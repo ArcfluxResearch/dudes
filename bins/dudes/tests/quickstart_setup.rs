@@ -174,15 +174,14 @@ fn alive(pid: i32) -> bool {
 }
 
 /// What a set-up quickstart prints after the daemon starts, in order: the ping, each engine with
-/// its sign-in, the Floor, and the hire. A terminal run gets the Floor link, printed because this
-/// is an SSH session; a script is told the command and gets no live link.
+/// its sign-in, the Floor, and the hire. A terminal run gets the Floor link, printed; a script is told the command and gets no live link.
 fn assert_set_up(run_output: &str, layout: &Layout, terminal: bool) {
     let engines = layout.path("engines");
     let floor: &[&str] = if terminal {
         &[
-            "dudes: opening no browser: this is an SSH session",
-            "the Floor is at http://127.0.0.1:",
+            "http://127.0.0.1:",
             "#bootstrap=",
+            "Paste this link into any browser within 60 seconds.",
         ]
     } else {
         &["Open the Floor with: dudes floor open"]
@@ -1375,7 +1374,7 @@ fn options_on_a_terminal_ask_nothing_and_print_the_commands() {
     let status = exit_status(&mut child, &screen);
     assert!(status.success(), "{status:?}:\n{}", screen.shown());
     let shown = screen.shown();
-    for absent in ["now? [y/N]", "#bootstrap=", "opening no browser"] {
+    for absent in ["now? [y/N]", "#bootstrap="] {
         assert!(!shown.contains(absent), "`{absent}` in:\n{shown}");
     }
     assert!(!layout.path("claude-login").exists(), "no login ran");

@@ -1,4 +1,4 @@
-//! `dudes floor open --no-browser` mints the operator bootstrap session over the operator door, prints
+//! `dudes floor open` mints the operator bootstrap session over the operator door, prints
 //! the one URL, discloses the bearer nowhere else, and refuses every start that is not ready.
 //!
 //! # The four refusals, and why they are three messages rather than three probes
@@ -16,9 +16,7 @@
 //!   CLI against that runtime exits `UNREACHABLE` having printed no URL. There is deliberately no
 //!   loopback readiness probe — it would assert a state the daemon cannot produce.
 //!
-//! The browser form is driven here only where it falls back, over SSH or from a
-//! relative runtime directory, because a test that succeeded would open a real browser. Its
-//! launch file, its opener and its success path are unit tests in `src/opener.rs`.
+//! The command opens no browser on any platform: it prints the link and says where to paste it.
 //!
 //! # The leak assertion and its control
 //!
@@ -75,13 +73,12 @@ fn with_floor(fixture: &Fixture) -> Settings {
     settings
 }
 
-/// `dudes floor open --no-browser` against this daemon, at the loudest this binary can be run.
+/// `dudes floor open` against this daemon, at the loudest this binary can be run.
 fn open(settings: &Settings, machine: bool) -> Run {
     let mut args = vec![OsString::from("floor"), OsString::from("open")];
     if machine {
         args.insert(0, OsString::from("--json"));
     }
-    args.push(OsString::from("--no-browser"));
     Cli::new(&settings.socket(), &settings.runtime_dir)
         .env("RUST_LOG", "trace")
         .args(args)
@@ -146,8 +143,8 @@ fn the_printed_url_is_the_live_daemons_origin_plus_the_route_and_fragment() {
     let url = human
         .stdout
         .lines()
-        .next_back()
-        .expect("the URL is the last line");
+        .next()
+        .expect("the URL is the first line");
 
     assert!(
         url.starts_with(&format!("{}/floor/#bootstrap=", issued.base_url)),
@@ -196,7 +193,7 @@ fn the_bearer_is_printed_once_on_stdout_and_nowhere_else() {
         } else {
             // The human mode prints no JSON, so the bearer is read back out of the one line that
             // carries it — which is also the only place this test will then tolerate it.
-            let url = run.stdout.lines().next_back().expect("a URL line");
+            let url = run.stdout.lines().next().expect("a URL line");
             let bearer = url.rsplit("#bootstrap=").next().expect("a fragment");
             serde_json::from_value(serde_json::json!({
                 "base_url": url
@@ -358,7 +355,7 @@ fn a_floor_with_no_release_manifest_refuses_to_start_the_daemon() {
     );
 }
 
-/// The launch files in `dir`.
+/// The launch files an earlier version wrote into `dir`.
 fn launch_files(dir: &Path) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
         .expect("the runtime directory")
@@ -373,10 +370,17 @@ fn launch_files(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// **Over SSH the browser form prints exactly what `--no-browser` prints, after one line naming
-/// why, and leaves no launch file**.
+/// What the command prints besides the link.
+const PASTE: &str = "Paste this link into any browser within 60 seconds. It works once; run dudes \
+                     floor open for a new one.";
+
+/// **The command prints the link on its own line, then where to paste it, and launches nothing.**
+///
+/// A launched opener leaves a launch file in the runtime directory and, over SSH, a line on
+/// stderr saying why it did not run; neither appears, with or without an SSH session. The old
+/// `--no-browser` flag is accepted and prints the same.
 #[test]
-fn the_browser_form_over_ssh_prints_the_link_and_leaves_no_file() {
+fn the_command_prints_the_link_and_launches_nothing() {
     let fixture = Fixture::new();
     let settings = with_floor(&fixture);
     let _daemon = start(
@@ -384,123 +388,53 @@ fn the_browser_form_over_ssh_prints_the_link_and_leaves_no_file() {
         SharedHost::new(),
         Arc::new(OpenRunner::default()),
     );
-
-    let run = Cli::new(&settings.socket(), &settings.runtime_dir)
-        .env("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 22")
-        .args(["floor", "open"])
-        .run();
-    assert_eq!(run.code(), exit::SUCCESS, "{}", run.output());
-    assert_eq!(
-        run.stderr,
-        "dudes: opening no browser: this is an SSH session, so a browser would open on another \
-         screen\n"
-    );
-    let printed = open(&settings, false).stdout;
     let shape = |text: &str| -> Vec<String> {
         text.lines()
             .map(|line| line.split("#bootstrap=").next().unwrap_or(line).to_owned())
             .collect()
     };
-    assert_eq!(shape(&run.stdout), shape(&printed), "{}", run.output());
-    assert_eq!(occurrences(&run.stdout, "#bootstrap="), 1);
-    assert_eq!(launch_files(&settings.runtime_dir), Vec::<PathBuf>::new());
-}
 
-/// **Both forms delete every earlier launch file before they issue, and nothing else**,
-/// and `--no-browser` prints what it always printed.
-#[test]
-fn both_forms_delete_every_earlier_launch_file() {
-    let fixture = Fixture::new();
-    let settings = with_floor(&fixture);
-    let _daemon = start(
-        &settings,
-        SharedHost::new(),
-        Arc::new(OpenRunner::default()),
-    );
-    let plant = || {
-        for name in [
-            "floor-open-0a.html",
-            "floor-open-ffffffffffffffffffffffffffffffff.html",
-        ] {
-            std::fs::write(settings.runtime_dir.join(name), "an old link").expect("plant");
+    // The daemon admits four Floor sessions, so the runs below stay under that.
+    let mut first: Option<Vec<String>> = None;
+    for (ssh, flag) in [(true, false), (false, false), (true, true)] {
+        let mut cli = Cli::new(&settings.socket(), &settings.runtime_dir);
+        if ssh {
+            cli = cli.env("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 22");
         }
-    };
-    let kept = settings.runtime_dir.join("notes.html");
-    std::fs::write(&kept, "keep").expect("another file");
-
-    plant();
-    let printed = open(&settings, false);
-    assert_eq!(printed.code(), exit::SUCCESS, "{}", printed.output());
-    assert_eq!(printed.stderr, "");
-    assert_eq!(printed.stdout.lines().count(), 2, "{}", printed.output());
-    assert!(
-        printed
-            .stdout
-            .starts_with("the Floor is at http://127.0.0.1:")
-    );
-    assert_eq!(launch_files(&settings.runtime_dir), Vec::<PathBuf>::new());
-
-    plant();
-    let fallback = Cli::new(&settings.socket(), &settings.runtime_dir)
-        .env("SSH_TTY", "/dev/ttys009")
-        .args(["floor", "open"])
-        .run();
-    assert_eq!(fallback.code(), exit::SUCCESS, "{}", fallback.output());
-    assert_eq!(launch_files(&settings.runtime_dir), Vec::<PathBuf>::new());
-    assert!(kept.exists(), "a file that is not a launch file stays");
-}
-
-/// **A relative runtime directory, even one that starts with `-`, opens nothing and prints the
-/// link**. The credential is still read through the relative path, so the link is
-/// issued; only the opener is refused.
-#[test]
-fn a_relative_runtime_directory_prints_the_link() {
-    let fixture = Fixture::new();
-    let settings = with_floor(&fixture);
-    let _daemon = start(
-        &settings,
-        SharedHost::new(),
-        Arc::new(OpenRunner::default()),
-    );
-    let cwd = tempfile::tempdir().expect("a working directory");
-    std::os::unix::fs::symlink(&settings.runtime_dir, cwd.path().join("-run"))
-        .expect("a relative name for the runtime directory");
-
-    let run = Cli::new(&settings.socket(), Path::new("-run"))
-        .current_dir(cwd.path())
-        .args(["floor", "open"])
-        .run();
-    assert_eq!(run.code(), exit::SUCCESS, "{}", run.output());
-    assert_eq!(
-        occurrences(&run.stdout, "#bootstrap="),
-        1,
-        "{}",
-        run.output()
-    );
-    if cfg!(target_os = "macos") {
-        assert_eq!(
-            run.stderr,
-            "dudes: opening no browser: the runtime directory -run is not an absolute path\n"
-        );
-    } else {
+        let mut args = vec!["floor", "open"];
+        if flag {
+            args.push("--no-browser");
+        }
+        let run = cli.args(args).run();
+        assert_eq!(run.code(), exit::SUCCESS, "ssh={ssh}: {}", run.output());
+        assert_eq!(run.stderr, "", "ssh={ssh} flag={flag}");
+        let lines: Vec<&str> = run.stdout.lines().collect();
+        assert_eq!(lines.len(), 2, "{}", run.output());
         assert!(
-            run.stderr.starts_with("dudes: opening no browser: "),
-            "{}",
+            lines[0].starts_with("http://127.0.0.1:") && lines[0].contains("/floor/#bootstrap="),
+            "the link is not on its own first line: {}",
             run.output()
         );
+        assert_eq!(lines[1], PASTE);
+        assert_eq!(occurrences(&run.stdout, "#bootstrap="), 1);
+        assert_eq!(launch_files(&settings.runtime_dir), Vec::<PathBuf>::new());
+        let shown = shape(&run.stdout);
+        assert_eq!(*first.get_or_insert_with(|| shown.clone()), shown);
     }
-    assert_eq!(launch_files(&settings.runtime_dir), Vec::<PathBuf>::new());
 }
 
-/// **`--json` has no browser form**: the contract type carries the bearer, and the browser form
-/// never prints it, so `--json` asks for `--no-browser` and sends nothing.
+/// **`--json` needs no flag**: the contract type is what a script parses.
 #[test]
-fn json_needs_no_browser() {
-    let run = Cli::bare().args(["--json", "floor", "open"]).run();
-    assert_eq!(run.code(), exit::USAGE, "{}", run.output());
-    assert!(
-        run.stderr.contains("`--json` needs --no-browser"),
-        "{}",
-        run.output()
+fn json_prints_the_contract_type() {
+    let fixture = Fixture::new();
+    let settings = with_floor(&fixture);
+    let _daemon = start(
+        &settings,
+        SharedHost::new(),
+        Arc::new(OpenRunner::default()),
     );
+    let run = open(&settings, true);
+    assert_eq!(run.code(), exit::SUCCESS, "{}", run.output());
+    let issued: SessionIssueResult = run.json();
+    assert_eq!(issued.expires_in_s, 60);
 }

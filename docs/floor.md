@@ -1,6 +1,6 @@
 # The Floor
 
-The Floor is the browser view that `dudes floor open` opens. The daemon's state decides where each
+The Floor is the browser view that the link from `dudes floor open` opens. The daemon's state decides where each
 agent stands in the office:
 
 - While a turn runs, the agent types at its desk.
@@ -37,11 +37,16 @@ twelve and HQ with sixteen:
 
 ## Open the Floor
 
-`dudes floor open` opens the Floor in your browser, and `dudes quickstart` does the same when it
-finishes. It writes a one-time sign-in link into a file only you can read in the runtime directory,
-and the system's own opener opens that file: `/usr/bin/open` on macOS. The link works once and
-expires after 60 seconds. Over SSH, on Linux and Windows for now, or when the opener fails, it
-prints the link instead, and `dudes floor open --no-browser` always prints it.
+`dudes floor open` prints a one-time sign-in link, and `dudes quickstart` prints one when it
+finishes. Paste the link into any browser, on this computer, within 60 seconds. Dudes opens no
+browser for you, so the link goes to the browser you choose and never to one you did not.
+
+A link works once, in one browser. Once a browser has used it, that browser keeps its own session,
+and the same link pasted into a second browser, or reloaded after it expired, is refused. The page
+then says so and tells you to run `dudes floor open` again for a new link. Copying the address from
+the browser's address bar does not help, because the browser removes the secret from the address as
+soon as it signs in. The daemon allows four Floor sessions at a time. `--no-browser` is still
+accepted and changes nothing, because printing is now the default.
 
 **Setup** shows each engine the daemon turned on and whether it found that engine's program on its
 `PATH`. **Settings** shows the running Floor switches, budget ceilings, per-turn reserves,
@@ -63,7 +68,7 @@ the install script puts it. On Unix, the daemon refuses to start with a `share/d
 neither you nor root owns, or that its group or others can write. A `duded` started directly, not
 through `dudes quickstart`, can name another bundle with `DUDES_FLOOR_ASSETS`, which takes
 precedence, for example `DUDES_FLOOR_ASSETS="$PWD/floor/dist" cargo run -p duded` in a checkout.
-With none of these, the Floor listener is disabled, and `dudes floor open --no-browser` says what
+With none of these, the Floor listener is disabled, and `dudes floor open` says what
 to do.
 
 `DUDES_FLOOR_ASSETS`, when present, must name an existing absolute release-bundle directory;
@@ -73,7 +78,7 @@ port stops startup. Without it, the daemon first asks for the port its last run 
 keeps in a `floor-port` file in the state directory, and takes a free port when that one is taken.
 The Floor's address then stays the same across restarts, so the private notes and roster order a
 browser keeps for it survive `dudes stop` and `dudes quickstart`. The startup line and
-`dudes floor open --no-browser` both show the port chosen. `dudes quickstart` passes neither
+`dudes floor open` both show the port chosen. `dudes quickstart` passes neither
 variable to the daemon. Dudes always binds `127.0.0.1`; neither variable can change the host.
 
 The release manifest proves that the directory is internally complete and version-matched. It does

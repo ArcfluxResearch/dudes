@@ -964,7 +964,7 @@ fn stop_ends_a_quickstarted_daemon() {
 }
 
 /// The first run in an installed layout, with the Floor bundle beside `duded`: `quickstart`, then
-/// `floor open --no-browser` prints a working sign-in link with no Floor variable set anywhere, and
+/// `floor open` prints a working sign-in link with no Floor variable set anywhere, and
 /// `stop` ends it. On Windows the daemon binds the Floor listener only with the `SystemRoot` that
 /// the CLI forwards.
 #[test]
@@ -1003,17 +1003,17 @@ fn quickstart_serves_the_floor_installed_beside_duded() {
         log()
     );
 
-    let opened = installed().args(["floor", "open", "--no-browser"]).run();
+    let opened = installed().args(["floor", "open"]).run();
     assert_eq!(
         opened.code(),
         dudes::exit::SUCCESS,
         "{opened:?}\nlog:\n{}",
         log()
     );
-    let link = opened.stdout.lines().last().unwrap_or_default();
+    let link = opened.stdout.lines().next().unwrap_or_default();
     assert!(
         link.starts_with("http://127.0.0.1:") && link.contains("/floor/#bootstrap="),
-        "the last line is the sign-in link: {opened:?}"
+        "the first line is the sign-in link: {opened:?}"
     );
     let origin = link
         .strip_prefix("http://")

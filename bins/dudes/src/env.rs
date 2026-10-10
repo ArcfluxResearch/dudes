@@ -33,8 +33,6 @@ use dudes_proto::rpc::hook::HookToken;
 use dudes_providers::launch::{DAEMON_ENV_ALLOWLIST, EnvVar};
 use dudes_types::McpServerName;
 
-pub use crate::opener::Desktop;
-
 /// The local endpoint's logical name inside a runtime directory.
 ///
 /// **A second spelling of `duded::settings::SOCKET_NAME`, and it has to be.** This package depends
@@ -103,7 +101,6 @@ pub struct Environment {
     config: Result<PathBuf, NoConfig>,
     current_dir: Option<PathBuf>,
     home: Option<PathBuf>,
-    desktop: Desktop,
     declared: Declared,
 }
 
@@ -318,12 +315,6 @@ impl Environment {
             .and_then(|value| value.into_string().ok())
             .and_then(|text| HookToken::new(text).ok());
         let config = operator_config_path(&lookup);
-        let set = |name: &str| lookup(name).is_some_and(|value| !value.is_empty());
-        let desktop = Desktop {
-            ssh: lookup("SSH_CONNECTION").is_some() || lookup("SSH_TTY").is_some(),
-            display: set("DISPLAY") || set("WAYLAND_DISPLAY"),
-            system_root: lookup("SystemRoot").map(PathBuf::from),
-        };
         Self {
             socket,
             runtime_dir,
@@ -336,7 +327,6 @@ impl Environment {
             config,
             current_dir: None,
             home,
-            desktop,
             declared: Declared::default(),
         }
     }
@@ -345,12 +335,6 @@ impl Environment {
     #[must_use]
     pub fn home(&self) -> Option<&Path> {
         self.home.as_deref()
-    }
-
-    /// What decides whether a browser can open here.
-    #[must_use]
-    pub fn desktop(&self) -> &Desktop {
-        &self.desktop
     }
 
     /// The directory the command runs in, which `quickstart` enrolls and hires into; `None` when
