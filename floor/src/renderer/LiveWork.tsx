@@ -10,7 +10,7 @@ const UNAVAILABLE: Record<string, string> = {
   evicted: 'Recent output evicted', cleared: 'Selection cleared',
 };
 
-function status(floor: FloorState): string {
+export function streamStatus(floor: FloorState): string {
   if (floor.phase === 'closed') return 'Unavailable — session or daemon disconnected';
   if (floor.phase === 'resyncing' || floor.phase === 'connecting') return 'Reconnecting — waiting for the Floor';
   if (floor.stale) return 'Unconfirmed — waiting for the stream';
@@ -28,18 +28,23 @@ function status(floor: FloorState): string {
   }
 }
 
-export function SelectionBar({ floor, onClear, leaveFocusTo }: {
+export function SelectionBar({ floor, onClear, leaveFocusTo, showStatus = true }: {
   readonly floor: FloorState;
   readonly onClear: () => void;
   readonly leaveFocusTo: string;
+  /** False when the header's own status line already carries the stream state. */
+  readonly showStatus?: boolean;
 }) {
-  return (
-    <div className="selection-bar">
-      <p className="stream-state" role="status">{status(floor)}</p>
-      <button type="button" id="selection-clear" className="drawer-close" aria-label="Close agent details"
-        title="Close (Escape)" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo} onClick={onClear}>×</button>
-    </div>
+  const close = (
+    <button type="button" id="selection-clear" className="drawer-close" aria-label="Close agent details"
+      title="Close (Escape)" ref={handFocusOnLeave} data-focus-on-leave={leaveFocusTo} onClick={onClear}>×</button>
   );
+  return showStatus ? (
+    <div className="selection-bar">
+      <p className="stream-state" role="status">{streamStatus(floor)}</p>
+      {close}
+    </div>
+  ) : close;
 }
 
 export function LiveWork({ floor, row }: { readonly floor: FloorState; readonly row: AgentRow | null }) {
