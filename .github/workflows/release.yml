@@ -47,6 +47,12 @@ jobs:
           version=$(sed -nE '/^\[workspace\.package\]/,/^\[/ s/^version *= *"([^"]+)".*/\1/p' Cargo.toml)
           test -n "$version" || { echo "Cargo.toml has no workspace version" >&2; exit 1; }
           test "$TAG" = "v$version" || { echo "tag $TAG is not v$version, the workspace version" >&2; exit 1; }
+      # Cheap early check; the notes job renders the section and refuses an empty one.
+      - name: CHANGELOG has a section for the version
+        if: github.ref_type == 'tag' && github.event_name == 'push'
+        run: |
+          version=$(sed -nE '/^\[workspace\.package\]/,/^\[/ s/^version *= *"([^"]+)".*/\1/p' Cargo.toml)
+          grep -qF "## [$version]" CHANGELOG.md || { echo "CHANGELOG.md has no section for $version" >&2; exit 1; }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24.21.0"
@@ -219,7 +225,12 @@ jobs:
         run: |
           version=$(sed -nE '/^\[workspace\.package\]/,/^\[/ s/^version *= *"([^"]+)".*/\1/p' Cargo.toml)
           test -n "$version" || { echo "Cargo.toml has no workspace version" >&2; exit 1; }
-          from=$(git describe --tags --abbrev=0 --match 'v*' --exclude "v$version" HEAD 2>/dev/null || true)
+          # A stable release covers everything since the last stable tag, skipping prereleases.
+          case "$version" in
+            *-*) skip_prereleases= ;;
+            *) skip_prereleases=1 ;;
+          esac
+          from=$(git describe --tags --abbrev=0 --match 'v*' --exclude "v$version" ${skip_prereleases:+--exclude '*-*'} HEAD 2>/dev/null || true)
           : > "$RUNNER_TEMP/authors.txt"
           for pr in $(git log --first-parent --format=%s ${from:+"$from..HEAD"} | sed -nE 's/.*\(#([0-9]+)\)$/\1/p'); do
             login=$(gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json author --jq .author.login)
@@ -228,7 +239,7 @@ jobs:
           set -- --version "$version" --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL" \
             --sums release/SHA256SUMS --authors "$RUNNER_TEMP/authors.txt" --maintainer "$MAINTAINER"
           if [ -n "$from" ]; then set -- "$@" --from "$from"; fi
-          if [ "$GITHUB_REF_TYPE" != tag ]; then set -- "$@" --preview; fi
+          if [ "$GITHUB_REF_TYPE" != tag ] || [ "$GITHUB_EVENT_NAME" != push ]; then set -- "$@" --preview; fi
           mkdir notes
           cargo xtask release-notes "$@" > notes/release-notes.md
           cat notes/release-notes.md
@@ -242,7 +253,7 @@ jobs:
   publish:
     name: publish
     needs: [collect, notes]
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

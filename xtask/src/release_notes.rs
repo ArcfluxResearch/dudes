@@ -294,6 +294,25 @@ struct Inputs<'a> {
     preview: bool,
 }
 
+/// A commit subject as plain text: a backslash before each character that markdown, a mention or
+/// a cross-reference would act on, and before the slashes of a `://` so no link is made.
+fn escape_markdown(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (at, ch) in text.char_indices() {
+        let scheme_slash = ch == '/' && (text[..at].ends_with(':') || text[..at].ends_with(":/"));
+        if scheme_slash
+            || matches!(
+                ch,
+                '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '&' | '|' | '~' | '#' | '@'
+            )
+        {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn plural(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }
@@ -361,7 +380,7 @@ fn render_body(subjects: &[String], changelog: &str, inputs: &Inputs<'_>) -> Res
             .get(pr)
             .filter(|login| !login.eq_ignore_ascii_case(inputs.maintainer))
             .map_or_else(String::new, |login| format!(". Thanks @{login}"));
-        let _ = writeln!(out, "- #{pr} {}{thanks}", entry.title);
+        let _ = writeln!(out, "- #{pr} {}{thanks}", escape_markdown(&entry.title));
     }
     if numbered.is_empty() {
         out.push_str("No pull requests in this release.\n");
@@ -818,6 +837,40 @@ Each archive and `SHA256SUMS` also carry a build provenance attestation. `gh att
         ] {
             assert!(parse(&refused).is_err(), "{refused:?} is refused");
         }
+    }
+
+    #[test]
+    fn a_hostile_title_renders_as_plain_text() {
+        let authors = BTreeMap::new();
+        let inputs = Inputs {
+            version: "0.1.0",
+            from: None,
+            repo: "example/dudes",
+            run_url: "u",
+            sha: "s",
+            sums: "x",
+            maintainer: "m",
+            authors: &authors,
+            preview: true,
+        };
+        let body = render_body(
+            &subjects(&[
+                "fix: ping @octocat, see [x](https://evil.test) <b>hi</b> `code` #99 (#5)",
+            ]),
+            "## [Unreleased]\n",
+            &inputs,
+        )
+        .expect("a body");
+        assert!(
+            body.contains(
+                "- #5 fix: ping \\@octocat, see \\[x\\](https:\\/\\/evil.test) \\<b\\>hi\\</b\\> \\`code\\` \\#99\n"
+            ),
+            "{body}"
+        );
+        assert_eq!(
+            escape_markdown("snake_case & more"),
+            "snake\\_case \\& more"
+        );
     }
 
     #[test]
