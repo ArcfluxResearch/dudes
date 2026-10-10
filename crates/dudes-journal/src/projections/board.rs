@@ -150,7 +150,7 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
             done_when,
             expected_seq,
             ..
-        } => update(table, lsn, *card, |row| {
+        } => update_ticket(table, lsn, *card, |row| {
             row.view.title.clone_from(title);
             row.view.seq = expected_seq.next();
             if let Some(ticket) = &mut row.ticket {
@@ -164,11 +164,14 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
             by,
             message,
             expected_seq,
-        } => update(table, lsn, *card, |row| {
-            let class = if matches!(row.view.status, CardStatus::Review | CardStatus::Blocked) {
-                QueueClass::Rework
-            } else {
-                QueueClass::New
+        } => update_ticket(table, lsn, *card, |row| {
+            // Moving a ticket that is already queued keeps its class: work sent back stays ahead
+            // of new work, wherever it is moved.
+            let kept = row.ticket.as_ref().and_then(|ticket| ticket.queue);
+            let class = match (row.view.status, kept) {
+                (CardStatus::Claimed, Some(key)) => key.class,
+                (CardStatus::Review | CardStatus::Blocked, _) => QueueClass::Rework,
+                _ => QueueClass::New,
             };
             row.view.status = CardStatus::Claimed;
             row.view.status_by = *by;
@@ -177,7 +180,9 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
             row.claimed_lsn = Some(lsn);
             if let Some(ticket) = &mut row.ticket {
                 ticket.queue = Some(QueueKey { class, lsn });
-                ticket.message.clone_from(message);
+                if message.is_some() {
+                    ticket.message.clone_from(message);
+                }
                 ticket.reason = None;
             }
         }),
@@ -186,7 +191,7 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
             agent,
             goal,
             expected_seq,
-        } => update(table, lsn, *card, |row| {
+        } => update_ticket(table, lsn, *card, |row| {
             row.view.status = CardStatus::Doing;
             row.view.status_by = Actor::System;
             row.view.seq = expected_seq.next();
@@ -201,7 +206,13 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
             }
         }),
         Record::TicketRemoved { card, .. } => {
-            table.remove(&card.to_bytes())?;
+            let is_ticket = get_row::<BoardRow>(table, &card.to_bytes())?
+                .is_some_and(|row| row.ticket.is_some());
+            if is_ticket {
+                table.remove(&card.to_bytes())?;
+            } else {
+                tracing::warn!(target: "journal", %lsn, %card, "projection.not_a_ticket");
+            }
             Ok(())
         }
         _ => Ok(()),
@@ -221,4 +232,20 @@ fn update(
     };
     change(&mut row);
     put_row(table, &card.to_bytes(), &row)
+}
+
+/// As [`update`], for a record that only a ticket can receive: a plain card is left as it is.
+fn update_ticket(
+    table: &mut RowTable<'_>,
+    lsn: Lsn,
+    card: CardId,
+    change: impl FnOnce(&mut BoardRow),
+) -> Result<()> {
+    update(table, lsn, card, |row| {
+        if row.ticket.is_some() {
+            change(row);
+        } else {
+            tracing::warn!(target: "journal", %lsn, %card, "projection.not_a_ticket");
+        }
+    })
 }

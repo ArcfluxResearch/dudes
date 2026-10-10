@@ -22,6 +22,16 @@ pub(crate) fn goal_check(check: &TicketCheck) -> Option<CompletionCheckRef> {
     named_check(&declaration, &check.predicate, true)
 }
 
+/// The card a record that only a ticket can receive names. A start has its own, stricter check.
+const fn ticket_target(record: &Record) -> Option<&CardId> {
+    match record {
+        Record::TicketEdited { card, .. }
+        | Record::TicketAssigned { card, .. }
+        | Record::TicketRemoved { card, .. } => Some(card),
+        _ => None,
+    }
+}
+
 #[derive(Debug)]
 struct Ticket {
     project: String,
@@ -41,6 +51,12 @@ pub(crate) struct TicketIndex {
 impl TicketIndex {
     /// Refuse a `TicketStarted` that does not match the ticket it starts.
     pub(crate) fn validate(&self, world: &World, record: &Record) -> Result<()> {
+        if let Some(card) = ticket_target(record) {
+            ensure!(
+                self.tickets.get(card).is_some_and(|ticket| !ticket.removed),
+                "a ticket record names a card that is not a live ticket"
+            );
+        }
         let Record::TicketStarted {
             card, agent, goal, ..
         } = record
@@ -401,6 +417,59 @@ mod tests {
         index
             .validate(&world, &start(goal))
             .expect("the edited check is current");
+    }
+
+    /// An edit, an assignment or a removal names a live ticket, and a plain card is not one.
+    #[test]
+    fn a_ticket_record_for_a_plain_card_or_a_removed_ticket_is_refused() {
+        let world = World::default();
+        let plain = CardId::from_parts(4, 9);
+        let mut index = queued(Some("service"));
+        index.apply(&Record::CardCreated {
+            card: plain,
+            title: "Plain".into(),
+            department: "engineering".into(),
+            by: Actor::System,
+            deps: Vec::new(),
+        });
+        let records = |card| {
+            [
+                Record::TicketEdited {
+                    card,
+                    title: "x".into(),
+                    description: String::new(),
+                    done_when: check(),
+                    by: Actor::System,
+                    expected_seq: Seq(0),
+                },
+                Record::TicketAssigned {
+                    card,
+                    agent: agent(),
+                    by: Actor::System,
+                    message: None,
+                    expected_seq: Seq(0),
+                },
+                Record::TicketRemoved {
+                    card,
+                    by: Actor::System,
+                    expected_seq: Seq(0),
+                },
+            ]
+        };
+        for record in records(plain) {
+            assert!(refusal(&index, &world, &record).contains("live ticket"));
+        }
+        for record in records(card()) {
+            index.validate(&world, &record).expect("a live ticket");
+        }
+        index.apply(&Record::TicketRemoved {
+            card: card(),
+            by: Actor::System,
+            expected_seq: Seq(1),
+        });
+        for record in records(card()) {
+            assert!(refusal(&index, &world, &record).contains("live ticket"));
+        }
     }
 
     /// The pass that validates every goal change runs the ticket check on a start, and a start

@@ -250,6 +250,12 @@ pub fn clean_text(text: &str, max: usize) -> bool {
             .any(|c| c.is_control() && c != '\n' && c != '\t')
 }
 
+/// Whether `text`, already trimmed, is a valid title: as [`clean_text`], on one line.
+#[must_use]
+pub fn clean_title(text: &str, max: usize) -> bool {
+    text.len() <= max && !text.chars().any(char::is_control)
+}
+
 /// Trim leading and trailing ASCII space, tab, CR and LF, as every ticket text is trimmed.
 #[must_use]
 pub fn trim(text: &str) -> &str {
@@ -313,6 +319,12 @@ mod tests {
         assert!(!clean_text("nul\0", 64));
         assert!(!clean_text("bell\u{7}", 64));
         assert!(!clean_text("12345", 4));
+        assert!(!clean_text("del\u{7f}", 64));
+        assert!(!clean_text("c1\u{9b}", 64));
+        assert!(clean_title("one line", 64));
+        assert!(!clean_title("two\nlines", 64));
+        assert!(!clean_title("tab\there", 64));
+        assert!(!clean_title("nul\0", 64));
     }
 
     #[test]
