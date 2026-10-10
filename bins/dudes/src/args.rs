@@ -371,22 +371,23 @@ COMMANDS
                [--hire <name> [--provider <provider>] [--role <role>] [--goal <text>]
                 [--usd-per-day <n>] [--tokens-per-day <n>]]
                [--hop-cap <n>] [--timeout-s <n>] [-- <program> [args...]]
-        Set up and start the daemon. On a terminal with no options it asks, one step at
-        a time, which engines to turn on, which Floor actions to allow, whether to set a
-        spending cap, whether to enroll the current repository and whether to hire a
-        first agent. It then writes the operator file once, starts the daemon (or
-        restarts one that runs other settings), shows where the daemon found each
-        engine and whether it is signed in, prints the Floor's one-time link to paste
-        into any browser, and makes the hire. Last, it offers to sign in to one
-        engine that is signed out; the others are named with the dudes login command for each. It reads no engine's
-        files.
-        With options it asks nothing and prints no Floor link: it
-        prints dudes floor open, and dudes login <engine> for each engine that is
-        signed out. --yes takes every default, --set is `config set`,
-        --enroll enrolls the current repository, --hire hires a first agent there, and
-        everything after `--` is the completion check that the workspace and the goal
-        share (default: at most 5 turns a goal, 600 seconds a check). A running daemon
-        with other settings is restarted only with --restart, because a restart ends
+        Set up and start the daemon. On a terminal with no options it turns on the
+        engines it finds on your PATH, then asks, one step at a time, whether the Floor
+        may act on your agents, for a daily spending cap only when an API key is set,
+        for the current repository's completion check (suggested from its files) and
+        whether to hire a first agent. It then writes the operator file once, starts
+        the daemon (or restarts one that runs other settings), shows where the daemon
+        found each engine and whether it is signed in, prints the Floor's one-time
+        link to paste into any browser, and makes the hire. Last, it offers to sign
+        in to one engine that is signed out; the others are named with the dudes
+        login command for each. It reads no engine's files.
+        With options it asks nothing and prints no Floor link: it prints dudes floor
+        open, and dudes login <engine> for each engine that is signed out. --yes
+        takes every default, --set is `config set`, --enroll enrolls the current
+        repository, --hire hires a first agent there, and everything after `--` is
+        the completion check that the workspace and the goal share (default: at
+        most 5 turns a goal, 600 seconds a check). A running daemon with other
+        settings is restarted only with --restart, because a restart ends
         every running turn; without it quickstart writes the file, names what differs,
         stops nothing and exits 4. Before any restart the running daemon reads the new
         file, and a file it would refuse is put back as it was. Ceilings are

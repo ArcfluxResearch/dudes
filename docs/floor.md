@@ -21,7 +21,8 @@ without a goal authorizes one turn; messages to an agent with a goal join its ne
 ![Animation in the Workshop office. A new hire appears at the door, walks across the floor and sits down at a free desk, while the rest of the crew types at desks and checks at the goal board.](../.github/readme/hire-walks-in.webp)
 
 The office is a view of the daemon's state, never a source of truth. The daemon's journal, an append-only log of everything it records, is the
-only record, and the Floor changes that state only through the Floor actions you turn on.
+only record, and the Floor changes that state only through the Floor actions you turn on. `dudes quickstart` asks once whether to turn on hire,
+pause, answer, change goals, retire and attach a terminal together.
 
 The Floor draws the smallest office that seats the whole crew. The Studio has 8 desks, the Workshop
 has 12 and HQ has 16. **Settings** can pin one office in this browser instead. When the office has
@@ -76,8 +77,8 @@ relative and empty paths stop startup. `DUDES_FLOOR_PORT` applies to either bund
 unsigned ASCII decimal that fits `u16`; `0` asks the operating system for a free port, and a taken
 port stops startup. Without it, the daemon first asks for the port its last run bound, which it
 keeps in a `floor-port` file in the state directory, and takes a free port when that one is taken.
-The Floor's address then stays the same across restarts, so the private notes and roster order a
-browser keeps for it survive `dudes stop` and `dudes quickstart`. The startup line and
+The Floor's address then stays the same across restarts, so the roster order a
+browser keeps for it survives `dudes stop` and `dudes quickstart`. The startup line and
 `dudes floor open` both show the port chosen. `dudes quickstart` passes neither
 variable to the daemon. Dudes always binds `127.0.0.1`; neither variable can change the host.
 

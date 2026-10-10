@@ -16,7 +16,7 @@ import type { FloorState } from '../floor/store.ts';
 import { browserSocket } from '../floor/stream.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from '../focus.ts';
 import { UnavailableControls } from '../settings/SettingsView.tsx';
-import { RetireStrip } from '../retire/RetirePanel.tsx';
+import { RetireStrip, openConfirmation } from '../retire/RetirePanel.tsx';
 import type { AgentRow } from '../scene/cast.ts';
 import type { Terminal } from './grid.ts';
 import {
@@ -51,7 +51,28 @@ const UNAVAILABLE: Readonly<Record<Extract<TerminalOffer, { kind: 'unavailable' 
   'no-session': 'Attach waits for this agent’s first confirmed session.',
 });
 
+const TRUST_WARNING = 'Claude Code may ask you to trust this workspace. Check the folder before accepting in the terminal. '
+  + 'No, exit may be selected when the prompt opens.';
+
 type AttachPart = 'all' | 'action' | 'details';
+
+/** Claude Code's workspace trust prompt comes up inside the terminal, so it is read here first. */
+export function AttachConfirmation({ name, onConfirm, onCancel }: {
+  readonly name: string; readonly onConfirm: () => void; readonly onCancel: () => void;
+}) {
+  return (
+    <dialog ref={openConfirmation} className="retire-dialog" data-attach-dialog
+      aria-labelledby="attach-dialog-title" aria-describedby="attach-dialog-text" onCancel={onCancel}>
+      <h2 id="attach-dialog-title">{`Attach to ${name}?`}</h2>
+      <p id="attach-dialog-text">{TRUST_WARNING}</p>
+      <div className="retire-actions">
+        <button type="button" className="terminal-attach-confirm"
+          onClick={(event) => { if (event.detail < 2) onConfirm(); }}>Attach</button>
+        <button type="button" className="retire-cancel" onClick={onCancel}>Cancel</button>
+      </div>
+    </dialog>
+  );
+}
 
 export function TerminalAttach({ floor, row, part = 'all' }: {
   readonly floor: FloorState; readonly row: AgentRow; readonly part?: AttachPart;
@@ -63,6 +84,7 @@ export function TerminalAttach({ floor, row, part = 'all' }: {
 export function TerminalAttachView({ floor, offer, part = 'all' }: {
   readonly floor: FloorState; readonly offer: TerminalOffer; readonly part?: AttachPart;
 }) {
+  const [confirming, setConfirming] = useState(false);
   if (offer.kind === 'none') return <UnavailableControls floor={floor} control="terminal" />;
   if (part === 'action' && offer.kind !== 'attach') return null;
   const claudeTrust = offer.kind === 'attach'
@@ -71,13 +93,12 @@ export function TerminalAttachView({ floor, offer, part = 'all' }: {
     <div className="agent-detail-terminal" data-terminal-offer={offer.kind}>
       {offer.kind === 'attach' ? (
         <>
-          {claudeTrust && part !== 'details' ? <p className="hire-note" id="terminal-trust-hint">
-            Claude Code may ask you to trust this workspace. Check the folder before accepting in the terminal.
-            {' '}No, exit may be selected when the prompt opens.
-          </p> : null}
           {part === 'details' ? null : <button type="button" className="terminal-attach"
-            aria-describedby={claudeTrust ? 'terminal-hint terminal-trust-hint' : 'terminal-hint'}
-            onClick={() => attachTerminal(offer.agent, browserTerminalPorts())}>Attach</button>}
+            aria-describedby="terminal-hint" aria-haspopup={claudeTrust ? 'dialog' : undefined}
+            onClick={() => (claudeTrust ? setConfirming(true) : attachTerminal(offer.agent, browserTerminalPorts()))}>Attach</button>}
+          {confirming && claudeTrust && part !== 'details' ? <AttachConfirmation name={nameOf(floor, offer.agent)}
+            onCancel={() => setConfirming(false)}
+            onConfirm={() => { setConfirming(false); attachTerminal(offer.agent, browserTerminalPorts()); }} /> : null}
           {part === 'action' ? null : <p className="hire-note" id="terminal-hint">{ATTACH_HINT}</p>}
         </>
       ) : (

@@ -196,7 +196,6 @@ export function keyboardSidebarWidth(width: number, key: string): number | null 
 export type AgentOrderView = 'strip' | 'focus';
 const AGENT_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const MAX_ORDER = 1024;
-export const MAX_AGENT_NOTE = 4096;
 
 function validOrder(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.length <= MAX_ORDER
@@ -284,33 +283,13 @@ export function reorderKeyTarget(ids: readonly string[], agent: string, key: str
   }
 }
 
-export function readAgentNote(agent: string, storage: () => ViewStorage = browserStorage): string {
-  try {
-    if (!AGENT_ID.test(agent)) return '';
-    const value = storage().getItem(`dudes.floor.agent-note.${agent}`);
-    return value !== null && value.length <= MAX_AGENT_NOTE ? value : '';
-  } catch {
-    return '';
-  }
-}
-
-export function writeAgentNote(agent: string, text: string, storage: () => ViewStorage = browserStorage): boolean {
-  try {
-    if (!AGENT_ID.test(agent) || text.length > MAX_AGENT_NOTE) return false;
-    storage().setItem(`dudes.floor.agent-note.${agent}`, text);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 const DETAIL_TAB_STORAGE_KEY = 'dudes.floor.agent-detail-tab';
 
 export function readDetailTab(storage: () => ViewStorage = browserStorage, fallback: DetailTab = 'overview'): DetailTab {
   try {
     const value = storage().getItem(DETAIL_TAB_STORAGE_KEY);
     return value === 'overview' || value === 'output' || value === 'terminal' || value === 'git' || value === 'memory'
-      || value === 'traces' || value === 'messages' || value === 'chat' ? value : fallback;
+      || value === 'messages' || value === 'chat' ? value : fallback;
   } catch {
     return fallback;
   }

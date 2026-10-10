@@ -50,9 +50,10 @@ dudes quickstart
 dudes floor open
 ```
 
-`dudes quickstart` asks which engines to turn on, starts the daemon, prints a link to the Floor and can hire a
-first agent. Paste the link into any browser; `dudes floor open` prints a new one later. On a remote machine, forward
-the link's port over SSH first, because the link is a loopback address. To hire an agent yourself and give it
+`dudes quickstart` asks only what it cannot work out, starts the daemon, prints a link to the Floor and can
+hire a first agent. Paste the link into any browser; `dudes floor open` prints a new one later. On a remote
+machine, forward the link's port over SSH first, because the link is a loopback address. To hire an agent
+yourself and give it
 a goal, use the id that `dudes hire` prints:
 
 ```sh

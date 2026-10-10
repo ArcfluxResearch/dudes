@@ -179,6 +179,68 @@ impl<'a> Terminal<'a> {
     }
 }
 
+/// What this machine already tells quickstart, so it asks only what it cannot work out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Host {
+    /// Engines whose program is a runnable file on this process's `PATH`.
+    pub found: Vec<Provider>,
+    /// Engines for which this process holds a credential that bills each token.
+    pub billed: Vec<Provider>,
+}
+
+impl Host {
+    /// What `env` shows: the engines on its `PATH` and the credentials it holds.
+    #[must_use]
+    pub fn of(env: &crate::env::Environment) -> Self {
+        let path = env
+            .daemon_env()
+            .iter()
+            .find(|var| var.name() == "PATH")
+            .map(|var| var.expose_value().to_owned());
+        let found = [Provider::Claude, Provider::Codex, Provider::Pi]
+            .into_iter()
+            .filter(|provider| on_path(provider.as_str(), path.as_deref()))
+            .collect();
+        Self {
+            found,
+            billed: env.billed().to_vec(),
+        }
+    }
+}
+
+/// Whether a runnable file called `name` sits in an absolute entry of `path`, as the daemon's own
+/// search reads it. This only shapes the questions; the daemon decides what it launches.
+fn on_path(name: &str, path: Option<&std::ffi::OsStr>) -> bool {
+    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    path.is_some_and(|path| {
+        std::env::split_paths(path)
+            .filter(|entry| entry.is_absolute())
+            .any(|entry| runnable(&entry.join(&file)))
+    })
+}
+
+#[cfg(unix)]
+fn runnable(candidate: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(candidate)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn runnable(candidate: &Path) -> bool {
+    candidate.is_file()
+}
+
+/// The Floor switches the single Floor question turns on and off together.
+const FLOOR_ACTIONS: [Key; 6] = [
+    Key::Answer,
+    Key::Hire,
+    Key::Control,
+    Key::Goal,
+    Key::Retire,
+    Key::Terminal,
+];
+
 /// Ask for every choice, applying each setting to `draft` as it is answered.
 ///
 /// `cwd` is the canonical current directory, offered for enrollment when it holds `.git`.
@@ -191,6 +253,7 @@ pub fn guided(
     draft: &mut Draft,
     config: &Path,
     cwd: Option<&Path>,
+    host: &Host,
 ) -> Result<Plan, Stopped> {
     let mut plan = Plan::default();
     term.say(&format!(
@@ -198,122 +261,188 @@ pub fn guided(
          takes the answer in capitals or in brackets.",
         config.display()
     ))?;
-    engines_step(term, draft, &mut plan)?;
+    engines_step(term, draft, &mut plan, host)?;
     floor_step(term, draft, &mut plan)?;
-    cap_step(term, draft, &mut plan)?;
+    cap_step(term, draft, &mut plan, host)?;
     if let Some(cwd) = cwd.filter(|cwd| cwd.join(".git").exists()) {
         workspace_step(term, draft.settings(), cwd, &mut plan)?;
     }
-    hire_step(term, draft.settings(), &mut plan)?;
+    hire_step(term, draft.settings(), cwd, host, &mut plan)?;
     Ok(plan)
 }
 
+/// Claude Code is always on. Codex and Pi are turned on when their program is found and
+/// otherwise left as the file has them. Nothing here is asked.
 fn engines_step(
     term: &mut Terminal<'_>,
     draft: &mut Draft,
     plan: &mut Plan,
+    host: &Host,
 ) -> Result<(), Stopped> {
-    term.say("\nEngines. Claude Code is always on.")?;
-    if switch(term, draft, plan, Key::Codex, "Turn on Codex?")? {
-        if cfg!(any(target_os = "macos", target_os = "linux")) {
-            term.say("Codex streaming uses a separate sign-in managed by the daemon.")?;
-            switch(
-                term,
-                draft,
-                plan,
-                Key::CodexStreaming,
-                "Turn on Codex streaming?",
-            )?;
-        } else {
-            term.say("Codex streaming requires macOS or Linux; its current setting is unchanged.")?;
-        }
+    term.say("\nEngines.")?;
+    let claude = if host.found.contains(&Provider::Claude) {
+        "found"
+    } else {
+        "not found on your PATH; install Claude Code before an agent can run"
+    };
+    term.say(&format!("  claude: always on, {claude}"))?;
+    for (provider, key) in [(Provider::Codex, Key::Codex), (Provider::Pi, Key::Pi)] {
+        let was_on = draft.settings().satisfies(key);
+        let line = match (host.found.contains(&provider), was_on) {
+            (true, true) => "found, already on",
+            (true, false) => {
+                set(draft, plan, key, true)?;
+                "found, turned on"
+            }
+            (false, true) => "not found on your PATH, left on as your file has it",
+            (false, false) => "not found on your PATH, left off",
+        };
+        term.say(&format!("  {provider}: {line}"))?;
     }
-    switch(term, draft, plan, Key::Pi, "Turn on Pi?")?;
+    term.say("The daemon reports each engine's sign-in once it starts.")?;
     Ok(())
 }
 
+/// One question for the Floor's actions, or one line when the file already holds its own mix.
 fn floor_step(term: &mut Terminal<'_>, draft: &mut Draft, plan: &mut Plan) -> Result<(), Stopped> {
-    term.say(
-        "\nFloor actions. Each lets the Floor, in your browser, act on an agent, and each is off \
-         unless you turn it on.",
-    )?;
-    switch(
-        term,
-        draft,
-        plan,
-        Key::Answer,
-        "Answer an agent's question from the Floor?",
-    )?;
-    term.say(
-        "With Hire on, anyone holding a Floor session can start agents that act with your \
+    term.say("")?;
+    let settings = draft.settings();
+    let on = FLOOR_ACTIONS
+        .iter()
+        .filter(|key| settings.satisfies(**key))
+        .count();
+    if on != 0 && on != FLOOR_ACTIONS.len() {
+        return Ok(term.say(
+            "Floor actions: your file already chooses which ones are on, so quickstart keeps that \
+             choice.",
+        )?);
+    }
+    let allow = term.yes(
+        "Let the Floor act on your agents: hire, pause, answer, change goals, retire and attach a \
+         terminal? Anyone holding your one-time Floor link could start agents that act with your \
          account's full reach.",
+        true,
     )?;
-    switch(
-        term,
-        draft,
-        plan,
-        Key::Hire,
-        "Hire an agent from the Floor?",
-    )?;
-    let control = switch(
-        term,
-        draft,
-        plan,
-        Key::Control,
-        "Pause, resume and rename an agent from the Floor?",
-    )?;
-    for (key, question) in [
-        (Key::Goal, "Change an agent's goal from the Floor?"),
-        (
-            Key::Renew,
-            "Start a new goal from the Floor when an agent's goal has nothing left?",
-        ),
-        (Key::Retire, "Retire an agent from the Floor?"),
-    ] {
-        let settings = draft.settings();
-        let asked = control
-            && (key != Key::Renew
-                || (settings.satisfies(Key::Goal) && settings.satisfies(Key::Hire)));
-        if asked && key == Key::Renew {
-            term.say(
-                "With Renew on, anyone holding a Floor session can give an agent whose goal has \
-                 nothing left a new goal with its workspace's turns and ceilings, each time it runs \
-                 out.",
-            )?;
-        }
-        if asked {
-            switch(term, draft, plan, key, question)?;
-        } else if settings.satisfies(key) {
-            set(draft, plan, key, false)?;
+    for key in FLOOR_ACTIONS {
+        if allow != draft.settings().satisfies(key) {
+            set(draft, plan, key, allow)?;
         }
     }
-    switch(
-        term,
-        draft,
-        plan,
-        Key::Terminal,
-        "Attach a terminal to an agent from the Floor?",
-    )?;
+    if !allow && draft.settings().satisfies(Key::Renew) {
+        set(draft, plan, Key::Renew, false)?;
+    }
     Ok(())
 }
 
-fn cap_step(term: &mut Terminal<'_>, draft: &mut Draft, plan: &mut Plan) -> Result<(), Stopped> {
-    term.say(
-        "\nSpending cap. Subscription plans have their own limits, so most people skip this. \
-         Set one when an engine bills an API key for each token.",
-    )?;
+/// The floor's daily cap, asked only when this process holds an API key for an engine that is on.
+fn cap_step(
+    term: &mut Terminal<'_>,
+    draft: &mut Draft,
+    plan: &mut Plan,
+    host: &Host,
+) -> Result<(), Stopped> {
     if draft.settings().satisfies(Key::FloorUsdPerDay) {
         return Ok(term.say(&format!(
-            "The floor's daily cap stays at ${}.",
+            "\nThe floor's daily cap stays at ${}.",
             draft.settings().shown(Key::FloorUsdPerDay)
         ))?);
     }
-    if term.yes("Set a spending cap (for API-key billing)?", false)? {
-        let change = term.value("Daily dollar cap for the whole floor", None, floor_cap)?;
+    let billed = billed_engines(draft.settings(), host);
+    if billed.is_empty() {
+        return Ok(());
+    }
+    term.say(&format!(
+        "\nSpending cap. This shell holds an API key for {}, which bills for each token.",
+        billed.join(" and "),
+    ))?;
+    let change = term.value(
+        "Daily dollar cap for the whole floor (Enter for none)",
+        None,
+        |text| {
+            if text.is_empty() {
+                Ok(None)
+            } else {
+                floor_cap(text).map(Some)
+            }
+        },
+    )?;
+    if let Some(change) = change {
         draft.apply(&change)?;
         plan.changes.push(change);
     }
     Ok(())
+}
+
+/// The engines that are on and for which this process holds a credential that bills each token.
+fn billed_engines(file: &Settings, host: &Host) -> Vec<&'static str> {
+    host.billed
+        .iter()
+        .filter(|provider| engine_on(file, **provider))
+        .map(|provider| provider.as_str())
+        .collect()
+}
+
+/// The check a repository suggests for itself: `None` when nothing in it names one.
+#[must_use]
+pub fn suggest_check(dir: &Path) -> Option<Vec<String>> {
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
+    let argv: &[&str] = if dir.join("Cargo.toml").is_file() {
+        &["cargo", "test"]
+    } else if read("package.json").is_some_and(|text| npm_test(&text)) {
+        &["npm", "test"]
+    } else if dir.join("go.mod").is_file() {
+        &["go", "test", "./..."]
+    } else if dir.join("pyproject.toml").is_file() || dir.join("pytest.ini").is_file() {
+        &["pytest"]
+    } else if ["Makefile", "makefile", "GNUmakefile"]
+        .iter()
+        .filter_map(|name| read(name))
+        .any(|text| text.lines().any(|line| line.starts_with("test:")))
+    {
+        &["make", "test"]
+    } else {
+        return None;
+    };
+    Some(argv.iter().map(|word| (*word).to_owned()).collect())
+}
+
+/// Whether `package.json` has a `test` script, other than the placeholder `npm init` writes.
+fn npm_test(manifest: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(manifest)
+        .ok()
+        .and_then(|json| json["scripts"]["test"].as_str().map(str::to_owned))
+        .is_some_and(|script| !script.contains("no test specified"))
+}
+
+/// Ask for the completion check, offering `suggestion`. `-` skips when `skippable`, and so does
+/// Enter when there is nothing to offer.
+fn ask_check(
+    term: &mut Terminal<'_>,
+    question: &str,
+    suggestion: Option<&[String]>,
+    skippable: bool,
+) -> Result<Option<Vec<String>>, Stopped> {
+    let suggested = suggestion.map(|argv| argv.join(" "));
+    let prompt = match (&suggested, skippable) {
+        (Some(text), true) => format!("{question} [{text}] (- to skip):"),
+        (Some(text), false) => format!("{question} [{text}]:"),
+        (None, true) => format!("{question} (- to skip):"),
+        (None, false) => format!("{question}:"),
+    };
+    loop {
+        let answer = term.answer(&prompt)?;
+        let text = match (answer.as_str(), &suggested) {
+            ("-", _) | ("", None) if skippable => return Ok(None),
+            ("", Some(text)) => text.as_str(),
+            ("-", _) => "",
+            (text, _) => text,
+        };
+        match words(text) {
+            Ok(Some(argv)) => return Ok(Some(argv)),
+            Ok(None) => term.say("Type the program and its arguments.")?,
+            Err(why) => term.say(&why)?,
+        }
+    }
 }
 
 fn workspace_step(
@@ -334,39 +463,49 @@ fn workspace_step(
         "the Floor can hire agents into it once floor.hire is on"
     };
     term.say(&format!(
-        "\nWorkspace. {} is a git repository. Enrolled, {hires}. A workspace needs a completion \
-         check: a command the daemon runs itself to decide that a goal is done, typed as a \
-         program and its arguments separated by spaces.",
+        "\nWorkspace. {} is a git repository. Enrolled, {hires}. A completion check is a command \
+         the daemon runs itself to decide that a goal is done, typed as a program and its \
+         arguments separated by spaces.",
         cwd.display()
     ))?;
-    let Some(argv) = term.value("Completion check (Enter to skip enrolling)", None, words)? else {
+    let suggestion = suggest_check(cwd);
+    let Some(argv) = ask_check(
+        term,
+        "Completion check for this repository",
+        suggestion.as_deref(),
+        true,
+    )?
+    else {
         return Ok(());
     };
-    let check_label = term.value(
-        "Name the check for the Floor",
-        Some(&argv.join(" ")),
-        display_text,
-    )?;
     term.say(
         "A goal normally needs a check that fails until that goal is met. Add a check for each \
          kind of goal with dudes workspace check add.",
     )?;
-    plan.check = Some(check(argv));
+    let label = argv.join(" ");
     plan.enroll = Some(Enroll {
-        check_label,
+        check_label: display_text(&label)
+            .map_err(|why| Stopped::Io(io::Error::new(io::ErrorKind::InvalidInput, why)))?,
         department: DEFAULT_DEPARTMENT.to_owned(),
         agent_usd_per_day: None,
         goal_usd: None,
     });
+    plan.check = Some(check(argv));
     Ok(())
 }
 
-fn hire_step(term: &mut Terminal<'_>, file: &Settings, plan: &mut Plan) -> Result<(), Stopped> {
-    term.say(
-        "\nFirst hire. An agent with a goal starts working at once, and its engine charges for \
-         every turn.",
-    )?;
-    if !term.yes("Hire a first agent now?", false)? {
+fn hire_step(
+    term: &mut Terminal<'_>,
+    file: &Settings,
+    cwd: Option<&Path>,
+    host: &Host,
+    plan: &mut Plan,
+) -> Result<(), Stopped> {
+    term.say("")?;
+    let runnable = [Provider::Claude, Provider::Codex, Provider::Pi]
+        .into_iter()
+        .any(|provider| engine_on(file, provider) && host.found.contains(&provider));
+    if !term.yes("Hire a first agent?", runnable)? {
         return Ok(());
     }
     let name = term.value("Name", Some(DEFAULT_NAME), display_text)?;
@@ -396,26 +535,24 @@ fn hire_step(term: &mut Terminal<'_>, file: &Settings, plan: &mut Plan) -> Resul
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         term.say("Codex's command sandbox permits writes in this workspace and its permitted temporary directories. Mail is unavailable on this platform. The completion check runs this workspace's code with no sandbox.")?;
     }
-    let goal = term.value(
-        "Goal (Enter to hire without one; an agent without a goal takes no turn)",
-        None,
-        |text| Ok((!text.is_empty()).then(|| text.to_owned())),
-    )?;
+    let goal = term.value("Goal (Enter for none)", None, |text| {
+        Ok((!text.is_empty()).then(|| text.to_owned()))
+    })?;
     if goal.is_some() && plan.check.is_none() {
         term.say(
             "The goal needs a completion check: a command the daemon runs itself to decide that \
              it is done, typed as a program and its arguments separated by spaces.",
         )?;
-        let argv = term.value("Completion check", None, |text| {
-            words(text)?.ok_or_else(|| "Type the program and its arguments.".to_owned())
-        })?;
+        let suggestion = cwd.and_then(suggest_check);
+        let argv = ask_check(term, "Completion check", suggestion.as_deref(), false)?
+            .expect("a check that cannot be skipped is an answer");
         plan.check = Some(check(argv));
     }
     let (mut usd_per_day, mut tokens_per_day) = (None, None);
-    if term.yes(
-        "Give this agent a spending cap (for API-key billing)?",
-        false,
-    )? {
+    if host.billed.contains(&provider) {
+        term.say(&format!(
+            "{provider} bills an API key for each token. A ceiling for this agent is optional."
+        ))?;
         usd_per_day = term.value("Whole dollars per day (Enter for none)", None, optional)?;
         tokens_per_day = term.value("Tokens per day (Enter for none)", None, optional)?;
     }
@@ -428,22 +565,6 @@ fn hire_step(term: &mut Terminal<'_>, file: &Settings, plan: &mut Plan) -> Resul
         tokens_per_day,
     });
     Ok(())
-}
-
-/// Ask whether `key` is on, starting from what the file holds, and apply a change.
-fn switch(
-    term: &mut Terminal<'_>,
-    draft: &mut Draft,
-    plan: &mut Plan,
-    key: Key,
-    question: &str,
-) -> Result<bool, Stopped> {
-    let now = draft.settings().satisfies(key);
-    let on = term.yes(&format!("{question} ({key})"), now)?;
-    if on != now {
-        set(draft, plan, key, on)?;
-    }
-    Ok(on)
 }
 
 fn set(draft: &mut Draft, plan: &mut Plan, key: Key, on: bool) -> Result<(), Stopped> {
@@ -598,24 +719,48 @@ pub fn summary(term: &mut Terminal<'_>, plan: &Plan, cwd: Option<&Path>) -> io::
 mod tests {
     use super::*;
 
-    /// Run [`guided`] over `answers`, one line each, against an empty operator file.
-    /// Run [`guided`] against an empty operator file, answering each question in turn, and check
-    /// that the questions were asked in that order.
-    fn run_guided(
-        script: &[(&str, &str)],
-        cwd: Option<&Path>,
-    ) -> (Result<Plan, Stopped>, Draft, String) {
+    const ACTIONS: [Key; 6] = FLOOR_ACTIONS;
+
+    fn host(found: &[Provider], billed: &[Provider]) -> Host {
+        Host {
+            found: found.to_vec(),
+            billed: billed.to_vec(),
+        }
+    }
+
+    fn repo(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let repo = tempfile::tempdir().expect("a repository");
+        std::fs::create_dir(repo.path().join(".git")).expect("a .git directory");
+        for (name, text) in files {
+            std::fs::write(repo.path().join(name), text).expect("a file");
+        }
+        repo
+    }
+
+    struct Run {
+        plan: Result<Plan, Stopped>,
+        draft: Draft,
+        shown: String,
+        asked: usize,
+    }
+
+    /// Run [`guided`] over `original` as the operator file, answering one line per question, and
+    /// check that the `script` questions were asked in that order.
+    fn run_guided(original: &str, script: &[(&str, &str)], cwd: Option<&Path>, host: &Host) -> Run {
         let home = tempfile::tempdir().expect("a home");
         let config = home.path().join("config.toml");
-        let mut draft = Draft::open(&config).expect("an absent file opens empty");
+        std::fs::write(&config, original).expect("a file");
+        let mut draft = Draft::open(&config).expect("the file opens");
         let answers: Vec<&str> = script.iter().map(|(_, answer)| *answer).collect();
-        let mut reader = io::Cursor::new(answers.join("\n") + "\n");
+        let input = answers.join("\n") + "\n";
+        let mut reader = io::Cursor::new(input.clone());
         let mut out = Vec::new();
         let plan = guided(
             &mut Terminal::new(&mut reader, &mut out),
             &mut draft,
             &config,
             cwd,
+            host,
         );
         let shown = String::from_utf8(out).expect("the questions are text");
         let mut rest = shown.as_str();
@@ -625,267 +770,433 @@ mod tests {
                 .unwrap_or_else(|| panic!("`{question}` was not asked next in:\n{shown}"));
             rest = &rest[at + question.len()..];
         }
-        (plan, draft, shown)
+        Run {
+            plan,
+            draft,
+            shown,
+            asked: input[..usize::try_from(reader.position()).expect("small")]
+                .matches('\n')
+                .count(),
+        }
     }
 
     fn change(key: Key, text: &str) -> Change {
         Change::set(key, text).expect("a value the key takes")
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn codex_streaming_is_opt_in_and_keeps_the_current_choice() {
-        for (original, answers, expected, prompted) in [
-            ("", "\n\n", false, false),
-            ("", "y\n\n\n", false, true),
-            ("", "y\ny\n\n", true, true),
-            (
-                "[providers.codex]\nstreaming = false # keep\n",
-                "\n\n\n",
-                false,
-                true,
-            ),
-            (
-                "[providers.codex]\nstreaming = true # keep\n",
-                "\n\n\n",
-                true,
-                true,
-            ),
-        ] {
-            let directory = tempfile::tempdir().unwrap();
-            let config = directory.path().join("config.toml");
-            std::fs::write(&config, original).unwrap();
-            let mut draft = Draft::open(&config).unwrap();
-            let mut plan = Plan::default();
-            let mut input = io::Cursor::new(answers);
-            let mut output = Vec::new();
-            engines_step(
-                &mut Terminal::new(&mut input, &mut output),
-                &mut draft,
-                &mut plan,
-            )
-            .unwrap();
-            let shown = String::from_utf8(output).unwrap();
-            assert_eq!(
-                shown.contains("(providers.codex.streaming)"),
-                prompted,
-                "{shown}"
-            );
-            if prompted {
-                assert!(shown.contains("separate sign-in"), "{shown}");
-                let default = if original.contains("streaming = true") {
-                    "[Y/n]"
-                } else {
-                    "[y/N]"
-                };
-                assert!(
-                    shown.contains(&format!("(providers.codex.streaming) {default}")),
-                    "{shown}"
-                );
-            }
-            draft.write().unwrap();
-            let written = std::fs::read_to_string(config).unwrap();
-            assert_eq!(written.contains("streaming = true"), expected);
-            if !original.is_empty() {
-                assert_eq!(written, original);
-            }
-        }
-    }
+    const FLOOR: &str = "Let the Floor act on your agents: hire, pause, answer, change goals, retire and attach a terminal? Anyone holding your one-time Floor link could start agents that act with your account's full reach. [Y/n]";
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    /// Enter at every question on a fresh file asks at most five questions and leaves a Floor
+    /// that can act, a repository enrolled with its suggested check, and one agent hired.
     #[test]
-    fn unsupported_streaming_is_not_offered_or_reconfigured() {
-        for value in [false, true] {
-            let directory = tempfile::tempdir().unwrap();
-            let config = directory.path().join("config.toml");
-            let original = format!("[providers.codex]\nstreaming = {value}\n");
-            std::fs::write(&config, &original).unwrap();
-            let mut draft = Draft::open(&config).unwrap();
-            let mut input = io::Cursor::new("\n\n");
-            let mut output = Vec::new();
-            engines_step(
-                &mut Terminal::new(&mut input, &mut output),
-                &mut draft,
-                &mut Plan::default(),
-            )
-            .unwrap();
-            let shown = String::from_utf8(output).unwrap();
-            assert!(!shown.contains("Turn on Codex streaming?"));
-            assert!(shown.contains("requires macOS or Linux"));
-            draft.write().unwrap();
-            assert_eq!(std::fs::read_to_string(config).unwrap(), original);
-        }
-    }
-
-    /// Each answer lands in the plan and in the draft, a default is taken on Enter, and a Floor
-    /// action that needs `floor.control` is not asked while control is off.
-    #[test]
-    fn the_guided_questions_build_the_plan() {
-        let repo = tempfile::tempdir().expect("a repository");
-        std::fs::create_dir(repo.path().join(".git")).expect("a .git directory");
-        let mut script = vec![
-            ("(providers.codex) [y/N]", "y"),
-            ("(providers.codex.streaming) [y/N]", ""),
-            ("(providers.pi) [y/N]", ""),
-            ("(floor.answer) [y/N]", "y"),
-            ("(floor.hire) [y/N]", "y"),
-            ("(floor.control) [y/N]", "n"),
-            ("(floor.terminal) [y/N]", ""),
-            ("Set a spending cap (for API-key billing)? [y/N]", ""),
+    fn enter_at_every_question_asks_at_most_five_and_turns_the_floor_on() {
+        let repo = repo(&[("Cargo.toml", "[package]\n")]);
+        let script = [
+            (FLOOR, ""),
             (
-                "Completion check (Enter to skip enrolling):",
-                "cargo test --quiet",
-            ),
-            ("Name the check for the Floor [cargo test --quiet]:", ""),
-            ("Hire a first agent now? [y/N]", "y"),
-            ("Name [Kim]:", ""),
-            ("Engine (claude, codex) [claude]:", "codex"),
-            ("Goal (Enter to hire without one", ""),
-            (
-                "Give this agent a spending cap (for API-key billing)? [y/N]",
+                "Completion check for this repository [cargo test] (- to skip):",
                 "",
             ),
+            ("Hire a first agent? [Y/n]", ""),
+            ("Name [Kim]:", ""),
+            ("Goal (Enter for none):", ""),
         ];
-        if !cfg!(any(target_os = "macos", target_os = "linux")) {
-            script.remove(1);
+        let run = run_guided(
+            "",
+            &script,
+            Some(repo.path()),
+            &host(&[Provider::Claude], &[]),
+        );
+        let shown = run.shown;
+        let plan = run.plan.expect("Enter answers every question");
+        assert_eq!(run.asked, 5, "{shown}");
+        for key in ACTIONS {
+            assert!(
+                run.draft.settings().satisfies(key),
+                "{key} is off:\n{shown}"
+            );
         }
-        let (plan, draft, shown) = run_guided(&script, Some(repo.path()));
-
+        assert!(!run.draft.settings().satisfies(Key::Renew), "{shown}");
         assert_eq!(
-            plan.expect("every question was answered"),
-            Plan {
-                changes: vec![
-                    change(Key::Codex, "on"),
-                    change(Key::Answer, "on"),
-                    change(Key::Hire, "on"),
-                ],
-                check: Some(Check {
-                    argv: vec!["cargo".to_owned(), "test".to_owned(), "--quiet".to_owned()],
-                    timeout_s: 600,
-                    hop_cap: 5,
-                }),
-                enroll: Some(Enroll {
-                    check_label: "cargo test --quiet".to_owned(),
-                    department: "engineering".to_owned(),
-                    agent_usd_per_day: None,
-                    goal_usd: None,
-                }),
-                hire: Some(Hire {
-                    name: "Kim".to_owned(),
-                    role: "engineer".to_owned(),
-                    provider: Provider::Codex,
-                    goal: None,
-                    usd_per_day: None,
-                    tokens_per_day: None,
-                }),
-                restart: false,
-            }
+            plan.check.as_ref().map(|check| check.argv.clone()),
+            Some(vec!["cargo".to_owned(), "test".to_owned()])
         );
-        assert!(draft.settings().satisfies(Key::Codex));
-        assert!(!draft.settings().satisfies(Key::Pi));
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        assert!(shown.contains("Codex's command sandbox permits writes in this workspace, its permitted temporary directories and its own outgoing mailbox. The completion check runs this workspace's code with no sandbox."));
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        assert!(shown.contains("Codex's command sandbox permits writes in this workspace and its permitted temporary directories. Mail is unavailable on this platform. The completion check runs this workspace's code with no sandbox."));
-        assert!(
-            !shown.contains("(floor.goal)")
-                && !shown.contains("(floor.renew)")
-                && !shown.contains("(floor.retire)"),
-            "goal, renew and retire need floor.control, which is off: {shown}"
+        assert_eq!(
+            plan.enroll
+                .as_ref()
+                .map(|enroll| enroll.check_label.as_str()),
+            Some("cargo test")
         );
-        let grant = shown
-            .find("With Hire on, anyone holding a Floor session can start agents that act with your account's full reach.")
-            .expect("the Hire question says what it grants");
-        assert!(grant < shown.find("(floor.hire)").expect("the Hire question"));
-        assert!(
-            shown.contains("Enrolled, the Floor can hire agents into it. "),
-            "{shown}"
+        assert_eq!(
+            plan.hire.as_ref().map(|hire| hire.name.as_str()),
+            Some("Kim")
+        );
+        assert_eq!(
+            plan.hire.as_ref().map(|hire| hire.provider),
+            Some(Provider::Claude)
         );
     }
 
-    /// Renewal is asked right after goal change, and only while goal change and Hire are both on;
-    /// a renewal left on beside a goal change turned off is turned off with it.
+    /// Codex and Pi are turned on when found and never asked about, and Codex streaming is never
+    /// offered or changed.
     #[test]
-    fn renewal_is_asked_only_beside_goal_change_and_hire() {
-        let script = [
-            ("(providers.codex) [y/N]", ""),
-            ("(providers.pi) [y/N]", ""),
-            ("(floor.answer) [y/N]", ""),
-            ("(floor.hire) [y/N]", "y"),
-            ("(floor.control) [y/N]", "y"),
-            ("(floor.goal) [y/N]", "y"),
-            ("(floor.renew) [y/N]", "y"),
-            ("(floor.retire) [y/N]", ""),
-            ("(floor.terminal) [y/N]", ""),
-            ("Set a spending cap (for API-key billing)? [y/N]", ""),
-            ("Hire a first agent now? [y/N]", ""),
-        ];
-        let (plan, draft, shown) = run_guided(&script, None);
+    fn engines_are_detected_not_asked() {
+        let found = host(&[Provider::Claude, Provider::Codex, Provider::Pi], &[]);
+        let run = run_guided(
+            "",
+            &[(FLOOR, "n"), ("Hire a first agent? [Y/n]", "n")],
+            None,
+            &found,
+        );
+        let shown = run.shown;
+        let plan = run.plan.expect("answered");
         assert_eq!(
-            plan.expect("every question was answered").changes,
+            plan.changes,
+            [change(Key::Codex, "on"), change(Key::Pi, "on")]
+        );
+        assert!(shown.contains("codex: found, turned on"), "{shown}");
+        assert!(shown.contains("pi: found, turned on"), "{shown}");
+        assert!(
+            !shown.contains("streaming") && !shown.contains("Turn on"),
+            "{shown}"
+        );
+
+        let none = host(&[Provider::Claude], &[]);
+        let run = run_guided(
+            "",
+            &[(FLOOR, "n"), ("Hire a first agent? [Y/n]", "n")],
+            None,
+            &none,
+        );
+        let shown = run.shown;
+        assert!(run.plan.expect("answered").changes.is_empty());
+        assert!(
+            shown.contains("codex: not found on your PATH, left off"),
+            "{shown}"
+        );
+
+        let original = "[providers.codex]\nstreaming = true\n";
+        let run = run_guided(
+            original,
+            &[(FLOOR, "n"), ("Hire a first agent? [Y/n]", "n")],
+            None,
+            &found,
+        );
+        run.plan.expect("answered");
+        assert!(run.draft.settings().satisfies(Key::Codex));
+        assert!(
+            run.shown.contains("codex: found, already on"),
+            "{}",
+            run.shown
+        );
+    }
+
+    /// Yes turns on the six actions and leaves Renew; No turns them and Renew off.
+    #[test]
+    fn one_floor_question_turns_the_actions_on_or_off_together() {
+        let quiet = host(&[Provider::Claude], &[]);
+        let run = run_guided(
+            "",
+            &[(FLOOR, "y"), ("Hire a first agent? [Y/n]", "n")],
+            None,
+            &quiet,
+        );
+        assert_eq!(
+            run.plan.expect("answered").changes,
             [
+                change(Key::Answer, "on"),
                 change(Key::Hire, "on"),
                 change(Key::Control, "on"),
                 change(Key::Goal, "on"),
-                change(Key::Renew, "on"),
+                change(Key::Retire, "on"),
+                change(Key::Terminal, "on"),
             ]
         );
-        assert!(draft.settings().problems().is_empty(), "{shown}");
-        let grant = shown
-            .find("With Renew on, anyone holding a Floor session can give an agent whose goal has nothing left a new goal with its workspace's turns and ceilings, each time it runs out.")
-            .expect("the Renew question says what it grants");
-        assert!(grant < shown.find("(floor.renew)").expect("the Renew question"));
 
-        let without_goal = [
-            ("(providers.codex) [y/N]", ""),
-            ("(providers.pi) [y/N]", ""),
-            ("(floor.answer) [y/N]", ""),
-            ("(floor.hire) [y/N]", "y"),
-            ("(floor.control) [y/N]", "y"),
-            ("(floor.goal) [y/N]", ""),
-            ("(floor.retire) [y/N]", ""),
-            ("(floor.terminal) [y/N]", ""),
-            ("Set a spending cap (for API-key billing)? [y/N]", ""),
-            ("Hire a first agent now? [y/N]", ""),
-        ];
-        let (plan, _, shown) = run_guided(&without_goal, None);
-        plan.expect("every question was answered");
-        assert!(!shown.contains("(floor.renew)"), "{shown}");
+        let all_on = "[floor.answer]\nenabled = true\n[floor.hire]\nenabled = true\n[floor.control]\nenabled = true\n[floor.goal]\nenabled = true\n[floor.renew]\nenabled = true\n[floor.retire]\nenabled = true\n[floor.terminal]\nenabled = true\n";
+        let run = run_guided(
+            all_on,
+            &[(FLOOR, "n"), ("Hire a first agent? [Y/n]", "n")],
+            None,
+            &quiet,
+        );
+        let shown = run.shown;
+        run.plan.expect("answered");
+        for key in ACTIONS.into_iter().chain([Key::Renew]) {
+            assert!(!run.draft.settings().satisfies(key), "{key}:\n{shown}");
+        }
+        assert!(run.draft.settings().problems().is_empty(), "{shown}");
     }
 
-    /// With Hire off, enrolling says the Floor hires into the workspace only once Hire is on.
+    /// A file that already mixes the switches keeps its mix and is told so, with no question.
     #[test]
-    fn enrolling_without_hire_says_hire_is_off() {
-        let repo = tempfile::tempdir().expect("a repository");
-        std::fs::create_dir(repo.path().join(".git")).expect("a .git directory");
-        let script = [
-            ("(providers.codex) [y/N]", ""),
-            ("(providers.pi) [y/N]", ""),
-            ("(floor.answer) [y/N]", ""),
-            ("(floor.hire) [y/N]", ""),
-            ("(floor.control) [y/N]", ""),
-            ("(floor.terminal) [y/N]", ""),
-            ("Set a spending cap (for API-key billing)? [y/N]", ""),
-            ("Completion check (Enter to skip enrolling):", ""),
-            ("Hire a first agent now? [y/N]", ""),
+    fn a_mixed_floor_is_kept_and_not_asked_about() {
+        let mixed = "[floor.answer]\nenabled = true\n";
+        let run = run_guided(
+            mixed,
+            &[("Hire a first agent? [Y/n]", "n")],
+            None,
+            &host(&[Provider::Claude], &[]),
+        );
+        let shown = run.shown;
+        assert!(run.plan.expect("answered").changes.is_empty(), "{shown}");
+        assert!(shown.contains("keeps that choice."), "{shown}");
+        assert!(!shown.contains("Let the Floor act"), "{shown}");
+        assert!(run.draft.settings().satisfies(Key::Answer));
+        assert!(!run.draft.settings().satisfies(Key::Hire));
+    }
+
+    /// The floor cap is asked only for an engine that is on and has an API key in this process.
+    #[test]
+    fn the_floor_cap_is_asked_only_beside_an_api_key() {
+        let cap = "Daily dollar cap for the whole floor (Enter for none):";
+        let run = run_guided(
+            "",
+            &[
+                (FLOOR, "n"),
+                (cap, "25"),
+                ("Hire a first agent? [Y/n]", "n"),
+            ],
+            None,
+            &host(&[Provider::Claude], &[Provider::Claude]),
+        );
+        assert_eq!(
+            run.plan.expect("answered").changes,
+            [change(Key::FloorUsdPerDay, "25")]
+        );
+
+        for billed in [&[][..], &[Provider::Codex][..]] {
+            let run = run_guided(
+                "",
+                &[(FLOOR, "n"), ("Hire a first agent? [Y/n]", "n")],
+                None,
+                &host(&[Provider::Claude], billed),
+            );
+            assert!(!run.shown.contains("Daily dollar cap"), "{}", run.shown);
+            assert!(run.plan.expect("answered").changes.is_empty());
+        }
+
+        let run = run_guided(
+            "[budget]\nfloor_usd_per_day = 9\n",
+            &[(FLOOR, "n"), ("Hire a first agent? [Y/n]", "n")],
+            None,
+            &host(&[Provider::Claude], &[Provider::Claude]),
+        );
+        assert!(!run.shown.contains("Daily dollar cap"), "{}", run.shown);
+        assert!(run.shown.contains("The floor's daily cap stays at $9."));
+        run.plan.expect("answered");
+    }
+
+    /// Each kind of repository suggests its own check, and a repository that names none suggests
+    /// nothing.
+    #[test]
+    fn a_repository_suggests_its_check() {
+        let suggest =
+            |files: &[(&str, &str)]| suggest_check(repo(files).path()).map(|argv| argv.join(" "));
+        assert_eq!(
+            suggest(&[("Cargo.toml", "")]).as_deref(),
+            Some("cargo test")
+        );
+        assert_eq!(
+            suggest(&[("package.json", r#"{"scripts":{"test":"jest"}}"#)]).as_deref(),
+            Some("npm test")
+        );
+        assert_eq!(
+            suggest(&[(
+                "package.json",
+                r#"{"scripts":{"test":"echo \"Error: no test specified\" && exit 1"}}"#
+            )]),
+            None
+        );
+        assert_eq!(suggest(&[("package.json", r#"{"name":"x"}"#)]), None);
+        assert_eq!(suggest(&[("go.mod", "")]).as_deref(), Some("go test ./..."));
+        assert_eq!(
+            suggest(&[("pyproject.toml", "")]).as_deref(),
+            Some("pytest")
+        );
+        assert_eq!(suggest(&[("pytest.ini", "")]).as_deref(), Some("pytest"));
+        assert_eq!(
+            suggest(&[("Makefile", "build:\n\ttrue\ntest:\n\ttrue\n")]).as_deref(),
+            Some("make test")
+        );
+        assert_eq!(suggest(&[("Makefile", "build:\n\ttrue\n")]), None);
+        assert_eq!(suggest(&[]), None);
+    }
+
+    /// The check question offers the suggestion, takes another command, and skips on `-`; with
+    /// no suggestion Enter skips enrolling.
+    #[test]
+    fn the_check_question_offers_skips_and_takes_another_command() {
+        let quiet = host(&[Provider::Claude], &[]);
+        let go = repo(&[("go.mod", "")]);
+        let run = run_guided(
+            "",
+            &[
+                (FLOOR, "n"),
+                (
+                    "Completion check for this repository [go test ./...] (- to skip):",
+                    "make check",
+                ),
+                ("Hire a first agent? [Y/n]", "n"),
+            ],
+            Some(go.path()),
+            &quiet,
+        );
+        let plan = run.plan.expect("answered");
+        assert_eq!(plan.check.expect("a check").argv, ["make", "check"]);
+        assert_eq!(plan.enroll.expect("enrolled").check_label, "make check");
+
+        let run = run_guided(
+            "",
+            &[
+                (FLOOR, "n"),
+                ("(- to skip):", "-"),
+                ("Hire a first agent? [Y/n]", "n"),
+            ],
+            Some(go.path()),
+            &quiet,
+        );
+        let plan = run.plan.expect("answered");
+        assert!(plan.check.is_none() && plan.enroll.is_none());
+
+        let bare = repo(&[]);
+        let run = run_guided(
+            "",
+            &[
+                (FLOOR, "n"),
+                ("Completion check for this repository (- to skip):", ""),
+                ("Hire a first agent? [Y/n]", "n"),
+            ],
+            Some(bare.path()),
+            &quiet,
+        );
+        assert!(run.plan.expect("answered").enroll.is_none());
+        assert!(!run.shown.contains("Name the check"), "{}", run.shown);
+    }
+
+    /// The engine is asked only when more than one is on; a goal asks for a check with the
+    /// suggestion when none exists yet; caps are asked only beside an API key.
+    #[test]
+    fn the_first_hire_asks_only_what_it_needs() {
+        let go = repo(&[("go.mod", "")]);
+        let all = host(&[Provider::Claude, Provider::Codex], &[Provider::Codex]);
+        let run = run_guided(
+            "",
+            &[
+                (FLOOR, "n"),
+                ("Enter for none):", ""),
+                ("(- to skip):", "-"),
+                ("Hire a first agent? [Y/n]", ""),
+                ("Name [Kim]:", "Ada"),
+                ("Engine (claude, codex) [claude]:", "codex"),
+                ("Goal (Enter for none):", "fix the build"),
+                ("Completion check [go test ./...]:", ""),
+                ("Whole dollars per day (Enter for none):", "3"),
+                ("Tokens per day (Enter for none):", ""),
+            ],
+            Some(go.path()),
+            &all,
+        );
+        let plan = run.plan.expect("answered");
+        assert_eq!(plan.check.expect("a check").argv, ["go", "test", "./..."]);
+        let hire = plan.hire.expect("hired");
+        assert_eq!(
+            (
+                hire.name.as_str(),
+                hire.provider,
+                hire.usd_per_day,
+                hire.tokens_per_day
+            ),
+            ("Ada", Provider::Codex, Some(3), None)
+        );
+        assert!(plan.enroll.is_none());
+
+        let run = run_guided(
+            "",
+            &[
+                (FLOOR, "n"),
+                ("Hire a first agent? [Y/n]", ""),
+                ("Name [Kim]:", ""),
+                ("Goal (Enter for none):", ""),
+            ],
+            None,
+            &host(&[Provider::Claude], &[]),
+        );
+        assert!(!run.shown.contains("Engine ("), "{}", run.shown);
+        assert!(!run.shown.contains("Whole dollars"), "{}", run.shown);
+        run.plan.expect("answered");
+    }
+
+    /// With no engine program on the PATH, hiring defaults to No.
+    #[test]
+    fn hiring_defaults_to_no_without_an_engine_program() {
+        let run = run_guided(
+            "",
+            &[(FLOOR, "n"), ("Hire a first agent? [y/N]", "")],
+            None,
+            &host(&[], &[]),
+        );
+        assert!(run.plan.expect("answered").hire.is_none());
+    }
+
+    /// The workspace sentence says the Floor hires into it only while Hire is on.
+    #[test]
+    fn enrolling_says_hire_is_off_when_the_floor_is_declined() {
+        let bare = repo(&[]);
+        let quiet = host(&[Provider::Claude], &[]);
+        let questions = [
+            (FLOOR, "n"),
+            ("(- to skip):", "-"),
+            ("Hire a first agent? [Y/n]", "n"),
         ];
-        let (plan, _, shown) = run_guided(&script, Some(repo.path()));
-        plan.expect("every question was answered");
+        let run = run_guided("", &questions, Some(bare.path()), &quiet);
         assert!(
-            shown.contains("Enrolled, the Floor can hire agents into it once floor.hire is on. "),
-            "{shown}"
+            run.shown
+                .contains("Enrolled, the Floor can hire agents into it once floor.hire is on."),
+            "{}",
+            run.shown
+        );
+        let run = run_guided(
+            "",
+            &[(FLOOR, "y"), questions[1], questions[2]],
+            Some(bare.path()),
+            &quiet,
+        );
+        assert!(
+            run.shown
+                .contains("Enrolled, the Floor can hire agents into it. "),
+            "{}",
+            run.shown
         );
     }
 
-    /// The input ending is a stop, never a default: nothing is planned and nothing is applied.
+    /// A lone `-` is not a program when the check cannot be skipped.
+    #[test]
+    fn a_required_check_rejects_a_lone_dash() {
+        let go = repo(&[("go.mod", "")]);
+        let run = run_guided(
+            "",
+            &[
+                (FLOOR, "n"),
+                ("(- to skip):", "-"),
+                ("Hire a first agent? [Y/n]", ""),
+                ("Name [Kim]:", ""),
+                ("Goal (Enter for none):", "ship it"),
+                ("Completion check [go test ./...]:", "-"),
+                ("Type the program and its arguments.", "make check"),
+            ],
+            Some(go.path()),
+            &host(&[Provider::Claude], &[]),
+        );
+        let plan = run.plan.expect("answered");
+        assert_eq!(plan.check.expect("a check").argv, ["make", "check"]);
+    }
+
+    /// The input ending is a stop, never a default: nothing is planned.
     #[test]
     fn an_ended_input_stops_without_a_plan() {
-        let (plan, draft, _) = run_guided(&[("(providers.codex) [y/N]", "y")], None);
-        assert!(matches!(plan, Err(Stopped::Ended)), "{plan:?}");
-        assert!(
-            draft.settings().satisfies(Key::Codex),
-            "the one answer given was applied to the draft, which is never written"
-        );
+        let run = run_guided("", &[(FLOOR, "n")], None, &host(&[Provider::Claude], &[]));
+        assert!(matches!(run.plan, Err(Stopped::Ended)), "{:?}", run.plan);
     }
 
     /// Each engine the daemon turned on gets its place and the daemon's sign-in answer; Pi gets

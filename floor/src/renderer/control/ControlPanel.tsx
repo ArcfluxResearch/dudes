@@ -79,6 +79,7 @@ export function ControlStripView({ control, floor, row, session }: {
   const pressedHere = attempt !== null && sentFrom(attempt, gate);
   const busy = control.sending && pressedHere;
   const focusOnLeave = pressedHere ? 'control-status-title' : AGENT_DETAIL_HEADING_ID;
+  const hint = gate.open && gate.offer !== 'none' ? hintFor(gate.offer, row) : undefined;
   return (
     <div className="agent-detail-control" data-control-agent-id={gate.open ? gate.agent : undefined}
       data-control-lsn={gate.open ? gate.controlLsn ?? '' : undefined}>
@@ -97,21 +98,21 @@ export function ControlStripView({ control, floor, row, session }: {
               {gate.offer === 'pause' ? (
                 <button key="pause" ref={handFocusOnLeave} type="button" className="control-pause"
                   aria-disabled={blocked || undefined} aria-busy={busy} data-focus-on-leave={focusOnLeave}
-                  aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
+                  title={hint} aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
                   onClick={(event) => { if (event.detail < 2) void submitControl('pause', gate, browserControlDeps); }}>
                   {busy ? 'Sending…' : 'Pause'}
                 </button>
               ) : (
                 <button key="resume" ref={handFocusOnLeave} type="button" className="control-resume"
                   aria-disabled={blocked || undefined} aria-busy={busy} data-focus-on-leave={focusOnLeave}
-                  aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
+                  title={hint} aria-describedby="control-hint" onKeyDown={(event) => { if (event.repeat) event.preventDefault(); }}
                   onClick={(event) => { if (event.detail < 2) void submitControl('resume', gate, browserControlDeps); }}>
                   {busy ? 'Sending…' : 'Resume'}
                 </button>
               )}
             </div>
           )}
-          {gate.offer === 'none' ? null : <p className="hire-note" id="control-hint">{hintFor(gate.offer, row)}</p>}
+          {hint === undefined ? null : <span className="visually-hidden" id="control-hint">{hint}</span>}
           {gate.halted ? <p className="hire-note control-halt-note">{HALT_NOTE}</p> : null}
           {blocked && !control.sending ? <p className="hire-note">{heldBecause(control)}</p> : null}
           {control.problem === null || attempt !== null ? null : (

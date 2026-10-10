@@ -75,7 +75,7 @@ test('each row shows its colour, name, role and engine, workspace, activity and 
   const working = { ...rows[1], provider: 'codex', goal: { text: 'Polish the Floor', status: 'in_progress' } };
   await withCrew((render) => {
     const html = render({ agents: [asking, working], selectedId: null, selectable: true });
-    assert.match(html, /^<section class="crew-list" id="crew-list" aria-labelledby="crew-title" data-stale="false"><h2 id="crew-title">Crew <span>2<\/span><\/h2><dl class="crew-totals"[\s\S]*?<\/dl><ul class="crew-rows"><li class="crew-entry"/);
+    assert.match(html, /^<section class="crew-list" id="crew-list" aria-labelledby="crew-title" data-stale="false"><h2 id="crew-title">Crew <span>2<\/span><\/h2><ul class="crew-rows"><li class="crew-entry"/);
     assert.equal((html.match(/<li class="crew-entry"/g) ?? []).length, 2);
     const row = (id) => html.match(new RegExp(`<button[^>]*data-agent-id="${id}".*?</button>`))[0];
     assert.equal(row(ADA), `<button type="button" id="crew-row-${ADA}" class="crew-row" data-agent-id="${ADA}" `
