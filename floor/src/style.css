@@ -1396,22 +1396,6 @@ samp,
   list-style: none;
 }
 
-.waiting-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.2rem 0.6rem;
-}
-
-.waiting-head h4 {
-  font-size: 0.95rem;
-}
-
-.waiting-for {
-  color: var(--muted-ink);
-  font-size: 0.875rem;
-}
-
 .waiting-open {
   margin-top: 0.5rem;
   padding: 0.3rem 0.7rem;

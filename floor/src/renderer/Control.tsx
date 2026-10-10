@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import type { ReactNode } from 'react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
 import { ArchivedAgents } from './ArchivedAgents.tsx';
 import type { RetiredAgentRow } from './archive.ts';
@@ -11,7 +11,7 @@ import { journalPosition } from './format.ts';
 import { closesPanel, handFocusOnLeave } from './focus.ts';
 import { StreamReadStatus } from './ReadError.tsx';
 import type { FloorState } from './floor/store.ts';
-import { waitedLabel, waitingOnYou } from './questions.ts';
+import { waitingOnYou } from './questions.ts';
 import type { WaitingItem } from './questions.ts';
 import { fieldsOf } from './scene/label.ts';
 import { SetupView } from './setup/SetupView.tsx';
@@ -141,8 +141,6 @@ export function FocusRoster({ collapsed, onToggle, ...roster }: Parameters<typeo
   );
 }
 
-const WAIT_TICK_MS = 30_000;
-
 /** The things waiting on the operator, one entry each. The list is absent when nothing waits. */
 export function WaitingOnYou({ items, selectable, onOpen }: {
   readonly items: readonly WaitingItem[];
@@ -155,12 +153,7 @@ export function WaitingOnYou({ items, selectable, onOpen }: {
       <ol aria-label="Things waiting on you">
         {items.map((item) => (
           <li key={item.key} className="waiting-item" data-waiting-kind={item.kind} data-waiting-agent-id={item.agentId}>
-            <div className="waiting-head">
-              <h4>{item.name}</h4>
-              <span className="waiting-for" title="Counted from when this page first saw the question.">
-                {waitedLabel(item.waitedMs)}
-              </span>
-            </div>
+            <h4>{item.name}</h4>
             <p>{item.text}</p>
             <button type="button" className="waiting-open" disabled={!selectable}
               onClick={() => onOpen(item.agentId)}>Open Chat</button>
@@ -175,12 +168,7 @@ function WaitingSection({ floor, onOpen }: {
   readonly floor: FloorState;
   readonly onOpen: (agentId: string) => void;
 }) {
-  const [, tick] = useState(0);
-  useEffect(() => {
-    const timer = setInterval(() => tick((count) => count + 1), WAIT_TICK_MS);
-    return () => clearInterval(timer);
-  }, []);
-  const items = waitingOnYou(floor.agents, Date.now());
+  const items = waitingOnYou(floor.agents);
   return items.length === 0 ? null
     : <WaitingOnYou items={items} selectable={floor.phase === 'live' && !floor.stale} onOpen={onOpen} />;
 }

@@ -51,7 +51,6 @@ after(async () => {
 
 beforeEach(() => {
   store.resetFloorStore();
-  questions.resetWaiting();
 });
 
 function subscribe(agents) {
@@ -85,22 +84,21 @@ test('the top bar lists exactly Overview, Board, Log, Setup and Settings, with n
   ]);
 });
 
-test('Overview opens with a Waiting on you section naming the agent, its question and the wait', () => {
+test('Overview opens with a Waiting on you section naming the agent and its question', () => {
   subscribe([ada(), idle(GRACE, 'Grace')]);
   const html = overview();
   assert.match(html, /<section class="waiting-on-you" aria-labelledby="waiting-on-you-title"><h3 id="waiting-on-you-title">Waiting on you<\/h3>/);
   assert.deepEqual([...html.matchAll(/<li class="waiting-item" data-waiting-kind="question" data-waiting-agent-id="([^"]+)">/g)]
     .map(([, id]) => id), [ADA]);
-  assert.match(html, /<h4>Ada<\/h4>/);
-  assert.ok(html.includes('Ship 7f3a9c1e or wait for review?'));
-  assert.match(html, /<span class="waiting-for"[^>]*>waiting under a minute<\/span>/);
+  assert.match(html, /<h4>Ada<\/h4><p>Ship 7f3a9c1e or wait for review\?<\/p><button/);
+  assert.doesNotMatch(html, /waiting-for|waiting \d+ min|under a minute/);
   assert.ok(html.indexOf('Waiting on you') < html.indexOf('Current agents'), 'the section is not at the top of Overview');
 });
 
 test('choosing an entry hands that agent to the handler the office question mark also uses', () => {
   subscribe([ada(), grace()]);
   const opened = [];
-  const items = questions.waitingOnYou(store.getFloorState().agents, Date.now());
+  const items = questions.waitingOnYou(store.getFloorState().agents);
   const tree = WaitingOnYou({ items, selectable: true, onOpen: (id) => opened.push(id) });
   const buttons = find(tree, (node) => node.type === 'button');
   assert.equal(buttons.length, 2);
@@ -126,19 +124,4 @@ test('with nothing waiting the section is absent and nothing stands in for it', 
   const html = overview();
   assert.doesNotMatch(html, /waiting-on-you|Waiting on you|No agent is waiting|Recent answered/);
   assert.match(html, /Current agents/);
-});
-
-test('the wait counts from when the page first saw the question and is worded in minutes', () => {
-  const rows = [ada()];
-  questions.noteWaiting(rows, 1_000_000);
-  assert.equal(questions.waitingOnYou(rows, 1_000_000 + 30_000)[0].waitedMs, 30_000);
-  assert.equal(questions.waitingOnYou(rows, 1_000_000 + 5 * 60_000)[0].waitedMs, 300_000);
-  assert.equal(questions.waitedLabel(0), 'waiting under a minute');
-  assert.equal(questions.waitedLabel(59_999), 'waiting under a minute');
-  assert.equal(questions.waitedLabel(60_000), 'waiting 1 min');
-  assert.equal(questions.waitedLabel(59 * 60_000), 'waiting 59 min');
-  assert.equal(questions.waitedLabel(60 * 60_000), 'waiting 1 h');
-  assert.equal(questions.waitedLabel(150 * 60_000), 'waiting 2 h 30 min');
-  questions.noteWaiting([idle()], 2_000_000);
-  assert.equal(questions.waitingOnYou(rows, 3_000_000)[0].waitedMs, 0, 'an answered question keeps its old clock');
 });

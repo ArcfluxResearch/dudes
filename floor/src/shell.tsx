@@ -27,7 +27,6 @@ import { TerminalPanel } from './renderer/terminal/TerminalPanel';
 import { JournalStoppedBanner } from './renderer/JournalStoppedBanner';
 import { ClosingTimeBanner } from './renderer/ClosingTimeBanner';
 import { requestCardSelection } from './renderer/BoardPanel';
-import { noteWaiting } from './renderer/questions';
 import { StreamNotice } from './renderer/StreamNotice';
 import './failure.css';
 import {
@@ -136,10 +135,6 @@ export function WebFloorShell() {
       setArchiveHireKept(false);
     }
   }, [reveal, hire.outcome?.kind]);
-
-  useEffect(() => {
-    noteWaiting(floor.agents, Date.now());
-  }, [floor.agents]);
 
   useEffect(() => {
     writeViewPreferences(preferences);

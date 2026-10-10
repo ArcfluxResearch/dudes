@@ -86,7 +86,7 @@ function entries(html) {
     .map(([, agent, body]) => ({
       agent,
       name: body.match(/<h4>([^<]*)<\/h4>/)?.[1],
-      question: body.match(/<\/div><p>([^<]*)<\/p>/)?.[1],
+      question: body.match(/<\/h4><p>([^<]*)<\/p>/)?.[1],
     }));
 }
 
