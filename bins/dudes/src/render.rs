@@ -782,12 +782,13 @@ pub fn floor_url(
     if machine {
         return json(out, result);
     }
+    writeln!(out, "{}", urls.printed_once)?;
     writeln!(
         out,
-        "the Floor is at {} — open this once, within {}s:",
-        urls.page, result.expires_in_s
-    )?;
-    writeln!(out, "{}", urls.printed_once)
+        "Paste this link into any browser within {} seconds. It works once; run dudes floor open \
+         for a new one.",
+        result.expires_in_s
+    )
 }
 
 /// `floor.enrollment.reload`: the file's hash, the change, and whether it was applied.

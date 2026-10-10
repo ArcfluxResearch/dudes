@@ -1,10 +1,9 @@
 //! Invariant 7's other half: the CLI names no interpreter route and composes no shell string, and
 //! the scan that says so fires.
 //!
-//! The CLI starts exactly three programs, each from one audited site: quickstart's
-//! daemon in `src/quickstart.rs`, the platform opener in `src/opener.rs` and an engine's own login
-//! in `src/login.rs`. The programs it starts may themselves be scripts, as `xdg-open` and a
-//! `#!/usr/bin/env node` vendor CLI are; what they do inside is the platform's or the vendor's.
+//! The CLI starts exactly two programs, each from one audited site: quickstart's
+//! daemon in `src/quickstart.rs` and an engine's own login in `src/login.rs`. The programs it
+//! starts may themselves be scripts, as a `#!/usr/bin/env node` vendor CLI is; what they do inside is the platform's or the vendor's.
 //! What this file holds is what Dudes composes: typed argv, an absolute program, no shell string
 //! and no `PATH` search.
 //!
@@ -112,7 +111,7 @@ const QUOTED_ROUTES: &[&str] = &["\"sh\"", "\"bash\"", "\"/bin/sh\"", "\"-c\""];
 const MIN_FILES: usize = 6;
 
 /// The files that may name a command type, each with one spawn item.
-const ROUTE_FILES: [&str; 3] = ["quickstart.rs", "opener.rs", "login.rs"];
+const ROUTE_FILES: [&str; 2] = ["quickstart.rs", "login.rs"];
 
 /// The lints whose `allow` or `expect` silences the command-type ban: the two lints it is made of,
 /// the clippy groups that hold them, and every warning at once.
@@ -125,11 +124,10 @@ const BAN_LINTS: [&str; 5] = [
 ];
 
 /// The files of this package that may carry one `#[expect(clippy::disallowed_types)]`, and nothing
-/// else from [`BAN_LINTS`]: the three route items, and the two test helpers that start a real
+/// else from [`BAN_LINTS`]: the two route items, and the two test helpers that start a real
 /// process (`bins/dudes/clippy.toml` item 3).
-const ADMITTED_EXPECTATIONS: [&str; 5] = [
+const ADMITTED_EXPECTATIONS: [&str; 4] = [
     "src/quickstart.rs",
-    "src/opener.rs",
     "src/login.rs",
     "tests/common/mod.rs",
     "tests/windows_pipe_owner.rs",
@@ -375,7 +373,6 @@ fn route_violations(package: &Path) -> Vec<String> {
     }
     for (file, routes) in [
         ("quickstart.rs", &COMMAND_ROUTES[..]),
-        ("opener.rs", &COMMAND_ROUTES[..]),
         ("login.rs", &COMMAND_ROUTES[..1]),
     ] {
         for route in routes {
@@ -405,7 +402,7 @@ fn walk(dir: &Path, visit: &mut impl FnMut(&Path)) {
     }
 }
 
-/// The source names no interpreter route, confines both command types to the three route files,
+/// The source names no interpreter route, confines both command types to the two route files,
 /// and carries only the admitted lint expectations, with no other suppression of the ban anywhere
 /// in the package.
 #[test]
@@ -473,29 +470,29 @@ fn the_route_mutants_fail_as_designed() {
 
     let second = mutated_package(|package| {
         append_to(
-            &package.join("src/opener.rs"),
+            &package.join("src/login.rs"),
             "#[expect(clippy::disallowed_types, reason = \"a second\")]\nfn second() {}",
         );
     });
     assert_eq!(
         route_violations(second.path()),
         vec![
-            "(c) src/opener.rs carries expect(clippy::disallowed_types), \
+            "(c) src/login.rs carries expect(clippy::disallowed_types), \
              expect(clippy::disallowed_types)"
         ],
-        "a second expectation in src/opener.rs fails (c)"
+        "a second expectation in src/login.rs fails (c)"
     );
 
     let allowed = mutated_package(|package| {
         replace_in(
-            &package.join("src/opener.rs"),
+            &package.join("src/login.rs"),
             "#[expect(\n    clippy::disallowed_types,",
             "#[allow(\n    clippy::disallowed_types,",
         );
     });
     assert_eq!(
         route_violations(allowed.path()),
-        vec!["(c) src/opener.rs carries allow(clippy::disallowed_types)"],
+        vec!["(c) src/login.rs carries allow(clippy::disallowed_types)"],
         "allow in place of expect fails (c)"
     );
 
@@ -513,17 +510,16 @@ fn the_route_mutants_fail_as_designed() {
     );
 
     let shell = mutated_package(|package| {
-        replace_in(
-            &package.join("src/opener.rs"),
-            "const MACOS_OPENER: &str = \"/usr/bin/open\";",
-            "const MACOS_OPENER: &str = \"/bin/sh\";",
+        append_to(
+            &package.join("src/login.rs"),
+            "const SHELL: &str = \"/bin/sh\";",
         );
     });
     assert_eq!(
         route_violations(shell.path()),
         vec![format!(
-            "(a) src/opener.rs:{} \"/bin/sh\"",
-            std::fs::read_to_string(shell.path().join("src/opener.rs"))
+            "(a) src/login.rs:{} \"/bin/sh\"",
+            std::fs::read_to_string(shell.path().join("src/login.rs"))
                 .expect("the mutant")
                 .lines()
                 .position(|line| line.contains("\"/bin/sh\""))
@@ -546,13 +542,11 @@ fn every_other_suppression_of_the_ban_is_refused() {
         (
             Box::new(|package: &Path| {
                 append_to(
-                    &package.join("src/opener.rs"),
+                    &package.join("src/login.rs"),
                     &format!("#[allow(clippy::style)]\n{SECOND_SPAWN}"),
                 );
             }),
-            vec![
-                "(c) src/opener.rs carries allow(clippy::style), expect(clippy::disallowed_types)",
-            ],
+            vec!["(c) src/login.rs carries allow(clippy::style), expect(clippy::disallowed_types)"],
         ),
         (
             Box::new(|package: &Path| {
@@ -578,11 +572,11 @@ fn every_other_suppression_of_the_ban_is_refused() {
         (
             Box::new(|package: &Path| {
                 append_to(
-                    &package.join("src/opener.rs"),
+                    &package.join("src/login.rs"),
                     &format!("#[cfg_attr(unix, allow(warnings))]\n{SECOND_SPAWN}"),
                 );
             }),
-            vec!["(c) src/opener.rs carries allow(warnings), expect(clippy::disallowed_types)"],
+            vec!["(c) src/login.rs carries allow(warnings), expect(clippy::disallowed_types)"],
         ),
         (
             Box::new(|package: &Path| {
@@ -1952,9 +1946,7 @@ mod windows_spawn_gate {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut texts = Vec::new();
         super::walk(&root, &mut |path| {
-            if path.extension().is_some_and(|extension| extension == "rs")
-                && path != root.join("opener.rs")
-            {
+            if path.extension().is_some_and(|extension| extension == "rs") {
                 texts.push(
                     std::fs::read_to_string(path)
                         .unwrap_or_else(|error| panic!("reading {}: {error}", path.display())),
@@ -2393,7 +2385,7 @@ fn spawn() -> Result<(), Error> {
     }
 }
 
-// The opener's and the login's items, each with exactly its admitted calls.
+// The login's item, with exactly its admitted calls.
 // Quickstart's Windows item keeps the profile above. The gate reads every call and every
 // path in the route file: each method call is placed in the chain it belongs to, whatever its
 // shape (a statement per call, a builder chain, a closure), each chain rooted at the command is
@@ -2648,41 +2640,6 @@ mod route_items {
         after: &'static [&'static str],
     }
 
-    const OPENER_UNIX: Profile = Profile {
-        label: "opener-unix",
-        constructor: "std::process::Command::new",
-        program: "program",
-        calls: &[
-            "arg(file)",
-            "env_remove(\"DUDES_SOCK\")",
-            "env_remove(\"DUDES_TOKEN\")",
-            "process_group(0)",
-            "spawn()",
-            "stderr(std::process::Stdio::null())",
-            "stdin(std::process::Stdio::null())",
-            "stdout(std::process::Stdio::null())",
-        ],
-        terminal: "spawn",
-        after: &["map_err(failed)"],
-    };
-
-    const OPENER_WINDOWS: Profile = Profile {
-        label: "opener-windows",
-        constructor: "windows_spawn::Command::new",
-        program: "program",
-        calls: &[
-            "arg(file)",
-            "env_remove(\"DUDES_SOCK\")",
-            "env_remove(\"DUDES_TOKEN\")",
-            "spawn_with(options)",
-            "stderr(windows_spawn::Stdio::null())",
-            "stdin(windows_spawn::Stdio::null())",
-            "stdout(windows_spawn::Stdio::null())",
-        ],
-        terminal: "spawn_with",
-        after: &["map(drop)", "map_err(failed)"],
-    };
-
     const LOGIN: Profile = Profile {
         label: "login",
         constructor: "std::process::Command::new",
@@ -2702,23 +2659,9 @@ mod route_items {
     };
 
     /// The paths each route item may name, how many times, and whether as a call.
-    const OPENER_PATHS: &[(&str, usize, bool)] = &[
-        ("std::process::Command::new", 1, true),
-        ("std::process::Stdio::null", 3, true),
-        ("windows_spawn::Command::new", 1, true),
-        ("windows_spawn::Stdio::null", 3, true),
-        ("windows_spawn::SpawnOptions::new", 1, true),
-        ("windows_spawn::CreationFlags::DETACHED_PROCESS", 1, false),
-        ("windows_spawn::CreationFlags::NEW_PROCESS_GROUP", 1, false),
-        ("windows_spawn::DropPolicy::Detach", 1, false),
-    ];
     const LOGIN_PATHS: &[(&str, usize, bool)] = &[("std::process::Command::new", 1, true)];
 
     /// The capability paths the rest of each route file may name, outside its item.
-    const OPENER_FILE_PATHS: &[&str] = &[
-        "std::os::unix::process::CommandExt",
-        "std::process::ExitStatus",
-    ];
     const LOGIN_FILE_PATHS: &[&str] = &["std::os::unix::process::CommandExt"];
 
     /// The one function in `file` that answers `clippy::disallowed_types`.
@@ -2970,78 +2913,6 @@ mod route_items {
         }
     }
 
-    fn opener(text: &str) -> Vec<String> {
-        let file = syn::parse_file(text).expect("the opener parses");
-        let mut violations = BTreeSet::new();
-        let item = match spawn_item(&file) {
-            Ok(item) => item,
-            Err(violation) => return vec![violation],
-        };
-        rest_of_file("opener", &file, item, OPENER_FILE_PATHS, &mut violations);
-        let mut facts = Facts::default();
-        facts.visit_item_fn(item);
-        census("opener", &facts, OPENER_PATHS, &mut violations);
-        let chains = chains(&facts);
-        let mut admitted = BTreeSet::new();
-        for profile in [&OPENER_UNIX, &OPENER_WINDOWS] {
-            admitted.extend(command(profile, &facts, &chains, &mut violations));
-        }
-        let from_opener = only(&facts, "program").is_some_and(|value| {
-            matches!(value, Expr::Reference(reference)
-                if matches!(reference.expr.as_ref(), Expr::Field(field)
-                    if ident(&field.base).as_deref() == Some("opener")
-                        && matches!(&field.member, syn::Member::Unnamed(index) if index.index == 0)))
-        });
-        if !from_opener {
-            violations.insert("opener program: not the opener's fixed program".to_owned());
-        }
-        let child: Vec<&Vec<&ExprMethodCall>> = chains
-            .values()
-            .filter(|(start, _)| ident(start).as_deref() == Some("child"))
-            .map(|(_, calls)| calls)
-            .collect();
-        if facts.idents.get("child").copied().unwrap_or(0) != child.len() || child.is_empty() {
-            violations.insert("opener-unix child-escape".to_owned());
-        }
-        for calls in child {
-            let shown: Vec<String> = calls.iter().map(|call| call_text(call)).collect();
-            if shown != ["try_wait()", "map_err(failed)"] {
-                violations.insert(format!("opener-unix wait: {shown:?}"));
-            }
-            admitted.extend(calls.iter().map(|call| std::ptr::from_ref(*call) as usize));
-        }
-        let options = chains
-            .values()
-            .find(|(start, _)| calls(start, "windows_spawn::SpawnOptions::new"));
-        let bound = only(&facts, "options")
-            .is_some_and(|value| calls(base(value).0, "windows_spawn::SpawnOptions::new"));
-        match options.filter(|_| bound) {
-            Some((_, calls)) => {
-                let shown: Vec<String> = calls.iter().map(|call| call_text(call)).collect();
-                if shown
-                    != [
-                        "creation_flags(windows_spawn::CreationFlags::DETACHED_PROCESS|\
-                         windows_spawn::CreationFlags::NEW_PROCESS_GROUP)",
-                        "drop_policy(windows_spawn::DropPolicy::Detach)",
-                    ]
-                {
-                    violations.insert(format!("opener-windows options: {shown:?}"));
-                }
-                admitted.extend(calls.iter().map(|call| std::ptr::from_ref(*call) as usize));
-            }
-            None => {
-                violations.insert(
-                    "opener-windows options: not bound once to SpawnOptions::new".to_owned(),
-                );
-            }
-        }
-        if facts.idents.get("options").copied().unwrap_or(0) != 1 {
-            violations.insert("opener-windows options-escape".to_owned());
-        }
-        strays("opener", &facts, &admitted, &mut violations);
-        violations.into_iter().collect()
-    }
-
     fn login(text: &str) -> Vec<String> {
         let file = syn::parse_file(text).expect("the login parses");
         let mut violations = BTreeSet::new();
@@ -3152,8 +3023,7 @@ mod route_items {
     }
 
     #[test]
-    fn the_opener_and_the_login_make_only_their_admitted_calls() {
-        assert_eq!(opener(&source("opener.rs")), Vec::<String>::new());
+    fn the_login_makes_only_its_admitted_calls() {
         assert_eq!(login(&source("login.rs")), Vec::<String>::new());
     }
 
@@ -3187,61 +3057,9 @@ mod route_items {
         );
     }
 
-    /// Every planted mutant of the two items, with the exact violations it must print.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one table of planted mutants, each with its exact violations"
-    )]
+    /// Every planted mutant of the login item, with the exact violations it must print.
     fn arms() -> Vec<(&'static str, Vec<String>, Vec<&'static str>)> {
         vec![
-            (
-                "a chained extra argument and a leaked token",
-                opener(&mutant(
-                    "opener.rs",
-                    "        unix_command.arg(file);\n",
-                    "        unix_command.arg(file).arg(\"-a\").env(\"DUDES_TOKEN\", \"leak\");\n",
-                )),
-                vec![
-                    "opener-unix calls: [\"arg(\\\"-a\\\")\", \"arg(file)\", \"env(\\\"DUDES_TOKEN\\\",\\\"leak\\\")\", \"env_remove(\\\"DUDES_SOCK\\\")\", \"env_remove(\\\"DUDES_TOKEN\\\")\", \"process_group(0)\", \"spawn()\", \"stderr(std::process::Stdio::null())\", \"stdin(std::process::Stdio::null())\", \"stdout(std::process::Stdio::null())\"]",
-                ],
-            ),
-            (
-                "a second spawn chained on a builder call",
-                opener(&mutant(
-                    "opener.rs",
-                    "        unix_command.stdin(std::process::Stdio::null());\n",
-                    "        let _ = unix_command.stdin(std::process::Stdio::null()).status();\n",
-                )),
-                vec![
-                    "opener-unix calls: [\"arg(file)\", \"env_remove(\\\"DUDES_SOCK\\\")\", \"env_remove(\\\"DUDES_TOKEN\\\")\", \"process_group(0)\", \"spawn()\", \"status()\", \"stderr(std::process::Stdio::null())\", \"stdin(std::process::Stdio::null())\", \"stdout(std::process::Stdio::null())\"]",
-                ],
-            ),
-            (
-                "a qualified constructor path",
-                opener(&mutant(
-                    "opener.rs",
-                    "        let deadline = Instant::now() + SETTLE;\n",
-                    "        let _ = <std::process::Command>::new(\"/usr/bin/osascript\").spawn();\n        let deadline = Instant::now() + SETTLE;\n",
-                )),
-                vec![
-                    "opener path: std::process::Command",
-                    "opener qualified paths: 1",
-                    "opener stray call: spawn()",
-                ],
-            ),
-            (
-                "the constructor as a function value",
-                opener(&mutant(
-                    "opener.rs",
-                    "        let deadline = Instant::now() + SETTLE;\n",
-                    "        let make = std::process::Command::new;\n        let _ = make(\"/usr/bin/osascript\").spawn();\n        let deadline = Instant::now() + SETTLE;\n",
-                )),
-                vec![
-                    "opener path count: std::process::Command::new 2",
-                    "opener path not called: std::process::Command::new",
-                    "opener stray call: spawn()",
-                ],
-            ),
             (
                 "a token removed, then set again in the same chain",
                 login(&mutant(
@@ -3261,114 +3079,6 @@ mod route_items {
                     "    let _ = program.is_absolute();\n",
                 )),
                 vec!["login program: not checked absolute before the command"],
-            ),
-            (
-                "opener stdout inherited",
-                opener(&mutant(
-                    "opener.rs",
-                    "unix_command.stdout(std::process::Stdio::null());",
-                    "unix_command.stdout(std::process::Stdio::inherit());",
-                )),
-                vec![
-                    "opener path count: std::process::Stdio::null 2",
-                    "opener path: std::process::Stdio::inherit",
-                    "opener-unix calls: [\"arg(file)\", \"env_remove(\\\"DUDES_SOCK\\\")\", \"env_remove(\\\"DUDES_TOKEN\\\")\", \"process_group(0)\", \"spawn()\", \"stderr(std::process::Stdio::null())\", \"stdin(std::process::Stdio::null())\", \"stdout(std::process::Stdio::inherit())\"]",
-                ],
-            ),
-            (
-                "opener keeps DUDES_SOCK",
-                opener(&mutant(
-                    "opener.rs",
-                    "        unix_command.env_remove(\"DUDES_SOCK\");\n",
-                    "",
-                )),
-                vec![
-                    "opener-unix calls: [\"arg(file)\", \"env_remove(\\\"DUDES_TOKEN\\\")\", \"process_group(0)\", \"spawn()\", \"stderr(std::process::Stdio::null())\", \"stdin(std::process::Stdio::null())\", \"stdout(std::process::Stdio::null())\"]",
-                ],
-            ),
-            (
-                "opener joins the process group",
-                opener(&mutant(
-                    "opener.rs",
-                    "unix_command.process_group(0);",
-                    "unix_command.process_group(1);",
-                )),
-                vec![
-                    "opener-unix calls: [\"arg(file)\", \"env_remove(\\\"DUDES_SOCK\\\")\", \"env_remove(\\\"DUDES_TOKEN\\\")\", \"process_group(1)\", \"spawn()\", \"stderr(std::process::Stdio::null())\", \"stdin(std::process::Stdio::null())\", \"stdout(std::process::Stdio::null())\"]",
-                ],
-            ),
-            (
-                "opener runs another program",
-                opener(&mutant(
-                    "opener.rs",
-                    "let mut unix_command = std::process::Command::new(program);",
-                    "let mut unix_command = std::process::Command::new(\"/usr/bin/osascript\");",
-                )),
-                vec!["opener-unix program: not `program`"],
-            ),
-            (
-                "opener waits without a bound",
-                opener(&mutant(
-                    "opener.rs",
-                    "match child.try_wait().map_err(failed)? {",
-                    "match child.wait().map(Some).map_err(failed)? {",
-                )),
-                vec!["opener-unix wait: [\"wait()\", \"map(Some)\", \"map_err(failed)\"]"],
-            ),
-            (
-                "opener kills the tree on drop",
-                opener(&mutant(
-                    "opener.rs",
-                    "windows_spawn::DropPolicy::Detach",
-                    "windows_spawn::DropPolicy::KillTree",
-                )),
-                vec![
-                    "opener path count: windows_spawn::DropPolicy::Detach 0",
-                    "opener path: windows_spawn::DropPolicy::KillTree",
-                    "opener-windows options: [\"creation_flags(windows_spawn::CreationFlags::DETACHED_PROCESS|windows_spawn::CreationFlags::NEW_PROCESS_GROUP)\", \"drop_policy(windows_spawn::DropPolicy::KillTree)\"]",
-                ],
-            ),
-            (
-                "opener inherits stdin on Windows",
-                opener(&mutant(
-                    "opener.rs",
-                    "command.stdin(windows_spawn::Stdio::null());",
-                    "command.stdin(windows_spawn::Stdio::inherit());",
-                )),
-                vec![
-                    "opener path count: windows_spawn::Stdio::null 2",
-                    "opener path: windows_spawn::Stdio::inherit",
-                    "opener-windows calls: [\"arg(file)\", \"env_remove(\\\"DUDES_SOCK\\\")\", \"env_remove(\\\"DUDES_TOKEN\\\")\", \"spawn_with(options)\", \"stderr(windows_spawn::Stdio::null())\", \"stdin(windows_spawn::Stdio::inherit())\", \"stdout(windows_spawn::Stdio::null())\"]",
-                ],
-            ),
-            (
-                "opener hands the command away",
-                opener(&mutant(
-                    "opener.rs",
-                    "        let mut child = unix_command.spawn().map_err(failed)?;\n",
-                    "        let mut child = spawn_elsewhere(&mut unix_command).map_err(failed)?;\n",
-                )),
-                vec![
-                    "opener-unix after-start: []",
-                    "opener-unix calls: [\"arg(file)\", \"env_remove(\\\"DUDES_SOCK\\\")\", \"env_remove(\\\"DUDES_TOKEN\\\")\", \"process_group(0)\", \"stderr(std::process::Stdio::null())\", \"stdin(std::process::Stdio::null())\", \"stdout(std::process::Stdio::null())\"]",
-                    "opener-unix command-escape: unix_command",
-                ],
-            ),
-            (
-                "opener gains a helper that spawns",
-                opener(&format!(
-                    "{}\nfn helper() {{\n    let _ = std::process::Command::new(\"/usr/bin/true\").spawn();\n}}\n",
-                    source("opener.rs")
-                )),
-                vec!["opener file path: std::process::Command::new"],
-            ),
-            (
-                "opener gains a macro",
-                opener(&format!(
-                    "{}\nmacro_rules! run {{ () => {{ std::process::Command::new(\"/usr/bin/true\") }}; }}\n",
-                    source("opener.rs")
-                )),
-                vec!["opener macro_rules: 1"],
             ),
             (
                 "login builds its argv",

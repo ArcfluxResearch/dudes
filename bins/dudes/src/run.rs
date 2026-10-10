@@ -59,7 +59,7 @@ use crate::env::Environment;
 use crate::login::{Engine, Login};
 use crate::setup::{self, Plan, Stopped, Terminal};
 use crate::workspace::{self, Edit, NewWorkspace};
-use crate::{exit, opener, render};
+use crate::{exit, render};
 
 /// The client this binary drives: one local connection, buffered on the read side.
 type Socket = LocalClient;
@@ -399,18 +399,6 @@ fn dispatch(
     }
 
     let cred = operator_credential(env)?;
-
-    // Both forms delete every earlier launch file before a new bootstrap exists.
-    if let Command::FloorOpen { browser } = invocation.command {
-        if let Ok(dir) = env.runtime_dir() {
-            opener::sweep(dir);
-        }
-        if browser {
-            let response = call_presenting(&mut client, Method::FloorSessionIssue, None, cred)?;
-            open_floor(env, answer_result(response)?, out, err)?;
-            return Ok(exit::SUCCESS);
-        }
-    }
 
     // `journal.tail` is a subscription and not a call: its backfill reaches the peer *before* the
     // response to the call that asked for it, so it reads frames rather than one answer.
@@ -952,7 +940,7 @@ fn local(error: impl std::fmt::Display) -> Failure {
 /// `dudes quickstart`. Without a plan and without a terminal to ask one, it starts the daemon and
 /// prints the ping, as it always has. Otherwise it settles the plan, writes the operator file once,
 /// starts the daemon ([`write_and_start`]), reports the engines, and makes the hire. Only the
-/// guided run, with no options, opens the Floor and asks about a login; a run with options asks
+/// guided run, with no options, prints the Floor link and asks about a login; a run with options asks
 /// nothing and prints the commands instead.
 fn quickstart(
     machine: bool,
@@ -977,7 +965,14 @@ fn quickstart(
         (None, Some(input)) => {
             let running = ping_once(env).is_ok();
             let mut term = Terminal::new(input, out);
-            match guided(&mut term, &mut draft, config, cwd.as_deref(), running) {
+            match guided(
+                &mut term,
+                &mut draft,
+                config,
+                cwd.as_deref(),
+                &setup::Host::of(env),
+                running,
+            ) {
                 Ok(plan) => plan,
                 Err(stopped @ (Stopped::Ended | Stopped::Declined)) => {
                     render::local_error(err, &stopped.to_string()).map_err(local)?;
@@ -1289,9 +1284,10 @@ fn guided(
     draft: &mut Draft,
     config: &Path,
     cwd: Option<&Path>,
+    host: &setup::Host,
     running: bool,
 ) -> Result<Plan, Stopped> {
-    let mut plan = setup::guided(term, draft, config, cwd)?;
+    let mut plan = setup::guided(term, draft, config, cwd, host)?;
     setup::summary(term, &plan, cwd)?;
     if running {
         term.say(
@@ -1510,41 +1506,19 @@ fn hard_stop_daemon(env: &Environment, err: &mut dyn Write) -> Result<(), Failur
     Ok(())
 }
 
-/// The Floor, opened as `dudes floor open` opens it. A daemon that serves no Floor is a warning,
-/// because the daemon itself is running.
+/// The Floor's one-time link, printed as `dudes floor open` prints it. A daemon that serves no
+/// Floor is a warning, because the daemon itself is running.
 fn floor_link(env: &Environment, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), Failure> {
-    if let Ok(dir) = env.runtime_dir() {
-        opener::sweep(dir);
-    }
     match operator_call(env, Method::FloorSessionIssue, None) {
-        Ok(issued) => open_floor(env, issued, out, err),
+        Ok(issued) => {
+            let issued = typed::<SessionIssueResult>(issued)?;
+            let urls = crate::floor::urls(&issued).map_err(local)?;
+            render::floor_url(out, false, &issued, &urls).map_err(local)
+        }
         Err(failure) => {
             render::warning(err, &format!("no Floor link: {}", failure.message())).map_err(local)
         }
     }
-}
-
-/// Open the session `issued` in the browser, or print it as `--no-browser` does, after one line
-/// saying why.
-fn open_floor(
-    env: &Environment,
-    issued: Value,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> Result<(), Failure> {
-    let issued = typed::<SessionIssueResult>(issued)?;
-    let urls = crate::floor::urls(&issued).map_err(local)?;
-    match opener::open(env, &urls.printed_once) {
-        Ok(()) => writeln!(
-            out,
-            "Opened the Floor in your browser at {}. Its one-time sign-in link expires in {} \
-             seconds. If no browser opened, run dudes floor open --no-browser.",
-            urls.page, issued.expires_in_s
-        ),
-        Err(reason) => writeln!(err, "dudes: opening no browser: {reason}")
-            .and_then(|()| render::floor_url(out, false, &issued, &urls)),
-    }
-    .map_err(local)
 }
 
 /// The name the daemon records for a workspace's own check, as quickstart enrolls it.
@@ -1720,7 +1694,7 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         // operator door as every row above: the credential is read once in [`dispatch`] and
         // presented once in [`call_presenting`]. The method's `Requirement` is the daemon's registration to
         // enforce, not this enum's to restate.
-        Command::FloorOpen { .. } => (Method::FloorSessionIssue, None),
+        Command::FloorOpen => (Method::FloorSessionIssue, None),
         Command::Board(BoardCommand::Create(params)) => {
             (Method::BoardCreate, Some(encode(params)?))
         }

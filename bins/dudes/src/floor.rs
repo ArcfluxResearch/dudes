@@ -8,10 +8,8 @@
 //!
 //! # This module launches nothing
 //!
-//! The fragment-bearing URL has two permitted disclosures: printed once by the requesting CLI,
-//! or written into an owner-only launch file that the platform's opener opens.
-//! The second belongs to `crate::opener`, which is the only place a URL leaves this
-//! process for another program, and never in an argv.
+//! The fragment-bearing URL has one permitted disclosure: printed once by the requesting CLI.
+//! It never leaves this process for another program.
 //!
 //! # Two URLs, named so that misusing one is visible
 //!
@@ -57,7 +55,7 @@ const SCHEME: &str = "http://";
 pub struct FloorUrl {
     /// The address of the app's own page. Carries no secret.
     pub page: String,
-    /// The fragment-bearing URL, which this CLI prints once or writes into a launch file.
+    /// The fragment-bearing URL, which this CLI prints once.
     pub printed_once: String,
 }
 

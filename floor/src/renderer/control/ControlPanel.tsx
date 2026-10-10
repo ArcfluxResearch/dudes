@@ -259,7 +259,7 @@ function OutcomeBody({ outcome, attempt, control, floor, session }: {
           {now === 'checking'
             ? 'The daemon refused this request before any effect. Checking whether this Floor session is still live…'
             : now === 'ended'
-              ? 'Your Floor session has ended or was revoked. Paste a new link from dudes floor open --no-browser '
+              ? 'Your Floor session has ended or was revoked. Paste a new link from dudes floor open '
                 + (control.uncertain
                   // Only a request whose effect is unknown is kept; a press after a settled one mints a new request.
                   ? `into this tab’s address bar: this page keeps the request. ${next}`

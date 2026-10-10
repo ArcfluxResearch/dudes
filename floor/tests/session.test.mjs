@@ -194,7 +194,7 @@ test('the entry point opens one stream or surfaces the closed phase', async () =
   assert.equal([...entry.matchAll(/\bopenFloorStream\(/g)].length, 1);
   assert.match(
     main,
-    /if \(session === null\) \{\s*noteTransport\('close'\);\s*return;\s*\}/,
+    /if \(session === null\) \{\s*if \(openedWithLink\) noteNoFirstLink\(\);\s*else noteSignInExpired\(\);\s*noteTransport\('close'\);\s*return;\s*\}/,
     'exhausted recovery does not publish the closed phase',
   );
   assert.match(

@@ -76,6 +76,19 @@ impl fmt::Debug for EnvVar {
     }
 }
 
+/// The environment variable names that, when set, let `provider`'s engine bill an API key for
+/// each token. The daemon asks the same list of an adapter to decide that a billed hire needs a
+/// spending ceiling.
+#[must_use]
+pub fn billing_env_vars(provider: dudes_types::Provider) -> &'static [&'static str] {
+    match provider {
+        dudes_types::Provider::Claude => crate::claude::config::BILLING_ENV_VARS,
+        dudes_types::Provider::Codex => crate::codex::managed::BILLING_ENV_VARS,
+        dudes_types::Provider::Pi => crate::pi::managed::BILLING_ENV_VARS,
+        _ => &[],
+    }
+}
+
 /// The names a quickstarted daemon receives from the caller's ambient environment, in the order
 /// they are handed over.
 ///

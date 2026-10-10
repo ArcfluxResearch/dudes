@@ -274,14 +274,24 @@ test('a link refused for a different build says so, keeps the page, and a matchi
   assert.equal(entry.pastedLinkBuildMismatch(), false);
 });
 
-test('a refused first link names every reason and no secret, and a session taken since clears it', async () => {
+const USED = 'This sign-in link was already used or has expired\. Each link works once, in one browser\. Run '
+  + '<code>dudes floor open</code> and paste the new link here within 60 seconds\. The daemon also refuses a link '
+  + 'while four Floor sessions are open\.';
+const NO_LINK = 'The sign-in link in the address of this page is not one the daemon can read\. Run '
+  + '<code>dudes floor open</code> and paste the new link here within 60 seconds\.';
+const EXPIRED = 'This sign-in has expired\. Run <code>dudes floor open</code> for a new link\. Each link works once, in one '
+  + 'browser\.';
+
+test('a refused first link leads with the used-or-expired line, names no secret, and a session taken since clears it', async () => {
   const session = await server.ssrLoadModule('/src/session.ts');
   const entry = await server.ssrLoadModule('/src/connect.ts');
+  const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
   const page = () => renderToStaticMarkup(createElement(WebFloorShell));
   const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers() };
   session.resetFloorSession();
   entry.resetPastedLink();
+  store.resetFloorStore();
 
   const outcome = (fetch) => {
     const { location, history } = pasted();
@@ -291,15 +301,55 @@ test('a refused first link names every reason and no secret, and a session taken
   assert.equal(await outcome(async () => { throw new TypeError('Failed to fetch'); }) instanceof session.LinkRefused,
     false, 'the control: a daemon that could not be reached is not a refusal');
 
-  assert.doesNotMatch(page(), /This sign-in link was refused/, 'the control: nothing is said before a refusal');
+  assert.doesNotMatch(page(), /already used or has expired/, 'the control: nothing is said before a refusal');
+  // What main.tsx does with a refused first link: say so, then close the stream's phase.
   entry.noteFirstLinkRefused();
+  store.noteTransport('close');
   const html = page();
-  assert.match(html, new RegExp('<p class="link-refused" role="alert">This sign-in link was refused\\. It was '
-    + 'already used, it expired, or the daemon already has four Floor sessions\\. If you did not use this link, '
-    + 'another program on this computer may have\\. Run dudes floor open again; if four sessions are open, '
-    + 'restart the daemon first\\.</p>'));
+  assert.match(html, new RegExp(`<p class="link-refused" role="alert">${USED}</p>`));
+  assert.doesNotMatch(html, /Disconnected/, 'the stream notice sits beside the refusal');
+  assert.doesNotMatch(html, /stream-notice/, 'the stream notice sits beside the refusal');
   assert.equal(html.includes(BOOTSTRAP), false, 'the refusal line carries the bootstrap');
 
   await entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_A }), session), ports);
-  assert.doesNotMatch(page(), /This sign-in link was refused/, 'a link that signed the page in left the refusal up');
+  assert.doesNotMatch(page(), /already used or has expired/, 'a link that signed the page in left the refusal up');
+});
+
+test('a page whose address holds no usable link says so instead of Disconnected', async () => {
+  const entry = await server.ssrLoadModule('/src/connect.ts');
+  const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
+  const session = await server.ssrLoadModule('/src/session.ts');
+  const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
+  const page = () => renderToStaticMarkup(createElement(WebFloorShell));
+  session.resetFloorSession();
+  entry.resetPastedLink();
+  store.resetFloorStore();
+
+  entry.noteNoFirstLink();
+  store.noteTransport('close');
+  const html = page();
+  assert.match(html, new RegExp(`<p class="link-refused" role="alert">${NO_LINK}</p>`));
+  assert.doesNotMatch(html, /Disconnected/);
+});
+
+test('a recovery that stays refused says the sign-in expired instead of Disconnected', async () => {
+  const entry = await server.ssrLoadModule('/src/connect.ts');
+  const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
+  const session = await server.ssrLoadModule('/src/session.ts');
+  const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
+  const page = () => renderToStaticMarkup(createElement(WebFloorShell));
+  session.resetFloorSession();
+  entry.resetPastedLink();
+  store.resetFloorStore();
+
+  let asked = 0;
+  const found = await session.recoverFloorSession(async () => { asked += 1; return reply(403); }, async () => {});
+  assert.equal(found, null, 'recovery gave up');
+  assert.equal(asked, session.RECOVERY_DELAYS_MS.length + 1, 'every retry was refused');
+  entry.noteSignInExpired();
+  store.noteTransport('close');
+  const html = page();
+  assert.match(html, new RegExp(`<p class="link-refused" role="alert">${EXPIRED}</p>`));
+  assert.doesNotMatch(html, /Disconnected/);
+  assert.doesNotMatch(html, /no sign-in link/);
 });

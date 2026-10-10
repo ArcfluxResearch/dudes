@@ -122,12 +122,8 @@ pub enum Command {
         /// Keep reading after the backfill instead of exiting when the response arrives.
         follow: bool,
     },
-    /// `floor.session.issue`, opened in the browser through a launch file, or with `--no-browser`
-    /// printed as the one URL to open.
-    FloorOpen {
-        /// Open the browser; `false` for `--no-browser`.
-        browser: bool,
-    },
+    /// `floor.session.issue`, printed as the one URL to paste into a browser.
+    FloorOpen,
     /// Run an engine's own sign-in from the path the daemon found.
     Login(Provider),
     /// `workspace add|remove|reload|list`: edit `[floor.onboarding]` and have the daemon adopt
@@ -375,22 +371,23 @@ COMMANDS
                [--hire <name> [--provider <provider>] [--role <role>] [--goal <text>]
                 [--usd-per-day <n>] [--tokens-per-day <n>]]
                [--hop-cap <n>] [--timeout-s <n>] [-- <program> [args...]]
-        Set up and start the daemon. On a terminal with no options it asks, one step at
-        a time, which engines to turn on, which Floor actions to allow, whether to set a
-        spending cap, whether to enroll the current repository and whether to hire a
-        first agent. It then writes the operator file once, starts the daemon (or
-        restarts one that runs other settings), shows where the daemon found each
-        engine and whether it is signed in, opens the Floor in your browser, and makes
-        the hire. Last, it offers to sign in to one engine that is signed out; the
-        others are named with the dudes login command for each. It reads no engine's
-        files.
-        With options it asks nothing, opens no browser and prints no Floor link: it
-        prints dudes floor open, and dudes login <engine> for each engine that is
-        signed out. --yes takes every default, --set is `config set`,
-        --enroll enrolls the current repository, --hire hires a first agent there, and
-        everything after `--` is the completion check that the workspace and the goal
-        share (default: at most 5 turns a goal, 600 seconds a check). A running daemon
-        with other settings is restarted only with --restart, because a restart ends
+        Set up and start the daemon. On a terminal with no options it turns on the
+        engines it finds on your PATH, then asks, one step at a time, whether the Floor
+        may act on your agents, for a daily spending cap only when an API key is set,
+        for the current repository's completion check (suggested from its files) and
+        whether to hire a first agent. It then writes the operator file once, starts
+        the daemon (or restarts one that runs other settings), shows where the daemon
+        found each engine and whether it is signed in, prints the Floor's one-time
+        link to paste into any browser, and makes the hire. Last, it offers to sign
+        in to one engine that is signed out; the others are named with the dudes
+        login command for each. It reads no engine's files.
+        With options it asks nothing and prints no Floor link: it prints dudes floor
+        open, and dudes login <engine> for each engine that is signed out. --yes
+        takes every default, --set is `config set`, --enroll enrolls the current
+        repository, --hire hires a first agent there, and everything after `--` is
+        the completion check that the workspace and the goal share (default: at
+        most 5 turns a goal, 600 seconds a check). A running daemon with other
+        settings is restarted only with --restart, because a restart ends
         every running turn; without it quickstart writes the file, names what differs,
         stops nothing and exits 4. Before any restart the running daemon reads the new
         file, and a file it would refuse is put back as it was. Ceilings are
@@ -615,12 +612,10 @@ COMMANDS
         runs differently, which a restart applies: dudes stop, then dudes quickstart.
 
     floor open [--no-browser]
-        Mint a read-only Floor session and open it in your browser. The one-time
-        sign-in link goes into an owner-only file in the runtime directory, which
-        macOS's /usr/bin/open opens. The link expires in 60 seconds and works once.
-        Over SSH, on Linux and Windows for now, or when the opener fails, it prints
-        the link instead, as --no-browser does.
-        With --no-browser it prints the one loopback URL that opens the session.
+        Mint a read-only Floor session and print its one-time sign-in link. Paste the
+        link into any browser. It expires in 60 seconds and works once, in one
+        browser; run the command again for a new one. Nothing is opened for you.
+        --no-browser is accepted and changes nothing: printing is now the default.
 
     login claude|codex|pi
         Sign in to an engine with its own login command: `claude auth login` or
@@ -788,12 +783,7 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "memory" => Command::Memory(memory(tail)?),
         "why" => why(tail)?,
         "tail" => journal_tail(tail)?,
-        "floor" => match floor(tail)? {
-            Command::FloorOpen { browser: true } if json => {
-                return Err(ArgError::Requires("--json", "--no-browser"));
-            }
-            command => command,
-        },
+        "floor" => floor(tail)?,
         "login" if json => return Err(ArgError::TextOnly("login")),
         "login" => login(tail)?,
         "workspace" => Command::Workspace(workspace(tail, payload)?),
@@ -1258,7 +1248,7 @@ fn board_status(flags: &mut Flags<'_>, flag: &'static str) -> Result<CardStatus,
     }
 }
 
-/// `floor open [--no-browser]`.
+/// `floor open [--no-browser]`; the flag is accepted for scripts that still pass it.
 ///
 /// The only subcommand is `open`. `dudes floor` alone is refused by name rather than folded into
 /// `UnknownCommand`, because it is what an operator typing from memory will actually type.
@@ -1275,20 +1265,15 @@ fn floor(tail: &[OsString]) -> Result<Command, ArgError> {
             subcommand.to_string_lossy()
         )));
     }
-    let mut browserless = false;
     for flag in flags {
         if asks_for_help(flag) {
             return Err(ArgError::HelpRequested);
         }
-        if flag == "--no-browser" {
-            browserless = true;
-        } else {
+        if flag != "--no-browser" {
             return Err(ArgError::UnknownFlag(flag.to_string_lossy().into_owned()));
         }
     }
-    Ok(Command::FloorOpen {
-        browser: !browserless,
-    })
+    Ok(Command::FloorOpen)
 }
 
 /// `login <claude|codex|pi>`.

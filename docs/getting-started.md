@@ -18,22 +18,29 @@ Dudes reads no engine's credentials or files.
    dudes quickstart
    ```
 
-   On a terminal, `quickstart` asks one step at a time, and Enter takes the answer shown in
-   capitals or in brackets:
+   On a terminal, `quickstart` works out what it can and asks the rest one step at a time. Enter
+   takes the answer shown in capitals or in brackets. Pressing Enter at every question gives a
+   working setup:
 
-   - **Engines.** Claude Code is always on; turn on Codex and Pi if you use them. On macOS and
-     Linux, you can also opt in to Codex streaming, which uses a separate sign-in.
-   - **Floor actions.** Answering an agent's question, hiring an agent, pausing,
-     resuming and renaming an agent, changing its goal, starting a new goal when an agent's goal
-     has nothing left (this needs goal change and Hire), retiring it and attaching a terminal.
-     Each is off unless you turn it on.
-   - **Spending cap.** Skipped unless you choose it. Subscription plans have their own limits; set
-     a daily dollar cap for the whole floor when an engine bills an API key for each token. See
+   - **Engines (no question).** Claude Code is always on. Codex and Pi are turned on when their
+     program is on your `PATH`, and left as your file has them when it is not. Codex streaming is
+     never asked about; see [Chat](chat.md) to opt in.
+   - **Floor actions (one question).** Let the Floor hire, pause and resume, answer, change goals,
+     retire and attach a terminal. Yes turns all six on and No turns them off. Anyone holding your
+     one-time Floor link could start agents that act with your account's full reach. When your
+     file already turns on only some of them, quickstart keeps that choice and does not ask.
+     Starting a new goal when an agent's goal has nothing left stays as your file has it, and
+     is off in a new file.
+   - **Spending cap (only with an API key).** Asked only when your shell holds an API key for an
+     engine that is on. Subscription plans have their own limits. See
      [Budgets](configuration.md#budgets).
-   - **Workspace.** Enroll the current repository for the Floor's Hire, with the completion check
-     the daemon runs itself to decide that a goal is done.
-   - **First hire.** Optionally hire an agent in the current directory, with a goal or without one.
-     An agent with a goal starts working at once.
+   - **Workspace.** When the current directory is a git repository that is not enrolled, one
+     question for its completion check, the command the daemon runs itself to decide that a goal
+     is done. Quickstart suggests `cargo test`, `npm test`, `go test ./...`, `pytest` or
+     `make test` from the files it finds; `-` skips enrolling.
+   - **First hire.** A name, an engine only when more than one is on, and a goal you can leave
+     empty. An agent with a goal starts working at once, and a goal asks for a completion check
+     when the repository has none.
 
    After a summary you confirm, `quickstart` writes the daemon's operator file once and starts the
    daemon. When one is already running with other settings, the guide says so before you confirm,
@@ -45,7 +52,8 @@ Dudes reads no engine's credentials or files.
      and whether it is signed in. The daemon asks the engine's own status command (`claude auth
      status` or `codex login status`) and reads only its exit status. Pi has no such command:
      run `pi`, then type `/login` inside it;
-   - opens the Floor in your browser, as `dudes floor open` does;
+   - prints a one-time link to the Floor, as `dudes floor open` does, for you to paste into any
+     browser;
    - prints the hired agent's id, when you hired one;
    - last, when an engine is signed out, names the others that are and offers to sign in to one.
      A yes runs that engine's own login in your terminal, and `quickstart` ends there.
@@ -54,8 +62,9 @@ Dudes reads no engine's credentials or files.
    The operator file and the `duded.log` line that `quickstart` leaves are described in
    [Configuration](configuration.md#the-operator-file).
 
-3. Use the Floor that opened in your browser. `dudes floor open` opens it again.
-   [The Floor](floor.md) explains how it opens, what each tab shows and what an agent's position
+3. Paste the link into a browser and use the Floor. The link works once, in one browser;
+   `dudes floor open` prints a new one. On a remote machine, forward the link's port over SSH first, because
+   the link is a loopback address. [The Floor](floor.md) explains how it signs in, what each tab shows and what an agent's position
    in the office means.
 
 4. Hire more agents. On the Floor, click **Hire an agent**, choose the workspace and an engine it
@@ -110,15 +119,15 @@ chmod go-w <the directory the error names>
 
 ### Hiring with Codex or Pi is refused
 
-Claude Code is always on. Codex and Pi are off until you turn them on, in the quickstart's
-**Engines** step or with `dudes config set providers.codex on` (or `providers.pi`), followed by
-`dudes quickstart --restart`.
+Claude Code is always on. Quickstart turns Codex and Pi on when it finds their programs on your
+`PATH`. Otherwise turn one on with `dudes config set providers.codex on` (or `providers.pi`),
+followed by `dudes quickstart --restart`.
 
 ## Run quickstart without the guide
 
 Without a terminal and without options, `dudes quickstart` only starts the daemon and prints its
 version and control socket, as scripts expect. With options it asks nothing,
-opens no browser and prints no live Floor link: it prints `dudes floor open`, and `dudes login
+prints no live Floor link: it prints `dudes floor open`, and `dudes login
 <engine>` for each engine that is signed out. `--yes` takes every default, `--set <key> <value>`
 sets what `dudes config set` sets, `--enroll` enrolls the current repository and `--hire <name>`
 hires a first agent there, with the completion check after `--`; a setting that breaks one of the

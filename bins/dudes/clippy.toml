@@ -1,9 +1,8 @@
 # Invariant 7, enforced by the compiler rather than by review: within `bins/dudes`, both admitted
-# command types are disallowed. Three items answer the lint with the platform's selected type
-#: `src/quickstart.rs` starts the absolute `duded` path with no arguments,
-# `src/opener.rs` starts the fixed platform opener on a launch file, and `src/login.rs` replaces the
-# CLI with an engine's own login on Unix. The AST gate in `tests/no_interpreter.rs` confines the
-# three items, lists each one's admitted calls and narrows the Windows dependency's capability
+# command types are disallowed. Two items answer the lint with the platform's selected type:
+# `src/quickstart.rs` starts the absolute `duded` path with no arguments, and `src/login.rs`
+# replaces the CLI with an engine's own login on Unix. The AST gate in `tests/no_interpreter.rs`
+# confines the two items, lists each one's admitted calls and narrows the Windows dependency's capability
 # surface.
 #
 # No allow-listed module, for the reason `bins/duded/clippy.toml` gives: an allow-listed module is a
@@ -28,11 +27,11 @@
 #    complement that the attribute cannot buy back is `tests/no_interpreter.rs`, whose scan walks
 #    `src/` textually and therefore catches a `process::Command` there whatever attribute sits above
 #    it — and which carries a planted control proving the scan fires.
-# 4. `src/quickstart.rs`, `src/opener.rs` and `src/login.rs` each answer the selected platform type
+# 4. `src/quickstart.rs` and `src/login.rs` each answer the selected platform type
 #    on one spawn item with `#[expect]`, never with a module allow-list. Deleting one leaves an
 #    unfulfilled expectation; a second item in any of them is refused; and
 #    `tests/no_interpreter.rs` rejects a permanent `#[allow]`, confines both admitted routes to
-#    those three files, parses the cfg-disabled Windows arms, and pins each item's calls.
+#    those two files, parses the cfg-disabled Windows arms, and pins each item's calls.
 #
 # The known cost, which `bins/duded/clippy.toml` and `crates/dudes-policy/clippy.toml` document at
 # the same place: clippy reads exactly one configuration file, so this one replaces the workspace's
@@ -47,8 +46,7 @@ disallowed-types = [
     "windows_spawn::MitigationPolicy",
 ]
 
-# Admits only `Command::spawn_with` and the fixed builders used by quickstart and the
-# opener. Resolved method paths keep this effective through imports, aliases, UFCS calls and
+# Admits only `Command::spawn_with` and the fixed builders used by quickstart. Resolved method paths keep this effective through imports, aliases, UFCS calls and
 # rustfmt wrapping.
 disallowed-methods = [
     "windows_spawn::Command::spawn",

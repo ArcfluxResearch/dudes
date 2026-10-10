@@ -30,10 +30,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use dudes_proto::rpc::hook::HookToken;
-use dudes_providers::launch::{DAEMON_ENV_ALLOWLIST, EnvVar};
-use dudes_types::McpServerName;
-
-pub use crate::opener::Desktop;
+use dudes_providers::launch::{DAEMON_ENV_ALLOWLIST, EnvVar, billing_env_vars};
+use dudes_types::{McpServerName, Provider};
 
 /// The local endpoint's logical name inside a runtime directory.
 ///
@@ -103,8 +101,8 @@ pub struct Environment {
     config: Result<PathBuf, NoConfig>,
     current_dir: Option<PathBuf>,
     home: Option<PathBuf>,
-    desktop: Desktop,
     declared: Declared,
+    billed: Vec<Provider>,
 }
 
 /// The variables the operator file's `[mcp.servers]` declares, as this process holds them.
@@ -319,11 +317,10 @@ impl Environment {
             .and_then(|text| HookToken::new(text).ok());
         let config = operator_config_path(&lookup);
         let set = |name: &str| lookup(name).is_some_and(|value| !value.is_empty());
-        let desktop = Desktop {
-            ssh: lookup("SSH_CONNECTION").is_some() || lookup("SSH_TTY").is_some(),
-            display: set("DISPLAY") || set("WAYLAND_DISPLAY"),
-            system_root: lookup("SystemRoot").map(PathBuf::from),
-        };
+        let billed = [Provider::Claude, Provider::Codex, Provider::Pi]
+            .into_iter()
+            .filter(|provider| billing_env_vars(*provider).iter().any(|name| set(name)))
+            .collect();
         Self {
             socket,
             runtime_dir,
@@ -336,8 +333,8 @@ impl Environment {
             config,
             current_dir: None,
             home,
-            desktop,
             declared: Declared::default(),
+            billed,
         }
     }
 
@@ -345,12 +342,6 @@ impl Environment {
     #[must_use]
     pub fn home(&self) -> Option<&Path> {
         self.home.as_deref()
-    }
-
-    /// What decides whether a browser can open here.
-    #[must_use]
-    pub fn desktop(&self) -> &Desktop {
-        &self.desktop
     }
 
     /// The directory the command runs in, which `quickstart` enrolls and hires into; `None` when
@@ -425,6 +416,12 @@ impl Environment {
     /// The MCP variables the operator file declares, as this process holds them.
     pub(crate) fn declared(&self) -> &Declared {
         &self.declared
+    }
+
+    /// The engines for which this process holds a credential that bills each token, by the lists
+    /// the daemon's adapters use.
+    pub(crate) fn billed(&self) -> &[Provider] {
+        &self.billed
     }
 
     /// The agent token this process was given, if it was given a well-formed one.

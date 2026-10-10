@@ -38,7 +38,7 @@ dudes-rpc.workspace = true
 dudes-types = { workspace = true, features = ["std"] }
 # `dudes tail` shows each record's time in the operating system's zone.
 chrono.workspace = true
-# The launch file's random name, so nothing can create its path in advance.
+# The random part of a mail id.
 getrandom.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json.workspace = true
@@ -94,8 +94,7 @@ dudes-supervisor = { workspace = true, features = ["testing"] }
 # on every host. This package is already present in the locked workspace graph.
 syn.workspace = true
 # The process-level quickstart test owns and stops the detached daemon by signal, and drives the
-# guided quickstart through a pseudo-terminal. The opener's unit test reaps the stand-in opener it
-# let go, so no child outlives the test. Test-only: the shipped CLI uses `std`'s child handle for
+# guided quickstart through a pseudo-terminal. Test-only: the shipped CLI uses `std`'s child handle for
 # startup failure cleanup and `std`'s terminal test.
 nix = { workspace = true, features = ["process", "signal", "term"] }
 tempfile.workspace = true

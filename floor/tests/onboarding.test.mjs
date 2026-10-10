@@ -1224,7 +1224,7 @@ test('after hired_without_goal for session_expired or session_revoked, a fresh l
     const html = render();
     assert.match(html, /Hired without its goal/);
     assert.match(html, />Check status</, 'a goal the session lost cannot be set from a fresh one');
-    assert.match(html, /Paste a new link from dudes floor open --no-browser into this tab’s address bar: this page keeps the Hire, and Check status then sets only the goal this Hire recorded\./);
+    assert.match(html, /Paste a new link from dudes floor open into this tab’s address bar: this page keeps the Hire, and Check status then sets only the goal this Hire recorded\./);
 
     csrf = FRESH; // a fresh link pasted into this tab
     subscribe({ agents: [agentRow(AGENT, 'Kim')] });
@@ -1262,7 +1262,7 @@ test('a 403 after pending, a 503 or a lost reply keeps the Hire, and a same-body
     assert.doesNotMatch(html, /No agent was hired/, 'the page says no agent was hired, which nothing proves');
     assert.doesNotMatch(html, />Edit the form</);
     assert.match(html, /an earlier request for this Hire has no known result, so an agent may already have been hired/);
-    assert.match(html, /Paste a new link from dudes floor open --no-browser into this tab’s address bar/);
+    assert.match(html, /Paste a new link from dudes floor open into this tab’s address bar/);
     assert.match(html, />Check status</);
 
     csrf = FRESH;
@@ -1393,7 +1393,7 @@ test('a recorded hire keeps its AgentId through every later reply, and after a f
   // The session ends: the page asks for a new link.
   invalidateFloorEpoch();
   noteTransport('close');
-  assert.match(shown('the session ended'), /Paste a new link from dudes floor open --no-browser/);
+  assert.match(shown('the session ended'), /Paste a new link from dudes floor open/);
 
   // A fresh link, and a snapshot of that session offering hiring: the next step is Check status.
   csrf = FRESH;

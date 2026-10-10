@@ -832,7 +832,7 @@ test('a 403 says what this page can do next, and a request whose effect is unkno
   noteTransport('close');
   html = status();
   assert.match(html, /data-retire-session="ended"/);
-  assert.match(html, /Your Floor session has ended or was revoked\. Paste a new link from dudes floor open --no-browser into this tab’s address bar to act again\. Nothing was retired\./);
+  assert.match(html, /Your Floor session has ended or was revoked\. Paste a new link from dudes floor open into this tab’s address bar to act again\. Nothing was retired\./);
 
   // After an unresolved reply, a 403 keeps the request, and Check status from a fresh session sends the same bytes.
   resetFloorStore();

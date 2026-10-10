@@ -1,6 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { connect, noteFirstLinkRefused, takePastedLink } from './connect';
+import { connect, noteFirstLinkRefused, noteNoFirstLink, noteSignInExpired, takePastedLink } from './connect';
 import type { StreamPorts } from './connect';
 import { noteTransport } from './renderer/floor/store';
 import { browserSocket } from './renderer/floor/stream';
@@ -15,10 +15,13 @@ const BROWSER: StreamPorts = { location: window.location, socket: browserSocket 
 // sockets and a double-mounted effect would take both for one view. A link
 // pasted while this is still in flight may settle first; this result is then
 // stale, and it neither opens nor closes anything.
+const openedWithLink = window.location.hash.startsWith('#bootstrap=');
 void establishFloorSession()
   .then((session) => {
     if (session !== currentFloorSession()) return;
     if (session === null) {
+      if (openedWithLink) noteNoFirstLink();
+      else noteSignInExpired();
       noteTransport('close');
       return;
     }
