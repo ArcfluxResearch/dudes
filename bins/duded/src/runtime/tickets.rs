@@ -9,7 +9,7 @@ use dudes_proto::rpc::ticket::{
 use dudes_proto::rpc::{ErrorCode, RpcError};
 use dudes_proto::ticket::{
     MAX_MESSAGE_BYTES, MAX_NOTE_BYTES, MAX_OPEN_TICKETS, MAX_QUEUE, MAX_TITLE_BYTES, clean_text,
-    trim,
+    clean_title, trim,
 };
 use dudes_proto::{Actor, CardView, Record, TicketCheck, TicketRefusal, TicketRow};
 use dudes_types::{AgentId, CardId, CardStatus, Seq};
@@ -59,22 +59,22 @@ fn operator(by: Actor) -> Result<(), RpcError> {
 
 fn title_of(text: &str) -> Result<String, RpcError> {
     let title = trim(text);
-    if title.is_empty() || !clean_text(title, MAX_TITLE_BYTES) {
+    if title.is_empty() || !clean_title(title, MAX_TITLE_BYTES) {
         return Err(invalid(
-            "the title must be 1 to 256 bytes without control characters",
+            "the title must be 1 to 256 bytes on one line without control characters",
         ));
     }
     Ok(title.to_owned())
 }
 
+/// The note is kept exactly as written.
 fn note_of(text: &str) -> Result<String, RpcError> {
-    let note = trim(text);
-    if !clean_text(note, MAX_NOTE_BYTES) {
+    if !clean_text(text, MAX_NOTE_BYTES) {
         return Err(invalid(
             "the note must be at most 8192 bytes without control characters",
         ));
     }
-    Ok(note.to_owned())
+    Ok(text.to_owned())
 }
 
 /// The project's check named by `id`, or its own check; refused when `revision` says the caller
@@ -199,6 +199,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if request.title.is_none() && request.description.is_none() && request.done_when.is_none() {
             return Err(invalid("there is nothing to change"));
         }
+        if request.done_when.is_none() && request.done_when_revision.is_some() {
+            return Err(invalid("a check revision needs the check it belongs to"));
+        }
         let title = match &request.title {
             Some(text) => title_of(text)?,
             None => view.title.clone(),
@@ -249,13 +252,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             return Err(refusal(TicketRefusal::WrongState, view.status));
         }
         let message = match request.message.as_deref() {
-            Some(text) if text.len() > MAX_MESSAGE_BYTES || text.contains('\0') => {
+            Some(text) if !clean_text(trim(text), MAX_MESSAGE_BYTES) => {
                 return Err(invalid(
-                    "the message must be at most 2048 bytes without NUL",
+                    "the message must be at most 2048 bytes without control characters",
                 ));
             }
-            Some("") | None => None,
-            Some(text) => Some(text.to_owned()),
+            Some(text) if trim(text).is_empty() => None,
+            Some(text) => Some(trim(text).to_owned()),
+            None => None,
         };
         self.require_ticket_agent(request.agent, &ticket)?;
         let waiting = self.agent_queue(request.agent)?;

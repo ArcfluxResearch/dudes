@@ -314,7 +314,7 @@ fn a_created_ticket_replays_to_the_same_board_after_the_cache_is_deleted() {
     let first = daemon.create("  Fix the parser \n");
     let created: dudes_proto::rpc::ticket::TicketCreateResult = daemon.ok(
         Method::TicketCreate,
-        json!({"title": "Add the lexer", "description": "\nCover the empty input.\n", "done_when": "strict"}),
+        json!({"title": "Add the lexer", "description": "Cover the empty input.\n", "done_when": "strict"}),
     );
     let second = created.card;
     assert_eq!(
@@ -344,7 +344,10 @@ fn a_created_ticket_replays_to_the_same_board_after_the_cache_is_deleted() {
     assert_eq!(second_view.card.title, "Add the tokenizer");
     assert_eq!(second_view.card.status, CardStatus::Todo);
     assert_eq!(second_view.card.department, "engineering");
-    assert_eq!(second_view.ticket.description, "Cover the empty input.");
+    assert_eq!(
+        second_view.ticket.description, "Cover the empty input.\n",
+        "the note is kept exactly as written"
+    );
     assert_eq!(second_view.ticket.done_when.id, "strict");
     assert_eq!(second_view.position, None);
 
@@ -784,6 +787,9 @@ fn text_is_trimmed_bounded_and_free_of_control_characters() {
             "a control character in the title",
         ),
         (json!({"title": "nul\0"}), "NUL in the title"),
+        (json!({"title": "two\nlines"}), "a newline in the title"),
+        (json!({"title": "tab\there"}), "a tab in the title"),
+        (json!({"title": "del\u{7f}"}), "DEL in the title"),
         (
             json!({"title": "ok", "description": "x".repeat(8_193)}),
             "a note over 8192 bytes",
@@ -816,6 +822,55 @@ fn text_is_trimmed_bounded_and_free_of_control_characters() {
         json!({"card": exact, "expected_seq": 0}),
     );
     assert_eq!(edit.error.unwrap().code, ErrorCode::InvalidParams.code());
+    let before = fixture.records().len();
+    let revision = daemon.call(
+        Method::TicketEdit,
+        json!({"card": exact, "title": "x", "done_when_revision": Hex32::new([1; 32]), "expected_seq": 0}),
+    );
+    assert_eq!(
+        revision.error.unwrap().code,
+        ErrorCode::InvalidParams.code()
+    );
+    let note = daemon.create("Note kept");
+    let kept_note = daemon.card(note).seq;
+    daemon.ok::<Value>(
+        Method::TicketEdit,
+        json!({"card": note, "description": "  padded \n", "expected_seq": kept_note}),
+    );
+    assert_eq!(daemon.read(note).ticket.description, "  padded \n");
+    assert_eq!(
+        fixture.records().len(),
+        before + 2,
+        "the refusal appended nothing"
+    );
+    daemon.stop();
+}
+
+/// The message that goes to the agent is trimmed, bounded and free of control characters.
+#[test]
+fn an_assignment_message_is_trimmed_and_refuses_control_characters() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut daemon = start(&fixture, settings);
+    let agent = common::hire(&daemon.running.handle, &repo);
+    let card = daemon.create("Messaged");
+    let before = fixture.records().len();
+    for message in ["esc\u{1b}[2J", "nul\0", "del\u{7f}", &"x".repeat(2_049)] {
+        let response = daemon.assign(card, agent, Some(message));
+        assert_eq!(
+            response.error.unwrap().code,
+            ErrorCode::InvalidParams.code()
+        );
+    }
+    assert_eq!(fixture.records().len(), before);
+    assert_eq!(
+        position(daemon.assign(card, agent, Some("  Mind the edge.\n\tAnd the end. \n"))),
+        1
+    );
+    assert_eq!(
+        daemon.read(card).ticket.message.as_deref(),
+        Some("Mind the edge.\n\tAnd the end.")
+    );
     daemon.stop();
 }
 

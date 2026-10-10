@@ -1663,9 +1663,9 @@ pub enum Record {
     TicketCreated {
         /// The card.
         card: CardId,
-        /// Title, trimmed.
+        /// Title, trimmed, on one line.
         title: String,
-        /// The note, trimmed; empty when there is none.
+        /// The note exactly as written; empty when there is none.
         description: String,
         /// Department whose agents may hold it, copied from the project.
         department: String,
@@ -1681,9 +1681,9 @@ pub enum Record {
     TicketEdited {
         /// The card.
         card: CardId,
-        /// Title, trimmed.
+        /// Title, trimmed, on one line.
         title: String,
-        /// The note, trimmed; empty when there is none.
+        /// The note exactly as written; empty when there is none.
         description: String,
         /// The check that finishes it.
         done_when: TicketCheck,
