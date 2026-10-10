@@ -104,13 +104,13 @@ test('choosing an entry hands that agent to the handler the office question mark
   assert.equal(buttons.length, 2);
   buttons[1].props.onClick();
   assert.deepEqual(opened, [ADA]);
-  assert.match(overview(), /<button type="button" class="waiting-open"[^>]*>Open Chat<\/button>/);
+  assert.match(overview(), /<button type="button" class="waiting-open"[^>]*>Answer<\/button>/);
 });
 
 test('an entry cannot be opened while the view is unconfirmed', () => {
   subscribe([ada()]);
   store.noteStale(true);
-  assert.match(overview(), /<button type="button" class="waiting-open" disabled="">Open Chat<\/button>/);
+  assert.match(overview(), /<button type="button" class="waiting-open" disabled="">Answer<\/button>/);
 });
 
 test('entries come newest question first', () => {
@@ -124,4 +124,15 @@ test('with nothing waiting the section is absent and nothing stands in for it', 
   const html = overview();
   assert.doesNotMatch(html, /waiting-on-you|Waiting on you|No agent is waiting|Recent answered/);
   assert.match(html, /Current agents/);
+});
+
+test('a stream frame that still carries answered-question history is read without it and without a rejection', () => {
+  const epoch = store.beginFloorEpoch();
+  store.noteTransport('open');
+  store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 12, agents: [ada()] }, answer: SIBLING,
+    question_history: [{ agent_id: ADA, question_lsn: '8', answer_lsn: '9', question: 'Earlier ask' }] }), epoch);
+  assert.equal(store.getFloorState().rejected, 0);
+  assert.equal(store.getFloorState().agents.length, 1);
+  assert.equal('questionHistory' in store.getFloorState(), false);
+  assert.ok(!overview().includes('Earlier ask'));
 });

@@ -19,8 +19,6 @@
 // `subscribeToFloor`.
 
 import { validAppearance } from '../appearance.ts';
-import { decodeQuestionHistory } from '../question-history.ts';
-import type { AnsweredQuestion } from '../question-history.ts';
 import { decodeRetiredAgents } from '../archive.ts';
 import type { RetiredAgentRow } from '../archive.ts';
 import { decodeActivity } from '../activity.ts';
@@ -183,7 +181,6 @@ export interface FloorState {
   readonly cards: readonly CardRow[];
   readonly activity: readonly ActivityRow[];
   readonly retiredAgents: readonly RetiredAgentRow[];
-  readonly questionHistory: readonly AnsweredQuestion[];
   readonly messages: readonly MessageRow[];
   readonly threads: readonly ThreadRow[];
   readonly messagesLsn: string | null;
@@ -293,7 +290,6 @@ const EMPTY: FloorState = Object.freeze({
   cards: Object.freeze([]),
   activity: Object.freeze([]),
   retiredAgents: Object.freeze([]),
-  questionHistory: Object.freeze([]),
   messages: Object.freeze([]),
   threads: Object.freeze([]),
   messagesLsn: null,
@@ -350,7 +346,6 @@ export function noteTransport(event: 'open' | 'close'): void {
     epoch: event === 'close' ? state.epoch + 1 : state.epoch,
     activity: event === 'close' ? Object.freeze([]) : state.activity,
     retiredAgents: event === 'close' ? Object.freeze([]) : state.retiredAgents,
-    questionHistory: event === 'close' ? Object.freeze([]) : state.questionHistory,
     messages: event === 'close' ? Object.freeze([]) : state.messages,
     threads: event === 'close' ? Object.freeze([]) : state.threads,
     messagesLsn: event === 'close' ? null : state.messagesLsn,
@@ -446,7 +441,6 @@ export function invalidateFloorEpoch(): void {
     cards: Object.freeze([]),
     activity: Object.freeze([]),
     retiredAgents: Object.freeze([]),
-    questionHistory: Object.freeze([]),
     messages: Object.freeze([]),
   threads: Object.freeze([]),
     messagesLsn: null,
@@ -505,7 +499,6 @@ export function applyServerFrame(
       commit({ ...state, phase: 'closed', epoch: state.epoch + 1, activity: Object.freeze([]),
         chat: null, output: emptyOutput(state.output, 'unavailable'),
         retiredAgents: Object.freeze([]),
-        questionHistory: Object.freeze([]),
         messages: Object.freeze([]),
         threads: Object.freeze([]), messagesLsn: null, onboarding: null, checks: null, answering: null, control: false,
         goalChange: null, terminal: false, retire: false, git: false, daemon: null, settings: null, journalStopped: null,
@@ -546,7 +539,6 @@ interface ServerMessage {
   readonly settings?: unknown;
   readonly journal_stopped?: unknown;
   readonly finished_today?: unknown;
-  readonly question_history?: unknown;
   readonly chat?: unknown;
   readonly delta?: unknown;
   readonly [field: string]: unknown;
@@ -771,7 +763,6 @@ function fromSnapshot(message: ServerMessage): FloorState {
   const cards = decodeCards(projection.cards);
   const activity = decodeActivity(projection.activity);
   const retired = decodeRetiredAgents(projection.retired_agents);
-  const history = decodeQuestionHistory(message.question_history);
   const messages = decodeMailWindow(message.messages, message.messages_lsn, message.threads, message.threads_lsn);
   const messagesLsn = messages.cut;
   const chat = decodeChat(message.chat, sifted.rows);
@@ -800,13 +791,12 @@ function fromSnapshot(message: ServerMessage): FloorState {
     cards: cards.rows,
     activity: activity.rows,
     retiredAgents: retired.rows,
-    questionHistory: history.rows,
     messages: messages.rows,
     threads: messages.threads,
     messagesLsn,
     output: state.output.targetId !== null && !sifted.rows.some((row) => row.id === state.output.targetId)
       ? emptyOutput(state.output, 'unavailable') : state.output,
-    rejected: state.rejected + sifted.rejected + cards.rejected + activity.rejected + retired.rejected + history.rejected + messages.rejected
+    rejected: state.rejected + sifted.rejected + cards.rejected + activity.rejected + retired.rejected + messages.rejected
       + (message.chat !== undefined && chat === null ? 1 : 0) + closing.rejected,
   };
 }
@@ -854,8 +844,6 @@ function fromDelta(delta: Record<string, unknown>, message: ServerMessage): Floo
   const activity = delta.activity === undefined ? { rows: state.activity, rejected: 0 } : decodeActivity(delta.activity);
   const retired = delta.retired_agents === undefined || state.snapshotEpoch !== state.epoch
     ? { rows: state.retiredAgents, rejected: 0 } : decodeRetiredAgents(delta.retired_agents);
-  const history = message.question_history === undefined || state.snapshotEpoch !== state.epoch
-    ? { rows: state.questionHistory, rejected: 0 } : decodeQuestionHistory(message.question_history);
   const nextCards = new Map(state.cards.map((card) => [card.id, card]));
   for (const card of cardChanges.rows) nextCards.set(card.id, card);
   const removed = new Set(
@@ -884,14 +872,13 @@ function fromDelta(delta: Record<string, unknown>, message: ServerMessage): Floo
     cards: Object.freeze([...nextCards.values()].sort((a, b) => a.id.localeCompare(b.id))),
     activity: activity.rows,
     retiredAgents: retired.rows,
-    questionHistory: history.rows,
     messages: messages.rows,
     threads: messages.threads,
     messagesLsn: messages.cut,
     doneNotices: announce(agents),
     output: state.output.targetId !== null && !next.has(state.output.targetId)
       ? emptyOutput(state.output, 'unavailable') : state.output,
-    rejected: state.rejected + sifted.rejected + cardChanges.rejected + activity.rejected + retired.rejected + history.rejected + messages.rejected
+    rejected: state.rejected + sifted.rejected + cardChanges.rejected + activity.rejected + retired.rejected + messages.rejected
       + (message.chat !== undefined && chat === null ? 1 : 0) + closing.rejected,
   };
 }
@@ -937,7 +924,6 @@ function unchanged(current: FloorState, next: FloorState): boolean {
     && current.closingTime === next.closingTime
     && current.doneNotices === next.doneNotices
     && current.agents.length === next.agents.length
-    && current.questionHistory === next.questionHistory
     && current.threads === next.threads
     && current.messages === next.messages
     && current.messagesLsn === next.messagesLsn

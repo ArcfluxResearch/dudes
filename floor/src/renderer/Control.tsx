@@ -156,7 +156,7 @@ export function WaitingOnYou({ items, selectable, onOpen }: {
             <h4>{item.name}</h4>
             <p>{item.text}</p>
             <button type="button" className="waiting-open" disabled={!selectable}
-              onClick={() => onOpen(item.agentId)}>Open Chat</button>
+              onClick={() => onOpen(item.agentId)}>Answer</button>
           </li>
         ))}
       </ol>
