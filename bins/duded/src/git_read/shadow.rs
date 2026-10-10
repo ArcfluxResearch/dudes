@@ -47,11 +47,13 @@ const REF_DEPTH_MAX: usize = 16;
 /// The literal configuration of every shadow. Nothing the agent wrote reaches it.
 ///
 /// The pack window and limit are far under the address-space limit a Linux child runs with, which
-/// git's default 1 GiB window would otherwise exhaust on a large pack.
+/// git's default 1 GiB window would otherwise exhaust on a large pack. For the same reason git
+/// runs no helper threads: each reserves a stack and a malloc arena, and with the limit in force
+/// a large index made `status` fail at random with "unable to create threaded lstat".
 const CONFIG: &str = if cfg!(target_os = "macos") {
-    "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tignorecase = true\n\tprecomposeunicode = true\n\tpackedGitWindowSize = 32m\n\tpackedGitLimit = 256m\n"
+    "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tignorecase = true\n\tprecomposeunicode = true\n\tpackedGitWindowSize = 32m\n\tpackedGitLimit = 256m\n\tpreloadindex = false\n[index]\n\tthreads = false\n"
 } else {
-    "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tpackedGitWindowSize = 32m\n\tpackedGitLimit = 256m\n"
+    "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tpackedGitWindowSize = 32m\n\tpackedGitLimit = 256m\n\tpreloadindex = false\n[index]\n\tthreads = false\n"
 };
 
 /// Why a shadow could not be built. Each is a finite state of the reply, with no repository data.
@@ -509,8 +511,8 @@ mod tests {
         assert!(config.starts_with("[core]\n"));
         assert_eq!(
             config.matches('[').count(),
-            1,
-            "one section, and nothing the agent wrote"
+            2,
+            "the core and index sections, and nothing the agent wrote"
         );
     }
 }
