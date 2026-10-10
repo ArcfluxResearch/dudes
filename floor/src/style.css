@@ -189,7 +189,7 @@ samp,
 /*
  * Under 1440 pixels, beside Hire an agent or Pause all, or with six status
  * chips, the bar tightens. Under 1440 pixels it also says the crew count only
- * to screen readers; Crew's heading shows it. Measured with Questions (1): one
+ * to screen readers; Crew's heading shows it. Measured with a waiting agent: one
  * line from 1248 pixels with Hire and five chips, from 1326 with both buttons
  * and five chips, and at 1440 with both buttons, six chips and the crew count.
  */
@@ -1356,7 +1356,7 @@ samp,
 }
 
 .agent-detail-question,
-.questions-entry {
+.waiting-item {
   margin: 0 0 0.8rem;
   padding: 0.7rem 0.85rem;
   border-radius: 3px;
@@ -1367,8 +1367,8 @@ samp,
 
 .agent-detail-question h3,
 .agent-detail-question p,
-.questions-entry h3,
-.questions-entry p {
+.waiting-item h4,
+.waiting-item p {
   margin: 0;
 }
 
@@ -1376,42 +1376,60 @@ samp,
   font-size: 0.95rem;
 }
 
-.questions-context {
-  display: grid;
-  gap: 8px;
-  margin: 0;
+.agent-detail-question p,
+.waiting-item p {
+  margin-top: 0.4rem;
 }
 
-.questions-context dt,
-.questions-history li span {
+.waiting-on-you {
+  margin: 0 0 1rem;
+}
+
+.waiting-on-you h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.waiting-on-you ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.waiting-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.6rem;
+}
+
+.waiting-head h4 {
+  font-size: 0.95rem;
+}
+
+.waiting-for {
   color: var(--muted-ink);
   font-size: 0.875rem;
 }
 
-.questions-context dd {
-  margin: 2px 0 0;
-  overflow-wrap: anywhere;
+.waiting-open {
+  margin-top: 0.5rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--accent-ink);
+  background: var(--button-background);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
 }
 
-.questions-history {
-  border-top: 1px solid var(--muted-ink);
-  margin-top: 16px;
-  padding-top: 12px;
+.waiting-open:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
 }
 
-.questions-history li {
-  margin-bottom: 12px;
-}
-
-.questions-history li p {
-  margin: 0 0 4px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.agent-detail-question p,
-.questions-entry p {
-  margin-top: 0.4rem;
+.waiting-open:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .crew-list h2 {
@@ -1796,7 +1814,6 @@ samp,
 
 .overview-summary,
 .agents-roster,
-.questions,
 .setup-view {
   height: 100%;
   overflow: auto;
@@ -1848,12 +1865,6 @@ samp,
   flex-wrap: wrap;
   gap: 0.5rem;
   align-items: center;
-}
-
-.questions ol {
-  margin: 0;
-  padding: 0;
-  list-style: none;
 }
 
 .stream-state {

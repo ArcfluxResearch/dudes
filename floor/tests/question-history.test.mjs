@@ -43,13 +43,13 @@ function delta(epoch, lsn, rows) {
 }
 function center() {
   return renderToStaticMarkup(createElement(Control, { floor: store.getFloorState(),
-    selectedId: null, onClose() {}, onView() {}, view: 'questions' }));
+    selectedId: null, onClose() {}, onView() {}, onOpenQuestion() {}, view: 'overview' }));
 }
 
 test('history reconstructs exact allowed fields and never retains or renders prohibited answer text', () => {
   snapshot([history()]);
   assert.deepEqual(store.getFloorState().questionHistory, [history()]);
-  assert.match(center(), /Which branch\?/);
+  assert.doesNotMatch(center(), /Which branch\?/, 'the Floor draws no answered-question history');
   store.resetFloorStore();
   snapshot([{ ...history('10'), answer: SECRET }]);
   assert.deepEqual(store.getFloorState().questionHistory, []);
@@ -107,39 +107,4 @@ test('every ended history epoch clears the window and old frames cannot restore 
     delta(epoch, 15, [history('15')]);
     assert.deepEqual(store.getFloorState().questionHistory, [], ending);
   }
-});
-
-test('Questions joins current goal and active card and groups answered history by current agent', () => {
-  const cards = [
-    { id: '01JBQ8XK2M3N4P5Q6R7S8T9VWY', title: 'Review schema', department: 'engineering',
-      status: 'review', status_by: { kind: 'system' }, seq: 1, claimed_by: ADA },
-    { id: '01JBQ8XK2M3N4P5Q6R7S8T9VWZ', title: 'Implement parser', department: 'engineering',
-      status: 'doing', status_by: { kind: 'system' }, seq: 1, claimed_by: ADA },
-  ];
-  snapshot([history('7', ADA, 'Earlier ask'), history('9', ADA, 'Latest ask'), history('10', GRACE, 'Tag?')],
-    [agent(), { ...agent(GRACE, 'Grace'), goal: null }], cards);
-  const html = center();
-  assert.match(html, /Current goal<\/dt><dd>Deliver the parser<\/dd>/);
-  assert.match(html, /Current active card<\/dt><dd>Implement parser<\/dd>/);
-  assert.match(html, /Current goal<\/dt><dd>No goal<\/dd>/);
-  assert.match(html, /Current active card<\/dt><dd>No active card<\/dd>/);
-  assert.match(html, /Recent answered questions/);
-  assert.match(html, /data-history-agent-id="01JBQ8XK2M3N4P5Q6R7S8T9VWX"/);
-  assert.ok(html.indexOf('Latest ask') < html.indexOf('Earlier ask'));
-  assert.match(html, /Answered/);
-  assert.match(html, /A bounded recent window\. Answer text is not shown\./);
-  assert.equal([...html.matchAll(/<textarea/g)].length, 0);
-});
-
-test('positioned attached and held questions retain current context without changing answer admission', () => {
-  const rows = [
-    { ...agent(), status: 'attached', mode: 'attached' },
-    { ...agent(GRACE, 'Grace'), automatic_hold: { kind: 'launch_refused', reason: 'Unavailable CLI' } },
-  ];
-  snapshot([], rows);
-  const html = center();
-  assert.equal([...html.matchAll(/class="questions-entry"/g)].length, 2);
-  assert.equal([...html.matchAll(/Current goal<\/dt><dd>Deliver the parser<\/dd>/g)].length, 2);
-  assert.equal([...html.matchAll(/Current active card<\/dt><dd>No active card<\/dd>/g)].length, 2);
-  assert.equal([...html.matchAll(/<textarea/g)].length, 0);
 });

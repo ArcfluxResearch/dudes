@@ -27,6 +27,7 @@ import { TerminalPanel } from './renderer/terminal/TerminalPanel';
 import { JournalStoppedBanner } from './renderer/JournalStoppedBanner';
 import { ClosingTimeBanner } from './renderer/ClosingTimeBanner';
 import { requestCardSelection } from './renderer/BoardPanel';
+import { noteWaiting } from './renderer/questions';
 import { StreamNotice } from './renderer/StreamNotice';
 import './failure.css';
 import {
@@ -135,6 +136,10 @@ export function WebFloorShell() {
       setArchiveHireKept(false);
     }
   }, [reveal, hire.outcome?.kind]);
+
+  useEffect(() => {
+    noteWaiting(floor.agents, Date.now());
+  }, [floor.agents]);
 
   useEffect(() => {
     writeViewPreferences(preferences);
@@ -350,7 +355,7 @@ export function WebFloorShell() {
           onOpenCard={openCard}
           addAgent={<HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded />} /> : null}
         {view === null || focused ? null : <Control key={view} floor={floor} view={view} selectedId={currentSelectedId}
-          onClose={() => setView(null)} onView={openView} onHireAgain={hireAgain}
+          onClose={() => setView(null)} onView={openView} onOpenQuestion={openQuestion} onHireAgain={hireAgain}
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
         <div className="office-slot">
           <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}

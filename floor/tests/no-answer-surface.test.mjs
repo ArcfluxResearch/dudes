@@ -1038,7 +1038,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     'src/renderer/AgentDetail.tsx',
     ...Array(2).fill('src/renderer/CrewList.tsx'),
     ...Array(3).fill(ARCHIVED_AGENTS),
-    ...Array(4).fill('src/renderer/Control.tsx'),
+    ...Array(5).fill('src/renderer/Control.tsx'),
     'src/renderer/DoneNotices.tsx',
     'src/renderer/LiveWork.tsx',
     'src/renderer/LiveWork.tsx',
@@ -1117,7 +1117,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   ]);
   assert.match(center, /className="agents-roster-row"/);
   assert.match(center, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);
-  assert.deepEqual(clicksIn(center), ['() => onSelectAgent(row.id)', 'onToggle', '() => onToggle(entry.view)', 'onClose']);
+  assert.deepEqual(clicksIn(center), ['() => onSelectAgent(row.id)', 'onToggle', '() => onOpen(item.agentId)', '() => onToggle(entry.view)', 'onClose']);
   // Opening Setup or Settings takes a fresh snapshot: the same resubscription Recheck starts.
   assert.match(center, /\{ view: 'setup', label: 'Setup', refresh: true \}/);
   assert.match(center, /\{ view: 'settings', label: 'Settings', refresh: true \}/);
@@ -2470,9 +2470,8 @@ test('the answer form renders when the snapshot carries the answer sibling', () 
   // Where the live case looks for it: in the selected agent's own panel, under its question.
   assert.match(html,
     /id="selected-agent-detail"[\s\S]*<aside class="agent-detail"[\s\S]*<section class="agent-detail-question"[\s\S]*<textarea/);
-  const entry = `<li class="questions-entry" data-question-agent-id="${ADA}">`;
-  assert.match(center(floorWith(waiting(), SIBLING), 'questions'),
-    new RegExp(`${entry}(?:(?!</li>)[\\s\\S])*<textarea[^>]*name="answer"`));
+  assert.doesNotMatch(center(floorWith(waiting(), SIBLING), 'overview').split('<div class="receipts">')[0], /<textarea|name="answer"/,
+    'Overview lists the question but answers only through the agent\'s own panel');
 });
 
 test('the answer gate stays closed without the sibling, an open question, a canonical lsn, or an unattached agent', () => {
@@ -2518,9 +2517,9 @@ test('with the same Waiting row but no answer sibling, no answer form renders', 
   assert.match(html, /<section class="agent-detail-question"/);
   assert.ok(html.includes(QUESTION), 'the Waiting question is not displayed, so this proves nothing');
   assert.doesNotMatch(html, /<textarea|name="answer"|Send answer|data-answer-/);
-  const asking = center(floorWith(waiting(), undefined), 'questions');
-  assert.match(asking, new RegExp(`<li class="questions-entry" data-question-agent-id="${ADA}">`));
-  assert.ok(asking.includes(QUESTION), 'Questions does not list the Waiting question, so this proves nothing');
+  const asking = center(floorWith(waiting(), undefined), 'overview');
+  assert.match(asking, new RegExp(`<li class="waiting-item" data-waiting-kind="question" data-waiting-agent-id="${ADA}">`));
+  assert.ok(asking.includes(QUESTION), 'Overview does not list the Waiting question, so this proves nothing');
   assert.doesNotMatch(asking, /<textarea|name="answer"|Send answer|data-answer-/);
   // Nor for an agent a person is attached to, even with answering on.
   assert.doesNotMatch(center(floorWith(waiting({ mode: 'attached', status: 'attached' }), SIBLING)),
