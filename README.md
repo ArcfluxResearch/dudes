@@ -126,8 +126,10 @@ to change. The [full text](docs/what-agents-can-do.md) has the details.
 - [Build Dudes from source](docs/building-from-source.md)
 - [Platforms and known limits](docs/platforms-and-limits.md)
 
-## Contributing and security
+## Help, contributing and security
 
+Ask questions and suggest ideas in [Discussions](https://github.com/ArcfluxResearch/dudes/discussions);
+[SUPPORT.md](SUPPORT.md) says where each kind of request goes.
 [CONTRIBUTING.md](CONTRIBUTING.md) lists the checks to run before you push, and
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) sets the ground rules. Report security problems as
 [SECURITY.md](SECURITY.md) describes, not in a public issue.

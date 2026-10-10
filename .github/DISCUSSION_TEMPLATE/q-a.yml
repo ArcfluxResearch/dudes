@@ -1,0 +1,58 @@
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask anything about installing, setting up or running Dudes. When an answer solves it, mark it
+        as the answer so the next person finds it. A crash or wrong behaviour you can reproduce is a
+        bug: open an issue instead. A security problem goes to the private report described in
+        SECURITY.md, never here.
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: The outcome you want, in a sentence or two.
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened instead?
+      description: The command you ran and what it printed. Remove tokens, keys and private paths.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `dudes --version`.
+      placeholder: dudes 0.84.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple silicon)
+        - macOS (Intel)
+        - Linux (x86_64)
+        - Linux (arm64)
+        - Windows (built from source)
+    validations:
+      required: true
+  - type: checkboxes
+    id: engines
+    attributes:
+      label: Engines you use
+      options:
+        - label: Claude Code
+        - label: Codex
+        - label: Pi
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `dudes doctor`
+      description: Optional, but it often answers the question.
+      render: text

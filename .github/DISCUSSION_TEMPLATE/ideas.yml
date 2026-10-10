@@ -1,0 +1,36 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas start here so others can weigh in. An idea that gathers support and a clear shape
+        becomes an issue. Start with the problem: a good problem statement is worth more than a
+        finished design.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What were you trying to do with your agents, and what got in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: The change you have in mind, and how you would know it works.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today
+      description: Your current workaround, if you have one.
+  - type: dropdown
+    id: help
+    attributes:
+      label: Would you help build it?
+      options:
+        - "No"
+        - Yes, with a pull request
+        - Yes, by testing it
+    validations:
+      required: true
