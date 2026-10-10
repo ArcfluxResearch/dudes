@@ -136,6 +136,7 @@ pub fn run(
         Command::Quickstart(plan) => {
             quickstart(invocation.json, plan.as_deref(), terminal, env, out, err)
         }
+        Command::Start => start_command(invocation.json, env, out, err),
         Command::Login(provider) => login(*provider, terminal.is_some(), env, out),
         Command::Mail(command) => crate::mail::run(command, env, out)
             .map(|()| exit::SUCCESS)
@@ -1107,7 +1108,7 @@ fn login(
 ) -> Result<u8, Failure> {
     let doctor = operator_call(env, Method::SystemDoctor, None)
         .map_err(|failure| match failure {
-            Failure::Unreachable(_) => failure.noted("start it with dudes quickstart"),
+            Failure::Unreachable(_) => failure.noted("start it with dudes start"),
             other => other,
         })
         .and_then(typed::<DoctorResult>)?;
@@ -1256,6 +1257,34 @@ fn write_and_start(
     })
 }
 
+/// `dudes start`: the start `quickstart` makes without a plan or a terminal, and the ping it
+/// prints. A running daemon is left alone, and one of another version is named so the operator
+/// chooses when to restart it.
+fn start_command(
+    machine: bool,
+    env: &Environment,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<u8, Failure> {
+    let running = ping_once(env).is_ok();
+    let answer = start(env, err)?;
+    if running && !machine {
+        writeln!(out, "The daemon is already running.").map_err(local)?;
+    }
+    render::ping(out, machine, &answer).map_err(local)?;
+    if !machine && answer.version != env!("CARGO_PKG_VERSION") {
+        writeln!(
+            out,
+            "The running daemon is {} and this dudes is {}. Run dudes stop, then dudes start, to \
+             use the new version.",
+            render::Escaped(&answer.version),
+            env!("CARGO_PKG_VERSION")
+        )
+        .map_err(local)?;
+    }
+    Ok(exit::SUCCESS)
+}
+
 /// Start the daemon when none answers, and return its ping.
 fn start(env: &Environment, err: &mut dyn Write) -> Result<PingResult, Failure> {
     crate::quickstart::run(env, || ping_once(env).ok(), err).map_err(local)
@@ -1371,7 +1400,7 @@ enum ReloadCheck {
     Known(EnrollmentReloadResult),
 }
 
-const RESTART_COMMANDS: &str = "`dudes stop`, then `dudes quickstart`";
+const RESTART_COMMANDS: &str = "`dudes stop`, then `dudes start`";
 
 enum ReloadMismatch {
     Version { running: String },
@@ -1728,6 +1757,7 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         // Dispatched above. Reported rather than `unreachable!`, because a panic is a worse
         // diagnosis than a message and this binary has no state worth aborting to protect.
         Command::Quickstart(_)
+        | Command::Start
         | Command::Login(_)
         | Command::PauseAll
         | Command::GoalReplace(_)

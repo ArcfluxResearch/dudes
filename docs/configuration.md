@@ -26,7 +26,7 @@ dudes config set providers.codex on floor.hire on
 
 `unset` removes a key, so the daemon's default applies. An edit that breaks the file's own start
 rules is refused and names the key it needs. With a daemon running, an edit names the settings it
-runs differently, which a restart applies: `dudes stop`, then `dudes quickstart`.
+runs differently, which a restart applies: `dudes stop`, then `dudes start`.
 
 - `providers.codex` and `providers.pi`, on or off, turn on those engines. Claude Code is always on.
 - `providers.codex.streaming` opts in to Codex streaming with a separate sign-in home. It defaults

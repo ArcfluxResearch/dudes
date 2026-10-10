@@ -64,8 +64,8 @@ dudes goal --agent <agent id> --text "Create hello.txt that contains the word he
 ```
 
 The agent takes turns until `/bin/test -f hello.txt` passes. `dudes agents` lists every agent and
-its status, and `dudes stop` stops the daemon. [Get started](docs/getting-started.md) is the full
-walk-through.
+its status, `dudes stop` stops the daemon and `dudes start` starts it again.
+[Get started](docs/getting-started.md) is the full walk-through.
 
 ## How it works
 

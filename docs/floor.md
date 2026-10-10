@@ -78,9 +78,9 @@ unsigned ASCII decimal that fits `u16`; `0` asks the operating system for a free
 port stops startup. Without it, the daemon first asks for the port its last run bound, which it
 keeps in a `floor-port` file in the state directory, and takes a free port when that one is taken.
 The Floor's address then stays the same across restarts, so the roster order a
-browser keeps for it survives `dudes stop` and `dudes quickstart`. The startup line and
-`dudes floor open` both show the port chosen. `dudes quickstart` passes neither
-variable to the daemon. Dudes always binds `127.0.0.1`; neither variable can change the host.
+browser keeps for it survives `dudes stop` and `dudes start`. The startup line and
+`dudes floor open` both show the port chosen. `dudes quickstart` and `dudes start` pass
+neither variable to the daemon. Dudes always binds `127.0.0.1`; neither variable can change the host.
 
 The release manifest proves that the directory is internally complete and version-matched. It does
 not prove where those files came from or grant them access to daemon data. A bundle that fails the
