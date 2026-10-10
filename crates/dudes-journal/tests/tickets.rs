@@ -230,6 +230,84 @@ fn a_ticket_given_again_is_rework() {
     }
 }
 
+/// A ticket that is already queued as rework keeps its class and its sent-back message when it is
+/// moved to the same agent or another, and a new message replaces the old one.
+#[test]
+fn moving_a_queued_rework_ticket_keeps_its_class_and_message() {
+    let other = AgentId::from_parts(1, 2);
+    let mut records = vec![
+        hire("service"),
+        created(card()),
+        assigned(card(), 0, None),
+        started(card(), GoalId::from_parts(8, 1), 1),
+        transition(card(), CardStatus::Doing, CardStatus::Review, 2),
+        assigned(card(), 3, Some("Cover the edge.")),
+    ];
+    let queue = |records: &[Record]| {
+        let projections = project(records.iter().cloned());
+        let (view, ticket) = projections.ticket(card()).unwrap().unwrap();
+        (view.claimed_by, ticket.queue.unwrap(), ticket.message)
+    };
+    let (_, first, message) = queue(&records);
+    assert_eq!(first.class, QueueClass::Rework);
+    assert_eq!(message.as_deref(), Some("Cover the edge."));
+
+    records.push(assigned(card(), 4, None));
+    let (_, again, message) = queue(&records);
+    assert_eq!(again.class, QueueClass::Rework, "still ahead of new work");
+    assert!(again.lsn > first.lsn, "but moved to the back of the rework");
+    assert_eq!(
+        message.as_deref(),
+        Some("Cover the edge."),
+        "no message keeps it"
+    );
+
+    records.push(Record::TicketAssigned {
+        card: card(),
+        agent: other,
+        by: operator(),
+        message: Some("Cover the edge and the end.".into()),
+        expected_seq: Seq(5),
+    });
+    let (holder, moved, message) = queue(&records);
+    assert_eq!(holder, Some(other));
+    assert_eq!(moved.class, QueueClass::Rework);
+    assert_eq!(message.as_deref(), Some("Cover the edge and the end."));
+}
+
+/// A ticket record that names a plain card changes nothing on it.
+#[test]
+fn ticket_records_leave_a_plain_card_alone() {
+    let plain = CardId::from_parts(4, 2);
+    let base = [hire("service"), samples_card(plain)];
+    let untouched = project(base.iter().cloned()).card(plain).unwrap().unwrap();
+    for record in [
+        Record::TicketEdited {
+            card: plain,
+            title: "Hijacked".into(),
+            description: String::new(),
+            done_when: check(),
+            by: operator(),
+            expected_seq: Seq::ZERO,
+        },
+        assigned(plain, 0, Some("hi")),
+        started(plain, GoalId::from_parts(8, 1), 0),
+        Record::TicketRemoved {
+            card: plain,
+            by: operator(),
+            expected_seq: Seq::ZERO,
+        },
+    ] {
+        let kind = record.kind();
+        let projections = project(base.iter().cloned().chain([record]));
+        assert_eq!(
+            projections.card(plain).unwrap().as_ref(),
+            Some(&untouched),
+            "{kind:?}"
+        );
+    }
+}
+
 #[test]
 fn a_start_moves_the_card_to_doing_and_links_its_goal() {
     let goal_id = GoalId::from_parts(8, 1);
