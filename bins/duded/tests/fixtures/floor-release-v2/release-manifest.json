@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "base_path": "/floor/",
-  "daemon_version": "0.82.0",
+  "daemon_version": "0.83.0",
   "browser_wire_version": 2,
   "asset_tree_sha256": "5515e2eaada61bc2100ca50f15d1414729b73f33adce2452937cb7f419807eeb",
   "files": [
