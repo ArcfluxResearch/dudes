@@ -69,24 +69,35 @@ lower value is refused by `dudes-host`'s build script; `12.0` and higher are acc
 
 ## Cut a release
 
-1. Bump `version` in `[workspace.package]` in `Cargo.toml`, update `Cargo.lock` and the Floor
-   release-manifest fixtures, and merge that change to `main`.
-2. Tag the merge commit `v<version>` and push the tag:
+1. Run `cargo xtask release-notes --draft --from <previous tag>`. It prints a draft changelog
+   section from the pull requests merged since that tag.
+2. Add the version's section to `CHANGELOG.md` as `## [<version>] - <date>`, with the compare and
+   tag links at the bottom as Keep a Changelog does. Edit the draft, and write the Highlights
+   by hand: two to four bullets that lead with what changes for the user.
+3. Bump `version` in `[workspace.package]` in `Cargo.toml`, update `Cargo.lock` and the Floor
+   release-manifest fixtures. The bump happens only in this release change, never in other pull
+   requests.
+4. Merge that release pull request to `main`.
+5. Tag the merge commit `v<version>` and push the tag:
 
    ```sh
    git tag v<version>
    git push origin v<version>
    ```
 
-3. The [Release workflow](.github/workflows/release.yml) builds the Floor once, then builds and
-   smoke-tests an archive for each of the six targets `install.sh` supports. It fails if the tag
-   is not `v` plus the workspace version. It then writes one `SHA256SUMS` and creates the GitHub
-   Release with every archive. Linux hosts install the static musl archive, and the glibc archives
-   are published for people who unpack them by hand. A tag with a hyphen, such as `v1.0.0-rc.1`, is marked a
-   pre-release, which `install.sh` does not pick as the latest release.
+The [Release workflow](.github/workflows/release.yml) then builds the Floor once, and builds and
+smoke-tests an archive for each of the six targets `install.sh` supports. It fails if the tag is
+not `v` plus the workspace version, and it fails early if `CHANGELOG.md` has no section for that
+version, so a release never goes out without notes. It then writes one `SHA256SUMS`, builds the
+release body from the changelog section and the pull requests since the previous tag, attests the
+archives and `SHA256SUMS`, and creates the GitHub Release. Linux hosts install the static musl
+archive, and the glibc archives are published for people who unpack them by hand. A tag with a
+hyphen, such as `v1.0.0-rc.1`, is marked a pre-release, which `install.sh` does not pick as the
+latest release.
 
 Run the workflow by hand (Actions, Release, Run workflow) to build and smoke-test the archives
-without publishing.
+and preview the release notes without publishing. The body is uploaded as the `release-notes`
+artifact, and it falls back to the Unreleased changelog section when the version has none yet.
 
 ## Layout and rules
 
