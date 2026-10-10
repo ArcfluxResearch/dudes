@@ -130,8 +130,6 @@ pre,
 kbd,
 samp,
 .data,
-.live-work-agent,
-.live-work-turn,
 .live-work-text,
 .memory-text {
   font-family: var(--font-data);
@@ -1762,25 +1760,21 @@ samp,
   color: var(--ink);
 }
 
-.live-work-head, .live-work-actions {
+.live-work-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.5rem;
 }
 
-.live-work-head h3 { margin: 0; }
-.live-work-head .agent-detail-kicker { margin: 0; }
+.full-output { margin-top: 0.5rem; }
+.full-output .live-work { margin-top: 0.4rem; }
+.live-work > p { margin: 0 0 0.3rem; }
 .live-work-actions button, .selection-bar button {
   border: 1px solid var(--accent-ink);
   background: var(--button-background);
   color: inherit;
   font: inherit;
   cursor: pointer;
-}
-.live-work-agent, .live-work-turn {
-  margin: 0.2rem 0;
-  overflow-wrap: anywhere;
 }
 .live-work-text {
   max-height: 20rem;
@@ -2043,6 +2037,7 @@ samp,
 .retire-actions button,
 .goal-actions button,
 .agent-detail-terminal button,
+.full-output-toggle,
 .terminal-actions button,
 .done-notice button {
   padding: 0.3rem 0.7rem;
@@ -2146,6 +2141,7 @@ samp,
 .retire-actions button:focus-visible,
 .goal-actions button:focus-visible,
 .agent-detail-terminal button:focus-visible,
+.full-output-toggle:focus-visible,
 .terminal-actions button:focus-visible,
 .done-notice button:focus-visible,
 .agent-detail-answer textarea:focus-visible,

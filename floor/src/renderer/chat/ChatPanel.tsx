@@ -14,7 +14,7 @@ import type { ChatReason, ChatTurn, PendingNote } from './model.ts';
 import { conversationEntries } from './thread.ts';
 import type { ChatEntry } from './thread.ts';
 import { ChatText } from './ChatText.tsx';
-import { LiveWork } from '../LiveWork.tsx';
+import { FullOutput } from '../LiveWork.tsx';
 
 export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
   agent_absent: 'The agent is no longer on the floor.',
@@ -194,11 +194,8 @@ function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
             <details className="chat-reply-details"><summary>Reply details</summary>
               <p>Live output is provisional. It is not a final reply.</p></details>
           </div> : null}
-          {entry === latestTurn ? <div className="chat-full-output-block">
-            <button type="button" className="chat-full-output" aria-expanded={fullOutput}
-              onClick={() => onFullOutput(!fullOutput)}>{fullOutput ? 'Hide full output' : 'Show full output'}</button>
-            {fullOutput ? <LiveWork floor={floor} row={row} /> : null}
-          </div> : null}
+          {entry === latestTurn
+            ? <FullOutput floor={floor} row={row} id="chat-full-output" open={fullOutput} onToggle={onFullOutput} /> : null}
         </li>;
       })}</ol>}
       {attempt === null ? null : <section className="chat-receipt" aria-label="Chat request" aria-live="polite"

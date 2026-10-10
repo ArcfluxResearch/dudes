@@ -80,20 +80,19 @@ test('Overview and the drawer report only published stream and selected-agent fa
   });
 });
 
-test('focus shows a switchable roster beside selected details and the stream status, and can collapse the roster', async () => {
+test('focus shows a switchable roster beside selected details and live output, and can collapse the roster', async () => {
   await withViews(({ focus }) => {
     const output = { ...live.output, targetId: ADA, agentId: ADA, status: 'live', chunks: ['A live line'] };
     const focused = focus({ ...live, output }, ada, ADA);
     assert.match(focused, /aria-label="Focus roster"/);
     assert.match(focused, new RegExp(`data-agent-id="${GRACE}"`));
     assert.match(focused, /data-selected-agent-id=/);
-    assert.match(focused, /Turn in progress/);
-    assert.doesNotMatch(focused, /A live line/, 'raw output is not drawn outside Chat');
+    assert.match(focused, /A live line/);
     assert.match(focused, /aria-expanded="true"[^>]*>Hide roster<\/button>/);
     const collapsed = focus({ ...live, output }, ada, ADA, true);
     assert.match(collapsed, /aria-expanded="false"[^>]*>Show roster<\/button>/);
     assert.doesNotMatch(collapsed, /data-agent-id=/);
-    assert.match(collapsed, /Turn in progress/);
+    assert.match(collapsed, /A live line/);
   });
 });
 
@@ -167,23 +166,24 @@ test('the header keeps enabled controls beside the tabbed agent facts', async ()
   });
 });
 
-test('a turn without assistant text hides Output while the header retains its status', async () => {
+test('a turn without assistant text offers no output toggle while the header retains its status', async () => {
   await withViews(({ drawer: center }) => {
     const output = { ...live.output, targetId: GRACE, status: 'live', chunks: [] };
     assert.match(center({ ...live, output }, grace, GRACE), /data-status="running"/);
-    assert.doesNotMatch(center({ ...live, output }, grace, GRACE), /role="tab"[^>]*>Output<\/button>/);
-    assert.doesNotMatch(center({ ...live, output: { ...output, status: 'ended' } }, grace, GRACE),
-      /role="tab"[^>]*>Output<\/button>/);
-    assert.doesNotMatch(center({ ...live, stale: true, output }, grace, GRACE), /role="tab"[^>]*>Output<\/button>/);
+    assert.doesNotMatch(center({ ...live, output }, grace, GRACE), /Show full output/);
+    assert.doesNotMatch(center({ ...live, output: { ...output, status: 'ended' } }, grace, GRACE), /Show full output/);
+    assert.doesNotMatch(center({ ...live, stale: true, output }, grace, GRACE), /Show full output/);
+    assert.match(center({ ...live, output: { ...output, status: 'gap' } }, grace, GRACE), /Show full output/,
+      'an incomplete stream still has its output to open');
   });
 });
 
 
-test('a waiting question is drawn and the last turn output is not', async () => {
+test('a waiting question keeps priority over the last turn output', async () => {
   await withViews(({ drawer: center }) => {
     const floor = { ...live, output: { ...live.output, targetId: ADA, status: 'ended', chunks: ['Question pending'] } };
     const html = center(floor, ada, ADA);
     assert.match(html, /aria-label="Waiting question"/);
-    assert.doesNotMatch(html, /Question pending|aria-label="Live work"/);
+    assert.ok(html.indexOf('aria-label="Waiting question"') < html.indexOf('aria-label="Live work"'));
   });
 });

@@ -435,21 +435,61 @@ test('after a chat message the drawer tabs are Overview, Chat, Git and Memory an
     row, selectedId: A, onClose() {}, leaveFocusTo: 'crew-toggle' }));
   assert.deepEqual(tabNames(html), ['Overview', 'Chat', 'Git', 'Memory']);
   assert.doesNotMatch(html, /agent-detail-tab-output|agent-detail-panel-output/);
-  assert.doesNotMatch(html, /Raw engine text/, 'the raw output stays collapsed until asked for');
+  assert.match(html, /<div id="chat-full-output" hidden="">[\s\S]*Raw engine text/, 'the raw output stays collapsed until asked for');
 });
 
 test('the latest turn offers Show full output, collapsed by default, and opening it shows the live output', () => {
   const chat = { ...view(), turns: [turn({ state: 'running', reply: null })] };
   const closed = render(chat, { output: liveReply('Provisional assistant text') });
-  assert.match(closed, /<button[^>]*class="chat-full-output"[^>]*aria-expanded="false"[^>]*>Show full output<\/button>/);
-  assert.doesNotMatch(closed, /Live work/);
+  assert.match(closed, /<button[^>]*class="full-output-toggle"[^>]*aria-expanded="false"[^>]*aria-controls="chat-full-output"[^>]*>Show full output<\/button><div id="chat-full-output" hidden="">/);
   const output = { ...store.getFloorState().output, view: 'output', targetId: A, status: 'live', chunks: ['Raw engine text'] };
   const open = renderToStaticMarkup(createElement(ChatPanelView, { floor: floor(chat, { output }), row, action, fullOutput: true }));
-  assert.match(open, /<button[^>]*class="chat-full-output"[^>]*aria-expanded="true"[^>]*>Hide full output<\/button>/);
-  assert.match(open, /aria-label="Live work"/);
-  assert.match(open, /Raw engine text/);
-  assert.equal((render({ ...view(), turns: [turn({ turn_id: B, note_lsn: '6' }), turn()] }).match(/class="chat-full-output"/g) ?? []).length, 1,
+  assert.match(open, /<button[^>]*class="full-output-toggle"[^>]*aria-expanded="true"[^>]*>Hide full output<\/button><div id="chat-full-output"><section[^>]*aria-label="Live work"/);
+  assert.match(open, /<pre class="live-work-text">Raw engine text<\/pre>/);
+  assert.doesNotMatch(open, /Read-only|Live work<|TurnId|<h3>Live work/i, 'no jargon inside the toggle');
+  assert.equal((render({ ...view(), turns: [turn({ turn_id: B, note_lsn: '6' }), turn()] }).match(/class="full-output-toggle"/g) ?? []).length, 1,
     'only the latest turn carries the toggle');
-  assert.doesNotMatch(render(chat, {}, { ...row, mode: 'attached' }), /chat-full-output/);
-  assert.doesNotMatch(render(view()), /chat-full-output/);
+  assert.doesNotMatch(render(chat, {}, { ...row, mode: 'attached' }), /full-output/);
+  assert.doesNotMatch(render(view()), /full-output/);
+});
+
+test('opening Show full output switches the stream to output, closing restores the reply stream, and a new agent starts closed', async () => {
+  const { fakePage, press } = await import('./helpers/fake-page.mjs');
+  const { createRoot } = await import('react-dom/client');
+  const { act } = await import('react');
+  const rowB = { ...row, id: B, name: 'Grace' };
+  const chat = { ...view(), turns: [turn({ state: 'running', reply: null }),
+    turn({ agent_id: B, turn_id: '01ARZ3NDEKTSV4RRFFQ69G5FB0', note_lsn: '8', state: 'running', reply: null })] };
+  const page = fakePage();
+  try {
+    const root = createRoot(page.host);
+    const show = (agent) => {
+      const output = { ...store.getFloorState().output, status: 'live', chunks: ['Raw engine text'] };
+      return act(() => root.render(createElement(AgentDrawer, { floor: floor(chat, { agents: [row, rowB], output }),
+        row: agent, selectedId: agent.id, onClose() {}, leaveFocusTo: 'crew-toggle' })));
+    };
+    store.selectOutputAgent(A, false, 'reply');
+    await show(row);
+    const toggle = () => page.host.querySelector('[aria-controls="chat-full-output"]');
+    assert.equal(store.getFloorState().output.view, 'reply');
+    assert.equal(toggle().getAttribute('aria-expanded'), 'false');
+    await act(async () => press(toggle()));
+    await show(row);
+    assert.equal(toggle().getAttribute('aria-expanded'), 'true');
+    assert.equal(store.getFloorState().output.view, 'output', 'opening asks for the output stream');
+    await act(async () => press(toggle()));
+    await show(row);
+    assert.equal(toggle().getAttribute('aria-expanded'), 'false');
+    assert.equal(store.getFloorState().output.view, 'reply', 'closing returns to the reply stream');
+    await act(async () => press(toggle()));
+    await show(row);
+    store.selectOutputAgent(B, false, 'output');
+    await show(rowB);
+    assert.equal(toggle().getAttribute('aria-expanded'), 'false', 'a newly selected agent starts closed');
+    assert.equal(store.getFloorState().output.view, 'reply');
+    await act(() => root.unmount());
+  } finally {
+    store.selectOutputAgent(null);
+    page.restore();
+  }
 });

@@ -58,8 +58,6 @@ test('only available detail tabs appear, including Terminal only when switched o
   assert.doesNotMatch(all, /role="tab"[^>]*>Messages/);
   const terminalOff = render({ git });
   assert.deepEqual(tabs(terminalOff), ['Overview', 'Git']);
-  assert.doesNotMatch(render({ output: createElement('p', null, 'Observed output'), git }), /Output/,
-    'there is no Output tab to fill');
   assert.doesNotMatch(all, /Traces/);
 });
 
@@ -142,7 +140,7 @@ test('a vertical wheel scrolls overflowing detail tabs and leaves browser zoom a
     const { createRoot } = await import('react-dom/client');
     const root = createRoot(page.host);
     const panel = createElement('p', null, 'panel');
-    await act(() => root.render(createElement(AgentDetail, { row, output: panel, terminalDetails: panel })));
+    await act(() => root.render(createElement(AgentDetail, { row, git: panel, messages: panel })));
     const strip = page.host.querySelector('[role="tablist"]');
     strip.scrollWidth = 480;
     const wheel = (patch = {}) => {
@@ -233,10 +231,12 @@ test('the drawer never offers an Output tab and follows the terminal capability 
   const floor = { output };
   const center = patch => drawn(patch);
   assert.deepEqual(tabs(center({})).filter(tab => ['Overview', 'Output', 'Terminal'].includes(tab)), ['Overview']);
+  assert.doesNotMatch(center({}), /Show full output/, 'an agent with no output has nothing to open');
   const enabled = center({ terminal: true, output: { ...floor.output, status: 'live', chunks: ['Actual assistant output'] } });
   assert.match(enabled, /role="tab"[^>]*>Terminal<\/button>/);
   assert.deepEqual(tabs(enabled).filter(tab => tab === 'Output'), []);
-  assert.doesNotMatch(enabled, /Actual assistant output/, 'raw output is drawn only under Chat\'s Show full output');
+  assert.match(enabled, /<button[^>]*aria-expanded="false"[^>]*aria-controls="overview-full-output"[^>]*>Show full output<\/button><div id="overview-full-output" hidden="">[\s\S]*Actual assistant output/,
+    'the output sits behind a collapsed toggle in Overview');
   for (const patch of [{ terminal: true, stale: true }, { terminal: true, phase: 'resyncing' },
     { terminal: true, epoch: 2, snapshotEpoch: 1 }, { terminal: true, agents: [] }]) {
     assert.doesNotMatch(center(patch), /role="tab"[^>]*>Terminal<\/button>/);
