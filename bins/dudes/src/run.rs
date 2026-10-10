@@ -940,7 +940,7 @@ fn local(error: impl std::fmt::Display) -> Failure {
 /// `dudes quickstart`. Without a plan and without a terminal to ask one, it starts the daemon and
 /// prints the ping, as it always has. Otherwise it settles the plan, writes the operator file once,
 /// starts the daemon ([`write_and_start`]), reports the engines, and makes the hire. Only the
-/// guided run, with no options, opens the Floor and asks about a login; a run with options asks
+/// guided run, with no options, prints the Floor link and asks about a login; a run with options asks
 /// nothing and prints the commands instead.
 fn quickstart(
     machine: bool,

@@ -56,7 +56,8 @@ Dudes reads no engine's credentials or files.
    [Configuration](configuration.md#the-operator-file).
 
 3. Paste the link into a browser and use the Floor. The link works once, in one browser;
-   `dudes floor open` prints a new one. [The Floor](floor.md) explains how it signs in, what each tab shows and what an agent's position
+   `dudes floor open` prints a new one. On a remote machine, forward the link's port over SSH first, because
+   the link is a loopback address. [The Floor](floor.md) explains how it signs in, what each tab shows and what an agent's position
    in the office means.
 
 4. Hire more agents. On the Floor, click **Hire an agent**, choose the workspace and an engine it

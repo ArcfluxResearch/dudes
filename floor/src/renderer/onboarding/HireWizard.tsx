@@ -462,7 +462,7 @@ function RecordedCheck({ outcome, agent, hire, floor }: {
     ? ' Check status asks again with the same attempt, which never hires twice and sets only the goal this Hire '
       + 'recorded.'
     : floor.phase === 'closed'
-      ? ' Paste a new link from dudes floor open --no-browser into this tab’s address bar: this page keeps the Hire, '
+      ? ' Paste a new link from dudes floor open into this tab’s address bar: this page keeps the Hire, '
         + 'and Check status then sets only the goal this Hire recorded.'
       : '';
   return (
@@ -535,7 +535,7 @@ function AnswerBody({ outcome, hire, floor }: {
           </dl>
           <p className="hire-note">
             {outcome.reason === 'session_expired' || outcome.reason === 'session_revoked'
-              ? 'Paste a new link from dudes floor open --no-browser into this tab’s address bar: this page keeps the '
+              ? 'Paste a new link from dudes floor open into this tab’s address bar: this page keeps the '
                 + 'Hire, and Check status then sets only the goal this Hire recorded.'
               : 'The Floor sets no other goal for it; an operator can give it one locally.'}
           </p>
@@ -574,7 +574,7 @@ function AnswerBody({ outcome, hire, floor }: {
               ? 'The daemon refused this check before any effect. Checking whether this Floor session is still live…'
               : `${session === 'ended' ? 'Your Floor session has ended or was revoked. ' : ''}The daemon refused `
                 + 'this check before any effect, but an earlier request for this Hire has no known result, so an '
-                + 'agent may already have been hired. Paste a new link from dudes floor open --no-browser into '
+                + 'agent may already have been hired. Paste a new link from dudes floor open into '
                 + 'this tab’s address bar: this page keeps the Hire, and Check status asks again with the same '
                 + 'attempt, which never hires twice.'}
           </p>
@@ -588,7 +588,7 @@ function AnswerBody({ outcome, hire, floor }: {
             ? 'The daemon refused this Hire before any effect. Checking whether this Floor session is still live…'
             : session === 'ended'
               ? 'Your Floor session has ended or was revoked. No agent was hired. Paste a new link from dudes floor '
-                + 'open --no-browser into this tab’s address bar: this page keeps the Hire, and Check status asks '
+                + 'open into this tab’s address bar: this page keeps the Hire, and Check status asks '
                 + 'again with the same attempt.'
               : floor.onboarding === null
                 ? 'Hiring is no longer available to this session. The daemon refused before any effect: the '

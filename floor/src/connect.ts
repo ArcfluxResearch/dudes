@@ -58,10 +58,11 @@ export function subscribeToPastedLink(listener: () => void): () => void {
 }
 
 /**
- * Why the page opened with no session: the daemon refused its link, or it had
- * no link to exchange and no session to recover. `null` once a session is held.
+ * Why the page opened with no session: the daemon refused its link, the link in
+ * its address was not one, or it had none and recovery found no session.
+ * `null` once a session is held.
  */
-export type FirstLinkProblem = 'refused' | 'missing';
+export type FirstLinkProblem = 'refused' | 'missing' | 'expired';
 let firstProblem: FirstLinkProblem | null = null;
 
 export function firstLinkProblem(): FirstLinkProblem | null {
@@ -78,9 +79,14 @@ export function noteFirstLinkRefused(): void {
   noteFirstLinkProblem('refused');
 }
 
-/** Say that the page was opened with no link the daemon could take, and no session to recover. */
+/** Say that the page was opened with an address that held no usable link. */
 export function noteNoFirstLink(): void {
   noteFirstLinkProblem('missing');
+}
+
+/** Say that the page held no link and the daemon found no session to recover for this browser. */
+export function noteSignInExpired(): void {
+  noteFirstLinkProblem('expired');
 }
 
 /** What a reload does: forget the refusal. For tests; the page gets a fresh module per load. */

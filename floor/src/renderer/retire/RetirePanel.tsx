@@ -222,7 +222,7 @@ function OutcomeBody({ attempt, retire, floor, session }: {
           {now === 'checking'
             ? 'The daemon refused this request before any effect. Checking whether this Floor session is still live…'
             : now === 'ended'
-              ? 'Your Floor session has ended or was revoked. Paste a new link from dudes floor open --no-browser '
+              ? 'Your Floor session has ended or was revoked. Paste a new link from dudes floor open '
                 + `into this tab’s address bar to act again. ${next}`
               : now === 'renewed'
                 ? 'The daemon refused an earlier request before any effect, under a Floor session this page no '

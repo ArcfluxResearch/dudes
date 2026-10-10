@@ -530,7 +530,7 @@ test('403 with a live snapshot says this page can no longer act; with a dead str
   noteTransport('close');
   html = status();
   assert.match(html, /data-control-session="ended"/);
-  assert.match(html, /Your Floor session has ended or was revoked\. Paste a new link from dudes floor open --no-browser into this tab’s address bar/);
+  assert.match(html, /Your Floor session has ended or was revoked\. Paste a new link from dudes floor open into this tab’s address bar/);
   assert.doesNotMatch(html, /control-success/);
 
   // After signing in again, the message speaks for the new session.

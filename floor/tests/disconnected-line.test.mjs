@@ -140,7 +140,7 @@ test('all three lines below the floor are on the same footing', async () => {
 test('the closed notice requests a fresh link while preserving held drafts', async () => {
   const closed = notice('closed');
   assert.match(closed, /After a daemon restart, get a fresh link/);
-  assert.match(closed, /dudes floor open --no-browser/);
+  assert.match(closed, /dudes floor open/);
   assert.match(closed, /Paste the fresh link into this tab&#x27;s address bar/);
   assert.match(closed, /A reload would drop a Hire or an answer this page is holding/);
   assert.doesNotMatch(notice('live'), /office-closed/);

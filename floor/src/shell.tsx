@@ -41,8 +41,8 @@ import {
  * worked. It names no part of the link: the secret stays out of the page. The
  * daemon does not say why it refused a first link, so the page gives the usual
  * reason, a link that was already used or expired, and the one other it can
- * name. A page opened with no link at all is told that, because a browser
- * scrubs the secret from its address bar as soon as it signs in.
+ * name. A page opened with no link, as a copied address is because a browser
+ * scrubs the secret as soon as it signs in, is told its sign-in has expired.
  */
 export function PastedLinkNotice() {
   const first = useSyncExternalStore(subscribeToPastedLink, firstLinkProblem, firstLinkProblem);
@@ -60,9 +60,16 @@ export function PastedLinkNotice() {
   if (first === 'missing') {
     return (
       <p className="link-refused" role="alert">
-        This page has no sign-in link. Each link works once, in one browser, and a browser removes it from the
-        address bar as soon as it signs in, so a copied address does not carry it. Run <code>dudes floor open</code>{' '}
-        and paste the new link here within 60 seconds.
+        The sign-in link in the address of this page is not one the daemon can read. Run{' '}
+        <code>dudes floor open</code> and paste the new link here within 60 seconds.
+      </p>
+    );
+  }
+  if (first === 'expired') {
+    return (
+      <p className="link-refused" role="alert">
+        This sign-in has expired. Run <code>dudes floor open</code> for a new link. Each link works once, in one
+        browser.
       </p>
     );
   }
@@ -79,7 +86,7 @@ export function PastedLinkNotice() {
   return (
     <p className="link-refused" role="alert">
       The Floor link pasted into this tab was refused, or the daemon could not be reached to take it. This page is
-      as it was and keeps what it holds. For a new link, run dudes floor open --no-browser and paste it into this
+      as it was and keeps what it holds. For a new link, run dudes floor open and paste it into this
       tab’s address bar.
     </p>
   );

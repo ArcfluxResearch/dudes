@@ -46,7 +46,7 @@ and the same link pasted into a second browser, or reloaded after it expired, is
 then says so and tells you to run `dudes floor open` again for a new link. Copying the address from
 the browser's address bar does not help, because the browser removes the secret from the address as
 soon as it signs in. The daemon allows four Floor sessions at a time. `--no-browser` is still
-accepted and changes nothing, because printing is now the default.
+accepted and changes nothing, because printing is now the default. The link is a loopback address, so on a remote machine forward the port first, for example `ssh -L <port>:127.0.0.1:<port> <host>`, and paste the link into a browser on your own computer.
 
 **Setup** shows each engine the daemon turned on and whether it found that engine's program on its
 `PATH`. **Settings** shows the running Floor switches, budget ceilings, per-turn reserves,

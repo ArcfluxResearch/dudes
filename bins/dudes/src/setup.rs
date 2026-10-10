@@ -3,7 +3,7 @@
 //! [`guided`] asks them one question at a time; `crate::args` parses the same choices from flags
 //! into the same [`Plan`]. Nothing in this module writes a file, calls the daemon or starts a
 //! process: `crate::run` writes the operator file once, starts or restarts the daemon, reports the
-//! engines, opens the Floor, makes the hire and offers a login.
+//! engines, prints the Floor link, makes the hire and offers a login.
 
 use std::io::{self, BufRead, Write};
 use std::path::Path;
