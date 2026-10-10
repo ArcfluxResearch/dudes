@@ -1388,6 +1388,8 @@ fn every_ask_variant_preserves_publication_before_reply() {
             duded::ports::Ask::BoardClaim { .. } => "BoardClaim",
             duded::ports::Ask::BoardTransition { .. } => "BoardTransition",
             duded::ports::Ask::BoardList(_) => "BoardList",
+            // Driven over a real socket by tests/tickets.rs.
+            duded::ports::Ask::Ticket(_) => "Ticket",
             duded::ports::Ask::AgentList => "AgentList",
             duded::ports::Ask::Answer { .. } => "Answer",
             duded::ports::Ask::Steer { .. } => "Steer",

@@ -19,7 +19,7 @@ use crate::ports::{Answered, Ask, Handle};
 
 const SNAPSHOT_SIBLING_BYTES: usize = 65_536;
 
-fn actor(role: &PeerRole, pid: Option<u32>) -> Result<Actor, RpcError> {
+pub(crate) fn actor(role: &PeerRole, pid: Option<u32>) -> Result<Actor, RpcError> {
     match role {
         PeerRole::Operator => pid
             .map(|pid| Actor::Peer { pid, uid: None })

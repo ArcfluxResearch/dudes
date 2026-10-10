@@ -1481,6 +1481,7 @@ where
     let journal = Arc::new(JournalReader::new(journal_dir.to_path_buf()));
     register_all(&mut dispatcher, &control, &journal, subscribers);
     crate::board::register(&mut dispatcher, &handle);
+    crate::ticket::register(&mut dispatcher, &handle);
     register_agent_effects(&mut dispatcher, &control);
     register_agent_attach(&mut dispatcher, &control);
     register_agent_detach(&mut dispatcher, &control);

@@ -217,6 +217,42 @@ pub enum ExitCause {
     FloorGatewayEnded,
 }
 
+/// One `ticket.*` request, after the router resolved who is asking. Operator-only: `by` is
+/// never a request field.
+#[derive(Debug)]
+pub enum TicketAsk {
+    /// `ticket.create`.
+    Create {
+        /// The new ticket's fields.
+        request: dudes_proto::rpc::ticket::TicketCreateParams,
+        /// Caller identity resolved by the router.
+        by: Actor,
+    },
+    /// `ticket.edit`.
+    Edit {
+        /// The conditional change.
+        request: dudes_proto::rpc::ticket::TicketEditParams,
+        /// Caller identity resolved by the router.
+        by: Actor,
+    },
+    /// `ticket.assign`.
+    Assign {
+        /// The conditional assignment.
+        request: dudes_proto::rpc::ticket::TicketAssignParams,
+        /// Caller identity resolved by the router.
+        by: Actor,
+    },
+    /// `ticket.remove`.
+    Remove {
+        /// The conditional removal.
+        request: dudes_proto::rpc::ticket::TicketRemoveParams,
+        /// Caller identity resolved by the router.
+        by: Actor,
+    },
+    /// `ticket.read`.
+    Read(dudes_proto::rpc::ticket::TicketReadParams),
+}
+
 /// A command that changes state, waiting for the loop.
 ///
 /// **One variant per RPC method, named after it**, so that reading `register_all` and reading this
@@ -300,6 +336,8 @@ pub enum Ask {
     },
     /// `board.list`.
     BoardList(CardListParams),
+    /// `ticket.*`.
+    Ticket(TicketAsk),
     /// `agent.list`.
     AgentList,
     /// A conditioned `agent.answer` that the router selected to apply.
@@ -495,6 +533,12 @@ pub enum Answered {
     CheckRunning(Box<crate::baseline::Ticket>),
     /// The created card.
     CardCreated(CardCreateResult),
+    /// The created ticket.
+    TicketCreated(dudes_proto::rpc::ticket::TicketCreateResult),
+    /// Where an assigned ticket stands.
+    TicketAssigned(dudes_proto::rpc::ticket::TicketAssignResult),
+    /// One ticket in full.
+    TicketRead(Box<dudes_proto::rpc::ticket::TicketReadResult>),
     /// Current cards matching a board list filter.
     Cards(Vec<CardView>),
     /// Every hired, unretired agent.

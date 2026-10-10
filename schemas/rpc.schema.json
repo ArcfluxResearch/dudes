@@ -9699,6 +9699,96 @@
           ],
           "type": "object"
         },
+        "ticket.assign": {
+          "description": "Put a ticket in an agent's queue. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketAssignParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/TicketAssignResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "ticket.create": {
+          "description": "Make a ticket: a board card with a note, a project and a completion check. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketCreateParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/TicketCreateResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "ticket.edit": {
+          "description": "Change a ticket's title, note or check while it is in To do. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketEditParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "ticket.read": {
+          "description": "One ticket with its note, check and queue place. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketReadParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/TicketReadResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "ticket.remove": {
+          "description": "Take a ticket off the board. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketRemoveParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "worktree.list": {
           "description": "Every worktree lease that is not removed, with its path. Operator-only.",
           "properties": {
@@ -9783,7 +9873,12 @@
         "worktree.list",
         "worktree.removed",
         "memory.search",
-        "agent.mcp"
+        "agent.mcp",
+        "ticket.create",
+        "ticket.edit",
+        "ticket.assign",
+        "ticket.remove",
+        "ticket.read"
       ],
       "type": "object"
     },
@@ -10778,6 +10873,39 @@
       ],
       "type": "object"
     },
+    "QueueClass": {
+      "description": "Which side of the queue a ticket sits on. Given-again work is served before new work.",
+      "oneOf": [
+        {
+          "const": "rework",
+          "description": "Given again from Ready for you or Needs you.",
+          "type": "string"
+        },
+        {
+          "const": "new",
+          "description": "Given for the first time.",
+          "type": "string"
+        }
+      ]
+    },
+    "QueueKey": {
+      "description": "A ticket's place in its agent's queue: class first, then the position of the assignment.",
+      "properties": {
+        "class": {
+          "$ref": "#/$defs/QueueClass",
+          "description": "The class."
+        },
+        "lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "The journal position of the `TicketAssigned` that queued it. Positions are unique, so keys\nnever tie."
+        }
+      },
+      "required": [
+        "class",
+        "lsn"
+      ],
+      "type": "object"
+    },
     "RecordedWorkspace": {
       "description": "The enrolled workspace identity and display label recorded at hire.",
       "properties": {
@@ -11473,6 +11601,75 @@
       "title": "ThreadView",
       "type": "object"
     },
+    "TicketAssignOutcome": {
+      "description": "What became of an assigned ticket.",
+      "oneOf": [
+        {
+          "description": "The ticket is in the agent's queue.",
+          "properties": {
+            "position": {
+              "description": "Its place there, counting from 1.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "state": {
+              "const": "queued",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "position"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TicketAssignParams": {
+      "additionalProperties": false,
+      "description": "`ticket.assign` params: put the ticket in an agent's queue.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentId",
+          "description": "The agent, hired into the ticket's project."
+        },
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "The ticket."
+        },
+        "expected_seq": {
+          "$ref": "#/$defs/Seq",
+          "description": "The ticket's `seq` as last seen."
+        },
+        "message": {
+          "description": "What to tell the agent when sending work back: at most 2,048 bytes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "card",
+        "agent",
+        "expected_seq"
+      ],
+      "type": "object"
+    },
+    "TicketAssignResult": {
+      "description": "`ticket.assign` result.",
+      "properties": {
+        "outcome": {
+          "$ref": "#/$defs/TicketAssignOutcome",
+          "description": "What became of it."
+        }
+      },
+      "required": [
+        "outcome"
+      ],
+      "type": "object"
+    },
     "TicketCheck": {
       "description": "The check a ticket is finished by, as it was when the ticket was made or last edited. Storing\nthe resolved predicate means a later enrollment edit cannot change what an existing ticket is\nchecked by.",
       "properties": {
@@ -11493,6 +11690,149 @@
         "id",
         "label",
         "predicate"
+      ],
+      "type": "object"
+    },
+    "TicketCreateParams": {
+      "additionalProperties": false,
+      "description": "`ticket.create` params. Only the title is required.",
+      "properties": {
+        "description": {
+          "description": "The note: at most 8,192 bytes after trimming. Absent means none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "done_when": {
+          "description": "The id of one of the project's enrolled checks. Absent means the project's own check.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "done_when_revision": {
+          "description": "The revision of that check the caller looked at; a changed check is refused.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "The enrolled project. Absent means the only enrolled project.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Title: 1 to 256 bytes after trimming.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "TicketCreateResult": {
+      "description": "`ticket.create` result.",
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "The new ticket."
+        }
+      },
+      "required": [
+        "card"
+      ],
+      "type": "object"
+    },
+    "TicketEditParams": {
+      "additionalProperties": false,
+      "description": "`ticket.edit` params. At least one of the three values changes. Valid while the ticket is in\nTo do.",
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "The ticket."
+        },
+        "description": {
+          "description": "The new note; an empty note clears it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "done_when": {
+          "description": "The id of the project's check to finish the ticket by.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "done_when_revision": {
+          "description": "The revision of that check the caller looked at.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected_seq": {
+          "$ref": "#/$defs/Seq",
+          "description": "The ticket's `seq` as last seen."
+        },
+        "title": {
+          "description": "The new title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "card",
+        "expected_seq"
+      ],
+      "type": "object"
+    },
+    "TicketReadParams": {
+      "additionalProperties": false,
+      "description": "`ticket.read` params.",
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "The ticket."
+        }
+      },
+      "required": [
+        "card"
+      ],
+      "type": "object"
+    },
+    "TicketReadResult": {
+      "description": "`ticket.read` result.",
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/CardView",
+          "description": "The card as the board shows it."
+        },
+        "position": {
+          "description": "Its place in its holder's queue, counting from 1, while it waits there.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ticket": {
+          "$ref": "#/$defs/TicketRow",
+          "description": "What the board keeps of the ticket."
+        }
+      },
+      "required": [
+        "card",
+        "ticket"
       ],
       "type": "object"
     },
@@ -11560,6 +11900,95 @@
           "type": "string"
         }
       ]
+    },
+    "TicketRemoveParams": {
+      "additionalProperties": false,
+      "description": "`ticket.remove` params. A ticket that is being worked on must be stopped first.",
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "The ticket."
+        },
+        "expected_seq": {
+          "$ref": "#/$defs/Seq",
+          "description": "The ticket's `seq` as last seen."
+        }
+      },
+      "required": [
+        "card",
+        "expected_seq"
+      ],
+      "type": "object"
+    },
+    "TicketRow": {
+      "description": "What the board keeps of a ticket beyond what every card has.",
+      "properties": {
+        "description": {
+          "description": "The note; empty when there is none.",
+          "type": "string"
+        },
+        "done_when": {
+          "$ref": "#/$defs/TicketCheck",
+          "description": "The check that finishes it."
+        },
+        "goal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoalId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The goal the ticket's latest start installed. Kept as history after the work stops."
+        },
+        "message": {
+          "description": "What the operator said when sending the work back, until the next start uses it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "The enrolled project the ticket runs in.",
+          "type": "string"
+        },
+        "queue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QueueKey"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its place in its holder's queue, while it waits there."
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the daemon moved the ticket into Needs you, while it is there."
+        },
+        "round": {
+          "default": 0,
+          "description": "How many times work on the ticket has started.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "description",
+        "project",
+        "done_when"
+      ],
+      "type": "object"
     },
     "Timestamp": {
       "description": "UTC milliseconds since the Unix epoch. An integer so it sorts, diffs and reads in `jq`.",

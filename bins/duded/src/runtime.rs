@@ -87,12 +87,13 @@ use crate::floor_retire::{RetireOutcome, RetireRefusal, RetireRequest};
 use crate::lock::StateLock;
 use crate::ports::{
     Answered, Ask, DoctorSnapshot, ExitCause, Handle, HookAnswer, Job, PtyCloseOutcome,
-    PtyOpenFailure,
+    PtyOpenFailure, TicketAsk,
 };
 
 mod agent_mcp;
 #[cfg(test)]
 mod ticket_start_tests;
+mod tickets;
 pub(crate) use agent_mcp::PiAdmission;
 use agent_mcp::pi_retry;
 mod browser_chat;
@@ -4036,6 +4037,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 ask,
                 Ask::AgentList
                     | Ask::BoardList(_)
+                    | Ask::Ticket(TicketAsk::Read(_))
                     | Ask::MemoryRead { caller: None, .. }
                     | Ask::MemorySearch { caller: None, .. }
                     | Ask::TeamRoster { caller: None }
@@ -4381,6 +4383,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             Ask::BoardClaim { request, by } => self.board_claim(&request, by),
             Ask::BoardTransition { request, by } => self.board_transition(&request, by),
             Ask::BoardList(request) => self.board_list(&request),
+            Ask::Ticket(ask) => self.ticket(ask),
             Ask::AgentList => {
                 let now = self.ctx.clock.now();
                 crate::floor::agents(&self.ctx.projections, now)
@@ -5529,13 +5532,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
         }
         let card = self.sup.mint_card_id();
-        let mut cards = self.ctx.projections.cards().map_err(|failure| {
-            error(
-                ErrorCode::InternalError,
-                format!("could not read the board: {failure}"),
-            )
-        })?;
-        cards.push(CardView {
+        self.admit_new_card(CardView {
             id: card,
             title: request.title.clone(),
             department: request.department.clone(),
@@ -5544,16 +5541,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             seq: Seq::ZERO,
             claimed_by: None,
             deps: request.deps.clone(),
-        });
-        let now = self.ctx.clock.now();
-        let snapshot =
-            crate::floor::snapshot(&mut self.ctx.projections, now).map_err(|failure| {
-                error(
-                    ErrorCode::InternalError,
-                    format!("could not size the Floor: {failure}"),
-                )
-            })?;
-        crate::board::admit_cards(snapshot.agents, cards)?;
+        })?;
         self.board_append(Record::CardCreated {
             card,
             title: request.title,
@@ -5564,6 +5552,49 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         Ok(Answered::CardCreated(CardCreateResult { card }))
     }
 
+    /// Refuse a card that would push the complete Floor snapshot past its budget.
+    fn admit_new_card(&mut self, view: CardView) -> Result<(), RpcError> {
+        let mut cards = self.ctx.projections.cards().map_err(|failure| {
+            error(
+                ErrorCode::InternalError,
+                format!("could not read the board: {failure}"),
+            )
+        })?;
+        cards.push(view);
+        let now = self.ctx.clock.now();
+        let snapshot =
+            crate::floor::snapshot(&mut self.ctx.projections, now).map_err(|failure| {
+                error(
+                    ErrorCode::InternalError,
+                    format!("could not size the Floor: {failure}"),
+                )
+            })?;
+        crate::board::admit_cards(snapshot.agents, cards)
+    }
+
+    /// A ticket is moved only by the ticket methods and by the daemon's own records, whoever
+    /// asks: an agent that could claim its ticket or move it to Done would decide its own review.
+    fn refuse_ticket_card(&self, card: CardId, status: CardStatus) -> Result<(), RpcError> {
+        let is_ticket = self
+            .ctx
+            .projections
+            .ticket(card)
+            .map_err(|failure| {
+                error(
+                    ErrorCode::InternalError,
+                    format!("could not read the board: {failure}"),
+                )
+            })?
+            .is_some();
+        if is_ticket {
+            return Err(tickets::refusal(
+                dudes_proto::TicketRefusal::TicketCard,
+                status,
+            ));
+        }
+        Ok(())
+    }
+
     fn board_claim(&mut self, request: &CardClaimParams, by: Actor) -> Result<Answered, RpcError> {
         if let Actor::Agent { agent } = by {
             self.refuse_retired(agent)?;
@@ -5571,6 +5602,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let card = self
             .board_card(request.card)?
             .ok_or_else(|| error(ErrorCode::NotFound, "no such card"))?;
+        self.refuse_ticket_card(card.id, card.status)?;
         board_seq(&card, request.expected_seq)?;
         if card.status != CardStatus::Todo || card.claimed_by.is_some() {
             return Err(error(ErrorCode::Refused, "card is not claimable"));
@@ -5620,6 +5652,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let card = self
             .board_card(request.card)?
             .ok_or_else(|| error(ErrorCode::NotFound, "no such card"))?;
+        self.refuse_ticket_card(card.id, card.status)?;
         board_seq(&card, request.expected_seq)?;
         if matches!(request.to, CardStatus::Todo | CardStatus::Claimed) {
             return Err(error(

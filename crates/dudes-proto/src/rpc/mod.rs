@@ -60,6 +60,7 @@ pub mod pty;
 mod secret;
 pub mod system;
 pub mod team;
+pub mod ticket;
 pub mod worktree;
 
 use std::fmt;
@@ -668,6 +669,16 @@ names! {
     "memory.search" => MemorySearch / memory_search : memory::MemorySearchParams => memory::MemorySearchResult;
     /// Read or replace one live agent's desired MCP names for later managed launches.
     "agent.mcp" => AgentMcp / agent_mcp : agent::McpParams => agent::McpResult;
+    /// Make a ticket: a board card with a note, a project and a completion check. Operator-only.
+    "ticket.create" => TicketCreate / ticket_create : ticket::TicketCreateParams => ticket::TicketCreateResult;
+    /// Change a ticket's title, note or check while it is in To do. Operator-only.
+    "ticket.edit" => TicketEdit / ticket_edit : ticket::TicketEditParams => Empty;
+    /// Put a ticket in an agent's queue. Operator-only.
+    "ticket.assign" => TicketAssign / ticket_assign : ticket::TicketAssignParams => ticket::TicketAssignResult;
+    /// Take a ticket off the board. Operator-only.
+    "ticket.remove" => TicketRemove / ticket_remove : ticket::TicketRemoveParams => Empty;
+    /// One ticket with its note, check and queue place. Operator-only.
+    "ticket.read" => TicketRead / ticket_read : ticket::TicketReadParams => ticket::TicketReadResult;
 }
 
 impl From<crate::record::ConditionedMethod> for Method {
@@ -856,12 +867,14 @@ mod tests {
     }
 
     #[test]
-    fn the_method_table_keeps_old_rows_and_appends_mcp_edit() {
+    fn the_method_table_keeps_old_rows_and_appends_tickets() {
         assert_eq!(
             Method::ALL.len(),
-            44,
-            "memory.search stays at row 43; agent.mcp appends row 44"
+            49,
+            "agent.mcp stays at row 44; the five ticket methods append rows 45 to 49"
         );
+        assert_eq!(Method::ALL[44], Method::TicketCreate);
+        assert_eq!(Method::ALL[48], Method::TicketRead);
         assert_eq!(
             "floor.enrollment.reload".parse::<Method>(),
             Ok(Method::FloorEnrollmentReload)
