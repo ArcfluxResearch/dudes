@@ -14,7 +14,7 @@ import type { FloorState } from './floor/store.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from './focus.ts';
 import { GitPanel } from './git/GitPanel.tsx';
 import { GoalForm, GoalStatus } from './goal/GoalPanel.tsx';
-import { SelectionBar, streamStatus } from './LiveWork.tsx';
+import { OverviewOutput, SelectionBar, streamStatus } from './LiveWork.tsx';
 import { MemoryPanel } from './memory/MemoryPanel.tsx';
 import { LookStatus } from './look/LookEditor.tsx';
 import { MessagesPanel } from './MessagesPanel.tsx';
@@ -83,6 +83,9 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
         <AgentDetail row={row} selection={selection} streamState={streamStatus(floor)} tab={detailTab} onTabChange={chooseDetailTab}
           chat={chatGate(floor, row).open
             ? <ChatPanel floor={floor} row={row} fullOutput={fullOutput} onFullOutput={setFullOutput} /> : null}
+          liveOutput={floor.output.targetId === row.id && (floor.output.chunks.length > 0
+            || floor.output.status === 'gap' || floor.output.status === 'unavailable')
+            ? <OverviewOutput floor={floor} row={row} /> : null}
           live={floor.phase === 'live' && !floor.stale && floor.snapshotEpoch === floor.epoch}
           messages={((floor.messages ?? []).some(message => message.thread === undefined && (message.from === row.id || message.to === row.id))
             || (floor.threads ?? []).some(thread => thread.members.includes(row.id)))

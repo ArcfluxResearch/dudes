@@ -447,3 +447,40 @@ test('the terminal header offers bounded zoom, selection copy and reversible exp
   assert.match(html, /data-terminal-expanded="false"/);
   assert.match(html, /Cmd\+= zooms in|Ctrl\+\] first/);
 });
+
+test('pressing a waiting Attach neither opens the confirmation nor attaches, and an available one does open it', async () => {
+  const { fakePage, press } = await import('./helpers/fake-page.mjs');
+  const { createRoot } = await import('react-dom/client');
+  const { act } = await import('react');
+  const terminal = await server.ssrLoadModule('/src/renderer/terminal/terminal.ts');
+  terminal.resetTerminal();
+  const floor = floorOf([row({ provider: 'claude' })]);
+  const page = fakePage();
+  const prototype = page.host.constructor.prototype;
+  prototype.showModal = () => {};
+  prototype.close = () => {};
+  try {
+    const root = createRoot(page.host);
+    const mount = (offer) => act(() => root.render(createElement(TerminalAttachView, { floor, offer })));
+    const attach = () => page.host.querySelector('[aria-describedby="terminal-hint"]');
+    const dialog = () => page.host.querySelector('[data-attach-dialog="true"]');
+    for (const offer of [{ kind: 'unavailable', reason: 'running' }, { kind: 'unavailable', reason: 'attached' },
+      { kind: 'unavailable', reason: 'halted' }, { kind: 'unavailable', reason: 'no-session' }, { kind: 'open-here' },
+      { kind: 'open-elsewhere', agent: GRACE }]) {
+      await mount(offer);
+      assert.equal(attach().getAttribute('aria-disabled'), 'true');
+      await act(async () => press(attach()));
+      assert.equal(dialog(), null, `${offer.kind} ${offer.reason ?? ''} opened the confirmation`);
+      assert.equal(terminal.getTerminalState().phase, 'idle', `${offer.kind} ${offer.reason ?? ''} attached`);
+    }
+    await mount({ kind: 'attach', agent: ADA });
+    await act(async () => press(attach()));
+    assert.notEqual(dialog(), null, 'an available Claude Attach opens its confirmation');
+    await act(() => root.unmount());
+  } finally {
+    delete prototype.showModal;
+    delete prototype.close;
+    terminal.resetTerminal();
+    page.restore();
+  }
+});

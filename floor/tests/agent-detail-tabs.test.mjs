@@ -53,14 +53,11 @@ async function drawer() {
 
 test('only available detail tabs appear and Terminal is never one of them', () => {
   assert.deepEqual(tabs(render()), ['Overview']);
-  const all = render({ terminalDetails: createElement('p', null, 'Terminal details'), git });
+  const all = render({ git });
   assert.deepEqual(tabs(all), ['Overview', 'Git']);
-  assert.doesNotMatch(all, /Terminal details/);
   assert.doesNotMatch(all, /role="tab"[^>]*>Messages/);
   const terminalOff = render({ git });
   assert.deepEqual(tabs(terminalOff), ['Overview', 'Git']);
-  assert.doesNotMatch(render({ output: createElement('p', null, 'Observed output'), git }), /Output/,
-    'there is no Output tab to fill');
   assert.doesNotMatch(all, /Traces/);
 });
 
@@ -238,10 +235,12 @@ test('the drawer never offers an Output or Terminal tab, and Attach follows the 
   const attach = html => (html.match(/class="terminal-attach"/g) ?? []).length;
   assert.deepEqual(tabs(center({})), ['Overview', 'Memory']);
   assert.equal(attach(center({})), 0);
+  assert.doesNotMatch(center({}), /Show full output/, 'an agent with no output has nothing to open');
   const enabled = center({ terminal: true, output: { ...floor.output, status: 'live', chunks: ['Actual assistant output'] } });
   assert.deepEqual(tabs(enabled), ['Overview', 'Memory']);
   assert.equal(attach(enabled), 1, 'Attach stays in the action row');
-  assert.doesNotMatch(enabled, /Actual assistant output/, 'raw output is drawn only under Chat\'s Show full output');
+  assert.match(enabled, /<button[^>]*aria-expanded="false"[^>]*aria-controls="overview-full-output"[^>]*>Show full output<\/button><div id="overview-full-output" hidden="">[\s\S]*Actual assistant output/,
+    'the output sits behind a collapsed toggle in Overview');
   for (const patch of [{ terminal: true, stale: true }, { terminal: true, phase: 'resyncing' },
     { terminal: true, epoch: 2, snapshotEpoch: 1 }, { terminal: true, agents: [] }]) {
     assert.equal(attach(center(patch)), 0);

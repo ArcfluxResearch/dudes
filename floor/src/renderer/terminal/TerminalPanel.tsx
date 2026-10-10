@@ -95,15 +95,11 @@ export function TerminalAttachView({ floor, offer }: { readonly floor: FloorStat
   const target = offer.kind === 'attach' ? offer.agent : null;
   const hint = offer.kind === 'attach' ? ATTACH_HINT : whyNoAttach(floor, offer);
   const claudeTrust = target !== null && floor.agents.find((row) => row.id === target)?.provider === 'claude';
-  const startAttach = (agent: string): void => {
-    if (claudeTrust) setConfirming(true);
-    else attachTerminal(agent, browserTerminalPorts());
-  };
   return (
     <div className="agent-detail-terminal" data-terminal-offer={offer.kind}>
       <button type="button" className="terminal-attach" title={hint} aria-describedby="terminal-hint"
         aria-haspopup={claudeTrust ? 'dialog' : undefined} aria-disabled={target === null || undefined}
-        onClick={() => { if (target !== null) startAttach(target); }}>Attach</button>
+        onClick={() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }}>Attach</button>
       {confirming && target !== null && claudeTrust ? <AttachConfirmation name={nameOf(floor, target)}
         onCancel={() => setConfirming(false)}
         onConfirm={() => { setConfirming(false); attachTerminal(target, browserTerminalPorts()); }} /> : null}
