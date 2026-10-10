@@ -10,6 +10,7 @@ import type { Baseline } from './goal/completionCheck.ts';
 import { detailTabSelection, detailTabTarget, revealedTabScroll } from './detailTabs.ts';
 import type { DetailTab } from './detailTabs.ts';
 import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
+import { HIRE_ENGINES } from './onboarding/catalog.ts';
 import { NameEditor } from './rename/NameEditor.tsx';
 import { LookEditor } from './look/LookEditor.tsx';
 import { GoalResult } from './goal/GoalResult.tsx';
@@ -24,6 +25,10 @@ import { decodeWorktree, sharesCheckout, worktreeText } from './worktree.ts';
 import { TracesPanel } from './TracesPanel.tsx';
 import type { TurnTrace } from './traces.ts';
 
+function providerLabel(provider: string): string {
+  return (HIRE_ENGINES as Readonly<Record<string, string>>)[provider] ?? provider;
+}
+
 function value(value: unknown): string {
   return typeof value === 'string' && value !== '' ? value : '—';
 }
@@ -36,11 +41,13 @@ const BASELINE_LINES: Readonly<Record<Baseline | 'absent', string>> = Object.fre
 });
 
 export function AgentDetail({
-  row, selection = null, control = null, retire = null, terminal = null, enable = null, answer = null, goal: goalForm = null,
-  note = null, output = null, messages = null, chat = null, terminalDetails = null, git = null, memory = null, traces = [], tab = 'overview', onTabChange = () => {}, live = false,
+  row, selection = null, streamState = null, control = null, retire = null, terminal = null, enable = null, answer = null, goal: goalForm = null,
+  output = null, messages = null, chat = null, terminalDetails = null, git = null, memory = null, traces = [], tab = 'overview', onTabChange = () => {}, live = false,
 }: {
   readonly row: AgentRow;
   readonly selection?: ReactNode;
+  /** The output stream's state, drawn as the last part of the header's status line. */
+  readonly streamState?: string | null;
   readonly control?: ReactNode;
   readonly retire?: ReactNode;
   readonly terminal?: ReactNode;
@@ -48,7 +55,6 @@ export function AgentDetail({
   readonly enable?: ReactNode;
   readonly answer?: ReactNode;
   readonly goal?: ReactNode;
-  readonly note?: ReactNode;
   readonly output?: ReactNode;
   readonly messages?: ReactNode;
   readonly chat?: ReactNode;
@@ -101,7 +107,6 @@ export function AgentDetail({
         <div><dt>Cost today</dt><dd>{fields.cost}</dd></div>
       </dl>
       <GoalResult result={goalResultOf(row.goal)} />
-      {note}
     </> },
     { id: 'output', label: 'Output', content: output },
     { id: 'chat', label: 'Chat', content: chat },
@@ -152,17 +157,23 @@ export function AgentDetail({
           name={row.name} />
         <div className="agent-detail-identity">
           <p className="agent-detail-kicker">Selected agent</p>
-          <h2 id={AGENT_DETAIL_HEADING_ID} tabIndex={-1} onDoubleClick={() => beginRename(`detail:${row.id}`, row)}>{value(row.name)}</h2>
-          <NameEditor row={row} surface="detail" showName={false} />
-          <p>{value(row.role)} · <span data-status={fields.status}>{value(fields.status)}</span></p>
-          {fields.liveActivity === null ? null : <p data-live-activity={fields.liveActivity}>{fields.liveActivity}</p>}
+          <div className="agent-detail-name">
+            <h2 id={AGENT_DETAIL_HEADING_ID} tabIndex={-1} onDoubleClick={() => beginRename(`detail:${row.id}`, row)}>{value(row.name)}</h2>
+            <NameEditor row={row} surface="detail" showName={false} />
+          </div>
+          <p className="agent-detail-status">
+            {value(row.role)}
+            {typeof row.provider === 'string' && row.provider !== '' ? ` · ${providerLabel(row.provider)}` : ''}
+            {' · '}<span data-status={fields.status}>{value(fields.status)}</span>
+            {fields.liveActivity === null ? null : <>{' · '}<span data-live-activity={fields.liveActivity}>{fields.liveActivity}</span></>}
+            {streamState === null ? null : <>{' · '}<span className="stream-state" role="status">{streamState}</span></>}
+          </p>
         </div>
         {selection}
         {automaticHold === null ? null : <p className="agent-detail-hold" role="status">
           {automaticHoldText(automaticHold)}
         </p>}
-        <div className="agent-detail-actions">{control}{retire}{terminal}</div>
-        {enable}
+        <div className="agent-detail-actions">{control}{retire}{terminal}{enable}</div>
         {fields.question === '' ? null : (
           <section className="agent-detail-question" aria-label="Waiting question" tabIndex={-1}>
             <h3>Waiting question</h3>

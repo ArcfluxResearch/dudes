@@ -38,7 +38,7 @@ const header = html => html.match(/<header class="agent-detail-head">([\s\S]*?)<
 const panel = (html, id) => html.match(
   new RegExp(`<section id="agent-detail-panel-${id}"[\\s\\S]*?(?=<section id="agent-detail-panel-|</aside>)`))?.[0] ?? '';
 const CLOSE = /<button type="button" id="selection-clear" class="drawer-close" aria-label="Close agent details"[^>]*>×<\/button>/;
-const STREAM_STATE = /<p class="stream-state" role="status">([^<]*)<\/p>/g;
+const STREAM_STATE = /<(?:p|span) class="stream-state" role="status">([^<]*)<\/(?:p|span)>/g;
 
 async function drawer() {
   const { AgentDrawer } = await server.ssrLoadModule('/src/renderer/AgentDrawer.tsx');

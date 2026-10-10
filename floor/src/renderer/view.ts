@@ -196,7 +196,6 @@ export function keyboardSidebarWidth(width: number, key: string): number | null 
 export type AgentOrderView = 'strip' | 'focus';
 const AGENT_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const MAX_ORDER = 1024;
-export const MAX_AGENT_NOTE = 4096;
 
 function validOrder(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.length <= MAX_ORDER
@@ -281,26 +280,6 @@ export function reorderKeyTarget(ids: readonly string[], agent: string, key: str
     case 'Home': return at === 0 ? null : ids[0] ?? null;
     case 'End': return at === ids.length - 1 ? null : ids.at(-1) ?? null;
     default: return null;
-  }
-}
-
-export function readAgentNote(agent: string, storage: () => ViewStorage = browserStorage): string {
-  try {
-    if (!AGENT_ID.test(agent)) return '';
-    const value = storage().getItem(`dudes.floor.agent-note.${agent}`);
-    return value !== null && value.length <= MAX_AGENT_NOTE ? value : '';
-  } catch {
-    return '';
-  }
-}
-
-export function writeAgentNote(agent: string, text: string, storage: () => ViewStorage = browserStorage): boolean {
-  try {
-    if (!AGENT_ID.test(agent) || text.length > MAX_AGENT_NOTE) return false;
-    storage().setItem(`dudes.floor.agent-note.${agent}`, text);
-    return true;
-  } catch {
-    return false;
   }
 }
 

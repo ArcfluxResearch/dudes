@@ -51,7 +51,7 @@ const row = { id: '01ARZ3NDEKTSV4RRFFQ69G5FAV', name: 'Jonas', role: 'frontend b
 test('the drawer portrait is the agent\'s figure, hidden from assistive technology beside its name', () => {
   const html = renderToStaticMarkup(createElement(AgentDetail, { row }));
   const header = html.match(/<header class="agent-detail-head">([\s\S]*?)<\/header>/)?.[1] ?? '';
-  assert.match(header, /^<canvas class="agent-portrait agent-detail-portrait portrait-figure" aria-hidden="true" data-portrait="figure" data-skin="#e8b98f" data-hair="#6b3b2a" data-shirt="#397ca9"><\/canvas><div class="agent-detail-identity"><p class="agent-detail-kicker">Selected agent<\/p><h2 id="agent-detail-title" tabindex="-1">Jonas<\/h2>/);
+  assert.match(header, /^<canvas class="agent-portrait agent-detail-portrait portrait-figure" aria-hidden="true" data-portrait="figure" data-skin="#e8b98f" data-hair="#6b3b2a" data-shirt="#397ca9"><\/canvas><div class="agent-detail-identity"><p class="agent-detail-kicker">Selected agent<\/p><div class="agent-detail-name"><h2 id="agent-detail-title" tabindex="-1">Jonas<\/h2>/);
   assert.doesNotMatch(html, /<svg|crispEdges/, 'the pixel portrait is still drawn');
 });
 

@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { agentOrder, moveAgent, reorderKeyTarget, readAgentOrder, writeAgentOrder, readAgentNote, writeAgentNote } from '../src/renderer/view.ts';
+import { agentOrder, moveAgent, reorderKeyTarget, readAgentOrder, writeAgentOrder } from '../src/renderer/view.ts';
 
 const ADA = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const GRACE = '01M31CGZJMEFDYMJ4YBV76DJHQ';
@@ -38,34 +38,19 @@ test('arrow keys and Home or End choose reorder destinations without leaving the
   assert.equal(reorderKeyTarget(ids, ADA, 'Enter'), null);
 });
 
-test('private notes survive a rename by AgentId and never bleed into another agent', () => {
-  const local = storage();
-  assert.equal(writeAgentNote(ADA, '<secret> My local reminder', () => local), true);
-  const renamed = { id: ADA, name: 'Renamed Ada' };
-  assert.equal(readAgentNote(renamed.id, () => local), '<secret> My local reminder');
-  assert.equal(readAgentNote(GRACE, () => local), '');
-  assert.equal(writeAgentNote(ADA, '', () => local), true);
-  assert.equal(readAgentNote(ADA, () => local), '');
-});
-
 test('malformed and oversized browser preferences fail closed', () => {
   for (const raw of ['{', '{}', '["not-an-agent"]', JSON.stringify([ADA, ADA]), JSON.stringify(Array(1025).fill(ADA))]) {
     assert.deepEqual(readAgentOrder('strip', () => ({ getItem: () => raw })), []);
   }
-  const local = storage();
-  assert.equal(writeAgentNote(ADA, 'x'.repeat(4097), () => local), false);
-  assert.equal(readAgentNote(ADA, () => ({ getItem: () => 'x'.repeat(4097) })), '');
 });
 
-test('refused storage getter, reads and writes retain safe defaults and report unsaved notes', () => {
+test('refused storage getter, reads and writes retain safe defaults and report unsaved order', () => {
   const local = storage();
   writeAgentOrder('strip', [GRACE, ADA], () => local);
   assert.deepEqual(readAgentOrder('strip', () => local), [GRACE, ADA]);
   for (const unavailable of [() => { throw Error('getter'); }, () => ({ getItem() { throw Error('read'); }, setItem() { throw Error('write'); } })]) {
     assert.deepEqual(readAgentOrder('strip', unavailable), []);
-    assert.equal(readAgentNote(ADA, unavailable), '');
     assert.equal(writeAgentOrder('strip', [ADA], unavailable), false);
-    assert.equal(writeAgentNote(ADA, 'local', unavailable), false);
   }
 });
 
@@ -91,28 +76,6 @@ test('Crew and the focus roster each keep this viewer\'s own order behind reorde
     assert.match(focus, /Reorder Grace, position 1 of 2/);
     assert.match(strip, /Reorder Ada renamed, position 1 of 2/);
     assert.match(strip, /aria-pressed="true"/);
-  } finally {
-    await server.close();
-    delete globalThis.window;
-  }
-});
-
-test('the private note identifies its agent and discloses browser-only storage', async () => {
-  const { createElement } = await import('react');
-  const { renderToStaticMarkup } = await import('react-dom/server');
-  const { createServer } = await import('vite');
-  const { resolve } = await import('node:path');
-  const local = storage();
-  writeAgentNote(ADA, 'Remember my review', () => local);
-  globalThis.window = { localStorage: local };
-  const server = await createServer({ root: resolve(import.meta.dirname, '..'), server: { middlewareMode: true, hmr: false }, appType: 'custom' });
-  try {
-    const { AgentNote } = await server.ssrLoadModule('/src/renderer/AgentNote.tsx');
-    const html = renderToStaticMarkup(createElement(AgentNote, { agent: ADA, name: 'Renamed Ada' }));
-    assert.match(html, /Private note<\/button>/);
-    assert.match(html, /This note lives only in this browser/);
-    assert.match(html, new RegExp(`aria-controls="private-note-${ADA}"`));
-    assert.match(renderToStaticMarkup(createElement(AgentNote, { agent: GRACE })), /Private note<\/button>/);
   } finally {
     await server.close();
     delete globalThis.window;

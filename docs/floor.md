@@ -71,8 +71,8 @@ relative and empty paths stop startup. `DUDES_FLOOR_PORT` applies to either bund
 unsigned ASCII decimal that fits `u16`; `0` asks the operating system for a free port, and a taken
 port stops startup. Without it, the daemon first asks for the port its last run bound, which it
 keeps in a `floor-port` file in the state directory, and takes a free port when that one is taken.
-The Floor's address then stays the same across restarts, so the private notes and roster order a
-browser keeps for it survive `dudes stop` and `dudes quickstart`. The startup line and
+The Floor's address then stays the same across restarts, so the roster order a
+browser keeps for it survives `dudes stop` and `dudes quickstart`. The startup line and
 `dudes floor open --no-browser` both show the port chosen. `dudes quickstart` passes neither
 variable to the daemon. Dudes always binds `127.0.0.1`; neither variable can change the host.
 

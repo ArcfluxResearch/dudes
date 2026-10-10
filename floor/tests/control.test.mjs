@@ -804,11 +804,11 @@ test('a 200 holds the pressed verb until a delta moves its control position, and
 test('the Pause hint says what pausing an attached agent does, and a Managed agent keeps its own', () => {
   subscribe({ agents: [agent({ mode: 'attached', status: 'attached' })] });
   const attached = strip();
-  assert.match(attached, /<p class="hire-note" id="control-hint">Pause refuses this agent’s prompts and tool calls until a Resume: each prompt submitted in its attached session is blocked and erased, each tool call is denied, and compaction is blocked\.<\/p>/);
+  assert.match(attached, /<span class="visually-hidden" id="control-hint">Pause refuses this agent’s prompts and tool calls until a Resume: each prompt submitted in its attached session is blocked and erased, each tool call is denied, and compaction is blocked\.<\/span>/);
   assert.doesNotMatch(attached, /its person/);
   resetFloorStore();
   subscribe();
-  assert.match(strip(), /<p class="hire-note" id="control-hint">Pause stops new turns and kills nothing: a turn already running runs to its end\.<\/p>/);
+  assert.match(strip(), /<span class="visually-hidden" id="control-hint">Pause stops new turns and kills nothing: a turn already running runs to its end\.<\/span>/);
   // Resume keeps its hint, attached or not.
   resetFloorStore();
   subscribe({ agents: [agent({ mode: 'attached', status: 'attached', paused: true, control_lsn: LSN })] });

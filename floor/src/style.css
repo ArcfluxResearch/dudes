@@ -1125,7 +1125,7 @@ samp,
 .agent-detail-head .portrait-figure { background-color: var(--card-background); }
 .agent-detail-identity p { margin: 0.3rem 0; overflow-wrap: anywhere; }
 .agent-detail-actions, .agent-detail-head > .agent-detail-hold, .agent-detail-head > .selection-bar,
-.agent-detail-head > .agent-detail-question, .agent-detail-head > .enable-controls { grid-column: 1 / -1; }
+.agent-detail-head > .agent-detail-question { grid-column: 1 / -1; }
 .selection-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .selection-bar .stream-state { margin: 0; overflow-wrap: anywhere; }
 /* Seven tabs pass the drawer's default width, so the row scrolls sideways rather than wrapping or showing a scrollbar. */
@@ -3094,11 +3094,6 @@ samp,
 .agent-reorder-handle[data-dragging='true'] { cursor: grabbing; }
 .agent-reorder-handle:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
 .reorder-position { font-size: 0.75rem; }
-.agent-private-note { margin-top: 1rem; }
-.agent-private-note button { padding: 0.3rem 0.5rem; border: 1px solid var(--accent-ink); background: var(--surface-muted); color: var(--ink); font: inherit; cursor: pointer; }
-.agent-private-note p { font-size: 0.8rem; }
-.agent-private-note label { display: block; }
-.agent-private-note textarea { box-sizing: border-box; width: 100%; resize: vertical; border: 1px solid var(--accent-ink); background: var(--output); color: var(--ink); font: inherit; }
 
 .chat-panel { display: grid; gap: .75rem; }
 .chat-panel section { min-width: 0; }
@@ -3168,3 +3163,44 @@ samp,
   font-family: var(--font-data);
   font-size: 0.85em;
 }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.agent-detail-name { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
+.agent-detail-name h2 { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.agent-detail-name .agent-name-editor > button {
+  margin: 0;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted-ink);
+  line-height: 1;
+}
+.agent-detail-name .agent-name-editor > button:hover { border-color: var(--line); color: var(--ink); }
+.agent-detail-name .agent-name-editor > button:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+.agent-detail-identity .agent-detail-status { margin: 0.15rem 0 0; color: var(--muted-ink); font-size: 0.84rem; }
+
+/* One compact row: the strips' own wrappers dissolve so their buttons sit side by side. */
+.agent-detail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.agent-detail-actions .agent-detail-control,
+.agent-detail-actions .control-actions,
+.agent-detail-actions .retire-offer,
+.agent-detail-actions .agent-detail-terminal { display: contents; }
+.agent-detail-actions button { flex: 1 1 5rem; margin: 0; padding: 0.3rem 0.5rem; text-align: center; }
+.agent-detail-actions p { flex: 1 1 100%; margin: 0; }
+.agent-detail-actions .agent-detail-pause { order: -1; }
+.agent-detail-actions .enable-controls { flex: 0 1 auto; }
+.agent-detail-actions .enable-controls[open] { flex-basis: 100%; }
+.agent-detail-actions .retire-dialog p { flex: none; margin: 0 0 0.75rem; }
+.agent-detail-actions .retire-dialog button { flex: none; padding: 0.3rem 0.7rem; }
+.agent-detail-status .stream-state { font-weight: inherit; }

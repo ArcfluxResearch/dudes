@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 
 import { AgentDetail } from './AgentDetail.tsx';
-import { AgentNote } from './AgentNote.tsx';
 import { AnswerForm, AnswerStatus } from './answer/AnswerPanel.tsx';
 import { ControlStatus, ControlStrip } from './control/ControlPanel.tsx';
 import { ChatPanel } from './chat/ChatPanel.tsx';
@@ -15,7 +14,7 @@ import type { FloorState } from './floor/store.ts';
 import { AGENT_DETAIL_HEADING_ID, handFocusOnLeave } from './focus.ts';
 import { GitPanel } from './git/GitPanel.tsx';
 import { GoalForm, GoalStatus } from './goal/GoalPanel.tsx';
-import { LiveWork, SelectionBar } from './LiveWork.tsx';
+import { LiveWork, SelectionBar, streamStatus } from './LiveWork.tsx';
 import { MemoryPanel } from './memory/MemoryPanel.tsx';
 import { LookStatus } from './look/LookEditor.tsx';
 import { MessagesPanel } from './MessagesPanel.tsx';
@@ -66,7 +65,7 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
     setDetailTab(tab);
     writeDetailTab(tab);
   }
-  const selection = <SelectionBar floor={floor} onClear={onClose} leaveFocusTo={leaveFocusTo} />;
+  const selection = <SelectionBar floor={floor} onClear={onClose} leaveFocusTo={leaveFocusTo} showStatus={row === null} />;
   const switchedOff = switchedOffControls(floor);
   return (
     <div className="agent-drawer" id="selected-agent-detail" key={selectedId ?? 'none'}
@@ -80,7 +79,7 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
           {selection}
         </header>
       ) : (
-        <AgentDetail row={row} selection={selection} tab={detailTab} onTabChange={chooseDetailTab}
+        <AgentDetail row={row} selection={selection} streamState={streamStatus(floor)} tab={detailTab} onTabChange={chooseDetailTab}
           chat={chatGate(floor, row).open ? <ChatPanel floor={floor} row={row} /> : null}
           live={floor.phase === 'live' && !floor.stale && floor.snapshotEpoch === floor.epoch}
           output={floor.output.targetId === row.id && (detailTab === 'output' || floor.output.view === 'reply' || floor.output.chunks.length > 0
@@ -104,8 +103,7 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
           </details>}
           answer={detailTab === 'chat' && chatGate(floor, row).open ? null
             : <AnswerForm floor={floor} row={row} leaveFocusTo={AGENT_DETAIL_HEADING_ID} />}
-          goal={<GoalForm floor={floor} row={row} />}
-          note={<AgentNote key={row.id} agent={row.id} />} />
+          goal={<GoalForm floor={floor} row={row} />} />
       )}
     </div>
   );
