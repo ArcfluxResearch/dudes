@@ -603,8 +603,7 @@ test('the Memory tab sits after Git, and the drawer always offers it for a live 
   const tabs = (html) => [...html.matchAll(/role="tab" class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map((match) => match[1]);
   const panel = (label) => createElement('p', null, label);
   assert.deepEqual(tabs(renderToStaticMarkup(createElement(AgentDetail, { row: ada, git: panel('Git'), memory: panel('Memory'),
-    messages: panel('Messages'), traces: [{ agent_id: ADA, started_at: null, duration_ms: null, outcome: 'ended', engine: 'claude',
-      tokens: null, cost_usd_micros: null }] }))), ['Overview', 'Git', 'Memory', 'Traces', 'Messages']);
+    messages: panel('Messages') }))), ['Overview', 'Git', 'Memory', 'Messages']);
   const drawer = (git) => tabs(renderToStaticMarkup(createElement(AgentDrawer, {
     floor: { ...store.getFloorState(), phase: 'live', stale: false, agents: [ada], git },
     row: ada, selectedId: ADA, onClose() {}, leaveFocusTo: 'crew-toggle',

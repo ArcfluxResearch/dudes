@@ -310,7 +310,7 @@ export function readDetailTab(storage: () => ViewStorage = browserStorage, fallb
   try {
     const value = storage().getItem(DETAIL_TAB_STORAGE_KEY);
     return value === 'overview' || value === 'output' || value === 'terminal' || value === 'git' || value === 'memory'
-      || value === 'traces' || value === 'messages' || value === 'chat' ? value : fallback;
+      || value === 'messages' || value === 'chat' ? value : fallback;
   } catch {
     return fallback;
   }

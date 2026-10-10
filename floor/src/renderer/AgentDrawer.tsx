@@ -94,7 +94,6 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
             ? null : <TerminalAttach floor={floor} row={row} part="details" />}
           git={floor.git ? <GitPanel row={row} active={detailTab === 'git'} /> : null}
           memory={<MemoryPanel agent={row.id} active={detailTab === 'memory'} crew={floor} />}
-          traces={floor.traces?.filter((trace) => trace.agent_id === row.id) ?? []}
           control={<ControlStrip floor={floor} row={row} />}
           retire={switchedOff.includes('retire') ? null : <RetireStrip floor={floor} row={row} />}
           terminal={switchedOff.includes('terminal') ? null : <TerminalAttach floor={floor} row={row} part="action" />}

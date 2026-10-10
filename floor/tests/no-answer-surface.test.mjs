@@ -464,7 +464,7 @@ test("CrewList.tsx's top-level imports include its live activity expiry hook, it
     }
     ts.forEachChild(node, collect);
   })(syntax);
-  assert.deepEqual(specifiers.sort(), ['./AgentOrder.tsx', './CrewTotals.tsx', './Portrait.tsx', './board.ts', './crewRow.ts', './scene/cast.ts', './useLiveActivityExpiry.ts', './workspace.ts', './worktree.ts', 'react'],
+  assert.deepEqual(specifiers.sort(), ['./AgentOrder.tsx', './Portrait.tsx', './board.ts', './crewRow.ts', './scene/cast.ts', './useLiveActivityExpiry.ts', './workspace.ts', './worktree.ts', 'react'],
     "CrewList.tsx's top-level imports changed; inspect any new path for an answer input");
   assert.equal(bindingNamesIn(syntax).filter(({ name }) => name === 'reveal').length, 1,
     'CrewList.tsx binds reveal more than once, so the pinned body may not be the one onFocus calls');

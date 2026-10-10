@@ -4,7 +4,6 @@ import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 
 import { ReorderHandle, useAgentOrder } from './AgentOrder.tsx';
 import type { AgentRow } from './scene/cast.ts';
-import { CrewTotals } from './CrewTotals.tsx';
 import { crewRowOf } from './crewRow.ts';
 import { initialOf } from './Portrait.tsx';
 import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
@@ -64,7 +63,6 @@ export function CrewList({ agents, cards = [], selectedId, selectable, stale, on
   return (
     <section className="crew-list" id="crew-list" aria-labelledby="crew-title" data-stale={stale ? 'true' : 'false'}>
       <h2 id="crew-title">Crew <span>{agents.length}</span></h2>
-      <CrewTotals agents={agents} />
       {checkouts === null ? null : <p className="crew-checkouts">Checkouts: {checkouts}</p>}
       {agents.length === 0 ? <p className="crew-empty">No current agents.</p> : <ul className="crew-rows">
         {ordered.map((row) => {

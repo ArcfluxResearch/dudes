@@ -30,8 +30,7 @@ before(async () => {
 after(async () => { await server?.close(); });
 const row = { id: '01ARZ3NDEKTSV4RRFFQ69G5FAV', name: 'Ada', role: 'Builder',
   provider: 'pi', status: 'idle', mode: 'managed' };
-const trace = { agent_id: row.id, started_at: null, duration_ms: null,
-  outcome: 'ended', engine: 'pi', tokens: null, cost_usd_micros: null };
+const git = createElement('p', null, 'Git details');
 const render = (props = {}) => renderToStaticMarkup(createElement(AgentDetail, { row, ...props }));
 const tabs = html => [...html.matchAll(/role="tab" class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map(match => match[1]);
 const header = html => html.match(/<header class="agent-detail-head">([\s\S]*?)<\/header>/)?.[1] ?? '';
@@ -55,11 +54,12 @@ async function drawer() {
 test('only available detail tabs appear, including Terminal only when switched on', () => {
   assert.deepEqual(tabs(render()), ['Overview']);
   const all = render({ output: createElement('p', null, 'Observed output'),
-    terminalDetails: createElement('p', null, 'Terminal details'), traces: [trace] });
-  assert.deepEqual(tabs(all), ['Overview', 'Output', 'Terminal', 'Traces']);
+    terminalDetails: createElement('p', null, 'Terminal details'), git });
+  assert.deepEqual(tabs(all), ['Overview', 'Output', 'Terminal', 'Git']);
   assert.doesNotMatch(all, /role="tab"[^>]*>Messages/);
-  const terminalOff = render({ output: createElement('p', null, 'Observed output'), traces: [trace] });
-  assert.deepEqual(tabs(terminalOff), ['Overview', 'Output', 'Traces']);
+  const terminalOff = render({ output: createElement('p', null, 'Observed output'), git });
+  assert.deepEqual(tabs(terminalOff), ['Overview', 'Output', 'Git']);
+  assert.doesNotMatch(all, /Traces/);
 });
 
 test('Chat is an optional detail panel with the existing reciprocal tab links', () => {
@@ -81,8 +81,8 @@ test('panels have reciprocal ARIA links, one selected tab and mounted hidden dra
   assert.match(html, /Unsubmitted goal draft/);
   assert.equal((html.match(/aria-selected="true"/g) ?? []).length, 1);
   assert.equal((html.match(/role="tab"[^>]*tabindex="0"/g) ?? []).length, 1);
-  assert.deepEqual(tabs(render({ tab: 'traces' })), ['Overview']);
-  assert.match(render({ tab: 'traces' }), /id="agent-detail-tab-overview"[^>]*aria-selected="true"/);
+  assert.deepEqual(tabs(render({ tab: 'git' })), ['Overview']);
+  assert.match(render({ tab: 'git' }), /id="agent-detail-tab-overview"[^>]*aria-selected="true"/);
 });
 
 test('the header retains identity and actions outside every panel', () => {
@@ -97,12 +97,12 @@ test('the header retains identity and actions outside every panel', () => {
 
 test('horizontal tab keys wrap and support Home and End without consuming scrolling keys', async () => {
   const { detailTabTarget } = await server.ssrLoadModule('/src/renderer/detailTabs.ts');
-  const available = ['overview', 'output', 'terminal', 'traces'];
-  assert.equal(detailTabTarget(available, 'overview', 'ArrowLeft'), 'traces');
-  assert.equal(detailTabTarget(available, 'traces', 'ArrowRight'), 'overview');
+  const available = ['overview', 'output', 'terminal', 'git'];
+  assert.equal(detailTabTarget(available, 'overview', 'ArrowLeft'), 'git');
+  assert.equal(detailTabTarget(available, 'git', 'ArrowRight'), 'overview');
   assert.equal(detailTabTarget(available, 'output', 'ArrowRight'), 'terminal');
   assert.equal(detailTabTarget(available, 'output', 'Home'), 'overview');
-  assert.equal(detailTabTarget(available, 'output', 'End'), 'traces');
+  assert.equal(detailTabTarget(available, 'output', 'End'), 'git');
   for (const key of ['ArrowUp', 'ArrowDown', 'Tab', 'Enter', ' ']) {
     assert.equal(detailTabTarget(available, 'output', key), null);
   }
@@ -212,11 +212,13 @@ test('a browser tab preference survives switching agents and a temporary missing
   const { readDetailTab, writeDetailTab } = await server.ssrLoadModule('/src/renderer/view.ts');
   const values = new Map();
   const storage = () => ({ getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) });
-  writeDetailTab('traces', storage);
-  assert.equal(readDetailTab(storage), 'traces');
-  assert.match(render({ tab: readDetailTab(storage), traces: [trace] }), /id="agent-detail-tab-traces"[^>]*aria-selected="true"/);
+  writeDetailTab('git', storage);
+  assert.equal(readDetailTab(storage), 'git');
+  assert.match(render({ tab: readDetailTab(storage), git }), /id="agent-detail-tab-git"[^>]*aria-selected="true"/);
   assert.match(render({ row: { ...row, id: '01ARZ3NDEKTSV4RRFFQ69G5FAX', name: 'Grace' }, tab: readDetailTab(storage) }), /id="agent-detail-tab-overview"[^>]*aria-selected="true"/);
-  assert.match(render({ tab: readDetailTab(storage), traces: [trace] }), /id="agent-detail-tab-traces"[^>]*aria-selected="true"/);
+  assert.match(render({ tab: readDetailTab(storage), git }), /id="agent-detail-tab-git"[^>]*aria-selected="true"/);
+  values.set('dudes.floor.agent-detail-tab', 'traces');
+  assert.equal(readDetailTab(storage), 'overview');
   for (const raw of ['{', '', 'x'.repeat(1000)]) {
     assert.equal(readDetailTab(() => ({ getItem: () => raw })), 'overview');
   }
@@ -229,7 +231,7 @@ test('the drawer hides empty waiting output and follows the terminal capability 
   const { center: drawn, output } = await drawer();
   const floor = { output };
   const center = patch => drawn(patch);
-  assert.deepEqual(tabs(center({})).filter(tab => ['Overview', 'Output', 'Terminal', 'Traces'].includes(tab)), ['Overview']);
+  assert.deepEqual(tabs(center({})).filter(tab => ['Overview', 'Output', 'Terminal'].includes(tab)), ['Overview']);
   const enabled = center({ terminal: true, output: { ...floor.output, status: 'live', chunks: ['Actual assistant output'] } });
   assert.match(enabled, /role="tab"[^>]*>Terminal<\/button>/);
   assert.match(enabled, /role="tab"[^>]*>Output<\/button>/);
