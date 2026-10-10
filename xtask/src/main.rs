@@ -16,6 +16,8 @@
 //!   portable implementation is a cross-check tool and never a resolved feature. See [`blake3_pure`].
 //! - `dist [--target <triple>]` — the release layout: release binaries and the built Floor in one directory. See
 //!   [`dist`].
+//! - `release-notes --draft --from <tag>` / `release-notes --version <v> ...` — a draft changelog
+//!   section, or the full GitHub Release body. See [`release_notes`].
 //!
 //! Commands shell out to `$CARGO` with typed argument lists; nothing is interpolated into a shell.
 //!
@@ -35,6 +37,7 @@ mod layering;
 mod lints;
 mod metadata;
 mod naming;
+mod release_notes;
 mod schemas;
 mod smoke;
 mod workspace;
@@ -112,6 +115,12 @@ fn run() -> Result<()> {
             let workspace = announce()?;
             dist::run(&workspace, target.as_deref())
         }
+        // The body is the artefact on stdout, so the banner goes to stderr.
+        "release-notes" => {
+            let mode = release_notes::parse(&rest)?;
+            let workspace = announce_on_stderr()?;
+            release_notes::run(&workspace, mode)
+        }
         "smoke" => {
             let workspace = announce()?;
             smoke::run(&workspace)
@@ -180,6 +189,10 @@ fn print_usage() {
          dist [--target <triple>]\n                     \
          build the release binaries and lay them out with floor/dist in\n                     \
          target/dist/dudes-<version>/\n  \
+         release-notes --draft --from <tag>\n                     \
+         print a draft CHANGELOG.md section from the pull requests since <tag>\n  \
+         release-notes --version <v> [--from <tag>] --repo <o/r> --run-url <url> --sums <file> --maintainer <login>\n                     \
+         [--authors <file>] [--preview]  print the GitHub Release body\n  \
          smoke              verify release install, quickstart, browser hire and cleanup"
     );
 }
