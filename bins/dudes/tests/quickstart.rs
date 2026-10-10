@@ -970,9 +970,16 @@ fn stop_ends_a_quickstarted_daemon() {
 fn start_starts_one_daemon_and_a_second_run_says_it_is_running() {
     let root = tempfile::tempdir().expect("a temporary installation home");
     let _daemon = daemon_binary();
+    let config = root.path().join("config.toml");
     let socket = dudes_rpc::local_endpoint(root.path().join("run"), dudes::env::SOCKET_NAME);
 
-    let first = captured_with_deadline(base_cli(root.path()).args(["start"]), root.path(), true);
+    let first = captured_with_deadline(
+        base_cli(root.path())
+            .env("DUDES_CONFIG", &config)
+            .args(["start"]),
+        root.path(),
+        true,
+    );
     let mut guard = DaemonGuard::from_root(root.path());
     assert_human_triple(&first, &socket, root.path());
     assert!(
@@ -982,7 +989,13 @@ fn start_starts_one_daemon_and_a_second_run_says_it_is_running() {
     let pids = spawned_pids(root.path());
     assert_eq!(pids.len(), 1, "start created {pids:?}");
 
-    let second = captured_with_deadline(base_cli(root.path()).args(["start"]), root.path(), false);
+    let second = captured_with_deadline(
+        base_cli(root.path())
+            .env("DUDES_CONFIG", &config)
+            .args(["start"]),
+        root.path(),
+        false,
+    );
     assert_eq!(second.code(), dudes::exit::SUCCESS, "{second:?}");
     assert!(second.stderr.is_empty(), "{second:?}");
     assert!(
@@ -1003,6 +1016,18 @@ fn start_starts_one_daemon_and_a_second_run_says_it_is_running() {
         spawned_pids(root.path()),
         pids,
         "start created another daemon"
+    );
+
+    assert!(!config.exists(), "start wrote the operator file");
+    let agents = base_cli(root.path())
+        .env("DUDES_CONFIG", &config)
+        .args(["--json", "agents"])
+        .run();
+    assert_eq!(agents.code(), dudes::exit::SUCCESS, "{agents:?}");
+    assert_eq!(
+        agents.json::<serde_json::Value>(),
+        serde_json::json!([]),
+        "start hired an agent"
     );
 
     guard.stop();

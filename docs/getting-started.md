@@ -104,7 +104,7 @@ Dudes reads no engine's credentials or files.
 
    To start the daemon again, for example after you rerun the installer to upgrade, run
    `dudes start`. It asks nothing, changes no settings and hires no agent. If a daemon is
-   already running it says so, and it tells you when that daemon is an older version than
+   already running it says so, and it tells you when that daemon is a different version from
    `dudes`.
 
 `dudes --help` lists every command and option.
