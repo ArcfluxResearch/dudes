@@ -7,14 +7,12 @@ import { ArchivedAgents } from './ArchivedAgents.tsx';
 import type { RetiredAgentRow } from './archive.ts';
 import { LogPanel } from './LogPanel.tsx';
 import { ReorderHandle, useAgentOrder } from './AgentOrder.tsx';
-import { activeCard } from './board.ts';
-import { AnswerForm } from './answer/AnswerPanel.tsx';
 import { journalPosition } from './format.ts';
 import { closesPanel, handFocusOnLeave } from './focus.ts';
 import { StreamReadStatus } from './ReadError.tsx';
 import type { FloorState } from './floor/store.ts';
-import { openQuestions } from './questions.ts';
-import type { OpenQuestion } from './questions.ts';
+import { waitingOnYou } from './questions.ts';
+import type { WaitingItem } from './questions.ts';
 import { fieldsOf } from './scene/label.ts';
 import { SetupView } from './setup/SetupView.tsx';
 import { SettingsView } from './settings/SettingsView.tsx';
@@ -22,12 +20,11 @@ import { Board, CardDetail } from './BoardPanel.tsx';
 import { workspaceGroups, workspaceLabel } from './workspace.ts';
 import { HireEntry } from './onboarding/HireEntry.tsx';
 
-export type ControlView = 'overview' | 'questions' | 'board' | 'log' | 'setup' | 'settings';
+export type ControlView = 'overview' | 'board' | 'log' | 'setup' | 'settings';
 
 /** Control's views, in top bar order. Setup and Settings take a fresh snapshot when they open. */
 export const CONTROL_VIEWS: readonly { readonly view: ControlView; readonly label: string; readonly refresh: boolean }[] = [
   { view: 'overview', label: 'Overview', refresh: false },
-  { view: 'questions', label: 'Questions', refresh: false },
   { view: 'board', label: 'Board', refresh: false },
   { view: 'log', label: 'Log', refresh: false },
   { view: 'setup', label: 'Setup', refresh: true },
@@ -57,14 +54,16 @@ function focusOnArrival(node: HTMLHeadingElement | null): void {
   node?.focus();
 }
 
-export function OverviewSummary({ floor, selectedId, onHireAgain }: {
+export function OverviewSummary({ floor, selectedId, onOpenQuestion, onHireAgain }: {
   readonly floor: FloorState;
   readonly selectedId: string | null;
+  readonly onOpenQuestion: (agentId: string) => void;
   readonly onHireAgain?: (row: RetiredAgentRow, opener: HTMLButtonElement) => void;
 }) {
   return (
     <div className="overview-summary">
       <StreamReadStatus floor={floor} />
+      <WaitingSection floor={floor} onOpen={onOpenQuestion} />
       <dl>
         <div><dt>Current agents</dt><dd>{floor.agents.length}</dd></div>
         <div><dt>Journal position</dt><dd className="data">{journalPosition(floor.lsn)}</dd></div>
@@ -142,48 +141,36 @@ export function FocusRoster({ collapsed, onToggle, ...roster }: Parameters<typeo
   );
 }
 
-function Questions({ floor, questions }: {
-  readonly floor: FloorState;
-  readonly questions: readonly OpenQuestion[];
+/** The things waiting on the operator, one entry each. The list is absent when nothing waits. */
+export function WaitingOnYou({ items, selectable, onOpen }: {
+  readonly items: readonly WaitingItem[];
+  readonly selectable: boolean;
+  readonly onOpen: (agentId: string) => void;
 }) {
   return (
-    <div className="questions">
-      <StreamReadStatus floor={floor} />
-      {questions.length === 0 ? <p>No agent is waiting on a question.</p> : (
-        <>
-          <p>{questions.length === 1 ? '1 open question' : `${questions.length} open questions`}, newest first.</p>
-          <ol aria-label="Open questions">
-            {questions.map((question) => (
-              <li key={question.row.id} className="questions-entry" data-question-agent-id={question.row.id}>
-                <h3>{question.name}</h3>
-                <p>{question.text}</p>
-                <dl className="questions-context">
-                  <div><dt>Current goal</dt><dd>{fieldsOf(question.row).goal || 'No goal'}</dd></div>
-                  <div><dt>Current active card</dt><dd>{activeCard(floor.cards, question.row.id)?.title ?? 'No active card'}</dd></div>
-                </dl>
-                <AnswerForm floor={floor} row={question.row} leaveFocusTo={CONTROL_TITLE_ID} />
-              </li>
-            ))}
-          </ol>
-        </>
-      )}
-      <section className="questions-history" aria-label="Recent answered questions">
-        <h3>Recent answered questions</h3>
-        <p>A bounded recent window. Answer text is not shown.</p>
-        {floor.questionHistory.length === 0 ? <p>No recent answered questions.</p> : floor.agents.map((row) => {
-          const history = floor.questionHistory.filter((question) => question.agent_id === row.id).slice().reverse();
-          return history.length === 0 ? null : <section key={row.id} data-history-agent-id={row.id}>
-            <h4>{value(row.name)}</h4>
-            <ol aria-label={`Recent answered questions for ${value(row.name)}`}>
-              {history.map((question) => <li key={question.question_lsn}>
-                <p>{question.question}</p><span>Answered</span>
-              </li>)}
-            </ol>
-          </section>;
-        })}
-      </section>
-    </div>
+    <section className="waiting-on-you" aria-labelledby="waiting-on-you-title">
+      <h3 id="waiting-on-you-title">Waiting on you</h3>
+      <ol aria-label="Things waiting on you">
+        {items.map((item) => (
+          <li key={item.key} className="waiting-item" data-waiting-kind={item.kind} data-waiting-agent-id={item.agentId}>
+            <h4>{item.name}</h4>
+            <p>{item.text}</p>
+            <button type="button" className="waiting-open" disabled={!selectable}
+              onClick={() => onOpen(item.agentId)}>Answer</button>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
+}
+
+function WaitingSection({ floor, onOpen }: {
+  readonly floor: FloorState;
+  readonly onOpen: (agentId: string) => void;
+}) {
+  const items = waitingOnYou(floor.agents);
+  return items.length === 0 ? null
+    : <WaitingOnYou items={items} selectable={floor.phase === 'live' && !floor.stale} onOpen={onOpen} />;
 }
 
 export function ControlNav({ floor, view, onToggle }: {
@@ -191,32 +178,31 @@ export function ControlNav({ floor, view, onToggle }: {
   readonly view: ControlView | null;
   readonly onToggle: (view: ControlView) => void;
 }) {
-  const questions = openQuestions(floor.agents).length;
   return (
     <nav className="control-nav" aria-label="Views">
       {CONTROL_VIEWS.map((entry) => <button key={entry.view} type="button" id={viewButtonId(entry.view)}
         aria-pressed={view === entry.view} aria-controls={view === entry.view ? 'control-panel' : undefined}
         onClick={() => onToggle(entry.view)}>
-        {entry.label}{entry.view === 'questions' && questions !== 0 ? ` (${questions})` : null}
+        {entry.label}
       </button>)}
     </nav>
   );
 }
 
-export function Control({ floor, view, selectedId, onClose, onView, onHireAgain, onGuide }: {
+export function Control({ floor, view, selectedId, onClose, onView, onOpenQuestion, onHireAgain, onGuide }: {
   readonly floor: FloorState;
   readonly view: ControlView;
   readonly selectedId: string | null;
   readonly onClose: () => void;
   readonly onView: (view: ControlView) => void;
+  readonly onOpenQuestion: (agentId: string) => void;
   readonly onHireAgain?: (row: RetiredAgentRow, opener: HTMLButtonElement) => void;
   readonly onGuide?: () => void;
 }) {
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const selectedCard = (floor.cards ?? []).find((card) => card.id === selectedCardId) ?? null;
   const panels: Record<ControlView, ReactNode> = {
-    overview: <OverviewSummary floor={floor} selectedId={selectedId} onHireAgain={onHireAgain} />,
-    questions: <Questions floor={floor} questions={openQuestions(floor.agents)} />,
+    overview: <OverviewSummary floor={floor} selectedId={selectedId} onOpenQuestion={onOpenQuestion} onHireAgain={onHireAgain} />,
     board: <Board floor={floor} selectedId={selectedCardId} onSelect={setSelectedCardId} />,
     log: <LogPanel floor={floor} />,
     setup: <SetupView floor={floor} onGuide={onGuide} />,
