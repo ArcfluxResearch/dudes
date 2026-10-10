@@ -1,0 +1,54 @@
+name: Bug report
+description: Something in Dudes does not work as the docs say.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security problems go to the private report linked on the previous page, not here.
+  - type: input
+    id: version
+    attributes:
+      label: Dudes version
+      description: The output of `dudes --version`.
+      placeholder: dudes 0.79.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS on Apple silicon
+        - macOS on Intel
+        - Linux x86_64
+        - Linux arm64
+        - Windows (built from source)
+    validations:
+      required: true
+  - type: input
+    id: engine
+    attributes:
+      label: Engine and its version
+      description: Which coding-agent CLI the agent runs, and `claude --version`, `codex --version` or `pi --version`.
+      placeholder: Claude Code 2.x
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      description: The commands you ran, or what you clicked on the Floor, in order.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Include the exact error text. `dudes agents` output helps for agent problems.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true

@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest a change or a new capability.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do with your agents, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help
+      description: The change you have in mind, and how you would know it works.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do instead today

@@ -1,5 +1,9 @@
 # Dudes
 
+[![CI](https://github.com/ArcfluxResearch/dudes/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ArcfluxResearch/dudes/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ArcfluxResearch/dudes)](https://github.com/ArcfluxResearch/dudes/releases/latest)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#licence)
+
 Dudes is a supervisor for coding agents, written in Rust. You hire an agent, such as Claude Code,
 Codex or Pi, and give it a role. You then talk to it, or give it a **goal** with a completion check.
 A background daemon keeps the agent working until the daemon's own run of that
