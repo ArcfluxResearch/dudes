@@ -434,6 +434,7 @@ fn ask_check(
         let text = match (answer.as_str(), &suggested) {
             ("-", _) | ("", None) if skippable => return Ok(None),
             ("", Some(text)) => text.as_str(),
+            ("-", _) => "",
             (text, _) => text,
         };
         match words(text) {
@@ -456,10 +457,15 @@ fn workspace_step(
             cwd.display()
         ))?);
     }
+    let hires = if file.satisfies(Key::Hire) {
+        "the Floor can hire agents into it"
+    } else {
+        "the Floor can hire agents into it once floor.hire is on"
+    };
     term.say(&format!(
-        "\nWorkspace. {} is a git repository. Enrolled, the Floor can hire agents into it. A \
-         completion check is a command the daemon runs itself to decide that a goal is done, typed \
-         as a program and its arguments separated by spaces.",
+        "\nWorkspace. {} is a git repository. Enrolled, {hires}. A completion check is a command \
+         the daemon runs itself to decide that a goal is done, typed as a program and its \
+         arguments separated by spaces.",
         cwd.display()
     ))?;
     let suggestion = suggest_check(cwd);
@@ -496,7 +502,10 @@ fn hire_step(
     plan: &mut Plan,
 ) -> Result<(), Stopped> {
     term.say("")?;
-    if !term.yes("Hire a first agent?", true)? {
+    let runnable = [Provider::Claude, Provider::Codex, Provider::Pi]
+        .into_iter()
+        .any(|provider| engine_on(file, provider) && host.found.contains(&provider));
+    if !term.yes("Hire a first agent?", runnable)? {
         return Ok(());
     }
     let name = term.value("Name", Some(DEFAULT_NAME), display_text)?;
@@ -1116,6 +1125,71 @@ mod tests {
         assert!(!run.shown.contains("Engine ("), "{}", run.shown);
         assert!(!run.shown.contains("Whole dollars"), "{}", run.shown);
         run.plan.expect("answered");
+    }
+
+    /// With no engine program on the PATH, hiring defaults to No.
+    #[test]
+    fn hiring_defaults_to_no_without_an_engine_program() {
+        let run = run_guided(
+            "",
+            &[(FLOOR, "n"), ("Hire a first agent? [y/N]", "")],
+            None,
+            &host(&[], &[]),
+        );
+        assert!(run.plan.expect("answered").hire.is_none());
+    }
+
+    /// The workspace sentence says the Floor hires into it only while Hire is on.
+    #[test]
+    fn enrolling_says_hire_is_off_when_the_floor_is_declined() {
+        let bare = repo(&[]);
+        let quiet = host(&[Provider::Claude], &[]);
+        let questions = [
+            (FLOOR, "n"),
+            ("(- to skip):", "-"),
+            ("Hire a first agent? [Y/n]", "n"),
+        ];
+        let run = run_guided("", &questions, Some(bare.path()), &quiet);
+        assert!(
+            run.shown
+                .contains("Enrolled, the Floor can hire agents into it once floor.hire is on."),
+            "{}",
+            run.shown
+        );
+        let run = run_guided(
+            "",
+            &[(FLOOR, "y"), questions[1], questions[2]],
+            Some(bare.path()),
+            &quiet,
+        );
+        assert!(
+            run.shown
+                .contains("Enrolled, the Floor can hire agents into it. "),
+            "{}",
+            run.shown
+        );
+    }
+
+    /// A lone `-` is not a program when the check cannot be skipped.
+    #[test]
+    fn a_required_check_rejects_a_lone_dash() {
+        let go = repo(&[("go.mod", "")]);
+        let run = run_guided(
+            "",
+            &[
+                (FLOOR, "n"),
+                ("(- to skip):", "-"),
+                ("Hire a first agent? [Y/n]", ""),
+                ("Name [Kim]:", ""),
+                ("Goal (Enter for none):", "ship it"),
+                ("Completion check [go test ./...]:", "-"),
+                ("Type the program and its arguments.", "make check"),
+            ],
+            Some(go.path()),
+            &host(&[Provider::Claude], &[]),
+        );
+        let plan = run.plan.expect("answered");
+        assert_eq!(plan.check.expect("a check").argv, ["make", "check"]);
     }
 
     /// The input ending is a stop, never a default: nothing is planned.
