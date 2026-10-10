@@ -35,7 +35,7 @@ build that runs on any distribution. `~/.local/bin/dudes --version` checks the i
 a specific version, run the script with `sh -s -- --version <version>`. You also need at least one of the `claude`,
 `codex` or `pi` CLIs, signed in.
 
-To upgrade, run the same install command again, then `dudes stop` and `dudes quickstart`. There is
+To upgrade, run the same install command again, then `dudes stop` and `dudes start`. There is
 no separate upgrade command, and a running daemon keeps using the old binary until it stops.
 
 To build from source, or on Windows, see [Build Dudes from source](docs/building-from-source.md).

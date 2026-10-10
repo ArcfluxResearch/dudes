@@ -413,7 +413,7 @@ fn upgrade_text(version: &str, repo: &str, breaking: &str) -> String {
          curl -fsSL https://raw.githubusercontent.com/{repo}/main/install.sh | sh -s -- --version {version}\n\
          ```\n\n\
          A running daemon keeps using the old binary until it stops. Run `dudes stop`, then \
-         `dudes quickstart`, to start the new one.\n\n{breaking}"
+         `dudes start`, to start the new one.\n\n{breaking}"
     )
 }
 
@@ -700,7 +700,7 @@ There is no upgrade command. Run the installer again to replace your installed v
 curl -fsSL https://raw.githubusercontent.com/example/dudes/main/install.sh | sh -s -- --version 0.2.0
 ```
 
-A running daemon keeps using the old binary until it stops. Run `dudes stop`, then `dudes quickstart`, to start the new one.
+A running daemon keeps using the old binary until it stops. Run `dudes stop`, then `dudes start`, to start the new one.
 
 Breaking changes:
 
