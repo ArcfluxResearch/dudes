@@ -6345,7 +6345,7 @@
           "type": "string"
         },
         "description": {
-          "description": "The note, trimmed; empty when there is none.",
+          "description": "The note exactly as written; empty when there is none.",
           "type": "string"
         },
         "done_when": {
@@ -6361,7 +6361,7 @@
           "type": "string"
         },
         "title": {
-          "description": "Title, trimmed.",
+          "description": "Title, trimmed, on one line.",
           "type": "string"
         }
       },
@@ -6389,7 +6389,7 @@
           "description": "The card."
         },
         "description": {
-          "description": "The note, trimmed; empty when there is none.",
+          "description": "The note exactly as written; empty when there is none.",
           "type": "string"
         },
         "done_when": {
@@ -6405,7 +6405,7 @@
           "type": "string"
         },
         "title": {
-          "description": "Title, trimmed.",
+          "description": "Title, trimmed, on one line.",
           "type": "string"
         }
       },
