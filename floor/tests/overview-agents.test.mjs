@@ -80,19 +80,20 @@ test('Overview and the drawer report only published stream and selected-agent fa
   });
 });
 
-test('focus shows a switchable roster beside selected details and live output, and can collapse the roster', async () => {
+test('focus shows a switchable roster beside selected details and the stream status, and can collapse the roster', async () => {
   await withViews(({ focus }) => {
     const output = { ...live.output, targetId: ADA, agentId: ADA, status: 'live', chunks: ['A live line'] };
     const focused = focus({ ...live, output }, ada, ADA);
     assert.match(focused, /aria-label="Focus roster"/);
     assert.match(focused, new RegExp(`data-agent-id="${GRACE}"`));
     assert.match(focused, /data-selected-agent-id=/);
-    assert.match(focused, /A live line/);
+    assert.match(focused, /Turn in progress/);
+    assert.doesNotMatch(focused, /A live line/, 'raw output is not drawn outside Chat');
     assert.match(focused, /aria-expanded="true"[^>]*>Hide roster<\/button>/);
     const collapsed = focus({ ...live, output }, ada, ADA, true);
     assert.match(collapsed, /aria-expanded="false"[^>]*>Show roster<\/button>/);
     assert.doesNotMatch(collapsed, /data-agent-id=/);
-    assert.match(collapsed, /A live line/);
+    assert.match(collapsed, /Turn in progress/);
   });
 });
 
@@ -178,11 +179,11 @@ test('a turn without assistant text hides Output while the header retains its st
 });
 
 
-test('a waiting question keeps priority over the last turn output', async () => {
+test('a waiting question is drawn and the last turn output is not', async () => {
   await withViews(({ drawer: center }) => {
     const floor = { ...live, output: { ...live.output, targetId: ADA, status: 'ended', chunks: ['Question pending'] } };
     const html = center(floor, ada, ADA);
     assert.match(html, /aria-label="Waiting question"/);
-    assert.ok(html.indexOf('aria-label="Waiting question"') < html.indexOf('aria-label="Live work"'));
+    assert.doesNotMatch(html, /Question pending|aria-label="Live work"/);
   });
 });

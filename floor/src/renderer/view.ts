@@ -288,7 +288,7 @@ const DETAIL_TAB_STORAGE_KEY = 'dudes.floor.agent-detail-tab';
 export function readDetailTab(storage: () => ViewStorage = browserStorage, fallback: DetailTab = 'overview'): DetailTab {
   try {
     const value = storage().getItem(DETAIL_TAB_STORAGE_KEY);
-    return value === 'overview' || value === 'output' || value === 'terminal' || value === 'git' || value === 'memory'
+    return value === 'overview' || value === 'terminal' || value === 'git' || value === 'memory'
       || value === 'messages' || value === 'chat' ? value : fallback;
   } catch {
     return fallback;

@@ -28,15 +28,15 @@ const message = (id, from, to, lsn, at, state) => ({ id, from, to, lsn, at, stat
 test('Messages joins the detail registry with ARIA, hidden drafts and persistent keyboard selection', async () => {
   const html = renderToStaticMarkup(createElement(AgentDetail, { row, tab: 'messages',
     messages: createElement('p', null, 'Approved mail metadata'),
-    output: createElement('p', null, 'Observed output'),
+    git: createElement('p', null, 'Git details'),
     goal: createElement('textarea', { defaultValue: 'Unsubmitted goal draft' }) }));
   assert.match(html, /id="agent-detail-tab-messages"[^>]*aria-controls="agent-detail-panel-messages"[^>]*aria-selected="true"[^>]*tabindex="0"/);
   assert.match(html, /id="agent-detail-panel-messages"[^>]*aria-labelledby="agent-detail-tab-messages"/);
   assert.match(html, /id="agent-detail-panel-overview"[^>]*hidden=""/);
   assert.match(html, /Unsubmitted goal draft/);
-  assert.match(html, /id="agent-detail-panel-output"[^>]*hidden=""/);
+  assert.match(html, /id="agent-detail-panel-git"[^>]*hidden=""/);
   const { detailTabTarget } = await server.ssrLoadModule('/src/renderer/detailTabs.ts');
-  assert.equal(detailTabTarget(['overview', 'output', 'terminal', 'messages'], 'messages', 'ArrowRight'), 'overview');
+  assert.equal(detailTabTarget(['overview', 'chat', 'terminal', 'messages'], 'messages', 'ArrowRight'), 'overview');
   const { readDetailTab, writeDetailTab } = await server.ssrLoadModule('/src/renderer/view.ts');
   const values = new Map();
   const storage = () => ({ getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) });

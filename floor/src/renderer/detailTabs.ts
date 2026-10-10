@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-export type DetailTab = 'overview' | 'output' | 'terminal' | 'git' | 'memory' | 'messages' | 'chat';
+export type DetailTab = 'overview' | 'terminal' | 'git' | 'memory' | 'messages' | 'chat';
 
 export function detailTabTarget(tabs: readonly DetailTab[], current: DetailTab, key: string): DetailTab | null {
   const at = tabs.indexOf(current);

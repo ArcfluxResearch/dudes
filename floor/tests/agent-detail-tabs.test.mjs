@@ -53,12 +53,13 @@ async function drawer() {
 
 test('only available detail tabs appear, including Terminal only when switched on', () => {
   assert.deepEqual(tabs(render()), ['Overview']);
-  const all = render({ output: createElement('p', null, 'Observed output'),
-    terminalDetails: createElement('p', null, 'Terminal details'), git });
-  assert.deepEqual(tabs(all), ['Overview', 'Output', 'Terminal', 'Git']);
+  const all = render({ terminalDetails: createElement('p', null, 'Terminal details'), git });
+  assert.deepEqual(tabs(all), ['Overview', 'Terminal', 'Git']);
   assert.doesNotMatch(all, /role="tab"[^>]*>Messages/);
-  const terminalOff = render({ output: createElement('p', null, 'Observed output'), git });
-  assert.deepEqual(tabs(terminalOff), ['Overview', 'Output', 'Git']);
+  const terminalOff = render({ git });
+  assert.deepEqual(tabs(terminalOff), ['Overview', 'Git']);
+  assert.doesNotMatch(render({ output: createElement('p', null, 'Observed output'), git }), /Output/,
+    'there is no Output tab to fill');
   assert.doesNotMatch(all, /Traces/);
 });
 
@@ -72,17 +73,17 @@ test('Chat is an optional detail panel with the existing reciprocal tab links', 
 });
 
 test('panels have reciprocal ARIA links, one selected tab and mounted hidden drafts', () => {
-  const html = render({ tab: 'output', output: createElement('p', null, 'Observed output'),
+  const html = render({ tab: 'git', git,
     goal: createElement('textarea', { defaultValue: 'Unsubmitted goal draft', 'aria-label': 'Goal draft' }) });
   assert.match(html, /role="tablist" aria-label="Agent detail sections"/);
-  assert.match(html, /id="agent-detail-tab-output"[^>]*aria-controls="agent-detail-panel-output"[^>]*aria-selected="true"[^>]*tabindex="0"/);
-  assert.match(html, /id="agent-detail-panel-output"[^>]*role="tabpanel"[^>]*aria-labelledby="agent-detail-tab-output"/);
+  assert.match(html, /id="agent-detail-tab-git"[^>]*aria-controls="agent-detail-panel-git"[^>]*aria-selected="true"[^>]*tabindex="0"/);
+  assert.match(html, /id="agent-detail-panel-git"[^>]*role="tabpanel"[^>]*aria-labelledby="agent-detail-tab-git"/);
   assert.match(html, /id="agent-detail-panel-overview"[^>]*hidden=""/);
   assert.match(html, /Unsubmitted goal draft/);
   assert.equal((html.match(/aria-selected="true"/g) ?? []).length, 1);
   assert.equal((html.match(/role="tab"[^>]*tabindex="0"/g) ?? []).length, 1);
-  assert.deepEqual(tabs(render({ tab: 'git' })), ['Overview']);
-  assert.match(render({ tab: 'git' }), /id="agent-detail-tab-overview"[^>]*aria-selected="true"/);
+  assert.deepEqual(tabs(render({ tab: 'memory' })), ['Overview']);
+  assert.match(render({ tab: 'memory' }), /id="agent-detail-tab-overview"[^>]*aria-selected="true"/);
 });
 
 test('the header retains identity and actions outside every panel', () => {
@@ -97,14 +98,14 @@ test('the header retains identity and actions outside every panel', () => {
 
 test('horizontal tab keys wrap and support Home and End without consuming scrolling keys', async () => {
   const { detailTabTarget } = await server.ssrLoadModule('/src/renderer/detailTabs.ts');
-  const available = ['overview', 'output', 'terminal', 'git'];
+  const available = ['overview', 'chat', 'terminal', 'git'];
   assert.equal(detailTabTarget(available, 'overview', 'ArrowLeft'), 'git');
   assert.equal(detailTabTarget(available, 'git', 'ArrowRight'), 'overview');
-  assert.equal(detailTabTarget(available, 'output', 'ArrowRight'), 'terminal');
-  assert.equal(detailTabTarget(available, 'output', 'Home'), 'overview');
-  assert.equal(detailTabTarget(available, 'output', 'End'), 'git');
+  assert.equal(detailTabTarget(available, 'chat', 'ArrowRight'), 'terminal');
+  assert.equal(detailTabTarget(available, 'chat', 'Home'), 'overview');
+  assert.equal(detailTabTarget(available, 'chat', 'End'), 'git');
   for (const key of ['ArrowUp', 'ArrowDown', 'Tab', 'Enter', ' ']) {
-    assert.equal(detailTabTarget(available, 'output', key), null);
+    assert.equal(detailTabTarget(available, 'chat', key), null);
   }
 });
 
@@ -117,7 +118,7 @@ test('a selected tab past the edge of the scrolling tab row scrolls just into vi
 });
 
 test('multiple detail sections show a scroll hint linked to their tab row', () => {
-  const html = render({ output: createElement('p', null, 'Observed output') });
+  const html = render({ git });
   assert.match(html, /role="tablist"[^>]*aria-describedby="agent-detail-tab-hint"/);
   assert.match(html, /<p id="agent-detail-tab-hint"[^>]*>Scroll for more sections/);
   assert.doesNotMatch(render(), /id="agent-detail-tab-hint"/);
@@ -195,12 +196,12 @@ test('the drawer scrolls its tab row so the selected tab shows, and again when t
     const root = createRoot(page.host);
     const panel = createElement('p', null, 'panel');
     const show = (tab) => act(() => root.render(createElement(AgentDetail, { row, tab,
-      output: panel, chat: panel, terminalDetails: panel, git: panel, messages: panel })));
+      chat: panel, terminalDetails: panel, git: panel, messages: panel })));
     const strip = () => page.host.querySelector('[role="tablist"]');
     await show('messages');
-    assert.equal(strip().childNodes.length, 6);
-    assert.equal(strip().scrollLeft, 280, 'the sixth tab, 400 to 480 pixels along a 200 pixel row, is out of view');
-    await show('output');
+    assert.equal(strip().childNodes.length, 5);
+    assert.equal(strip().scrollLeft, 200, 'the fifth tab, 320 to 400 pixels along a 200 pixel row, is out of view');
+    await show('chat');
     assert.equal(strip().scrollLeft, 80, 'the second tab is out of view to the left');
     await act(() => root.unmount());
   } finally {
@@ -223,26 +224,26 @@ test('a browser tab preference survives switching agents and a temporary missing
     assert.equal(readDetailTab(() => ({ getItem: () => raw })), 'overview');
   }
   assert.equal(readDetailTab(() => { throw Error('refused'); }), 'overview');
-  assert.doesNotThrow(() => writeDetailTab('output', () => { throw Error('refused'); }));
+  assert.doesNotThrow(() => writeDetailTab('overview', () => { throw Error('refused'); }));
 });
 
 
-test('the drawer hides empty waiting output and follows the terminal capability switch', async () => {
+test('the drawer never offers an Output tab and follows the terminal capability switch', async () => {
   const { center: drawn, output } = await drawer();
   const floor = { output };
   const center = patch => drawn(patch);
   assert.deepEqual(tabs(center({})).filter(tab => ['Overview', 'Output', 'Terminal'].includes(tab)), ['Overview']);
   const enabled = center({ terminal: true, output: { ...floor.output, status: 'live', chunks: ['Actual assistant output'] } });
   assert.match(enabled, /role="tab"[^>]*>Terminal<\/button>/);
-  assert.match(enabled, /role="tab"[^>]*>Output<\/button>/);
-  assert.match(enabled, /Actual assistant output/);
+  assert.deepEqual(tabs(enabled).filter(tab => tab === 'Output'), []);
+  assert.doesNotMatch(enabled, /Actual assistant output/, 'raw output is drawn only under Chat\'s Show full output');
   for (const patch of [{ terminal: true, stale: true }, { terminal: true, phase: 'resyncing' },
     { terminal: true, epoch: 2, snapshotEpoch: 1 }, { terminal: true, agents: [] }]) {
     assert.doesNotMatch(center(patch), /role="tab"[^>]*>Terminal<\/button>/);
   }
   const diagnostic = center({ output: { ...floor.output, status: 'gap' } });
-  assert.match(diagnostic, /role="tab"[^>]*>Output<\/button>/);
-  assert.match(diagnostic, /Gap — output incomplete/);
+  assert.deepEqual(tabs(diagnostic).filter(tab => tab === 'Output'), []);
+  assert.match(diagnostic, /Gap — output incomplete/, 'the header still names the stream state');
   assert.doesNotMatch(center({ output: { ...floor.output, targetId: '01ARZ3NDEKTSV4RRFFQ69G5FAX', chunks: ['Other agent output'] } }), /Other agent output/);
 });
 
@@ -266,11 +267,11 @@ test('header Attach and terminal guidance share the existing offer without dupli
 
 test('tab selection follows a focused fallback section until focus leaves it', async () => {
   const { detailTabSelection } = await server.ssrLoadModule('/src/renderer/detailTabs.ts');
-  const available = ['overview', 'output', 'terminal'];
-  assert.equal(detailTabSelection(available, 'output', 'overview'), 'overview');
-  assert.equal(detailTabSelection(available, 'output', null), 'output');
-  assert.equal(detailTabSelection(['overview', 'terminal'], 'output', 'output'), 'overview');
-  assert.equal(detailTabSelection(['overview', 'terminal'], 'output', 'terminal'), 'terminal');
+  const available = ['overview', 'git', 'terminal'];
+  assert.equal(detailTabSelection(available, 'git', 'overview'), 'overview');
+  assert.equal(detailTabSelection(available, 'git', null), 'git');
+  assert.equal(detailTabSelection(['overview', 'terminal'], 'git', 'git'), 'overview');
+  assert.equal(detailTabSelection(['overview', 'terminal'], 'git', 'terminal'), 'terminal');
 });
 
 test('the drawer\'s close button stays in the detail header with or without output, and while the view is unconfirmed', async () => {
@@ -291,12 +292,11 @@ test('the drawer\'s close button stays in the detail header with or without outp
   assert.equal(none, '', 'the drawer is drawn with nothing selected');
 });
 
-test('a waiting question and its answer form stay in the header while Output is the stored tab', () => {
+test('a waiting question and its answer form stay in the header while Git is the stored tab', () => {
   const question = 'Ship now, or wait for a review?';
-  const html = render({ row: { ...row, status: 'waiting', question }, tab: 'output',
-    output: createElement('p', null, 'Observed output'),
+  const html = render({ row: { ...row, status: 'waiting', question }, tab: 'git', git,
     answer: createElement('textarea', { name: 'answer', 'aria-label': 'Your answer' }) });
-  assert.match(html, /id="agent-detail-tab-output"[^>]*aria-selected="true"/);
+  assert.match(html, /id="agent-detail-tab-git"[^>]*aria-selected="true"/);
   assert.match(header(html),
     /<section class="agent-detail-question" aria-label="Waiting question" tabindex="-1"><h3>Waiting question<\/h3><p>Ship now, or wait for a review\?<\/p><textarea name="answer"/);
   assert.doesNotMatch(panel(html, 'overview'), /Waiting question|<textarea/);
@@ -313,7 +313,7 @@ test('the stream status is one live region in the header, outside every tab pane
     const detail = html.slice(html.indexOf('id="selected-agent-detail"'));
     assert.deepEqual([...detail.matchAll(STREAM_STATE)].map((match) => match[1]), [text], `${patch.status} output`);
     assert.deepEqual([...header(html).matchAll(STREAM_STATE)].map((match) => match[1]), [text]);
-    assert.doesNotMatch(panel(html, 'output'), /role="status"/);
+    assert.doesNotMatch(panel(html, 'overview'), /role="status"/);
   }
   const unconfirmed = center({ stale: true }, null);
   assert.deepEqual([...header(unconfirmed).matchAll(STREAM_STATE)].map((match) => match[1]),

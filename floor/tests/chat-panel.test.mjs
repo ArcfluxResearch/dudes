@@ -56,10 +56,13 @@ test('a fresh drawer defaults to Chat while explicit preferences and Chat-off fa
   const values = new Map();
   const storage = () => ({ getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) });
   assert.equal(readDetailTab(storage, 'chat'), 'chat');
-  for (const preferred of ['overview', 'output', 'messages']) {
+  for (const preferred of ['overview', 'messages']) {
     writeDetailTab(preferred, storage);
     assert.equal(readDetailTab(storage, 'chat'), preferred);
   }
+  values.set('dudes.floor.agent-detail-tab', 'output');
+  assert.equal(readDetailTab(storage, 'chat'), 'chat', 'a remembered Output tab falls back to Chat');
+  assert.equal(readDetailTab(storage, 'overview'), 'overview', 'and to Overview where Chat is unavailable');
   const draw = chat => renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(chat), row,
     selectedId: A, onClose() {}, leaveFocusTo: 'crew-toggle' }));
   assert.match(draw(view()), /id="agent-detail-tab-chat"[^>]*aria-selected="true"/);
@@ -421,4 +424,32 @@ test('context loss displays the refused message separately from the newer draft 
   assert.doesNotMatch(stale, /chat-start-fresh/);
   assert.match(stale, /The conversation context changed/);
   chatModule.resetChat();
+});
+
+const tabNames = html => [...html.matchAll(/role="tab" class="agent-detail-tab"[^>]*>([^<]+)<\/button>/g)].map(match => match[1]);
+
+test('after a chat message the drawer tabs are Overview, Chat, Git and Memory and never Output', () => {
+  const output = { ...liveReply('Provisional assistant text'), chunks: ['Raw engine text'] };
+  const chat = { ...view(), turns: [turn({ state: 'running', reply: null })] };
+  const html = renderToStaticMarkup(createElement(AgentDrawer, { floor: floor(chat, { output, git: true }),
+    row, selectedId: A, onClose() {}, leaveFocusTo: 'crew-toggle' }));
+  assert.deepEqual(tabNames(html), ['Overview', 'Chat', 'Git', 'Memory']);
+  assert.doesNotMatch(html, /agent-detail-tab-output|agent-detail-panel-output/);
+  assert.doesNotMatch(html, /Raw engine text/, 'the raw output stays collapsed until asked for');
+});
+
+test('the latest turn offers Show full output, collapsed by default, and opening it shows the live output', () => {
+  const chat = { ...view(), turns: [turn({ state: 'running', reply: null })] };
+  const closed = render(chat, { output: liveReply('Provisional assistant text') });
+  assert.match(closed, /<button[^>]*class="chat-full-output"[^>]*aria-expanded="false"[^>]*>Show full output<\/button>/);
+  assert.doesNotMatch(closed, /Live work/);
+  const output = { ...store.getFloorState().output, view: 'output', targetId: A, status: 'live', chunks: ['Raw engine text'] };
+  const open = renderToStaticMarkup(createElement(ChatPanelView, { floor: floor(chat, { output }), row, action, fullOutput: true }));
+  assert.match(open, /<button[^>]*class="chat-full-output"[^>]*aria-expanded="true"[^>]*>Hide full output<\/button>/);
+  assert.match(open, /aria-label="Live work"/);
+  assert.match(open, /Raw engine text/);
+  assert.equal((render({ ...view(), turns: [turn({ turn_id: B, note_lsn: '6' }), turn()] }).match(/class="chat-full-output"/g) ?? []).length, 1,
+    'only the latest turn carries the toggle');
+  assert.doesNotMatch(render(chat, {}, { ...row, mode: 'attached' }), /chat-full-output/);
+  assert.doesNotMatch(render(view()), /chat-full-output/);
 });
