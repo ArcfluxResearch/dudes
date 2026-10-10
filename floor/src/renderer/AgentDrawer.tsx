@@ -23,7 +23,6 @@ import { RetireStatus, RetireStrip } from './retire/RetirePanel.tsx';
 import { switchedOffControls, UnavailableControls } from './settings/SettingsView.tsx';
 import type { AgentRow } from './scene/cast.ts';
 import { TerminalAttach } from './terminal/TerminalPanel.tsx';
-import { terminalOffer } from './terminal/terminal.ts';
 import { readDetailTab, writeDetailTab } from './view.ts';
 
 /**
@@ -89,13 +88,11 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
             || (floor.threads ?? []).some(thread => thread.members.includes(row.id)))
             ? <MessagesPanel messages={floor.messages} threads={floor.threads} agent={row.id}
               agents={floor.agents} retiredAgents={floor.retiredAgents} /> : null}
-          terminalDetails={terminalOffer(floor, row, { phase: 'idle' }).kind === 'none'
-            ? null : <TerminalAttach floor={floor} row={row} part="details" />}
           git={floor.git ? <GitPanel row={row} active={detailTab === 'git'} /> : null}
           memory={<MemoryPanel agent={row.id} active={detailTab === 'memory'} crew={floor} />}
           control={<ControlStrip floor={floor} row={row} />}
           retire={switchedOff.includes('retire') ? null : <RetireStrip floor={floor} row={row} />}
-          terminal={switchedOff.includes('terminal') ? null : <TerminalAttach floor={floor} row={row} part="action" />}
+          terminal={switchedOff.includes('terminal') ? null : <TerminalAttach floor={floor} row={row} />}
           enable={switchedOff.length === 0 ? null : <details className="enable-controls">
             <summary>Enable more controls <span className="enable-controls-count">{switchedOff.length}</span></summary>
             {switchedOff.map((control) => <UnavailableControls key={control} floor={floor} control={control} />)}

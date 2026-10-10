@@ -1202,7 +1202,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => void submitGoal(gate, browserGoalDeps)',
   ].sort());
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TERMINAL_PANEL), 'utf8')).sort(), [
-    '() => (claudeTrust ? setConfirming(true) : attachTerminal(offer.agent, browserTerminalPorts()))',
+    '() => { if (target !== null) startAttach(target); }',
     '(event) => { if (event.detail < 2) onConfirm(); }',
     'onCancel',
     "() => command('copy')",

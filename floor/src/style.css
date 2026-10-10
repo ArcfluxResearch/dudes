@@ -2120,7 +2120,8 @@ samp,
 .retire-actions button[aria-disabled='true'],
 .goal-actions button:disabled,
 .goal-actions button[aria-disabled='true'],
-.terminal-actions button[aria-disabled='true'] {
+.terminal-actions button[aria-disabled='true'],
+.agent-detail-terminal button[aria-disabled='true'] {
   border-color: var(--line);
   border-style: dashed;
   background: transparent;

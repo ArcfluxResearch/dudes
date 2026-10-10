@@ -51,10 +51,11 @@ async function drawer() {
   return { center, output };
 }
 
-test('only available detail tabs appear, including Terminal only when switched on', () => {
+test('only available detail tabs appear and Terminal is never one of them', () => {
   assert.deepEqual(tabs(render()), ['Overview']);
   const all = render({ terminalDetails: createElement('p', null, 'Terminal details'), git });
-  assert.deepEqual(tabs(all), ['Overview', 'Terminal', 'Git']);
+  assert.deepEqual(tabs(all), ['Overview', 'Git']);
+  assert.doesNotMatch(all, /Terminal details/);
   assert.doesNotMatch(all, /role="tab"[^>]*>Messages/);
   const terminalOff = render({ git });
   assert.deepEqual(tabs(terminalOff), ['Overview', 'Git']);
@@ -98,10 +99,10 @@ test('the header retains identity and actions outside every panel', () => {
 
 test('horizontal tab keys wrap and support Home and End without consuming scrolling keys', async () => {
   const { detailTabTarget } = await server.ssrLoadModule('/src/renderer/detailTabs.ts');
-  const available = ['overview', 'chat', 'terminal', 'git'];
+  const available = ['overview', 'chat', 'memory', 'git'];
   assert.equal(detailTabTarget(available, 'overview', 'ArrowLeft'), 'git');
   assert.equal(detailTabTarget(available, 'git', 'ArrowRight'), 'overview');
-  assert.equal(detailTabTarget(available, 'chat', 'ArrowRight'), 'terminal');
+  assert.equal(detailTabTarget(available, 'chat', 'ArrowRight'), 'memory');
   assert.equal(detailTabTarget(available, 'chat', 'Home'), 'overview');
   assert.equal(detailTabTarget(available, 'chat', 'End'), 'git');
   for (const key of ['ArrowUp', 'ArrowDown', 'Tab', 'Enter', ' ']) {
@@ -142,7 +143,7 @@ test('a vertical wheel scrolls overflowing detail tabs and leaves browser zoom a
     const { createRoot } = await import('react-dom/client');
     const root = createRoot(page.host);
     const panel = createElement('p', null, 'panel');
-    await act(() => root.render(createElement(AgentDetail, { row, output: panel, terminalDetails: panel })));
+    await act(() => root.render(createElement(AgentDetail, { row, git: panel, messages: panel })));
     const strip = page.host.querySelector('[role="tablist"]');
     strip.scrollWidth = 480;
     const wheel = (patch = {}) => {
@@ -196,11 +197,11 @@ test('the drawer scrolls its tab row so the selected tab shows, and again when t
     const root = createRoot(page.host);
     const panel = createElement('p', null, 'panel');
     const show = (tab) => act(() => root.render(createElement(AgentDetail, { row, tab,
-      chat: panel, terminalDetails: panel, git: panel, messages: panel })));
+      chat: panel, git: panel, messages: panel })));
     const strip = () => page.host.querySelector('[role="tablist"]');
     await show('messages');
-    assert.equal(strip().childNodes.length, 5);
-    assert.equal(strip().scrollLeft, 200, 'the fifth tab, 320 to 400 pixels along a 200 pixel row, is out of view');
+    assert.equal(strip().childNodes.length, 4);
+    assert.equal(strip().scrollLeft, 120, 'the fourth tab, 240 to 320 pixels along a 200 pixel row, is out of view');
     await show('chat');
     assert.equal(strip().scrollLeft, 80, 'the second tab is out of view to the left');
     await act(() => root.unmount());
@@ -218,8 +219,10 @@ test('a browser tab preference survives switching agents and a temporary missing
   assert.match(render({ tab: readDetailTab(storage), git }), /id="agent-detail-tab-git"[^>]*aria-selected="true"/);
   assert.match(render({ row: { ...row, id: '01ARZ3NDEKTSV4RRFFQ69G5FAX', name: 'Grace' }, tab: readDetailTab(storage) }), /id="agent-detail-tab-overview"[^>]*aria-selected="true"/);
   assert.match(render({ tab: readDetailTab(storage), git }), /id="agent-detail-tab-git"[^>]*aria-selected="true"/);
-  values.set('dudes.floor.agent-detail-tab', 'traces');
-  assert.equal(readDetailTab(storage), 'overview');
+  for (const retired of ['traces', 'output', 'terminal']) {
+    values.set('dudes.floor.agent-detail-tab', retired);
+    assert.equal(readDetailTab(storage), 'overview', `a remembered ${retired} tab opens Overview`);
+  }
   for (const raw of ['{', '', 'x'.repeat(1000)]) {
     assert.equal(readDetailTab(() => ({ getItem: () => raw })), 'overview');
   }
@@ -228,18 +231,20 @@ test('a browser tab preference survives switching agents and a temporary missing
 });
 
 
-test('the drawer never offers an Output tab and follows the terminal capability switch', async () => {
+test('the drawer never offers an Output or Terminal tab, and Attach follows the terminal capability switch', async () => {
   const { center: drawn, output } = await drawer();
   const floor = { output };
   const center = patch => drawn(patch);
-  assert.deepEqual(tabs(center({})).filter(tab => ['Overview', 'Output', 'Terminal'].includes(tab)), ['Overview']);
+  const attach = html => (html.match(/class="terminal-attach"/g) ?? []).length;
+  assert.deepEqual(tabs(center({})), ['Overview', 'Memory']);
+  assert.equal(attach(center({})), 0);
   const enabled = center({ terminal: true, output: { ...floor.output, status: 'live', chunks: ['Actual assistant output'] } });
-  assert.match(enabled, /role="tab"[^>]*>Terminal<\/button>/);
-  assert.deepEqual(tabs(enabled).filter(tab => tab === 'Output'), []);
+  assert.deepEqual(tabs(enabled), ['Overview', 'Memory']);
+  assert.equal(attach(enabled), 1, 'Attach stays in the action row');
   assert.doesNotMatch(enabled, /Actual assistant output/, 'raw output is drawn only under Chat\'s Show full output');
   for (const patch of [{ terminal: true, stale: true }, { terminal: true, phase: 'resyncing' },
     { terminal: true, epoch: 2, snapshotEpoch: 1 }, { terminal: true, agents: [] }]) {
-    assert.doesNotMatch(center(patch), /role="tab"[^>]*>Terminal<\/button>/);
+    assert.equal(attach(center(patch)), 0);
   }
   const diagnostic = center({ output: { ...floor.output, status: 'gap' } });
   assert.deepEqual(tabs(diagnostic).filter(tab => tab === 'Output'), []);
@@ -248,30 +253,15 @@ test('the drawer never offers an Output tab and follows the terminal capability 
 });
 
 
-test('header Attach and terminal guidance share the existing offer without duplicate actions', async () => {
-  const { TerminalAttachView } = await server.ssrLoadModule('/src/renderer/terminal/TerminalPanel.tsx');
-  const floor = { agents: [row] };
-  const offer = { kind: 'attach', agent: row.id };
-  const view = part => renderToStaticMarkup(createElement(TerminalAttachView, { floor, offer, part }));
-  assert.match(view('action'), /class="terminal-attach"/);
-  assert.doesNotMatch(view('action'), /id="terminal-hint"/);
-  assert.match(view('details'), /id="terminal-hint"/);
-  assert.doesNotMatch(view('details'), /<button/);
-  const unavailable = renderToStaticMarkup(createElement(TerminalAttachView, {
-    floor, offer: { kind: 'unavailable', reason: 'running' }, part: 'details',
-  }));
-  assert.match(unavailable, /Attach waits for this agent’s running turn to end/);
-  assert.doesNotMatch(unavailable, /<button/);
-});
 
 
 test('tab selection follows a focused fallback section until focus leaves it', async () => {
   const { detailTabSelection } = await server.ssrLoadModule('/src/renderer/detailTabs.ts');
-  const available = ['overview', 'git', 'terminal'];
+  const available = ['overview', 'git', 'memory'];
   assert.equal(detailTabSelection(available, 'git', 'overview'), 'overview');
   assert.equal(detailTabSelection(available, 'git', null), 'git');
-  assert.equal(detailTabSelection(['overview', 'terminal'], 'git', 'git'), 'overview');
-  assert.equal(detailTabSelection(['overview', 'terminal'], 'git', 'terminal'), 'terminal');
+  assert.equal(detailTabSelection(['overview', 'memory'], 'git', 'git'), 'overview');
+  assert.equal(detailTabSelection(['overview', 'memory'], 'git', 'memory'), 'memory');
 });
 
 test('the drawer\'s close button stays in the detail header with or without output, and while the view is unconfirmed', async () => {

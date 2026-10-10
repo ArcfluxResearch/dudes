@@ -41,11 +41,11 @@ function idle(fields = {}) {
   };
 }
 
-function drawer({ off = [] } = {}) {
+function drawer({ off = [], fields = {} } = {}) {
   store.resetFloorStore();
   const epoch = store.beginFloorEpoch();
   store.noteTransport('open');
-  const frame = { type: 'floor.snapshot', projection: { lsn: 9, agents: [idle()] } };
+  const frame = { type: 'floor.snapshot', projection: { lsn: 9, agents: [idle(fields)] } };
   for (const key of ['control', 'retire', 'terminal']) if (!off.includes(key)) frame[key] = ON;
   store.applyServerFrame(JSON.stringify(frame), epoch);
   const settings = {
@@ -67,6 +67,19 @@ test('Pause, Retire and Attach share one row with no paragraph between them', ()
   const between = block.slice(block.indexOf('class="control-pause"'), block.indexOf('>Attach<'));
   assert.doesNotMatch(between, /<p\b/);
   assert.doesNotMatch(block, /trust this workspace/);
+});
+
+test('the Attach explanation is the button’s description and tooltip, and a waiting Attach says why', () => {
+  const block = actionsOf(drawer());
+  const text = 'Attach hands you this agent’s CLI\\. Its loop holds while you type, and Detach hands it back\\.';
+  assert.match(block, new RegExp(`<button[^>]*class="terminal-attach"[^>]*title="${text}"`));
+  assert.match(block, /<button[^>]*class="terminal-attach"[^>]*aria-describedby="terminal-hint"/);
+  assert.match(block, new RegExp(`<span class="visually-hidden" id="terminal-hint">${text}</span>`));
+  assert.doesNotMatch(block, /<button[^>]*class="terminal-attach"[^>]*aria-disabled/);
+  assert.doesNotMatch(drawer(), /agent-detail-tab-terminal|agent-detail-panel-terminal/);
+  const running = actionsOf(drawer({ fields: { status: 'running' } }));
+  assert.match(running, /<button[^>]*class="terminal-attach"[^>]*aria-disabled="true"[^>]*>/);
+  assert.match(running, /id="terminal-hint">Attach waits for this agent’s running turn to end\./);
 });
 
 test('a switched-off action is not drawn and Enable more controls closes the row', () => {
