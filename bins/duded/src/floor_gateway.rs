@@ -108,6 +108,11 @@ pub const RESPONSE_WRITE_DEADLINE: Duration = Duration::from_millis(500);
 pub const READY_BOUND: Duration = Duration::from_secs(1);
 /// Maximum time shutdown waits for the worker to report completion.
 pub const JOIN_BOUND: Duration = Duration::from_secs(2);
+/// How long a fault handle waits for an injected handshake step. The worker's own bound starts
+/// when the worker thread first runs after acknowledging readiness, which can be well after the
+/// constructor returns on a loaded machine, so the wait must outlast it by more than a poll. A
+/// satisfied wait returns at once.
+const FAULT_WAIT: Duration = Duration::from_secs(5);
 
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
 /// A terminal-enabled daemon admits inline styles for the terminal's renderer. Every
@@ -371,9 +376,7 @@ impl FloorStartFault {
         let (state, _) = self
             .0
             .changed
-            .wait_timeout_while(state, READY_BOUND + ACCEPT_POLL, |state| {
-                state.timeout.is_none()
-            })
+            .wait_timeout_while(state, FAULT_WAIT, |state| state.timeout.is_none())
             .unwrap_or_else(PoisonError::into_inner);
         state.timeout
     }
@@ -389,7 +392,7 @@ impl FloorStartFault {
         let (state, _) = self
             .0
             .changed
-            .wait_timeout_while(state, READY_BOUND + ACCEPT_POLL, |state| {
+            .wait_timeout_while(state, FAULT_WAIT, |state| {
                 !state.parent_release_observed && state.timeout.is_none()
             })
             .unwrap_or_else(PoisonError::into_inner);
