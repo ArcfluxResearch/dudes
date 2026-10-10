@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Maintainers prepare released sections from Conventional Commits before manually tagging a release.
+`cargo xtask release-notes --draft --from <previous tag>` prints a draft. The release workflow
+refuses a tag whose version has no section here, and builds the GitHub Release body from it.
 
 ## [Unreleased]
 

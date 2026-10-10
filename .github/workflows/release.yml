@@ -1,9 +1,13 @@
 # Release — builds the install archives for every target `install.sh` supports, smoke-tests each
 # one by installing it, and on a `v*` tag publishes them with one SHA256SUMS as a GitHub Release.
 #
-#   floor ─▶ build {6 targets} ─▶ collect ─▶ publish (tag only)
+#   floor ─▶ build {6 targets} ─▶ collect ─▶ notes ─▶ publish (tag only)
 #
-# A manual run (`workflow_dispatch`) does everything except publish. Action refs are pinned to
+# `notes` builds the release body with `cargo xtask release-notes` from CHANGELOG.md, the pull
+# requests since the previous tag and SHA256SUMS. `publish` attests the archives and SHA256SUMS,
+# then creates the Release from that body. A manual run (`workflow_dispatch`) does everything except
+# publish and attest, and uploads the body as the `release-notes` artifact to preview; it falls
+# back to the Unreleased changelog section when the version has none yet. Action refs are pinned to
 # commit SHAs with the tag in the comment, as in ci.yml. Every cargo invocation is `--locked`.
 # Windows has no installer yet, so it has no archive.
 
@@ -188,19 +192,78 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  notes:
+    name: release notes
+    needs: collect
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+      - name: Build the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAINTAINER: alexnthnz
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          version=$(sed -nE '/^\[workspace\.package\]/,/^\[/ s/^version *= *"([^"]+)".*/\1/p' Cargo.toml)
+          test -n "$version" || { echo "Cargo.toml has no workspace version" >&2; exit 1; }
+          from=$(git describe --tags --abbrev=0 --match 'v*' --exclude "v$version" HEAD 2>/dev/null || true)
+          : > "$RUNNER_TEMP/authors.txt"
+          for pr in $(git log --first-parent --format=%s ${from:+"$from..HEAD"} | sed -nE 's/.*\(#([0-9]+)\)$/\1/p'); do
+            login=$(gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json author --jq .author.login)
+            echo "$pr $login" >> "$RUNNER_TEMP/authors.txt"
+          done
+          set -- --version "$version" --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL" \
+            --sums release/SHA256SUMS --authors "$RUNNER_TEMP/authors.txt" --maintainer "$MAINTAINER"
+          if [ -n "$from" ]; then set -- "$@" --from "$from"; fi
+          if [ "$GITHUB_REF_TYPE" != tag ]; then set -- "$@" --preview; fi
+          mkdir notes
+          cargo xtask release-notes "$@" > notes/release-notes.md
+          cat notes/release-notes.md
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: notes/release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: publish
-    needs: collect
+    needs: [collect, notes]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release
           path: release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: notes
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release/dudes-*.tar.gz
+            release/SHA256SUMS
       - name: Create the GitHub Release
         working-directory: release
         env:
@@ -214,4 +277,4 @@ jobs:
           esac
           # shellcheck disable=SC2086
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Dudes ${TAG#v}" \
-            --generate-notes $prerelease dudes-*.tar.gz SHA256SUMS
+            --notes-file ../notes/release-notes.md $prerelease dudes-*.tar.gz SHA256SUMS
