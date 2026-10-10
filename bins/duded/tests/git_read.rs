@@ -973,6 +973,37 @@ fn thirty_thousand_staged_files_fill_the_changes_budget_and_say_so() {
     assert!(json(&view).len() < dudes_proto::MAX_GIT_VIEW_BYTES);
 }
 
+/// Threads are what a Linux child's address-space limit takes away at random: each one reserves a
+/// stack, and `status` over a large index dies with "unable to create threaded lstat" when the
+/// limit leaves no room for the next, which the read reported as an unreadable tree. The shadow's
+/// configuration turns them all off.
+#[test]
+fn the_shadow_configuration_keeps_status_single_threaded() {
+    let lab = Lab::new();
+    let repo = lab.repo("repo");
+    lab.git(
+        &repo,
+        &["commit", "--quiet", "--allow-empty", "-m", "first"],
+    );
+    let reader = lab.reader();
+    let shadow = reader.shadow(&checkout(&repo)).expect("a shadow");
+    for key in ["core.preloadindex", "index.threads"] {
+        let spec = reader
+            .launch(&shadow, &["config", "--type=bool", "--get", key])
+            .expect("launch");
+        let Ok(PredicateCaptured::Finished { exit, stdout, .. }) =
+            lab.runner.run_captured(&spec, Duration::from_secs(20), 64)
+        else {
+            panic!("config {key} did not finish");
+        };
+        assert_eq!(
+            String::from_utf8_lossy(&stdout).trim(),
+            "false",
+            "{key} (exit {exit:?})"
+        );
+    }
+}
+
 /// Strings an agent controls: a right-to-left override, a newline, a shell metacharacter run.
 #[test]
 fn hostile_strings_are_dropped_or_left_for_the_floor_to_quote() {
