@@ -106,6 +106,10 @@ pub(super) fn apply(table: &mut RowTable<'_>, lsn: Lsn, entry: &Entry) -> Result
 }
 
 /// The five ticket records: a ticket is a card with more to remember.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match applies each ticket record to its row"
+)]
 fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<()> {
     match record {
         Record::TicketCreated {
