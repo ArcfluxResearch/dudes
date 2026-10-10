@@ -531,7 +531,7 @@ fn reload_refuses_to_compare_a_daemon_of_another_version() {
             "{result:?}"
         );
         assert!(result.stderr.contains("dudes stop"), "{result:?}");
-        assert!(result.stderr.contains("dudes quickstart"), "{result:?}");
+        assert!(result.stderr.contains("dudes start"), "{result:?}");
         assert_eq!(result.stderr.matches("dudes stop").count(), 1);
     }
 }

@@ -963,6 +963,128 @@ fn stop_ends_a_quickstarted_daemon() {
     assert_eq!(again.code(), dudes::exit::UNREACHABLE, "{again:?}");
 }
 
+/// `dudes start` is the way back in after an upgrade: it starts the daemon when none answers,
+/// prints the ping, and asks nothing, writes nothing and hires nothing. A second run starts
+/// nothing new and says the daemon is running.
+#[test]
+fn start_starts_one_daemon_and_a_second_run_says_it_is_running() {
+    let root = tempfile::tempdir().expect("a temporary installation home");
+    let _daemon = daemon_binary();
+    let config = root.path().join("config.toml");
+    let socket = dudes_rpc::local_endpoint(root.path().join("run"), dudes::env::SOCKET_NAME);
+
+    let first = captured_with_deadline(
+        base_cli(root.path())
+            .env("DUDES_CONFIG", &config)
+            .args(["start"]),
+        root.path(),
+        true,
+    );
+    let mut guard = DaemonGuard::from_root(root.path());
+    assert_human_triple(&first, &socket, root.path());
+    assert!(
+        !first.stdout.contains("already running"),
+        "a daemon that was not running was reported as running: {first:?}"
+    );
+    let pids = spawned_pids(root.path());
+    assert_eq!(pids.len(), 1, "start created {pids:?}");
+
+    let second = captured_with_deadline(
+        base_cli(root.path())
+            .env("DUDES_CONFIG", &config)
+            .args(["start"]),
+        root.path(),
+        false,
+    );
+    assert_eq!(second.code(), dudes::exit::SUCCESS, "{second:?}");
+    assert!(second.stderr.is_empty(), "{second:?}");
+    assert!(
+        second
+            .stdout
+            .starts_with("The daemon is already running.\n"),
+        "{second:?}"
+    );
+    assert!(
+        second.stdout.contains(&format!(
+            "duded {} on {}",
+            env!("CARGO_PKG_VERSION"),
+            socket.display()
+        )),
+        "{second:?}"
+    );
+    assert_eq!(
+        spawned_pids(root.path()),
+        pids,
+        "start created another daemon"
+    );
+
+    assert!(!config.exists(), "start wrote the operator file");
+    let agents = base_cli(root.path())
+        .env("DUDES_CONFIG", &config)
+        .args(["--json", "agents"])
+        .run();
+    assert_eq!(agents.code(), dudes::exit::SUCCESS, "{agents:?}");
+    assert_eq!(
+        agents.json::<serde_json::Value>(),
+        serde_json::json!([]),
+        "start hired an agent"
+    );
+
+    guard.stop();
+}
+
+/// After `stop`, `start` brings the daemon back without questions.
+#[cfg(unix)]
+#[test]
+fn start_brings_a_stopped_daemon_back() {
+    let root = tempfile::tempdir().expect("a restart home");
+    let _daemon = daemon_binary();
+    let first = captured_with_deadline(base_cli(root.path()).args(["start"]), root.path(), true);
+    let mut guard = DaemonGuard::from_root(root.path());
+    assert_eq!(first.code(), dudes::exit::SUCCESS, "{first:?}");
+
+    let stopped = base_cli(root.path()).args(["stop", "--hard"]).run();
+    assert_eq!(stopped.code(), dudes::exit::SUCCESS, "{stopped:?}");
+    guard.0 = None;
+
+    let again = captured_with_deadline(base_cli(root.path()).args(["start"]), root.path(), true);
+    let mut guard = DaemonGuard::from_root(root.path());
+    assert_eq!(again.code(), dudes::exit::SUCCESS, "{again:?}");
+    assert_eq!(spawned_pids(root.path()).len(), 2);
+    guard.stop();
+}
+
+/// A running daemon of another version is left alone and named: the user chooses when to restart.
+#[cfg(unix)]
+#[test]
+fn start_names_a_running_daemon_of_another_version() {
+    let home = tempfile::tempdir().expect("home");
+    let socket = home.path().join("duded.sock");
+    common::ping_as(&socket, "0.0.1");
+    let cli = Cli::new(&socket, home.path()).env("HOME", home.path());
+
+    let run = cli.clone().args(["start"]).run();
+    assert_eq!(run.code(), dudes::exit::SUCCESS, "{run:?}");
+    assert_eq!(
+        run.stdout,
+        format!(
+            "The daemon is already running.\nduded 0.0.1 on {}\njournal has no records yet\n\
+             The running daemon is 0.0.1 and this dudes is {}. Run dudes stop, then dudes start, \
+             to use the new version.\n",
+            socket.display(),
+            env!("CARGO_PKG_VERSION")
+        )
+    );
+
+    let machine = cli.args(["--json", "start"]).run();
+    assert_eq!(machine.code(), dudes::exit::SUCCESS, "{machine:?}");
+    assert_eq!(
+        machine.json::<serde_json::Value>()["version"],
+        "0.0.1",
+        "{machine:?}"
+    );
+}
+
 /// The first run in an installed layout, with the Floor bundle beside `duded`: `quickstart`, then
 /// `floor open` prints a working sign-in link with no Floor variable set anywhere, and
 /// `stop` ends it. On Windows the daemon binds the Floor listener only with the `SystemRoot` that

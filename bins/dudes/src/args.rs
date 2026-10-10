@@ -61,6 +61,9 @@ pub enum Command {
     /// operator file first, then report the engines, print the Floor link and make the hire.
     /// Without one, a terminal is asked for the plan and anything else only starts the daemon.
     Quickstart(Option<Box<Plan>>),
+    /// Start the daemon when absent, then complete `system.ping`. It asks nothing, writes no
+    /// configuration and hires nobody.
+    Start,
     /// `system.ping`.
     Ping,
     /// `system.doctor` diagnostics.
@@ -395,6 +398,13 @@ COMMANDS
         Without a terminal and without options it only starts the daemon when absent
         and prints its version, socket and journal position.
 
+    start
+        Start the daemon if it is not running, then print what ping prints. Use it
+        after dudes stop, for example to run a newer version after an upgrade. It asks
+        no questions, writes no configuration, prints no Floor link and hires nobody.
+        If a daemon is already running it says so and leaves it alone, and when that
+        daemon is not this version it says how to restart it.
+
     ping
         Ask the daemon for its version, socket and journal position.
 
@@ -609,7 +619,7 @@ COMMANDS
         the key it needs. An edit that takes a per-turn reserve to zero is written with
         a warning, because the daemon refuses to start while an agent it has hired has
         a ceiling in that unit. With a daemon running, an edit names the settings it
-        runs differently, which a restart applies: dudes stop, then dudes quickstart.
+        runs differently, which a restart applies: dudes stop, then dudes start.
 
     floor open [--no-browser]
         Mint a read-only Floor session and print its one-time sign-in link. Paste the
@@ -688,6 +698,12 @@ pub fn parse(argv: &[OsString]) -> Result<Invocation, ArgError> {
     parse_global(argv)
 }
 
+/// `command`, when nothing follows its word.
+fn without_arguments(tail: &[OsString], command: Command) -> Result<Command, ArgError> {
+    reject_leftovers(tail)?;
+    Ok(command)
+}
+
 fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
     // **Split at the first `--` before anything else looks at a flag.** Everything after it is a
     // command's own payload — today, a predicate's argv — and is never inspected for this CLI's
@@ -728,10 +744,8 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
             }
             Command::Quickstart(plan)
         }
-        "ping" => {
-            reject_leftovers(tail)?;
-            Command::Ping
-        }
+        "start" => without_arguments(tail, Command::Start)?,
+        "ping" => without_arguments(tail, Command::Ping)?,
         "doctor" | "status" => {
             reject_leftovers(tail)?;
             if command_word == "doctor" {
@@ -3401,6 +3415,16 @@ mod closing_tests {
 
     fn parse_line(line: &[&str]) -> Result<Invocation, ArgError> {
         parse(&line.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn start_takes_no_arguments() {
+        assert_eq!(parse_line(&["start"]).unwrap().command, Command::Start);
+        assert_eq!(
+            parse_line(&["--json", "start"]).unwrap().command,
+            Command::Start
+        );
+        assert!(parse_line(&["start", "--hire", "ada"]).is_err());
     }
 
     #[test]

@@ -514,7 +514,7 @@ fn an_edit_tells_a_running_daemon_to_restart() {
         set.stdout,
         format!(
             "wrote {}; the running daemon reads these settings only when it starts, so restart it \
-             to apply them: `dudes stop`, then `dudes quickstart`\n",
+             to apply them: `dudes stop`, then `dudes start`\n",
             config.display()
         )
     );
@@ -581,7 +581,7 @@ fn set(cli: &Cli, key: &str, value: &str) -> String {
 fn restart(config: &Path, differences: &str) -> String {
     format!(
         "wrote {}; the running daemon reads other settings ({differences}) and reads the file only \
-         when it starts, so restart it to apply them: `dudes stop`, then `dudes quickstart`\n",
+         when it starts, so restart it to apply them: `dudes stop`, then `dudes start`\n",
         config.display()
     )
 }
@@ -663,7 +663,7 @@ fn an_edit_to_a_file_the_running_daemon_does_not_read_asks_for_a_restart() {
         set(&cli, "floor.answer", "on"),
         format!(
             "wrote {}; the running daemon reads {}, not this file, so restart it to apply these \
-             settings: `dudes stop`, then `dudes quickstart`\n",
+             settings: `dudes stop`, then `dudes start`\n",
             config_for(&mine).display(),
             config_for(&theirs).display()
         )
@@ -705,7 +705,7 @@ fn an_edit_beside_a_daemon_of_another_version_asks_for_a_restart() {
         set(&cli, "floor.answer", "on"),
         format!(
             "wrote {}; the running daemon is 0.0.1, this CLI is {}, so restart it to apply these \
-             settings: `dudes stop`, then `dudes quickstart`\n",
+             settings: `dudes stop`, then `dudes start`\n",
             config_for(home.path()).display(),
             env!("CARGO_PKG_VERSION")
         )

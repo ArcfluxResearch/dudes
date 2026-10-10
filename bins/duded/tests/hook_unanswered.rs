@@ -17,8 +17,8 @@ use duded::boot;
 use duded::ports::Ask;
 use duded::startup::Witness;
 use dudes_proto::PeerProvenance;
-use dudes_proto::rpc::Method;
 use dudes_proto::rpc::hook::{HookEventParams, HookToken};
+use dudes_proto::rpc::{Method, Response};
 use dudes_rpc::auth::{PeerIdentity, PeerResolution, PeerResolver};
 use dudes_rpc::{ClientError, FrameError, LocalClient};
 use dudes_types::AgentId;
@@ -285,56 +285,71 @@ fn a_running_agent_with_a_free_slot_is_allowed() {
     }
 }
 
-#[test]
-fn a_full_cap_ends_the_connection_in_the_shapes_the_shim_blocks_on() {
-    use std::collections::BTreeMap;
+/// Names the shape of an unanswered conversation, and fails on any shape the shim would not block on.
+fn unanswered_shape(result: Result<Response, ClientError>) -> String {
     use std::io::ErrorKind::{BrokenPipe, ConnectionReset, NotConnected, UnexpectedEof};
 
-    let rig = paused_rig();
-    let holder = hold_the_slot(&rig.socket);
-    let params = serde_json::to_value(HookEventParams {
+    let (label, error) = match result {
+        Err(ClientError::Closed) => return "Closed".to_owned(),
+        Err(ClientError::Frame(FrameError::Io(e))) => ("Frame(Io)", e),
+        Err(ClientError::Io(e)) => ("Io", e),
+        other => panic!("the cap-full call produced {other:?}"),
+    };
+    assert!(
+        matches!(
+            error.kind(),
+            BrokenPipe | NotConnected | ConnectionReset | UnexpectedEof
+        ),
+        "unclassified kind {:?}",
+        error.kind()
+    );
+    format!("{label} {:?}", error.kind())
+}
+
+fn hook_params(rig: &Rig) -> Value {
+    serde_json::to_value(HookEventParams {
         token: HookToken::new(rig.token.expose()).unwrap(),
         raw: payload("PreToolUse"),
     })
-    .unwrap();
-    let mut shapes: BTreeMap<String, usize> = BTreeMap::new();
+    .unwrap()
+}
+
+/// Which error a client sees depends on whether its write beats the daemon's close, so one run
+/// cannot require any one shape. Every outcome must still be one the shim blocks on, and none may
+/// be an answer.
+#[test]
+fn a_full_cap_never_answers_and_ends_in_a_shape_the_shim_blocks_on() {
+    let rig = paused_rig();
+    let holder = hold_the_slot(&rig.socket);
+    let params = hook_params(&rig);
     for _ in 0..RUNS {
         let mut client = LocalClient::connect(&rig.socket).expect("connect succeeds at the cap");
-        let shape = match client.call(Method::HookEvent, Some(params.clone())) {
-            Err(ClientError::Closed) => "Closed".to_owned(),
-            Err(ClientError::Frame(FrameError::Io(e))) => {
-                assert!(
-                    matches!(
-                        e.kind(),
-                        BrokenPipe | NotConnected | ConnectionReset | UnexpectedEof
-                    ),
-                    "unclassified kind {:?}",
-                    e.kind()
-                );
-                format!("Frame(Io) {:?}", e.kind())
-            }
-            Err(ClientError::Io(e)) => {
-                assert!(
-                    matches!(
-                        e.kind(),
-                        BrokenPipe | NotConnected | ConnectionReset | UnexpectedEof
-                    ),
-                    "unclassified kind {:?}",
-                    e.kind()
-                );
-                format!("Io {:?}", e.kind())
-            }
-            other => panic!("the cap-full call produced {other:?}"),
-        };
-        *shapes.entry(shape).or_default() += 1;
+        unanswered_shape(client.call(Method::HookEvent, Some(params.clone())));
     }
-    assert!(shapes.contains_key("Closed"), "{shapes:?}");
-    assert!(
-        shapes
-            .keys()
-            .any(|shape| shape.starts_with("Frame(Io)") || shape.starts_with("Io ")),
-        "{shapes:?}"
-    );
+    drop(holder);
+}
+
+/// The daemon ends a connection it will not serve before reading from it, so a client that has
+/// not written yet reads a clean end of stream.
+#[test]
+fn a_full_cap_ends_a_silent_connection_with_a_clean_close() {
+    let rig = paused_rig();
+    let holder = hold_the_slot(&rig.socket);
+    let mut client = LocalClient::connect(&rig.socket).expect("connect succeeds at the cap");
+    assert!(matches!(client.recv(), Err(ClientError::Closed)));
+    drop(holder);
+}
+
+/// A client that writes after the daemon ended the connection fails with a broken pipe.
+#[test]
+fn a_write_after_the_full_cap_close_is_a_broken_pipe() {
+    let rig = paused_rig();
+    let holder = hold_the_slot(&rig.socket);
+    let params = hook_params(&rig);
+    let mut client = LocalClient::connect(&rig.socket).expect("connect succeeds at the cap");
+    assert!(matches!(client.recv(), Err(ClientError::Closed)));
+    let shape = unanswered_shape(client.call(Method::HookEvent, Some(params)));
+    assert!(shape.ends_with("BrokenPipe"), "{shape}");
     drop(holder);
 }
 
