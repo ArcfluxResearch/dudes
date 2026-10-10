@@ -9,6 +9,8 @@ Maintainers prepare released sections from Conventional Commits before manually 
 
 ## [Unreleased]
 
+## [0.79.0] - 2026-10-10
+
 The first public release. Dudes is an early preview, so commands and configuration keys can still
 change between releases. [Platforms and known limits](docs/platforms-and-limits.md) lists what has
 been tested and what is missing.
@@ -35,3 +37,6 @@ been tested and what is missing.
   stops. `dudes stop --hard` stops at once.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
+
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.79.0...HEAD
+[0.79.0]: https://github.com/ArcfluxResearch/dudes/releases/tag/v0.79.0
