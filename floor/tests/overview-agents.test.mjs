@@ -44,11 +44,11 @@ async function withViews(run) {
     }));
     run({
       detail: (row) => renderToStaticMarkup(createElement(AgentDetail, { row })),
-      monitor: (floor) => renderToStaticMarkup(createElement(OverviewSummary, { floor, selectedId: null })),
+      monitor: (floor) => renderToStaticMarkup(createElement(OverviewSummary, { floor, selectedId: null, onOpenQuestion() {} })),
       roster: (floor, selectedId) => renderToStaticMarkup(createElement(AgentsRoster,
         { floor, selectedId, onSelectAgent() {} })),
       overview: (floor, selectedId) => renderToStaticMarkup(createElement(Control, {
-        floor, view: 'overview', selectedId, onClose() {}, onView() {},
+        floor, view: 'overview', selectedId, onClose() {}, onView() {}, onOpenQuestion() {},
       })),
       drawer,
       focus: (floor, row, selectedId, collapsed = false) => drawer(floor, row, selectedId)
@@ -76,7 +76,7 @@ test('Overview and the drawer report only published stream and selected-agent fa
     assert.doesNotMatch(html, /<input|<form|<textarea|contenteditable|Terminal|Workers/);
     const other = center(live, grace, GRACE);
     assert.ok(other.includes(GRACE) && other.includes('Grace') && other.includes('$0.11 · 111 tok'));
-    assert.ok(!other.includes('Ship now, or wait for a review?'));
+    assert.ok(!drawer(live, grace, GRACE).includes('Ship now, or wait for a review?'));
   });
 });
 

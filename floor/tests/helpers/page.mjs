@@ -14,7 +14,7 @@ export async function loadStage(server) {
   return ({ floor, row = floor.agents[0] ?? null, view = null, leaveFocusTo = 'crew-toggle' }) => renderToStaticMarkup(
     createElement(Fragment, null,
       view === null ? null : createElement(Control, {
-        floor, view, selectedId: row?.id ?? null, onClose() {}, onView() {},
+        floor, view, selectedId: row?.id ?? null, onClose() {}, onView() {}, onOpenQuestion() {},
       }),
       createElement(Receipts, { floor, leaveFocusTo }),
       createElement(AgentDrawer, { floor, row, selectedId: row?.id ?? null, onClose() {}, leaveFocusTo }),

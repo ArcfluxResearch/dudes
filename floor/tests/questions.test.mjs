@@ -35,7 +35,7 @@ let answer;
 let store;
 let openQuestions;
 let stage;
-let ControlNav;
+let Control;
 
 before(async () => {
   server = await createServer({
@@ -49,7 +49,7 @@ before(async () => {
   store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   ({ openQuestions } = await server.ssrLoadModule('/src/renderer/questions.ts'));
   stage = await loadStage(server);
-  ({ ControlNav } = await server.ssrLoadModule('/src/renderer/Control.tsx'));
+  ({ Control } = await server.ssrLoadModule('/src/renderer/Control.tsx'));
 });
 
 after(async () => {
@@ -74,18 +74,19 @@ function center(view, selectedId = null) {
   return stage({ floor, view, row: floor.agents.find((agent) => agent.id === selectedId) ?? null });
 }
 
-/** The top bar's Control buttons with `view` open. */
-function nav(view) {
-  return renderToStaticMarkup(createElement(ControlNav, { floor: store.getFloorState(), view, onToggle() {} }));
+/** Overview as the page renders it, with the agent named by `selectedId` in the drawer. */
+function overview() {
+  return renderToStaticMarkup(createElement(Control, {
+    floor: store.getFloorState(), view: 'overview', selectedId: null, onClose() {}, onView() {}, onOpenQuestion() {},
+  }));
 }
 
 function entries(html) {
-  return [...html.matchAll(/<li class="questions-entry" data-question-agent-id="([^"]+)">([\s\S]*?)<\/li>/g)]
+  return [...html.matchAll(/<li class="waiting-item" data-waiting-kind="question" data-waiting-agent-id="([^"]+)">([\s\S]*?)<\/li>/g)]
     .map(([, agent, body]) => ({
       agent,
-      name: body.match(/<h3>([^<]*)<\/h3>/)?.[1],
-      question: body.match(/<\/h3><p>([^<]*)<\/p>/)?.[1],
-      field: body.match(/<textarea[^>]*>([^<]*)<\/textarea>/)?.[1] ?? null,
+      name: body.match(/<h4>([^<]*)<\/h4>/)?.[1],
+      question: body.match(/<\/h4><p>([^<]*)<\/p>/)?.[1],
     }));
 }
 
@@ -111,41 +112,24 @@ test('open questions come newest first by journal position read as a whole numbe
   ]);
 });
 
-test('Questions lists every waiting agent by name, newest first, each with its own answer field and a count', () => {
-  subscribe([ada(), grace(), { ...waiting(LINUS, 'Linus', '', undefined), status: 'running' }]);
-  const html = center('questions');
-  assert.match(nav('questions'),
-    /<button type="button" id="view-questions" aria-pressed="true" aria-controls="control-panel">Questions \(2\)<\/button>/);
-  assert.match(html, /<h2 id="control-title" tabindex="-1">Questions<\/h2>/);
-  assert.match(html, /2 open questions, newest first\./);
+test('Overview carries no answer field: a question is answered in the agent\'s Chat', () => {
+  subscribe([ada(), grace()]);
+  const html = overview();
   assert.deepEqual(entries(html).map(({ agent, name, question }) => [agent, name, question]), [
     [GRACE, 'Grace', 'Which tag goes on the release?'],
     [ADA, 'Ada', 'Ship 7f3a9c1e or wait for review?'],
   ]);
-  const fields = [...html.matchAll(/<label for="([^"]+)">Your answer<\/label><textarea id="([^"]+)" name="answer"/g)];
-  assert.equal(fields.length, 2, 'each question does not have its own labelled field');
-  assert.ok(fields.every(([, label, id]) => label === id), 'a label does not name its own field');
-  assert.notEqual(fields[0][2], fields[1][2], 'two fields share one id, so the second label names the first field');
-  assert.equal([...html.matchAll(/<textarea[^>]*data-focus-on-leave="control-title"/g)].length, 2,
-    'a field that leaves Questions while focused does not hand the keyboard to the Questions heading');
-  assert.match(html, /<section class="control-panel" id="control-panel" data-view="questions" aria-labelledby="control-title"/);
+  assert.doesNotMatch(html, /<textarea|name="answer"|Send answer/);
 });
 
-test('with nothing waiting, Questions says so and its top bar button carries no count', () => {
-  subscribe([{ ...waiting(LINUS, 'Linus', '', undefined), status: 'running' }]);
-  const html = center('questions');
-  assert.match(nav('questions'), /id="view-questions" aria-pressed="true"[^>]*>Questions<\/button>/);
-  assert.match(html, /<p>No agent is waiting on a question\.<\/p>/);
-  assert.deepEqual(entries(html), []);
-});
-
-test('a question with no journal position is listed read-only, as the detail shows it', () => {
+test('a question with no journal position is listed, and the detail shows it read-only', () => {
   subscribe([ada(), waiting(MAE, 'Mae', 'Rebase first?', undefined)]);
-  assert.deepEqual(entries(center('questions')).map(({ agent, question, field }) => [agent, question, field]), [
-    [ADA, 'Ship 7f3a9c1e or wait for review?', ''],
-    [MAE, 'Rebase first?', null],
+  assert.deepEqual(entries(overview()).map(({ agent, question }) => [agent, question]), [
+    [ADA, 'Ship 7f3a9c1e or wait for review?'],
+    [MAE, 'Rebase first?'],
   ]);
-  const detail = center(null, MAE);
+  const floor = store.getFloorState();
+  const detail = stage({ floor, view: null, row: floor.agents.find((agent) => agent.id === MAE) });
   assert.ok(detail.includes('Rebase first?'), 'the detail does not show the question either');
   assert.doesNotMatch(detail, /<textarea/);
 });
@@ -153,24 +137,8 @@ test('a question with no journal position is listed read-only, as the detail sho
 test('an unconfirmed view keeps each question on the list and takes every answer field away', () => {
   subscribe([ada(), grace()]);
   store.noteStale(true);
-  const html = center('questions');
+  const html = overview();
   assert.match(html, /View unconfirmed — waiting for the stream/);
-  assert.deepEqual(entries(html).map(({ agent, field }) => [agent, field]), [[GRACE, null], [ADA, null]]);
-});
-
-test('a draft is the same draft in Questions and in the agent detail, whichever view is shown', () => {
-  subscribe([ada(), grace()]);
-  answer.editAnswerDraft(ADA, '9', 'use main');
-  assert.deepEqual(entries(center('questions')).map(({ agent, field }) => [agent, field]),
-    [[GRACE, ''], [ADA, 'use main']]);
-  const detail = center(null, ADA);
-  assert.match(detail, /data-selected-agent-id="01JBQ8XK2M3N4P5Q6R7S8T9VWX"[\s\S]*<textarea[^>]*>use main<\/textarea>/);
-
-  answer.editAnswerDraft(ADA, '9', 'use main, then tag it');
-  const both = center('questions', ADA);
-  assert.deepEqual(entries(both).map(({ agent, field }) => [agent, field]),
-    [[GRACE, ''], [ADA, 'use main, then tag it']]);
-  const ids = [...both.matchAll(/<textarea id="([^"]+)"[^>]*>use main, then tag it<\/textarea>/g)].map(([, id]) => id);
-  assert.equal(ids.length, 2, 'Ada\'s question is not drawn both in Questions and in her detail');
-  assert.notEqual(ids[0], ids[1], 'the two fields for one question share an id');
+  assert.deepEqual(entries(html).map(({ agent }) => agent), [GRACE, ADA]);
+  assert.doesNotMatch(html, /<textarea/);
 });

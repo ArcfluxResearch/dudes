@@ -350,7 +350,7 @@ export function WebFloorShell() {
           onOpenCard={openCard}
           addAgent={<HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded />} /> : null}
         {view === null || focused ? null : <Control key={view} floor={floor} view={view} selectedId={currentSelectedId}
-          onClose={() => setView(null)} onView={openView} onHireAgain={hireAgain}
+          onClose={() => setView(null)} onView={openView} onOpenQuestion={openQuestion} onHireAgain={hireAgain}
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
         <div className="office-slot">
           <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}

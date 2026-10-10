@@ -27,3 +27,20 @@ function newestFirstUnplacedLast(a: OpenQuestion, b: OpenQuestion): number {
   if (b.lsn === null) return -1;
   return a.lsn > b.lsn ? -1 : 1;
 }
+
+/** One thing that waits on the operator. Question is the only kind today. */
+export type WaitingItem = {
+  readonly kind: 'question';
+  readonly key: string;
+  readonly agentId: string;
+  readonly name: string;
+  readonly text: string;
+};
+
+/** Everything waiting on the operator, newest question first. */
+export function waitingOnYou(agents: readonly AgentRow[]): readonly WaitingItem[] {
+  return openQuestions(agents).map((question): WaitingItem => ({
+    kind: 'question', key: `${question.row.id}:${question.lsn ?? question.text}`,
+    agentId: question.row.id, name: question.name, text: question.text,
+  }));
+}
