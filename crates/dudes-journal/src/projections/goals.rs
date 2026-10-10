@@ -164,21 +164,21 @@ pub(crate) fn apply(
     entry: &Entry,
 ) -> Result<()> {
     let record = &entry.record;
+    if let Some((agent, goal)) = record.goal_install() {
+        let row = GoalRow {
+            id: goal.id,
+            agent,
+            text: goal.text.clone(),
+            predicate: goal.predicate.clone(),
+            completion_check: goal.completion_check.clone(),
+            baseline: goal.baseline.clone(),
+            budget: goal.budget,
+            hop_cap: goal.hop_cap,
+            ..GoalRow::default()
+        };
+        return put_row(table, &goal.id.to_bytes(), &row);
+    }
     match record {
-        Record::GoalSet { agent, goal, .. } => {
-            let row = GoalRow {
-                id: goal.id,
-                agent: *agent,
-                text: goal.text.clone(),
-                predicate: goal.predicate.clone(),
-                completion_check: goal.completion_check.clone(),
-                baseline: goal.baseline.clone(),
-                budget: goal.budget,
-                hop_cap: goal.hop_cap,
-                ..GoalRow::default()
-            };
-            put_row(table, &goal.id.to_bytes(), &row)
-        }
         // The row stays, with its counters: `dudes why` still has to explain a goal after it was
         // abandoned, and a `GoalSet` reusing the id is refused before it is ever appended.
         Record::GoalCleared { goal, .. } => update(table, lsn, *goal, record, |g| {

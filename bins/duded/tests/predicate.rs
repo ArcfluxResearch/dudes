@@ -988,6 +988,7 @@ fn goal_set_refuses_a_board_check_already_at_its_status() {
             to: dudes_types::CardStatus::Done,
             by: mover,
             expected_seq: dudes_types::Seq(0),
+            reason: None,
         });
     }
     let daemon = baselined_with(|_| {}, seeded);

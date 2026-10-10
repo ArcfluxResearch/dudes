@@ -848,8 +848,14 @@ impl MailWakeState {
                     }
                 }
             }
-            Record::GoalSet { agent: owner, .. } | Record::GoalCleared { agent: owner, .. }
-                if *owner == agent =>
+            Record::GoalCleared { agent: owner, .. } if *owner == agent => {
+                row.retire();
+                row.candidate = None;
+            }
+            record
+                if record
+                    .goal_install()
+                    .is_some_and(|(owner, _)| owner == agent) =>
             {
                 row.retire();
                 row.candidate = None;
@@ -1385,6 +1391,45 @@ mod tests {
                 .collect(),
             decision: MailWakeAdmission::Issue { task },
         })
+    }
+
+    /// A goal installed over the agent's completed goal retires the wake candidate it owed, whether
+    /// the goal arrives as a `GoalSet` or as a ticket's start.
+    #[test]
+    fn ticket_start_retires_a_wake_candidate() {
+        let goal_set = crate::record::samples::record(crate::RecordKind::GoalSet);
+        let Record::GoalSet {
+            goal: installed, ..
+        } = goal_set.clone()
+        else {
+            unreachable!("the GoalSet sample is a GoalSet");
+        };
+        let carriers = [
+            Record::GoalSet {
+                agent: actor(),
+                goal: installed.clone(),
+                browser_onboarding: None,
+                browser_goal: None,
+                goal_replacement: None,
+            },
+            Record::TicketStarted {
+                card: dudes_types::CardId::from_parts(9, 9),
+                agent: actor(),
+                goal: installed,
+                expected_seq: dudes_types::Seq(0),
+            },
+        ];
+        for carrier in carriers {
+            let mut row = MailWakeState::default();
+            let mut context = MailWakeContext {
+                completion: Some((goal(), Lsn(1))),
+                ..MailWakeContext::default()
+            };
+            emit(&mut row, &mut context, 2, mail(1));
+            assert!(row.candidate.is_some(), "the arrival owes a wake");
+            emit(&mut row, &mut context, 3, carrier.clone());
+            assert!(row.candidate.is_none(), "{carrier:?} retires the candidate");
+        }
     }
 
     #[test]

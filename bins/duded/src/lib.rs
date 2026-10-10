@@ -136,3 +136,13 @@ where
 }
 
 mod goal_replacement;
+mod ticket_index;
+
+/// The name a ticket's goal records for its check, for tests that build a ticket's start.
+#[doc(hidden)]
+#[must_use]
+pub fn ticket_goal_check(
+    check: &dudes_proto::TicketCheck,
+) -> Option<dudes_proto::CompletionCheckRef> {
+    ticket_index::goal_check(check)
+}

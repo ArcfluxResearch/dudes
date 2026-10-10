@@ -91,6 +91,8 @@ use crate::ports::{
 };
 
 mod agent_mcp;
+#[cfg(test)]
+mod ticket_start_tests;
 pub(crate) use agent_mcp::PiAdmission;
 use agent_mcp::pi_retry;
 mod browser_chat;
@@ -5647,6 +5649,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             to: request.to,
             by,
             expected_seq: request.expected_seq,
+            reason: None,
         })?;
         Ok(Answered::Done)
     }
@@ -6960,19 +6963,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                         .agents
                         .keys()
                         .try_for_each(|agent| self.push_spend(*agent, queue)),
-                    Record::GoalSet {
-                        agent,
-                        goal,
-                        browser_goal: Some(_),
-                        ..
-                    }
-                    | Record::GoalSet {
-                        agent,
-                        goal,
-                        goal_replacement: Some(_),
-                        ..
-                    } => self.push_goal_spend(*agent, goal.id, queue),
-                    _ => Ok(()),
+                    record => match goal_to_price(record) {
+                        Some((agent, goal)) => self.push_goal_spend(agent, goal, queue),
+                        None => Ok(()),
+                    },
                 };
                 #[cfg(any(test, feature = "testing"))]
                 let refreshed = if self.onboarding_failure.take_spend_refresh() {
@@ -7673,6 +7667,28 @@ fn turn_reader<C: Clock, R: Rng>(
     let agent = world.turns.get(&turn)?.agent;
     let provider = world.agents.get(&agent)?.provider;
     Some(sup.adapters().get(provider)?.turn_reader_for(spec))
+}
+
+/// The goal whose spend a durable record puts in front of the decision that follows it: a goal
+/// that takes over from another with the allowance the old one left, or a ticket's start. A plain
+/// goal set starts from nothing, so there is nothing to read.
+fn goal_to_price(record: &Record) -> Option<(AgentId, GoalId)> {
+    match record {
+        Record::GoalSet {
+            agent,
+            goal,
+            browser_goal: Some(_),
+            ..
+        }
+        | Record::GoalSet {
+            agent,
+            goal,
+            goal_replacement: Some(_),
+            ..
+        }
+        | Record::TicketStarted { agent, goal, .. } => Some((*agent, goal.id)),
+        _ => None,
+    }
 }
 
 fn retired_caller(ask: &Ask) -> Option<AgentId> {

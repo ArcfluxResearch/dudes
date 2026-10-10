@@ -90,9 +90,8 @@ fn unknown_required_kinds_refuse_before_reader_or_writer_mutation() {
 
 /// a reader that does not know a required kind must refuse
 /// the journal before it repairs, rotates or touches a cache, so rolling back to an older release
-/// cannot misread records it never understood. Tag 71 stands for the next required kind after the
-/// four wake and note kinds and the two worktree kinds, which an older reader meets in exactly
-/// this shape.
+/// cannot misread records it never understood. Tag 76 stands for the next required kind after the
+/// wake, note, worktree and ticket kinds, which an older reader meets in exactly this shape.
 #[test]
 fn a_future_required_kind_after_understood_history_refuses_both_opens_and_changes_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -110,7 +109,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     drop(writer);
     let path = segment_path(dir.path(), 1);
     let mut bytes = fs::read(&path).unwrap();
-    bytes.extend_from_slice(&raw_frame(2, 71, b"{\"t\":\"future\"}"));
+    bytes.extend_from_slice(&raw_frame(2, 76, b"{\"t\":\"future\"}"));
     fs::write(&path, &bytes).unwrap();
     let cache = dir.path().join("state.redb");
     fs::write(&cache, b"cache witness").unwrap();
@@ -124,7 +123,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     };
     let before = files();
 
-    let expected = "journal required record kind 71 at 1:";
+    let expected = "journal required record kind 76 at 1:";
     let reader_error = Reader::open(dir.path()).unwrap_err().to_string();
     assert!(reader_error.starts_with(expected), "{reader_error}");
     let writer_error = open(dir.path(), JournalOptions::default())
@@ -137,7 +136,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     let cache_before = advanced.export().unwrap();
     assert!(matches!(
         replay(&Reader::new(dir.path()), &mut advanced),
-        Err(Error::RequiredKind { kind: 71, .. })
+        Err(Error::RequiredKind { kind: 76, .. })
     ));
     assert_eq!(advanced.export().unwrap(), cache_before);
 
@@ -304,4 +303,50 @@ fn mcp_policy_and_grant_append_in_required_v2_even_through_default_append() {
             .unwrap(),
         expected
     );
+}
+
+/// A build from before tickets knows tags 1 to 70 and refuses a required frame of any other tag.
+/// A ticket record written by this build is such a frame, so that build stops at the first one,
+/// before it repairs the journal, replays it or opens a cache, rather than reading a ticket as a
+/// plain card or folding a start as nothing.
+#[test]
+fn a_ticket_record_is_a_required_frame_an_older_build_refuses() {
+    let before_tickets: Vec<u16> = RecordKind::KNOWN[..70]
+        .iter()
+        .map(|kind| kind.tag())
+        .collect();
+    for kind in [
+        RecordKind::TicketCreated,
+        RecordKind::TicketEdited,
+        RecordKind::TicketAssigned,
+        RecordKind::TicketStarted,
+        RecordKind::TicketRemoved,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut writer, _) = open(
+            dir.path(),
+            JournalOptions {
+                fsync: Fsync::None,
+                ..JournalOptions::default()
+            },
+        )
+        .unwrap();
+        writer
+            .append(&Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: dudes_proto::record::samples::record(kind),
+            })
+            .unwrap();
+        drop(writer);
+        let bytes = fs::read(segment_path(dir.path(), 1)).unwrap();
+        let header = Header::parse(bytes[..12].try_into().unwrap());
+        assert_eq!(header.kind, kind.tag());
+        assert_eq!(header.ver, 2, "{kind:?} is written as a required frame");
+        assert!(
+            !before_tickets.contains(&header.kind),
+            "{kind:?} is a tag the older build does not know, so it refuses the frame"
+        );
+        let (reader, _) = Reader::open(dir.path()).expect("this build understands it");
+        assert_eq!(reader.iter_from(Lsn::ZERO).unwrap().count(), 1);
+    }
 }

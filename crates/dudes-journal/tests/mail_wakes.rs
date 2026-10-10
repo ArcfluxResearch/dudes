@@ -545,7 +545,7 @@ fn conversation(log: &mut Log, turn: TurnId) {
 
 #[test]
 fn current_conversation_raw_taught_and_wake_history_rebuilds_cache_35_to_38() {
-    assert_eq!(dudes_journal::PROJECTION_VERSION, 42);
+    assert_eq!(dudes_journal::PROJECTION_VERSION, 43);
     let mut log = Log::new(&[0]);
     let conversation_turn = TurnId::from_parts(3, 1);
     let raw_turn = TurnId::from_parts(3, 2);
@@ -653,6 +653,31 @@ fn goal_clear_set_and_reassign_retire_unissued_wake_and_preserve_context_revisio
             );
         }
     }
+}
+
+/// A ticket's start installs a goal, so it retires an unissued wake exactly as a `GoalSet` does.
+#[test]
+fn mail_wake_projection_sees_ticket_start() {
+    let mut log = Log::new(&[0]);
+    log.append(log.root_record(), stamp());
+    log.advance(0);
+    let mut start = samples::record(RecordKind::TicketStarted);
+    let Record::TicketStarted { agent, goal, .. } = &mut start else {
+        unreachable!()
+    };
+    *agent = log.agent;
+    goal.id = GoalId::from_parts(9, 9);
+    let revision = log.append(start, stamp());
+    let reader = log.reader();
+    let mut projected = Projections::in_memory().unwrap();
+    replay(&reader, &mut projected).unwrap();
+    let row = state(&projected, log.agent);
+    assert!(row.preparation.is_none());
+    assert!(row.candidate.is_none());
+    assert_eq!(
+        projected.agent(log.agent).unwrap().unwrap().context_lsn,
+        revision
+    );
 }
 
 #[test]

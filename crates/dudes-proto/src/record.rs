@@ -21,6 +21,7 @@ use crate::budget::{AgentBudget, Ceiling, Spend};
 use crate::decision::{GateStep, LoopDecision, NoteAdmission};
 use crate::goal::{Evidence, Goal};
 use crate::projection::LiveActivityKind;
+use crate::ticket::{TicketCheck, TicketReason};
 
 /// The journal frame payload: a [`Record`] stamped with the time it entered the machine.
 ///
@@ -923,6 +924,9 @@ pub enum Record {
         by: Actor,
         /// The card's `seq` the mover decided against.
         expected_seq: Seq,
+        /// Why the daemon moved a ticket into Needs you. Absent on every other transition.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<TicketReason>,
     },
     /// `board.claim`. Conditional: rejected (not appended) when `card.seq ≠ expected_seq`, so
     /// two agents racing for one card see exactly one winner.
@@ -1654,6 +1658,76 @@ pub enum Record {
         /// Exact canonical names; no definitions or secrets.
         mcp_servers: Vec<dudes_types::McpServerName>,
     },
+    /// `ticket.create`: a board card that is a ticket. A required record, so a build that does
+    /// not know tickets stops instead of replaying one as a plain card.
+    TicketCreated {
+        /// The card.
+        card: CardId,
+        /// Title, trimmed.
+        title: String,
+        /// The note, trimmed; empty when there is none.
+        description: String,
+        /// Department whose agents may hold it, copied from the project.
+        department: String,
+        /// The enrolled project the ticket runs in.
+        project: String,
+        /// The check that finishes it, resolved at creation.
+        done_when: TicketCheck,
+        /// Who created it, and so the author of the card's `Todo` status.
+        by: Actor,
+    },
+    /// `ticket.edit`: the complete new values, so replay needs no merge. Conditional on
+    /// `expected_seq`.
+    TicketEdited {
+        /// The card.
+        card: CardId,
+        /// Title, trimmed.
+        title: String,
+        /// The note, trimmed; empty when there is none.
+        description: String,
+        /// The check that finishes it.
+        done_when: TicketCheck,
+        /// Who edited it.
+        by: Actor,
+        /// The card's `seq` the editor decided against.
+        expected_seq: Seq,
+    },
+    /// `ticket.assign`: the ticket joins an agent's queue. Conditional on `expected_seq`.
+    TicketAssigned {
+        /// The card.
+        card: CardId,
+        /// The agent whose queue it joins.
+        agent: AgentId,
+        /// Who assigned it.
+        by: Actor,
+        /// What the operator asked for when sending work back; kept for the next start.
+        message: Option<String>,
+        /// The card's `seq` the assigner decided against.
+        expected_seq: Seq,
+    },
+    /// A ticket's work starts: installs the goal and moves the card to Doing in one record, so a
+    /// crash cannot leave a Doing card with no goal or a goal with no card. Conditional on
+    /// `expected_seq`. Replay validates the embedded goal against the ticket and never trusts it.
+    TicketStarted {
+        /// The card.
+        card: CardId,
+        /// The agent that pursues it.
+        agent: AgentId,
+        /// The goal, complete.
+        goal: Goal,
+        /// The card's `seq` the starter decided against.
+        expected_seq: Seq,
+    },
+    /// `ticket.remove`: the card leaves the board view and its queue. The record stays in the
+    /// journal. Conditional on `expected_seq`.
+    TicketRemoved {
+        /// The card.
+        card: CardId,
+        /// Who removed it.
+        by: Actor,
+        /// The card's `seq` the remover decided against.
+        expected_seq: Seq,
+    },
 }
 
 /// Who removed a worktree.
@@ -1906,6 +1980,24 @@ impl Record {
             Self::WorktreeRemoved { .. } => RecordKind::WorktreeRemoved,
             Self::AgentMcpServersChanged { .. } => RecordKind::AgentMcpServersChanged,
             Self::McpLaunchGranted { .. } => RecordKind::McpLaunchGranted,
+            Self::TicketCreated { .. } => RecordKind::TicketCreated,
+            Self::TicketEdited { .. } => RecordKind::TicketEdited,
+            Self::TicketAssigned { .. } => RecordKind::TicketAssigned,
+            Self::TicketStarted { .. } => RecordKind::TicketStarted,
+            Self::TicketRemoved { .. } => RecordKind::TicketRemoved,
+        }
+    }
+
+    /// The agent and goal this record installs: a `GoalSet`, or a `TicketStarted`, which carries a
+    /// whole goal. Every fold that reacts to a goal being installed asks here, so a new carrier
+    /// cannot be missed by one of them.
+    #[must_use]
+    pub const fn goal_install(&self) -> Option<(AgentId, &Goal)> {
+        match self {
+            Self::GoalSet { agent, goal, .. } | Self::TicketStarted { agent, goal, .. } => {
+                Some((*agent, goal))
+            }
+            _ => None,
         }
     }
 }
@@ -2060,6 +2152,16 @@ pub enum RecordKind {
     AgentMcpServersChanged = 69,
     /// [`Record::McpLaunchGranted`].
     McpLaunchGranted = 70,
+    /// [`Record::TicketCreated`].
+    TicketCreated = 71,
+    /// [`Record::TicketEdited`].
+    TicketEdited = 72,
+    /// [`Record::TicketAssigned`].
+    TicketAssigned = 73,
+    /// [`Record::TicketStarted`].
+    TicketStarted = 74,
+    /// [`Record::TicketRemoved`].
+    TicketRemoved = 75,
 }
 
 impl RecordKind {
@@ -2116,8 +2218,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 70] {
-        let mut kinds = [Self::AgentHired; 70];
+    const fn known_kinds() -> [Self; 75] {
+        let mut kinds = [Self::AgentHired; 75];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2147,6 +2249,11 @@ impl RecordKind {
         kinds[67] = Self::WorktreeRemoved;
         kinds[68] = Self::AgentMcpServersChanged;
         kinds[69] = Self::McpLaunchGranted;
+        kinds[70] = Self::TicketCreated;
+        kinds[71] = Self::TicketEdited;
+        kinds[72] = Self::TicketAssigned;
+        kinds[73] = Self::TicketStarted;
+        kinds[74] = Self::TicketRemoved;
         kinds
     }
 
@@ -2177,6 +2284,11 @@ impl RecordKind {
                 | Self::MailWakeOnlyTurnIssued
                 | Self::AgentMcpServersChanged
                 | Self::McpLaunchGranted
+                | Self::TicketCreated
+                | Self::TicketEdited
+                | Self::TicketAssigned
+                | Self::TicketStarted
+                | Self::TicketRemoved
         )
     }
 
@@ -2448,6 +2560,17 @@ pub mod samples {
 
     pub(crate) fn card() -> CardId {
         CardId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAZ").unwrap()
+    }
+
+    pub(crate) fn ticket_check() -> TicketCheck {
+        TicketCheck {
+            id: "default".into(),
+            label: "tests pass".into(),
+            predicate: Predicate::Command {
+                argv: vec!["cargo".into(), "test".into()],
+                timeout_s: 600,
+            },
+        }
     }
 
     pub(crate) fn mail() -> MailId {
@@ -2745,6 +2868,64 @@ pub mod samples {
                 policy_lsn: Lsn::from_parts(1, 100).unwrap(),
                 mcp_servers: Vec::new(),
             },
+            RecordKind::TicketCreated => Record::TicketCreated {
+                card: card(),
+                title: "Write the parser".into(),
+                description: "Cover the empty input.".into(),
+                department: "engineering".into(),
+                project: "main".into(),
+                done_when: ticket_check(),
+                by: Actor::Peer {
+                    pid: 77,
+                    uid: Some(501),
+                },
+            },
+            RecordKind::TicketEdited => Record::TicketEdited {
+                card: card(),
+                title: "Write the lexer".into(),
+                description: String::new(),
+                done_when: ticket_check(),
+                by: Actor::Peer {
+                    pid: 77,
+                    uid: Some(501),
+                },
+                expected_seq: Seq(0),
+            },
+            RecordKind::TicketAssigned => Record::TicketAssigned {
+                card: card(),
+                agent: agent(),
+                by: Actor::Peer {
+                    pid: 77,
+                    uid: Some(501),
+                },
+                message: Some("Please cover the empty input too.".into()),
+                expected_seq: Seq(1),
+            },
+            RecordKind::TicketStarted => Record::TicketStarted {
+                card: card(),
+                agent: agent(),
+                goal: crate::goal::Goal {
+                    id: goal(),
+                    text: "Write the parser".into(),
+                    predicate: ticket_check().predicate,
+                    completion_check: None,
+                    baseline: Some(crate::goal::CheckBaseline::MayAlreadyPass),
+                    budget: crate::budget::GoalBudget {
+                        usd: None,
+                        tokens: None,
+                    },
+                    hop_cap: 8,
+                },
+                expected_seq: Seq(2),
+            },
+            RecordKind::TicketRemoved => Record::TicketRemoved {
+                card: card(),
+                by: Actor::Peer {
+                    pid: 77,
+                    uid: Some(501),
+                },
+                expected_seq: Seq(3),
+            },
             RecordKind::AgentRenamed => Record::AgentRenamed {
                 id: agent(),
                 name: "Kim renamed".to_owned(),
@@ -2951,6 +3132,7 @@ pub mod samples {
                 to: CardStatus::Doing,
                 by: Actor::Agent { agent: agent() },
                 expected_seq: Seq(3),
+                reason: None,
             },
             RecordKind::Claim => Record::Claim {
                 card: card(),
@@ -3155,7 +3337,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 70);
+        assert_eq!(RecordKind::KNOWN.len(), 75);
         for &kind in &RecordKind::KNOWN[46..66] {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys() {
@@ -3658,7 +3840,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            70,
+            75,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -4656,8 +4838,86 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 70);
-        assert_eq!(RecordKind::from_tag(71), None);
+        assert_eq!(RecordKind::KNOWN.len(), 75);
+        assert_eq!(RecordKind::from_tag(76), None);
+    }
+
+    const TICKET_KINDS: [(RecordKind, u16); 5] = [
+        (RecordKind::TicketCreated, 71),
+        (RecordKind::TicketEdited, 72),
+        (RecordKind::TicketAssigned, 73),
+        (RecordKind::TicketStarted, 74),
+        (RecordKind::TicketRemoved, 75),
+    ];
+
+    /// A build that does not know tickets must stop at one, not replay it as a plain card or fold a
+    /// start as nothing. Only a required frame makes an older reader refuse, so each ticket kind
+    /// must be one, and must keep its tag.
+    #[test]
+    fn ticket_records_are_required_frames_with_fixed_tags() {
+        for (kind, tag) in TICKET_KINDS {
+            assert_eq!(kind.tag(), tag);
+            assert_eq!(RecordKind::from_tag(tag), Some(kind));
+            assert!(kind.requires_required_frame(), "{kind:?}");
+            let record = samples::record(kind);
+            assert_eq!(record.kind(), kind);
+            assert!(record.requires_required_frame(), "{kind:?}");
+            let encoded = serde_json::to_value(&record).unwrap();
+            assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
+        }
+        assert!(
+            !RecordKind::CardCreated.requires_required_frame(),
+            "a plain card is still a compatible frame"
+        );
+    }
+
+    #[test]
+    fn ticket_records_state_every_value_they_carry() {
+        for (kind, _) in TICKET_KINDS {
+            let value = serde_json::to_value(samples::record(kind)).unwrap();
+            for key in value.as_object().unwrap().keys().filter(|key| *key != "t") {
+                if key == "message" {
+                    continue;
+                }
+                let mut missing = value.clone();
+                missing.as_object_mut().unwrap().remove(key);
+                assert!(
+                    serde_json::from_value::<Record>(missing).is_err(),
+                    "{kind:?} accepted an absent {key}"
+                );
+            }
+        }
+    }
+
+    /// Every fold that reacts to a goal being installed asks this one accessor, so a record that
+    /// carries a goal cannot be missed by one of them: exactly the goal set and the ticket start
+    /// answer, and they answer with the agent and the goal they carry.
+    #[test]
+    fn goal_install_names_the_goal_set_and_the_ticket_start_only() {
+        for &kind in RecordKind::KNOWN {
+            let record = samples::record(kind);
+            let installs = matches!(kind, RecordKind::GoalSet | RecordKind::TicketStarted);
+            assert_eq!(record.goal_install().is_some(), installs, "{kind:?}");
+        }
+        let started = samples::record(RecordKind::TicketStarted);
+        let (agent, goal) = started.goal_install().unwrap();
+        assert_eq!(agent, samples::agent());
+        assert_eq!(goal.id, samples::goal());
+    }
+
+    #[test]
+    fn a_transition_names_why_only_when_it_has_a_reason() {
+        let mut record = samples::record(RecordKind::CardTransition);
+        let plain = serde_json::to_value(&record).unwrap();
+        assert!(plain.get("reason").is_none());
+        let Record::CardTransition { reason, .. } = &mut record else {
+            unreachable!("the sample is a transition");
+        };
+        *reason = Some(TicketReason::NoTurns);
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["reason"], "no_turns");
+        assert_eq!(serde_json::from_value::<Record>(value).unwrap(), record);
+        assert!(serde_json::from_value::<Record>(plain).is_ok());
     }
 
     #[test]

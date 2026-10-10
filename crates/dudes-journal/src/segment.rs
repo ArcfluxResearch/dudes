@@ -401,7 +401,12 @@ mod tests {
             | Record::PtyCloseRequested { .. }
             | Record::PtySpawned { .. }
             | Record::WorktreeLeased { .. }
-            | Record::WorktreeRemoved { .. } => Vec::new(),
+            | Record::WorktreeRemoved { .. }
+            | Record::TicketCreated { .. }
+            | Record::TicketEdited { .. }
+            | Record::TicketAssigned { .. }
+            | Record::TicketStarted { .. }
+            | Record::TicketRemoved { .. } => Vec::new(),
         }
     }
 

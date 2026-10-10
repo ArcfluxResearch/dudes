@@ -3746,6 +3746,7 @@ mod tests {
                     to: dudes_types::CardStatus::Done,
                     by,
                     expected_seq: dudes_types::Seq::ZERO,
+                    reason: None,
                 }),
             )
             .unwrap();

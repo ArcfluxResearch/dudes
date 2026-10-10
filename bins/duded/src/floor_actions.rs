@@ -428,7 +428,8 @@ impl OnboardingIndex {
                 agent,
                 browser_onboarding: None,
                 ..
-            } => {
+            }
+            | Record::TicketStarted { agent, .. } => {
                 for attempt in self.attempts.values_mut() {
                     if attempt.agent == *agent && !attempt.goal_set {
                         attempt.goal_conflict = true;
@@ -964,5 +965,53 @@ mod tests {
         );
         let error = OnboardRequest::parse(body.as_bytes()).expect_err("depth refusal");
         assert!(error.to_string().contains("too large or nested"));
+    }
+
+    /// A goal that takes over from a browser hire's intended goal before the onboarding goal
+    /// lands makes that attempt conflicted. A ticket's start installs a goal the same way.
+    #[test]
+    fn ticket_start_conflicts_an_unfinished_hire_attempt() {
+        use dudes_proto::RecordKind;
+        use dudes_proto::record::samples;
+
+        let attempt_id = Hex32::new([3; 32]);
+        for carrier in [RecordKind::GoalSet, RecordKind::TicketStarted] {
+            let mut hire = samples::record(RecordKind::AgentHired);
+            let Record::AgentHired {
+                id,
+                browser_onboarding,
+                ..
+            } = &mut hire
+            else {
+                unreachable!("the sample is a hire");
+            };
+            let Record::GoalSet { goal, .. } = samples::record(RecordKind::GoalSet) else {
+                unreachable!("the sample is a goal set");
+            };
+            let agent = *id;
+            *browser_onboarding = Some(Box::new(BrowserOnboardingHire {
+                attempt_id,
+                request_digest: Hex32::new([4; 32]),
+                profile_id: "repo_1".into(),
+                session_digest: Hex32::new([5; 32]),
+                intended_goal: goal,
+            }));
+            let mut index = OnboardingIndex::default();
+            index.apply(&hire).unwrap();
+            assert!(!index.attempt(attempt_id).unwrap().goal_conflict);
+            let mut other = samples::record(carrier);
+            match &mut other {
+                Record::GoalSet { agent: owner, .. }
+                | Record::TicketStarted { agent: owner, .. } => {
+                    *owner = agent;
+                }
+                _ => unreachable!("a goal carrier"),
+            }
+            index.apply(&other).unwrap();
+            assert!(
+                index.attempt(attempt_id).unwrap().goal_conflict,
+                "{carrier:?} conflicts the unfinished attempt"
+            );
+        }
     }
 }

@@ -206,6 +206,14 @@ pub(crate) fn apply(
     entry: &Entry,
 ) -> Result<()> {
     let record = &entry.record;
+    if let Some((agent, goal)) = record.goal_install() {
+        return update(table, lsn, agent, record, |a| {
+            a.goal = Some(goal.id);
+            a.context_lsn = lsn;
+            a.automatic_hold = None;
+            a.live_activity = None;
+        });
+    }
     match record {
         Record::AgentHired {
             id,
@@ -270,12 +278,6 @@ pub(crate) fn apply(
                 kind: LiveActivityKind::Idle,
                 at: entry.at,
             });
-        }),
-        Record::GoalSet { agent, goal, .. } => update(table, lsn, *agent, record, |a| {
-            a.goal = Some(goal.id);
-            a.context_lsn = lsn;
-            a.automatic_hold = None;
-            a.live_activity = None;
         }),
         Record::GoalCleared { agent, .. } => update(table, lsn, *agent, record, |a| {
             a.goal = None;

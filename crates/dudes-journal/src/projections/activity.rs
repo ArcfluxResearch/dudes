@@ -75,6 +75,11 @@ fn event(
     board: &RowTable<'_>,
     record: &Record,
 ) -> Result<Option<ActivityEvent>> {
+    if let Some((id, _)) = record.goal_install() {
+        return Ok(Some(ActivityEvent::GoalSet {
+            agent: agent(agents, id)?,
+        }));
+    }
     Ok(Some(match record {
         Record::TurnIssued { agent: id, .. }
         | Record::NoteOnlyTurnIssued { agent: id, .. }
@@ -84,9 +89,6 @@ fn event(
             agent: agent(agents, *id)?,
         },
         Record::TurnEnded { agent: id, .. } => ActivityEvent::TurnEnded {
-            agent: agent(agents, *id)?,
-        },
-        Record::GoalSet { agent: id, .. } => ActivityEvent::GoalSet {
             agent: agent(agents, *id)?,
         },
         Record::LoopDecided {

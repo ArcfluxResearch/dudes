@@ -624,6 +624,27 @@ impl World {
         } else if let Some(closing) = self.closing.as_mut() {
             closing.fold(lsn, entry);
         }
+        if let Some((agent, goal)) = entry.record.goal_install() {
+            self.goals.insert(
+                goal.id,
+                GoalRow {
+                    goal: goal.clone(),
+                    agent,
+                    turns_on_goal: 0,
+                    predicate: None,
+                    last_turn: None,
+                    cleared: false,
+                },
+            );
+            if let Some(row) = self.agents.get_mut(&agent) {
+                row.goal = Some(goal.id);
+                row.context_lsn = lsn;
+                row.automatic_hold = None;
+                row.fast_failures = None;
+                row.rapid_failure_beat = false;
+                row.pending_launch_failure = None;
+            }
+        }
         match &entry.record {
             Record::ConversationDispatchUncertain {
                 agent,
@@ -1123,27 +1144,6 @@ impl World {
                     {
                         row.predicate = None;
                     }
-                }
-            }
-            Record::GoalSet { agent, goal, .. } => {
-                self.goals.insert(
-                    goal.id,
-                    GoalRow {
-                        goal: goal.clone(),
-                        agent: *agent,
-                        turns_on_goal: 0,
-                        predicate: None,
-                        last_turn: None,
-                        cleared: false,
-                    },
-                );
-                if let Some(row) = self.agents.get_mut(agent) {
-                    row.goal = Some(goal.id);
-                    row.context_lsn = lsn;
-                    row.automatic_hold = None;
-                    row.fast_failures = None;
-                    row.rapid_failure_beat = false;
-                    row.pending_launch_failure = None;
                 }
             }
             Record::GoalCleared { agent, goal } => {
@@ -1669,9 +1669,17 @@ impl World {
             // here would give one fact two owners.
             Record::BudgetDecision { .. } => {} // history, read from the journal
             Record::MemoryCondenseModelAdmitted { .. } => {} // history, read from the journal
+            // The goal was installed above, through the one accessor every goal carrier shares.
+            Record::GoalSet { .. } => {}
+            // An edit changes words, not a card's status, so no board result it could hold moves.
+            Record::TicketEdited { .. } => {}
             Record::CardCreated { card, .. }
             | Record::CardTransition { card, .. }
-            | Record::Claim { card, .. } => {
+            | Record::Claim { card, .. }
+            | Record::TicketCreated { card, .. }
+            | Record::TicketAssigned { card, .. }
+            | Record::TicketStarted { card, .. }
+            | Record::TicketRemoved { card, .. } => {
                 for (goal, row) in &mut self.goals {
                     if !row.cleared
                         && !self.completed_goals.contains_key(goal)

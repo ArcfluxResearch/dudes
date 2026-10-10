@@ -1079,6 +1079,7 @@ fn startup_judges_a_durable_transition_without_issuing_a_fresh_turn() {
                     uid: Some(501),
                 },
                 expected_seq: Seq(0),
+                reason: None,
             },
         })
         .unwrap();

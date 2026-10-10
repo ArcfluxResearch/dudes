@@ -3602,6 +3602,17 @@
               "$ref": "#/$defs/CardStatus",
               "description": "Status before."
             },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TicketReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Why the daemon moved a ticket into Needs you. Absent on every other transition."
+            },
             "t": {
               "const": "card_transition",
               "type": "string"
@@ -5714,6 +5725,198 @@
             "turn",
             "policy_lsn",
             "mcp_servers"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`ticket.create`: a board card that is a ticket. A required record, so a build that does\nnot know tickets stops instead of replaying one as a plain card.",
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/Actor",
+              "description": "Who created it, and so the author of the card's `Todo` status."
+            },
+            "card": {
+              "$ref": "#/$defs/CardId",
+              "description": "The card."
+            },
+            "department": {
+              "description": "Department whose agents may hold it, copied from the project.",
+              "type": "string"
+            },
+            "description": {
+              "description": "The note, trimmed; empty when there is none.",
+              "type": "string"
+            },
+            "done_when": {
+              "$ref": "#/$defs/TicketCheck",
+              "description": "The check that finishes it, resolved at creation."
+            },
+            "project": {
+              "description": "The enrolled project the ticket runs in.",
+              "type": "string"
+            },
+            "t": {
+              "const": "ticket_created",
+              "type": "string"
+            },
+            "title": {
+              "description": "Title, trimmed.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "card",
+            "title",
+            "description",
+            "department",
+            "project",
+            "done_when",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`ticket.edit`: the complete new values, so replay needs no merge. Conditional on\n`expected_seq`.",
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/Actor",
+              "description": "Who edited it."
+            },
+            "card": {
+              "$ref": "#/$defs/CardId",
+              "description": "The card."
+            },
+            "description": {
+              "description": "The note, trimmed; empty when there is none.",
+              "type": "string"
+            },
+            "done_when": {
+              "$ref": "#/$defs/TicketCheck",
+              "description": "The check that finishes it."
+            },
+            "expected_seq": {
+              "$ref": "#/$defs/Seq",
+              "description": "The card's `seq` the editor decided against."
+            },
+            "t": {
+              "const": "ticket_edited",
+              "type": "string"
+            },
+            "title": {
+              "description": "Title, trimmed.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "card",
+            "title",
+            "description",
+            "done_when",
+            "by",
+            "expected_seq"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`ticket.assign`: the ticket joins an agent's queue. Conditional on `expected_seq`.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The agent whose queue it joins."
+            },
+            "by": {
+              "$ref": "#/$defs/Actor",
+              "description": "Who assigned it."
+            },
+            "card": {
+              "$ref": "#/$defs/CardId",
+              "description": "The card."
+            },
+            "expected_seq": {
+              "$ref": "#/$defs/Seq",
+              "description": "The card's `seq` the assigner decided against."
+            },
+            "message": {
+              "description": "What the operator asked for when sending work back; kept for the next start.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "t": {
+              "const": "ticket_assigned",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "card",
+            "agent",
+            "by",
+            "expected_seq"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A ticket's work starts: installs the goal and moves the card to Doing in one record, so a\ncrash cannot leave a Doing card with no goal or a goal with no card. Conditional on\n`expected_seq`. Replay validates the embedded goal against the ticket and never trusts it.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "The agent that pursues it."
+            },
+            "card": {
+              "$ref": "#/$defs/CardId",
+              "description": "The card."
+            },
+            "expected_seq": {
+              "$ref": "#/$defs/Seq",
+              "description": "The card's `seq` the starter decided against."
+            },
+            "goal": {
+              "$ref": "#/$defs/Goal",
+              "description": "The goal, complete."
+            },
+            "t": {
+              "const": "ticket_started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "card",
+            "agent",
+            "goal",
+            "expected_seq"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "`ticket.remove`: the card leaves the board view and its queue. The record stays in the\njournal. Conditional on `expected_seq`.",
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/Actor",
+              "description": "Who removed it."
+            },
+            "card": {
+              "$ref": "#/$defs/CardId",
+              "description": "The card."
+            },
+            "expected_seq": {
+              "$ref": "#/$defs/Seq",
+              "description": "The card's `seq` the remover decided against."
+            },
+            "t": {
+              "const": "ticket_removed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "card",
+            "by",
+            "expected_seq"
           ],
           "type": "object"
         }
@@ -11269,6 +11472,94 @@
       ],
       "title": "ThreadView",
       "type": "object"
+    },
+    "TicketCheck": {
+      "description": "The check a ticket is finished by, as it was when the ticket was made or last edited. Storing\nthe resolved predicate means a later enrollment edit cannot change what an existing ticket is\nchecked by.",
+      "properties": {
+        "id": {
+          "description": "The check's id within its project.",
+          "type": "string"
+        },
+        "label": {
+          "description": "The check's label.",
+          "type": "string"
+        },
+        "predicate": {
+          "$ref": "#/$defs/Predicate",
+          "description": "The typed command the daemon runs."
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "predicate"
+      ],
+      "type": "object"
+    },
+    "TicketReason": {
+      "description": "Why a ticket is in Needs you. Written on the daemon's own move into that lane.",
+      "oneOf": [
+        {
+          "const": "project_unavailable",
+          "description": "The project is not enrolled any more.",
+          "type": "string"
+        },
+        {
+          "const": "check_cannot_run",
+          "description": "The check's program was not found.",
+          "type": "string"
+        },
+        {
+          "const": "ceiling_required",
+          "description": "A spending limit is required and none is set.",
+          "type": "string"
+        },
+        {
+          "const": "reserve_missing",
+          "description": "The per-turn spending reserve is not set.",
+          "type": "string"
+        },
+        {
+          "const": "goal_changed",
+          "description": "The agent's goal was changed outside the board.",
+          "type": "string"
+        },
+        {
+          "const": "limit_goal",
+          "description": "The ticket reached its spending limit.",
+          "type": "string"
+        },
+        {
+          "const": "slowed",
+          "description": "The agent kept failing and was slowed down.",
+          "type": "string"
+        },
+        {
+          "const": "no_turns",
+          "description": "The agent used all its turns on the ticket.",
+          "type": "string"
+        },
+        {
+          "const": "held_launch",
+          "description": "The agent's engine would not start.",
+          "type": "string"
+        },
+        {
+          "const": "held_failing",
+          "description": "The agent's turns kept failing at once.",
+          "type": "string"
+        },
+        {
+          "const": "held_unsure",
+          "description": "The daemon could not confirm how the agent's last turn ended.",
+          "type": "string"
+        },
+        {
+          "const": "worktree_missing",
+          "description": "The agent's worktree is missing.",
+          "type": "string"
+        }
+      ]
     },
     "Timestamp": {
       "description": "UTC milliseconds since the Unix epoch. An integer so it sorts, diffs and reads in `jq`.",

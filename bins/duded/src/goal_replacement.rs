@@ -318,6 +318,7 @@ pub(crate) struct IndexedGoal {
 pub(crate) struct GoalChanges {
     browser: BTreeMap<Hex32, IndexedGoal>,
     operator: BTreeMap<Hex32, (Hex32, GoalReplaceResult)>,
+    tickets: crate::ticket_index::TicketIndex,
 }
 
 impl GoalChanges {
@@ -330,6 +331,7 @@ impl GoalChanges {
     }
 
     pub(crate) fn validate(&self, world: &World, record: &Record) -> Result<()> {
+        self.tickets.validate(world, record)?;
         if let Record::AgentHired {
             browser_onboarding: Some(hire),
             ..
@@ -429,6 +431,7 @@ impl GoalChanges {
     }
 
     pub(crate) fn apply(&mut self, record: &Record) {
+        self.tickets.apply(record);
         let Record::GoalSet {
             agent,
             goal,

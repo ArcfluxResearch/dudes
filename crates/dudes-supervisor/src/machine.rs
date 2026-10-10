@@ -52,6 +52,8 @@ use crate::world::{AgentRow, MAX_PENDING_STEERS, World};
 mod browser_notes;
 mod conversations;
 mod mail_wakes;
+#[cfg(test)]
+mod ticket_start;
 use browser_notes::BrowserLaunchPhase;
 use mail_wakes::{MailRefresh, MailRefreshPhase};
 
@@ -1129,7 +1131,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 let card = match &entry.record {
                     Record::CardCreated { card, .. }
                     | Record::CardTransition { card, .. }
-                    | Record::Claim { card, .. } => *card,
+                    | Record::Claim { card, .. }
+                    | Record::TicketCreated { card, .. }
+                    | Record::TicketAssigned { card, .. }
+                    | Record::TicketStarted { card, .. }
+                    | Record::TicketRemoved { card, .. } => *card,
                     _ => return &self.pending,
                 };
                 self.apply_entry(lsn, &entry);
@@ -1231,6 +1237,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     /// Track the newest journaled activity and forget samples a lifecycle record supersedes.
     fn fold_activity(&mut self, entry: &Entry) {
+        if let Some((agent, _)) = entry.record.goal_install() {
+            self.activity_pending.remove(&agent);
+            if let Some(journaled) = self.activity_journaled.get_mut(&agent) {
+                journaled.kind = None;
+            }
+            return;
+        }
         match &entry.record {
             Record::LiveActivityObserved { agent, kind } => {
                 self.activity_journaled.insert(
@@ -1246,7 +1259,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.activity_journaled.remove(id);
             }
             Record::AgentHeld { agent, .. }
-            | Record::GoalSet { agent, .. }
             | Record::GoalCleared { agent, .. }
             | Record::TurnSpawned { agent, .. }
             | Record::TurnEnded { agent, .. }
@@ -1284,17 +1296,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if let Record::PredicateResult { goal, .. } = &entry.record {
             self.goals_awaiting_board_result.remove(goal);
         }
-        if matches!(
-            entry.record,
-            Record::GoalSet { .. }
-                | Record::GoalCleared { .. }
-                | Record::GoalReassigned { .. }
-                | Record::AgentRetired { .. }
-                | Record::LoopDecided {
-                    decision: LoopDecision::Done,
-                    ..
-                }
-        ) {
+        if entry.record.goal_install().is_some()
+            || matches!(
+                entry.record,
+                Record::GoalCleared { .. }
+                    | Record::GoalReassigned { .. }
+                    | Record::AgentRetired { .. }
+                    | Record::LoopDecided {
+                        decision: LoopDecision::Done,
+                        ..
+                    }
+            )
+        {
             self.goals_awaiting_board_result.retain(|goal| {
                 self.world
                     .held_board_goals(None)

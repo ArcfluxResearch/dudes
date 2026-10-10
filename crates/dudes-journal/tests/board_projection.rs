@@ -27,6 +27,7 @@ fn card_records_replay_to_the_same_status_author_and_sequence() {
             to: CardStatus::Doing,
             by: Actor::Agent { agent },
             expected_seq: Seq(1),
+            reason: None,
         },
     ]
     .map(|record| Entry {

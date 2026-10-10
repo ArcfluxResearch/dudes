@@ -570,6 +570,7 @@ fn a_replayed_board_change_invalidates_a_pass_until_fresh_observed_evidence() {
             to: CardStatus::Doing,
             by: peer(),
             expected_seq: dudes_types::Seq(1),
+            reason: None,
         }));
         let mut harness = replay(entries);
         assert!(harness.supervisor.world().goals[&goal].predicate.is_none());

@@ -126,10 +126,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     pub(super) fn mail_event_recipients(&self, record: &Record) -> Vec<AgentId> {
+        if record.goal_install().is_some() {
+            return self.world.mail_wake_recipients(record);
+        }
         match record {
             Record::Mail { .. }
             | Record::MailState { .. }
-            | Record::GoalSet { .. }
             | Record::GoalCleared { .. }
             | Record::GoalReassigned { .. }
             | Record::AgentRetired { .. } => self.world.mail_wake_recipients(record),

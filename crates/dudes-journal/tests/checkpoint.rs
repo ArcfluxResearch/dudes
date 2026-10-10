@@ -181,6 +181,13 @@ fn placement(kind: RecordKind) -> Placement {
         RecordKind::MailWakeTurnDecided | RecordKind::MailWakeOnlyTurnIssued => Placement::Out(
             "matched wake authority uses the checkpointed same-journal rebuild case below; standalone samples do not form valid joins",
         ),
+        RecordKind::TicketCreated
+        | RecordKind::TicketEdited
+        | RecordKind::TicketAssigned
+        | RecordKind::TicketStarted
+        | RecordKind::TicketRemoved => Placement::Out(
+            "a ticket's records need the card they name; tests/tickets.rs replays the lifecycle with and without checkpoints",
+        ),
         RecordKind::AgentMcpServersChanged | RecordKind::McpLaunchGranted => Placement::Out(
             "MCP authority requires its edited policy and physical joins; required frame and cache rebuild tests cover those records separately",
         ),

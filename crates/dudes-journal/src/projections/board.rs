@@ -1,5 +1,5 @@
-use dudes_proto::{Actor, CardView, Entry, Record};
-use dudes_types::{CardStatus, Lsn, Seq};
+use dudes_proto::{Actor, CardView, Entry, QueueClass, QueueKey, Record, TicketRow};
+use dudes_types::{CardId, CardStatus, Lsn, Seq};
 use serde::{Deserialize, Serialize};
 
 use super::{RowTable, all_rows, get_row, put_row};
@@ -11,6 +11,20 @@ pub(super) struct BoardRow {
     pub(super) view: CardView,
     #[serde(default)]
     pub(super) claimed_lsn: Option<Lsn>,
+    /// Present only for a ticket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) ticket: Option<TicketRow>,
+}
+
+impl BoardRow {
+    /// The card is no longer held, and a ticket leaves its queue.
+    fn release(&mut self) {
+        self.view.claimed_by = None;
+        self.claimed_lsn = None;
+        if let Some(ticket) = &mut self.ticket {
+            ticket.queue = None;
+        }
+    }
 }
 
 pub(super) fn apply(table: &mut RowTable<'_>, lsn: Lsn, entry: &Entry) -> Result<()> {
@@ -36,45 +50,47 @@ pub(super) fn apply(table: &mut RowTable<'_>, lsn: Lsn, entry: &Entry) -> Result
                     deps: deps.clone(),
                 },
                 claimed_lsn: None,
+                ticket: None,
             },
         ),
         Record::Claim {
             card,
             agent,
             expected_seq,
-        } => {
-            let Some(mut row) = get_row::<BoardRow>(table, &card.to_bytes())? else {
-                tracing::warn!(target: "journal", %lsn, %card, "projection.unknown_card");
-                return Ok(());
-            };
+        } => update(table, lsn, *card, |row| {
             row.view.status = CardStatus::Claimed;
             row.view.status_by = Actor::Agent { agent: *agent };
             row.view.seq = expected_seq.next();
             row.view.claimed_by = Some(*agent);
             row.claimed_lsn = Some(lsn);
-            put_row(table, &card.to_bytes(), &row)
-        }
+        }),
         Record::CardTransition {
             card,
             to,
             by,
             expected_seq,
+            reason,
             ..
-        } => {
-            let Some(mut row) = get_row::<BoardRow>(table, &card.to_bytes())? else {
-                tracing::warn!(target: "journal", %lsn, %card, "projection.unknown_card");
-                return Ok(());
-            };
+        } => update(table, lsn, *card, |row| {
             row.view.status = *to;
             row.view.status_by = *by;
             row.view.seq = expected_seq.next();
-            put_row(table, &card.to_bytes(), &row)
-        }
+            if let Some(ticket) = &mut row.ticket {
+                ticket.reason = *reason;
+                if *to == CardStatus::Todo {
+                    row.release();
+                }
+            }
+        }),
         Record::AgentRetired { id, .. } => {
             for mut card in all_rows::<BoardRow>(table)? {
                 if card.view.claimed_by == Some(*id) {
-                    card.view.claimed_by = None;
-                    card.claimed_lsn = None;
+                    // A pending decision is not erased by the departure of the agent that did
+                    // the work: the ticket stays Ready for you and remembers who did it.
+                    if card.ticket.is_some() && card.view.status == CardStatus::Review {
+                        continue;
+                    }
+                    card.release();
                     card.view.seq = card.view.seq.next();
                     if card.view.status != CardStatus::Done {
                         card.view.status = CardStatus::Todo;
@@ -85,6 +101,124 @@ pub(super) fn apply(table: &mut RowTable<'_>, lsn: Lsn, entry: &Entry) -> Result
             }
             Ok(())
         }
+        _ => apply_ticket(table, lsn, &entry.record),
+    }
+}
+
+/// The five ticket records: a ticket is a card with more to remember.
+fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<()> {
+    match record {
+        Record::TicketCreated {
+            card,
+            title,
+            description,
+            department,
+            project,
+            done_when,
+            by,
+        } => put_row(
+            table,
+            &card.to_bytes(),
+            &BoardRow {
+                view: CardView {
+                    id: *card,
+                    title: title.clone(),
+                    department: department.clone(),
+                    status: CardStatus::Todo,
+                    status_by: *by,
+                    seq: Seq::ZERO,
+                    claimed_by: None,
+                    deps: Vec::new(),
+                },
+                claimed_lsn: None,
+                ticket: Some(TicketRow {
+                    description: description.clone(),
+                    project: project.clone(),
+                    done_when: done_when.clone(),
+                    goal: None,
+                    queue: None,
+                    message: None,
+                    round: 0,
+                    reason: None,
+                }),
+            },
+        ),
+        Record::TicketEdited {
+            card,
+            title,
+            description,
+            done_when,
+            expected_seq,
+            ..
+        } => update(table, lsn, *card, |row| {
+            row.view.title.clone_from(title);
+            row.view.seq = expected_seq.next();
+            if let Some(ticket) = &mut row.ticket {
+                ticket.description.clone_from(description);
+                ticket.done_when = done_when.clone();
+            }
+        }),
+        Record::TicketAssigned {
+            card,
+            agent,
+            by,
+            message,
+            expected_seq,
+        } => update(table, lsn, *card, |row| {
+            let class = if matches!(row.view.status, CardStatus::Review | CardStatus::Blocked) {
+                QueueClass::Rework
+            } else {
+                QueueClass::New
+            };
+            row.view.status = CardStatus::Claimed;
+            row.view.status_by = *by;
+            row.view.seq = expected_seq.next();
+            row.view.claimed_by = Some(*agent);
+            row.claimed_lsn = Some(lsn);
+            if let Some(ticket) = &mut row.ticket {
+                ticket.queue = Some(QueueKey { class, lsn });
+                ticket.message.clone_from(message);
+                ticket.reason = None;
+            }
+        }),
+        Record::TicketStarted {
+            card,
+            agent,
+            goal,
+            expected_seq,
+        } => update(table, lsn, *card, |row| {
+            row.view.status = CardStatus::Doing;
+            row.view.status_by = Actor::System;
+            row.view.seq = expected_seq.next();
+            row.view.claimed_by = Some(*agent);
+            row.claimed_lsn.get_or_insert(lsn);
+            if let Some(ticket) = &mut row.ticket {
+                ticket.goal = Some(goal.id);
+                ticket.queue = None;
+                ticket.message = None;
+                ticket.reason = None;
+                ticket.round = ticket.round.saturating_add(1);
+            }
+        }),
+        Record::TicketRemoved { card, .. } => {
+            table.remove(&card.to_bytes())?;
+            Ok(())
+        }
         _ => Ok(()),
     }
+}
+
+/// Change one card's row, or note that the record names no card.
+fn update(
+    table: &mut RowTable<'_>,
+    lsn: Lsn,
+    card: CardId,
+    change: impl FnOnce(&mut BoardRow),
+) -> Result<()> {
+    let Some(mut row) = get_row::<BoardRow>(table, &card.to_bytes())? else {
+        tracing::warn!(target: "journal", %lsn, %card, "projection.unknown_card");
+        return Ok(());
+    };
+    change(&mut row);
+    put_row(table, &card.to_bytes(), &row)
 }

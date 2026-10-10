@@ -37,6 +37,7 @@ pub mod reply;
 pub mod rpc;
 pub mod schema;
 pub mod task;
+pub mod ticket;
 pub mod traces;
 
 /// The current RPC contract major. `goal.replace` checks [`rpc::Request::v`] against it;
@@ -87,6 +88,7 @@ pub use task::{
     MAIL_INSTRUCTION, MEMORY_INSTRUCTION, NoteContract, TEACHING_BYTES, normalized_browser_note,
     recognize_taught_note_task, taught_note_task, valid_taught_admission, valid_taught_decision,
 };
+pub use ticket::{QueueClass, QueueKey, TicketCheck, TicketReason, TicketRefusal, TicketRow};
 pub use traces::{
     MAX_AGENT_TRACE_BYTES, MAX_AGENT_TRACES, MAX_TRACE_BYTES, MAX_TRACES, TraceOutcome,
     TurnTraceView,

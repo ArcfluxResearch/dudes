@@ -73,12 +73,14 @@ impl Fold {
     }
 
     pub(super) fn affected(&self, record: &Record) -> Vec<AgentId> {
+        if let Some((agent, _)) = record.goal_install() {
+            return vec![agent];
+        }
         match record {
             Record::Mail {
                 to: MailTo::Agent { agent },
                 ..
             }
-            | Record::GoalSet { agent, .. }
             | Record::GoalCleared { agent, .. }
             | Record::BreakerBeat { agent, .. } => vec![*agent],
             Record::AgentRetired { id, .. } => vec![*id],
@@ -497,6 +499,7 @@ mod tests {
                 to: dudes_types::CardStatus::Done,
                 by: dudes_proto::Actor::System,
                 expected_seq: dudes_types::Seq(1),
+                reason: None,
             },
         };
         h.journal.push(entry.clone());

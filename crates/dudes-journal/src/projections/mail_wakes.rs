@@ -87,12 +87,14 @@ impl Facts<'_, '_> {
     }
 
     fn affected(&self, record: &Record) -> Result<Vec<AgentId>> {
+        if let Some((agent, _)) = record.goal_install() {
+            return Ok(vec![agent]);
+        }
         Ok(match record {
             Record::Mail {
                 to: MailTo::Agent { agent },
                 ..
             }
-            | Record::GoalSet { agent, .. }
             | Record::GoalCleared { agent, .. }
             | Record::BreakerBeat { agent, .. } => vec![*agent],
             Record::AgentRetired { id, .. } => vec![*id],
