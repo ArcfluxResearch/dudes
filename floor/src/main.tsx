@@ -1,6 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { connect, noteFirstLinkRefused, takePastedLink } from './connect';
+import { connect, noteFirstLinkRefused, noteNoFirstLink, takePastedLink } from './connect';
 import type { StreamPorts } from './connect';
 import { noteTransport } from './renderer/floor/store';
 import { browserSocket } from './renderer/floor/stream';
@@ -19,6 +19,7 @@ void establishFloorSession()
   .then((session) => {
     if (session !== currentFloorSession()) return;
     if (session === null) {
+      noteNoFirstLink();
       noteTransport('close');
       return;
     }

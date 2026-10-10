@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 
-import { firstLinkRefused, pastedLinkBuildMismatch, pastedLinkRefused, subscribeToPastedLink } from './connect';
+import { firstLinkProblem, pastedLinkBuildMismatch, pastedLinkRefused, subscribeToPastedLink } from './connect';
 import { AgentDrawer, Receipts } from './renderer/AgentDrawer';
 import { CONTROL_VIEWS, Control, ControlNav, FocusRoster, toggledView, viewButtonId } from './renderer/Control';
 import type { ControlView } from './renderer/Control';
@@ -39,19 +39,30 @@ import {
  * Said when the link this page was opened with, or one pasted into it, was
  * refused. Without it the page looks as it did, which reads as the link having
  * worked. It names no part of the link: the secret stays out of the page. The
- * page cannot tell why the daemon refused its first link, so it names every
- * reason.
+ * daemon does not say why it refused a first link, so the page gives the usual
+ * reason, a link that was already used or expired, and the one other it can
+ * name. A page opened with no link at all is told that, because a browser
+ * scrubs the secret from its address bar as soon as it signs in.
  */
 export function PastedLinkNotice() {
-  const first = useSyncExternalStore(subscribeToPastedLink, firstLinkRefused, firstLinkRefused);
+  const first = useSyncExternalStore(subscribeToPastedLink, firstLinkProblem, firstLinkProblem);
   const refused = useSyncExternalStore(subscribeToPastedLink, pastedLinkRefused, pastedLinkRefused);
   const buildMismatch = useSyncExternalStore(subscribeToPastedLink, pastedLinkBuildMismatch, pastedLinkBuildMismatch);
-  if (first) {
+  if (first === 'refused') {
     return (
       <p className="link-refused" role="alert">
-        This sign-in link was refused. It was already used, it expired, or the daemon already has four Floor
-        sessions. If you did not use this link, another program on this computer may have. Run dudes floor open
-        again; if four sessions are open, restart the daemon first.
+        This sign-in link was already used or has expired. Each link works once, in one browser. Run{' '}
+        <code>dudes floor open</code> and paste the new link here within 60 seconds. The daemon also refuses a link
+        while four Floor sessions are open.
+      </p>
+    );
+  }
+  if (first === 'missing') {
+    return (
+      <p className="link-refused" role="alert">
+        This page has no sign-in link. Each link works once, in one browser, and a browser removes it from the
+        address bar as soon as it signs in, so a copied address does not carry it. Run <code>dudes floor open</code>{' '}
+        and paste the new link here within 60 seconds.
       </p>
     );
   }
@@ -82,6 +93,7 @@ export function WebFloorShell() {
   const [archiveHireKept, setArchiveHireKept] = useState(false);
   const [officeBar, setOfficeBar] = useState<HTMLDivElement | null>(null);
   const hire = useSyncExternalStore(subscribeToHire, getHireState, getHireState);
+  const firstLink = useSyncExternalStore(subscribeToPastedLink, firstLinkProblem, firstLinkProblem);
   const [view, setView] = useState<ControlView | null>(null);
   const [answerAsked, setAnswerAsked] = useState<{ readonly id: string } | null>(null);
   const [crewOpen, setCrewOpen] = useState(true);
@@ -321,7 +333,7 @@ export function WebFloorShell() {
         <PastedLinkNotice />
         <JournalStoppedBanner stopped={floor.journalStopped} />
         <ClosingTimeBanner closing={floor.closingTime} stale={floor.stale} />
-        <StreamNotice floor={floor} />
+        {firstLink === null ? <StreamNotice floor={floor} /> : null}
         <div className="office-bar" ref={setOfficeBar} />
       </header>
       <div className="floor-stage"
