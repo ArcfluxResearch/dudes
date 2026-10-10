@@ -36,7 +36,7 @@ test('Messages joins the detail registry with ARIA, hidden drafts and persistent
   assert.match(html, /Unsubmitted goal draft/);
   assert.match(html, /id="agent-detail-panel-output"[^>]*hidden=""/);
   const { detailTabTarget } = await server.ssrLoadModule('/src/renderer/detailTabs.ts');
-  assert.equal(detailTabTarget(['overview', 'output', 'terminal', 'traces', 'messages'], 'messages', 'ArrowRight'), 'overview');
+  assert.equal(detailTabTarget(['overview', 'output', 'terminal', 'messages'], 'messages', 'ArrowRight'), 'overview');
   const { readDetailTab, writeDetailTab } = await server.ssrLoadModule('/src/renderer/view.ts');
   const values = new Map();
   const storage = () => ({ getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) });

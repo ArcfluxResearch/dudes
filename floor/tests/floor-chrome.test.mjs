@@ -4,7 +4,7 @@
 //
 // Mutation controls, each named by the test it turns red:
 //   EVERY_VIEW       drop an entry from CONTROL_VIEWS ........... "the top bar reaches every Control view…"
-//   STATS_COUNT      count `idle` as running in crewTotalsOf ..... "the top bar names the floor and counts…"
+//   STATS_COUNT      count `idle` as running in crewStatuses ..... "the top bar names the floor and counts…"
 //   CREW_UNFOLDED    drop `folded` from Crew's HireEntry ......... "the top bar names the floor and counts…"
 //   DRAWER_END_AUTO  the drawer's office rule back to `grid-column: 3`  "the office takes the columns the docked panels…"
 //   WORKSPACE_ALWAYS drop `[aria-pressed='false']` from the hide rule "a Crew row says its workspace is not recorded…"

@@ -335,6 +335,7 @@ test('Attach is offered for a Managed agent between turns with a confirmed sessi
 
 let server;
 let TerminalAttachView;
+let AttachConfirmation;
 let TerminalPanelView;
 
 before(async () => {
@@ -345,7 +346,7 @@ before(async () => {
     appType: 'custom',
     logLevel: 'silent',
   });
-  ({ TerminalAttachView, TerminalPanelView } = await server.ssrLoadModule('/src/renderer/terminal/TerminalPanel.tsx'));
+  ({ TerminalAttachView, TerminalPanelView, AttachConfirmation } = await server.ssrLoadModule('/src/renderer/terminal/TerminalPanel.tsx'));
 });
 
 after(async () => {
@@ -368,15 +369,18 @@ test('the detail says why there is no Attach, and names the agent whose terminal
   assert.doesNotMatch(view({ kind: 'open-here' }), /<button/);
 });
 
-test('Claude Attach warns about workspace trust before opening the terminal', () => {
+test('Claude Attach shows the workspace trust warning in a confirmation before opening the terminal', () => {
   const floor = floorOf([row({ provider: 'claude' }), row({ id: GRACE, provider: 'local' })]);
   const view = (agent) => renderToStaticMarkup(createElement(TerminalAttachView, { floor, offer: { kind: 'attach', agent } }));
   const claude = view(ADA);
-  assert.match(claude, /Claude Code may ask you to trust this workspace/);
-  assert.match(claude, /No, exit/);
-  assert.match(claude, /aria-describedby="terminal-hint terminal-trust-hint"/);
-  assert.ok(claude.indexOf('terminal-trust-hint"') < claude.indexOf('>Attach<'));
-  assert.doesNotMatch(view(GRACE), /terminal-trust-hint|No, exit/);
+  assert.doesNotMatch(claude, /trust this workspace/);
+  assert.match(claude, /<button type="button" class="terminal-attach" aria-describedby="terminal-hint" aria-haspopup="dialog">Attach<\/button>/);
+  assert.doesNotMatch(view(GRACE), /aria-haspopup/);
+  const dialog = renderToStaticMarkup(createElement(AttachConfirmation, { name: 'Ada', onConfirm() {}, onCancel() {} }));
+  assert.match(dialog, /Claude Code may ask you to trust this workspace/);
+  assert.match(dialog, /No, exit/);
+  assert.ok(dialog.indexOf('trust this workspace') < dialog.indexOf('>Attach<'));
+  assert.match(dialog, /class="retire-cancel"[^>]*>Cancel</);
 });
 
 test('the panel offers Detach only while attached, and Close only once ended', () => {
