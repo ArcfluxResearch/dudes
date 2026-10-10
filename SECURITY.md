@@ -5,17 +5,15 @@ callbacks. Bugs on those edges are security bugs. Please report them privately.
 
 ## Supported versions
 
-Dudes is pre-1.0 and has no releases yet. Security fixes land on the `main` branch. To get them,
-build from the latest `main`.
+Dudes is pre-1.0. Only the latest release is supported. Security fixes ship in a new release, so
+upgrade to it as the README describes.
 
 ## Reporting a vulnerability
 
-Report vulnerabilities privately to [alex.nthnz@gmail.com](mailto:alex.nthnz@gmail.com).
-Alex Nguyen monitors this address.
-
-GitHub private vulnerability reporting requires a public repository with the feature enabled.
-Alternatively, if the repository's **Advisories** page offers **Report a vulnerability**, use it to
-create a private report.
+Report vulnerabilities privately through GitHub:
+[Report a vulnerability](https://github.com/ArcfluxResearch/dudes/security/advisories/new) opens a
+private report that only the maintainer can see. If you cannot use GitHub, email
+[alex.nthnz@gmail.com](mailto:alex.nthnz@gmail.com). Alex Nguyen monitors this address.
 Do not open a public issue or pull request for a security problem.
 
 Please include: the affected version or commit, the platform, a reproduction (a journal excerpt,

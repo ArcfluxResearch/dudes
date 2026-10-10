@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Ask a question
+    url: https://github.com/ArcfluxResearch/dudes/discussions/categories/q-a
+    about: Help with installing, setting up or running Dudes.
+  - name: Suggest an idea
+    url: https://github.com/ArcfluxResearch/dudes/discussions/categories/ideas
+    about: Talk an idea through before it becomes a feature request.
   - name: Report a security problem privately
     url: https://github.com/ArcfluxResearch/dudes/security/advisories/new
     about: Do not open a public issue for a vulnerability. SECURITY.md has the details.
