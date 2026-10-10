@@ -19,4 +19,5 @@ cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings --loc
 - [ ] Tests added or updated name the invariant they protect
 - [ ] ≤ 400 changed lines (otherwise split)
 - [ ] `CHANGELOG.md` Unreleased entry, if user-visible
+- [ ] No version change (the release pull request bumps it)
 - [ ] Every document stating the old fact was updated
