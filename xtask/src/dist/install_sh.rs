@@ -24,9 +24,18 @@ fn release_at(dir: &Path, version: &str, targets: &[&str]) {
     for target in targets {
         let tree = tempfile::tempdir().expect("a release tree");
         for binary in BINARIES {
+            // `dudes ping` answers as a daemon of the version in DUDES_FAKE_DAEMON, or fails as
+            // it does when no daemon runs.
+            let ping = if binary == "dudes" {
+                "if [ \"${1:-}\" = ping ]; then\n\
+                 if [ -n \"${DUDES_FAKE_DAEMON:-}\" ]; then echo \"duded $DUDES_FAKE_DAEMON on /sock\"; exit 0; fi\n\
+                 echo 'cannot reach the daemon' >&2; exit 1\nfi\n"
+            } else {
+                ""
+            };
             write(
                 &tree.path().join(binary),
-                &format!("#!/bin/sh\necho {binary} {target}\n"),
+                &format!("#!/bin/sh\n{ping}echo {binary} {target}\n"),
             );
         }
         for notice in NOTICES {
@@ -432,6 +441,47 @@ fn it_installs_the_binaries_and_floor_and_says_what_to_run_next() {
             format!("{notice} 1.2.4 aarch64-apple-darwin\n")
         );
     }
+}
+
+/// What an upgrade says after installing, given the version of the daemon already running, if any,
+/// and the `dudes` it tells the user to run, which is off `PATH` here.
+fn upgrade_says(daemon: Option<&str>) -> (String, String) {
+    let served = tempfile::tempdir().expect("a release directory");
+    release(served.path(), &["aarch64-apple-darwin"]);
+    let url = serve(served.path()).url;
+    let host = Host::new("Darwin", "arm64");
+    let env = daemon.map(|version| ("DUDES_FAKE_DAEMON", Path::new(version)));
+    let ran = host.run_in(None, env.as_slice(), Some(&url), &[]);
+    assert!(ran.status.success(), "installed: {ran:?}");
+    let run = host.prefix().join("bin/dudes");
+    (stdout(&ran), run.display().to_string())
+}
+
+#[test]
+fn it_names_a_daemon_left_running_on_another_version() {
+    let (said, run) = upgrade_says(Some("1.0.0"));
+    assert!(
+        said.ends_with(&format!(
+            "A Dudes daemon is still running version 1.0.0. Run `{run} stop`, then `{run} start`, \
+             to use {VERSION}.\n"
+        )),
+        "{said}"
+    );
+    assert!(!said.contains("Next, start the daemon"), "{said}");
+}
+
+#[test]
+fn it_adds_nothing_when_the_running_daemon_is_the_version_just_installed() {
+    let (said, _) = upgrade_says(Some(VERSION));
+    assert!(!said.contains("still running"), "{said}");
+    assert!(!said.contains("Next, start the daemon"), "{said}");
+}
+
+#[test]
+fn it_keeps_the_first_run_advice_when_no_daemon_runs() {
+    let (said, _) = upgrade_says(None);
+    assert!(said.contains("Next, start the daemon:"), "{said}");
+    assert!(!said.contains("still running"), "{said}");
 }
 
 #[test]
