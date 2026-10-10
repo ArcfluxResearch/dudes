@@ -277,7 +277,6 @@ const FIRST_RUN_GUIDE = 'src/renderer/setup/FirstRunGuide.tsx';
 const SETTINGS_VIEW = 'src/renderer/settings/SettingsView.tsx';
 const FLOOR_SHELL = 'src/shell.tsx';
 const AGENT_ORDER = 'src/renderer/AgentOrder.tsx';
-const AGENT_NOTE = 'src/renderer/AgentNote.tsx';
 const ARCHIVED_AGENTS = 'src/renderer/ArchivedAgents.tsx';
 const CONTROL_VIEW = 'src/renderer/Control.tsx';
 /** Escape closes a Control view, or the drawer from anywhere on the stage, unless a field already used it. It sends nothing. */
@@ -307,7 +306,6 @@ const ADMITTED = new Map([
     'a submit handler', 'a key handler'])],
   [FLOOR_SHELL, Object.freeze(['a key handler', 'a pointer handler'])],
   [AGENT_ORDER, Object.freeze(['a key handler', 'a pointer handler'])],
-  [AGENT_NOTE, Object.freeze(['a textarea', 'a change handler'])],
   ['src/renderer/AgentDetail.tsx', Object.freeze(['a key handler'])],
   [CONTROL_VIEW, Object.freeze(['a key handler'])],
   [TERMINAL_PANEL, Object.freeze(['a textarea', 'a key handler'])],
@@ -377,7 +375,6 @@ const ADMITTED_HANDLERS = [
   { file: TERMINAL_PANEL, tag: 'textarea', handler: 'onFocus', expression: '(event) => event.currentTarget.select()' },
   { file: FIRST_RUN_GUIDE, tag: 'aside', className: 'first-run-guide', handler: 'onKeyDown',
     expression: "(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }" },
-  { file: AGENT_NOTE, tag: 'textarea', handler: 'onChange', expression: '(event) => editNote(event.target.value)' },
   { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
     expression: '(event) => setFilters({ ...filters, agentId: event.currentTarget.value })' },
   { file: ACTIVITY_PANEL, tag: 'select', handler: 'onChange',
@@ -421,6 +418,8 @@ const ADMITTED_HANDLERS = [
   // RetirePanel.tsx: Escape fires the modal confirmation's `cancel`, which
   // closes it and sends nothing.
   { file: RETIRE_PANEL, tag: 'dialog', className: 'retire-dialog', handler: 'onCancel', expression: 'cancelRetire' },
+  // TerminalPanel.tsx: the same for the Attach confirmation, which opens nothing.
+  { file: TERMINAL_PANEL, tag: 'dialog', className: 'retire-dialog', handler: 'onCancel', expression: 'onCancel' },
   { file: CREW_LIST, tag: 'button', handler: 'onFocus', expression: '() => reveal(row.id)' },
   // ArchivedAgents.tsx: the Memory disclosure mounts its panel only while open, so closing it forgets what was read.
   { file: ARCHIVED_AGENTS, tag: 'details', className: 'archive-memory', handler: 'onToggle',
@@ -729,8 +728,8 @@ test('every handler prop other than onClick on a lowercase intrinsic tag under f
 test('terminal local handlers admit only the header shortcuts and native copy selection', async () => {
   const text = await readFile(resolve(floor, TERMINAL_PANEL), 'utf8');
   const handlers = handlerPropsIn(text, TERMINAL_PANEL);
-  assert.equal(handlers.length, 2);
-  assert.deepEqual(handlers.map((entry) => isAdmittedHandler(TERMINAL_PANEL, entry)), [true, true]);
+  assert.equal(handlers.length, 3);
+  assert.deepEqual(handlers.map((entry) => isAdmittedHandler(TERMINAL_PANEL, entry)), [true, true, true]);
   for (const [original, replacement] of [
     ["command(action);", "writeTerminal('injected');"],
     ['className="terminal-actions"', 'className="other-actions"'],
@@ -1009,18 +1008,6 @@ test("the answer form has exactly one field and its field and Send key handlers 
   ]);
 });
 
-test('the private note has one local field with no daemon or session source', async () => {
-  const text = await readFile(resolve(floor, AGENT_NOTE), 'utf8');
-  const expected = [{ tag: 'textarea', name: 'private_note', type: null, change: '(event) => editNote(event.target.value)' }];
-  assert.deepEqual(fieldsIn(text), expected);
-  const planted = fieldsIn(`${text}\nconst leak = <input name="answer" onChange={submitAnswer} />;`);
-  assert.notDeepEqual(planted, expected, 'a planted answer field escapes the private-note allowance');
-  const syntax = parsedByExtension(text, AGENT_NOTE);
-  assert.deepEqual(syntax.statements.filter(ts.isImportDeclaration).map((node) => node.moduleSpecifier.text).sort(),
-    ['./view.ts', 'react']);
-  assert.match(text, /setText\(value\);\s*setSaved\(writeAgentNote\(agent, value\)\)/);
-});
-
 test('the goal form has one text field, named goal, and one check choice, each with a pinned change handler', async () => {
   const form = await readFile(resolve(floor, GOAL_PANEL), 'utf8');
   const fields = fieldsIn(form);
@@ -1050,7 +1037,6 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   const expected = [
     'src/renderer/AgentDetail.tsx',
     ...Array(2).fill('src/renderer/CrewList.tsx'),
-    AGENT_NOTE,
     ...Array(3).fill(ARCHIVED_AGENTS),
     ...Array(4).fill('src/renderer/Control.tsx'),
     'src/renderer/DoneNotices.tsx',
@@ -1075,7 +1061,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(3).fill(SETUP_VIEW),
     ...Array(4).fill(SETTINGS_VIEW),
     ...Array(7).fill(FIRST_RUN_GUIDE),
-    ...Array(8).fill(TERMINAL_PANEL),
+    ...Array(10).fill(TERMINAL_PANEL),
     ...Array(4).fill('src/shell.tsx'),
   ];
   assert.deepEqual(buttons.sort(), [...expected, AGENT_ORDER].sort());
@@ -1083,7 +1069,6 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   const clickExpected = [...expected];
   clickExpected.splice(clickExpected.indexOf(LOOK_PANEL), 1);
   assert.deepEqual(clicks.sort(), clickExpected.sort());
-  assert.deepEqual(clicksIn(await readFile(resolve(floor, AGENT_NOTE), 'utf8')), ['() => setOpen((current) => !current)']);
   const readError = await readFile(resolve(source, 'renderer/ReadError.tsx'), 'utf8');
   assert.deepEqual(clicksIn(readError), ['onRetry']);
   assert.match(readError, /onRetry = refreshFloorSnapshot/);
@@ -1217,7 +1202,9 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => void submitGoal(gate, browserGoalDeps)',
   ].sort());
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TERMINAL_PANEL), 'utf8')).sort(), [
-    '() => attachTerminal(offer.agent, browserTerminalPorts())',
+    '() => (claudeTrust ? setConfirming(true) : attachTerminal(offer.agent, browserTerminalPorts()))',
+    '(event) => { if (event.detail < 2) onConfirm(); }',
+    'onCancel',
     "() => command('copy')",
     "() => command('expand')",
     "() => command('zoom-in')",
@@ -1225,7 +1212,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     "() => command('zoom-reset')",
     'detachTerminal',
     'dismissTerminal',
-  ]);
+  ].sort());
   assert.deepEqual(clicksIn(await readFile(resolve(source, 'renderer/DoneNotices.tsx'), 'utf8')), [
     '() => dismissDoneNotice(notice.key)',
   ]);
@@ -2123,7 +2110,7 @@ test('session material has no browser persistence, URL, argv or log sink', async
     // The office registry is layout data the page is built with, and the pin is checked against its ids.
     [['./floor/store.ts', true], ['./archive.ts', true], ['./detailTabs.ts', true], ['./office3d/offices.ts', false],
       ['./office3d/offices.ts', true]], 'view preferences gained a runtime source of daemon or session material');
-  for (const name of ['readViewPreferences', 'writeViewPreferences', 'readAgentIds', 'writeAgentIds', 'readAgentNote', 'writeAgentNote', 'readDetailTab', 'writeDetailTab',
+  for (const name of ['readViewPreferences', 'writeViewPreferences', 'readAgentIds', 'writeAgentIds', 'readDetailTab', 'writeDetailTab',
     'readOfficePin', 'writeOfficePin']) {
     const fn = viewSyntax.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name);
     assert.equal(fn?.body?.statements.length, 1, `${name} moved storage outside its try/catch`);
@@ -2685,7 +2672,7 @@ test('Attach renders when the snapshot carries the terminal sibling', () => {
   // The positive control for the absence checks below: with the terminal on, Attach is there.
   const html = center(floorWith(resting(), undefined, undefined, undefined, TERMINAL));
   assert.match(html,
-    /<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<div class="agent-detail-actions"><div class="agent-detail-terminal" data-terminal-offer="attach"><p class="hire-note" id="terminal-trust-hint">[^<]+<\/p><button type="button" class="terminal-attach"[^>]*>Attach<\/button>/);
+    /<h2 id="agent-detail-title" tabindex="-1">Ada<\/h2>[\s\S]*?<div class="agent-detail-actions"><div class="agent-detail-terminal" data-terminal-offer="attach"><button type="button" class="terminal-attach"[^>]*>Attach<\/button>/);
 });
 
 test('the terminal offer stays none without the sibling, a live confirmed view, or the agent on the floor', () => {
