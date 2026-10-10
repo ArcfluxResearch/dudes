@@ -10,6 +10,11 @@ doc comments on each crate.
   above, without any additional terms or conditions (Apache-2.0 §5).
 - **Code of conduct.** See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 - **Security.** Do not open public issues for security problems; see [SECURITY.md](SECURITY.md).
+- **Questions and ideas** go to [Discussions](https://github.com/ArcfluxResearch/dudes/discussions);
+  [SUPPORT.md](SUPPORT.md) says where each kind of request goes. Issues are for bugs you can
+  reproduce and work that is ready to pick up.
+- **Versions.** Do not change the version in a pull request. The maintainer bumps it once, in the
+  pull request that prepares a release, so contributions never conflict on version files.
 
 ## Toolchain
 
@@ -24,6 +29,19 @@ cargo install cargo-nextest cargo-deny --locked
 ```
 
 ## Before you push
+
+CI runs every check on every pull request, so locally you only need the checks for what you
+changed:
+
+| You changed | Run locally |
+|---|---|
+| Only Markdown or other prose | `cargo xtask naming` |
+| Only `floor/` | `npm run typecheck` and `npm test` in `floor/`, with the toolchain in [floor/README.md](floor/README.md) |
+| Rust in one crate or binary | `cargo fmt --check`, then `cargo clippy --locked -p <package> --all-targets -- -D warnings` and `cargo nextest run --locked -p <package>` |
+| Types in `crates/dudes-proto` | the Rust row, then `cargo xtask schemas` to regenerate `schemas/` and commit the result |
+| Dependencies, or Rust across several crates | the full set below |
+
+The full set, which is what CI runs:
 
 ```sh
 cargo fmt --check

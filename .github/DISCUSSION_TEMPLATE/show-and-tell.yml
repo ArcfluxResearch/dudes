@@ -1,0 +1,23 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share a setup that works for you: a crew and its roles, a completion check, a workflow, or
+        something you built with Dudes. Remove tokens, keys and private paths before you post.
+  - type: textarea
+    id: what
+    attributes:
+      label: What you made
+      description: What it does and who it is for.
+    validations:
+      required: true
+  - type: textarea
+    id: how
+    attributes:
+      label: How it works
+      description: The agents, roles, goals and completion checks involved, and any configuration worth copying.
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshots or a recording
+      description: Optional. Drag images or a short video here.
