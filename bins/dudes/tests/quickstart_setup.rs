@@ -27,6 +27,7 @@ mod common;
 use common::{Cli, run_program};
 
 const SPAWN_MARKER: &str = "quickstart started duded pid ";
+const FLOOR_QUESTION: &str = "Let the Floor act on your agents: hire, pause, answer, change goals, retire and attach a terminal? Anyone holding your one-time Floor link could start agents that act with your account's full reach. [Y/n]";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -229,26 +230,27 @@ fn assert_only_status_checks(layout: &Layout) {
     );
 }
 
-/// The file both setups write: Codex, the Floor's answer and Hire, no budget, and the workspace
+/// The file both setups write: Codex, the Floor switches in `floor_on`, no budget, and the workspace
 /// with no ceiling.
-fn assert_written(layout: &Layout) {
+fn assert_written(layout: &Layout, floor_on: &[Key], label: &str) {
     let config = layout.config();
     let file = Settings::read(&config).expect("the operator file");
     let shown: Vec<(Key, String)> = Key::ALL
         .into_iter()
         .map(|key| (key, file.shown(key)))
         .collect();
+    let switch = |key| if floor_on.contains(&key) { "on" } else { "off" };
     let expected = [
         (Key::Codex, "on"),
         (Key::CodexStreaming, "off"),
         (Key::Pi, "off"),
-        (Key::Answer, "on"),
-        (Key::Hire, "on"),
-        (Key::Control, "off"),
-        (Key::Goal, "off"),
+        (Key::Answer, switch(Key::Answer)),
+        (Key::Hire, switch(Key::Hire)),
+        (Key::Control, switch(Key::Control)),
+        (Key::Goal, switch(Key::Goal)),
         (Key::Renew, "off"),
-        (Key::Retire, "off"),
-        (Key::Terminal, "off"),
+        (Key::Retire, switch(Key::Retire)),
+        (Key::Terminal, switch(Key::Terminal)),
         (Key::Git, "off"),
         (Key::FloorUsdPerDay, "none"),
         (Key::PerTurnUsd, "0.25"),
@@ -260,7 +262,7 @@ fn assert_written(layout: &Layout) {
     for line in [
         "workspace_id = \"repo\"".to_owned(),
         "label = \"repo\"".to_owned(),
-        "completion_check_label = \"README says hello\"".to_owned(),
+        format!("completion_check_label = \"{label}\""),
         format!("cwd = \"{}\"", layout.repo().display()),
         "department = \"engineering\"".to_owned(),
         "hop_cap = 5".to_owned(),
@@ -313,7 +315,7 @@ fn a_script_sets_up_enrolls_and_hires_without_a_question() {
         "a script is asked nothing: {run:?}"
     );
     assert_set_up(&run.stdout, &layout, false);
-    assert_written(&layout);
+    assert_written(&layout, &[Key::Answer, Key::Hire], "README says hello");
 }
 
 /// A script whose completion check the daemon cannot run still hires and enrolls, and the refused
@@ -827,45 +829,15 @@ fn a_terminal_is_asked_each_step_and_gets_the_same_setup() {
     let mut screen = Screen::new(pty.master);
 
     for (question, answer) in [
-        ("Turn on Codex? (providers.codex) [y/N]", "y"),
+        (FLOOR_QUESTION, "y"),
         (
-            "Turn on Codex streaming? (providers.codex.streaming) [y/N]",
-            "",
-        ),
-        ("Turn on Pi? (providers.pi) [y/N]", ""),
-        (
-            "Answer an agent's question from the Floor? (floor.answer) [y/N]",
-            "y",
-        ),
-        ("Hire an agent from the Floor? (floor.hire) [y/N]", "y"),
-        (
-            "Pause, resume and rename an agent from the Floor? (floor.control) [y/N]",
-            "",
-        ),
-        (
-            "Attach a terminal to an agent from the Floor? (floor.terminal) [y/N]",
-            "",
-        ),
-        ("Set a spending cap (for API-key billing)? [y/N]", ""),
-        (
-            "Completion check (Enter to skip enrolling):",
+            "Completion check for this repository (- to skip):",
             "/usr/bin/true",
         ),
-        (
-            "Name the check for the Floor [/usr/bin/true]:",
-            "README says hello",
-        ),
-        ("Hire a first agent now? [y/N]", "y"),
+        ("Hire a first agent? [Y/n]", ""),
         ("Name [Kim]:", ""),
         ("Engine (claude, codex) [claude]:", "codex"),
-        (
-            "Goal (Enter to hire without one; an agent without a goal takes no turn):",
-            "",
-        ),
-        (
-            "Give this agent a spending cap (for API-key billing)? [y/N]",
-            "",
-        ),
+        ("Goal (Enter for none):", ""),
         ("and go ahead? [Y/n]", ""),
     ] {
         screen.expect(question);
@@ -886,7 +858,18 @@ fn a_terminal_is_asked_each_step_and_gets_the_same_setup() {
     };
     assert!(status.success(), "{status:?}:\n{}", screen.shown());
     assert_set_up(&screen.shown(), &layout, true);
-    assert_written(&layout);
+    assert_written(
+        &layout,
+        &[
+            Key::Answer,
+            Key::Hire,
+            Key::Control,
+            Key::Goal,
+            Key::Retire,
+            Key::Terminal,
+        ],
+        "/usr/bin/true",
+    );
 }
 
 /// On a terminal, a running daemon is named before the operator confirms, with what a restart
@@ -907,19 +890,9 @@ fn a_terminal_is_warned_before_a_restart() {
     drop(pty.slave);
     let mut screen = Screen::new(pty.master);
     for (question, answer) in [
-        ("Turn on Codex? (providers.codex) [y/N]", "y"),
-        (
-            "Turn on Codex streaming? (providers.codex.streaming) [y/N]",
-            "",
-        ),
-        ("Turn on Pi? (providers.pi) [y/N]", ""),
-        ("(floor.answer) [y/N]", ""),
-        ("(floor.hire) [y/N]", ""),
-        ("(floor.control) [y/N]", ""),
-        ("(floor.terminal) [y/N]", ""),
-        ("Set a spending cap (for API-key billing)? [y/N]", ""),
-        ("Completion check (Enter to skip enrolling):", ""),
-        ("Hire a first agent now? [y/N]", ""),
+        (FLOOR_QUESTION, "n"),
+        ("Completion check for this repository (- to skip):", ""),
+        ("Hire a first agent? [Y/n]", "n"),
     ] {
         screen.expect(question);
         screen.answer(answer);
@@ -949,7 +922,7 @@ fn a_terminal_that_ends_its_input_writes_nothing() {
     let mut child = layout.cli().arg("quickstart").spawn_on_terminal(&pty.slave);
     drop(pty.slave);
     let mut screen = Screen::new(pty.master);
-    screen.expect("Turn on Codex? (providers.codex) [y/N]");
+    screen.expect(FLOOR_QUESTION);
     // Control-D at the start of a line ends a terminal's input.
     screen
         .keyboard
@@ -962,30 +935,17 @@ fn a_terminal_that_ends_its_input_writes_nothing() {
     assert!(!layout.path("run").exists());
 }
 
-/// Answer the guided setup with every default: no engine beyond Claude, no Floor action, no cap,
-/// no workspace and no hire, then confirm.
-fn answer_the_defaults(screen: &mut Screen, codex: bool) {
+/// Answer the guided setup declining the Floor question, with no workspace and no hire, then
+/// confirm.
+fn answer_the_defaults(screen: &mut Screen) {
     for (question, answer) in [
-        (
-            "Turn on Codex? (providers.codex) [y/N]",
-            if codex { "y" } else { "" },
-        ),
-        ("Turn on Pi? (providers.pi) [y/N]", ""),
-        ("(floor.answer) [y/N]", ""),
-        ("(floor.hire) [y/N]", ""),
-        ("(floor.control) [y/N]", ""),
-        ("(floor.terminal) [y/N]", ""),
-        ("Set a spending cap (for API-key billing)? [y/N]", ""),
-        ("Completion check (Enter to skip enrolling):", ""),
-        ("Hire a first agent now? [y/N]", ""),
+        (FLOOR_QUESTION, "n"),
+        ("Completion check for this repository (- to skip):", ""),
+        ("Hire a first agent? [Y/n]", "n"),
         ("and go ahead? [Y/n]", ""),
     ] {
         screen.expect(question);
         screen.answer(answer);
-        if codex && question == "Turn on Codex? (providers.codex) [y/N]" {
-            screen.expect("(providers.codex.streaming) [y/N]");
-            screen.answer("");
-        }
     }
 }
 
@@ -1025,7 +985,7 @@ fn a_terminal_run_offers_one_login_last_and_the_login_replaces_quickstart() {
         .spawn_on_terminal(&pty.slave);
     drop(pty.slave);
     let mut screen = Screen::new(pty.master);
-    answer_the_defaults(&mut screen, true);
+    answer_the_defaults(&mut screen);
 
     let claude = layout.path("engines/claude");
     screen.expect(&format!(
@@ -1074,7 +1034,7 @@ fn a_declined_login_offer_runs_nothing() {
     let mut child = layout.cli().arg("quickstart").spawn_on_terminal(&pty.slave);
     drop(pty.slave);
     let mut screen = Screen::new(pty.master);
-    answer_the_defaults(&mut screen, false);
+    answer_the_defaults(&mut screen);
     screen.expect("Sign in to Claude now?");
     screen.answer("");
     let status = exit_status(&mut child, &screen);
@@ -1375,7 +1335,7 @@ fn options_on_a_terminal_ask_nothing_and_print_the_commands() {
     let status = exit_status(&mut child, &screen);
     assert!(status.success(), "{status:?}:\n{}", screen.shown());
     let shown = screen.shown();
-    for absent in ["now? [y/N]", "#bootstrap=", "opening no browser"] {
+    for absent in ["Hire a first agent?", "#bootstrap=", "opening no browser"] {
         assert!(!shown.contains(absent), "`{absent}` in:\n{shown}");
     }
     assert!(!layout.path("claude-login").exists(), "no login ran");

@@ -977,7 +977,14 @@ fn quickstart(
         (None, Some(input)) => {
             let running = ping_once(env).is_ok();
             let mut term = Terminal::new(input, out);
-            match guided(&mut term, &mut draft, config, cwd.as_deref(), running) {
+            match guided(
+                &mut term,
+                &mut draft,
+                config,
+                cwd.as_deref(),
+                &setup::Host::of(env),
+                running,
+            ) {
                 Ok(plan) => plan,
                 Err(stopped @ (Stopped::Ended | Stopped::Declined)) => {
                     render::local_error(err, &stopped.to_string()).map_err(local)?;
@@ -1289,9 +1296,10 @@ fn guided(
     draft: &mut Draft,
     config: &Path,
     cwd: Option<&Path>,
+    host: &setup::Host,
     running: bool,
 ) -> Result<Plan, Stopped> {
-    let mut plan = setup::guided(term, draft, config, cwd)?;
+    let mut plan = setup::guided(term, draft, config, cwd, host)?;
     setup::summary(term, &plan, cwd)?;
     if running {
         term.say(

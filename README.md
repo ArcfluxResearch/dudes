@@ -50,7 +50,7 @@ dudes quickstart
 dudes floor open
 ```
 
-`dudes quickstart` asks which engines to turn on, starts the daemon, opens the Floor and can hire a
+`dudes quickstart` asks only what it cannot work out, starts the daemon, opens the Floor and can hire a
 first agent. `dudes floor open` opens the Floor again later. To hire an agent yourself and give it
 a goal, use the id that `dudes hire` prints:
 
