@@ -70,7 +70,7 @@ test('a card keeps exactly the members a snapshot sends, and a plain card has no
   for (const [what, ticket] of [
     ['a note', { description: 'secret' }],
     ['a summary', { summary: 'done' }],
-    ['a path', { path: '/home/me/repo' }],
+    ['a path', { path: 'src/main.rs' }],
     ['an unknown reason', { reason: 'made_up' }],
     ['a position of zero', { position: 0 }],
     ['a fractional round', { round: 1.5 }],
