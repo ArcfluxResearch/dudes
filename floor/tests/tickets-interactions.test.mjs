@@ -118,14 +118,18 @@ const textOf = (element) => element.nodeType === 3 ? element.nodeValue : element
 async function closeHireCallback(page, dialog, opener) {
   const source = await readFile(resolve(import.meta.dirname, '../src/shell.tsx'), 'utf8');
   const syntax = ts.createSourceFile('shell.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  let callback, completion;
+  let callback, completion, cancellation;
   (function visit(node) {
     if (ts.isFunctionDeclaration(node) && node.name?.text === 'closeHire') callback = node.getText(syntax);
     if (ts.isCallExpression(node) && node.expression.getText(syntax) === 'useEffect'
       && node.arguments[0]?.getText(syntax).includes('markRevealed(reveal)')) completion = node.arguments[0].getText(syntax);
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(syntax) === 'HireWizard') {
+      cancellation = node.attributes.properties.find((prop) => ts.isJsxAttribute(prop)
+        && prop.name.getText(syntax) === 'onClose')?.initializer.expression.getText(syntax);
+    }
     ts.forEachChild(node, visit);
   })(syntax);
-  assert.ok(callback && completion);
+  assert.ok(callback && completion && cancellation);
   const code = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const closeHire = new Function('backdropPress', 'hireDialog', 'hireOpener', 'document', 'setHiring', 'restoreFocusAfterDialog',
     `${code}\nreturn closeHire;`)({ current: null }, { current: dialog }, { current: opener }, page.document,
@@ -137,7 +141,8 @@ async function closeHireCallback(page, dialog, opener) {
     'setHiring', 'setGuide', 'setFocused', 'setArchiveHireKept', `${completed}\nreturn complete;`)(ADA,
     { outcome: { kind: 'complete' } }, (id) => selections.push(['revealed', id]), (id) => selections.push(['selected', id]),
     closeHire, { current: dialog }, () => {}, () => {}, () => {}, () => {});
-  return { closeHire, completeHire, selections };
+  const cancelHire = new Function('closeHire', `return ${cancellation};`)(closeHire);
+  return { closeHire, completeHire, cancelHire, selections };
 }
 
 function hireLayer(page) {
@@ -151,6 +156,20 @@ function hireLayer(page) {
   assert.equal(page.document.activeElement, field, 'controls outside the top modal are inert');
   return { topbar, dialog, field };
 }
+
+test('Hire Close and Cancel ignore the click event and restore a removed opener fallback', async () => {
+  const page = pageForTickets();
+  try {
+    const opener = page.document.body.appendChild(page.document.createElement('button'));
+    const hire = hireLayer(page);
+    page.document.body.removeChild(opener);
+    const { cancelHire } = await closeHireCallback(page, hire.dialog, opener);
+    cancelHire({ type: 'click', currentTarget: hire.field });
+    page.flushFocus();
+    assert.equal(hire.dialog.getAttribute('open'), null);
+    assert.equal(page.document.activeElement.id, 'hire-open');
+  } finally { page.restore(); }
+});
 
 async function mount(cards, { agents = [agent()], onHire = () => {}, hireAvailable = false } = {}) {
   subscribe(store, { cards, agents, checks: TWO_PROJECTS });

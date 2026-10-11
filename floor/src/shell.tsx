@@ -408,7 +408,7 @@ export function WebFloorShell() {
         }}
         onPointerCancel={() => { backdropPress.current = null; }}>
         {archiveHireKept ? <p role="status">The current Hire is kept. Resolve it before preparing another agent.</p> : null}
-        <HireWizard floor={floor} onClose={closeHire} />
+        <HireWizard floor={floor} onClose={() => closeHire()} />
       </dialog> : null}
     </main>
   );

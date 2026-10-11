@@ -44,7 +44,7 @@ test('ESCAPE_DISMISS and OUTSIDE_DISMISS mutants route native dialog exits throu
   assert.equal(props.onClick, undefined);
   assert.match(props.onPointerDown, /event\.target === event\.currentTarget/);
   assert.match(props.onPointerUp, /if \(dismiss\) closeHire\(\);/);
-  assert.match(shell, /<HireWizard floor=\{floor\} onClose=\{closeHire\}/);
+  assert.match(shell, /<HireWizard floor=\{floor\} onClose=\{\(\) => closeHire\(\)\}/);
 });
 
 test('FOCUS_RETURN mutant restores the opener and falls back if that control left the page', () => {
