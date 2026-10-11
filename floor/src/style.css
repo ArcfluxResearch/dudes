@@ -136,11 +136,6 @@ samp,
   font-size: 0.88em;
 }
 
-/*
- * One screenful: a slim top bar, then the stage. Crew, a Control view and the
- * agent's details dock beside the office, so none of them covers it. Board is
- * too wide to dock and floats over the office's left edge.
- */
 .shell {
   box-sizing: border-box;
   display: grid;
@@ -310,10 +305,6 @@ samp,
   grid-column-end: 4;
 }
 
-.floor-stage:has(.control-panel[data-view='board']) .office-slot {
-  grid-column-start: 2;
-}
-
 /* Clipped and isolated, so nothing laid over the office escapes it or rises above the panels that float over it. */
 .office {
   position: relative;
@@ -365,12 +356,80 @@ samp,
   overflow: hidden;
 }
 
-.control-panel[data-view='board'] {
-  width: min(46rem, 60vw);
-  margin: 0.8rem 0 0.8rem 0.8rem;
-  border-width: 1px;
-  border-radius: var(--radius);
-  box-shadow: 0 14px 28px -12px var(--panel-shadow);
+.shell:has(.control-panel[data-view='board']) {
+  height: 100dvh;
+}
+
+.shell:has(.control-panel[data-view='board']) .office-bar {
+  display: none;
+}
+
+.floor-stage:has(.control-panel[data-view='board']) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.floor-stage:has(.control-panel[data-view='board']) > .office-slot,
+.floor-stage:has(.control-panel[data-view='board']) > .crew-list,
+.floor-stage:has(.control-panel[data-view='board']) > .stage-center,
+.floor-stage:has(.control-panel[data-view='board']) > .stage-side {
+  display: none;
+}
+
+.floor-stage:has(.control-panel[data-view='board']) > .control-panel {
+  position: relative;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  width: auto;
+  max-height: none;
+  margin: 0;
+  padding: 1.5rem 2.25rem 2rem;
+  gap: 1.5rem;
+  overflow-y: auto;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.floor-stage:has(.control-panel[data-view='board']) > .done-notices {
+  grid-row: 1;
+  grid-column: 1 / -1;
+  height: auto;
+}
+
+.control-panel[data-view='board'] .control-panel-head {
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.control-panel[data-view='board'] .control-heading-copy {
+  max-width: calc(100% - 12rem);
+}
+
+.control-panel[data-view='board'] .control-panel-head h2 {
+  font-size: 2.75rem;
+  font-weight: 500;
+  letter-spacing: -0.08rem;
+}
+
+.board-description {
+  margin: 0.4rem 0 0;
+  color: var(--muted-ink);
+  font-size: 0.8rem;
+}
+
+.control-panel[data-view='board'] .control-view,
+.control-panel[data-view='board'] .control-detail {
+  flex: 0 0 auto;
+  max-height: none;
+  overflow: visible;
+}
+
+@media (max-width: 800px) {
+  .floor-stage:has(.control-panel[data-view='board']) > .control-panel {
+    padding: 1.25rem;
+  }
 }
 
 .control-panel-head {
@@ -518,28 +577,6 @@ samp,
   max-width: 22rem;
 }
 
-@media (min-width: 801px) {
-  .floor-stage:has(.terminal-panel):has(.control-panel[data-view='board']) {
-    grid-template-rows: var(--notice-row) minmax(0, 1fr) minmax(0, 1fr);
-  }
-
-  .floor-stage:has(.terminal-panel):has(.control-panel[data-view='board']) > .control-panel {
-    grid-row: 2;
-    grid-column: 1 / 4;
-    width: auto;
-    margin: 0.6rem;
-  }
-
-  .floor-stage:has(.terminal-panel):has(.control-panel[data-view='board']) > .stage-center {
-    grid-row: 3;
-    grid-column: 1 / 4;
-  }
-
-  .floor-stage:has(.terminal-panel):has(.control-panel[data-view='board']) > .crew-list {
-    visibility: hidden;
-  }
-}
-
 .done-notices-more {
   display: none;
   margin: 0;
@@ -641,11 +678,11 @@ samp,
   z-index: var(--layer-expanded-terminal);
 }
 
-.shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']):has(.first-run-guide) {
+.shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']):has(.first-run-guide):not(:has(.control-panel[data-view='board'])) {
   grid-template-rows: var(--notice-row) minmax(0, 0.7fr) minmax(0, 1fr);
 }
 
-.shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']):has(.first-run-guide) > .first-run-guide {
+.shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']):has(.first-run-guide):not(:has(.control-panel[data-view='board'])) > .first-run-guide {
   position: relative;
   inset: auto;
   grid-row: 2;
@@ -653,7 +690,7 @@ samp,
   width: auto;
 }
 
-.shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']):has(.first-run-guide) > .stage-center {
+.shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']):has(.first-run-guide):not(:has(.control-panel[data-view='board'])) > .stage-center {
   grid-row: 3;
   grid-column: 1 / -1;
 }
@@ -804,10 +841,6 @@ samp,
 
   .floor-stage:has(.control-panel) .crew-list {
     visibility: hidden;
-  }
-
-  .floor-stage:has(.control-panel[data-view='board']) .office-slot {
-    grid-column-start: 1;
   }
 }
 

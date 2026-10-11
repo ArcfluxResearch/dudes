@@ -210,7 +210,11 @@ export function WebFloorShell() {
   }
 
   function toggleCrew(): void {
-    if (focused) {
+    if (view === 'board') {
+      setView(null);
+      setFocused(false);
+      setCrewOpen(true);
+    } else if (focused) {
       setFocused(false);
       setCrewOpen(true);
     } else {
@@ -322,8 +326,8 @@ export function WebFloorShell() {
         <CrewStats agents={floor.agents} cards={floor.cards} />
         <ControlNav floor={floor} view={focused ? null : view} onToggle={toggleView} />
         <div className="top-bar-actions" role="group" aria-label="Floor actions">
-          <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={crewOpen && !focused}
-            aria-controls={crewOpen && !focused ? 'crew-list' : undefined}
+          <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={crewOpen && !focused && view !== 'board'}
+            aria-controls={crewOpen && !focused && view !== 'board' ? 'crew-list' : undefined}
             onClick={toggleCrew}>Crew</button>
           <button type="button" className="focus-toggle" id="focus-toggle" aria-pressed={focused}
             aria-keyshortcuts="Alt+Shift+F" onClick={toggleFocus}>

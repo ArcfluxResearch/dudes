@@ -23,6 +23,13 @@ const COLUMN_TONE: Readonly<Record<TicketColumn | 'needs', string>> = Object.fre
   todo: 'todo', working: 'doing', ready: 'review', done: 'done', needs: 'blocked',
 });
 
+const EMPTY_COLUMN: Readonly<Record<TicketColumn, string>> = Object.freeze({
+  todo: 'Create a ticket, then give it to an agent.',
+  working: 'Tickets appear here when an agent starts.',
+  ready: 'Review finished work and choose what happens next.',
+  done: 'Accepted tickets appear here, newest first.',
+});
+
 /** Whether this page may act on tickets now: the switch is on and the view is live and confirmed. */
 export function ticketActionsOpen(floor: FloorState): boolean {
   return floor.ticket && floor.phase === 'live' && !floor.stale && floor.snapshotEpoch === floor.epoch;
@@ -193,11 +200,12 @@ export function TicketBoard({ floor, selectedId, onSelect, onHire }: {
       {forming ? <NewTicketForm floor={floor} onHire={onHire}
         onCreated={(card) => { setForming(false); onSelect(card); }} /> : null}
     </section> : <TicketOffHint floor={floor} />}
-    {needsYou.length === 0 ? null : <section className="ticket-lane task-column" data-column={COLUMN_TONE.needs}
+    <section className="ticket-lane task-column" data-column={COLUMN_TONE.needs}
       data-lane="needs-you" aria-label="Needs you">
       <h3>Needs you ({needsYou.length})</h3>
       <ul>{needsYou.map(draw)}</ul>
-    </section>}
+      {needsYou.length === 0 ? <p className="ticket-empty">Tickets that need your next step appear here.</p> : null}
+    </section>
     <div className="task-columns">
       {TICKET_COLUMNS.map((column) => {
         const cards = columns[column.key];
@@ -205,12 +213,12 @@ export function TicketBoard({ floor, selectedId, onSelect, onHire }: {
           data-ticket-column={column.key} aria-label={column.title}>
           <h3>{column.title} ({cards.length})</h3>
           <ul>{cards.map(draw)}</ul>
+          {cards.length === 0 ? <p className="ticket-empty">{EMPTY_COLUMN[column.key]}</p> : null}
           {column.key === 'done' && doneHidden > 0
             ? <p className="ticket-hint">{doneHidden} older ticket{doneHidden === 1 ? '' : 's'} not shown. List them with <code>dudes ticket list --status done</code>.</p> : null}
         </section>;
       })}
     </div>
-    {tickets(floor.cards).length === 0 ? <p>No tickets yet.</p> : null}
     {plain.length === 0 ? null : <section className="ticket-plain" aria-label="Other board cards">
       <h3>Other board cards</h3>
       <LegacyColumns floor={{ ...floor, cards: plain }} selectedId={selectedId} onSelect={onSelect} />

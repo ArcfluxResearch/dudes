@@ -231,7 +231,10 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
       ref={handFocusOnLeave} data-focus-on-leave={viewButtonId(view)}
       onKeyDown={(event) => { if (closesPanel(event)) { event.stopPropagation(); onClose(); } }}>
       <header className="control-panel-head">
-        <h2 id={CONTROL_TITLE_ID} tabIndex={-1} ref={focusOnArrival}>{label}</h2>
+        <div className="control-heading-copy">
+          <h2 id={CONTROL_TITLE_ID} tabIndex={-1} ref={focusOnArrival}>{label}</h2>
+          {view === 'board' ? <p className="board-description">Give work a clear next step.</p> : null}
+        </div>
         <button type="button" className="panel-close" aria-label={`Close ${label}`} title="Close (Escape)"
           onClick={onClose}>×</button>
       </header>

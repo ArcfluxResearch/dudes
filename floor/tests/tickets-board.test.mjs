@@ -112,6 +112,26 @@ test('Done shows the newest twenty and says how many it leaves out', () => {
   assert.match(board(), /5 older tickets not shown\. List them with <code>dudes ticket list --status done<\/code>/);
 });
 
+test('an empty ticket board gives one next step in every labelled lane', () => {
+  subscribe(store);
+  const html = board();
+  const lane = html.match(/<section[^>]*data-lane="needs-you"[\s\S]*?<\/section>/)?.[0];
+  assert.ok(lane, 'Needs you remains visible while empty');
+  assert.match(lane, /aria-label="Needs you"/);
+  assert.match(lane, /Tickets that need your next step appear here\./);
+  const expected = [
+    ['todo', 'To do', 'Create a ticket, then give it to an agent.'],
+    ['working', 'Working', 'Tickets appear here when an agent starts.'],
+    ['ready', 'Ready for you', 'Review finished work and choose what happens next.'],
+    ['done', 'Done', 'Accepted tickets appear here, newest first.'],
+  ];
+  for (const [key, label, text] of expected) {
+    const shown = column(html, key);
+    assert.ok(shown.includes(`aria-label="${label}"`));
+    assert.ok(shown.includes(text), text);
+  }
+});
+
 test('a card says its title, its agent, its place in line and why it waits', () => {
   subscribe(store, {
     agents: [agent(ADA, 'Ada', { status: 'running' }), agent(GRACE, 'Grace', { paused: true })],

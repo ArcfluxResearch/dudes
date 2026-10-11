@@ -34,6 +34,7 @@ import test, { after, before, beforeEach } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import ts from 'typescript';
 
 import { closesDrawer, closesPanel } from '../src/renderer/focus.ts';
 
@@ -203,22 +204,19 @@ function gridColumn(rules, matches) {
   return `${start} / ${end}`;
 }
 
-test('the office takes the columns the docked panels leave, and Board floats over it with or without the drawer', async () => {
+test('the office takes the columns the docked panels leave outside Board', async () => {
   const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
   const office = (width, open) => gridColumn(rulesAt(css, width), (selector) => {
     const [target, ...context] = selector.split(/\s+/).reverse();
     if (target !== '.office-slot') return false;
-    return context.every((part) => (part === '.floor-stage:has(.drawer-frame)' && open.includes('drawer'))
-      || (part === ".floor-stage:has(.control-panel[data-view='board'])" && open.includes('board')));
+    return context.every((part) => part === '.floor-stage:has(.drawer-frame)' && open.includes('drawer'));
   });
   for (const width of [1440, 1280]) {
     assert.equal(office(width, []), '3 / -1', `${width}: the office spans what Crew and a docked view leave`);
     assert.equal(office(width, ['drawer']), '3 / 4', `${width}: the drawer docks beside the office`);
-    assert.equal(office(width, ['board']), '2 / -1', `${width}: Board floats over the office's left edge`);
-    assert.equal(office(width, ['board', 'drawer']), '2 / 4', `${width}: Board floats over the office beside the docked drawer`);
   }
-  assert.equal(office(1024, ['board']), '1 / -1', 'between 801 and 1199 pixels Board covers Crew and the office runs under both');
-  assert.equal(office(1024, ['board', 'drawer']), '1 / 4');
+  assert.equal(office(1024, []), '3 / -1');
+  assert.equal(office(1024, ['drawer']), '3 / 4');
 });
 
 /** Admits a selector that styles `target` on the stage while a terminal is open, in focus mode too when `focus`. */
@@ -305,32 +303,75 @@ test('Done notices get their own row above docked panels without a terminal, inc
   }
 });
 
-test('Board and an attached terminal share a usable column beside the drawer in separate rows', async () => {
+test('Board takes the working area at every width with one vertical scroll region', async () => {
   const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
-  const stage = ".floor-stage:has(.terminal-panel):has(.control-panel[data-view='board'])";
-  for (const width of [900, 1024, 1440]) {
+  const stage = ".floor-stage:has(.control-panel[data-view='board'])";
+  for (const width of [640, 1024, 1280, 1440]) {
     const rules = rulesAt(css, width);
     const of = (target, property) => declared(rules, selector => selector === (target ? `${stage} > ${target}` : stage), property);
-    assert.equal(of('', 'grid-template-rows'), 'var(--notice-row) minmax(0, 1fr) minmax(0, 1fr)');
+    assert.equal(of('', 'display'), 'grid');
+    assert.equal(of('', 'grid-template-columns'), 'minmax(0, 1fr)');
+    assert.equal(of('', 'grid-template-rows'), 'auto minmax(0, 1fr)');
     assert.equal(of('.control-panel', 'grid-row'), '2');
-    assert.equal(of('.stage-center', 'grid-row'), '3');
-    assert.equal(of('.control-panel', 'grid-column'), '1 / 4');
-    assert.equal(of('.stage-center', 'grid-column'), '1 / 4');
+    assert.equal(of('.control-panel', 'grid-column'), '1 / -1');
     assert.equal(of('.control-panel', 'width'), 'auto');
+    assert.equal(of('.control-panel', 'overflow-y'), 'auto');
+    assert.equal(of('.control-panel', 'max-height'), 'none');
+    for (const target of ['.control-view', '.control-detail']) {
+      assert.equal(declared(rules, selector => selector === `.control-panel[data-view='board'] ${target}`, 'overflow'), 'visible');
+    }
   }
 });
 
-test('Board with a terminal leaves Crew visible when the panels flow vertically', async () => {
+test('Board steps the mounted office, crew, terminal and drawer aside at every width', async () => {
   const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
-  const selector = ".floor-stage:has(.terminal-panel):has(.control-panel[data-view='board']) > .crew-list";
-  const visibility = width => declared(rulesAt(css, width), candidate => candidate === selector, 'visibility');
-  assert.notEqual(visibility(750), 'hidden');
-  assert.equal(visibility(900), 'hidden');
+  const stage = ".floor-stage:has(.control-panel[data-view='board'])";
+  for (const width of [640, 1024, 1280, 1440]) {
+    for (const target of ['.office-slot', '.crew-list', '.stage-center', '.stage-side']) {
+      assert.equal(declared(rulesAt(css, width), candidate => candidate === `${stage} > ${target}`, 'display'), 'none');
+    }
+    assert.equal(declared(rulesAt(css, width), candidate => candidate === `${stage} > .done-notices`, 'grid-row'), '1');
+  }
+});
+
+test('Crew reveals its roster after Board enters focus mode', async () => {
+  const source = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');
+  const syntax = ts.createSourceFile('shell.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let callback;
+  function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'toggleCrew') callback = node.getText(syntax);
+    ts.forEachChild(node, visit);
+  }
+  visit(syntax);
+  assert.ok(callback);
+  const code = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  for (const focused of [false, true]) {
+    const state = { view: 'board', focused, crewOpen: true };
+    const press = new Function('view', 'focused', 'crewOpen', 'setView', 'setFocused', 'setCrewOpen', `${code}\nreturn toggleCrew;`)(
+      state.view, state.focused, state.crewOpen,
+      (value) => { state.view = value; }, (value) => { state.focused = value; },
+      (value) => { state.crewOpen = typeof value === 'function' ? value(state.crewOpen) : value; });
+    press();
+    assert.deepEqual(state, { view: null, focused: false, crewOpen: true });
+  }
+});
+
+test('Board reserves no hidden terminal row while the first-run guide is open', async () => {
+  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const active = new Set([
+    '.floor-stage', '.floor-stage:has(.terminal-panel)',
+    ".floor-stage:has(.control-panel[data-view='board'])",
+    ".shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true'])",
+    ".shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']):has(.first-run-guide)",
+  ]);
+  for (const width of [640, 1024, 1440]) {
+    assert.equal(declared(rulesAt(css, width), selector => active.has(selector), 'grid-template-rows'), 'auto minmax(0, 1fr)');
+  }
 });
 
 test('the first-run guide has a separate row above an expanded terminal and its controls', async () => {
   const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
-  const stage = ".shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']):has(.first-run-guide)";
+  const stage = ".shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']):has(.first-run-guide):not(:has(.control-panel[data-view='board']))";
   const rules = rulesAt(css, 1024);
   const of = (target, property) => declared(rules, selector => selector === `${stage} > ${target}`, property);
   assert.equal(of('.first-run-guide', 'position'), 'relative');
@@ -424,9 +465,11 @@ test('each Control view opens under its own heading, with a close button, and ha
     ['setup', 'Setup'], ['settings', 'Settings']]) {
     const html = renderToStaticMarkup(createElement(Control, { floor, view, selectedId: null, onClose() {}, onView() {}, onOpenQuestion() {} }));
     assert.match(html, new RegExp(`^<section class="control-panel" id="control-panel" data-view="${view}" `
-      + `aria-labelledby="control-title" data-focus-on-leave="view-${view}"><header class="control-panel-head">`
-      + `<h2 id="control-title" tabindex="-1">${label}</h2><button type="button" class="panel-close" aria-label="Close ${label}"`),
+      + `aria-labelledby="control-title" data-focus-on-leave="view-${view}"><header class="control-panel-head"><div class="control-heading-copy">`
+      + `<h2 id="control-title" tabindex="-1">${label}</h2>`),
     view);
+    assert.match(html, new RegExp(`<button type="button" class="panel-close" aria-label="Close ${label}"`));
+    assert.equal(html.includes('Give work a clear next step.'), view === 'board');
     assert.equal(html.includes('id="selected-card-detail"'), view === 'board', `${view} card detail`);
   }
 });
