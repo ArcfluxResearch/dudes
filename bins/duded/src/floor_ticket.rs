@@ -105,8 +105,22 @@ impl TicketRequest {
             bail!("Floor ticket request is nested too deeply");
         }
         Ok(match route {
-            TicketRoute::Create => Self::Create(decode(bytes)?),
-            TicketRoute::Edit => Self::Edit(decode(bytes)?),
+            TicketRoute::Create => {
+                let request: TicketCreateParams = decode(bytes)?;
+                named_check(
+                    request.done_when.is_some(),
+                    request.done_when_revision.is_some(),
+                )?;
+                Self::Create(request)
+            }
+            TicketRoute::Edit => {
+                let request: TicketEditParams = decode(bytes)?;
+                named_check(
+                    request.done_when.is_some(),
+                    request.done_when_revision.is_some(),
+                )?;
+                Self::Edit(request)
+            }
             TicketRoute::Assign => Self::Assign(decode(bytes)?),
             TicketRoute::Accept => Self::Accept(decode(bytes)?),
             TicketRoute::Stop => Self::Stop(decode(bytes)?),
@@ -123,6 +137,15 @@ impl TicketRequest {
             _ => None,
         }
     }
+}
+
+/// A check is chosen by its id and the revision the page saw, both or neither, so that a changed
+/// check is refused whatever the page sends.
+fn named_check(id: bool, revision: bool) -> Result<()> {
+    if id != revision {
+        bail!("a check is named by its id and its revision together");
+    }
+    Ok(())
 }
 
 fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
@@ -186,6 +209,7 @@ pub fn refusal_code(code: &str) -> Option<&'static str> {
         TicketRefusal::AgentNoProject,
         TicketRefusal::QueueFull,
         TicketRefusal::LimitReached,
+        TicketRefusal::Busy,
     ]
     .into_iter()
     .map(TicketRefusal::code)
@@ -225,9 +249,13 @@ impl TicketLimits {
         }
     }
 
-    /// Admit one request of `session`, or `None` when another of its requests is in flight or a
-    /// count it would move is spent. A refused request changes nothing.
-    pub(crate) fn begin(&self, session: [u8; 32], counted: Option<Counted>) -> Option<Turn<'_>> {
+    /// Admit one request of `session`, or the reason it is refused: `busy` while another of its
+    /// requests is in flight, `limit_reached` when a count it would move is spent. A refused request changes nothing.
+    pub(crate) fn begin(
+        &self,
+        session: [u8; 32],
+        counted: Option<Counted>,
+    ) -> Result<Turn<'_>, &'static str> {
         let now = Instant::now();
         let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
         sessions.retain(|_, counts| counts.busy || now.duration_since(counts.seen) < KEEP);
@@ -238,14 +266,16 @@ impl TicketLimits {
             seen: now,
         });
         counts.seen = now;
-        if counts.busy
-            || (counted == Some(Counted::Create) && counts.creates >= MOST_CREATES)
+        if counts.busy {
+            return Err("busy");
+        }
+        if (counted == Some(Counted::Create) && counts.creates >= MOST_CREATES)
             || (counted == Some(Counted::Assign) && counts.assigns >= MOST_ASSIGNS)
         {
-            return None;
+            return Err("limit_reached");
         }
         counts.busy = true;
-        Some(Turn {
+        Ok(Turn {
             limits: self,
             session,
             counted,
@@ -392,6 +422,18 @@ mod tests {
     #[test]
     fn a_request_is_one_flat_object_of_the_routes_members() {
         let ok = br#"{"title":"Fix it"}"#;
+        let rev = "0".repeat(64);
+        let both = format!(r#"{{"title":"x","done_when":"default","done_when_revision":"{rev}"}}"#);
+        assert!(TicketRequest::parse(TicketRoute::Create, both.as_bytes()).is_ok());
+        for lone in [
+            br#"{"title":"x","done_when":"default"}"#.to_vec(),
+            format!(r#"{{"title":"x","done_when_revision":"{rev}"}}"#).into_bytes(),
+        ] {
+            assert!(TicketRequest::parse(TicketRoute::Create, &lone).is_err());
+        }
+        let lone_edit =
+            br#"{"card":"01JBQ8XK2M3N4P5Q6R7S8T9VWX","expected_seq":1,"done_when":"default"}"#;
+        assert!(TicketRequest::parse(TicketRoute::Edit, lone_edit).is_err());
         assert!(TicketRequest::parse(TicketRoute::Create, ok).is_ok());
         for bad in [
             &br#"{"title":"x","author":"me"}"#[..],
@@ -416,17 +458,20 @@ mod tests {
         let limits = TicketLimits::new();
         let key = [7_u8; 32];
         let first = limits.begin(key, Some(Counted::Create)).expect("first");
-        assert!(limits.begin(key, None).is_none(), "one at a time");
-        assert!(limits.begin([8_u8; 32], None).is_some(), "per session");
+        assert_eq!(limits.begin(key, None).err(), Some("busy"), "one at a time");
+        assert!(limits.begin([8_u8; 32], None).is_ok(), "per session");
         first.succeeded();
         drop(first);
         for _ in 1..MOST_CREATES {
             let turn = limits.begin(key, Some(Counted::Create)).expect("within");
             turn.succeeded();
         }
-        assert!(limits.begin(key, Some(Counted::Create)).is_none());
-        assert!(limits.begin(key, Some(Counted::Assign)).is_some());
-        assert!(limits.begin(key, None).is_some(), "reads are not counted");
+        assert_eq!(
+            limits.begin(key, Some(Counted::Create)).err(),
+            Some("limit_reached")
+        );
+        assert!(limits.begin(key, Some(Counted::Assign)).is_ok());
+        assert!(limits.begin(key, None).is_ok(), "reads are not counted");
     }
 
     #[test]

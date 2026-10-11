@@ -270,6 +270,8 @@ pub enum TicketRefusal {
     QueueFull,
     /// The board holds too many open tickets.
     LimitReached,
+    /// The session already has a ticket request running.
+    Busy,
 }
 
 impl TicketRefusal {
@@ -287,6 +289,7 @@ impl TicketRefusal {
             Self::AgentNoProject => "agent_no_project",
             Self::QueueFull => "queue_full",
             Self::LimitReached => "limit_reached",
+            Self::Busy => "busy",
         }
     }
 
@@ -313,6 +316,7 @@ impl TicketRefusal {
             }
             Self::QueueFull => "That agent already has 8 tickets waiting.".to_owned(),
             Self::LimitReached => "Too many tickets for now. Remove some, or wait.".to_owned(),
+            Self::Busy => "Another ticket request is still running. Try again in a moment.".to_owned(),
         }
     }
 }
@@ -323,7 +327,7 @@ impl TicketRefusal {
 pub fn summary_text(text: &str) -> String {
     let mut kept = String::new();
     for c in text.chars() {
-        if c.is_control() && c != '\n' && c != '\t' {
+        if (c.is_control() && c != '\n' && c != '\t') || is_bidi_control(c) {
             continue;
         }
         if kept.len() + c.len_utf8() > MAX_SUMMARY_BYTES {
@@ -346,20 +350,27 @@ pub const fn state_name(status: CardStatus) -> &'static str {
     }
 }
 
-/// Whether `text`, already trimmed, is a valid ticket text: within `max` bytes, with no NUL and no
-/// control character other than newline and tab.
+/// A bidirectional override, embedding or isolate: text that can make what is shown read in a
+/// different order from the characters that were sent.
+#[must_use]
+pub const fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Whether `text`, already trimmed, is a valid ticket text: within `max` bytes, with no NUL, no
+/// bidirectional control and no control character other than newline and tab.
 #[must_use]
 pub fn clean_text(text: &str, max: usize) -> bool {
     text.len() <= max
         && !text
             .chars()
-            .any(|c| c.is_control() && c != '\n' && c != '\t')
+            .any(|c| (c.is_control() && c != '\n' && c != '\t') || is_bidi_control(c))
 }
 
 /// Whether `text`, already trimmed, is a valid title: as [`clean_text`], on one line.
 #[must_use]
 pub fn clean_title(text: &str, max: usize) -> bool {
-    text.len() <= max && !text.chars().any(char::is_control)
+    text.len() <= max && !text.chars().any(|c| c.is_control() || is_bidi_control(c))
 }
 
 /// Trim leading and trailing ASCII space, tab, CR and LF, as every ticket text is trimmed.
@@ -421,6 +432,10 @@ mod tests {
     #[test]
     fn a_summary_loses_control_bytes_and_is_cut_on_a_character() {
         assert_eq!(summary_text("a\u{7}b\nc\td\u{1b}[2J"), "ab\nc\td[2J");
+        assert_eq!(
+            summary_text("safe\u{202E}gnp.exe\u{2066}x\u{2069}"),
+            "safegnp.exex"
+        );
         let long = "é".repeat(3_000);
         let cut = summary_text(&long);
         assert_eq!(cut.len(), MAX_SUMMARY_BYTES);
@@ -441,6 +456,8 @@ mod tests {
         assert!(!clean_title("two\nlines", 64));
         assert!(!clean_title("tab\there", 64));
         assert!(!clean_title("nul\0", 64));
+        assert!(!clean_title("mirror \u{202E}gnp.exe", 64));
+        assert!(!clean_text("isolate \u{2066}x", 64));
     }
 
     #[test]
