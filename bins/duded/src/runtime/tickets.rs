@@ -177,7 +177,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             seq: Seq::ZERO,
             claimed_by: None,
             deps: Vec::new(),
-            ticket: None,
+            ticket: Some(crate::board::largest_ticket()),
         })?;
         self.board_append(Record::TicketCreated {
             card,

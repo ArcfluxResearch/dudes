@@ -5592,7 +5592,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     /// Refuse a card that would push the complete Floor snapshot past its budget.
     fn admit_new_card(&mut self, view: CardView) -> Result<(), RpcError> {
-        let mut cards = self.ctx.projections.cards().map_err(|failure| {
+        let mut cards = crate::floor::cards(&self.ctx.projections).map_err(|failure| {
             error(
                 ErrorCode::InternalError,
                 format!("could not read the board: {failure}"),

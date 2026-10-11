@@ -282,19 +282,21 @@ pub struct CardView {
     pub ticket: Option<CardTicket>,
 }
 
-/// What the floor snapshot says of a ticket. It carries no note, message, summary, path, argv or
-/// check output: those come only from `ticket.read`.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero(count: &u32) -> bool {
+    *count == 0
+}
+
+/// What the floor snapshot says of a ticket. It carries no note, message, summary, path, argv,
+/// check name or check output: those come only from `ticket.read`. It is small on purpose, because
+/// the snapshot's card budget has to hold the most tickets the board allows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CardTicket {
-    /// The enrolled project the ticket runs in.
-    pub project: String,
-    /// The label of the check that finishes it.
-    pub check: String,
     /// Its place in its holder's queue, counting from 1, while it waits there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<u32>,
-    /// How many times work on the ticket has started.
-    #[serde(default)]
+    /// How many times work on the ticket has started; absent before the first start.
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub round: u32,
     /// Why the daemon moved the ticket into Needs you, while it is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]

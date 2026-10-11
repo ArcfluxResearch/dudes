@@ -124,7 +124,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 .map_or(TicketReply::Unavailable, TicketReply::Refused);
         }
         if error.code == ErrorCode::NotFound.code() {
-            return TicketReply::Refused("not_a_ticket");
+            return TicketReply::Refused("stale_card");
         }
         if error.code == ErrorCode::InvalidParams.code() {
             return TicketReply::Invalid;

@@ -1530,12 +1530,8 @@
       ]
     },
     "CardTicket": {
-      "description": "What the floor snapshot says of a ticket. It carries no note, message, summary, path, argv or\ncheck output: those come only from `ticket.read`.",
+      "description": "What the floor snapshot says of a ticket. It carries no note, message, summary, path, argv,\ncheck name or check output: those come only from `ticket.read`. It is small on purpose, because\nthe snapshot's card budget has to hold the most tickets the board allows.",
       "properties": {
-        "check": {
-          "description": "The label of the check that finishes it.",
-          "type": "string"
-        },
         "position": {
           "description": "Its place in its holder's queue, counting from 1, while it waits there.",
           "format": "uint32",
@@ -1544,10 +1540,6 @@
             "integer",
             "null"
           ]
-        },
-        "project": {
-          "description": "The enrolled project the ticket runs in.",
-          "type": "string"
         },
         "reason": {
           "anyOf": [
@@ -1561,8 +1553,7 @@
           "description": "Why the daemon moved the ticket into Needs you, while it is there."
         },
         "round": {
-          "default": 0,
-          "description": "How many times work on the ticket has started.",
+          "description": "How many times work on the ticket has started; absent before the first start.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -1572,10 +1563,6 @@
           "type": "boolean"
         }
       },
-      "required": [
-        "project",
-        "check"
-      ],
       "type": "object"
     },
     "CardTransitionParams": {

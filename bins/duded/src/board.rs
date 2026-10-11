@@ -103,6 +103,17 @@ pub(crate) fn predicate_result(view: &CardView, predicate: &Predicate) -> (bool,
     )
 }
 
+/// The summary a new ticket's card will carry, at the size it can grow to: a place in
+/// the longest queue, a round count no ticket reaches and every optional member present.
+pub(crate) fn largest_ticket() -> CardTicket {
+    CardTicket {
+        position: u32::try_from(dudes_proto::ticket::MAX_QUEUE).ok(),
+        round: u32::from(u16::MAX),
+        reason: Some(TicketReason::ProjectUnavailable),
+        stopping: true,
+    }
+}
+
 pub(crate) fn admit_cards(
     mut agents: Vec<AgentView>,
     mut cards: Vec<CardView>,
@@ -121,14 +132,6 @@ pub(crate) fn admit_cards(
         };
         card.seq = Seq(u64::MAX);
         card.claimed_by = Some(AgentId::NIL);
-        card.ticket = Some(CardTicket {
-            project: "p".repeat(128),
-            check: "c".repeat(256),
-            position: Some(u32::MAX),
-            round: u32::MAX,
-            reason: Some(TicketReason::ProjectUnavailable),
-            stopping: true,
-        });
     }
     let projection = FloorProjection {
         lsn: Lsn(u64::MAX),

@@ -80,7 +80,7 @@ pub fn snapshot(projections: &mut Projections, now: Timestamp) -> Result<AgentSn
 
 /// Every board card, with the summary a ticket card carries. The summary holds codes and counts
 /// only: the note, the agent's summary and the check result come from `ticket.read`.
-fn cards(projections: &Projections) -> Result<Vec<CardView>> {
+pub(crate) fn cards(projections: &Projections) -> Result<Vec<CardView>> {
     let mut cards = projections
         .cards()
         .context("could not read projected board cards")?;
@@ -106,8 +106,6 @@ fn cards(projections: &Projections) -> Result<Vec<CardView>> {
             _ => None,
         };
         card.ticket = Some(CardTicket {
-            project: ticket.project.clone(),
-            check: ticket.done_when.label.clone(),
             position,
             round: ticket.round,
             reason: if card.status == CardStatus::Blocked {

@@ -605,10 +605,7 @@ fn a_title_only_ticket_is_authored_by_the_session_and_the_snapshot_holds_no_note
     let (view, payload) = page.snapshot();
     let cards = view["projection"]["cards"].as_array().expect("cards");
     let shown = cards.iter().find(|row| row["id"] == json!(card)).unwrap();
-    assert_eq!(
-        shown["ticket"],
-        json!({"project": "service", "check": "default passes", "round": 0})
-    );
+    assert_eq!(shown["ticket"], json!({}));
     assert!(
         !String::from_utf8_lossy(&payload).contains("NOTE-IN-THE-RECORD"),
         "the snapshot never carries a note"
@@ -757,7 +754,7 @@ fn a_retry_after_success_is_a_stale_card() {
     board.end_turn(turn, None);
     page.post("/floor/ticket/remove", &remove).ok();
     page.post("/floor/ticket/remove", &remove)
-        .refused("not_a_ticket");
+        .refused("stale_card");
     board.stop();
 }
 
@@ -794,7 +791,7 @@ fn refusals_are_fixed_codes_and_append_nothing() {
         "/floor/ticket/accept",
         &json!({"card": missing, "expected_seq": 0}),
     )
-    .refused("not_a_ticket");
+    .refused("stale_card");
 
     let plain = board.rpc(
         Method::BoardCreate,
