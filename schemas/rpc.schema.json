@@ -6347,6 +6347,13 @@
           },
           "type": "array"
         },
+        "removed_cards": {
+          "description": "Cards removed from the board since the previous delta. An older reader ignores it.",
+          "items": {
+            "$ref": "#/$defs/CardId"
+          },
+          "type": "array"
+        },
         "retired_agents": {
           "description": "Complete retired-agent archive when changed, including an empty replacement.",
           "items": {

@@ -55,6 +55,9 @@ pub struct FloorDelta {
     pub retired_agents: Option<Vec<RetiredAgentView>>,
     /// Agents retired since the previous delta.
     pub removed_agents: Vec<AgentId>,
+    /// Cards removed from the board since the previous delta. An older reader ignores it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub removed_cards: Vec<CardId>,
     /// The closing-time step, when it changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closing_time: Option<ClosingPhase>,

@@ -2248,6 +2248,11 @@ fn delta(previous: &AgentSnapshot, next: &AgentSnapshot) -> FloorDelta {
             })
             .cloned()
             .collect(),
+        removed_cards: old_cards
+            .keys()
+            .filter(|card| !next.cards.iter().any(|kept| kept.id == **card))
+            .copied()
+            .collect(),
         mail: Vec::new(),
         closing_time: None,
     }
@@ -3762,6 +3767,21 @@ mod tests {
         let change = delta(&before, &after);
         assert_eq!(change.cards.len(), 1);
         assert!(delta(&after, &after).cards.is_empty());
+        assert!(change.removed_cards.is_empty());
+        let mut gone = after.clone();
+        gone.cards.clear();
+        let removal = delta(&after, &gone);
+        assert_eq!(removal.removed_cards.len(), after.cards.len());
+        assert!(removal.removed_cards.contains(&card));
+        assert!(removal.cards.is_empty());
+        assert!(delta(&gone, &gone).removed_cards.is_empty());
+        assert!(
+            serde_json::to_value(delta(&after, &after))
+                .unwrap()
+                .get("removed_cards")
+                .is_none(),
+            "an unchanged board adds nothing to the wire"
+        );
         let wire = serde_json::to_value(change).unwrap();
         assert_eq!(wire["cards"][0]["status"], "done");
         assert_eq!(wire["cards"][0]["seq"], 1);
