@@ -7285,8 +7285,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         self.append_with_publication(world, entry, FloorPublication::ProjectionOnly)
     }
 
-    /// `Writer::append` returns only after fsync. Policy records wait for their matching fold;
-    /// runtime-owned audits retain the already-folded closing view without inventing a fold.
     #[expect(
         clippy::too_many_lines,
         reason = "durability, projections and publication retain one visible first-error boundary"
