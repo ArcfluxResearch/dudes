@@ -358,15 +358,33 @@ const status = (html) => /<p class="terminal-state[^"]*" role="(?:status|alert)"
 const buttons = (html) => [...html.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label)
   .filter((label) => ['Detach', 'Detaching…', 'Close'].includes(label));
 
-test('the detail says why there is no Attach, and names the agent whose terminal is open', () => {
-  const floor = floorOf([row(), row({ id: GRACE, name: 'Grace' })]);
+test('Attach carries its explanation as a tooltip and description, and a disabled Attach says why', () => {
+  const floor = floorOf([row({ provider: 'local' }), row({ id: GRACE, name: 'Grace', provider: 'local' })]);
   const view = (offer) => renderToStaticMarkup(createElement(TerminalAttachView, { floor, offer }));
+  const attachButton = (html) => /<button[^>]*class="terminal-attach"[^>]*>/.exec(html)?.[0] ?? '';
+  const described = (html, words) => {
+    const button = attachButton(html);
+    assert.match(button, new RegExp(`title="${words}"`));
+    assert.match(button, /aria-describedby="terminal-hint"/);
+    assert.match(html, new RegExp(`<span class="visually-hidden" id="terminal-hint">${words}</span>`));
+    assert.doesNotMatch(html, /<p\b/, 'the words are a tooltip, not a paragraph');
+  };
   assert.equal(view({ kind: 'none' }), '');
-  assert.match(view({ kind: 'attach', agent: ADA }),
-    /<button type="button" class="terminal-attach" aria-describedby="terminal-hint">Attach<\/button>/);
-  assert.match(view({ kind: 'open-elsewhere', agent: GRACE }), /The terminal is open for Grace\. Detach it before/);
-  assert.match(view({ kind: 'unavailable', reason: 'running' }), /Attach waits for this agent’s running turn to end\./);
-  assert.doesNotMatch(view({ kind: 'open-here' }), /<button/);
+  const open = view({ kind: 'attach', agent: ADA });
+  described(open, 'Attach hands you this agent’s CLI\\. Its loop holds while you type, and Detach hands it back\\.');
+  assert.doesNotMatch(attachButton(open), /aria-disabled/);
+  for (const [offer, words] of [
+    [{ kind: 'unavailable', reason: 'running' }, 'Attach waits for this agent’s running turn to end\\.'],
+    [{ kind: 'unavailable', reason: 'attached' }, 'A person already holds this agent’s keyboard\\.'],
+    [{ kind: 'unavailable', reason: 'halted' }, 'A halt stands on this agent, so the Floor cannot attach it\\.'],
+    [{ kind: 'unavailable', reason: 'no-session' }, 'Attach waits for this agent’s first confirmed session\\.'],
+    [{ kind: 'open-here' }, 'This agent’s terminal is open\\.'],
+    [{ kind: 'open-elsewhere', agent: GRACE }, 'The terminal is open for Grace\\. Detach it before attaching this agent\\.'],
+  ]) {
+    const html = view(offer);
+    described(html, words);
+    assert.match(attachButton(html), /aria-disabled="true"/, offer.kind + ' ' + (offer.reason ?? ''));
+  }
 });
 
 test('Claude Attach shows the workspace trust warning in a confirmation before opening the terminal', () => {
@@ -374,7 +392,7 @@ test('Claude Attach shows the workspace trust warning in a confirmation before o
   const view = (agent) => renderToStaticMarkup(createElement(TerminalAttachView, { floor, offer: { kind: 'attach', agent } }));
   const claude = view(ADA);
   assert.doesNotMatch(claude, /trust this workspace/);
-  assert.match(claude, /<button type="button" class="terminal-attach" aria-describedby="terminal-hint" aria-haspopup="dialog">Attach<\/button>/);
+  assert.match(claude, /<button type="button" class="terminal-attach" title="[^"]*" aria-describedby="terminal-hint" aria-haspopup="dialog">Attach<\/button>/);
   assert.doesNotMatch(view(GRACE), /aria-haspopup/);
   const dialog = renderToStaticMarkup(createElement(AttachConfirmation, { name: 'Ada', onConfirm() {}, onCancel() {} }));
   assert.match(dialog, /Claude Code may ask you to trust this workspace/);
@@ -428,4 +446,41 @@ test('the terminal header offers bounded zoom, selection copy and reversible exp
   assert.match(html, /aria-expanded="false"[^>]*>Expand<\/button>/);
   assert.match(html, /data-terminal-expanded="false"/);
   assert.match(html, /Cmd\+= zooms in|Ctrl\+\] first/);
+});
+
+test('pressing a waiting Attach neither opens the confirmation nor attaches, and an available one does open it', async () => {
+  const { fakePage, press } = await import('./helpers/fake-page.mjs');
+  const { createRoot } = await import('react-dom/client');
+  const { act } = await import('react');
+  const terminal = await server.ssrLoadModule('/src/renderer/terminal/terminal.ts');
+  terminal.resetTerminal();
+  const floor = floorOf([row({ provider: 'claude' })]);
+  const page = fakePage();
+  const prototype = page.host.constructor.prototype;
+  prototype.showModal = () => {};
+  prototype.close = () => {};
+  try {
+    const root = createRoot(page.host);
+    const mount = (offer) => act(() => root.render(createElement(TerminalAttachView, { floor, offer })));
+    const attach = () => page.host.querySelector('[aria-describedby="terminal-hint"]');
+    const dialog = () => page.host.querySelector('[data-attach-dialog="true"]');
+    for (const offer of [{ kind: 'unavailable', reason: 'running' }, { kind: 'unavailable', reason: 'attached' },
+      { kind: 'unavailable', reason: 'halted' }, { kind: 'unavailable', reason: 'no-session' }, { kind: 'open-here' },
+      { kind: 'open-elsewhere', agent: GRACE }]) {
+      await mount(offer);
+      assert.equal(attach().getAttribute('aria-disabled'), 'true');
+      await act(async () => press(attach()));
+      assert.equal(dialog(), null, `${offer.kind} ${offer.reason ?? ''} opened the confirmation`);
+      assert.equal(terminal.getTerminalState().phase, 'idle', `${offer.kind} ${offer.reason ?? ''} attached`);
+    }
+    await mount({ kind: 'attach', agent: ADA });
+    await act(async () => press(attach()));
+    assert.notEqual(dialog(), null, 'an available Claude Attach opens its confirmation');
+    await act(() => root.unmount());
+  } finally {
+    delete prototype.showModal;
+    delete prototype.close;
+    terminal.resetTerminal();
+    page.restore();
+  }
 });

@@ -317,6 +317,14 @@ fn dispatch(
         _ => {}
     }
 
+    // `floor open` has no version in its answer, so it asks once before it mints the link.
+    if invocation.command == Command::FloorOpen
+        && !invocation.json
+        && let Ok(ping) = ping_once(env)
+    {
+        write_restart_nudge(err, &ping.version).map_err(local)?;
+    }
+
     let mut client = connect(env)?;
 
     if invocation.command == Command::Team {
@@ -411,6 +419,11 @@ fn dispatch(
 
     // --- the presentation half. It opens nothing and knows no path. -----------------------------
     let response = call_presenting(&mut client, method, params, cred)?;
+    let ping_version = (method == Method::SystemPing && !invocation.json)
+        .then(|| response.result.clone())
+        .flatten()
+        .and_then(|result| serde_json::from_value::<PingResult>(result).ok())
+        .map(|ping| ping.version);
     if method == Method::SystemShutdown && response.error.is_none() {
         let shutdown = typed::<ShutdownResult>(response.result.clone().unwrap_or(Value::Null))?;
         drop(client);
@@ -424,6 +437,9 @@ fn dispatch(
         .flatten()
         .and_then(|result| serde_json::from_value::<HireResult>(result).ok());
     let status = render_answer(invocation, method, response, out)?;
+    if let Some(version) = ping_version {
+        write_restart_nudge(err, &version).map_err(local)?;
+    }
     if let (Some(hired), Command::Hire(params)) = (hired, &invocation.command)
         && params.checkout.is_none()
     {
@@ -1272,17 +1288,25 @@ fn start_command(
         writeln!(out, "The daemon is already running.").map_err(local)?;
     }
     render::ping(out, machine, &answer).map_err(local)?;
-    if !machine && answer.version != env!("CARGO_PKG_VERSION") {
-        writeln!(
-            out,
-            "The running daemon is {} and this dudes is {}. Run dudes stop, then dudes start, to \
-             use the new version.",
-            render::Escaped(&answer.version),
-            env!("CARGO_PKG_VERSION")
-        )
-        .map_err(local)?;
+    if !machine {
+        write_restart_nudge(out, &answer.version).map_err(local)?;
     }
     Ok(exit::SUCCESS)
+}
+
+/// The line that names a running daemon of another version and the way to replace it; nothing
+/// when it runs this dudes' own version.
+fn write_restart_nudge(to: &mut dyn Write, daemon: &str) -> std::io::Result<()> {
+    if daemon == env!("CARGO_PKG_VERSION") {
+        return Ok(());
+    }
+    writeln!(
+        to,
+        "The running daemon is {} and this dudes is {}. Run dudes stop, then dudes start, to use \
+         the new version.",
+        render::Escaped(daemon),
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 /// Start the daemon when none answers, and return its ping.

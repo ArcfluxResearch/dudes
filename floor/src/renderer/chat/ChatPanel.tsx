@@ -14,6 +14,7 @@ import type { ChatReason, ChatTurn, PendingNote } from './model.ts';
 import { conversationEntries } from './thread.ts';
 import type { ChatEntry } from './thread.ts';
 import { ChatText } from './ChatText.tsx';
+import { FullOutput } from '../LiveWork.tsx';
 
 export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
   agent_absent: 'The agent is no longer on the floor.',
@@ -38,7 +39,10 @@ export const CHAT_REASON_TEXT: Readonly<Record<ChatReason, string>> = {
   note_cancelled: 'This note was already cancelled.',
 };
 
-export function ChatPanel({ floor, row }: { readonly floor: FloorState; readonly row: AgentRow }) {
+export function ChatPanel({ floor, row, fullOutput = false, onFullOutput }: {
+  readonly floor: FloorState; readonly row: AgentRow; readonly fullOutput?: boolean;
+  readonly onFullOutput?: (open: boolean) => void;
+}) {
   const chat = useSyncExternalStore(subscribeToChat, getChatState, getChatState);
   const target = chat.answerTargets.get(row.id);
   const previousTarget = useRef(target);
@@ -51,11 +55,12 @@ export function ChatPanel({ floor, row }: { readonly floor: FloorState; readonly
   useEffect(() => {
     if (chatGate(floor, row).open && floor.chat !== null) reconcileChat(floor.chat);
   }, [floor.chat, floor.phase, floor.stale, floor.epoch, floor.snapshotEpoch, row, chat.acknowledged]);
-  return <ChatPanelView floor={floor} row={row} action={chat} />;
+  return <ChatPanelView floor={floor} row={row} action={chat} fullOutput={fullOutput} onFullOutput={onFullOutput} />;
 }
 
-export function ChatPanelView({ floor, row, action }: {
+export function ChatPanelView({ floor, row, action, fullOutput = false, onFullOutput = () => {} }: {
   readonly floor: FloorState; readonly row: AgentRow; readonly action: ChatState;
+  readonly fullOutput?: boolean; readonly onFullOutput?: (open: boolean) => void;
 }) {
   const gate = chatGate(floor, row);
   const view = floor.chat;
@@ -71,7 +76,8 @@ export function ChatPanelView({ floor, row, action }: {
   const replying = target !== undefined && question.open && target.questionLsn === question.questionLsn;
   const waitingQuestion = row.status === 'waiting' && typeof row.question === 'string' && canonicalLsn(row.question_lsn);
   return <div className="chat-panel" data-chat-agent-id={row.id}>
-    <ChatThread key={row.id} entries={entries} floor={floor} row={row} action={action} />
+    <ChatThread key={row.id} entries={entries} floor={floor} row={row} action={action}
+      fullOutput={fullOutput} onFullOutput={onFullOutput} />
     {row.mode === 'attached' ? <p className="chat-guidance">Attached replies are unavailable. Messages are sent as context.</p> : null}
     <section aria-labelledby="chat-compose-title" className="chat-compose">
       <h3 id="chat-compose-title" tabIndex={-1}>{replying ? 'Reply to' : 'Message'} {name}</h3>
@@ -118,8 +124,9 @@ export function ChatPanelView({ floor, row, action }: {
   </div>;
 }
 
-function ChatThread({ entries, floor, row, action }: {
+function ChatThread({ entries, floor, row, action, fullOutput, onFullOutput }: {
   readonly entries: readonly ChatEntry[]; readonly floor: FloorState; readonly row: AgentRow; readonly action: ChatState;
+  readonly fullOutput: boolean; readonly onFullOutput: (open: boolean) => void;
 }) {
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
@@ -130,6 +137,7 @@ function ChatThread({ entries, floor, row, action }: {
   const name = typeof row.name === 'string' ? row.name : row.id;
   const attempt = action.attempt?.payload.agent === row.id ? action.attempt : null;
   const outcome = action.outcome;
+  const latestTurn = row.mode === 'managed' ? entries.filter(entry => entry.kind !== 'context' && entry.turn !== null).at(-1) : undefined;
   return <section className="chat-thread" aria-labelledby="chat-thread-title">
     <h3 id="chat-thread-title">Conversation</h3>
     <div className="chat-scroll" ref={scroll} role="log" aria-label={`Conversation with ${name}`} aria-relevant="additions"
@@ -186,6 +194,8 @@ function ChatThread({ entries, floor, row, action }: {
             <details className="chat-reply-details"><summary>Reply details</summary>
               <p>Live output is provisional. It is not a final reply.</p></details>
           </div> : null}
+          {entry === latestTurn
+            ? <FullOutput floor={floor} row={row} id="chat-full-output" open={fullOutput} onToggle={onFullOutput} /> : null}
         </li>;
       })}</ol>}
       {attempt === null ? null : <section className="chat-receipt" aria-label="Chat request" aria-live="polite"

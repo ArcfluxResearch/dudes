@@ -454,8 +454,15 @@ main() {
 		run=$bin/dudes
 		;;
 	esac
-	say "Next, start the daemon:"
-	say "  $run quickstart"
+	# `ping` only asks: it starts nothing, and it fails at once when no daemon runs. A daemon that
+	# started before this install keeps serving the version it loaded, Floor included.
+	daemon=$("$bin/dudes" ping 2>/dev/null </dev/null | sed -n '1s/^duded \([^ ]*\) on .*/\1/p') || daemon=
+	if [ -z "$daemon" ]; then
+		say "Next, start the daemon:"
+		say "  $run quickstart"
+	elif [ "$daemon" != "$version" ]; then
+		say "A Dudes daemon is still running version $daemon. Run \`$run stop\`, then \`$run start\`, to use $version."
+	fi
 }
 
 main "$@"
