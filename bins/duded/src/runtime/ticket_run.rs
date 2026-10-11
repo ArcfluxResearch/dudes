@@ -160,6 +160,21 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
     }
 
+    /// Clear the goal a ticket still holds an agent with, so the move the operator is making does
+    /// not leave the old goal holding the agent. A goal that is finished, or that the agent no
+    /// longer holds, is left alone.
+    pub(super) fn settle_goal(
+        &mut self,
+        view: &CardView,
+        ticket: &TicketRow,
+    ) -> Result<(), RpcError> {
+        let to_clear = self.with_ticket_facts(|facts| facts.goal_to_settle(view, ticket))?;
+        if let Some((agent, goal)) = to_clear {
+            self.pump_or_refuse(Input::Command(Command::GoalClear { agent, goal }))?;
+        }
+        Ok(())
+    }
+
     /// Append one move the board owes, as the daemon.
     fn move_owed(&mut self, owed: &Owed) -> Result<(), RpcError> {
         self.board_append(Record::CardTransition {
@@ -168,7 +183,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             to: owed.to,
             by: Actor::System,
             expected_seq: owed.seq,
-            reason: None,
+            reason: owed.reason,
         })
     }
 

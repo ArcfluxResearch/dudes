@@ -1,7 +1,13 @@
-use dudes_proto::{Actor, CardView, Entry, QueueClass, QueueKey, Record, TicketCheck, TicketRow};
-use dudes_types::{AgentId, CardId, CardStatus, GoalId, Lsn, Seq};
+use dudes_proto::goal::Evidence;
+use dudes_proto::ticket::summary_text;
+use dudes_proto::{
+    Actor, CardView, Entry, QueueClass, QueueKey, Record, TicketCheck, TicketCheckResult, TicketRow,
+};
+use dudes_types::{AgentId, CardId, CardStatus, GoalId, Lsn, Mode, Seq};
+use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
 
+use super::turns::TurnRow;
 use super::{RowTable, all_rows, get_row, put_row};
 use crate::error::Result;
 
@@ -27,7 +33,12 @@ impl BoardRow {
     }
 }
 
-pub(super) fn apply(table: &mut RowTable<'_>, lsn: Lsn, entry: &Entry) -> Result<()> {
+pub(super) fn apply(
+    table: &mut RowTable<'_>,
+    turns: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
+    lsn: Lsn,
+    entry: &Entry,
+) -> Result<()> {
     match &entry.record {
         Record::CardCreated {
             card,
@@ -104,8 +115,57 @@ pub(super) fn apply(table: &mut RowTable<'_>, lsn: Lsn, entry: &Entry) -> Result
             }
             Ok(())
         }
+        Record::TurnEnded {
+            turn,
+            mode: Mode::Managed,
+            last_message,
+            ..
+        } => {
+            let goal = get_row::<TurnRow>(turns, &turn.to_bytes())?.and_then(|row| row.goal);
+            match goal {
+                Some(goal) => update_goal_ticket(table, goal, |ticket| {
+                    ticket.summary = last_message.as_deref().map(summary_text);
+                }),
+                None => Ok(()),
+            }
+        }
+        Record::PredicateResult {
+            goal,
+            pass,
+            evidence,
+            ..
+        } => update_goal_ticket(table, *goal, |ticket| {
+            ticket.check = Some(TicketCheckResult {
+                pass: *pass,
+                exit: match evidence {
+                    Evidence::Command { exit, .. } => *exit,
+                    _ => None,
+                },
+                at: entry.at,
+            });
+        }),
         _ => apply_ticket(table, lsn, &entry.record),
     }
+}
+
+/// Change the ticket whose newest start installed `goal`, when there is one.
+fn update_goal_ticket(
+    table: &mut RowTable<'_>,
+    goal: GoalId,
+    change: impl FnOnce(&mut TicketRow),
+) -> Result<()> {
+    let found = all_rows::<BoardRow>(table)?.into_iter().find(|row| {
+        row.ticket
+            .as_ref()
+            .is_some_and(|ticket| ticket.goal == Some(goal))
+    });
+    let Some(mut row) = found else {
+        return Ok(());
+    };
+    if let Some(ticket) = &mut row.ticket {
+        change(ticket);
+    }
+    put_row(table, &row.view.id.to_bytes(), &row)
 }
 
 /// The five ticket records: a ticket is a card with more to remember.
@@ -139,6 +199,8 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
                 message: None,
                 round: 0,
                 reason: None,
+                summary: None,
+                check: None,
             };
             let row = BoardRow {
                 view,
@@ -238,6 +300,8 @@ fn start_ticket(row: &mut BoardRow, lsn: Lsn, agent: AgentId, goal: GoalId, expe
         ticket.queue = None;
         ticket.message = None;
         ticket.reason = None;
+        ticket.summary = None;
+        ticket.check = None;
         ticket.round = ticket.round.saturating_add(1);
     }
 }

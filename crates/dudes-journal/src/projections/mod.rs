@@ -541,7 +541,7 @@ impl Projections {
                 question_history::capture(&mut history, &agents, lsn, entry)?;
                 agents::apply(&mut agents, &turns, &goals, lsn, carrier)?;
                 goals::apply(&mut goals, &mut first_done, &agents, lsn, carrier)?;
-                board::apply(&mut board, lsn, entry)?;
+                board::apply(&mut board, &turns, lsn, entry)?;
                 worktrees::apply(&mut leases, entry)?;
                 let ended = turns::apply(&mut turns, lsn, carrier)?;
                 traces::capture(&mut traces, &agents, &turns, entry, ended.is_some())?;

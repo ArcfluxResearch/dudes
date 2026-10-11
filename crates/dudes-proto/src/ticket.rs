@@ -1,7 +1,7 @@
 //! A ticket is a board card with a note, a project and a required completion check. These are the
 //! values its journal records carry and the words the operator sees when a request is refused.
 
-use dudes_types::{CardId, CardStatus, GoalId, Lsn};
+use dudes_types::{CardId, CardStatus, GoalId, Lsn, Timestamp};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,8 @@ pub const MAX_MESSAGE_BYTES: usize = 2_048;
 pub const MAX_QUEUE: usize = 8;
 /// Most tickets the board holds that are neither removed nor done.
 pub const MAX_OPEN_TICKETS: usize = 512;
+/// Most bytes of an agent's last message the board keeps and shows as a ticket's summary.
+pub const MAX_SUMMARY_BYTES: usize = 4_096;
 
 /// The check a ticket is finished by, as it was when the ticket was made or last edited. Storing
 /// the resolved predicate means a later enrollment edit cannot change what an existing ticket is
@@ -29,6 +31,18 @@ pub struct TicketCheck {
     pub label: String,
     /// The typed command the daemon runs.
     pub predicate: Predicate,
+}
+
+/// What the daemon's latest run of a ticket's check found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TicketCheckResult {
+    /// Whether the check passed.
+    pub pass: bool,
+    /// The check's exit code; absent when it was killed or never ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<i32>,
+    /// When the run was recorded.
+    pub at: Timestamp,
 }
 
 /// What the board keeps of a ticket beyond what every card has.
@@ -55,6 +69,13 @@ pub struct TicketRow {
     /// Why the daemon moved the ticket into Needs you, while it is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<TicketReason>,
+    /// What the agent said at the end of its newest turn on the ticket's goal, cut to
+    /// [`MAX_SUMMARY_BYTES`]. These are the agent's own words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// The daemon's newest run of the check on the ticket's goal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<TicketCheckResult>,
 }
 
 /// Which side of the queue a ticket sits on. Given-again work is served before new work.
@@ -178,6 +199,12 @@ pub enum TicketWait {
     AgentAttached,
     /// The daemon is shutting down.
     Closing,
+    /// The ticket was stopped and the agent is still finishing its current step.
+    Stopping,
+    /// The agent reached its daily limit and carries on by itself when it resets.
+    AgentLimit,
+    /// The Floor reached its daily limit and carries on by itself when it resets.
+    FloorLimit,
 }
 
 /// A wait and the sentence that says it.
@@ -204,6 +231,15 @@ impl TicketWait {
             Self::AgentPaused => format!("Waiting for {agent} to be resumed."),
             Self::AgentAttached => format!("Waiting for {agent}'s keyboard session to end."),
             Self::Closing => "Dudes is shutting down.".to_owned(),
+            Self::Stopping => "Stopping: the agent is finishing its current step.".to_owned(),
+            Self::AgentLimit => {
+                "The agent reached its daily limit. It carries on by itself when the limit resets."
+                    .to_owned()
+            }
+            Self::FloorLimit => {
+                "The Floor reached its daily limit. It carries on by itself when the limit resets."
+                    .to_owned()
+            }
         }
     }
 }
@@ -278,6 +314,23 @@ impl TicketRefusal {
             Self::LimitReached => "Too many tickets for now. Remove some, or wait.".to_owned(),
         }
     }
+}
+
+/// The agent's words as the board keeps and shows them: control characters other than newline and
+/// tab removed, then cut to [`MAX_SUMMARY_BYTES`] at a character boundary.
+#[must_use]
+pub fn summary_text(text: &str) -> String {
+    let mut kept = String::new();
+    for c in text.chars() {
+        if c.is_control() && c != '\n' && c != '\t' {
+            continue;
+        }
+        if kept.len() + c.len_utf8() > MAX_SUMMARY_BYTES {
+            break;
+        }
+        kept.push(c);
+    }
+    kept
 }
 
 /// What the operator calls a ticket in this state.
@@ -362,6 +415,16 @@ mod tests {
             TicketReason::NoTurns.sentence(),
             "The agent used all its turns on this ticket. Give to agent to try again, or Stop."
         );
+    }
+
+    #[test]
+    fn a_summary_loses_control_bytes_and_is_cut_on_a_character() {
+        assert_eq!(summary_text("a\u{7}b\nc\td\u{1b}[2J"), "ab\nc\td[2J");
+        let long = "é".repeat(3_000);
+        let cut = summary_text(&long);
+        assert_eq!(cut.len(), MAX_SUMMARY_BYTES);
+        assert!(cut.chars().all(|c| c == 'é'));
+        assert_eq!(summary_text(&"x".repeat(4_097)).len(), 4_096);
     }
 
     #[test]

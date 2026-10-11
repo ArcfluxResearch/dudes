@@ -5,7 +5,7 @@ use super::{Answered, Clock, Daemon, PredicateRunner, ProcessHost, Rng, TicketAs
 use dudes_proto::rpc::ticket::{
     TicketAcceptParams, TicketAssignOutcome, TicketAssignParams, TicketAssignResult,
     TicketCreateParams, TicketCreateResult, TicketEditParams, TicketReadParams, TicketReadResult,
-    TicketRemoveParams,
+    TicketRemoveParams, TicketStopParams,
 };
 use dudes_proto::rpc::{ErrorCode, RpcError};
 use dudes_proto::ticket::{
@@ -112,6 +112,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             TicketAsk::Assign { request, by } => self.ticket_assign(&request, by),
             TicketAsk::Remove { request, by } => self.ticket_remove(&request, by),
             TicketAsk::Accept { request, by } => self.ticket_accept(&request, by),
+            TicketAsk::Stop { request, by } => self.ticket_stop(&request, by),
             TicketAsk::Read(request) => self.ticket_read(request),
         }
     }
@@ -268,6 +269,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if waiting.iter().filter(|(card, _)| *card != view.id).count() >= MAX_QUEUE {
             return Err(refusal(TicketRefusal::QueueFull, view.status));
         }
+        self.settle_goal(&view, &ticket)?;
         self.board_append(Record::TicketAssigned {
             card: view.id,
             agent: request.agent,
@@ -392,13 +394,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         by: Actor,
     ) -> Result<Answered, RpcError> {
         operator(by)?;
-        let (view, _) = self.ticket_row(request.card)?;
+        let (view, ticket) = self.ticket_row(request.card)?;
         if view.seq != request.expected_seq {
             return Err(stale(&view));
         }
         if view.status == CardStatus::Doing {
             return Err(refusal(TicketRefusal::WrongState, view.status));
         }
+        self.settle_goal(&view, &ticket)?;
         self.board_append(Record::TicketRemoved {
             card: view.id,
             by,
@@ -407,8 +410,37 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         Ok(Answered::Done)
     }
 
+    /// Take a Working ticket, or one in Needs you, back to To do, unassigned. The goal is cleared
+    /// first when it is still unfinished, and the running turn is left to end by itself: it
+    /// is not killed, and the project stays busy until it does. Both records are appended before
+    /// anything else reads the board, so no move the board owes can fall between them.
+    fn ticket_stop(&mut self, request: &TicketStopParams, by: Actor) -> Result<Answered, RpcError> {
+        operator(by)?;
+        let (view, ticket) = self.ticket_row(request.card)?;
+        if view.seq != request.expected_seq {
+            return Err(stale(&view));
+        }
+        if !matches!(view.status, CardStatus::Doing | CardStatus::Blocked) {
+            return Err(refusal(TicketRefusal::WrongState, view.status));
+        }
+        self.settle_goal(&view, &ticket)?;
+        self.board_append(Record::CardTransition {
+            card: view.id,
+            from: view.status,
+            to: CardStatus::Todo,
+            by,
+            expected_seq: request.expected_seq,
+            reason: None,
+        })?;
+        Ok(Answered::Done)
+    }
+
     fn ticket_read(&self, request: TicketReadParams) -> Result<Answered, RpcError> {
-        let (card, ticket) = self.ticket_row(request.card)?;
+        let (card, mut ticket) = self.ticket_row(request.card)?;
+        ticket.summary = ticket
+            .summary
+            .as_deref()
+            .map(dudes_proto::ticket::summary_text);
         let position = match (card.status, card.claimed_by) {
             (CardStatus::Claimed, Some(agent)) => self
                 .agent_queue(agent)?

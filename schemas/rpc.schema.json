@@ -9807,6 +9807,24 @@
           ],
           "type": "object"
         },
+        "ticket.stop": {
+          "description": "Stop work on a ticket and return it to To do. The running turn finishes by itself. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketStopParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "worktree.list": {
           "description": "Every worktree lease that is not removed, with its path. Operator-only.",
           "properties": {
@@ -9897,7 +9915,8 @@
         "ticket.assign",
         "ticket.remove",
         "ticket.read",
-        "ticket.accept"
+        "ticket.accept",
+        "ticket.stop"
       ],
       "type": "object"
     },
@@ -11772,6 +11791,32 @@
       ],
       "type": "object"
     },
+    "TicketCheckResult": {
+      "description": "What the daemon's latest run of a ticket's check found.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the run was recorded."
+        },
+        "exit": {
+          "description": "The check's exit code; absent when it was killed or never ran.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pass": {
+          "description": "Whether the check passed.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pass",
+        "at"
+      ],
+      "type": "object"
+    },
     "TicketCreateParams": {
       "additionalProperties": false,
       "description": "`ticket.create` params. Only the title is required.",
@@ -12013,6 +12058,17 @@
     "TicketRow": {
       "description": "What the board keeps of a ticket beyond what every card has.",
       "properties": {
+        "check": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketCheckResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The daemon's newest run of the check on the ticket's goal."
+        },
         "description": {
           "description": "The note; empty when there is none.",
           "type": "string"
@@ -12071,12 +12127,38 @@
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
+        },
+        "summary": {
+          "description": "What the agent said at the end of its newest turn on the ticket's goal, cut to\n[`MAX_SUMMARY_BYTES`]. These are the agent's own words.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "description",
         "project",
         "done_when"
+      ],
+      "type": "object"
+    },
+    "TicketStopParams": {
+      "additionalProperties": false,
+      "description": "`ticket.stop` params: take a ticket that is Working or in Needs you back to To do.",
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "The ticket."
+        },
+        "expected_seq": {
+          "$ref": "#/$defs/Seq",
+          "description": "The ticket's `seq` as last seen."
+        }
+      },
+      "required": [
+        "card",
+        "expected_seq"
       ],
       "type": "object"
     },
@@ -12171,6 +12253,45 @@
           "properties": {
             "kind": {
               "const": "closing",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The ticket was stopped and the agent is still finishing its current step.",
+          "properties": {
+            "kind": {
+              "const": "stopping",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The agent reached its daily limit and carries on by itself when it resets.",
+          "properties": {
+            "kind": {
+              "const": "agent_limit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The Floor reached its daily limit and carries on by itself when it resets.",
+          "properties": {
+            "kind": {
+              "const": "floor_limit",
               "type": "string"
             }
           },

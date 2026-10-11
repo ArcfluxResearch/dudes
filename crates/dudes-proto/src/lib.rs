@@ -89,8 +89,8 @@ pub use task::{
     recognize_taught_note_task, taught_note_task, valid_taught_admission, valid_taught_decision,
 };
 pub use ticket::{
-    QueueClass, QueueKey, TicketCheck, TicketReason, TicketRefusal, TicketRow, TicketWait,
-    TicketWaiting,
+    QueueClass, QueueKey, TicketCheck, TicketCheckResult, TicketReason, TicketRefusal, TicketRow,
+    TicketWait, TicketWaiting,
 };
 pub use traces::{
     MAX_AGENT_TRACE_BYTES, MAX_AGENT_TRACES, MAX_TRACE_BYTES, MAX_TRACES, TraceOutcome,

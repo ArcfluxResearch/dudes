@@ -4,10 +4,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dudes_proto::CardView;
-use dudes_proto::{QueueKey, TicketRow, TicketWait};
+use dudes_proto::{
+    CardView, ExhaustedReason, HoldReason, QueueKey, TicketReason, TicketRow, TicketWait,
+};
 use dudes_supervisor::world::{AgentRow, World};
-use dudes_types::{AgentId, CardId, CardStatus, Seq};
+use dudes_types::{AgentId, CardId, CardStatus, GoalId, Seq};
 
 /// What the pure functions read.
 pub(crate) struct Facts<'a> {
@@ -29,6 +30,7 @@ pub(crate) struct Owed {
     pub(crate) from: CardStatus,
     pub(crate) to: CardStatus,
     pub(crate) seq: Seq,
+    pub(crate) reason: Option<TicketReason>,
 }
 
 impl Facts<'_> {
@@ -50,7 +52,7 @@ impl Facts<'_> {
     }
 
     /// The ticket's goal is still its holder's unfinished goal.
-    fn holds_unfinished_goal(&self, view: &CardView, ticket: &TicketRow) -> bool {
+    pub(crate) fn holds_unfinished_goal(&self, view: &CardView, ticket: &TicketRow) -> bool {
         let (Some(agent), Some(goal)) = (view.claimed_by, ticket.goal) else {
             return false;
         };
@@ -58,6 +60,19 @@ impl Facts<'_> {
             .agents
             .get(&agent)
             .is_some_and(|row| row.goal == Some(goal) && self.has_unfinished_goal(row))
+    }
+
+    /// The agent and goal to clear before the operator moves a ticket whose goal is still its
+    /// holder's unfinished goal, so the old goal does not hold the agent for ever.
+    pub(crate) fn goal_to_settle(
+        &self,
+        view: &CardView,
+        ticket: &TicketRow,
+    ) -> Option<(AgentId, GoalId)> {
+        if !self.holds_unfinished_goal(view, ticket) {
+            return None;
+        }
+        Some((view.claimed_by?, ticket.goal?))
     }
 
     /// Why `agent` cannot start a ticket now, or `None` when it can.
@@ -157,7 +172,19 @@ impl Facts<'_> {
     pub(crate) fn wait_of(&self, card: CardId) -> Option<TicketWait> {
         let (view, ticket) = self.ticket(card)?;
         match view.status {
-            CardStatus::Todo => Some(TicketWait::NotGiven),
+            CardStatus::Todo => Some(self.stopped_or_not_given(ticket)),
+            CardStatus::Doing => {
+                match self
+                    .world
+                    .agents
+                    .get(&view.claimed_by?)
+                    .and_then(|row| row.exhausted)
+                {
+                    Some(ExhaustedReason::AgentBudget) => Some(TicketWait::AgentLimit),
+                    Some(ExhaustedReason::FloorBudget) => Some(TicketWait::FloorLimit),
+                    _ => None,
+                }
+            }
             CardStatus::Claimed => {
                 let agent = view.claimed_by?;
                 self.agent_wait(agent, &ticket.project)
@@ -169,6 +196,22 @@ impl Facts<'_> {
                     })
             }
             _ => None,
+        }
+    }
+
+    /// A ticket that was stopped while its agent was still in a turn shows that the agent is
+    /// finishing; any other unassigned ticket has simply not been given yet.
+    fn stopped_or_not_given(&self, ticket: &TicketRow) -> TicketWait {
+        let finishing = ticket
+            .goal
+            .and_then(|goal| self.world.goals.get(&goal))
+            .filter(|held| held.cleared)
+            .and_then(|held| self.world.agents.get(&held.agent))
+            .is_some_and(|row| row.open_turn.is_some());
+        if finishing {
+            TicketWait::Stopping
+        } else {
+            TicketWait::NotGiven
         }
     }
 
@@ -189,22 +232,68 @@ impl Facts<'_> {
     }
 
     /// The moves the current state owes, oldest card first. A ticket whose goal the loop has
-    /// latched Done owes Ready for you, whether it is Working or was in Needs you.
+    /// latched Done owes Ready for you, whether it is Working or was in Needs you. A Working
+    /// ticket whose goal cannot go on without the operator owes Needs you.
     pub(crate) fn owed_ticket_moves(&self) -> Vec<Owed> {
         self.tickets
             .iter()
-            .filter(|(view, _)| matches!(view.status, CardStatus::Doing | CardStatus::Blocked))
-            .filter(|(_, ticket)| {
-                ticket
-                    .goal
-                    .is_some_and(|goal| self.world.completed_goal_lsn(goal).is_some())
-            })
-            .map(|(view, _)| Owed {
-                card: view.id,
-                from: view.status,
-                to: CardStatus::Review,
-                seq: view.seq,
+            .filter_map(|(view, ticket)| {
+                let goal = ticket.goal?;
+                let (to, reason) = if matches!(view.status, CardStatus::Doing | CardStatus::Blocked)
+                    && self.world.completed_goal_lsn(goal).is_some()
+                {
+                    (CardStatus::Review, None)
+                } else if view.status == CardStatus::Doing {
+                    (CardStatus::Blocked, Some(self.stall(view, goal)?))
+                } else {
+                    return None;
+                };
+                Some(Owed {
+                    card: view.id,
+                    from: view.status,
+                    to,
+                    seq: view.seq,
+                    reason,
+                })
             })
             .collect()
+    }
+
+    /// Why a Working ticket's goal has stopped without the loop finishing it, when only the
+    /// operator can restart it. A limit that resets by itself, and a hold the operator put on the
+    /// agent, are not stalls: the operator caused or sees them, and the goal carries on.
+    fn stall(&self, view: &CardView, goal: GoalId) -> Option<TicketReason> {
+        let row = self.world.agents.get(&view.claimed_by?)?;
+        if row.goal != Some(goal) || self.world.goals.get(&goal).is_none_or(|held| held.cleared) {
+            return Some(TicketReason::GoalChanged);
+        }
+        if let Some(exhausted) = row.exhausted {
+            return match exhausted {
+                ExhaustedReason::GoalBudget => Some(TicketReason::LimitGoal),
+                ExhaustedReason::Breaker => Some(TicketReason::Slowed),
+                ExhaustedReason::Hops => Some(TicketReason::NoTurns),
+                ExhaustedReason::CeilingRequired => Some(TicketReason::CeilingRequired),
+                ExhaustedReason::AgentBudget
+                | ExhaustedReason::FloorBudget
+                | ExhaustedReason::MailWakeLimit => None,
+            };
+        }
+        let hold = row
+            .automatic_hold
+            .as_ref()
+            .map(dudes_proto::AutomaticHold::hold_reason)
+            .or_else(|| {
+                (row.last_turn_end == Some(dudes_types::Provenance::Inferred))
+                    .then_some(HoldReason::InferredTurnEnd)
+            })?;
+        match hold {
+            HoldReason::LaunchRefused | HoldReason::LaunchFailed => Some(TicketReason::HeldLaunch),
+            HoldReason::RepeatedFastFailure => Some(TicketReason::HeldFailing),
+            HoldReason::InferredTurnEnd | HoldReason::UnknownCause => {
+                Some(TicketReason::HeldUnsure)
+            }
+            HoldReason::WorktreeMissing => Some(TicketReason::WorktreeMissing),
+            HoldReason::Halted | HoldReason::Paused | HoldReason::Attached => None,
+        }
     }
 }

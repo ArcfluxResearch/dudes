@@ -138,6 +138,16 @@ pub struct TicketReadResult {
     pub waiting: Option<TicketWaiting>,
 }
 
+/// `ticket.stop` params: take a ticket that is Working or in Needs you back to To do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TicketStopParams {
+    /// The ticket.
+    pub card: CardId,
+    /// The ticket's `seq` as last seen.
+    pub expected_seq: Seq,
+}
+
 /// `ticket.accept` params: the operator's verdict that a ticket that is Ready for you is done.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

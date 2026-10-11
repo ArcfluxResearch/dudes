@@ -3,7 +3,7 @@
 
 use dudes_proto::rpc::ticket::{
     TicketAcceptParams, TicketAssignParams, TicketCreateParams, TicketEditParams, TicketReadParams,
-    TicketRemoveParams,
+    TicketRemoveParams, TicketStopParams,
 };
 use dudes_proto::rpc::{ErrorCode, Method};
 use dudes_rpc::Dispatcher;
@@ -21,7 +21,7 @@ fn wrong_answer(method: Method) -> dudes_proto::rpc::RpcError {
     )
 }
 
-/// Register the six ticket methods with their declared caller role.
+/// Register the seven ticket methods with their declared caller role.
 pub(crate) fn register(dispatcher: &mut Dispatcher, handle: &Handle) {
     let create = handle.clone();
     dispatcher.register_audited(
@@ -84,6 +84,18 @@ pub(crate) fn register(dispatcher: &mut Dispatcher, handle: &Handle) {
             let by = actor(call.role, pid)?;
             accept.ask(Ask::Ticket(TicketAsk::Accept { request, by }))?;
             encode(Method::TicketAccept, &dudes_proto::rpc::Empty {})
+        },
+    );
+
+    let stop = handle.clone();
+    dispatcher.register_audited(
+        Method::TicketStop,
+        Requirement::Operator,
+        move |call, pid| {
+            let request: TicketStopParams = params(&call)?;
+            let by = actor(call.role, pid)?;
+            stop.ask(Ask::Ticket(TicketAsk::Stop { request, by }))?;
+            encode(Method::TicketStop, &dudes_proto::rpc::Empty {})
         },
     );
 

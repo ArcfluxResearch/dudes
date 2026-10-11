@@ -30,6 +30,7 @@ use dudes_proto::{
 };
 use dudes_providers::adapter::{HookInstall, ManagedInstall};
 use dudes_providers::launch::LaunchSpec;
+use dudes_providers::stream::ScopedUsage;
 use dudes_rpc::Client;
 use dudes_rpc::auth::PeerProvenance;
 use dudes_supervisor::Input;
@@ -37,7 +38,8 @@ use dudes_supervisor::host::{
     AdoptionKey, HostBoot, KillOutcome, Liveness, ProcessHost, SpawnResult,
 };
 use dudes_types::{
-    AgentId, AgentStatus, CardId, CardStatus, GoalId, IsolationMode, Seq, Timestamp, TurnId, Usd,
+    AgentId, AgentStatus, CardId, CardStatus, GoalId, IsolationMode, Seq, Timestamp, TurnId, Usage,
+    Usd,
 };
 use serde_json::{Value, json};
 
@@ -150,6 +152,7 @@ struct Flow {
     durable_at_spawn: Arc<Mutex<Vec<usize>>>,
     append_failure: duded::runtime::AppendFailure,
     repo: PathBuf,
+    column: Arc<ScriptedColumn>,
 }
 
 fn credential(settings: &duded::Settings) -> OperatorCredential {
@@ -185,7 +188,7 @@ impl Flow {
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
             Witness::default(),
-            column,
+            Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
         );
         for _ in 0..fixture.records().len() * 8 + 64 {
             dudes_supervisor::Rng::ulid(&mut seams.rng);
@@ -203,6 +206,7 @@ impl Flow {
             durable_at_spawn,
             append_failure,
             repo,
+            column,
         }
     }
 
@@ -227,9 +231,14 @@ impl Flow {
     }
 
     fn hire(&mut self, name: &str) -> AgentId {
+        self.hire_with(name, common::hire_params(&self.repo).budget)
+    }
+
+    fn hire_with(&mut self, name: &str, budget: AgentBudget) -> AgentId {
         let params = HireParams {
             name: name.to_owned(),
             department: "engineering".to_owned(),
+            budget,
             ..common::hire_params(&self.repo)
         };
         match self
@@ -355,6 +364,11 @@ impl Flow {
 
     /// The agent's engine finishes `turn` and says `message`.
     fn end_turn(&self, turn: TurnId, message: Option<&str>) {
+        self.end_turn_charging(turn, message, None);
+    }
+
+    /// As [`Flow::end_turn`], with what the turn cost.
+    fn end_turn_charging(&self, turn: TurnId, message: Option<&str>, cost: Option<Usd>) {
         self.running.handle.input(Input::ChildExited {
             final_reply: None,
             elapsed_ms: Some(5),
@@ -363,7 +377,12 @@ impl Flow {
                 code: Some(0),
                 signal: None,
             },
-            usage: None,
+            usage: cost.map(|usd| {
+                ScopedUsage::Turn(Usage {
+                    usd: Some(usd),
+                    ..Usage::ZERO
+                })
+            }),
             model_usage: BTreeMap::new(),
             outcome: TurnOutcome::Completed,
             last_message: message.map(str::to_owned),
@@ -1388,4 +1407,407 @@ fn a_crash_after_a_passing_check_and_before_ready_for_you_moves_the_ticket_once(
         1,
         "no turn follows a latched Done"
     );
+}
+
+fn stop_params(flow: &mut Flow, card: CardId) -> Value {
+    let seq = flow.card(card).seq;
+    json!({"card": card, "expected_seq": seq})
+}
+
+fn hop_cap_one(settings: &mut duded::Settings) {
+    settings.enrollment.profiles[0].hop_cap = 1;
+}
+
+/// Stop on a Working ticket clears its goal, then returns the card to To do, unassigned, authored
+/// by the operator. It does not end the running turn: the agent keeps running, the host is asked
+/// to kill nothing, and the project stays busy until the turn ends by itself. Nothing falls
+/// between the two records, so the card is never in Needs you on the way.
+#[test]
+fn stop_returns_the_ticket_to_to_do_and_the_project_waits_for_the_running_turn() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let (cody, dana) = (flow.hire("Cody"), flow.hire("Dana"));
+    let (one, two) = (flow.create("One"), flow.create("Two"));
+    assert_eq!(flow.give_ok(one, cody, None), TicketAssignOutcome::Started);
+    let waiting = flow.give_ok(two, dana, None);
+    assert_eq!(queued(&waiting).1, TicketWait::Ticket { card: one });
+    let (turn, _, goal, _) = Flow::await_turn_number(&fixture, 1);
+    let before = fixture.records().len();
+
+    let params = stop_params(&mut flow, one);
+    let stopped = flow.call(dudes_proto::rpc::Method::TicketStop, params);
+    assert!(stopped.error.is_none(), "{:?}", stopped.error);
+
+    let view = flow.card(one);
+    assert_eq!(view.status, CardStatus::Todo);
+    assert_eq!(view.claimed_by, None);
+    assert!(matches!(view.status_by, Actor::Peer { .. }));
+    let appended = fixture.records()[before..].to_vec();
+    assert_eq!(
+        appended.iter().map(Record::kind).collect::<Vec<_>>(),
+        [RecordKind::GoalCleared, RecordKind::CardTransition]
+    );
+    assert!(matches!(&appended[0], Record::GoalCleared { goal: cleared, .. } if *cleared == goal));
+    assert_eq!(
+        transitions(&fixture.records(), one).len(),
+        1,
+        "no move to Needs you on the way"
+    );
+    assert!(
+        flow.host.peek(|host| host.killed.is_empty()),
+        "the turn is not killed"
+    );
+    assert_eq!(flow.agent(cody).status, AgentStatus::Running);
+    assert!(flow.agent(cody).goal.is_none());
+    assert_eq!(flow.read(one).waiting.unwrap().wait, TicketWait::Stopping);
+    assert_eq!(
+        flow.read(one).waiting.unwrap().note,
+        "Stopping: the agent is finishing its current step."
+    );
+    assert_eq!(
+        flow.read(two).waiting.unwrap().wait,
+        TicketWait::ProjectBusy
+    );
+    assert_eq!(Flow::turns(&fixture).len(), 1, "no turn follows a stop");
+
+    flow.end_turn(turn, Some("late words"));
+    flow.await_status(two, CardStatus::Doing);
+    assert!(
+        !fixture
+            .records()
+            .iter()
+            .any(|r| matches!(r, Record::PredicateResult { goal: judged, .. } if *judged == goal)),
+        "a stopped goal is not judged"
+    );
+    assert_eq!(flow.card(one).status, CardStatus::Todo);
+    flow.stop();
+}
+
+/// A crash between Stop's two records leaves a Working ticket with a cleared goal. The restart
+/// finds it owing Needs you, and a second Stop finishes the job without clearing anything twice.
+#[test]
+fn a_crash_between_stops_two_appends_leaves_a_ticket_a_second_stop_finishes() {
+    let moved = |r: &Record| matches!(r, Record::CardTransition { .. });
+    let drive = |fixture: &Fixture, flow: &mut Flow| {
+        let cody = flow.hire("Cody");
+        let card = flow.create("One");
+        flow.give_ok(card, cody, None);
+        Flow::await_turn_number(fixture, 1);
+        card
+    };
+
+    let reference = Fixture::new();
+    let (settings, repo) = enrolled(&reference);
+    let mut flow = Flow::boot(&reference, settings, repo, [common::fails()]);
+    let card = drive(&reference, &mut flow);
+    let before = reference.records().len();
+    let params = stop_params(&mut flow, card);
+    flow.ok::<Value>(dudes_proto::rpc::Method::TicketStop, params);
+    let nth = appends_between(&reference.records(), before, moved);
+    flow.stop();
+
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings.clone(), repo.clone(), [common::fails()]);
+    let card = drive(&fixture, &mut flow);
+    let before = fixture.records().len();
+    flow.append_failure.short_write_after(nth - 1, 5);
+    let params = stop_params(&mut flow, card);
+    let _ = flow.call(dudes_proto::rpc::Method::TicketStop, params);
+    let crashed = settled(&fixture);
+    assert!(
+        crashed[before..]
+            .iter()
+            .any(|r| matches!(r, Record::GoalCleared { .. }))
+    );
+    assert!(
+        !crashed[before..].iter().any(moved),
+        "the card did not move"
+    );
+    flow.stop();
+
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    flow.await_status(card, CardStatus::Blocked);
+    let detail = flow.read(card);
+    assert_eq!(detail.ticket.reason, Some(TicketReason::GoalChanged));
+    let params = stop_params(&mut flow, card);
+    flow.ok::<Value>(dudes_proto::rpc::Method::TicketStop, params);
+    let view = flow.card(card);
+    assert_eq!((view.status, view.claimed_by), (CardStatus::Todo, None));
+    let records = settled(&fixture);
+    flow.stop();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| matches!(r, Record::GoalCleared { .. }))
+            .count(),
+        1,
+        "the goal was cleared once"
+    );
+}
+
+/// A goal that ran out of turns moves the ticket to Needs you with the reason. The ticket holds
+/// its agent and its project until the operator settles it: another ticket for the same agent
+/// starts nothing, and a ticket for another agent in the project waits with a note that names the
+/// stalled ticket. Giving the stalled ticket to an agent again clears the old goal first and
+/// restarts it ahead of the others.
+#[test]
+fn an_exhausted_ticket_holds_its_agent_and_project_until_the_operator_settles_it() {
+    let fixture = Fixture::new();
+    let (mut settings, repo) = enrolled(&fixture);
+    hop_cap_one(&mut settings);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let (cody, dana) = (flow.hire("Cody"), flow.hire("Dana"));
+    let (one, two, three) = (flow.create("One"), flow.create("Two"), flow.create("Three"));
+    assert_eq!(flow.give_ok(one, cody, None), TicketAssignOutcome::Started);
+    let (turn, _, old_goal, _) = Flow::await_turn_number(&fixture, 1);
+    flow.end_turn(turn, Some("I tried."));
+    flow.await_status(one, CardStatus::Blocked);
+    let detail = flow.read(one);
+    assert_eq!(detail.ticket.reason, Some(TicketReason::NoTurns));
+    assert_eq!(
+        TicketReason::NoTurns.sentence(),
+        "The agent used all its turns on this ticket. Give to agent to try again, or Stop."
+    );
+
+    let same_agent = flow.give_ok(two, cody, None);
+    assert_eq!(queued(&same_agent).1, TicketWait::AgentBusy);
+    let other_agent = flow.give_ok(three, dana, None);
+    let (_, wait, note) = queued(&other_agent);
+    assert_eq!(wait, TicketWait::Ticket { card: one });
+    assert_eq!(
+        note,
+        "Waiting for One to be finished, accepted or sent back."
+    );
+    assert_eq!(
+        started_goals(&fixture.records()).len(),
+        1,
+        "nothing else started"
+    );
+
+    let before = fixture.records().len();
+    assert_eq!(
+        flow.give_ok(one, cody, Some("Try the other way.")),
+        TicketAssignOutcome::Started
+    );
+    let appended = fixture.records()[before..].to_vec();
+    let cleared = position_of(
+        &appended,
+        |r| matches!(r, Record::GoalCleared { goal, .. } if *goal == old_goal),
+    );
+    let assigned = position_of(&appended, |r| matches!(r, Record::TicketAssigned { .. }));
+    let started = position_of(&appended, |r| matches!(r, Record::TicketStarted { .. }));
+    assert!(
+        cleared < assigned && assigned < started,
+        "{:?}",
+        appended.iter().map(Record::kind).collect::<Vec<_>>()
+    );
+    assert_eq!(flow.read(one).ticket.round, 2);
+    assert_eq!(flow.card(two).status, CardStatus::Claimed);
+    flow.stop();
+}
+
+/// Remove on a ticket in Needs you clears its unfinished goal first, so it does not hold the agent
+/// afterwards. Remove on a Working ticket is refused and appends nothing.
+#[test]
+fn remove_clears_an_unfinished_goal_first_and_refuses_a_working_ticket() {
+    let fixture = Fixture::new();
+    let (mut settings, repo) = enrolled(&fixture);
+    hop_cap_one(&mut settings);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let cody = flow.hire("Cody");
+    let (one, two) = (flow.create("One"), flow.create("Two"));
+    flow.give_ok(one, cody, None);
+    flow.give_ok(two, cody, None);
+    let (turn, _, goal, _) = Flow::await_turn_number(&fixture, 1);
+    flow.end_turn(turn, None);
+    flow.await_status(one, CardStatus::Blocked);
+
+    let before = fixture.records().len();
+    let seq = flow.card(one).seq;
+    flow.ok::<Value>(
+        dudes_proto::rpc::Method::TicketRemove,
+        json!({"card": one, "expected_seq": seq}),
+    );
+    let appended = fixture.records()[before..].to_vec();
+    assert!(matches!(&appended[0], Record::GoalCleared { goal: cleared, .. } if *cleared == goal));
+    assert!(matches!(&appended[1], Record::TicketRemoved { .. }));
+    assert!(flow.board().iter().all(|view| view.id != one));
+    flow.await_status(two, CardStatus::Doing);
+
+    let before = fixture.records().len();
+    let seq = flow.card(two).seq;
+    let refused = flow.call(
+        dudes_proto::rpc::Method::TicketRemove,
+        json!({"card": two, "expected_seq": seq}),
+    );
+    assert_eq!(refusal_reason(&refused), TicketRefusal::WrongState.code());
+    assert_eq!(fixture.records().len(), before);
+    flow.stop();
+}
+
+/// An engine that cannot launch holds its agent. The Working ticket moves to Needs you with the
+/// hold's sentence and keeps the project: the other agent's ticket waits for it. Stop from Needs
+/// you clears the goal and frees the project.
+#[test]
+fn a_hold_moves_the_working_ticket_to_needs_you_and_keeps_the_project() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let card = CardId::from_parts(4, 1);
+    let mut records = given("service", &repo, None, card);
+    let Record::AgentHired {
+        sandbox,
+        isolation,
+        max_turns,
+        max_budget,
+        trusted,
+        mcp_servers,
+        ..
+    } = &mut records[0]
+    else {
+        unreachable!("the first record is the hire");
+    };
+    *mcp_servers = vec![dudes_types::McpServerName::parse("memory").unwrap()];
+    (*sandbox, *isolation, *max_turns, *max_budget, *trusted) = (
+        Some(true),
+        Some(IsolationMode::Inherit),
+        Some(7),
+        Some(Usd::from_micros(1_500_000)),
+        true,
+    );
+    let dana = AgentId::from_parts(9, 1);
+    let mut second = seeded_hire("service", &repo, None);
+    let Record::AgentHired { id, name, .. } = &mut second else {
+        unreachable!("the sample is a hire");
+    };
+    (*id, *name) = (dana, "Dana".to_owned());
+    records.insert(1, second);
+    seed(&fixture, records);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    flow.await_status(card, CardStatus::Blocked);
+    let reason = flow.read(card).ticket.reason.expect("a reason");
+    assert!(
+        matches!(reason, TicketReason::HeldLaunch | TicketReason::HeldFailing),
+        "{reason:?}"
+    );
+
+    let other = flow.create("Other");
+    let waiting = flow.give_ok(other, dana, None);
+    assert_eq!(queued(&waiting).1, TicketWait::Ticket { card });
+
+    let params = stop_params(&mut flow, card);
+    flow.ok::<Value>(dudes_proto::rpc::Method::TicketStop, params);
+    assert_eq!(flow.card(card).status, CardStatus::Todo);
+    flow.await_status(other, CardStatus::Doing);
+    flow.stop();
+}
+
+/// A daily limit that resets by itself keeps the ticket Working and shows a note. A question the
+/// agent asks moves no card.
+#[test]
+fn a_daily_limit_and_an_open_question_move_no_card() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let cody = flow.hire_with(
+        "Cody",
+        AgentBudget {
+            usd_per_day: Some(Usd::from_dollars(1)),
+            tokens_per_day: None,
+        },
+    );
+    let card = flow.create("One");
+    flow.give_ok(card, cody, None);
+    let (turn, ..) = Flow::await_turn_number(&fixture, 1);
+    flow.end_turn_charging(turn, None, Some(Usd::from_dollars(2)));
+    fixture.await_record("an Exhausted decision", |record| {
+        matches!(
+            record,
+            Record::LoopDecided {
+                decision: LoopDecision::Exhausted { .. },
+                ..
+            }
+        )
+        .then_some(())
+    });
+    assert_eq!(flow.card(card).status, CardStatus::Doing);
+    let waiting = flow.read(card).waiting.expect("a waiting note");
+    assert_eq!(waiting.wait, TicketWait::AgentLimit);
+    assert_eq!(
+        waiting.note,
+        "The agent reached its daily limit. It carries on by itself when the limit resets."
+    );
+    assert!(!kinds(&fixture).contains(&RecordKind::CardTransition));
+    flow.stop();
+
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let dana = flow.hire("Dana");
+    let card = flow.create("Two");
+    flow.give_ok(card, dana, None);
+    let hash = fixture.await_record("agent token", |record| match record {
+        Record::HookTokenMinted { agent, token_hash } if *agent == dana => Some(token_hash.clone()),
+        _ => None,
+    });
+    let token = common::token_of(&hash);
+    flow.column.set(PeerProvenance::Agent(dana));
+    let mut as_agent = Client::connect(flow.settings.socket()).unwrap();
+    let asked = as_agent
+        .call(
+            dudes_proto::rpc::Method::AgentAsk,
+            Some(json!({"token": token.expose(), "text": "which branch?"})),
+        )
+        .unwrap();
+    assert!(asked.error.is_none(), "{:?}", asked.error);
+    assert_eq!(flow.agent(dana).status, AgentStatus::Waiting);
+    assert_eq!(flow.card(card).status, CardStatus::Doing);
+    assert!(!kinds(&fixture).contains(&RecordKind::CardTransition));
+    drop(as_agent);
+    flow.stop();
+}
+
+/// The summary is the agent's last message, cut and stripped of control bytes, and the check
+/// result is the daemon's own newest run: pass or fail, exit status and time. A new round starts
+/// with neither.
+#[test]
+fn the_summary_and_the_check_result_follow_the_ticket() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(
+        &fixture,
+        settings,
+        repo,
+        [common::fails(), common::passes()],
+    );
+    let cody = flow.hire("Cody");
+    let card = flow.create("One");
+    flow.give_ok(card, cody, None);
+    assert_eq!(flow.read(card).ticket.summary, None);
+
+    let (first, ..) = Flow::await_turn_number(&fixture, 1);
+    flow.end_turn(first, Some("first words"));
+    let (second, ..) = Flow::await_turn_number(&fixture, 2);
+    let failed = flow.read(card).ticket;
+    assert_eq!(failed.summary.as_deref(), Some("first words"));
+    let result = failed.check.expect("the check ran after the first turn");
+    assert_eq!((result.pass, result.exit), (false, Some(1)));
+
+    let long = format!("{}\u{7}{}", "x".repeat(3_000), "y".repeat(3_000));
+    flow.end_turn(second, Some(&long));
+    flow.await_status(card, CardStatus::Review);
+    let ready = flow.read(card).ticket;
+    let summary = ready.summary.expect("a summary");
+    assert_eq!(summary.len(), 4_096);
+    assert!(!summary.contains('\u{7}'));
+    assert!(summary.starts_with(&"x".repeat(3_000)));
+    let result = ready.check.expect("the check ran");
+    assert_eq!((result.pass, result.exit), (true, Some(0)));
+    assert!(result.at > Timestamp::from_unix_millis(1_000));
+
+    flow.give_ok(card, cody, Some("again"));
+    let fresh = flow.read(card).ticket;
+    assert_eq!((fresh.summary, fresh.check), (None, None));
+    flow.stop();
 }

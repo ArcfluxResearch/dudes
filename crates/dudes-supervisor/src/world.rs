@@ -170,6 +170,10 @@ pub struct AgentRow {
     /// `input_digest` when the input could not be serialised (`Supervisor::decide`), and this field
     /// is that record's field rather than a second opinion about it.
     pub last_input_digest: Option<String>,
+    /// Why the newest decision for the agent's goal was `Exhausted`, and `None` after any other
+    /// decision or when the goal changes. An exhausted goal is not finished: the loop decides it
+    /// again when its limit resets.
+    pub exhausted: Option<dudes_proto::ExhaustedReason>,
 }
 
 /// One answer waiting for a spawned turn to carry it.
@@ -643,6 +647,7 @@ impl World {
                 row.fast_failures = None;
                 row.rapid_failure_beat = false;
                 row.pending_launch_failure = None;
+                row.exhausted = None;
             }
         }
         match &entry.record {
@@ -1122,6 +1127,7 @@ impl World {
                         session: None,
                         open_turn: None,
                         last_input_digest: None,
+                        exhausted: None,
                     },
                 );
                 if let Some(worktree) = worktree {
@@ -1155,6 +1161,7 @@ impl World {
                 {
                     row.goal = None;
                     row.context_lsn = lsn;
+                    row.exhausted = None;
                 }
             }
             Record::GoalReassigned { goal, from, to, .. } => {
@@ -1654,6 +1661,10 @@ impl World {
                 }
                 if let Some(row) = self.agents.get_mut(agent) {
                     row.last_input_digest = Some(input_digest.clone());
+                    row.exhausted = match decision {
+                        LoopDecision::Exhausted { reason } => Some(*reason),
+                        _ => None,
+                    };
                     if matches!(decision, LoopDecision::Done)
                         && let Some(goal) = row.goal
                     {

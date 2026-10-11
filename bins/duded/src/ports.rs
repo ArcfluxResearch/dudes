@@ -256,6 +256,13 @@ pub enum TicketAsk {
         /// Caller identity resolved by the router.
         by: Actor,
     },
+    /// `ticket.stop`.
+    Stop {
+        /// The conditional stop.
+        request: dudes_proto::rpc::ticket::TicketStopParams,
+        /// Caller identity resolved by the router.
+        by: Actor,
+    },
     /// `ticket.read`.
     Read(dudes_proto::rpc::ticket::TicketReadParams),
 }
