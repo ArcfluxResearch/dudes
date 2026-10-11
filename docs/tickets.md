@@ -43,7 +43,7 @@ dudes ticket show <card id>
 ```
 
 `--status` takes `todo`, `working`, `ready`, `done` or `needs-you`. `show` prints the note, the
-check and the agent. The changed files are in the Floor.
+check and the agent.
 
 ## Fix a mistake
 

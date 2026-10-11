@@ -143,7 +143,6 @@ fn the_whole_flow_adds_lists_shows_edits_gives_and_removes() {
         "service",
         "default passes",
         "It 500s on a blank password.",
-        "Open the Floor to see the changed files.",
     ] {
         assert!(shown.stdout.contains(line), "{line}: {}", shown.stdout);
     }

@@ -151,5 +151,5 @@ pub fn show(
             writeln!(out, "  {}", Escaped(line))?;
         }
     }
-    writeln!(out, "Open the Floor to see the changed files.")
+    Ok(())
 }
