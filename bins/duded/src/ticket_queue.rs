@@ -297,3 +297,172 @@ impl Facts<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use dudes_proto::record::samples;
+    use dudes_proto::{Actor, Entry, Goal, GoalBudget, Predicate, Record, RecordKind, TicketCheck};
+    use dudes_proto::{QueueClass, QueueKey};
+    use dudes_types::{GoalId, Lsn, Timestamp};
+
+    use super::*;
+
+    const PROJECT: &str = "service";
+
+    fn agent(n: u128) -> AgentId {
+        AgentId::from_parts(1, n)
+    }
+
+    fn entry(record: Record) -> Entry {
+        Entry {
+            at: Timestamp::from_unix_millis(1),
+            record,
+        }
+    }
+
+    /// A world with these agents hired, and `goals` set for them.
+    fn world(agents: &[AgentId], goals: &[(AgentId, GoalId)]) -> World {
+        let mut world = World::default();
+        let mut lsn = 0;
+        for id in agents {
+            let mut hired = samples::record(RecordKind::AgentHired);
+            if let Record::AgentHired { id: hired_id, .. } = &mut hired {
+                *hired_id = *id;
+            }
+            lsn += 1;
+            world.apply(Lsn(lsn), &entry(hired));
+        }
+        for (owner, goal) in goals {
+            lsn += 1;
+            world.apply(
+                Lsn(lsn),
+                &entry(Record::GoalSet {
+                    agent: *owner,
+                    goal: Goal {
+                        id: *goal,
+                        text: "work".into(),
+                        predicate: Predicate::Command {
+                            argv: vec!["/usr/bin/true".into()],
+                            timeout_s: 1,
+                        },
+                        completion_check: None,
+                        baseline: None,
+                        budget: GoalBudget {
+                            usd: None,
+                            tokens: None,
+                        },
+                        hop_cap: 4,
+                    },
+                    browser_onboarding: None,
+                    browser_goal: None,
+                    goal_replacement: None,
+                }),
+            );
+        }
+        world
+    }
+
+    fn ticket(
+        n: u128,
+        status: CardStatus,
+        holder: Option<AgentId>,
+        queued_at: Option<u64>,
+    ) -> (CardView, TicketRow) {
+        (
+            CardView {
+                id: CardId::from_parts(4, n),
+                title: format!("ticket {n}"),
+                department: "engineering".into(),
+                status,
+                status_by: Actor::System,
+                seq: Seq::ZERO,
+                claimed_by: holder,
+                deps: Vec::new(),
+            },
+            TicketRow {
+                description: String::new(),
+                project: PROJECT.into(),
+                done_when: TicketCheck {
+                    id: "default".into(),
+                    label: "passes".into(),
+                    predicate: Predicate::Command {
+                        argv: vec!["/usr/bin/true".into()],
+                        timeout_s: 1,
+                    },
+                },
+                goal: None,
+                queue: queued_at.map(|lsn| QueueKey {
+                    class: QueueClass::New,
+                    lsn: Lsn(lsn),
+                }),
+                message: None,
+                round: 0,
+                reason: None,
+                summary: None,
+                check: None,
+            },
+        )
+    }
+
+    fn with_facts<T>(
+        world: &World,
+        tickets: &[(CardView, TicketRow)],
+        agents: &[AgentId],
+        read: impl FnOnce(&Facts<'_>) -> T,
+    ) -> T {
+        let hires = agents.iter().map(|id| (*id, PROJECT.to_owned())).collect();
+        let working = BTreeSet::new();
+        read(&Facts {
+            world,
+            tickets,
+            hires: &hires,
+            working: &working,
+            closing: false,
+        })
+    }
+
+    /// Only the queue's own filter keeps a ticket that is already Working out of it.
+    #[test]
+    fn a_ticket_already_working_is_not_in_a_queue() {
+        let (first, world) = (agent(1), world(&[agent(1)], &[]));
+        let tickets = [ticket(1, CardStatus::Doing, Some(first), Some(5))];
+        let queue = with_facts(&world, &tickets, &[first], |facts| facts.queue(PROJECT));
+        assert!(queue.is_empty(), "{queue:?}");
+    }
+
+    /// Only the agent's own unfinished goal keeps it from starting: the project is free.
+    #[test]
+    fn an_agent_with_an_unfinished_goal_starts_nothing() {
+        let first = agent(1);
+        let world = world(&[first], &[(first, GoalId::from_parts(8, 1))]);
+        let tickets = [ticket(1, CardStatus::Claimed, Some(first), Some(5))];
+        with_facts(&world, &tickets, &[first], |facts| {
+            assert_eq!(facts.project_wait(PROJECT), None);
+            assert_eq!(
+                facts.agent_wait(first, PROJECT),
+                Some(TicketWait::AgentBusy)
+            );
+            assert_eq!(facts.next_ticket(PROJECT), None);
+        });
+    }
+
+    /// Only the project's rule keeps a free agent from starting while another ticket is Working
+    /// there.
+    #[test]
+    fn another_ticket_working_in_the_project_holds_it() {
+        let (first, second) = (agent(1), agent(2));
+        let world = world(&[first, second], &[(first, GoalId::from_parts(8, 1))]);
+        let working = ticket(1, CardStatus::Doing, Some(first), None);
+        let mut waiting = ticket(2, CardStatus::Claimed, Some(second), Some(6));
+        waiting.1.goal = None;
+        let tickets = [working.clone(), waiting];
+        with_facts(&world, &tickets, &[first, second], |facts| {
+            assert_eq!(facts.agent_wait(second, PROJECT), None);
+            assert_eq!(
+                facts.project_wait(PROJECT),
+                Some(TicketWait::Ticket { card: working.0.id })
+            );
+            assert_eq!(facts.next_ticket(PROJECT), None);
+        });
+    }
+}
