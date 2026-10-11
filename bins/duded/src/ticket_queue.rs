@@ -465,4 +465,60 @@ mod tests {
             assert_eq!(facts.next_ticket(PROJECT), None);
         });
     }
+
+    fn exhaust(world: &mut World, lsn: u64, agent: AgentId) {
+        world.apply(
+            Lsn(lsn),
+            &entry(Record::LoopDecided {
+                agent,
+                input_digest: String::new(),
+                decision: dudes_proto::LoopDecision::Exhausted {
+                    reason: ExhaustedReason::Hops,
+                },
+                gate_trace: Vec::new(),
+            }),
+        );
+    }
+
+    /// Only the project's rule keeps a free agent from starting while another ticket sits in
+    /// Needs you with its goal still the stalled agent's.
+    #[test]
+    fn a_stalled_ticket_alone_holds_the_project() {
+        let (first, second) = (agent(1), agent(2));
+        let goal = GoalId::from_parts(8, 1);
+        let mut world = world(&[first, second], &[(first, goal)]);
+        exhaust(&mut world, 10, first);
+        let mut stalled = ticket(1, CardStatus::Blocked, Some(first), None);
+        stalled.1.goal = Some(goal);
+        let tickets = [
+            stalled.clone(),
+            ticket(2, CardStatus::Claimed, Some(second), Some(6)),
+        ];
+        with_facts(&world, &tickets, &[first, second], |facts| {
+            assert_eq!(facts.agent_wait(second, PROJECT), None);
+            assert_eq!(
+                facts.project_wait(PROJECT),
+                Some(TicketWait::Ticket { card: stalled.0.id })
+            );
+            assert_eq!(facts.next_ticket(PROJECT), None);
+        });
+    }
+
+    /// Only the agent's own rule keeps it from starting while its goal has run out: nothing else
+    /// holds the project, and an exhausted goal is not finished.
+    #[test]
+    fn an_exhausted_goal_alone_holds_its_agent() {
+        let first = agent(1);
+        let mut world = world(&[first], &[(first, GoalId::from_parts(8, 1))]);
+        exhaust(&mut world, 10, first);
+        let tickets = [ticket(2, CardStatus::Claimed, Some(first), Some(6))];
+        with_facts(&world, &tickets, &[first], |facts| {
+            assert_eq!(facts.project_wait(PROJECT), None);
+            assert_eq!(
+                facts.agent_wait(first, PROJECT),
+                Some(TicketWait::AgentBusy)
+            );
+            assert_eq!(facts.next_ticket(PROJECT), None);
+        });
+    }
 }

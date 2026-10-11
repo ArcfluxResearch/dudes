@@ -101,6 +101,8 @@ struct Options {
     refuse_nth_append: Option<std::num::NonZeroUsize>,
     /// Park the first launch at this gate.
     gate: Option<Arc<Gate>>,
+    /// The engine refuses its first launch outright.
+    fail_spawn: bool,
 }
 
 impl ProcessHost for WatchHost {
@@ -239,7 +241,14 @@ impl Flow {
         options: Options,
     ) -> Self {
         let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
-        let host = SharedHost::new();
+        let host = if options.fail_spawn {
+            SharedHost::with(dudes_supervisor::testing::FakeHost {
+                fail_spawn: Some(std::io::ErrorKind::PermissionDenied),
+                ..dudes_supervisor::testing::FakeHost::wall_clock_anchored()
+            })
+        } else {
+            SharedHost::new()
+        };
         let runner = Arc::new(ScriptedRunner::scripted(answers));
         let durable_at_spawn = Arc::new(Mutex::new(Vec::new()));
         let mut seams = common::seams_with(
@@ -1983,8 +1992,9 @@ fn an_exhausted_ticket_holds_its_agent_and_project_until_the_operator_settles_it
         note,
         "Waiting for One to be finished, accepted or sent back."
     );
+    let settled_len = fixture.records().len();
     assert_eq!(
-        started_goals(&fixture.records()).len(),
+        started_goals(&settled(&fixture, settled_len)).len(),
         1,
         "nothing else started"
     );
@@ -2007,6 +2017,16 @@ fn an_exhausted_ticket_holds_its_agent_and_project_until_the_operator_settles_it
         appended.iter().map(Record::kind).collect::<Vec<_>>()
     );
     assert_eq!(flow.read(one).ticket.round, 2);
+    let (_, who, new_goal, task) = Flow::await_turn_number(&fixture, 2);
+    assert_eq!(who, cody);
+    assert_ne!(new_goal, old_goal, "a fresh goal");
+    assert_eq!(flow.read(one).ticket.goal, Some(new_goal));
+    assert!(
+        task.starts_with(
+            "One\n\nThe operator reviewed the previous work and asked for changes:\nTry the other way."
+        ),
+        "{task}"
+    );
     assert_eq!(flow.card(two).status, CardStatus::Claimed);
     flow.stop();
 }
@@ -2050,35 +2070,15 @@ fn remove_clears_an_unfinished_goal_first_and_refuses_a_working_ticket() {
     flow.stop();
 }
 
-/// An engine that cannot launch holds its agent. The Working ticket moves to Needs you with the
-/// hold's sentence and keeps the project: the other agent's ticket waits for it. Stop from Needs
-/// you clears the goal and frees the project.
+/// An engine that refuses its launch holds its agent. The Working ticket moves to Needs you with
+/// the hold's sentence and keeps the project: the other agent's ticket waits for it. Stop from
+/// Needs you clears the goal and frees the project.
 #[test]
 fn a_hold_moves_the_working_ticket_to_needs_you_and_keeps_the_project() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
     let card = CardId::from_parts(4, 1);
     let mut records = given("service", &repo, None, card);
-    let Record::AgentHired {
-        sandbox,
-        isolation,
-        max_turns,
-        max_budget,
-        trusted,
-        mcp_servers,
-        ..
-    } = &mut records[0]
-    else {
-        unreachable!("the first record is the hire");
-    };
-    *mcp_servers = vec![dudes_types::McpServerName::parse("memory").unwrap()];
-    (*sandbox, *isolation, *max_turns, *max_budget, *trusted) = (
-        Some(true),
-        Some(IsolationMode::Inherit),
-        Some(7),
-        Some(Usd::from_micros(1_500_000)),
-        true,
-    );
     let dana = AgentId::from_parts(9, 1);
     let mut second = seeded_hire("service", &repo, None);
     let Record::AgentHired { id, name, .. } = &mut second else {
@@ -2087,12 +2087,22 @@ fn a_hold_moves_the_working_ticket_to_needs_you_and_keeps_the_project() {
     (*id, *name) = (dana, "Dana".to_owned());
     records.insert(1, second);
     seed(&fixture, records);
-    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let mut flow = Flow::boot_with(
+        &fixture,
+        settings,
+        repo,
+        [common::fails()],
+        Options {
+            fail_spawn: true,
+            ..Options::default()
+        },
+    );
     flow.await_status(card, CardStatus::Blocked);
-    let reason = flow.read(card).ticket.reason.expect("a reason");
-    assert!(
-        matches!(reason, TicketReason::HeldLaunch | TicketReason::HeldFailing),
-        "{reason:?}"
+    let ticket = flow.read(card).ticket;
+    assert_eq!(ticket.reason, Some(TicketReason::HeldLaunch));
+    assert_eq!(
+        TicketReason::HeldLaunch.sentence(),
+        "The agent's engine would not start. Fix the cause, then resume the agent in the Floor or with `dudes resume`."
     );
 
     let other = flow.create("Other");
@@ -2134,6 +2144,7 @@ fn a_daily_limit_and_an_open_question_move_no_card() {
         )
         .then_some(())
     });
+    let after = settled(&fixture, fixture.records().len());
     assert_eq!(flow.card(card).status, CardStatus::Doing);
     let waiting = flow.read(card).waiting.expect("a waiting note");
     assert_eq!(waiting.wait, TicketWait::AgentLimit);
@@ -2141,7 +2152,11 @@ fn a_daily_limit_and_an_open_question_move_no_card() {
         waiting.note,
         "The agent reached its daily limit. It carries on by itself when the limit resets."
     );
-    assert!(!kinds(&fixture).contains(&RecordKind::CardTransition));
+    assert!(
+        !after
+            .iter()
+            .any(|r| matches!(r, Record::CardTransition { .. }))
+    );
     flow.stop();
 
     let fixture = Fixture::new();
@@ -2164,9 +2179,17 @@ fn a_daily_limit_and_an_open_question_move_no_card() {
         )
         .unwrap();
     assert!(asked.error.is_none(), "{:?}", asked.error);
+    fixture.await_record("the question", |record| {
+        matches!(record, Record::HumanQuestion { .. }).then_some(())
+    });
+    let after = settled(&fixture, fixture.records().len());
     assert_eq!(flow.agent(dana).status, AgentStatus::Waiting);
     assert_eq!(flow.card(card).status, CardStatus::Doing);
-    assert!(!kinds(&fixture).contains(&RecordKind::CardTransition));
+    assert!(
+        !after
+            .iter()
+            .any(|r| matches!(r, Record::CardTransition { .. }))
+    );
     drop(as_agent);
     flow.stop();
 }
