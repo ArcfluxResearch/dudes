@@ -4,6 +4,8 @@ import { useId, useState, useSyncExternalStore } from 'react';
 import type { FormEvent } from 'react';
 
 import type { CardRow } from '../board.ts';
+import './ticket.css';
+
 import { Board, useRequestedCard } from '../BoardPanel.tsx';
 import type { FloorState } from '../floor/store.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';

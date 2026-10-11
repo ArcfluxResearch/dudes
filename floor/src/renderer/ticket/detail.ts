@@ -10,7 +10,7 @@ import type { CardRow, TicketReason } from '../board.ts';
 import { TICKET_REASONS } from '../board.ts';
 import type { ControlDeps } from '../control/control.ts';
 import { browserControlDeps } from '../control/control.ts';
-import { postTicket, problemText } from './ticket.ts';
+import { problemText, readTicket } from './ticket.ts';
 import { WAITS } from './words.ts';
 import type { Wait } from './words.ts';
 
@@ -129,16 +129,10 @@ export function needsDetail(current: DetailState, card: CardRow): boolean {
 
 /** Read `card`'s detail. The last reading of the same ticket stays on screen while the next is read. */
 export async function loadDetail(card: CardRow, deps: ControlDeps = browserControlDeps): Promise<void> {
-  const csrf = deps.csrf();
   const same = state.card === card.id;
-  if (csrf === null) {
-    commit({ card: card.id, seq: card.seq, phase: 'failed', detail: same ? state.detail : null,
-      problem: 'This page has no Floor session, so nothing was sent.' });
-    return;
-  }
   const ticket = ++latest;
   commit({ card: card.id, seq: card.seq, phase: 'loading', detail: same ? state.detail : null, problem: null });
-  const outcome = await postTicket('read', { card: card.id }, csrf, deps.fetch);
+  const outcome = await readTicket(card.id, deps);
   if (ticket !== latest) return;
   if (outcome.kind === 'done') {
     const detail = decodeDetail(outcome.body, card.id);
@@ -152,6 +146,5 @@ export async function loadDetail(card: CardRow, deps: ControlDeps = browserContr
   }
   commit({ card: card.id, seq: card.seq, phase: 'failed', detail: same ? state.detail : null,
     problem: problemText(outcome, card.status) });
-  if (outcome.kind === 'forbidden') deps.refresh();
 }
 

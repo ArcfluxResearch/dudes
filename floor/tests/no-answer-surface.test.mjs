@@ -260,6 +260,10 @@ const TERMINAL_MODULE = 'src/renderer/terminal/terminal.ts';
 const TERMINAL_CONTROLS = 'src/renderer/terminal/controls.ts';
 const RETIRE_PANEL = 'src/renderer/retire/RetirePanel.tsx';
 const RETIRE_MODULE = 'src/renderer/retire/retire.ts';
+const TICKET_MODULE = 'src/renderer/ticket/ticket.ts';
+const TICKET_BOARD = 'src/renderer/ticket/TicketBoard.tsx';
+const TICKET_PANEL = 'src/renderer/ticket/TicketPanel.tsx';
+const ADMITTED_IN_TICKET_FORM = Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler', 'a submit handler']);
 const GIT_MODULE = 'src/renderer/git/git.ts';
 const GIT_PANEL = 'src/renderer/git/GitPanel.tsx';
 const MEMORY_MODULE = 'src/renderer/memory/memory.ts';
@@ -300,6 +304,7 @@ const ADMITTED = new Map([
   [HIRE_FORM, ADMITTED_IN_HIRE_FORM], [ANSWER_FORM, ADMITTED_IN_ANSWER_FORM], [CONTROL_PANEL, ADMITTED_IN_CONTROL_PANEL],
   [ACTIVITY_PANEL, Object.freeze(['an input', 'a select', 'a change handler'])],
   [GOAL_PANEL, ADMITTED_IN_GOAL_FORM],
+  [TICKET_BOARD, ADMITTED_IN_TICKET_FORM], [TICKET_PANEL, ADMITTED_IN_TICKET_FORM],
   [CHAT_PANEL, Object.freeze(['a textarea', 'a change handler', 'a key handler'])],
   [RENAME_PANEL, Object.freeze(['an input', 'a change handler', 'a key handler'])],
   [LOOK_PANEL, Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler',
@@ -403,6 +408,13 @@ const ADMITTED_HANDLERS = [
   { file: ANSWER_FORM, tag: 'textarea', handler: 'onKeyDown' },
   { file: ANSWER_FORM, tag: 'button', className: 'answer-send', handler: 'onKeyDown', expression: REFUSE_REPEAT },
   { file: GOAL_PANEL, tag: 'textarea', handler: 'onChange' },
+  // The ticket forms hold the draft in the page and send one typed request on submit.
+  ...[TICKET_BOARD, TICKET_PANEL].flatMap((file) => [
+    { file, tag: 'form', className: 'ticket-form', handler: 'onSubmit', expression: '(event) => { void submit(event); }' },
+    { file, tag: 'input', handler: 'onChange' },
+    { file, tag: 'textarea', handler: 'onChange' },
+    { file, tag: 'select', handler: 'onChange' },
+  ]),
   { file: GOAL_PANEL, tag: 'input', handler: 'onChange', expression: "() => choose('keep')" },
   { file: GOAL_PANEL, tag: 'input', handler: 'onChange', expression: '() => choose({ id: option.id })' },
   { file: CHAT_PANEL, tag: 'textarea', handler: 'onChange', expression: '(event) => editChatDraft(row.id, event.currentTarget.value)' },
@@ -1038,7 +1050,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     'src/renderer/AgentDetail.tsx',
     ...Array(2).fill('src/renderer/CrewList.tsx'),
     ...Array(3).fill(ARCHIVED_AGENTS),
-    ...Array(5).fill('src/renderer/Control.tsx'),
+    ...Array(6).fill('src/renderer/Control.tsx'),
     'src/renderer/DoneNotices.tsx',
     ...Array(3).fill('src/renderer/LiveWork.tsx'),
     'src/renderer/BoardNotes.tsx',
@@ -1050,6 +1062,9 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(CONTROL_PANEL),
     ...Array(5).fill(PAUSE_ALL_PANEL),
     ...Array(3).fill(GOAL_PANEL),
+    ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
+    ...Array(5).fill(TICKET_BOARD),
+    ...Array(8).fill(TICKET_PANEL),
     ...Array(10).fill(HIRE_FORM),
     HIRE_ENTRY,
     ...Array(6).fill(RETIRE_PANEL),
@@ -1067,6 +1082,10 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   expected.sort();
   const clickExpected = [...expected];
   clickExpected.splice(clickExpected.indexOf(LOOK_PANEL), 1);
+  // The two ticket forms each submit with a button that has no click handler of its own.
+  clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
+  clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
+  clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
   assert.deepEqual(clicks.sort(), clickExpected.sort());
   const readError = await readFile(resolve(source, 'renderer/ReadError.tsx'), 'utf8');
   assert.deepEqual(clicksIn(readError), ['onRetry']);
@@ -1116,7 +1135,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   ]);
   assert.match(center, /className="agents-roster-row"/);
   assert.match(center, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);
-  assert.deepEqual(clicksIn(center), ['() => onSelectAgent(row.id)', 'onToggle', '() => onOpen(item.agentId)', '() => onToggle(entry.view)', 'onClose']);
+  assert.deepEqual(clicksIn(center), ['() => onSelectAgent(row.id)', 'onToggle', '() => onOpen(item.agentId)',
+    '() => onOpenTicket?.(item.card)', '() => onToggle(entry.view)', 'onClose']);
   // Opening Setup or Settings takes a fresh snapshot: the same resubscription Recheck starts.
   assert.match(center, /\{ view: 'setup', label: 'Setup', refresh: true \}/);
   assert.match(center, /\{ view: 'settings', label: 'Settings', refresh: true \}/);
@@ -1412,6 +1432,12 @@ const REQUESTS = {
     methods: ['POST'],
     fetches: ['deps.fetch', "fetch('/floor/retire')"],
   },
+  [TICKET_MODULE]: {
+    paths: ['/floor/ticket', '/floor/ticket/edit', '/floor/ticket/assign', '/floor/ticket/accept', '/floor/ticket/stop',
+      '/floor/ticket/remove', '/floor/ticket/read', 'application/json'],
+    methods: ['POST'],
+    fetches: ['fetch(ROUTES[verb])', 'deps.fetch'],
+  },
   [GIT_MODULE]: {
     paths: ['/floor/git', 'application/json'],
     methods: ['POST'],
@@ -1577,7 +1603,7 @@ test('fetch and new WebSocket match in twelve known files, and requestsIn yields
     {
       WebSocket: ['src/renderer/floor/stream.ts'],
       fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RENAME_MODULE, RETIRE_MODULE,
-        'src/session.ts'],
+        TICKET_MODULE, 'src/session.ts'],
     },
     'the page reaches the network somewhere new',
   );
@@ -1678,7 +1704,7 @@ test('fetch and new WebSocket match in twelve known files, and requestsIn yields
 
   const fetching = reaching.get('fetch') ?? [];
   assert.deepEqual(fetching.sort(),
-    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RENAME_MODULE, RETIRE_MODULE, 'src/session.ts'],
+    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RENAME_MODULE, RETIRE_MODULE, TICKET_MODULE, 'src/session.ts'],
     'something other than the session exchange, the Hire, the answer, pause or resume, goal change, Retire, the Git read and the memory reads fetches');
   assert.deepEqual(calling.sort(), fetching,
     'a module other than those six calls fetch with a space before the parenthesis');

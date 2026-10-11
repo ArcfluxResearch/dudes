@@ -22,9 +22,6 @@ export const TICKET_REASONS: readonly TicketReason[] = Object.freeze([
  * the check's output. Those come from the read route when a ticket is opened.
  */
 export interface CardTicketRow {
-  readonly project: string;
-  /** The label of the check that finishes it. */
-  readonly check: string;
   /** Its place in its agent's queue, counting from 1, while it waits there. */
   readonly position: number | null;
   readonly round: number;
@@ -70,9 +67,7 @@ function actorOf(value: unknown): CardActor | null {
   return null;
 }
 
-const TICKET_KEYS = new Set(['project', 'check', 'position', 'round', 'reason', 'stopping']);
-const PROJECT_ID = /^[A-Za-z0-9_-]{1,128}$/;
-const UTF8 = new TextEncoder();
+const TICKET_KEYS = new Set(['position', 'round', 'reason', 'stopping']);
 
 function count(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 4_294_967_295;
@@ -83,9 +78,7 @@ function ticketOf(value: unknown): CardTicketRow | null | undefined {
   if (value === undefined) return null;
   const ticket = object(value);
   if (ticket === null || !Object.keys(ticket).every((key) => TICKET_KEYS.has(key))) return undefined;
-  const { project, check, position, round, reason, stopping } = ticket;
-  if (typeof project !== 'string' || !PROJECT_ID.test(project) || typeof check !== 'string' || check === ''
-    || UTF8.encode(check).length > 256 || /\p{Cc}/u.test(check)) return undefined;
+  const { position, round, reason, stopping } = ticket;
   const place = position ?? null;
   if (place !== null && (!count(place) || place < 1)) return undefined;
   const rounds = round ?? 0;
@@ -94,8 +87,7 @@ function ticketOf(value: unknown): CardTicketRow | null | undefined {
   if (why !== null && !(typeof why === 'string' && (TICKET_REASONS as readonly string[]).includes(why))) return undefined;
   const stop = stopping ?? false;
   if (typeof stop !== 'boolean') return undefined;
-  return Object.freeze({ project, check, position: place, round: rounds, reason: why as TicketReason | null,
-    stopping: stop });
+  return Object.freeze({ position: place, round: rounds, reason: why as TicketReason | null, stopping: stop });
 }
 
 function cardOf(value: unknown): CardRow | null {

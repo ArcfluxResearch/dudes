@@ -1131,3 +1131,69 @@ fn stop_and_remove_take_a_ticket_off_the_agent_and_the_board() {
     );
     board.stop();
 }
+
+/// The daemon sends codes, and the page words them from its own table. Every sentence the daemon
+/// owns for a Needs-you reason, a refusal and a wait must be in that table, character for
+/// character, so the two cannot drift apart.
+#[test]
+fn the_page_words_match_the_daemon_words() {
+    use dudes_proto::{TicketReason, TicketRefusal, TicketWait};
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../floor/src/renderer/ticket/words.ts");
+    let source = std::fs::read_to_string(&path).expect("the page's table of ticket words");
+    for reason in [
+        TicketReason::ProjectUnavailable,
+        TicketReason::CheckCannotRun,
+        TicketReason::CeilingRequired,
+        TicketReason::ReserveMissing,
+        TicketReason::GoalChanged,
+        TicketReason::LimitGoal,
+        TicketReason::Slowed,
+        TicketReason::NoTurns,
+        TicketReason::HeldLaunch,
+        TicketReason::HeldFailing,
+        TicketReason::HeldUnsure,
+        TicketReason::WorktreeMissing,
+    ] {
+        assert!(
+            source.contains(&format!("\"{}\"", reason.sentence())),
+            "{reason:?}"
+        );
+    }
+    for refusal in [
+        TicketRefusal::StaleCard,
+        TicketRefusal::NotATicket,
+        TicketRefusal::TicketCard,
+        TicketRefusal::ProjectUnavailable,
+        TicketRefusal::DoneWhenChanged,
+        TicketRefusal::AgentUnavailable,
+        TicketRefusal::AgentNoProject,
+        TicketRefusal::QueueFull,
+        TicketRefusal::LimitReached,
+    ] {
+        let sentence = refusal.sentence(dudes_types::CardStatus::Todo);
+        assert!(source.contains(&format!("\"{sentence}\"")), "{refusal:?}");
+    }
+    assert!(source.contains("You can't do that to a ticket that is "));
+    for wait in [
+        TicketWait::NotGiven,
+        TicketWait::Closing,
+        TicketWait::ProjectBusy,
+        TicketWait::Stopping,
+        TicketWait::AgentLimit,
+        TicketWait::FloorLimit,
+    ] {
+        let sentence = wait.sentence("", "");
+        assert!(source.contains(&format!("\"{sentence}\"")), "{wait:?}");
+    }
+    let card = dudes_types::CardId::from_parts(1, 1);
+    for wait in [
+        TicketWait::AgentBusy,
+        TicketWait::Ticket { card },
+        TicketWait::AgentPaused,
+        TicketWait::AgentAttached,
+    ] {
+        let sentence = wait.sentence("${agent}", "${title}");
+        assert!(source.contains(&format!("`{sentence}`")), "{sentence}");
+    }
+}

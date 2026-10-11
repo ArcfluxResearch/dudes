@@ -7,6 +7,7 @@
 import type { CardRow, TicketReason } from '../board.ts';
 import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
+import { decodeWorkspace } from '../workspace.ts';
 import { placeInLine, reasonSentence, waitSentence } from './words.ts';
 import type { Wait } from './words.ts';
 
@@ -32,8 +33,8 @@ export function columnOf(card: CardRow): TicketColumn | null {
   }
 }
 
-export function tickets(cards: readonly CardRow[]): readonly CardRow[] {
-  return cards.filter((card) => card.ticket !== null);
+export function tickets(cards: readonly CardRow[] | undefined): readonly CardRow[] {
+  return (cards ?? []).filter((card) => card.ticket !== null);
 }
 
 export function plainCards(cards: readonly CardRow[]): readonly CardRow[] {
@@ -95,6 +96,11 @@ export function agentRow(floor: FloorState, id: string | null): AgentRow | null 
   return id === null ? null : floor.agents.find((row) => row.id === id) ?? null;
 }
 
+/** The project a ticket runs in, as its agent's recorded workspace names it. */
+export function projectOf(floor: FloorState, card: CardRow): string | null {
+  return decodeWorkspace(agentRow(floor, card.claimed_by)?.workspace)?.id ?? null;
+}
+
 export function agentName(floor: FloorState, id: string | null): string {
   const row = agentRow(floor, id);
   return typeof row?.name === 'string' && row.name !== '' ? row.name : id ?? 'no agent';
@@ -117,8 +123,9 @@ export function waitOf(floor: FloorState, card: CardRow): { readonly wait: Wait;
     if (agent.mode === 'attached') return say('agent_attached');
     if (agent.status === 'running' || agent.status === 'waiting') return say('agent_busy');
   }
-  const holder = tickets(floor.cards).find((other) => other.id !== card.id && other.ticket?.project === ticket.project
-    && (other.status === 'doing' || other.status === 'review'));
+  const project = projectOf(floor, card);
+  const holder = project === null ? undefined : tickets(floor.cards).find((other) => other.id !== card.id
+    && projectOf(floor, other) === project && (other.status === 'doing' || other.status === 'review'));
   return holder === undefined ? null : say('ticket', holder.title);
 }
 

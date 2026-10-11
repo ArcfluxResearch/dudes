@@ -201,11 +201,19 @@ export function dismissNotice(): void {
 async function send(verb: Verb, payload: object, deps: ControlDeps): Promise<Outcome> {
   const csrf = deps.csrf();
   if (csrf === null) return Object.freeze({ kind: 'forbidden' });
-  const outcome = await postTicket(verb, payload, csrf, deps.fetch);
+  const sent = await postTicket(verb, payload, csrf, deps.fetch);
+  // An answer about another ticket proves nothing about this one.
+  const asked = (payload as { card?: unknown }).card;
+  const outcome = sent.kind === 'done' && verb !== 'read' && asked !== undefined && sent.card !== asked ? UNKNOWN : sent;
   // An empty 403 may mean the session ended or that this page can no longer act with it; a fresh
   // subscription tells the two apart. A stale card is answered by the same fresh snapshot.
   if (outcome.kind === 'forbidden' || (outcome.kind === 'refused' && outcome.reason === 'stale_card')) deps.refresh();
   return outcome;
+}
+
+/** Read one ticket's detail. A page with no Floor session sends nothing. */
+export async function readTicket(card: string, deps: ControlDeps): Promise<Outcome> {
+  return send('read', { card }, deps);
 }
 
 export interface NewTicket {

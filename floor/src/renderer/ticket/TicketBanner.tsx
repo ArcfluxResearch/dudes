@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+import './ticket.css';
+
 import type { FloorState } from '../floor/store.ts';
 import { announcement, arrivals, bannerCounts, bannerText } from './model.ts';
 

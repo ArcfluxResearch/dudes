@@ -12,6 +12,7 @@ import { getGitState, loadGit, needsRead, refusalText, subscribeToGit } from '..
 import type { GitChangeKind } from '../git/git.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { getDetailState, loadDetail, needsDetail, subscribeToDetail } from './detail.ts';
+import type { TicketDetail } from './detail.ts';
 import { ACTION_LABEL, actionsOf, cardWords } from './model.ts';
 import type { TicketAction } from './model.ts';
 import { agentsFor, ticketActionsOpen, TicketNotice } from './TicketBoard.tsx';
@@ -73,8 +74,8 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
     <dl>
       <div><dt>State</dt><dd>{stateName(card.status)}</dd></div>
       <div><dt>Agent</dt><dd>{words.agent ?? 'Not given to an agent'}</dd></div>
-      {ticket === null ? null : <div><dt>Done when</dt><dd>{ticket.check}</dd></div>}
-      {ticket === null ? null : <div><dt>Round</dt><dd>{ticket.round}</dd></div>}
+      {loaded === null ? null : <div><dt>Done when</dt><dd>{loaded.check.label}</dd></div>}
+      {ticket === null ? null : <div><dt>Round</dt><dd>{loaded?.round ?? ticket.round}</dd></div>}
       {words.place === null ? null : <div><dt>Place</dt><dd>{words.place}</dd></div>}
     </dl>
     {card.status === 'blocked' ? <p className="ticket-needs" role="note">{reasonSentence(ticket?.reason ?? null)}</p>
@@ -101,14 +102,14 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
 }
 
 /** Give to agent, Try again and Ask for changes: choose the agent, and for a change say what to fix. */
-function GiveForm({ floor, card, mode, onDone }: {
+function GiveForm({ floor, card, project, mode, onDone }: {
   readonly floor: FloorState;
   readonly card: CardRow;
+  readonly project: string | null;
   readonly mode: 'give' | 'changes';
   readonly onDone: () => void;
 }) {
   const ids = useId();
-  const project = card.ticket?.project ?? null;
   const { usable } = project === null ? { usable: [] } : agentsFor(floor, project);
   const [agent, setAgent] = useState(() => usable.find((row) => row.id === card.claimed_by)?.id ?? usable[0]?.id ?? '');
   const [message, setMessage] = useState('');
@@ -141,19 +142,17 @@ function GiveForm({ floor, card, mode, onDone }: {
   </form>;
 }
 
-function EditForm({ floor, card, note, onDone }: {
+function EditForm({ floor, card, detail, onDone }: {
   readonly floor: FloorState;
   readonly card: CardRow;
-  readonly note: string;
+  readonly detail: TicketDetail;
   readonly onDone: () => void;
 }) {
   const ids = useId();
   const [title, setTitle] = useState(card.title);
-  const [text, setText] = useState(note);
-  const project = card.ticket?.project ?? null;
-  const checks = project === null ? [] : checksFor(floor.checks, project) ?? [];
-  const current = checks.find((entry) => entry.label === card.ticket?.check)?.id ?? checks[0]?.id ?? '';
-  const [checkId, setCheckId] = useState(current);
+  const [text, setText] = useState(detail.note);
+  const checks = checksFor(floor.checks, detail.project) ?? [];
+  const [checkId, setCheckId] = useState(checks.find((entry) => entry.id === detail.check.id)?.id ?? checks[0]?.id ?? '');
   const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
   const check = checks.find((entry) => entry.id === checkId) ?? null;
 
@@ -197,7 +196,7 @@ export function TicketPanel({ floor, card }: { readonly floor: FloorState; reado
   // The ticket moved, so the form that was open for its old state no longer fits it.
   useEffect(() => { setMode('none'); }, [card.id, card.status]);
   const actions = open ? actionsOf(card) : [];
-  const note = detail.card === card.id ? detail.detail?.note ?? '' : '';
+  const loaded = detail.card === card.id ? detail.detail : null;
 
   function press(action: TicketAction): void {
     switch (action) {
@@ -223,8 +222,9 @@ export function TicketPanel({ floor, card }: { readonly floor: FloorState; reado
       {actions.map((action) => <button key={action} type="button" className="ticket-action" data-action={action}
         disabled={sending} onClick={() => press(action)}>{ACTION_LABEL[action]}</button>)}
     </div>}
-    {mode === 'give' || mode === 'changes' ? <GiveForm floor={floor} card={card} mode={mode} onDone={() => setMode('none')} /> : null}
-    {mode === 'edit' ? <EditForm floor={floor} card={card} note={note} onDone={() => setMode('none')} /> : null}
+    {mode === 'give' || mode === 'changes'
+      ? <GiveForm floor={floor} card={card} project={loaded?.project ?? null} mode={mode} onDone={() => setMode('none')} /> : null}
+    {mode === 'edit' && loaded !== null ? <EditForm floor={floor} card={card} detail={loaded} onDone={() => setMode('none')} /> : null}
     {mode === 'remove' ? <div className="ticket-confirm" role="group" aria-label="Remove ticket">
       <p>Remove this ticket? It leaves the board. Its record stays in the journal.</p>
       <button type="button" className="ticket-remove" disabled={sending}
