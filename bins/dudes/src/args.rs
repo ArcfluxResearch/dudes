@@ -39,7 +39,7 @@ use dudes_types::{AgentId, CardId, CardStatus, Lsn, MailId, Provider, Seq, Token
 
 use crate::config::{self, Change, Key};
 use crate::setup::{self, Check, Enroll, Hire, Plan};
-use crate::workspace::NewWorkspace;
+use crate::workspace::AddOptions;
 
 /// What the user asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +101,8 @@ pub enum Command {
     },
     /// `agent.hire`.
     Hire(Box<HireParams>),
+    /// A hire whose directory must be selected from the enrolled projects before sending it.
+    SelectHire(Box<HireParams>),
     /// `goal.set`.
     Goal(Box<GoalSetParams>),
     /// Submit one locally reviewed replacement request file.
@@ -370,7 +372,7 @@ pub enum WorktreeCommand {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceCommand {
     /// Append one entry, then have the daemon adopt exactly that addition.
-    Add(Box<NewWorkspace>),
+    Add(Box<AddOptions>),
     /// Delete one entry, then have the daemon adopt exactly that removal.
     Remove {
         /// The workspace id.
@@ -488,13 +490,16 @@ COMMANDS
         Set up and start the daemon. On a terminal with no options it turns on the
         engines it finds on your PATH, then asks, one step at a time, whether the Floor
         may act on your agents, for a daily spending cap only when an API key is set,
-        for the current repository's completion check (suggested from its files) and
-        whether to hire a first agent. It then writes the operator file once, starts
+        for the current repository's completion check (suggested from its files), or
+        for a project folder when outside a repository. Enter skips that folder.
+        It asks at most five questions, including confirmation. A first hire is named
+        Kim and starts idle. Choose an installed engine or skip hiring. Use explicit
+        --hire, --goal and budget options for other choices.
+        It then writes the operator file once, starts
         the daemon (or restarts one that runs other settings), shows where the daemon
         found each engine and whether it is signed in, prints the Floor's one-time
-        link to paste into any browser, and makes the hire. Last, it offers to sign
-        in to one engine that is signed out; the others are named with the dudes
-        login command for each. It reads no engine's files.
+        link to paste into any browser, and makes the hire. It prints the dudes login
+        command for each engine that is signed out. It reads no engine's files.
         With options it asks nothing and prints no Floor link: it prints dudes floor
         open, and dudes login <engine> for each engine that is signed out. --yes
         takes every default, --set is `config set`, --enroll enrolls the current
@@ -507,7 +512,8 @@ COMMANDS
         file, and a file it would refuse is put back as it was. Ceilings are
         optional.
         Without a terminal and without options it only starts the daemon when absent
-        and prints its version, socket and journal position.
+        and prints its version, socket and journal position. Without a project it
+        also says to run `dudes workspace add` in your project's folder, except with --json.
 
     start
         Start the daemon if it is not running, then print what ping prints. Use it
@@ -577,11 +583,14 @@ COMMANDS
         A running turn continues to its end. There is no resume-all command.
 
     hire --name <name> --role <role> --department <dept> --provider <provider>
-         --cwd <path> [--usd-per-day <n>] [--tokens-per-day <n>] [--sandbox true|false]
+         [--cwd <path>] [--usd-per-day <n>] [--tokens-per-day <n>] [--sandbox true|false]
          [--max-turns <n>] [--max-budget-usd <n>] [--trusted] [--mcp <server>]...
          [--worktree [--from <worktree-id>]]
          [--character c|d|e|f|g|h|i|j|k|l] [--accent amber|coral|mint|sky|violet|rose]
         Hire an agent. A relative --cwd is resolved against the current directory.
+        Without --cwd, use the only enrolled project or ask which on a terminal.
+        With no project, hire in the current directory and warn that the agent can't
+        take tickets. An explicit --cwd keeps its own directory choice.
         With --worktree the daemon creates a git worktree of the repository
         --cwd is in, on a new branch, and the agent works there alone; it needs --trusted
         and --provider claude, and git 2.17 or later. --from starts the new tree at the
@@ -719,14 +728,17 @@ COMMANDS
             dudes ticket changes <card> --message \"Also cover the empty form.\"
             dudes ticket stop <card>
 
-    workspace add <path> --id <id> --completion-check-label <text> --department <dept>
-                  --hop-cap <n> --timeout-s <n> [--label <text>]
+    workspace add [<path>] [--id <id>] [--completion-check-label <text>] [--department <dept>]
+                  [--hop-cap <n>] [--timeout-s <n>] [--label <text>]
                   [--agent-usd-per-day <usd>] [--goal-usd <usd>]
                   [--tokens-per-day <n>] [--goal-tokens <n>]
-                  -- <program> [args...]
-        Enroll a repository directory for the Floor's Hire in the daemon's configuration,
-        then have a running daemon adopt exactly that addition. <path> must be the
-        absolute, canonical path of an existing directory holding .git.
+                  [-- <program> [args...]]
+        Enroll a project for tickets and Floor hiring, then have a running daemon
+        adopt exactly that addition. With no path, use the canonical current directory,
+        which must hold .git. An explicit path must be absolute and canonical.
+        Default to a unique folder slug, its suggested test command and that command's
+        label, department engineering, 5 turns a goal and 600 seconds a check.
+        If no check is suggested, pass one after --. Every option overrides its default.
 
     workspace remove <id>
         Remove one enrolled workspace from the configuration and the running daemon.
@@ -914,7 +926,7 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "halt" | "retire" => {
             lifecycle_control(command_word.to_string_lossy().as_ref(), tail, payload)?
         }
-        "hire" => Command::Hire(Box::new(hire(tail)?)),
+        "hire" => hire(tail)?,
         "rename" => {
             if payload.is_some() || tail.len() != 2 {
                 return Err(ArgError::UnknownFlag(
@@ -1776,10 +1788,7 @@ fn workspace_check(
     }
 }
 
-fn workspace_add(
-    tail: &[OsString],
-    payload: Option<&[OsString]>,
-) -> Result<NewWorkspace, ArgError> {
+fn workspace_add(tail: &[OsString], payload: Option<&[OsString]>) -> Result<AddOptions, ArgError> {
     let mut flags = Flags::new(tail);
     let (mut path, mut id, mut label, mut check, mut department) = (None, None, None, None, None);
     let (mut agent_usd, mut goal_usd, mut hop_cap, mut timeout_s) = (None, None, None, None);
@@ -1807,7 +1816,7 @@ fn workspace_add(
         }
     }
     let argv = payload.unwrap_or_default();
-    if argv.is_empty() {
+    if payload.is_some() && argv.is_empty() {
         return Err(ArgError::NoPredicate);
     }
     let predicate_argv = argv
@@ -1818,18 +1827,17 @@ fn workspace_add(
                 .map_err(|_| ArgError::NotUtf8("--"))
         })
         .collect::<Result<_, _>>()?;
-    let id = required(id, "--id")?;
-    Ok(NewWorkspace {
-        path: required(path, "<path>")?,
-        label: label.unwrap_or_else(|| id.clone()),
+    Ok(AddOptions {
+        path,
+        label,
         id,
-        completion_check_label: required(check, "--completion-check-label")?,
-        department: required(department, "--department")?,
+        completion_check_label: check,
+        department: department.unwrap_or_else(|| setup::DEFAULT_DEPARTMENT.to_owned()),
         agent_usd_per_day: agent_usd,
         goal_usd,
-        hop_cap: required(hop_cap, "--hop-cap")?,
-        predicate_argv,
-        predicate_timeout_s: required(timeout_s, "--timeout-s")?,
+        hop_cap: hop_cap.unwrap_or(setup::DEFAULT_HOP_CAP),
+        predicate_argv: payload.map(|_| predicate_argv),
+        predicate_timeout_s: timeout_s.unwrap_or(DEFAULT_PREDICATE_TIMEOUT_S),
         tokens_per_day,
         goal_tokens,
     })
@@ -2057,6 +2065,7 @@ impl QuickstartFlags {
             tokens_per_day,
         });
         Ok(Plan {
+            project: None,
             changes,
             check,
             enroll,
@@ -2289,7 +2298,7 @@ fn worktree(tail: &[OsString]) -> Result<WorktreeCommand, ArgError> {
     }
 }
 
-fn hire(tail: &[OsString]) -> Result<HireParams, ArgError> {
+fn hire(tail: &[OsString]) -> Result<Command, ArgError> {
     let mut flags = Flags::new(tail);
     let (mut name, mut role, mut department, mut provider, mut cwd) =
         (None, None, None, None, None);
@@ -2360,14 +2369,14 @@ fn hire(tail: &[OsString]) -> Result<HireParams, ArgError> {
     if worktree && !trusted {
         return Err(ArgError::Requires("--worktree", "--trusted"));
     }
-    Ok(HireParams {
+    let params = Box::new(HireParams {
         character,
         accent,
         name: required(name, "--name")?,
         role: required(role, "--role")?,
         department: required(department, "--department")?,
         provider: required(provider, "--provider")?,
-        cwd: required(cwd, "--cwd")?,
+        cwd: cwd.clone().unwrap_or_default(),
         // Both units are optional and both mean the same three things:
         // omitted is no ceiling, `0` is a ceiling of nothing, `n` is a ceiling of `n`. An omitted
         // flag is `None` rather than a default, for the reason `--sandbox` below is: a CLI that
@@ -2393,6 +2402,11 @@ fn hire(tail: &[OsString]) -> Result<HireParams, ArgError> {
         checkout: worktree.then_some(dudes_proto::rpc::agent::Checkout::Worktree),
         from,
         mcp_servers,
+    });
+    Ok(if cwd.is_some() {
+        Command::Hire(params)
+    } else {
+        Command::SelectHire(params)
     })
 }
 
@@ -2439,7 +2453,7 @@ fn dollars_to_usd(dollars: u64) -> Result<Usd, ArgError> {
 ///
 /// Not this binary's number: it is the value `bins/duded`'s own fixtures use, and the one the
 /// contract's `timeout_s` is documented against. `--timeout-s` overrides it.
-pub(crate) const DEFAULT_PREDICATE_TIMEOUT_S: u64 = 600;
+pub(crate) const DEFAULT_PREDICATE_TIMEOUT_S: u64 = setup::DEFAULT_PREDICATE_TIMEOUT_S;
 
 fn targeted_control(
     name: &str,
@@ -3202,6 +3216,7 @@ mod tests {
                 "beans.txt",
             ]),
             Ok(Command::Quickstart(Some(Box::new(Plan {
+                project: None,
                 changes: vec![Change::set(Key::Pi, "on").expect("on")],
                 check: Some(Check {
                     argv: vec![

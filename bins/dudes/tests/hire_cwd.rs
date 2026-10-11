@@ -282,6 +282,164 @@ fn an_absolute_alias_records_the_same_enrolled_workspace() {
     recorded_workspace(true);
 }
 
+#[test]
+fn hire_defaults_to_the_only_enrolled_project() {
+    let fixture = Fixture::new();
+    let root = tempfile::tempdir().unwrap();
+    let here = root.path().join("repository");
+    fs::create_dir(&here).unwrap();
+    let mut settings = enrolled_settings(&fixture, &here);
+    let config = fixture.state.path().join("operator.toml");
+    settings.operator_config = Some(config.clone());
+    let _running = start(
+        &settings,
+        SharedHost::new(),
+        Arc::new(OpenRunner::default()),
+    );
+    let cli = Cli::new(&settings.socket(), &settings.runtime_dir)
+        .env("DUDES_CONFIG", config)
+        .current_dir(root.path());
+    let hired = cli
+        .clone()
+        .args([
+            "hire",
+            "--name",
+            "Kim",
+            "--role",
+            "engineer",
+            "--department",
+            "engineering",
+            "--provider",
+            "claude",
+        ])
+        .run();
+    assert_eq!(hired.code(), exit::SUCCESS, "{}", hired.output());
+    let listed = cli.args(["--json", "agents"]).run();
+    let agents: Vec<dudes_proto::AgentView> = listed.json();
+    assert_eq!(agents[0].workspace.as_ref().unwrap().id, "canonical_repo");
+    assert_eq!(hired_directories(&fixture), [here.canonicalize().unwrap()]);
+    assert!(!hired.output().contains("can't take tickets"));
+}
+
+#[test]
+fn hire_without_a_project_warns_that_it_cannot_take_tickets() {
+    let fixture = Fixture::new();
+    let config = fixture.state.path().join("operator.toml");
+    fs::write(&config, "").unwrap();
+    let mut settings = fixture.settings();
+    settings.operator_config = Some(config.clone());
+    let _running = start(
+        &settings,
+        SharedHost::new(),
+        Arc::new(OpenRunner::default()),
+    );
+    let root = tempfile::tempdir().unwrap();
+    let cli = Cli::new(&settings.socket(), &settings.runtime_dir)
+        .env("DUDES_CONFIG", config)
+        .current_dir(root.path());
+    let hired = cli.clone().args(common::hire_args(root.path())).run();
+    assert_eq!(hired.code(), exit::SUCCESS, "{}", hired.output());
+    assert!(
+        hired
+            .stderr
+            .contains("has no project and can't take tickets."),
+        "{}",
+        hired.output()
+    );
+    assert!(
+        hired
+            .stderr
+            .contains("No project yet. In your project's folder run `dudes workspace add`."),
+        "{}",
+        hired.output()
+    );
+    let json = cli.arg("--json").args(common::hire_args(root.path())).run();
+    assert_eq!(json.code(), exit::SUCCESS, "{}", json.output());
+    let _: dudes_proto::rpc::agent::HireResult = json.json();
+    assert!(!json.output().contains("No project yet."));
+}
+
+#[test]
+fn hire_without_cwd_or_a_project_uses_here_and_warns() {
+    let fixture = Fixture::new();
+    let config = fixture.state.path().join("operator.toml");
+    fs::write(&config, "").unwrap();
+    let mut settings = fixture.settings();
+    settings.operator_config = Some(config.clone());
+    let _running = start(
+        &settings,
+        SharedHost::new(),
+        Arc::new(OpenRunner::default()),
+    );
+    let root = tempfile::tempdir().unwrap();
+    let hired = Cli::new(&settings.socket(), &settings.runtime_dir)
+        .env("DUDES_CONFIG", config)
+        .current_dir(root.path())
+        .args([
+            "hire",
+            "--name",
+            "Kim",
+            "--role",
+            "engineer",
+            "--department",
+            "engineering",
+            "--provider",
+            "claude",
+        ])
+        .run();
+    assert_eq!(hired.code(), exit::SUCCESS, "{}", hired.output());
+    assert_eq!(
+        hired_directories(&fixture),
+        [root.path().canonicalize().unwrap()]
+    );
+    assert!(
+        hired
+            .stderr
+            .contains("Kim has no project and can't take tickets.")
+    );
+}
+
+#[test]
+fn a_hire_outside_a_project_does_not_claim_that_none_are_enrolled() {
+    let fixture = Fixture::new();
+    let root = tempfile::tempdir().unwrap();
+    let here = root.path().join("repository");
+    fs::create_dir(&here).unwrap();
+    let mut settings = enrolled_settings(&fixture, &here);
+    let config = fixture.state.path().join("operator.toml");
+    settings.operator_config = Some(config.clone());
+    let _running = start(
+        &settings,
+        SharedHost::new(),
+        Arc::new(OpenRunner::default()),
+    );
+    let cli = Cli::new(&settings.socket(), &settings.runtime_dir).env("DUDES_CONFIG", config);
+    let hired = cli.clone().args(common::hire_args(root.path())).run();
+    assert_eq!(hired.code(), exit::SUCCESS, "{}", hired.output());
+    assert!(
+        hired
+            .stderr
+            .contains("has no project and can't take tickets."),
+        "{}",
+        hired.output()
+    );
+    assert!(
+        !hired.stderr.contains("No project yet."),
+        "{}",
+        hired.output()
+    );
+    assert!(
+        hired
+            .stderr
+            .contains("Hire a new agent in a project with `dudes hire` to take tickets."),
+        "{}",
+        hired.output()
+    );
+    let listed = cli.args(["--json", "agents"]).run();
+    let agents: Vec<dudes_proto::AgentView> = listed.json();
+    assert!(agents[0].workspace.is_none());
+}
+
 fn sharing_warning(alias: bool) {
     let fixture = Fixture::new();
     let settings = fixture.settings();

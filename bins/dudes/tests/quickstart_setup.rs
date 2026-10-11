@@ -454,8 +454,8 @@ fn a_script_restarts_a_daemon_with_other_settings_only_when_asked() {
     assert_eq!(plain.code(), dudes::exit::SUCCESS, "{plain:?}");
     assert_eq!(
         plain.stdout.lines().count(),
-        2,
-        "without a terminal or options quickstart prints the ping and nothing else: {plain:?}"
+        3,
+        "without a terminal or options quickstart prints the ping and project hint: {plain:?}"
     );
     let first = layout.daemons();
     assert_eq!(first.len(), 1, "{plain:?}");
@@ -783,20 +783,26 @@ impl Screen {
 
     /// Wait until `text` appears after the last thing waited for.
     fn expect(&mut self, text: &str) {
+        self.expect_any(&[text]);
+    }
+
+    fn expect_any(&mut self, texts: &[&str]) -> usize {
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
-            if let Some(at) = self.seen[self.cursor..]
-                .windows(text.len())
-                .position(|window| window == text.as_bytes())
-            {
-                self.cursor += at + text.len();
-                return;
+            for (index, text) in texts.iter().enumerate() {
+                if let Some(at) = self.seen[self.cursor..]
+                    .windows(text.len())
+                    .position(|window| window == text.as_bytes())
+                {
+                    self.cursor += at + text.len();
+                    return index;
+                }
             }
             let left = deadline.saturating_duration_since(Instant::now());
             match self.chunks.recv_timeout(left) {
                 Ok(chunk) => self.seen.extend(chunk),
                 Err(error) => panic!(
-                    "`{text}` did not appear ({error}); the terminal shows:\n{}",
+                    "{texts:?} did not appear ({error}); the terminal shows:\n{}",
                     String::from_utf8_lossy(&self.seen)
                 ),
             }
@@ -812,6 +818,239 @@ impl Screen {
     fn shown(&self) -> String {
         String::from_utf8_lossy(&self.seen).replace("\r\n", "\n")
     }
+}
+
+#[test]
+fn quickstart_outside_a_repo_asks_for_a_folder_and_can_skip_it() {
+    let layout = Layout::new();
+    let pty = nix::pty::openpty(
+        None::<&nix::pty::Winsize>,
+        None::<&nix::sys::termios::Termios>,
+    )
+    .unwrap();
+    let mut child = layout
+        .cli()
+        .current_dir(layout.root.path())
+        .arg("quickstart")
+        .spawn_on_terminal(&pty.slave);
+    drop(pty.slave);
+    let mut screen = Screen::new(pty.master);
+    screen.expect(FLOOR_QUESTION);
+    screen.answer("y");
+    let found = screen.expect_any(&["Project folder (Enter to skip):", "Hire a first agent?"]);
+    if found != 0 {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    assert_eq!(found, 0, "{}", screen.shown());
+    screen.answer("");
+    screen.expect("Tickets and Floor hiring need a project.");
+    screen.expect("and go ahead? [Y/n]");
+    screen.answer("y");
+    screen.expect("No project yet. In your project's folder run `dudes workspace add`.");
+    assert!(child.wait().unwrap().success(), "{}", screen.shown());
+    assert_eq!(
+        screen.shown().matches("[Y/n]").count() + screen.shown().matches("Enter to skip):").count(),
+        3
+    );
+    let listed = layout.cli().args(["--json", "workspace", "list"]).run();
+    assert_eq!(
+        listed.json::<serde_json::Value>()["running"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn quickstart_outside_a_repo_enrolls_the_entered_folder() {
+    let layout = Layout::new();
+    std::fs::write(
+        layout.path("repo/Cargo.toml"),
+        "[package]\nname = 'service'\n",
+    )
+    .unwrap();
+    let pty = nix::pty::openpty(
+        None::<&nix::pty::Winsize>,
+        None::<&nix::sys::termios::Termios>,
+    )
+    .unwrap();
+    let mut child = layout
+        .cli()
+        .current_dir(layout.root.path())
+        .arg("quickstart")
+        .spawn_on_terminal(&pty.slave);
+    drop(pty.slave);
+    let mut screen = Screen::new(pty.master);
+    screen.expect(FLOOR_QUESTION);
+    screen.answer("y");
+    let found = screen.expect_any(&["Project folder (Enter to skip):", "Hire a first agent?"]);
+    if found != 0 {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    assert_eq!(found, 0, "{}", screen.shown());
+    screen.answer(layout.path("repo").to_str().unwrap());
+    screen.expect("First agent engine (claude, codex; Enter to skip):");
+    screen.answer("");
+    screen.expect("and go ahead? [Y/n]");
+    screen.answer("y");
+    screen.expect("Engines the daemon turned on:");
+    assert!(child.wait().unwrap().success(), "{}", screen.shown());
+    let loaded = duded::config::load_operator(&layout.config()).unwrap();
+    assert_eq!(loaded.enrollment.profiles[0].cwd, layout.repo());
+    assert_eq!(loaded.enrollment.profiles[0].checks[0].label, "cargo test");
+    assert!(
+        !screen.shown().contains("No project yet."),
+        "{}",
+        screen.shown()
+    );
+}
+
+#[test]
+fn start_floor_and_quickstart_show_a_missing_project_hint_only_to_people() {
+    let layout = Layout::new();
+    for command in [vec!["start"], vec!["floor", "open"], vec!["quickstart"]] {
+        let human = layout.cli().args(&command).run();
+        assert_eq!(human.code(), dudes::exit::SUCCESS, "{human:?}");
+        assert!(
+            human
+                .stdout
+                .contains("No project yet. In your project's folder run `dudes workspace add`.\n"),
+            "{human:?}"
+        );
+        let json = layout.cli().arg("--json").args(&command).run();
+        assert_eq!(json.code(), dudes::exit::SUCCESS, "{json:?}");
+        assert!(!json.output().contains("No project yet."), "{json:?}");
+        let _: serde_json::Value = json.json();
+    }
+    let added = layout
+        .cli()
+        .args(["workspace", "add", "--", "/usr/bin/true"])
+        .run();
+    assert_eq!(added.code(), dudes::exit::SUCCESS, "{added:?}");
+    for command in [vec!["start"], vec!["floor", "open"], vec!["quickstart"]] {
+        let human = layout.cli().args(&command).run();
+        assert_eq!(human.code(), dudes::exit::SUCCESS, "{human:?}");
+        assert!(!human.output().contains("No project yet."), "{human:?}");
+    }
+}
+
+#[test]
+fn billed_and_unbilled_guides_ask_at_most_five_questions_and_hire_idle() {
+    for (billed, multiple) in [(false, false), (false, true), (true, false), (true, true)] {
+        let layout = Layout::new();
+        let engines = if multiple {
+            layout.path("engines")
+        } else {
+            let only = layout.path("one-engine");
+            std::fs::create_dir(&only).unwrap();
+            std::fs::copy(layout.path("engines/claude"), only.join("claude")).unwrap();
+            only
+        };
+        let mut cli = layout
+            .cli()
+            .env("PATH", format!("{}:/usr/bin:/bin", engines.display()));
+        if billed {
+            cli = cli.env("ANTHROPIC_API_KEY", "fixture-api-key");
+        }
+        let pty = nix::pty::openpty(
+            None::<&nix::pty::Winsize>,
+            None::<&nix::sys::termios::Termios>,
+        )
+        .unwrap();
+        let mut child = cli.clone().arg("quickstart").spawn_on_terminal(&pty.slave);
+        drop(pty.slave);
+        let mut screen = Screen::new(pty.master);
+        screen.expect(FLOOR_QUESTION);
+        screen.answer("y");
+        if billed {
+            screen.expect("Daily dollar cap for the whole floor (Enter for none):");
+            screen.answer("25");
+        }
+        screen.expect("Completion check for this repository (- to skip):");
+        screen.answer("/usr/bin/true");
+        if multiple {
+            screen.expect("First agent engine (claude, codex; Enter to skip):");
+            screen.answer("claude");
+        } else {
+            screen.expect("Hire a first agent named Kim on claude, idle? [Y/n]");
+            screen.answer("y");
+        }
+        screen.expect("and go ahead? [Y/n]");
+        screen.answer("y");
+        screen.expect("hired ");
+        assert!(
+            exit_status(&mut child, &screen).success(),
+            "{}",
+            screen.shown()
+        );
+        let shown = screen.shown();
+        let questions = ["[Y/n]", "[y/N]", "]:", "):"]
+            .iter()
+            .map(|ending| shown.matches(ending).count())
+            .sum::<usize>();
+        assert_eq!(questions, if billed { 5 } else { 4 }, "{shown}");
+        let listed = cli.args(["--json", "agents"]).run();
+        let agents: Vec<dudes_proto::AgentView> = listed.json();
+        assert_eq!(agents[0].name, "Kim");
+        assert!(agents[0].goal.is_none(), "an idle hire has no goal");
+        assert_only_status_checks(&layout);
+    }
+}
+
+#[test]
+fn hire_asks_which_project_and_refuses_to_guess_without_a_terminal() {
+    let layout = Layout::new();
+    let started = layout.cli().args(["quickstart", "--yes"]).run();
+    assert_eq!(started.code(), 0, "{started:?}");
+    let added = layout
+        .cli()
+        .args(["workspace", "add", "--", "/usr/bin/true"])
+        .run();
+    assert_eq!(added.code(), 0, "{added:?}");
+    let other = layout.path("other");
+    std::fs::create_dir_all(other.join(".git")).unwrap();
+    let added = layout
+        .cli()
+        .current_dir(&other)
+        .args(["workspace", "add", "--", "/usr/bin/true"])
+        .run();
+    assert_eq!(added.code(), 0, "{added:?}");
+    let args = [
+        "hire",
+        "--name",
+        "Kim",
+        "--role",
+        "engineer",
+        "--department",
+        "engineering",
+        "--provider",
+        "claude",
+    ];
+    let refused = layout.cli().args(args).run();
+    assert_eq!(refused.code(), dudes::exit::OTHER, "{refused:?}");
+    assert_eq!(
+        refused.stderr,
+        "dudes: More than one project is enrolled. Run `dudes hire` in a terminal to choose one, or pass --cwd <project folder>.\n"
+    );
+    let pty = nix::pty::openpty(
+        None::<&nix::pty::Winsize>,
+        None::<&nix::sys::termios::Termios>,
+    )
+    .unwrap();
+    let mut child = layout.cli().args(args).spawn_on_terminal(&pty.slave);
+    drop(pty.slave);
+    let mut screen = Screen::new(pty.master);
+    screen.expect("Project (other, repo):");
+    screen.answer("other");
+    screen.expect("hired ");
+    assert!(
+        exit_status(&mut child, &screen).success(),
+        "{}",
+        screen.shown()
+    );
+    let listed = layout.cli().args(["--json", "agents"]).run();
+    let agents: Vec<dudes_proto::AgentView> = listed.json();
+    assert_eq!(agents[0].workspace.as_ref().unwrap().id, "other");
 }
 
 /// On a terminal with no options, each step is a question, and the answers give the same setup a
@@ -834,10 +1073,10 @@ fn a_terminal_is_asked_each_step_and_gets_the_same_setup() {
             "Completion check for this repository (- to skip):",
             "/usr/bin/true",
         ),
-        ("Hire a first agent? [Y/n]", ""),
-        ("Name [Kim]:", ""),
-        ("Engine (claude, codex) [claude]:", "codex"),
-        ("Goal (Enter for none):", ""),
+        (
+            "First agent engine (claude, codex; Enter to skip):",
+            "codex",
+        ),
         ("and go ahead? [Y/n]", ""),
     ] {
         screen.expect(question);
@@ -857,6 +1096,15 @@ fn a_terminal_is_asked_each_step_and_gets_the_same_setup() {
         std::thread::sleep(Duration::from_millis(20));
     };
     assert!(status.success(), "{status:?}:\n{}", screen.shown());
+    let asked = ["[Y/n]", "[y/N]", "]:", "):"]
+        .iter()
+        .map(|ending| screen.shown().matches(ending).count())
+        .sum::<usize>();
+    assert!(
+        asked <= 5,
+        "quickstart asked {asked} questions:\n{}",
+        screen.shown()
+    );
     assert_set_up(&screen.shown(), &layout, true);
     assert_written(
         &layout,
@@ -893,7 +1141,6 @@ fn a_terminal_is_warned_before_a_restart() {
     for (question, answer) in [
         (FLOOR_QUESTION, "n"),
         ("Completion check for this repository (- to skip):", ""),
-        ("Hire a first agent? [Y/n]", "n"),
     ] {
         screen.expect(question);
         screen.answer(answer);
@@ -942,7 +1189,6 @@ fn answer_the_defaults(screen: &mut Screen) {
     for (question, answer) in [
         (FLOOR_QUESTION, "n"),
         ("Completion check for this repository (- to skip):", ""),
-        ("Hire a first agent? [Y/n]", "n"),
         ("and go ahead? [Y/n]", ""),
     ] {
         screen.expect(question);
@@ -964,12 +1210,8 @@ fn exit_status(child: &mut std::process::Child, screen: &Screen) -> std::process
     }
 }
 
-/// **Quickstart's last act is the login offer**: after the Floor link it names each
-/// other engine still signed out, asks about one, and a yes replaces quickstart with that
-/// engine's own login, which holds the terminal, runs in the home without the agent names, and
-/// returns its own exit status.
 #[test]
-fn a_terminal_run_offers_one_login_last_and_the_login_replaces_quickstart() {
+fn a_terminal_setup_prints_login_commands_without_another_question() {
     let layout = Layout::new();
     layout.sign_out("claude");
     layout.sign_out("codex");
@@ -977,71 +1219,22 @@ fn a_terminal_run_offers_one_login_last_and_the_login_replaces_quickstart() {
         None::<&nix::pty::Winsize>,
         None::<&nix::sys::termios::Termios>,
     )
-    .expect("a pseudo-terminal");
-    let mut child = layout
-        .cli()
-        .env("DUDES_TOKEN", "not-an-agent")
-        .env("DUDES_SOCK", layout.socket())
-        .arg("quickstart")
-        .spawn_on_terminal(&pty.slave);
-    drop(pty.slave);
-    let mut screen = Screen::new(pty.master);
-    answer_the_defaults(&mut screen);
-
-    let claude = layout.path("engines/claude");
-    screen.expect(&format!(
-        "  claude: found at {}, signed out",
-        claude.display()
-    ));
-    screen.expect("#bootstrap=");
-    screen.expect("Codex is signed out. Sign in with: dudes login codex");
-    screen.expect(&format!(
-        "Sign in to Claude now? This runs {} auth login in this terminal. [y/N]",
-        claude.display()
-    ));
-    screen.answer("y");
-    let status = exit_status(&mut child, &screen);
-    assert_eq!(
-        status.code(),
-        Some(7),
-        "the login replaced quickstart and its status is the process's:\n{}",
-        screen.shown()
-    );
-    let home = layout.path("home").canonicalize().expect("the home");
-    assert_eq!(
-        std::fs::read_to_string(layout.path("claude-login")).expect("the login ran"),
-        format!("tty\n{}\nunset unset\n", home.display())
-    );
-    let runs = layout.engine_runs().unwrap_or_default();
-    assert_eq!(
-        runs.lines()
-            .filter(|line| line.contains("login") && !line.ends_with("status"))
-            .collect::<Vec<_>>(),
-        ["claude auth login"],
-        "exactly one login ran, and it was Claude's:\n{runs}"
-    );
-}
-
-/// No means no: the offer is declined, nothing runs, and quickstart ends well.
-#[test]
-fn a_declined_login_offer_runs_nothing() {
-    let layout = Layout::new();
-    layout.sign_out("claude");
-    let pty = nix::pty::openpty(
-        None::<&nix::pty::Winsize>,
-        None::<&nix::sys::termios::Termios>,
-    )
-    .expect("a pseudo-terminal");
+    .unwrap();
     let mut child = layout.cli().arg("quickstart").spawn_on_terminal(&pty.slave);
     drop(pty.slave);
     let mut screen = Screen::new(pty.master);
     answer_the_defaults(&mut screen);
-    screen.expect("Sign in to Claude now?");
-    screen.answer("");
-    let status = exit_status(&mut child, &screen);
-    assert!(status.success(), "{status:?}:\n{}", screen.shown());
-    assert!(!layout.path("claude-login").exists(), "no login ran");
+    screen.expect("Claude is signed out. Sign in with: dudes login claude");
+    screen.expect("Codex is signed out. Sign in with: dudes login codex");
+    assert!(
+        exit_status(&mut child, &screen).success(),
+        "{}",
+        screen.shown()
+    );
+    assert!(!layout.path("claude-login").exists());
+    assert!(!layout.path("codex-login").exists());
     assert_only_status_checks(&layout);
+    assert!(!screen.shown().contains("Sign in to Claude now?"));
 }
 
 /// `dudes login` runs nothing without a terminal, nothing for an engine already signed in, and
