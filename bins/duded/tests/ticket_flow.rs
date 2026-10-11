@@ -1015,6 +1015,57 @@ fn seed(fixture: &Fixture, records: Vec<Record>) {
     }
 }
 
+/// A restart finds a ticket that is already working and starts nothing: one start, whatever
+/// the number of restarts, and the ticket is still Working.
+#[test]
+fn a_restart_does_not_start_a_working_ticket_again() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings.clone(), repo.clone(), [common::fails()]);
+    let cody = flow.hire("Cody");
+    let card = flow.create("Fix the parser");
+    assert_eq!(flow.give_ok(card, cody, None), TicketAssignOutcome::Started);
+    flow.stop();
+
+    for _ in 0..2 {
+        let mut flow = Flow::boot(&fixture, settings.clone(), repo.clone(), [common::fails()]);
+        assert_eq!(flow.card(card).status, CardStatus::Doing);
+        flow.create("A later ticket");
+        flow.stop();
+        assert_eq!(
+            started_goals(&fixture.records()).len(),
+            1,
+            "one start in all"
+        );
+    }
+}
+
+/// An agent whose hire did not record a project is never given a ticket to start, even when the
+/// journal says the ticket was queued for it. The daemon neither starts it nor stops.
+#[test]
+fn an_agent_hired_without_a_project_starts_nothing() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let card = CardId::from_parts(4, 1);
+    let mut records = given("service", &repo, None, card);
+    let Record::AgentHired { workspace, .. } = &mut records[0] else {
+        unreachable!("the first record is the hire");
+    };
+    *workspace = None;
+    seed(&fixture, records);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    assert_eq!(flow.card(card).status, CardStatus::Claimed);
+    let waiting = flow.read(card).waiting.expect("it waits");
+    assert_eq!(waiting.wait, TicketWait::AgentBusy);
+    assert!(started_goals(&fixture.records()).is_empty());
+    let other = flow.create("Still works");
+    assert!(
+        flow.card(other).seq == Seq::ZERO,
+        "the daemon still answers"
+    );
+    flow.stop();
+}
+
 /// The reasons that only show at boot, because the hire that makes them possible cannot be
 /// made on a running daemon: a project that is no longer enrolled, a spending limit that is
 /// required and absent, and a per-turn reserve that is not set. Each moves a queued ticket to
