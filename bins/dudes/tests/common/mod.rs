@@ -47,7 +47,7 @@ use std::io;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Stdio};
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -226,17 +226,27 @@ impl ShutdownHold {
 /// A predicate runner that creates no process and answers "not yet".
 ///
 /// Every goal in this suite stays open, which is what the loop tests need: a predicate that
-/// passed immediately would make `Done` race the assertion that a turn was issued at all.
+/// passed immediately would make `Done` race the assertion that a turn was issued at all. A test
+/// that wants a check to pass calls [`OpenRunner::pass`], and every later run passes.
 #[derive(Debug, Default)]
 pub(crate) struct OpenRunner {
     runs: AtomicUsize,
+    passing: AtomicBool,
+}
+
+impl OpenRunner {
+    /// From now on every run of a check passes.
+    pub(crate) fn pass(&self) {
+        self.passing.store(true, Ordering::SeqCst);
+    }
 }
 
 impl PredicateRunner for OpenRunner {
     fn run(&self, _spec: &LaunchSpec, _timeout: Duration) -> io::Result<PredicateOutcome> {
         self.runs.fetch_add(1, Ordering::SeqCst);
+        let passing = self.passing.load(Ordering::SeqCst);
         Ok(PredicateOutcome::Finished {
-            exit: Some(1),
+            exit: Some(i32::from(!passing)),
             output_tail: "not yet".to_owned(),
             timed_out: false,
         })

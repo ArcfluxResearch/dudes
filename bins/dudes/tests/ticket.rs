@@ -14,12 +14,14 @@ use dudes_proto::rpc::board::CardCreateResult;
 use dudes_proto::rpc::ticket::{
     TicketAssignOutcome, TicketAssignResult, TicketCreateResult, TicketReadResult,
 };
-use dudes_proto::{AgentBudget, GoalBudget, Predicate};
-use dudes_types::{AgentId, CardStatus, IsolationMode, Usd};
+use dudes_proto::{AgentBudget, ExitStatus, GoalBudget, Predicate, Record, TurnOutcome};
+use dudes_supervisor::Input;
+use dudes_types::{AgentId, CardStatus, IsolationMode, TurnId, Usd};
 
 struct World {
     fixture: Fixture,
-    _running: Running,
+    running: Running,
+    runner: Arc<OpenRunner>,
     cli: Cli,
     repo: PathBuf,
 }
@@ -63,15 +65,13 @@ fn world() -> World {
     settings.enrollment = Enrollment {
         profiles: vec![profile("service", &repo)],
     };
-    let running = start(
-        &settings,
-        SharedHost::new(),
-        Arc::new(OpenRunner::default()),
-    );
+    let runner = Arc::new(OpenRunner::default());
+    let running = start(&settings, SharedHost::new(), Arc::clone(&runner));
     let cli = Cli::new(&settings.socket(), &settings.runtime_dir);
     World {
         fixture,
-        _running: running,
+        running,
+        runner,
         cli,
         repo,
     }
@@ -83,6 +83,13 @@ impl World {
     }
 
     fn hire(&self, name: &str, cwd: &Path) -> String {
+        let agent = self.hire_active(name, cwd);
+        let paused = self.dudes(["pause", &agent]);
+        assert_eq!(paused.code(), 0, "{}", paused.output());
+        agent
+    }
+
+    fn hire_active(&self, name: &str, cwd: &Path) -> String {
         let run = self
             .cli
             .clone()
@@ -98,10 +105,64 @@ impl World {
             .args(["--usd-per-day", "10"])
             .run();
         assert_eq!(run.code(), 0, "{}", run.output());
-        let agent = run.json::<HireResult>().agent.to_string();
-        let paused = self.dudes(["pause", &agent]);
-        assert_eq!(paused.code(), 0, "{}", paused.output());
-        agent
+        run.json::<HireResult>().agent.to_string()
+    }
+
+    /// The id and task text of the `count`th turn the daemon issued, once it has.
+    fn turn(&self, count: usize) -> (TurnId, String) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let turns: Vec<_> = self
+                .fixture
+                .records()
+                .into_iter()
+                .filter_map(|record| match record {
+                    Record::TurnIssued { turn, task, .. } => Some((turn, task)),
+                    _ => None,
+                })
+                .collect();
+            if let Some(found) = turns.get(count - 1) {
+                return found.clone();
+            }
+            assert!(std::time::Instant::now() < deadline, "no turn {count}");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// The agent's engine finishes `turn` saying `message`, and the daemon's check now passes.
+    fn finish(&self, turn: TurnId, message: &str) {
+        self.runner.pass();
+        self.running.handle.input(Input::ChildExited {
+            final_reply: None,
+            elapsed_ms: Some(5),
+            turn,
+            exit: ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: None,
+            model_usage: std::collections::BTreeMap::new(),
+            outcome: TurnOutcome::Completed,
+            last_message: Some(message.to_owned()),
+        });
+    }
+
+    /// Show `card` until it is in `state`, and answer the text.
+    fn show_until(&self, card: &str, state: &str) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let shown = self.dudes(["ticket", "show", card]);
+            assert_eq!(shown.code(), 0, "{}", shown.output());
+            if shown.stdout.contains(&format!("State: {state}")) {
+                return shown.stdout;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never reached {state}: {}",
+                shown.stdout
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     fn add(&self, title: &str) -> String {
@@ -407,7 +468,218 @@ fn help_lists_the_ticket_commands_with_one_worked_example() {
         assert!(run.stdout.contains(command), "{command}");
     }
     assert_eq!(run.stdout.matches("EXAMPLE: tickets").count(), 1);
-    for later in ["ticket accept", "ticket stop", "ticket changes"] {
-        assert!(!run.stdout.contains(later), "{later} arrives later");
+    for command in [
+        "ticket accept <card>",
+        "ticket changes <card> --message",
+        "ticket stop <card>",
+    ] {
+        assert!(run.stdout.contains(command), "{command}");
     }
+}
+
+#[test]
+fn the_loop_gives_by_name_reviews_accepts_asks_for_changes_stops_and_removes() {
+    let world = world();
+    let cody = world.hire_active("Cody", &world.repo);
+
+    let first = world.add("Fix the sign-in page");
+    let given = world.dudes(["ticket", "give", &first, "--agent", "Cody"]);
+    assert_eq!(given.code(), 0, "{}", given.output());
+    assert_eq!(given.stdout, "Cody is working on it.\n");
+    let shown = world.dudes(["ticket", "show", &first]);
+    assert!(
+        shown.stdout.contains("State: Working, Cody"),
+        "{}",
+        shown.stdout
+    );
+
+    let (turn, _) = world.turn(1);
+    world.finish(turn, "I fixed the blank password case.");
+    let shown = world.show_until(&first, "Ready for you");
+    for line in [
+        "The agent says:",
+        "  I fixed the blank password case.",
+        "Check: passed, exit status 0, ",
+        "Open the Floor to see the changed files.",
+    ] {
+        assert!(shown.contains(line), "{line}: {shown}");
+    }
+
+    let accepted = world.dudes(["ticket", "accept", &first]);
+    assert_eq!(accepted.code(), 0, "{}", accepted.output());
+    assert_eq!(accepted.stdout, "Ticket accepted.\n");
+    let shown = world.dudes(["ticket", "show", &first]);
+    assert!(shown.stdout.contains("State: Done"), "{}", shown.stdout);
+
+    let second = world.add("Fix the sign-up page");
+    let given = world.dudes(["ticket", "give", &second, "--agent", &cody]);
+    assert_eq!(given.stdout, "Cody is working on it.\n");
+    let (turn, _) = world.turn(2);
+    world.finish(turn, "Done.");
+    world.show_until(&second, "Ready for you");
+
+    let changes = world.dudes([
+        "ticket",
+        "changes",
+        &second,
+        "--message",
+        "Also cover the empty form.",
+    ]);
+    assert_eq!(changes.code(), 0, "{}", changes.output());
+    assert_eq!(changes.stdout, "Cody is working on it.\n");
+    let (_, task) = world.turn(3);
+    assert!(task.contains("Also cover the empty form."), "{task}");
+    let shown = world.dudes(["ticket", "show", &second]);
+    assert!(shown.stdout.contains("Round: 2"), "{}", shown.stdout);
+
+    let stopped = world.dudes(["ticket", "stop", &second]);
+    assert_eq!(stopped.code(), 0, "{}", stopped.output());
+    assert_eq!(stopped.stdout, "Ticket stopped. It is back in To do.\n");
+    let shown = world.dudes(["ticket", "show", &second]);
+    assert!(shown.stdout.contains("State: To do"), "{}", shown.stdout);
+
+    let removed = world.dudes(["ticket", "remove", &second]);
+    assert_eq!(removed.code(), 0, "{}", removed.output());
+    let listed = world.dudes(["ticket", "list"]);
+    assert!(listed.stdout.contains(&first), "{}", listed.stdout);
+    assert!(!listed.stdout.contains(&second), "{}", listed.stdout);
+}
+
+#[test]
+fn an_agent_name_must_match_exactly_one_live_agent() {
+    let world = world();
+    let one = world.hire("Cody", &world.repo);
+    let two = world.hire("Cody", &world.repo);
+    world.hire("Codex", &world.repo);
+    let card = world.add("Subject");
+
+    for agent in ["Nobody", "cody"] {
+        let run = world.dudes(["ticket", "give", &card, "--agent", agent]);
+        assert_eq!(run.code(), 4, "{}", run.output());
+        assert!(run.stdout.is_empty(), "{}", run.stdout);
+        let sentence = format!("No live agent is named \"{agent}\".");
+        assert!(run.stderr.contains(&sentence), "{}", run.stderr);
+    }
+
+    let run = world.dudes(["ticket", "give", &card, "--agent", "Cody"]);
+    assert_eq!(run.code(), 4, "{}", run.output());
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    for part in [
+        "More than one live agent is named \"Cody\"",
+        one.as_str(),
+        two.as_str(),
+        "Use an agent id.",
+    ] {
+        assert!(run.stderr.contains(part), "{part}: {}", run.stderr);
+    }
+
+    let by_id = world.dudes(["ticket", "give", &card, "--agent", &one]);
+    assert_eq!(by_id.code(), 0, "{}", by_id.output());
+    assert_eq!(by_id.stdout, "Queued. Cody is paused.\n");
+    let added = world.dudes(["ticket", "add", "--title", "Named", "--give-to", "Codex"]);
+    assert_eq!(added.code(), 0, "{}", added.output());
+    assert!(
+        added.stdout.ends_with("Queued. Codex is paused.\n"),
+        "{}",
+        added.stdout
+    );
+}
+
+#[test]
+fn the_review_commands_refuse_with_the_daemons_sentence_and_exit_code() {
+    let world = world();
+    let cody = world.hire("Cody", &world.repo);
+    let card = world.add("Subject");
+    let plain = world
+        .dudes([
+            "--json",
+            "board",
+            "create",
+            "--title",
+            "Plain",
+            "--department",
+            "engineering",
+        ])
+        .json::<CardCreateResult>()
+        .card
+        .to_string();
+
+    let refusals: Vec<(Vec<&str>, u8, &str)> = vec![
+        (
+            vec!["ticket", "accept", &card],
+            3,
+            "You can't do that to a ticket that is To do.",
+        ),
+        (
+            vec!["ticket", "stop", &card],
+            3,
+            "You can't do that to a ticket that is To do.",
+        ),
+        (
+            vec![
+                "ticket",
+                "changes",
+                &card,
+                "--message",
+                "x",
+                "--agent",
+                &cody,
+            ],
+            3,
+            "You can't do that to a ticket that is To do.",
+        ),
+        (
+            vec!["ticket", "accept", &card, "--expected-seq", "9"],
+            4,
+            "This ticket changed while you were looking. Reload and try again.",
+        ),
+        (
+            vec!["ticket", "accept", &plain],
+            3,
+            "That card is not a ticket.",
+        ),
+        (
+            vec!["ticket", "stop", &plain],
+            3,
+            "That card is not a ticket.",
+        ),
+    ];
+    for (args, code, sentence) in refusals {
+        let run = world.cli.clone().args(&args).run();
+        assert_eq!(run.code(), code, "{args:?}: {}", run.output());
+        assert!(run.stdout.is_empty(), "{args:?}: {}", run.stdout);
+        assert!(run.stderr.contains(sentence), "{args:?}: {}", run.stderr);
+    }
+}
+
+#[test]
+fn changes_needs_a_message_and_the_review_commands_take_a_card() {
+    let cli = Cli::bare();
+    let card = "00000000000000000000000004";
+    for args in [
+        vec!["ticket", "changes", card],
+        vec!["ticket", "changes", "--message", "x"],
+        vec!["ticket", "accept"],
+        vec!["ticket", "stop"],
+        vec!["ticket", "accept", card, "--message", "x"],
+        vec!["ticket", "stop", card, "--agent", "Cody"],
+    ] {
+        let run = cli.clone().args(&args).run();
+        assert_eq!(run.code(), 1, "{args:?}: {}", run.output());
+    }
+    let run = cli.clone().args(["ticket", "changes", card]).run();
+    assert!(
+        run.stderr.contains("`--message` is required"),
+        "{}",
+        run.stderr
+    );
+    let run = cli
+        .clone()
+        .args(["ticket", "accept", card, "--message", "x"])
+        .run();
+    assert!(
+        run.stderr.contains("unknown option `--message`"),
+        "{}",
+        run.stderr
+    );
 }

@@ -261,6 +261,21 @@ pub enum TicketStatus {
     NeedsYou,
 }
 
+/// An agent as the operator typed it: its id, or its name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentRef {
+    /// Anything that parses as an agent id.
+    Id(AgentId),
+    /// Any other text, which must match exactly one live agent's name.
+    Name(String),
+}
+
+impl From<String> for AgentRef {
+    fn from(text: String) -> Self {
+        text.parse().map_or(Self::Name(text), Self::Id)
+    }
+}
+
 /// One operator ticket command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TicketCommand {
@@ -269,7 +284,7 @@ pub enum TicketCommand {
         /// The ticket's fields.
         params: TicketCreateParams,
         /// The agent to give it to once it exists.
-        give_to: Option<AgentId>,
+        give_to: Option<AgentRef>,
     },
     /// Change a waiting ticket's title, note or check.
     Edit {
@@ -289,9 +304,34 @@ pub enum TicketCommand {
         /// The ticket.
         card: CardId,
         /// The agent.
-        agent: AgentId,
+        agent: AgentRef,
         /// What to tell the agent.
         message: Option<String>,
+        /// The sequence the operator observed; the ticket's current one when absent.
+        expected_seq: Option<Seq>,
+    },
+    /// Send finished work back to an agent with what to change.
+    Changes {
+        /// The ticket.
+        card: CardId,
+        /// What to change.
+        message: String,
+        /// The agent; the one that did the work when absent.
+        agent: Option<AgentRef>,
+        /// The sequence the operator observed; the ticket's current one when absent.
+        expected_seq: Option<Seq>,
+    },
+    /// Accept a ticket that is ready for the operator.
+    Accept {
+        /// The ticket.
+        card: CardId,
+        /// The sequence the operator observed; the ticket's current one when absent.
+        expected_seq: Option<Seq>,
+    },
+    /// Take a ticket back from the agent that is working on it.
+    Stop {
+        /// The ticket.
+        card: CardId,
         /// The sequence the operator observed; the ticket's current one when absent.
         expected_seq: Option<Seq>,
     },
@@ -647,7 +687,10 @@ COMMANDS
                [--give-to <agent>]
     ticket edit <card> [--title <text>] [--note <text>] [--done-when <check id>]
                 [--expected-seq <n>]
-    ticket give <card> --agent <id> [--message <text>] [--expected-seq <n>]
+    ticket give <card> --agent <name or id> [--message <text>] [--expected-seq <n>]
+    ticket accept <card> [--expected-seq <n>]
+    ticket changes <card> --message <text> [--agent <name or id>] [--expected-seq <n>]
+    ticket stop <card> [--expected-seq <n>]
     ticket remove <card> [--expected-seq <n>]
     ticket list [--status todo|working|ready|done|needs-you]
     ticket show <card>
@@ -656,16 +699,25 @@ COMMANDS
         enrolled workspace, and Done when to that project's own check. Give starts the
         ticket at once when the agent and the project are free, and otherwise queues
         it; it answers at once and polls nothing, and the agent must be hired into
-        the ticket's project. A message tells the agent what to change.
-        Edit and remove work on a ticket nobody has started; an empty --note clears
+        the ticket's project. An agent is named by its name, which must match exactly
+        one live agent, or by its id. When the daemon's own run of the check passes,
+        the ticket is Ready for you. Show prints the agent's summary and the check
+        result. Accept marks it Done. Changes sends it back with what to change, to
+        the agent that did the work unless --agent names another. Stop takes a Working
+        or Needs you ticket back to To do and frees the agent; a turn already running
+        finishes on its own. Give also retries a Needs you ticket.
+        Edit and remove work on a ticket nobody is working on; an empty --note clears
         the note. Every change reads the ticket's current sequence just before the
         call, so --expected-seq is only for a script that wants a stale one refused.
         With --give-to, add creates the ticket and then gives it; a refused give leaves
         the ticket in place and prints the refusal. List can be narrowed by --status.
         EXAMPLE: tickets
             dudes ticket add --title \"Fix the sign-in page\" --note \"It 500s on a blank password.\"
-            dudes ticket give <card> --agent <agent id>
+            dudes ticket give <card> --agent Cody
             dudes ticket show <card>
+            dudes ticket accept <card>
+            dudes ticket changes <card> --message \"Also cover the empty form.\"
+            dudes ticket stop <card>
 
     workspace add <path> --id <id> --completion-check-label <text> --department <dept>
                   --hop-cap <n> --timeout-s <n> [--label <text>]
@@ -1341,6 +1393,10 @@ fn board(tail: &[OsString]) -> Result<BoardCommand, ArgError> {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one parser reads every ticket subcommand's flags, and each subcommand adds its arm"
+)]
 fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
     let Some((command, rest)) = tail.split_first() else {
         return Err(ArgError::NoSubcommand("ticket"));
@@ -1351,11 +1407,14 @@ fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
     let subcommand = command.to_string_lossy();
     if !matches!(
         subcommand.as_ref(),
-        "add" | "edit" | "give" | "remove" | "list" | "show"
+        "add" | "edit" | "give" | "changes" | "accept" | "stop" | "remove" | "list" | "show"
     ) {
         return Err(ArgError::UnknownCommand(format!("ticket {subcommand}")));
     }
-    let takes_card = matches!(subcommand.as_ref(), "edit" | "give" | "remove" | "show");
+    let takes_card = matches!(
+        subcommand.as_ref(),
+        "edit" | "give" | "changes" | "accept" | "stop" | "remove" | "show"
+    );
     let mut flags = Flags::new(rest);
     let mut card = None;
     let (mut title, mut note, mut project, mut done_when) = (None, None, None, None);
@@ -1367,12 +1426,10 @@ fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
             ("add" | "edit", "--note") => note = Some(flags.value("--note")?),
             ("add", "--project") => project = Some(flags.value("--project")?),
             ("add" | "edit", "--done-when") => done_when = Some(flags.value("--done-when")?),
-            ("add", "--give-to") => {
-                agent = Some(flags.parsed::<AgentId>("--give-to", "an agent id")?);
-            }
-            ("give", "--agent") => agent = Some(flags.parsed::<AgentId>("--agent", "an agent id")?),
-            ("give", "--message") => message = Some(flags.value("--message")?),
-            ("edit" | "give" | "remove", "--expected-seq") => {
+            ("add", "--give-to") => agent = Some(flags.value("--give-to")?.into()),
+            ("give" | "changes", "--agent") => agent = Some(flags.value("--agent")?.into()),
+            ("give" | "changes", "--message") => message = Some(flags.value("--message")?),
+            ("edit" | "give" | "changes" | "accept" | "stop" | "remove", "--expected-seq") => {
                 seq = Some(Seq(flags.parsed::<u64>("--expected-seq", "a whole number")?));
             }
             ("list", "--status") => status = Some(ticket_status(&mut flags)?),
@@ -1413,6 +1470,20 @@ fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
                 card,
                 agent: required(agent, "--agent")?,
                 message,
+                expected_seq: seq,
+            }),
+            "changes" => Ok(TicketCommand::Changes {
+                card,
+                message: required(message, "--message")?,
+                agent,
+                expected_seq: seq,
+            }),
+            "accept" => Ok(TicketCommand::Accept {
+                card,
+                expected_seq: seq,
+            }),
+            "stop" => Ok(TicketCommand::Stop {
+                card,
                 expected_seq: seq,
             }),
             "remove" => Ok(TicketCommand::Remove {

@@ -103,9 +103,11 @@ lower value is refused by `dudes-host`'s build script; `12.0` and higher are acc
    git push origin v<version>
    ```
 
-The [Release workflow](.github/workflows/release.yml) then builds the Floor once, and builds and
-smoke-tests an archive for each of the six targets `install.sh` supports. It fails if the tag is
-not `v` plus the workspace version, and it fails early if `CHANGELOG.md` has no section for that
+Wait for the merge commit's CI on `main` to pass, or tag at once and let the release wait for it.
+The [Release workflow](.github/workflows/release.yml) refuses a tag that is not on `main`, or whose
+CI run on `main` failed, and waits up to 45 minutes for one still running. It then builds the Floor
+once, and builds and smoke-tests an archive for each of the six targets `install.sh` supports. It
+fails if the tag is not `v` plus the workspace version, and it fails early if `CHANGELOG.md` has no section for that
 version, so a release never goes out without notes. It then writes one `SHA256SUMS`, builds the
 release body from the changelog section and the pull requests since the previous tag, attests the
 archives and `SHA256SUMS`, and creates the GitHub Release. Linux hosts install the static musl
