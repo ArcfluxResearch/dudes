@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useId, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useState, useSyncExternalStore } from 'react';
 import type { FormEvent } from 'react';
 
 import type { CardRow } from '../board.ts';
@@ -15,6 +15,8 @@ import { boardColumns, cardWords, plainCards, tickets, TICKET_COLUMNS } from './
 import type { TicketColumn } from './model.ts';
 import { createTicket, dismissNotice, getTicketState, subscribeToTicket } from './ticket.ts';
 import { NO_AGENT_YET, refusalSentence } from './words.ts';
+
+const NOTICE_SECONDS = 8;
 
 const COLUMN_TONE: Readonly<Record<TicketColumn | 'needs', string>> = Object.freeze({
   todo: 'todo', working: 'doing', ready: 'review', done: 'done', needs: 'blocked',
@@ -54,9 +56,16 @@ export function agentsFor(floor: FloorState, project: string): {
 
 export function TicketNotice() {
   const ticket = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState);
-  if (ticket.notice === null) return null;
-  return <p className="ticket-notice" data-tone={ticket.notice.tone} role="status">
-    {ticket.notice.text}{' '}
+  const notice = ticket.notice;
+  // What went well is said for a few seconds. What went wrong stays until it is dismissed.
+  useEffect(() => {
+    if (notice === null || notice.tone !== 'done') return undefined;
+    const timer = setTimeout(dismissNotice, NOTICE_SECONDS * 1000);
+    return () => clearTimeout(timer);
+  }, [notice]);
+  if (notice === null) return null;
+  return <p className="ticket-notice" data-tone={notice.tone} role="status">
+    {notice.text}{' '}
     <button type="button" className="ticket-dismiss" onClick={dismissNotice}>Dismiss</button>
   </p>;
 }
