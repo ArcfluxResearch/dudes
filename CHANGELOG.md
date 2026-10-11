@@ -11,6 +11,24 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.85.1] - 2026-10-12
+
+### Highlights
+
+- **Set up a project in one step.** Run `dudes workspace add` in a git repository to enroll it with its suggested completion check and sensible defaults. (#40)
+
+### Changes
+
+- Update TOML parsing and editing dependencies. (#37)
+- `dudes workspace add` defaults to the canonical current directory, a unique folder id, the suggested check and its label, department `engineering`, five turns per goal and a 600-second check timeout. Explicit options override these defaults. (#40)
+- Quickstart asks for a project folder outside a repository, explains when you skip it, and asks at most five questions including confirmation. Its first hire starts idle, and sign-in commands are printed. (#40)
+- Without `--cwd`, `dudes hire` uses the only enrolled project or asks which one on a terminal. An agent hired without a project is named in a warning that explains it cannot take tickets. (#40)
+
+### Fixes
+
+- Start, Floor open, quickstart and ticket creation now explain when no project is set up and name `dudes workspace add` as the next step. The hint stays out of JSON output. The docs also explain how to bypass a shell alias or function named `dudes`. (#40)
+- The Floor explains when tickets are off, when a project is missing, when no agent works in the selected project and when an agent hired without a project cannot take tickets. (#39)
+
 ## [0.85.0] - 2026-10-11
 
 ### Highlights
@@ -83,7 +101,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.85.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.85.1...HEAD
+[0.85.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.85.0...v0.85.1
 [0.85.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.84.0...v0.85.0
 [0.84.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.79.0...v0.84.0
 [0.79.0]: https://github.com/ArcfluxResearch/dudes/releases/tag/v0.79.0
