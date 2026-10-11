@@ -23,7 +23,7 @@ export const FINISHED_TODAY_UNAVAILABLE: FinishedToday = Object.freeze({ state: 
 /** The most parcels the office shelf can show. */
 export const SHELF_SLOTS = 10;
 
-export const SHELF_LABEL = 'Goals finished today (daemon time)';
+export const SHELF_LABEL = 'Checks passed today (daemon time)';
 
 const U64_MAX = 18446744073709551615n;
 const DECIMAL = /^(0|[1-9][0-9]*)$/;

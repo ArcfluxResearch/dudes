@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import './ticket.css';
 
 import type { FloorState } from '../floor/store.ts';
-import { announcement, arrivals, bannerCounts, bannerText } from './model.ts';
+import { announcement, arrivals, bannerCounts, bannerText, viewConfirmed } from './model.ts';
 
 /** The page title for a banner, or `base` alone when nothing waits. */
 export function titleFor(base: string, text: string | null): string {
@@ -24,7 +24,7 @@ export function TicketBanner({ floor, onOpen }: { readonly floor: FloorState; re
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [said, setSaid] = useState('');
   const seen = useRef<ReadonlySet<string> | null>(null);
-  const confirmed = floor.phase === 'live' && !floor.stale && floor.snapshotEpoch === floor.epoch;
+  const confirmed = viewConfirmed(floor);
   const base = useRef<string | null>(null);
 
   useEffect(() => {

@@ -543,6 +543,19 @@ fn with_the_switch_off_the_ticket_paths_are_not_routes() {
     assert_eq!(tickets_made(&fixture), 0);
     let (view, _) = page.snapshot();
     assert!(view.get("ticket").is_none(), "no sibling when off");
+    // A ticket made from the socket is a card like any other while the board is off.
+    let mut board = board;
+    board
+        .rpc(Method::TicketCreate, json!({"title": "From the socket"}))
+        .result
+        .expect("made");
+    let (view, _) = page.snapshot();
+    let cards = view["projection"]["cards"].as_array().unwrap();
+    assert_eq!(cards.len(), 1);
+    assert!(
+        cards[0].get("ticket").is_none(),
+        "no ticket member when off"
+    );
     board.stop();
 }
 
@@ -844,6 +857,8 @@ fn bodies_are_bounded_flat_and_name_no_author_or_command() {
     for body in [
         r#"{"title":"x","by":{"kind":"system"}}"#,
         r#"{"title":"x","argv":["rm","-rf","/"]}"#,
+        r#"{"title":"x","done_when":"default"}"#,
+        r#"{"title":"mirror \u202egnp.exe"}"#,
         r#"{"title":"x","predicate":{"kind":"command","argv":["x"]}}"#,
         r#"{"title":"x","title":"y"}"#,
         r#"{"title":{"a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":{"i":1}}}}}}}}}}"#,
@@ -1021,7 +1036,7 @@ fn a_session_has_64_creates_and_32_assigns() {
 }
 
 /// One request at a time per session: a second request while the first waits for the writer is
-/// refused `limit_reached`, and the first still completes.
+/// refused `busy`, and the first still completes.
 #[test]
 fn a_session_has_one_request_in_flight() {
     let fixture = Fixture::new();
@@ -1046,7 +1061,7 @@ fn a_session_has_one_request_in_flight() {
     second.join().unwrap();
     answered
         .expect("a second request is answered without waiting for the writer")
-        .refused("limit_reached");
+        .refused("busy");
     first.join().unwrap().ok();
     assert_eq!(tickets_made(&fixture), 1);
     board.stop();
@@ -1132,15 +1147,20 @@ fn stop_and_remove_take_a_ticket_off_the_agent_and_the_board() {
     board.stop();
 }
 
-/// The daemon sends codes, and the page words them from its own table. Every sentence the daemon
-/// owns for a Needs-you reason, a refusal and a wait must be in that table, character for
-/// character, so the two cannot drift apart.
+/// The daemon sends codes, and the page words them from its own table. Each code is pinned to its
+/// sentence in that table, character for character, so the two cannot drift apart.
 #[test]
 fn the_page_words_match_the_daemon_words() {
     use dudes_proto::{TicketReason, TicketRefusal, TicketWait};
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../floor/src/renderer/ticket/words.ts");
     let source = std::fs::read_to_string(&path).expect("the page's table of ticket words");
+    let pinned = |key: &str, sentence: &str| {
+        assert!(
+            source.contains(&format!("{key}: \"{sentence}\",")),
+            "{key} is not worded {sentence:?}"
+        );
+    };
     for reason in [
         TicketReason::ProjectUnavailable,
         TicketReason::CheckCannotRun,
@@ -1155,13 +1175,10 @@ fn the_page_words_match_the_daemon_words() {
         TicketReason::HeldUnsure,
         TicketReason::WorktreeMissing,
     ] {
-        assert!(
-            source.contains(&format!("\"{}\"", reason.sentence())),
-            "{reason:?}"
-        );
+        let key = serde_json::to_value(reason).unwrap();
+        pinned(key.as_str().unwrap(), reason.sentence());
     }
     for refusal in [
-        TicketRefusal::StaleCard,
         TicketRefusal::NotATicket,
         TicketRefusal::TicketCard,
         TicketRefusal::ProjectUnavailable,
@@ -1170,30 +1187,66 @@ fn the_page_words_match_the_daemon_words() {
         TicketRefusal::AgentNoProject,
         TicketRefusal::QueueFull,
         TicketRefusal::LimitReached,
+        TicketRefusal::Busy,
     ] {
-        let sentence = refusal.sentence(dudes_types::CardStatus::Todo);
-        assert!(source.contains(&format!("\"{sentence}\"")), "{refusal:?}");
+        pinned(
+            refusal.code(),
+            &refusal.sentence(dudes_types::CardStatus::Todo),
+        );
     }
-    assert!(source.contains("You can't do that to a ticket that is "));
-    for wait in [
-        TicketWait::NotGiven,
-        TicketWait::Closing,
-        TicketWait::ProjectBusy,
-        TicketWait::Stopping,
-        TicketWait::AgentLimit,
-        TicketWait::FloorLimit,
+    // The page has already fetched the latest when it says this, so its sentence differs from
+    // the one a command line prints.
+    assert!(source.contains("stale_card: \"This ticket changed while you were looking. "));
+    assert!(source.contains("`You can't do that to a ticket that is ${"));
+    assert_eq!(
+        TicketRefusal::WrongState.sentence(dudes_types::CardStatus::Review),
+        "You can't do that to a ticket that is Ready for you."
+    );
+    for (status, name) in [
+        ("todo", "To do"),
+        ("claimed", "To do"),
+        ("doing", "Working"),
+        ("review", "Ready for you"),
+        ("done", "Done"),
+        ("blocked", "Needs you"),
+    ] {
+        assert!(
+            source.contains(&format!("case '{status}': return '{name}';"))
+                || source.contains(&format!("case '{status}':\n    case ")),
+            "{status} is not named {name}"
+        );
+    }
+    for (wait, kind) in [
+        (TicketWait::NotGiven, "not_given"),
+        (TicketWait::Closing, "closing"),
+        (TicketWait::ProjectBusy, "project_busy"),
+        (TicketWait::Stopping, "stopping"),
+        (TicketWait::AgentLimit, "agent_limit"),
+        (TicketWait::FloorLimit, "floor_limit"),
     ] {
         let sentence = wait.sentence("", "");
-        assert!(source.contains(&format!("\"{sentence}\"")), "{wait:?}");
+        assert!(
+            source.contains(&format!("case '{kind}': return \"{sentence}\";")),
+            "{kind}"
+        );
     }
     let card = dudes_types::CardId::from_parts(1, 1);
-    for wait in [
-        TicketWait::AgentBusy,
-        TicketWait::Ticket { card },
-        TicketWait::AgentPaused,
-        TicketWait::AgentAttached,
+    for (wait, kind) in [
+        (TicketWait::AgentBusy, "agent_busy"),
+        (TicketWait::Ticket { card }, "ticket"),
+        (TicketWait::AgentPaused, "agent_paused"),
+        (TicketWait::AgentAttached, "agent_attached"),
     ] {
         let sentence = wait.sentence("${agent}", "${title}");
-        assert!(source.contains(&format!("`{sentence}`")), "{sentence}");
+        assert!(
+            source.contains(&format!("case '{kind}': return `{sentence}`;")),
+            "{kind}"
+        );
     }
+    let queued = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../floor/src/renderer/ticket/ticket.ts"),
+    )
+    .expect("the page's ticket module");
+    assert!(queued.contains("`Queued for ${agent}, ${placeInLine(start.position)}. "));
+    assert!(source.contains("if (position <= 1) return 'next in line';"));
 }

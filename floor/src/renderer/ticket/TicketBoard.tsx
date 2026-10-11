@@ -6,7 +6,7 @@ import type { FormEvent } from 'react';
 import type { CardRow } from '../board.ts';
 import './ticket.css';
 
-import { Board, useRequestedCard } from '../BoardPanel.tsx';
+import { LegacyColumns, useRequestedCard } from '../BoardPanel.tsx';
 import type { FloorState } from '../floor/store.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
@@ -182,7 +182,7 @@ export function TicketBoard({ floor, selectedId, onSelect, onHire }: {
   const draw = (card: CardRow) => <TicketCard key={card.id} floor={floor} card={card} selected={card.id === selectedId}
     selectable={selectable} onSelect={onSelect} />;
   return <div className="board-view ticket-board">
-    <p className="stream-state" role="status">{selectable ? 'Live — confirmed' : 'View unconfirmed — waiting for the stream'}</p>
+    {selectable ? null : <p className="stream-state" role="alert">View unconfirmed — waiting for the stream</p>}
     {opened ? null : <TicketNotice />}
     {floor.ticket ? <section className="ticket-new" aria-label="New ticket">
       <button type="button" className="ticket-new-toggle" aria-expanded={forming} disabled={!ticketActionsOpen(floor)}
@@ -210,7 +210,7 @@ export function TicketBoard({ floor, selectedId, onSelect, onHire }: {
     {tickets(floor.cards).length === 0 ? <p>No tickets yet.</p> : null}
     {plain.length === 0 ? null : <section className="ticket-plain" aria-label="Other board cards">
       <h3>Other board cards</h3>
-      <Board floor={{ ...floor, cards: plain }} selectedId={selectedId} onSelect={onSelect} />
+      <LegacyColumns floor={{ ...floor, cards: plain }} selectedId={selectedId} onSelect={onSelect} />
     </section>}
   </div>;
 }

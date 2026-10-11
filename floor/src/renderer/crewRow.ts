@@ -7,6 +7,7 @@ import { ASKING, fieldsOf } from './scene/label.ts';
 import { activeCard } from './board.ts';
 import type { CardRow } from './board.ts';
 import { workspaceLabel } from './workspace.ts';
+import { ticketWord } from './ticket/model.ts';
 import { checkoutOf, SHARED_DIRECTORY_TEXT } from './worktree.ts';
 import type { CheckoutOwnership } from './worktree.ts';
 import type { LiveActivityContext } from './liveActivity.ts';
@@ -76,7 +77,7 @@ export function crewRowOf(row: AgentRow, cards: readonly CardRow[] = [], context
     role: shown(fields.role),
     engine,
     workspace,
-    status: shown(fields.status),
+    status: shown(ticketWord(cards, row.id, fields.status) ?? fields.status),
     activity,
     liveActivity,
     activeCard: task,

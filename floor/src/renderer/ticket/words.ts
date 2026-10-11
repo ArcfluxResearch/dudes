@@ -7,15 +7,15 @@
 import type { CardRow, TicketReason } from '../board.ts';
 
 export type RefusalCode = 'stale_card' | 'not_a_ticket' | 'ticket_card' | 'wrong_state' | 'project_unavailable'
-  | 'done_when_changed' | 'agent_unavailable' | 'agent_no_project' | 'queue_full' | 'limit_reached';
+  | 'done_when_changed' | 'agent_unavailable' | 'agent_no_project' | 'queue_full' | 'limit_reached' | 'busy';
 
 export const REFUSAL_CODES: readonly RefusalCode[] = Object.freeze([
   'stale_card', 'not_a_ticket', 'ticket_card', 'wrong_state', 'project_unavailable', 'done_when_changed',
-  'agent_unavailable', 'agent_no_project', 'queue_full', 'limit_reached',
+  'agent_unavailable', 'agent_no_project', 'queue_full', 'limit_reached', 'busy',
 ]);
 
 const REFUSALS: Readonly<Record<Exclude<RefusalCode, 'wrong_state'>, string>> = Object.freeze({
-  stale_card: "This ticket changed while you were looking. Reload and try again.",
+  stale_card: "This ticket changed while you were looking. Showing the latest.",
   not_a_ticket: "That card is not a ticket.",
   ticket_card: "That card is a ticket. Use the ticket commands.",
   project_unavailable: "That project is not set up any more.",
@@ -24,7 +24,13 @@ const REFUSALS: Readonly<Record<Exclude<RefusalCode, 'wrong_state'>, string>> = 
   agent_no_project: "That agent was hired before projects were recorded. Hire a new agent in this project with `dudes hire`.",
   queue_full: "That agent already has 8 tickets waiting.",
   limit_reached: "Too many tickets for now. Remove some, or wait.",
+  busy: "Another ticket request is still running. Try again in a moment.",
 });
+
+/** Text with the characters that reorder what is shown taken out, for anything a person or an agent wrote. */
+export function readable(text: string): string {
+  return text.replace(/[\u202A-\u202E\u2066-\u2069]/g, '');
+}
 
 /** What the operator calls a ticket in this status. */
 export function stateName(status: CardRow['status']): string {

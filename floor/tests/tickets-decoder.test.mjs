@@ -68,19 +68,18 @@ test('a card keeps exactly the members a snapshot sends, and a plain card has no
   assert.deepEqual(read({}).rows[0].ticket, { position: null, round: 0, reason: null, stopping: false });
   assert.equal(board.decodeCards([{ ...ticketCard(1, 'todo'), ticket: undefined }]).rows[0].ticket, null);
   for (const [what, ticket] of [
-    ['a note', { description: 'secret' }],
-    ['a summary', { summary: 'done' }],
-    ['a path', { path: 'src/main.rs' }],
     ['an unknown reason', { reason: 'made_up' }],
     ['a position of zero', { position: 0 }],
     ['a fractional round', { round: 1.5 }],
-    ['a project', { project: 'service' }],
-    ['a check label', { check: 'default passes' }],
     ['a stopping flag that is not a boolean', { stopping: 'yes' }],
   ]) {
     const { rows, rejected } = read(ticket);
     assert.deepEqual([rows.length, rejected], [0, 1], what);
   }
+  // A member a newer daemon adds is ignored, and the card is kept with the members this page knows.
+  const newer = board.decodeCards([ticketCard(1, 'todo', {}, { position: 2, project: 'service', tags: ['x'] })]);
+  assert.deepEqual([newer.rows.length, newer.rejected], [1, 0]);
+  assert.deepEqual(newer.rows[0].ticket, { position: 2, round: 0, reason: null, stopping: false });
   assert.deepEqual(board.decodeCards([{ ...ticketCard(1, 'todo'), ticket: 'yes' }]).rejected, 1);
   assert.deepEqual(board.decodeCards([{ ...ticketCard(1, 'todo'), ticket: [] }]).rejected, 1);
 });
