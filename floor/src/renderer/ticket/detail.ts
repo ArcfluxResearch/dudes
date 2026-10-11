@@ -11,7 +11,7 @@ import { TICKET_REASONS } from '../board.ts';
 import type { ControlDeps } from '../control/control.ts';
 import { browserControlDeps } from '../control/control.ts';
 import { problemText, readTicket } from './ticket.ts';
-import { WAITS } from './words.ts';
+import { WAITS, readable } from './words.ts';
 import type { Wait } from './words.ts';
 
 const UTF8 = new TextEncoder();
@@ -78,8 +78,8 @@ export function decodeDetail(body: Record<string, unknown>, card: string): Ticke
     wait = Object.freeze({ wait: waiting.wait.kind as Wait, note: waiting.note as string });
   }
   return Object.freeze({
-    note, project, check: Object.freeze({ id: check.id, label: check.label }), round, reason: why as TicketReason | null,
-    summary: words, result: outcome, position: place, waiting: wait,
+    note: readable(note), project, check: Object.freeze({ id: check.id, label: check.label }), round, reason: why as TicketReason | null,
+    summary: words === null ? null : readable(words), result: outcome, position: place, waiting: wait,
   });
 }
 

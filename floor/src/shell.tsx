@@ -319,7 +319,7 @@ export function WebFloorShell() {
       data-theme={preferences.theme} style={{ '--side-width': `${preferences.sidebarWidth}px` } as CSSProperties}>
       <header className="top-bar">
         <h1 id="floor-title" className="wordmark">dudes</h1>
-        <CrewStats agents={floor.agents} />
+        <CrewStats agents={floor.agents} cards={floor.cards} />
         <ControlNav floor={floor} view={focused ? null : view} onToggle={toggleView} />
         <div className="top-bar-actions" role="group" aria-label="Floor actions">
           <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={crewOpen && !focused}

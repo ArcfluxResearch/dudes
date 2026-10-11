@@ -888,7 +888,7 @@ function fromDelta(delta: Record<string, unknown>, message: ServerMessage): Floo
     messages: messages.rows,
     threads: messages.threads,
     messagesLsn: messages.cut,
-    doneNotices: announce(agents),
+    doneNotices: announce(agents, [...nextCards.values()]),
     output: state.output.targetId !== null && !next.has(state.output.targetId)
       ? emptyOutput(state.output, 'unavailable') : state.output,
     rejected: state.rejected + sifted.rejected + cardChanges.rejected + activity.rejected + retired.rejected + messages.rejected
@@ -896,9 +896,9 @@ function fromDelta(delta: Record<string, unknown>, message: ServerMessage): Floo
   };
 }
 
-function announce(agents: readonly AgentRow[]): readonly DoneNotice[] {
+function announce(agents: readonly AgentRow[], cards: readonly CardRow[]): readonly DoneNotice[] {
   const snapshotArrived = state.snapshotEpoch === state.epoch;
-  const fresh = snapshotArrived ? newlyDone(state.agents, agents) : [];
+  const fresh = snapshotArrived ? newlyDone(state.agents, agents, cards) : [];
   return fresh.length === 0 ? state.doneNotices : Object.freeze([...state.doneNotices, ...fresh]);
 }
 

@@ -2,14 +2,17 @@
 
 import type { AgentRow } from './scene/cast.ts';
 import { fieldsOf } from './scene/label.ts';
+import type { CardRow } from './board.ts';
+import { ticketWord } from './ticket/model.ts';
 
-const STATUS_ORDER = ['running', 'waiting', 'held', 'done', 'idle'];
+const STATUS_ORDER = ['running', 'waiting', 'held', 'needs you', 'ready for you', 'done', 'idle'];
 
 /** Each status some agent has, with how many, in the order the top bar lists them. */
-export function crewStatuses(agents: readonly AgentRow[]): readonly { readonly status: string; readonly count: number }[] {
+export function crewStatuses(agents: readonly AgentRow[], cards: readonly CardRow[] = []): readonly { readonly status: string; readonly count: number }[] {
   const counts = new Map<string, number>();
   for (const row of agents) {
-    const status = fieldsOf(row).status || 'unknown';
+    const own = fieldsOf(row).status || 'unknown';
+    const status = ticketWord(cards, row.id, own) ?? own;
     counts.set(status, (counts.get(status) ?? 0) + 1);
   }
   const rank = (status: string): number => {

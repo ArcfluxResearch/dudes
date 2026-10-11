@@ -131,7 +131,7 @@ test('the shelf reads a cached count as unavailable while stale, not live, or fr
 });
 
 test('the caption names the daemon day with the daemon date and offset', () => {
-  assert.equal(SHELF_LABEL, 'Goals finished today (daemon time)');
+  assert.equal(SHELF_LABEL, 'Checks passed today (daemon time)');
   const caption = shelfCaption(decodeFinishedToday(ready()));
   assert.deepEqual(caption, { label: SHELF_LABEL, value: '3', day: '2026-10-07, UTC+13:00' });
   assert.deepEqual(shelfCaption(FINISHED_TODAY_UNAVAILABLE), { label: SHELF_LABEL, value: 'unavailable', day: null });

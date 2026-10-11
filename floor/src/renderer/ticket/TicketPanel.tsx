@@ -13,7 +13,7 @@ import type { GitChangeKind } from '../git/git.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { getDetailState, loadDetail, needsDetail, subscribeToDetail } from './detail.ts';
 import type { TicketDetail } from './detail.ts';
-import { ACTION_LABEL, actionsOf, cardWords } from './model.ts';
+import { ACTION_LABEL, actionsOf, cardWords, projectOf } from './model.ts';
 import type { TicketAction } from './model.ts';
 import { agentsFor, ticketActionsOpen, TicketNotice } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
@@ -102,10 +102,12 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
 }
 
 /** Give to agent, Try again and Ask for changes: choose the agent, and for a change say what to fix. */
-function GiveForm({ floor, card, project, mode, onDone }: {
+export function GiveForm({ floor, card, project, pending, mode, onDone }: {
   readonly floor: FloorState;
   readonly card: CardRow;
   readonly project: string | null;
+  /** The reading's problem, when the project is not known and the read failed. */
+  readonly pending: string | null;
   readonly mode: 'give' | 'changes';
   readonly onDone: () => void;
 }) {
@@ -115,6 +117,7 @@ function GiveForm({ floor, card, project, mode, onDone }: {
   const [message, setMessage] = useState('');
   const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
   const chosen = usable.find((row) => row.id === agent)?.id ?? usable[0]?.id ?? null;
+  if (project === null) return <p className="ticket-hint" role="status">{pending ?? 'Reading the ticket…'}</p>;
   if (usable.length === 0) return <p className="ticket-hint" data-no-agent="true">{NO_AGENT_YET}</p>;
 
   async function submit(event: FormEvent): Promise<void> {
@@ -220,10 +223,12 @@ export function TicketPanel({ floor, card }: { readonly floor: FloorState; reado
     {!floor.ticket ? <p className="ticket-hint">Tickets are read-only here. Turn them on with <code>dudes config set floor.board on</code> and restart the daemon.</p> : null}
     {actions.length === 0 ? null : <div className="ticket-actions" role="group" aria-label="Ticket actions">
       {actions.map((action) => <button key={action} type="button" className="ticket-action" data-action={action}
-        disabled={sending} onClick={() => press(action)}>{ACTION_LABEL[action]}</button>)}
+        disabled={sending || (action === 'edit' && loaded === null)}
+        onClick={() => press(action)}>{ACTION_LABEL[action]}</button>)}
     </div>}
     {mode === 'give' || mode === 'changes'
-      ? <GiveForm floor={floor} card={card} project={loaded?.project ?? null} mode={mode} onDone={() => setMode('none')} /> : null}
+      ? <GiveForm floor={floor} card={card} project={loaded?.project ?? projectOf(floor, card)}
+        pending={detail.card === card.id ? detail.problem : null} mode={mode} onDone={() => setMode('none')} /> : null}
     {mode === 'edit' && loaded !== null ? <EditForm floor={floor} card={card} detail={loaded} onDone={() => setMode('none')} /> : null}
     {mode === 'remove' ? <div className="ticket-confirm" role="group" aria-label="Remove ticket">
       <p>Remove this ticket? It leaves the board. Its record stays in the journal.</p>

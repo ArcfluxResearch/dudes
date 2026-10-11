@@ -92,6 +92,30 @@ export function actionsOf(card: CardRow): readonly TicketAction[] {
   }
 }
 
+/** Whether the view is live and matches the newest snapshot, so what it says can be acted on or announced. */
+export function viewConfirmed(floor: FloorState): boolean {
+  return floor.phase === 'live' && !floor.stale && floor.snapshotEpoch === floor.epoch;
+}
+
+/**
+ * What an agent that finished its turn says of itself while its ticket waits on you: the agent
+ * reads "done" or "idle", but the work is not accepted. `null` when its status stands.
+ */
+export function ticketWord(cards: readonly CardRow[] | undefined, agent: string, status: string): string | null {
+  if (status !== 'done' && status !== 'idle') return null;
+  const held = tickets(cards).filter((card) => card.claimed_by === agent);
+  if (held.some((card) => card.status === 'blocked')) return 'needs you';
+  return held.some((card) => card.status === 'review') ? 'ready for you' : null;
+}
+
+/** The ticket that holds an agent's project, if one does: its title names the wait. */
+export function holdingTicket(floor: FloorState, agent: string): CardRow | null {
+  const project = decodeWorkspace(agentRow(floor, agent)?.workspace)?.id;
+  if (project === undefined) return null;
+  return tickets(floor.cards).find((card) => (card.status === 'doing' || card.status === 'review')
+    && decodeWorkspace(agentRow(floor, card.claimed_by)?.workspace)?.id === project) ?? null;
+}
+
 export function agentRow(floor: FloorState, id: string | null): AgentRow | null {
   return id === null ? null : floor.agents.find((row) => row.id === id) ?? null;
 }

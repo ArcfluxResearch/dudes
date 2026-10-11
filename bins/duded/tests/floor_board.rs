@@ -1147,15 +1147,20 @@ fn stop_and_remove_take_a_ticket_off_the_agent_and_the_board() {
     board.stop();
 }
 
-/// The daemon sends codes, and the page words them from its own table. Every sentence the daemon
-/// owns for a Needs-you reason, a refusal and a wait must be in that table, character for
-/// character, so the two cannot drift apart.
+/// The daemon sends codes, and the page words them from its own table. Each code is pinned to its
+/// sentence in that table, character for character, so the two cannot drift apart.
 #[test]
 fn the_page_words_match_the_daemon_words() {
     use dudes_proto::{TicketReason, TicketRefusal, TicketWait};
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../floor/src/renderer/ticket/words.ts");
     let source = std::fs::read_to_string(&path).expect("the page's table of ticket words");
+    let pinned = |key: &str, sentence: &str| {
+        assert!(
+            source.contains(&format!("{key}: \"{sentence}\",")),
+            "{key} is not worded {sentence:?}"
+        );
+    };
     for reason in [
         TicketReason::ProjectUnavailable,
         TicketReason::CheckCannotRun,
@@ -1170,13 +1175,10 @@ fn the_page_words_match_the_daemon_words() {
         TicketReason::HeldUnsure,
         TicketReason::WorktreeMissing,
     ] {
-        assert!(
-            source.contains(&format!("\"{}\"", reason.sentence())),
-            "{reason:?}"
-        );
+        let key = serde_json::to_value(reason).unwrap();
+        pinned(key.as_str().unwrap(), reason.sentence());
     }
     for refusal in [
-        TicketRefusal::StaleCard,
         TicketRefusal::NotATicket,
         TicketRefusal::TicketCard,
         TicketRefusal::ProjectUnavailable,
@@ -1185,30 +1187,66 @@ fn the_page_words_match_the_daemon_words() {
         TicketRefusal::AgentNoProject,
         TicketRefusal::QueueFull,
         TicketRefusal::LimitReached,
+        TicketRefusal::Busy,
     ] {
-        let sentence = refusal.sentence(dudes_types::CardStatus::Todo);
-        assert!(source.contains(&format!("\"{sentence}\"")), "{refusal:?}");
+        pinned(
+            refusal.code(),
+            &refusal.sentence(dudes_types::CardStatus::Todo),
+        );
     }
-    assert!(source.contains("You can't do that to a ticket that is "));
-    for wait in [
-        TicketWait::NotGiven,
-        TicketWait::Closing,
-        TicketWait::ProjectBusy,
-        TicketWait::Stopping,
-        TicketWait::AgentLimit,
-        TicketWait::FloorLimit,
+    // The page has already fetched the latest when it says this, so its sentence differs from
+    // the one a command line prints.
+    assert!(source.contains("stale_card: \"This ticket changed while you were looking. "));
+    assert!(source.contains("`You can't do that to a ticket that is ${"));
+    assert_eq!(
+        TicketRefusal::WrongState.sentence(dudes_types::CardStatus::Review),
+        "You can't do that to a ticket that is Ready for you."
+    );
+    for (status, name) in [
+        ("todo", "To do"),
+        ("claimed", "To do"),
+        ("doing", "Working"),
+        ("review", "Ready for you"),
+        ("done", "Done"),
+        ("blocked", "Needs you"),
+    ] {
+        assert!(
+            source.contains(&format!("case '{status}': return '{name}';"))
+                || source.contains(&format!("case '{status}':\n    case ")),
+            "{status} is not named {name}"
+        );
+    }
+    for (wait, kind) in [
+        (TicketWait::NotGiven, "not_given"),
+        (TicketWait::Closing, "closing"),
+        (TicketWait::ProjectBusy, "project_busy"),
+        (TicketWait::Stopping, "stopping"),
+        (TicketWait::AgentLimit, "agent_limit"),
+        (TicketWait::FloorLimit, "floor_limit"),
     ] {
         let sentence = wait.sentence("", "");
-        assert!(source.contains(&format!("\"{sentence}\"")), "{wait:?}");
+        assert!(
+            source.contains(&format!("case '{kind}': return \"{sentence}\";")),
+            "{kind}"
+        );
     }
     let card = dudes_types::CardId::from_parts(1, 1);
-    for wait in [
-        TicketWait::AgentBusy,
-        TicketWait::Ticket { card },
-        TicketWait::AgentPaused,
-        TicketWait::AgentAttached,
+    for (wait, kind) in [
+        (TicketWait::AgentBusy, "agent_busy"),
+        (TicketWait::Ticket { card }, "ticket"),
+        (TicketWait::AgentPaused, "agent_paused"),
+        (TicketWait::AgentAttached, "agent_attached"),
     ] {
         let sentence = wait.sentence("${agent}", "${title}");
-        assert!(source.contains(&format!("`{sentence}`")), "{sentence}");
+        assert!(
+            source.contains(&format!("case '{kind}': return `{sentence}`;")),
+            "{kind}"
+        );
     }
+    let queued = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../floor/src/renderer/ticket/ticket.ts"),
+    )
+    .expect("the page's ticket module");
+    assert!(queued.contains("`Queued for ${agent}, ${placeInLine(start.position)}. "));
+    assert!(source.contains("if (position <= 1) return 'next in line';"));
 }

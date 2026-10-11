@@ -43,6 +43,8 @@ export interface CardRow {
   readonly ticket: CardTicketRow | null;
 }
 
+import { readable } from './ticket/words.ts';
+
 export const COLUMNS = Object.freeze([
   { key: 'todo', title: 'Todo' }, { key: 'doing', title: 'Doing' },
   { key: 'blocked', title: 'Blocked' }, { key: 'done', title: 'Done' },
@@ -67,7 +69,6 @@ function actorOf(value: unknown): CardActor | null {
   return null;
 }
 
-const TICKET_KEYS = new Set(['position', 'round', 'reason', 'stopping']);
 
 function count(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 4_294_967_295;
@@ -77,7 +78,7 @@ function count(value: unknown): value is number {
 function ticketOf(value: unknown): CardTicketRow | null | undefined {
   if (value === undefined) return null;
   const ticket = object(value);
-  if (ticket === null || !Object.keys(ticket).every((key) => TICKET_KEYS.has(key))) return undefined;
+  if (ticket === null) return undefined;
   const { position, round, reason, stopping } = ticket;
   const place = position ?? null;
   if (place !== null && (!count(place) || place < 1)) return undefined;
@@ -104,7 +105,7 @@ function cardOf(value: unknown): CardRow | null {
   if (!Array.isArray(deps) || !deps.every((id) => typeof id === 'string' && CARD_ID.test(id))) return null;
   const ticket = ticketOf(row.ticket);
   if (ticket === undefined) return null;
-  return Object.freeze({ id: row.id, title: row.title, department: row.department,
+  return Object.freeze({ id: row.id, title: readable(row.title), department: row.department,
     status: row.status as CardStatus, status_by: Object.freeze(by), seq: row.seq,
     claimed_by: claimed, deps: Object.freeze([...deps]), ticket });
 }

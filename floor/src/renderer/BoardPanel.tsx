@@ -55,15 +55,14 @@ export function useRequestedCard(floor: FloorState, selectable: boolean, onSelec
   }, [requested, selectable, floor.cards, onSelect]);
 }
 
-export function Board({ floor, selectedId, onSelect }: {
+/** The legacy columns: every card in To do, Doing, Blocked or Done, as plain cards show. */
+export function LegacyColumns({ floor, selectedId, onSelect }: {
   readonly floor: FloorState;
   readonly selectedId: string | null;
   readonly onSelect: (id: string) => void;
 }) {
   const selectable = floor.phase === 'live' && !floor.stale;
-  useRequestedCard(floor, selectable, onSelect);
-  return <div className="board-view">
-    <p className="stream-state" role="status">{selectable ? 'Live — confirmed' : 'View unconfirmed — waiting for the stream'}</p>
+  return <>
     <div className="task-columns">
       {COLUMNS.map((column) => {
         const cards = cardsForColumn(floor.cards ?? [], column.key);
@@ -82,6 +81,19 @@ export function Board({ floor, selectedId, onSelect }: {
       })}
     </div>
     {(floor.cards ?? []).length === 0 ? <p>No board cards.</p> : null}
+  </>;
+}
+
+export function Board({ floor, selectedId, onSelect }: {
+  readonly floor: FloorState;
+  readonly selectedId: string | null;
+  readonly onSelect: (id: string) => void;
+}) {
+  const selectable = floor.phase === 'live' && !floor.stale;
+  useRequestedCard(floor, selectable, onSelect);
+  return <div className="board-view">
+    <p className="stream-state" role="status">{selectable ? 'Live — confirmed' : 'View unconfirmed — waiting for the stream'}</p>
+    <LegacyColumns floor={floor} selectedId={selectedId} onSelect={onSelect} />
   </div>;
 }
 

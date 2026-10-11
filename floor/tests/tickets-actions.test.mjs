@@ -86,7 +86,7 @@ test('the response map: each answer is worded for what it proves', async () => {
   let deps;
   [ok, notice, deps] = await text(refused('stale_card'));
   assert.equal(ok, false);
-  assert.deepEqual(notice, { tone: 'problem', text: 'This ticket changed while you were looking. Reload and try again.' });
+  assert.deepEqual(notice, { tone: 'problem', text: 'This ticket changed while you were looking. Showing the latest.' });
   assert.equal(deps.refreshed, 1, 'a stale card asks for a fresh snapshot');
 
   [, notice] = await text(refused('wrong_state'));

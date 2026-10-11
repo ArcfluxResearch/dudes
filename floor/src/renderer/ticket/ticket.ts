@@ -16,7 +16,7 @@ import { TICKET_REASONS } from '../board.ts';
 import type { TicketReason } from '../board.ts';
 import type { ControlDeps } from '../control/control.ts';
 import { browserControlDeps } from '../control/control.ts';
-import { agentName } from './model.ts';
+import { agentName, holdingTicket } from './model.ts';
 import { getFloorState } from '../floor/store.ts';
 import { COULD_NOT_CONFIRM, REFUSAL_CODES, WAITS, placeInLine, reasonSentence, refusalSentence, waitSentence } from './words.ts';
 import type { RefusalCode, Wait } from './words.ts';
@@ -153,10 +153,10 @@ export function problemText(outcome: Exclude<Outcome, { kind: 'done' }>, status:
 }
 
 /** What an assignment became, in the words the CLI uses. */
-export function startText(start: Start, agent: string): string {
+export function startText(start: Start, agent: string, holder = 'another ticket'): string {
   switch (start.state) {
     case 'started': return `${agent} is working on it.`;
-    case 'queued': return `Queued for ${agent}, ${placeInLine(start.position)}. ${waitSentence(start.wait, agent, 'another ticket')}`;
+    case 'queued': return `Queued for ${agent}, ${placeInLine(start.position)}. ${waitSentence(start.wait, agent, holder)}`;
     case 'needs_you': return reasonSentence(start.reason);
   }
 }
@@ -273,12 +273,19 @@ export async function createTicket(form: NewTicket, deps: ControlDeps = browserC
     commit({ sending: false, notice: { tone: 'done', text: 'Ticket created. Choose Give to agent when it is ready.' } });
     return { card: made.card, saved: true };
   }
-  const given = await send('assign', { card: made.card, agent: form.agent, expected_seq: made.seq ?? 0 }, deps);
-  const name = agentName(getFloorState(), form.agent);
-  const text = given.kind === 'done' && given.start !== null
-    ? `Ticket created. ${startText(given.start, name)}`
+  const floor = getFloorState();
+  const name = agentName(floor, form.agent);
+  // Without the new ticket's sequence there is nothing to give by, so the page does not guess one.
+  const given = made.seq === null
+    ? UNKNOWN
+    : await send('assign', { card: made.card, agent: form.agent, expected_seq: made.seq }, deps);
+  const started = given.kind === 'done' && given.start !== null ? given.start : null;
+  const text = started !== null
+    ? `Ticket created. ${startText(started, name, holdingTicket(floor, form.agent)?.title)}`
     : `Ticket created, but it was not given to ${name}. ${given.kind === 'done' ? COULD_NOT_CONFIRM : problemText(given, 'todo')}`;
-  commit({ sending: false, notice: { tone: given.kind === 'done' ? 'done' : 'problem', text } });
+  // A ticket that needs you stays said until it is dismissed, like any other problem.
+  const well = started !== null && started.state !== 'needs_you';
+  commit({ sending: false, notice: { tone: well ? 'done' : 'problem', text } });
   return { card: made.card, saved: true };
 }
 
@@ -326,8 +333,9 @@ export async function changeTicket(card: CardRow, change: Change, deps: ControlD
     return false;
   }
   const text = change.verb === 'assign' && outcome.start !== null
-    ? startText(outcome.start, agentName(getFloorState(), change.agent))
+    ? startText(outcome.start, agentName(getFloorState(), change.agent), holdingTicket(getFloorState(), change.agent)?.title)
     : change.verb === 'assign' ? COULD_NOT_CONFIRM : DONE_TEXT[change.verb];
-  commit({ sending: false, notice: { tone: 'done', text } });
+  const needs = change.verb === 'assign' && outcome.start?.state === 'needs_you';
+  commit({ sending: false, notice: { tone: needs ? 'problem' : 'done', text } });
   return true;
 }
