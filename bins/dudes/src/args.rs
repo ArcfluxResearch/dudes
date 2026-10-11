@@ -34,6 +34,7 @@ use dudes_proto::rpc::agent::{HireParams, LookParams, McpParams, RenameParams};
 use dudes_proto::rpc::board::{CardCreateParams, CardListParams};
 use dudes_proto::rpc::goal::{CompletionCheckDeclaration, GoalSetParams};
 use dudes_proto::rpc::journal::JournalTailParams;
+use dudes_proto::rpc::ticket::TicketCreateParams;
 use dudes_types::{AgentId, CardId, CardStatus, Lsn, MailId, Provider, Seq, Tokens, Usd};
 
 use crate::config::{self, Change, Key};
@@ -134,6 +135,8 @@ pub enum Command {
     Workspace(WorkspaceCommand),
     /// Operator board commands.
     Board(BoardCommand),
+    /// Operator ticket commands.
+    Ticket(TicketCommand),
     /// `agent.rename`.
     Rename(RenameParams),
     /// `agent.look`.
@@ -240,6 +243,74 @@ pub enum BoardCommand {
         to: CardStatus,
         /// The sequence the operator observed.
         expected_seq: Seq,
+    },
+}
+
+/// Which tickets `ticket list` shows, by the names the Floor uses for the board's columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TicketStatus {
+    /// Not started: with no agent, or queued for one.
+    Todo,
+    /// An agent is working on it.
+    Working,
+    /// The check passed and the work waits for the operator.
+    Ready,
+    /// Accepted.
+    Done,
+    /// It cannot go on without the operator.
+    NeedsYou,
+}
+
+/// One operator ticket command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TicketCommand {
+    /// Create a ticket, and give it to an agent when `give_to` is set.
+    Add {
+        /// The ticket's fields.
+        params: TicketCreateParams,
+        /// The agent to give it to once it exists.
+        give_to: Option<AgentId>,
+    },
+    /// Change a waiting ticket's title, note or check.
+    Edit {
+        /// The ticket.
+        card: CardId,
+        /// The new title.
+        title: Option<String>,
+        /// The new note; empty clears it.
+        note: Option<String>,
+        /// The id of the project's check to finish it by.
+        done_when: Option<String>,
+        /// The sequence the operator observed; the ticket's current one when absent.
+        expected_seq: Option<Seq>,
+    },
+    /// Put a ticket in an agent's queue.
+    Give {
+        /// The ticket.
+        card: CardId,
+        /// The agent.
+        agent: AgentId,
+        /// What to tell the agent.
+        message: Option<String>,
+        /// The sequence the operator observed; the ticket's current one when absent.
+        expected_seq: Option<Seq>,
+    },
+    /// Remove a ticket that is not being worked on.
+    Remove {
+        /// The ticket.
+        card: CardId,
+        /// The sequence the operator observed; the ticket's current one when absent.
+        expected_seq: Option<Seq>,
+    },
+    /// List tickets, optionally in one state.
+    List {
+        /// Only tickets in this state.
+        status: Option<TicketStatus>,
+    },
+    /// Show one ticket.
+    Show {
+        /// The ticket.
+        card: CardId,
     },
 }
 
@@ -572,6 +643,29 @@ COMMANDS
         Create, inspect, claim or move a journal-backed board card. Use the sequence
         from board list when claiming or moving; stale sequences are refused.
 
+    ticket add --title <text> [--note <text>] [--project <id>] [--done-when <check id>]
+               [--give-to <agent>]
+    ticket edit <card> [--title <text>] [--note <text>] [--done-when <check id>]
+                [--expected-seq <n>]
+    ticket give <card> --agent <id> [--message <text>] [--expected-seq <n>]
+    ticket remove <card> [--expected-seq <n>]
+    ticket list [--status todo|working|ready|done|needs-you]
+    ticket show <card>
+        A ticket is a board card with a title, a note, a project and a \"Done when\"
+        check. Add makes one and prints its card id. Project defaults to the only
+        enrolled workspace, and Done when to that project's own check. Give puts the
+        ticket in an agent's queue, answers at once and polls nothing; the agent must
+        be hired into the ticket's project. A message tells the agent what to change.
+        Edit and remove work on a ticket nobody has started; an empty --note clears
+        the note. Every change reads the ticket's current sequence just before the
+        call, so --expected-seq is only for a script that wants a stale one refused.
+        With --give-to, add creates the ticket and then gives it; a refused give leaves
+        the ticket in place and prints the refusal. List can be narrowed by --status.
+        EXAMPLE: tickets
+            dudes ticket add --title \"Fix the sign-in page\" --note \"It 500s on a blank password.\"
+            dudes ticket give <card> --agent <agent id>
+            dudes ticket show <card>
+
     workspace add <path> --id <id> --completion-check-label <text> --department <dept>
                   --hop-cap <n> --timeout-s <n> [--label <text>]
                   [--agent-usd-per-day <usd>] [--goal-usd <usd>]
@@ -803,6 +897,7 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "workspace" => Command::Workspace(workspace(tail, payload)?),
         "worktree" => Command::Worktree(worktree(tail)?),
         "board" => Command::Board(board(tail)?),
+        "ticket" => Command::Ticket(ticket(tail)?),
         "config" if json => return Err(ArgError::TextOnly("config")),
         "config" => Command::Config(config_command(tail)?),
         other => return Err(ArgError::UnknownCommand(other.to_owned())),
@@ -1242,6 +1337,118 @@ fn board(tail: &[OsString]) -> Result<BoardCommand, ArgError> {
             expected_seq: required(seq, "--expected-seq")?,
         }),
         _ => Err(ArgError::UnknownCommand(format!("board {subcommand}"))),
+    }
+}
+
+fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
+    let Some((command, rest)) = tail.split_first() else {
+        return Err(ArgError::NoSubcommand("ticket"));
+    };
+    if asks_for_help(command) {
+        return Err(ArgError::HelpRequested);
+    }
+    let subcommand = command.to_string_lossy();
+    if !matches!(
+        subcommand.as_ref(),
+        "add" | "edit" | "give" | "remove" | "list" | "show"
+    ) {
+        return Err(ArgError::UnknownCommand(format!("ticket {subcommand}")));
+    }
+    let takes_card = matches!(subcommand.as_ref(), "edit" | "give" | "remove" | "show");
+    let mut flags = Flags::new(rest);
+    let mut card = None;
+    let (mut title, mut note, mut project, mut done_when) = (None, None, None, None);
+    let (mut agent, mut message, mut status, mut seq) = (None, None, None, None);
+    while let Some(arg) = flags.next() {
+        match (subcommand.as_ref(), arg.to_string_lossy().as_ref()) {
+            (_, "--help" | "-h") => return Err(ArgError::HelpRequested),
+            ("add" | "edit", "--title") => title = Some(flags.value("--title")?),
+            ("add" | "edit", "--note") => note = Some(flags.value("--note")?),
+            ("add", "--project") => project = Some(flags.value("--project")?),
+            ("add" | "edit", "--done-when") => done_when = Some(flags.value("--done-when")?),
+            ("add", "--give-to") => {
+                agent = Some(flags.parsed::<AgentId>("--give-to", "an agent id")?);
+            }
+            ("give", "--agent") => agent = Some(flags.parsed::<AgentId>("--agent", "an agent id")?),
+            ("give", "--message") => message = Some(flags.value("--message")?),
+            ("edit" | "give" | "remove", "--expected-seq") => {
+                seq = Some(Seq(flags.parsed::<u64>("--expected-seq", "a whole number")?));
+            }
+            ("list", "--status") => status = Some(ticket_status(&mut flags)?),
+            (_, other) if takes_card && card.is_none() && !other.starts_with('-') => {
+                card = Some(
+                    arg.to_str()
+                        .ok_or(ArgError::NotUtf8("<card>"))?
+                        .parse::<CardId>()
+                        .map_err(|_| ArgError::BadValue {
+                            flag: "<card>",
+                            value: other.to_owned(),
+                            what: "a card id",
+                        })?,
+                );
+            }
+            (_, other) => return Err(ArgError::UnknownFlag(other.to_owned())),
+        }
+    }
+    if takes_card {
+        let card = required(card, "<card>")?;
+        return match subcommand.as_ref() {
+            "edit" => {
+                if title.is_none() && note.is_none() && done_when.is_none() {
+                    return Err(ArgError::Requires(
+                        "ticket edit",
+                        "at least one of --title, --note or --done-when",
+                    ));
+                }
+                Ok(TicketCommand::Edit {
+                    card,
+                    title,
+                    note,
+                    done_when,
+                    expected_seq: seq,
+                })
+            }
+            "give" => Ok(TicketCommand::Give {
+                card,
+                agent: required(agent, "--agent")?,
+                message,
+                expected_seq: seq,
+            }),
+            "remove" => Ok(TicketCommand::Remove {
+                card,
+                expected_seq: seq,
+            }),
+            _ => Ok(TicketCommand::Show { card }),
+        };
+    }
+    match subcommand.as_ref() {
+        "add" => Ok(TicketCommand::Add {
+            params: TicketCreateParams {
+                title: required(title, "--title")?,
+                description: note,
+                project,
+                done_when,
+                done_when_revision: None,
+            },
+            give_to: agent,
+        }),
+        _ => Ok(TicketCommand::List { status }),
+    }
+}
+
+fn ticket_status(flags: &mut Flags<'_>) -> Result<TicketStatus, ArgError> {
+    let value = flags.value("--status")?;
+    match value.as_str() {
+        "todo" => Ok(TicketStatus::Todo),
+        "working" => Ok(TicketStatus::Working),
+        "ready" => Ok(TicketStatus::Ready),
+        "done" => Ok(TicketStatus::Done),
+        "needs-you" => Ok(TicketStatus::NeedsYou),
+        _ => Err(ArgError::BadValue {
+            flag: "--status",
+            value,
+            what: "todo, working, ready, done or needs-you",
+        }),
     }
 }
 
