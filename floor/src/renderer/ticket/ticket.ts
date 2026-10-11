@@ -198,10 +198,23 @@ export function dismissNotice(): void {
   if (state.notice !== null && !state.sending) commit({ ...state, notice: null });
 }
 
+/**
+ * The daemon admits one ticket request at a time from a session, and refuses an overlapping one
+ * with a sentence about limits. So this page never overlaps its own: a read of a ticket's detail
+ * and an action wait their turn.
+ */
+let queue: Promise<unknown> = Promise.resolve();
+
+function inTurn<T>(job: () => Promise<T>): Promise<T> {
+  const run = queue.then(job, job);
+  queue = run.catch(() => undefined);
+  return run;
+}
+
 async function send(verb: Verb, payload: object, deps: ControlDeps): Promise<Outcome> {
   const csrf = deps.csrf();
   if (csrf === null) return Object.freeze({ kind: 'forbidden' });
-  const sent = await postTicket(verb, payload, csrf, deps.fetch);
+  const sent = await inTurn(() => postTicket(verb, payload, csrf, deps.fetch));
   // An answer about another ticket proves nothing about this one.
   const asked = (payload as { card?: unknown }).card;
   const outcome = sent.kind === 'done' && verb !== 'read' && asked !== undefined && sent.card !== asked ? UNKNOWN : sent;

@@ -85,6 +85,16 @@ test('a card keeps exactly the members a snapshot sends, and a plain card has no
   assert.deepEqual(board.decodeCards([{ ...ticketCard(1, 'todo'), ticket: [] }]).rejected, 1);
 });
 
+test('a delta that removes a card takes it off the board', () => {
+  subscribe(store, { cards: [ticketCard(1, 'todo'), ticketCard(2, 'todo')] });
+  const delta = (body) => JSON.stringify({ type: 'floor.delta', delta: { lsn: 13, agents: [], cards: [], mail: [], removed_agents: [], ...body } });
+  const epoch = store.getFloorState().epoch;
+  store.applyServerFrame(delta({ removed_cards: [cardId(1), 'not a card id', 7] }), epoch);
+  assert.deepEqual(store.getFloorState().cards.map((card) => card.id), [cardId(2)]);
+  store.applyServerFrame(delta({ lsn: 14 }), epoch);
+  assert.deepEqual(store.getFloorState().cards.map((card) => card.id), [cardId(2)], 'a delta with no removals keeps the rest');
+});
+
 test('the ticket sibling is an empty object, and nothing else', () => {
   subscribe(store, { ticket: {} });
   assert.equal(store.getFloorState().ticket, true);

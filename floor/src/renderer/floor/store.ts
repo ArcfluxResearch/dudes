@@ -856,6 +856,9 @@ function fromDelta(delta: Record<string, unknown>, message: ServerMessage): Floo
     ? { rows: state.retiredAgents, rejected: 0 } : decodeRetiredAgents(delta.retired_agents);
   const nextCards = new Map(state.cards.map((card) => [card.id, card]));
   for (const card of cardChanges.rows) nextCards.set(card.id, card);
+  for (const id of Array.isArray(delta.removed_cards) ? delta.removed_cards : []) {
+    if (typeof id === 'string') nextCards.delete(id);
+  }
   const removed = new Set(
     (Array.isArray(delta.removed_agents) ? delta.removed_agents : [])
       .filter((id): id is string => typeof id === 'string' && AGENT_ID.test(id)),

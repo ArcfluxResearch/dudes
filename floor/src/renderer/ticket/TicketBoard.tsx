@@ -167,12 +167,14 @@ export function TicketBoard({ floor, selectedId, onSelect, onHire }: {
   useRequestedCard(floor, selectable, onSelect);
   const [forming, setForming] = useState(false);
   const { columns, needsYou, doneHidden } = boardColumns(floor.cards);
+  // The panel of the selected ticket says what happened; the board says it when none is open.
+  const opened = floor.cards.some((card) => card.id === selectedId && card.ticket !== null);
   const plain = plainCards(floor.cards);
   const draw = (card: CardRow) => <TicketCard key={card.id} floor={floor} card={card} selected={card.id === selectedId}
     selectable={selectable} onSelect={onSelect} />;
   return <div className="board-view ticket-board">
     <p className="stream-state" role="status">{selectable ? 'Live — confirmed' : 'View unconfirmed — waiting for the stream'}</p>
-    <TicketNotice />
+    {opened ? null : <TicketNotice />}
     {floor.ticket ? <section className="ticket-new" aria-label="New ticket">
       <button type="button" className="ticket-new-toggle" aria-expanded={forming} disabled={!ticketActionsOpen(floor)}
         onClick={() => setForming((open) => !open)}>{forming ? 'Close new ticket' : 'New ticket'}</button>

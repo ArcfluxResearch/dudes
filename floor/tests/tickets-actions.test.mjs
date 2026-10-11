@@ -195,6 +195,23 @@ test('one request at a time, and an empty title sends nothing', async () => {
   assert.equal(seen.length, 1);
 });
 
+test('the page never overlaps its own requests, so a read and an action take turns', async () => {
+  subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'review', { claimed_by: ADA, seq: 7 })] });
+  const card = store.getFloorState().cards[0];
+  let running = 0;
+  let most = 0;
+  const { deps, seen } = daemon(async (url) => {
+    running += 1;
+    most = Math.max(most, running);
+    await new Promise((resolveTick) => setTimeout(resolveTick, 5));
+    running -= 1;
+    return url === '/floor/ticket/read' ? json(200, { state: 'ok' }) : done('stopped', NEW);
+  });
+  await Promise.all([ticket.readTicket(NEW, deps), ticket.changeTicket(card, { verb: 'stop' }, deps), ticket.readTicket(NEW, deps)]);
+  assert.equal(most, 1, 'at most one request is out at a time');
+  assert.deepEqual(seen.map((s) => s.url), ['/floor/ticket/read', '/floor/ticket/stop', '/floor/ticket/read']);
+});
+
 test('with no Floor session nothing is sent', async () => {
   subscribe(store, { agents: [agent()] });
   const { deps, seen } = daemon(() => done('created', NEW));
