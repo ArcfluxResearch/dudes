@@ -2,11 +2,13 @@
 
 use anyhow::{Context as _, Result};
 use dudes_journal::{AgentRow, GoalRow, Projections};
+use dudes_proto::QueueKey;
 use dudes_proto::rpc::floor::FloorFinishedToday;
 use dudes_proto::{
     ActivityView, AgentView, CardTicket, CardView, GoalView, LiveActivityView, RetiredAgentView,
 };
-use dudes_types::{CardStatus, GoalId, GoalStatus, Lsn, Timestamp};
+use dudes_types::{AgentId, CardStatus, GoalId, GoalStatus, Lsn, Timestamp};
+use std::collections::BTreeMap;
 
 pub(crate) const MAX_MAIL_BYTES: usize = dudes_proto::MAX_MESSAGES_BYTES;
 pub(crate) const ARCHIVE_RESERVE_BYTES: usize =
@@ -87,22 +89,31 @@ pub(crate) fn cards(projections: &Projections) -> Result<Vec<CardView>> {
     let tickets = projections
         .tickets()
         .context("could not read projected tickets")?;
+    let by_id: BTreeMap<_, _> = tickets
+        .iter()
+        .map(|(view, ticket)| (view.id, ticket))
+        .collect();
+    // Each agent's queue in serving order, so a place is a lookup and not a scan.
+    let mut queues: BTreeMap<AgentId, Vec<QueueKey>> = BTreeMap::new();
+    for (view, ticket) in &tickets {
+        if let (CardStatus::Claimed, Some(agent), Some(key)) =
+            (view.status, view.claimed_by, ticket.queue)
+        {
+            queues.entry(agent).or_default().push(key);
+        }
+    }
+    for queue in queues.values_mut() {
+        queue.sort_unstable();
+    }
     for card in &mut cards {
-        let Some((_, ticket)) = tickets.iter().find(|(view, _)| view.id == card.id) else {
+        let Some(ticket) = by_id.get(&card.id) else {
             continue;
         };
         let position = match (card.status, card.claimed_by, ticket.queue) {
-            (CardStatus::Claimed, Some(agent), Some(key)) => {
-                let ahead = tickets
-                    .iter()
-                    .filter(|(view, other)| {
-                        view.status == CardStatus::Claimed
-                            && view.claimed_by == Some(agent)
-                            && other.queue.is_some_and(|other| other < key)
-                    })
-                    .count();
-                u32::try_from(ahead + 1).ok()
-            }
+            (CardStatus::Claimed, Some(agent), Some(key)) => queues
+                .get(&agent)
+                .and_then(|queue| queue.binary_search(&key).ok())
+                .and_then(|at| u32::try_from(at + 1).ok()),
             _ => None,
         };
         card.ticket = Some(CardTicket {

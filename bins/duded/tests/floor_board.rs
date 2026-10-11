@@ -543,6 +543,19 @@ fn with_the_switch_off_the_ticket_paths_are_not_routes() {
     assert_eq!(tickets_made(&fixture), 0);
     let (view, _) = page.snapshot();
     assert!(view.get("ticket").is_none(), "no sibling when off");
+    // A ticket made from the socket is a card like any other while the board is off.
+    let mut board = board;
+    board
+        .rpc(Method::TicketCreate, json!({"title": "From the socket"}))
+        .result
+        .expect("made");
+    let (view, _) = page.snapshot();
+    let cards = view["projection"]["cards"].as_array().unwrap();
+    assert_eq!(cards.len(), 1);
+    assert!(
+        cards[0].get("ticket").is_none(),
+        "no ticket member when off"
+    );
     board.stop();
 }
 
@@ -844,6 +857,8 @@ fn bodies_are_bounded_flat_and_name_no_author_or_command() {
     for body in [
         r#"{"title":"x","by":{"kind":"system"}}"#,
         r#"{"title":"x","argv":["rm","-rf","/"]}"#,
+        r#"{"title":"x","done_when":"default"}"#,
+        r#"{"title":"mirror \u202egnp.exe"}"#,
         r#"{"title":"x","predicate":{"kind":"command","argv":["x"]}}"#,
         r#"{"title":"x","title":"y"}"#,
         r#"{"title":{"a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":{"i":1}}}}}}}}}}"#,
@@ -1021,7 +1036,7 @@ fn a_session_has_64_creates_and_32_assigns() {
 }
 
 /// One request at a time per session: a second request while the first waits for the writer is
-/// refused `limit_reached`, and the first still completes.
+/// refused `busy`, and the first still completes.
 #[test]
 fn a_session_has_one_request_in_flight() {
     let fixture = Fixture::new();
@@ -1046,7 +1061,7 @@ fn a_session_has_one_request_in_flight() {
     second.join().unwrap();
     answered
         .expect("a second request is answered without waiting for the writer")
-        .refused("limit_reached");
+        .refused("busy");
     first.join().unwrap().ok();
     assert_eq!(tickets_made(&fixture), 1);
     board.stop();

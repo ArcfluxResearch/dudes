@@ -2225,6 +2225,7 @@ fn ticket_response<'a>(
     head: &ActionHead,
     body: &[u8],
 ) -> Response<'a> {
+    // A lost answer to a create is not retried; Remove clears a duplicate.
     let Some(limits) = catalog.board else {
         return error_response(403, "Forbidden");
     };
@@ -2236,12 +2237,15 @@ fn ticket_response<'a>(
     let Ok(request) = TicketRequest::parse(route, body) else {
         return error_response(400, "Bad Request");
     };
-    let Some(turn) = limits.begin(session.limit_key(), request.kind()) else {
-        return action_json(
-            409,
-            "Conflict",
-            &serde_json::json!({"state": "refused", "reason": "limit_reached"}),
-        );
+    let turn = match limits.begin(session.limit_key(), request.kind()) {
+        Ok(turn) => turn,
+        Err(reason) => {
+            return action_json(
+                409,
+                "Conflict",
+                &serde_json::json!({"state": "refused", "reason": reason}),
+            );
+        }
     };
     match handle.ticket(session, request) {
         TicketReply::Done(value) => {

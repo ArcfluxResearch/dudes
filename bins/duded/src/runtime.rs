@@ -6831,6 +6831,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             &self.projections,
             &self.local_days,
         ));
+        // With the board off a ticket is a card like any other, and the page is told nothing more.
+        if !self.board_enabled {
+            for card in &mut snapshot.cards {
+                card.ticket = None;
+            }
+        }
         Ok(snapshot)
     }
 

@@ -492,6 +492,58 @@ mod tests {
         assert!(delta.agents.is_empty());
     }
 
+    /// A reader from before the board names none of the new members, and ignores each of them: a
+    /// card's `ticket` and a delta's `removed_cards`.
+    #[test]
+    fn an_older_reader_ignores_the_ticket_members() {
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct OlderCard {
+            id: CardId,
+            title: String,
+            department: String,
+            status: CardStatus,
+            status_by: Actor,
+            seq: Seq,
+            claimed_by: Option<AgentId>,
+            deps: Vec<CardId>,
+        }
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct OlderDelta {
+            lsn: Lsn,
+            agents: Vec<AgentView>,
+            cards: Vec<OlderCard>,
+            removed_agents: Vec<AgentId>,
+        }
+        let card = CardView {
+            id: CardId::from_parts(1, 1),
+            title: "Ticket".to_owned(),
+            department: "engineering".to_owned(),
+            status: CardStatus::Claimed,
+            status_by: Actor::System,
+            seq: Seq(2),
+            claimed_by: Some(AgentId::from_parts(1, 2)),
+            deps: Vec::new(),
+            ticket: Some(CardTicket {
+                position: Some(2),
+                round: 1,
+                reason: None,
+                stopping: false,
+            }),
+        };
+        let delta = FloorDelta {
+            cards: vec![card],
+            removed_cards: vec![CardId::from_parts(1, 3)],
+            ..FloorDelta::default()
+        };
+        let wire = serde_json::to_value(&delta).unwrap();
+        assert!(wire.get("removed_cards").is_some());
+        let older: OlderDelta = serde_json::from_value(wire).unwrap();
+        assert_eq!(older.cards.len(), 1);
+        assert_eq!(older.cards[0].title, "Ticket");
+    }
+
     /// A result that ran keeps today's bytes, and older bytes read as a result that ran.
     #[test]
     fn a_result_names_not_run_only_when_its_check_did_not_run() {
