@@ -4,7 +4,7 @@
 // operator may do to it, and what the banner counts. All of it is read from the snapshot's cards
 // and agents and nothing else, so a turn ending moves nothing here.
 
-import type { CardRow, TicketReason } from '../board.ts';
+import type { CardRow } from '../board.ts';
 import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { decodeWorkspace } from '../workspace.ts';
@@ -204,5 +204,3 @@ export function arrivals(seen: ReadonlySet<string> | null, cards: readonly CardR
 export function announcement(card: CardRow): string {
   return card.status === 'review' ? `${card.title} is ready for you.` : `${card.title} needs you.`;
 }
-
-export type { TicketReason };
