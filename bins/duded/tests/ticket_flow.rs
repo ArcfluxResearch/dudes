@@ -845,7 +845,7 @@ fn an_edit_to_a_queued_ticket_is_used_when_it_starts() {
 }
 
 /// A paused agent keeps the ticket in its queue with a note that names the agent. Resume starts it.
-/// An agent that has a goal of its own is not given a second one.
+/// An agent that has a goal of its own is not given a second one until that goal is finished.
 #[test]
 fn a_held_agent_starts_nothing_and_a_goal_of_its_own_is_kept() {
     let fixture = Fixture::new();
@@ -888,6 +888,47 @@ fn a_held_agent_starts_nothing_and_a_goal_of_its_own_is_kept() {
         started_goals(&fixture.records()).len(),
         1,
         "it started once the goal was done"
+    );
+    flow.stop();
+}
+
+/// A goal that ran out of turns is not finished: the agent still holds it, and a ticket given to
+/// that agent waits instead of replacing it.
+#[test]
+fn an_agent_whose_own_goal_ran_out_is_not_given_a_second_goal() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let dana = flow.hire("Dana");
+    let own = common::set_goal(
+        &flow.running.handle,
+        dudes_proto::rpc::goal::GoalSetParams {
+            hop_cap: 1,
+            ..common::goal_params(dana, &["/usr/bin/false"])
+        },
+    );
+    let (turn, ..) = Flow::await_turn_number(&fixture, 1);
+    flow.end_turn(turn, None);
+    fixture.await_record("an Exhausted decision", |record| {
+        matches!(
+            record,
+            Record::LoopDecided {
+                decision: LoopDecision::Exhausted { .. },
+                ..
+            }
+        )
+        .then_some(())
+    });
+    assert_eq!(flow.agent(dana).status, AgentStatus::Exhausted);
+
+    let card = flow.create("Fix the parser");
+    let outcome = flow.give_ok(card, dana, None);
+    assert_eq!(queued(&outcome).1, TicketWait::AgentBusy);
+    assert!(started_goals(&fixture.records()).is_empty());
+    assert_eq!(
+        flow.agent(dana).goal.map(|goal| goal.id),
+        Some(own),
+        "the goal that ran out is not replaced"
     );
     flow.stop();
 }
