@@ -26,6 +26,7 @@ import { selectedAgentRow } from './renderer/scene/selection';
 import { TerminalPanel } from './renderer/terminal/TerminalPanel';
 import { JournalStoppedBanner } from './renderer/JournalStoppedBanner';
 import { ClosingTimeBanner } from './renderer/ClosingTimeBanner';
+import { TicketBanner } from './renderer/ticket/TicketBanner';
 import { requestCardSelection } from './renderer/BoardPanel';
 import { StreamNotice } from './renderer/StreamNotice';
 import './failure.css';
@@ -340,6 +341,7 @@ export function WebFloorShell() {
         <PastedLinkNotice />
         <JournalStoppedBanner stopped={floor.journalStopped} />
         <ClosingTimeBanner closing={floor.closingTime} stale={floor.stale} />
+        <TicketBanner floor={floor} onOpen={() => openView('board')} />
         {firstLink === null ? <StreamNotice floor={floor} /> : null}
         <div className="office-bar" ref={setOfficeBar} />
       </header>
@@ -350,7 +352,8 @@ export function WebFloorShell() {
           onOpenCard={openCard}
           addAgent={<HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded />} /> : null}
         {view === null || focused ? null : <Control key={view} floor={floor} view={view} selectedId={currentSelectedId}
-          onClose={() => setView(null)} onView={openView} onOpenQuestion={openQuestion} onHireAgain={hireAgain}
+          onClose={() => setView(null)} onView={openView} onOpenQuestion={openQuestion} onOpenTicket={openCard}
+          onHire={openHire} onHireAgain={hireAgain}
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
         <div className="office-slot">
           <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}

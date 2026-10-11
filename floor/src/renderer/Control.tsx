@@ -17,6 +17,8 @@ import { fieldsOf } from './scene/label.ts';
 import { SetupView } from './setup/SetupView.tsx';
 import { SettingsView } from './settings/SettingsView.tsx';
 import { Board, CardDetail } from './BoardPanel.tsx';
+import { drawsTickets, TicketBoard } from './ticket/TicketBoard.tsx';
+import { TicketPanel } from './ticket/TicketPanel.tsx';
 import { workspaceGroups, workspaceLabel } from './workspace.ts';
 import { HireEntry } from './onboarding/HireEntry.tsx';
 
@@ -54,16 +56,17 @@ function focusOnArrival(node: HTMLHeadingElement | null): void {
   node?.focus();
 }
 
-export function OverviewSummary({ floor, selectedId, onOpenQuestion, onHireAgain }: {
+export function OverviewSummary({ floor, selectedId, onOpenQuestion, onOpenTicket, onHireAgain }: {
   readonly floor: FloorState;
   readonly selectedId: string | null;
   readonly onOpenQuestion: (agentId: string) => void;
+  readonly onOpenTicket?: (card: string) => void;
   readonly onHireAgain?: (row: RetiredAgentRow, opener: HTMLButtonElement) => void;
 }) {
   return (
     <div className="overview-summary">
       <StreamReadStatus floor={floor} />
-      <WaitingSection floor={floor} onOpen={onOpenQuestion} />
+      <WaitingSection floor={floor} onOpen={onOpenQuestion} onOpenTicket={onOpenTicket} />
       <dl>
         <div><dt>Current agents</dt><dd>{floor.agents.length}</dd></div>
         <div><dt>Journal position</dt><dd className="data">{journalPosition(floor.lsn)}</dd></div>
@@ -142,21 +145,26 @@ export function FocusRoster({ collapsed, onToggle, ...roster }: Parameters<typeo
 }
 
 /** The things waiting on the operator, one entry each. The list is absent when nothing waits. */
-export function WaitingOnYou({ items, selectable, onOpen }: {
+export function WaitingOnYou({ items, selectable, onOpen, onOpenTicket }: {
   readonly items: readonly WaitingItem[];
   readonly selectable: boolean;
   readonly onOpen: (agentId: string) => void;
+  readonly onOpenTicket?: (card: string) => void;
 }) {
   return (
     <section className="waiting-on-you" aria-labelledby="waiting-on-you-title">
       <h3 id="waiting-on-you-title">Waiting on you</h3>
       <ol aria-label="Things waiting on you">
         {items.map((item) => (
-          <li key={item.key} className="waiting-item" data-waiting-kind={item.kind} data-waiting-agent-id={item.agentId}>
+          <li key={item.key} className="waiting-item" data-waiting-kind={item.kind}
+            data-waiting-agent-id={item.agentId ?? undefined} data-waiting-card-id={item.kind === 'ticket' ? item.card : undefined}>
             <h4>{item.name}</h4>
             <p>{item.text}</p>
-            <button type="button" className="waiting-open" disabled={!selectable}
-              onClick={() => onOpen(item.agentId)}>Answer</button>
+            {item.kind === 'question'
+              ? <button type="button" className="waiting-open" disabled={!selectable}
+                onClick={() => onOpen(item.agentId)}>Answer</button>
+              : <button type="button" className="waiting-open" disabled={!selectable || onOpenTicket === undefined}
+                onClick={() => onOpenTicket?.(item.card)}>Open ticket</button>}
           </li>
         ))}
       </ol>
@@ -164,13 +172,15 @@ export function WaitingOnYou({ items, selectable, onOpen }: {
   );
 }
 
-function WaitingSection({ floor, onOpen }: {
+function WaitingSection({ floor, onOpen, onOpenTicket }: {
   readonly floor: FloorState;
   readonly onOpen: (agentId: string) => void;
+  readonly onOpenTicket?: (card: string) => void;
 }) {
-  const items = waitingOnYou(floor.agents);
+  const items = waitingOnYou(floor.agents, floor.cards);
   return items.length === 0 ? null
-    : <WaitingOnYou items={items} selectable={floor.phase === 'live' && !floor.stale} onOpen={onOpen} />;
+    : <WaitingOnYou items={items} selectable={floor.phase === 'live' && !floor.stale} onOpen={onOpen}
+      onOpenTicket={onOpenTicket} />;
 }
 
 export function ControlNav({ floor, view, onToggle }: {
@@ -189,21 +199,28 @@ export function ControlNav({ floor, view, onToggle }: {
   );
 }
 
-export function Control({ floor, view, selectedId, onClose, onView, onOpenQuestion, onHireAgain, onGuide }: {
+export function Control({ floor, view, selectedId, onClose, onView, onOpenQuestion, onOpenTicket, onHire, onHireAgain, onGuide }: {
   readonly floor: FloorState;
   readonly view: ControlView;
   readonly selectedId: string | null;
   readonly onClose: () => void;
   readonly onView: (view: ControlView) => void;
   readonly onOpenQuestion: (agentId: string) => void;
+  /** Open the Board on a ticket. */
+  readonly onOpenTicket?: (card: string) => void;
+  /** Open the Hire form, from the new-ticket form when no agent is hired. */
+  readonly onHire?: (opener: HTMLElement | null) => void;
   readonly onHireAgain?: (row: RetiredAgentRow, opener: HTMLButtonElement) => void;
   readonly onGuide?: () => void;
 }) {
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const selectedCard = (floor.cards ?? []).find((card) => card.id === selectedCardId) ?? null;
   const panels: Record<ControlView, ReactNode> = {
-    overview: <OverviewSummary floor={floor} selectedId={selectedId} onOpenQuestion={onOpenQuestion} onHireAgain={onHireAgain} />,
-    board: <Board floor={floor} selectedId={selectedCardId} onSelect={setSelectedCardId} />,
+    overview: <OverviewSummary floor={floor} selectedId={selectedId} onOpenQuestion={onOpenQuestion}
+      onOpenTicket={onOpenTicket} onHireAgain={onHireAgain} />,
+    board: drawsTickets(floor)
+      ? <TicketBoard floor={floor} selectedId={selectedCardId} onSelect={setSelectedCardId} onHire={onHire} />
+      : <Board floor={floor} selectedId={selectedCardId} onSelect={setSelectedCardId} />,
     log: <LogPanel floor={floor} />,
     setup: <SetupView floor={floor} onGuide={onGuide} />,
     settings: <SettingsView floor={floor} onSetup={() => onView('setup')} />,
@@ -221,7 +238,8 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
       <div className="control-view">{panels[view]}</div>
       {view === 'board' ? <div className="control-detail" id="selected-card-detail" key={selectedCardId ?? 'card-none'}
         ref={handFocusOnLeave} data-focus-on-leave={viewButtonId('board')}>
-        <CardDetail floor={floor} card={selectedCard} />
+        {selectedCard?.ticket != null ? <TicketPanel floor={floor} card={selectedCard} />
+          : <CardDetail floor={floor} card={selectedCard} />}
       </div> : null}
     </section>
   );
