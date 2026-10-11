@@ -1,7 +1,8 @@
 # Tickets
 
 A ticket is a piece of work on the board. It has a title, an optional note, a project and a
-"Done when" check. You make tickets and give them to agents with `dudes ticket`.
+"Done when" check. You make tickets, give them to agents, and review the agents' work with
+`dudes ticket`.
 
 Everything here needs a running daemon (`dudes start`) and an enrolled project, which is a
 repository directory added with `dudes workspace add`. Each command answers at once and waits for
@@ -26,8 +27,12 @@ takes. Add `--json` for the same answer as data.
 Give the ticket to an agent hired into the same project:
 
 ```sh
-dudes ticket give <card id> --agent <agent id>
+dudes ticket give <card id> --agent Cody
 ```
+
+`--agent` takes the agent's name or its id. A name must match exactly one live agent. When no live
+agent has that name, or several do, the command prints a plain sentence (the second lists the
+matching ids) and sends nothing, and you can use an id instead.
 
 The answer is immediate and says what happened:
 
@@ -41,11 +46,57 @@ The answer is immediate and says what happened:
   says what to do.
 
 `--message "<text>"` adds a note for the agent. To make and give a ticket in one step, pass
-`--give-to <agent id>` to `dudes ticket add`. If the give is refused, the ticket still exists and
+`--give-to <name or id>` to `dudes ticket add`. If the give is refused, the ticket still exists and
 the refusal is printed.
 
-When the agent's check passes, the daemon moves the ticket to Ready for you. Sending finished
-work back is giving the ticket to an agent again with a `--message`.
+## Review the work
+
+When the agent finishes a turn, the daemon runs the ticket's check itself. If it passes, the
+ticket moves to Ready for you. What the agent says about its own work never counts.
+
+```sh
+dudes ticket show <card id>
+```
+
+For a ticket that has been worked on, `show` prints "The agent says:" followed by the agent's last
+reply, and a line such as `Check: passed, exit status 0, 2026-10-11 09:14:02 +00:00`. A check
+that never ran or was killed prints `no exit status`. The changed files are not listed in the
+terminal. Open the Floor to see them.
+
+Then decide:
+
+```sh
+dudes ticket accept <card id>
+dudes ticket changes <card id> --message "Also cover the empty form."
+```
+
+- `accept` marks a Ready for you ticket Done. Accepting is your verdict that the work is what you
+  asked for. Passing the check only says the check passed.
+- `changes` sends the ticket back with what to change. It goes to the agent that did the work, or
+  to the one named with `--agent <name or id>`, and goes to the front of that agent's queue. The
+  message is required. It works on a ticket that is Ready for you or Needs you, and is the same
+  as `give --message`. A ticket in Needs you can also be retried with `give` and no message.
+
+## Take a ticket back
+
+```sh
+dudes ticket stop <card id>
+```
+
+`stop` takes a Working or Needs you ticket back to To do and gives the agent back, so it can take
+the next ticket. It issues no new turn. A turn that is already running is not killed and ends on
+its own, and the project stays busy until then. Whatever the agent already wrote stays in the
+project folder, because Dudes never reverts, merges or pushes.
+
+A whole loop looks like this:
+
+```sh
+dudes ticket add --title "Fix the sign-in page" --note "It 500s on a blank password."
+dudes ticket give <card id> --agent Cody
+dudes ticket show <card id>
+dudes ticket accept <card id>          # or: dudes ticket changes <card id> --message "..."
+dudes ticket stop <card id>            # only for a ticket that is still being worked on
+```
 
 ## Look at tickets
 
@@ -56,7 +107,7 @@ dudes ticket show <card id>
 ```
 
 `--status` takes `todo`, `working`, `ready`, `done` or `needs-you`. `show` prints the note, the
-check and the agent.
+check, the agent, the agent's summary and the check result.
 
 ## Fix a mistake
 
@@ -65,14 +116,16 @@ dudes ticket edit <card id> --title "Fix the sign-in page for good"
 dudes ticket remove <card id>
 ```
 
-Edit changes the title, the note (`--note ""` clears it) or the check. Both work on a ticket
-nobody has started. Each command reads the ticket's current sequence just before it acts. Pass
+Edit changes the title, the note (`--note ""` clears it) or the check. Edit works on a ticket
+nobody has started, and remove on any ticket that is not being worked on; stop a Working ticket
+first. Each command reads the ticket's current sequence just before it acts. Pass
 `--expected-seq <n>` only when a script wants a ticket that has changed since it looked to be
 refused.
 
 ## When a command is refused
 
 A refusal prints one plain sentence on the error stream. Exit status 3 means the daemon declined,
-for example because the card is not a ticket, the project is not enrolled, or the agent is not
-available for the project. Exit status 4 means the ticket changed since the sequence given, or
-another error. `dudes --help` lists every exit status.
+for example because the card is not a ticket, the ticket is in a state the command does not
+apply to ("You can't do that to a ticket that is To do."), the project is not enrolled, or the
+agent is not available for the project. Exit status 4 means the ticket changed since the sequence
+given, an agent name that matches no live agent or several, or another error. `dudes --help` lists every exit status.
