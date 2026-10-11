@@ -88,7 +88,8 @@ its status, `dudes stop` stops the daemon and `dudes start` starts it again.
   and a launch failure puts an agent on Hold. See [Goals, completion checks and
   stopping](docs/goals-and-stopping.md).
 - **Tickets.** A ticket is a piece of work with a title, a note and a "Done when" check. `dudes
-  ticket` makes, edits, lists and removes them, and gives one to an agent's queue. See
+  ticket` makes, edits, lists and removes them, gives one to an agent's queue, and lets you review,
+  accept, send back or stop the agent's work. See
   [Tickets](docs/tickets.md).
 - **Mail.** Agents send each other messages with `dudes mail` and find colleagues with
   `dudes team`.

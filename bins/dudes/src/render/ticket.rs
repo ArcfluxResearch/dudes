@@ -3,11 +3,12 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 
-use dudes_proto::TicketWait;
+use chrono::TimeZone;
 use dudes_proto::rpc::Empty;
 use dudes_proto::rpc::ticket::{
     TicketAssignOutcome, TicketAssignResult, TicketCreateResult, TicketReadResult,
 };
+use dudes_proto::{TicketCheckResult, TicketWait};
 use dudes_types::{AgentId, CardStatus};
 
 use super::{Escaped, json};
@@ -132,12 +133,16 @@ pub fn list(
 /// # Errors
 ///
 /// Whatever writing returns.
-pub fn show(
+pub fn show<Tz: TimeZone>(
     out: &mut dyn Write,
     machine: bool,
     read: &TicketReadResult,
     names: &AgentNames,
-) -> io::Result<()> {
+    zone: &Tz,
+) -> io::Result<()>
+where
+    Tz::Offset: std::fmt::Display,
+{
     if machine {
         return json(out, read);
     }
@@ -160,5 +165,31 @@ pub fn show(
             writeln!(out, "  {}", Escaped(line))?;
         }
     }
+    if let Some(check) = read.ticket.check {
+        writeln!(out, "Check: {}", check_line(check, zone))?;
+    }
+    if let Some(summary) = &read.ticket.summary {
+        writeln!(out, "The agent says:")?;
+        for line in summary.lines() {
+            writeln!(out, "  {}", Escaped(line))?;
+        }
+    } else if read.ticket.round > 0 {
+        writeln!(out, "The agent left no summary.")?;
+    }
+    if read.ticket.round > 0 {
+        writeln!(out, "Open the Floor to see the changed files.")?;
+    }
     Ok(())
+}
+
+fn check_line<Tz: TimeZone>(check: TicketCheckResult, zone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let verdict = if check.pass { "passed" } else { "failed" };
+    let exit = check.exit.map_or_else(
+        || "no exit status".to_owned(),
+        |code| format!("exit status {code}"),
+    );
+    format!("{verdict}, {exit}, {}", super::zoned(check.at, zone))
 }

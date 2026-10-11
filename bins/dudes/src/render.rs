@@ -964,20 +964,27 @@ where
     if machine {
         return json(out, params);
     }
-    let at = params.entry.at;
-    let time = chrono::DateTime::from_timestamp_millis(at.unix_millis()).map_or_else(
+    writeln!(
+        out,
+        "{:<37}  {}  {:?}",
+        position(params.lsn),
+        zoned(params.entry.at, zone),
+        params.entry.record.kind()
+    )
+}
+
+/// A moment as `2026-10-11 09:14:02 +02:00` in `zone`.
+fn zoned<Tz: TimeZone>(at: dudes_types::Timestamp, zone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    chrono::DateTime::from_timestamp_millis(at.unix_millis()).map_or_else(
         || at.to_string(),
         |utc| {
             utc.with_timezone(zone)
                 .format("%Y-%m-%d %H:%M:%S %:z")
                 .to_string()
         },
-    );
-    writeln!(
-        out,
-        "{:<37}  {time}  {:?}",
-        position(params.lsn),
-        params.entry.record.kind()
     )
 }
 

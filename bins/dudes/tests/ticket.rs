@@ -616,7 +616,15 @@ fn the_review_commands_refuse_with_the_daemons_sentence_and_exit_code() {
             "You can't do that to a ticket that is To do.",
         ),
         (
-            vec!["ticket", "changes", &card, "--message", "x", "--agent", &cody],
+            vec![
+                "ticket",
+                "changes",
+                &card,
+                "--message",
+                "x",
+                "--agent",
+                &cody,
+            ],
             3,
             "You can't do that to a ticket that is To do.",
         ),
@@ -647,7 +655,7 @@ fn the_review_commands_refuse_with_the_daemons_sentence_and_exit_code() {
 #[test]
 fn changes_needs_a_message_and_the_review_commands_take_a_card() {
     let cli = Cli::bare();
-    let card = "00000000000000000000000000000000";
+    let card = "00000000000000000000000004";
     for args in [
         vec!["ticket", "changes", card],
         vec!["ticket", "changes", "--message", "x"],
@@ -659,4 +667,19 @@ fn changes_needs_a_message_and_the_review_commands_take_a_card() {
         let run = cli.clone().args(&args).run();
         assert_eq!(run.code(), 1, "{args:?}: {}", run.output());
     }
+    let run = cli.clone().args(["ticket", "changes", card]).run();
+    assert!(
+        run.stderr.contains("`--message` is required"),
+        "{}",
+        run.stderr
+    );
+    let run = cli
+        .clone()
+        .args(["ticket", "accept", card, "--message", "x"])
+        .run();
+    assert!(
+        run.stderr.contains("unknown option `--message`"),
+        "{}",
+        run.stderr
+    );
 }
