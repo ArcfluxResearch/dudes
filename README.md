@@ -120,11 +120,12 @@ to change. The [full text](docs/what-agents-can-do.md) has the details.
 ## Documentation
 
 - [Get started](docs/getting-started.md): the full first run, from `dudes quickstart` to a goal.
-- [The Floor](docs/floor.md): the office view, how it opens and how to serve it.
+- [The Floor](docs/floor.md): the office view, how it opens and how to serve it, and tickets on the
+  Board.
 - [Chat](docs/chat.md): message an agent from the Floor, and Codex streaming.
 - [Goals, completion checks and stopping](docs/goals-and-stopping.md): replace a goal, pause, halt,
   retire and stop.
-- [Tickets](docs/tickets.md): make a ticket and give it to an agent.
+- [Tickets](docs/tickets.md): make a ticket and give it to an agent, from the command line or the Floor.
 - [Give an agent MCP servers](docs/mcp-servers.md): declare servers and opt agents in.
 - [Configuration](docs/configuration.md): the operator file, settings, budgets and environment
   variables.

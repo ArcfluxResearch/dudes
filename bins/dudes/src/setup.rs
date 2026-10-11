@@ -232,12 +232,13 @@ fn runnable(candidate: &Path) -> bool {
 }
 
 /// The Floor switches the single Floor question turns on and off together.
-const FLOOR_ACTIONS: [Key; 6] = [
+const FLOOR_ACTIONS: [Key; 7] = [
     Key::Answer,
     Key::Hire,
     Key::Control,
     Key::Goal,
     Key::Retire,
+    Key::Board,
     Key::Terminal,
 ];
 
@@ -318,9 +319,10 @@ fn floor_step(term: &mut Terminal<'_>, draft: &mut Draft, plan: &mut Plan) -> Re
         )?);
     }
     let allow = term.yes(
-        "Let the Floor act on your agents: hire, pause, answer, change goals, retire and attach a \
-         terminal? Anyone holding your one-time Floor link could start agents that act with your \
-         account's full reach.",
+        "Let the Floor act on your agents: hire, pause, answer, change goals, give tickets to agents, \
+         retire and attach a terminal? A ticket given to an agent starts it, and agents then run and \
+         spend under your account. Anyone holding your one-time Floor link could start agents that \
+         act with your account's full reach.",
         true,
     )?;
     for key in FLOOR_ACTIONS {
@@ -719,7 +721,7 @@ pub fn summary(term: &mut Terminal<'_>, plan: &Plan, cwd: Option<&Path>) -> io::
 mod tests {
     use super::*;
 
-    const ACTIONS: [Key; 6] = FLOOR_ACTIONS;
+    const ACTIONS: [Key; 7] = FLOOR_ACTIONS;
 
     fn host(found: &[Provider], billed: &[Provider]) -> Host {
         Host {
@@ -784,7 +786,7 @@ mod tests {
         Change::set(key, text).expect("a value the key takes")
     }
 
-    const FLOOR: &str = "Let the Floor act on your agents: hire, pause, answer, change goals, retire and attach a terminal? Anyone holding your one-time Floor link could start agents that act with your account's full reach. [Y/n]";
+    const FLOOR: &str = "Let the Floor act on your agents: hire, pause, answer, change goals, give tickets to agents, retire and attach a terminal? A ticket given to an agent starts it, and agents then run and spend under your account. Anyone holding your one-time Floor link could start agents that act with your account's full reach. [Y/n]";
 
     /// Enter at every question on a fresh file asks at most five questions and leaves a Floor
     /// that can act, a repository enrolled with its suggested check, and one agent hired.
@@ -891,7 +893,7 @@ mod tests {
         );
     }
 
-    /// Yes turns on the six actions and leaves Renew; No turns them and Renew off.
+    /// Yes turns on the seven actions and leaves Renew; No turns them and Renew off.
     #[test]
     fn one_floor_question_turns_the_actions_on_or_off_together() {
         let quiet = host(&[Provider::Claude], &[]);
@@ -909,11 +911,12 @@ mod tests {
                 change(Key::Control, "on"),
                 change(Key::Goal, "on"),
                 change(Key::Retire, "on"),
+                change(Key::Board, "on"),
                 change(Key::Terminal, "on"),
             ]
         );
 
-        let all_on = "[floor.answer]\nenabled = true\n[floor.hire]\nenabled = true\n[floor.control]\nenabled = true\n[floor.goal]\nenabled = true\n[floor.renew]\nenabled = true\n[floor.retire]\nenabled = true\n[floor.terminal]\nenabled = true\n";
+        let all_on = "[floor.answer]\nenabled = true\n[floor.hire]\nenabled = true\n[floor.control]\nenabled = true\n[floor.goal]\nenabled = true\n[floor.renew]\nenabled = true\n[floor.retire]\nenabled = true\n[floor.board]\nenabled = true\n[floor.terminal]\nenabled = true\n";
         let run = run_guided(
             all_on,
             &[(FLOOR, "n"), ("Hire a first agent? [Y/n]", "n")],

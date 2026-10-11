@@ -27,7 +27,7 @@ mod common;
 use common::{Cli, run_program};
 
 const SPAWN_MARKER: &str = "quickstart started duded pid ";
-const FLOOR_QUESTION: &str = "Let the Floor act on your agents: hire, pause, answer, change goals, retire and attach a terminal? Anyone holding your one-time Floor link could start agents that act with your account's full reach. [Y/n]";
+const FLOOR_QUESTION: &str = "Let the Floor act on your agents: hire, pause, answer, change goals, give tickets to agents, retire and attach a terminal? A ticket given to an agent starts it, and agents then run and spend under your account. Anyone holding your one-time Floor link could start agents that act with your account's full reach. [Y/n]";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -249,6 +249,7 @@ fn assert_written(layout: &Layout, floor_on: &[Key], label: &str) {
         (Key::Goal, switch(Key::Goal)),
         (Key::Renew, "off"),
         (Key::Retire, switch(Key::Retire)),
+        (Key::Board, switch(Key::Board)),
         (Key::Terminal, switch(Key::Terminal)),
         (Key::Git, "off"),
         (Key::FloorUsdPerDay, "none"),
@@ -865,6 +866,7 @@ fn a_terminal_is_asked_each_step_and_gets_the_same_setup() {
             Key::Control,
             Key::Goal,
             Key::Retire,
+            Key::Board,
             Key::Terminal,
         ],
         "/usr/bin/true",
