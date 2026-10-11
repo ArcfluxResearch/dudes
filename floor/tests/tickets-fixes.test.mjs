@@ -136,12 +136,30 @@ test('the Give form reads before it offers a hire, and takes the project from th
   assert.ok(!/No agent yet/.test(giveForm(null)));
   assert.match(giveForm(null, 'The daemon did not answer.'), /The daemon did not answer\./);
   assert.match(giveForm('service'), /<select/);
-  assert.match(giveForm('elsewhere'), /No agent yet/, 'a project with no agent says so');
+  assert.match(giveForm('elsewhere'), /No agent works in elsewhere yet\. Hire one into it, then give this ticket to it\./);
   // Opened with no detail loaded, a queued ticket's project comes from the agent that holds it.
   store.resetFloorStore();
   subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'claimed', { claimed_by: ADA }, { position: 1 })] });
   const floor = store.getFloorState();
   assert.equal(model.projectOf(floor, floor.cards[0]), 'service');
+});
+
+test('the Give form shows project setup instead of reading forever when no project exists', () => {
+  subscribe(store, { agents: [], cards: [ticketCard(1, 'todo')], checks: { workspaces: [] } });
+  assert.match(giveForm(null), /Tickets run in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes workspace add<\/code>\./);
+  assert.doesNotMatch(giveForm(null), /Reading the ticket|No agent yet/);
+});
+
+test('the Give form names agents without a project and offers a hire for this project', () => {
+  subscribe(store, { agents: [agent(ADA, 'Ada', { workspace: undefined })], cards: [ticketCard(1, 'todo')] });
+  const html = renderToStaticMarkup(createElement(panels.GiveForm, {
+    floor: { ...store.getFloorState(), onboarding: {} }, card: store.getFloorState().cards[0],
+    project: 'service', pending: null, mode: 'give', onDone() {}, onHire() {},
+  }));
+  assert.match(html, /No agent works in service yet\. Hire one into it, then give this ticket to it\./);
+  assert.match(html, /Ada was hired before projects were recorded, so it can&#x27;t take tickets\./);
+  assert.match(html, /<button type="button" class="ticket-hire">Hire an agent<\/button>/);
+  assert.doesNotMatch(html, /No agent yet/);
 });
 
 test('Edit waits for the ticket to be read', async () => {

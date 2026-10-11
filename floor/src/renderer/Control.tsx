@@ -238,7 +238,7 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
       <div className="control-view">{panels[view]}</div>
       {view === 'board' ? <div className="control-detail" id="selected-card-detail" key={selectedCardId ?? 'card-none'}
         ref={handFocusOnLeave} data-focus-on-leave={viewButtonId('board')}>
-        {selectedCard?.ticket != null ? <TicketPanel floor={floor} card={selectedCard} />
+        {selectedCard?.ticket != null ? <TicketPanel floor={floor} card={selectedCard} onHire={onHire} />
           : <CardDetail floor={floor} card={selectedCard} />}
       </div> : null}
     </section>

@@ -11,13 +11,15 @@ import { recordedTime } from '../format.ts';
 import { getGitState, loadGit, needsRead, refusalText, subscribeToGit } from '../git/git.ts';
 import type { GitChangeKind } from '../git/git.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
+import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
 import { getDetailState, loadDetail, needsDetail, subscribeToDetail } from './detail.ts';
 import type { TicketDetail } from './detail.ts';
-import { ACTION_LABEL, actionsOf, cardWords, projectOf } from './model.ts';
+import { ACTION_LABEL, actionsOf, agentChoiceSentence, cardWords, noProjects, projectOf } from './model.ts';
 import type { TicketAction } from './model.ts';
 import { agentsFor, ticketActionsOpen, TicketNotice } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
-import { AGENT_SAYS, NO_AGENT_YET, NO_SUMMARY, reasonSentence, stateName } from './words.ts';
+import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, reasonSentence, stateName } from './words.ts';
+import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
 const KIND_LABEL: Readonly<Record<GitChangeKind, string>> = Object.freeze({
   added: 'Added', modified: 'Modified', deleted: 'Deleted', renamed: 'Renamed',
@@ -102,7 +104,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
 }
 
 /** Give to agent, Try again and Ask for changes: choose the agent, and for a change say what to fix. */
-export function GiveForm({ floor, card, project, pending, mode, onDone }: {
+export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }: {
   readonly floor: FloorState;
   readonly card: CardRow;
   readonly project: string | null;
@@ -110,15 +112,23 @@ export function GiveForm({ floor, card, project, pending, mode, onDone }: {
   readonly pending: string | null;
   readonly mode: 'give' | 'changes';
   readonly onDone: () => void;
+  readonly onHire?: (opener: HTMLElement | null) => void;
 }) {
   const ids = useId();
-  const { usable } = project === null ? { usable: [] } : agentsFor(floor, project);
+  const { usable, unrecorded } = agentsFor(floor, project ?? '');
   const [agent, setAgent] = useState(() => usable.find((row) => row.id === card.claimed_by)?.id ?? usable[0]?.id ?? '');
   const [message, setMessage] = useState('');
   const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
   const chosen = usable.find((row) => row.id === agent)?.id ?? usable[0]?.id ?? null;
+  if (noProjects(floor)) return <NoTicketProjectHint />;
   if (project === null) return <p className="ticket-hint" role="status">{pending ?? 'Reading the ticket…'}</p>;
-  if (usable.length === 0) return <p className="ticket-hint" data-no-agent="true">{NO_AGENT_YET}</p>;
+  if (usable.length === 0) return <div className="ticket-field" data-no-agent="true">
+    <p className="ticket-hint">{agentChoiceSentence(floor, project)}</p>
+    {unrecorded.map((row) => <p key={row.id} className="ticket-hint">{agentWithoutProjectSentence(row.name)}</p>)}
+    {onHire !== undefined && hireSwitchOn(floor)
+      ? <button type="button" className="ticket-hire" onClick={(event) => onHire(event.currentTarget)}>Hire an agent</button>
+      : <p className="ticket-hint">Run <code>dudes hire</code> to add one.</p>}
+  </div>;
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -134,6 +144,7 @@ export function GiveForm({ floor, card, project, pending, mode, onDone }: {
         {usable.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
       </select>
     </div>
+    {unrecorded.map((row) => <p key={row.id} className="ticket-hint">{agentWithoutProjectSentence(row.name)}</p>)}
     {mode === 'changes' ? <div className="ticket-field">
       <label htmlFor={`${ids}-message`}>What should change?</label>
       <textarea id={`${ids}-message`} rows={3} maxLength={2048} value={message}
@@ -188,7 +199,11 @@ function EditForm({ floor, card, detail, onDone }: {
   </form>;
 }
 
-export function TicketPanel({ floor, card }: { readonly floor: FloorState; readonly card: CardRow }) {
+export function TicketPanel({ floor, card, onHire }: {
+  readonly floor: FloorState;
+  readonly card: CardRow;
+  readonly onHire?: (opener: HTMLElement | null) => void;
+}) {
   const [mode, setMode] = useState<Mode>('none');
   const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
   const detail = useSyncExternalStore(subscribeToDetail, getDetailState, getDetailState);
@@ -220,7 +235,7 @@ export function TicketPanel({ floor, card }: { readonly floor: FloorState; reado
     <TicketNotice />
     <Facts floor={floor} card={card} />
     {card.status === 'review' ? <ChangedFiles floor={floor} card={card} /> : null}
-    {!floor.ticket ? <p className="ticket-hint">Tickets are read-only here. Turn them on with <code>dudes config set floor.board on</code> and restart the daemon.</p> : null}
+    {!floor.ticket ? <TicketOffHint floor={floor} /> : null}
     {actions.length === 0 ? null : <div className="ticket-actions" role="group" aria-label="Ticket actions">
       {actions.map((action) => <button key={action} type="button" className="ticket-action" data-action={action}
         disabled={sending || (action === 'edit' && loaded === null)}
@@ -228,7 +243,7 @@ export function TicketPanel({ floor, card }: { readonly floor: FloorState; reado
     </div>}
     {mode === 'give' || mode === 'changes'
       ? <GiveForm floor={floor} card={card} project={loaded?.project ?? projectOf(floor, card)}
-        pending={detail.card === card.id ? detail.problem : null} mode={mode} onDone={() => setMode('none')} /> : null}
+        pending={detail.card === card.id ? detail.problem : null} mode={mode} onDone={() => setMode('none')} onHire={onHire} /> : null}
     {mode === 'edit' && loaded !== null ? <EditForm floor={floor} card={card} detail={loaded} onDone={() => setMode('none')} /> : null}
     {mode === 'remove' ? <div className="ticket-confirm" role="group" aria-label="Remove ticket">
       <p>Remove this ticket? It leaves the board. Its record stays in the journal.</p>

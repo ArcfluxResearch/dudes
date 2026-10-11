@@ -55,12 +55,13 @@ export function plainCard(n, status = 'todo') {
  * A fresh live subscription on the real store. `ticket: null` leaves the sibling out, as a daemon
  * with the board off does; `git` adds the `git` sibling.
  */
-export function subscribe(store, { agents = [], cards = [], ticket = {}, checks = CHECKS, git = false, lsn = 12 } = {}) {
+export function subscribe(store, { agents = [], cards = [], ticket = {}, checks = CHECKS, settings = null, git = false, lsn = 12 } = {}) {
   const epoch = store.beginFloorEpoch();
   store.noteTransport('open');
   const frame = { type: 'floor.snapshot', projection: { lsn, agents, cards } };
   if (ticket !== null) frame.ticket = ticket;
   if (checks !== null) frame.checks = checks;
+  if (settings !== null) frame.settings = settings;
   if (git) frame.git = {};
   store.applyServerFrame(JSON.stringify(frame), epoch);
   return epoch;

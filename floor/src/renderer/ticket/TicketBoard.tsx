@@ -11,10 +11,11 @@ import type { FloorState } from '../floor/store.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
 import { decodeWorkspace } from '../workspace.ts';
-import { boardColumns, cardWords, plainCards, tickets, TICKET_COLUMNS } from './model.ts';
+import { agentChoiceSentence, boardColumns, cardWords, noProjects, plainCards, tickets, TICKET_COLUMNS } from './model.ts';
 import type { TicketColumn } from './model.ts';
 import { createTicket, dismissNotice, getTicketState, subscribeToTicket } from './ticket.ts';
-import { NO_AGENT_YET, refusalSentence } from './words.ts';
+import { agentWithoutProjectSentence } from './words.ts';
+import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
 const NOTICE_SECONDS = 8;
 
@@ -86,7 +87,7 @@ export function NewTicketForm({ floor, onCreated, onHire }: {
   const project = projects.find((entry) => entry.id === chosenProject)?.id ?? projects[0]?.id ?? null;
   const checks = project === null ? [] : checksFor(floor.checks, project) ?? [];
   const check = checks.find((entry) => entry.id === chosenCheck) ?? checks[0] ?? null;
-  const { usable, unrecorded } = project === null ? { usable: [], unrecorded: [] } : agentsFor(floor, project);
+  const { usable, unrecorded } = agentsFor(floor, project ?? '');
   const open = ticketActionsOpen(floor);
   const ready = open && !ticket.sending && title.trim() !== '' && project !== null && check !== null;
 
@@ -129,8 +130,10 @@ export function NewTicketForm({ floor, onCreated, onHire }: {
         {checks.map((entry) => <option key={entry.id} value={entry.id}>{choiceLabel(entry)}</option>)}
       </select>
     </div> : null}
-    {usable.length === 0 ? <div className="ticket-field" data-no-agent="true">
-      <p className="ticket-hint">{NO_AGENT_YET}</p>
+    {noProjects(floor) ? <NoTicketProjectHint />
+      : project === null ? <p className="ticket-hint">Project choices are unavailable. Open Setup to check the project and its completion check.</p>
+      : usable.length === 0 ? <div className="ticket-field" data-no-agent="true">
+      <p className="ticket-hint">{agentChoiceSentence(floor, project)}</p>
       {onHire !== undefined && hireSwitchOn(floor)
         ? <button type="button" className="ticket-hire" onClick={(event) => onHire(event.currentTarget)}>Hire an agent</button>
         : <p className="ticket-hint">Run <code>dudes hire</code> to add one.</p>}
@@ -141,8 +144,8 @@ export function NewTicketForm({ floor, onCreated, onHire }: {
         {usable.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
         {unrecorded.map((row) => <option key={row.id} value={row.id} disabled>{row.name} (hired before projects were recorded)</option>)}
       </select>
-      {unrecorded.length === 0 ? null : <p className="ticket-hint">{refusalSentence('agent_no_project', null)}</p>}
     </div>}
+    {unrecorded.map((row) => <p key={row.id} className="ticket-hint">{agentWithoutProjectSentence(row.name)}</p>)}
     <button type="submit" className="ticket-create" aria-disabled={!ready || undefined} disabled={!ready}>Create ticket</button>
   </form>;
 }
@@ -189,7 +192,7 @@ export function TicketBoard({ floor, selectedId, onSelect, onHire }: {
         onClick={() => setForming((open) => !open)}>{forming ? 'Close new ticket' : 'New ticket'}</button>
       {forming ? <NewTicketForm floor={floor} onHire={onHire}
         onCreated={(card) => { setForming(false); onSelect(card); }} /> : null}
-    </section> : <p className="ticket-hint">Tickets are read-only here. Turn them on with <code>dudes config set floor.board on</code> and restart the daemon.</p>}
+    </section> : <TicketOffHint floor={floor} />}
     {needsYou.length === 0 ? null : <section className="ticket-lane task-column" data-column={COLUMN_TONE.needs}
       data-lane="needs-you" aria-label="Needs you">
       <h3>Needs you ({needsYou.length})</h3>

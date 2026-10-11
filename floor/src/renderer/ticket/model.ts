@@ -8,7 +8,7 @@ import type { CardRow } from '../board.ts';
 import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { decodeWorkspace } from '../workspace.ts';
-import { placeInLine, reasonSentence, waitSentence } from './words.ts';
+import { NO_AGENT_YET, noAgentInProjectSentence, placeInLine, reasonSentence, waitSentence } from './words.ts';
 import type { Wait } from './words.ts';
 
 export type TicketColumn = 'todo' | 'working' | 'ready' | 'done';
@@ -20,6 +20,16 @@ export const TICKET_COLUMNS: readonly { readonly key: TicketColumn; readonly tit
 
 /** How many finished tickets the Done column shows. The rest stay reachable with `dudes ticket list --status done`. */
 export const DONE_SHOWN = 20;
+
+export function noProjects(floor: FloorState): boolean {
+  return floor.settings !== null ? floor.settings.workspaces.length === 0
+    : floor.checks !== null && floor.checks.workspaces.length === 0;
+}
+
+export function agentChoiceSentence(floor: FloorState, project: string): string {
+  const label = floor.settings?.workspaces.find((row) => row.workspace_id === project)?.label ?? project;
+  return floor.agents.length === 0 ? NO_AGENT_YET : noAgentInProjectSentence(label);
+}
 
 /** The column a ticket is in, or `null` for a ticket in the Needs you lane. */
 export function columnOf(card: CardRow): TicketColumn | null {

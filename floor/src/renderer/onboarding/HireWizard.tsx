@@ -11,6 +11,7 @@ import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { UnavailableControls } from '../settings/SettingsView.tsx';
 import { rowFor } from '../setup/daemon.ts';
+import { noProjects, viewConfirmed } from '../ticket/model.ts';
 import type { ProviderRow } from '../setup/daemon.ts';
 import { HIRE_ENGINES, formatUsdMicros, isHireEngine } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
@@ -99,7 +100,8 @@ export function HireWizardView({ hire, floor, onClose }: {
         </div>
         <button type="button" ref={handFocusOnLeave} data-focus-on-leave="hire-open" onClick={onClose}>Close</button>
       </header>
-      <UnavailableControls floor={floor} control="hire" />
+      {floor.onboarding === null && noProjects(floor) && floor.settings?.switches.hire !== false
+        ? null : <UnavailableControls floor={floor} control="hire" />}
       {hire.outcome === null ? <HireForm hire={hire} floor={floor} onClose={onClose} />
         : <HireAnswer hire={hire} floor={floor} />}
     </section>
@@ -112,6 +114,7 @@ function HireForm({ hire, floor, onClose }: {
   readonly onClose: () => void;
 }) {
   const catalog = floor.onboarding;
+  const noProject = catalog === null && noProjects(floor);
   const at = SECTIONS.findIndex((entry) => entry.key === hire.section);
   const workspace = chosenWorkspace(hire.draft, catalog);
   const engine = chosenEngine(hire.draft, workspace);
@@ -199,10 +202,10 @@ function HireForm({ hire, floor, onClose }: {
           )}
           {hire.section !== 'workspace' ? null : (
             <>
-              {catalog === null ? <p>No enrolled workspace is offered to this session.</p> : (
+              {noProject ? <NoHireProjectHint /> : catalog === null ? <p>No project is available for hiring in this session.</p> : (
                 <fieldset className="hire-choices" aria-invalid={invalid('workspace_id')}
                   aria-describedby={described('workspace_id')}>
-                  <legend>Enrolled workspace</legend>
+                  <legend>Project</legend>
                   {catalog.workspaces.map((space) => (
                     <label key={space.workspaceId} className="hire-choice">
                       <input type="radio" name="workspace_id" value={space.workspaceId}
@@ -219,10 +222,7 @@ function HireForm({ hire, floor, onClose }: {
                   ))}
                 </fieldset>
               )}
-              <p className="hire-note">
-                The operator enrolled these workspaces in the daemon&apos;s configuration, and their folders stay
-                there. This page picks one by its ID.
-              </p>
+              {catalog === null ? null : <p className="hire-note">Choose the project where this agent will work.</p>}
             </>
           )}
           {hire.section !== 'engine' ? null : (
@@ -317,7 +317,7 @@ function HireForm({ hire, floor, onClose }: {
               </p>
             </>
           )}
-          {hire.problem === null ? null : (
+          {hire.problem === null || (noProject && hire.problem.field === 'workspace_id') ? null : (
             <p className="hire-problem" id="hire-problem" role="alert" data-check-refusal={hire.problem.refusal}>
               {hire.problem.message}
             </p>
@@ -341,9 +341,14 @@ function HireForm({ hire, floor, onClose }: {
       {hire.sending && hire.attempt !== null ? (
         <p className="hire-note" role="status">{`Running “${hire.attempt.checkLabel}” once before hiring.`}</p>
       ) : null}
-      {blocked === null || stuck ? null : <p className="hire-note" role="status">{blocked}</p>}
+      {noProject && viewConfirmed(floor) ? (hire.section === 'workspace' ? null : <NoHireProjectHint />)
+        : blocked === null || stuck ? null : <p className="hire-note" role="status">{blocked}</p>}
     </>
   );
+}
+
+function NoHireProjectHint() {
+  return <p className="hire-note">Agents work in a project, and none is set up yet. In your project&apos;s folder run <code>dudes workspace add</code>.</p>;
 }
 
 function HirePortrait({ draft }: { readonly draft: HireDraft }) {
