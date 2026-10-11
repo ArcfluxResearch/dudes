@@ -273,6 +273,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let Some(streams) = self.floor_streams.clone() else {
             return Ok(());
         };
+        if streams.is_ended() {
+            return Ok(());
+        }
         if !self.pending_floor.is_empty() {
             streams.end();
             return Ok(());

@@ -1204,6 +1204,14 @@ impl FloorStreams {
         broadcast(&self.0, RESYNC_TYPE)
     }
 
+    pub(crate) fn is_ended(&self) -> bool {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ended
+    }
+
     /// End every current epoch before the listener is released.
     pub(crate) fn end(&self) {
         let mut state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -3003,6 +3011,26 @@ mod tests {
                 serde_json::json!({"kind":"announced"})
             );
         }
+    }
+
+    #[test]
+    fn snapshots_and_deltas_outside_closing_have_no_progress() {
+        let mut projections = dudes_journal::Projections::in_memory().unwrap();
+        let mut snapshot = crate::floor::snapshot(&mut projections, Timestamp::UNIX_EPOCH).unwrap();
+        let streams = FloorStreams::new(
+            snapshot.clone(),
+            FloorStreamFault::default().without_heartbeat(),
+        )
+        .unwrap();
+        let opened = streams.subscribe().unwrap();
+        let frame: Value = serde_json::from_slice(text_payload(&opened.snapshot).unwrap()).unwrap();
+        assert!(frame["projection"].get("closing_time").is_none());
+        assert!(frame["projection"].get("closing_progress").is_none());
+        snapshot.lsn = Lsn(1);
+        streams.publish(snapshot).unwrap();
+        let frame = queued_json(opened.subscription.next(Duration::ZERO));
+        assert!(frame["delta"].get("closing_time").is_none());
+        assert!(frame["delta"].get("closing_progress").is_none());
     }
 
     #[test]

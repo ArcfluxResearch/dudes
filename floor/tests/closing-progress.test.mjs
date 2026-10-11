@@ -44,7 +44,7 @@ test('progress-only deltas retain phase and update exact bounded counts', () => 
 
 test('the banner uses literal counts and keeps the countdown outside the live region', () => {
   const html = renderToStaticMarkup(createElement(Banner, { closing: 'announced', progress, stale: false }));
-  assert.match(html, /1 of 3 acknowledged, 1 settled, 1 still owed, 1 turns still running\./);
+  assert.match(html, /1 of 3 acknowledged, 1 settled, 1 still owed, 1 turn still running\./);
   assert.match(html, /Settled means nothing left to save\./);
   assert.match(html, /About 13 seconds left/);
   assert.doesNotMatch(html.match(/role="status"[^>]*>(.*?)<\/p>/s)?.[1] ?? '', /seconds left/);

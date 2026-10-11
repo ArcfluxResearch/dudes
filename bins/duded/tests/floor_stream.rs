@@ -763,6 +763,8 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     common::set_goal(&running.handle, goal_params(agent, &["/usr/bin/true"]));
+    let unanswered = common::hire(&running.handle, fixture.state.path());
+    common::set_goal(&running.handle, goal_params(unanswered, &["/usr/bin/true"]));
     let issued = issue(&settings);
     let (cookie, csrf) = exchange(addr, &issued.bootstrap);
     let mut browser = WebSocket::connect(addr, &cookie, &csrf);
@@ -802,8 +804,8 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
     );
     assert_eq!(progress["acknowledged"], 0);
     assert_eq!(progress["settled"], 0);
-    assert_eq!(progress["owed"], 1);
-    assert_eq!(progress["running"], 1);
+    assert_eq!(progress["owed"], 2);
+    assert_eq!(progress["running"], 2);
     assert!((359_000..=360_000).contains(&progress["remaining_ms"].as_u64().unwrap()));
     assert_eq!(
         frame["delta"]["lsn"],
@@ -834,7 +836,7 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
     );
     let acknowledged = next_closing_progress(&mut browser);
     assert!(acknowledged["delta"].get("closing_time").is_none());
-    assert_progress_cut(&fixture, &acknowledged, (1, 0, 0, 1));
+    assert_progress_cut(&fixture, &acknowledged, (1, 0, 1, 2));
     let before_duplicate = fixture.entries();
     assert!(
         caller
@@ -872,30 +874,19 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
         ended["delta"].get("closing_time").is_none(),
         "an observed turn end is a progress-only delta"
     );
-    assert_progress_cut(&fixture, &ended, (1, 0, 0, 0));
+    assert_progress_cut(&fixture, &ended, (1, 0, 1, 1));
     let cut = ended["delta"]["lsn"].as_u64().unwrap();
     assert!(fixture.entries().iter().any(|(lsn, entry)| lsn.0 == cut
         && matches!(entry.record, dudes_proto::Record::TurnEnded { .. })));
-    let complete = loop {
-        let next = browser.json();
-        if next["delta"]["closing_time"]["kind"] == "complete" {
-            break next;
+    assert!(!fixture.records().iter().any(|record| matches!(
+        record,
+        dudes_proto::Record::ClosingTime {
+            phase: dudes_proto::ClosingPhase::Complete
         }
-        assert!(
-            next["delta"].get("closing_progress").is_none(),
-            "no duplicate or lagged progress frame"
-        );
-    };
-    assert_progress_cut(&fixture, &complete, (1, 0, 0, 0));
-    assert!(
-        complete["delta"]["closing_progress"]["remaining_ms"]
-            .as_u64()
-            .unwrap()
-            > 0
-    );
+    )));
     drop(browser);
     drop(client);
-    assert_eq!(running.join(), duded::ExitCause::ShutdownRpc);
+    running.stop(duded::ExitCause::ShutdownRpc);
 }
 
 fn next_closing_progress(browser: &mut WebSocket) -> Value {
@@ -1037,6 +1028,94 @@ fn an_unfolded_announcement_never_publishes_a_mismatched_closing_cut() {
             .error
             .is_none()
     );
+    running.stop(duded::ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn ten_quiet_seconds_send_no_progress_and_a_new_subscription_samples_fresh_time() {
+    let fixture = Fixture::new();
+    let settings = settings(&fixture, free_port());
+    let daemon = duded::boot(
+        &settings,
+        seams(
+            SharedHost::new(),
+            Arc::new(ScriptedRunner::default()),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+        ),
+    )
+    .unwrap();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    common::set_goal(&running.handle, goal_params(agent, &["/usr/bin/true"]));
+    let issued = issue(&settings);
+    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
+    let mut browser = WebSocket::connect(addr, &cookie, &csrf);
+    browser.send(r#"{"type":"floor.subscribe"}"#);
+    assert!(
+        browser.json()["projection"]
+            .get("closing_progress")
+            .is_none()
+    );
+    let mut operator = Client::connect(settings.socket()).unwrap();
+    assert!(
+        operator
+            .call_as_operator(
+                Method::SystemClosingTime,
+                Some(serde_json::json!({ "action": "announce" })),
+                credential_of(&settings)
+            )
+            .unwrap()
+            .error
+            .is_none()
+    );
+    let first = next_closing_progress(&mut browser);
+    assert_progress_cut(&fixture, &first, (0, 0, 1, 1));
+    let sampled = first["delta"]["closing_progress"]["remaining_ms"]
+        .as_u64()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        browser.read_timeout(
+            deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .max(Duration::from_millis(1)),
+        );
+        let mut byte = [0_u8; 1];
+        match browser.stream.peek(&mut byte) {
+            Ok(1) => {
+                let next = browser.json();
+                assert!(
+                    next["delta"].get("closing_progress").is_none(),
+                    "time alone published progress: {next}"
+                );
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            other => panic!("the owned closing stream remains live: {other:?}"),
+        }
+    }
+    let mut fresh = WebSocket::connect(addr, &cookie, &csrf);
+    fresh.send(r#"{"type":"floor.subscribe"}"#);
+    let snapshot = fresh.json();
+    assert_progress_cut(&fixture, &snapshot, (0, 0, 1, 1));
+    assert_eq!(
+        snapshot["projection"]["closing_time"],
+        serde_json::json!({ "kind": "announced" })
+    );
+    assert!(
+        snapshot["projection"]["closing_progress"]["remaining_ms"]
+            .as_u64()
+            .unwrap()
+            <= sampled - 9_500
+    );
+    drop(fresh);
+    drop(browser);
+    drop(operator);
     running.stop(duded::ExitCause::ShutdownRpc);
 }
 

@@ -3842,23 +3842,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 // exit must publish that completed fold even if an effect below fails.
                 if folds_journal_record {
                     ctx.tokens.mark_folded();
-                    if let Some(session) = sup
-                        .world()
-                        .closing
-                        .as_ref()
-                        .filter(|session| !session.is_complete())
-                    {
-                        closing.observe(session);
-                    }
-                    if !ctx
-                        .floor_closing
-                        .is_some_and(|view| view.phase == dudes_proto::ClosingPhase::Complete)
-                    {
-                        ctx.floor_closing = closing.floor_view(sup.world(), ctx.clock.now());
-                    }
-                    if let Err(error) = ctx.publish_folded_floor(sup.world()) {
-                        break 'work Err(error);
-                    }
+                }
+                if let Err(error) = ctx.publish_folded_floor(sup.world(), closing) {
+                    break 'work Err(error);
                 }
                 // Read the post-fold owner map only when this folded input emitted a Spawn. A
                 // startup re-issue can spawn without a fold in this pump, but startup publishes
@@ -3958,12 +3944,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         //
         // A peer waiting on the publication barrier is woken from here.
         self.ctx.resolver.publish(self.sup.world());
-        if !abandoned_floor && let Err(error) = self.ctx.publish_chat(&self.sup) {
+        if let Err(error) = self.ctx.publish_chat(&self.sup) {
             self.ctx.fence_journal();
             if let Some(streams) = &self.ctx.floor_streams {
                 streams.end();
             }
-            return Err(error);
+            if outcome.is_ok() {
+                return Err(error);
+            }
         }
         outcome
     }
@@ -4980,7 +4968,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     fn append_memory_entry(&mut self, record: Record, action: &str) -> Result<Lsn, RpcError> {
         self.ctx
-            .append(
+            .append_projection_only(
                 self.sup.world(),
                 &Entry {
                     at: self.ctx.clock.now(),
@@ -5305,7 +5293,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     fn append_pty_entry(&mut self, record: Record, action: &str) -> Result<Lsn, RpcError> {
         self.ctx
-            .append(
+            .append_projection_only(
                 self.sup.world(),
                 &Entry {
                     at: self.ctx.clock.now(),
@@ -6269,7 +6257,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     /// A confirmed exit close is journaled without a new managed decision: the daemon is stopping.
     fn detach_during_shutdown(&mut self, agent: AgentId, pty: PtyId) -> bool {
-        match self.ctx.append(
+        match self.ctx.append_projection_only(
             self.sup.world(),
             &Entry {
                 at: self.ctx.clock.now(),
@@ -6814,6 +6802,13 @@ fn liveness_unknown_refusal() -> RpcError {
 pub(crate) struct PendingFloor {
     patch: crate::floor_stream::FloorPatch,
     notice: OutputNotice,
+    publication: FloorPublication,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FloorPublication {
+    AfterFold,
+    ProjectionOnly,
 }
 
 enum OutputNotice {
@@ -6853,29 +6848,53 @@ impl OutputNotice {
 }
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
-    fn publish_folded_floor(&mut self, world: &dudes_supervisor::World) -> Result<()> {
-        let Some(pending) = world
-            .last_applied_lsn
-            .and_then(|lsn| self.pending_floor.remove(&lsn))
-        else {
-            return Ok(());
-        };
-        if self.pending_floor.is_empty() {
-            self.pending_floor_base = None;
+    fn publish_folded_floor(
+        &mut self,
+        world: &dudes_supervisor::World,
+        waiting: &mut crate::closing::Waiting,
+    ) -> Result<()> {
+        while let Some((&lsn, pending)) = self.pending_floor.first_key_value() {
+            if pending.publication == FloorPublication::AfterFold
+                && world.last_applied_lsn != Some(lsn)
+            {
+                break;
+            }
+            let (_, pending) = self
+                .pending_floor
+                .pop_first()
+                .expect("the oldest cut exists");
+            if self.pending_floor.is_empty() {
+                self.pending_floor_base = None;
+            }
+            if pending.publication == FloorPublication::AfterFold {
+                if let Some(session) = world
+                    .closing
+                    .as_ref()
+                    .filter(|session| !session.is_complete())
+                {
+                    waiting.observe(session);
+                }
+                if !self
+                    .floor_closing
+                    .is_some_and(|view| view.phase == dudes_proto::ClosingPhase::Complete)
+                {
+                    self.floor_closing = waiting.floor_view(world, self.clock.now());
+                }
+            }
+            if let Some(streams) = self.floor_streams.clone() {
+                let output = self.children.output();
+                streams
+                    .publish_patch(pending.patch, self.floor_closing, || {
+                        pending.notice.apply(&output)
+                    })
+                    .inspect_err(|_| {
+                        self.fence_journal();
+                        streams.end();
+                    })
+                    .context("publishing the folded closing Floor projection")?;
+            }
         }
-        let Some(streams) = self.floor_streams.clone() else {
-            return Ok(());
-        };
-        let output = self.children.output();
-        streams
-            .publish_patch(pending.patch, self.floor_closing, || {
-                pending.notice.apply(&output)
-            })
-            .inspect_err(|_| {
-                self.fence_journal();
-                streams.end();
-            })
-            .context("publishing the folded closing Floor projection")
+        Ok(())
     }
     /// The UTC day the budget projections are read for, from the daemon's one clock.
     pub(crate) fn today(&self) -> UtcDay {
@@ -7254,16 +7273,30 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
     }
 
-    /// Append one entry, and publish it.
-    ///
-    /// `Writer::append` returns only after the fsync, so everything after this line is acting on a
-    /// record that already exists — which is invariant 2 and, for `Control`, its durability
-    /// promise.
+    fn append(&mut self, world: &dudes_supervisor::World, entry: &Entry) -> Result<Lsn> {
+        self.append_with_publication(world, entry, FloorPublication::AfterFold)
+    }
+
+    fn append_projection_only(
+        &mut self,
+        world: &dudes_supervisor::World,
+        entry: &Entry,
+    ) -> Result<Lsn> {
+        self.append_with_publication(world, entry, FloorPublication::ProjectionOnly)
+    }
+
+    /// `Writer::append` returns only after fsync. Policy records wait for their matching fold;
+    /// runtime-owned audits retain the already-folded closing view without inventing a fold.
     #[expect(
         clippy::too_many_lines,
         reason = "durability, projections and publication retain one visible first-error boundary"
     )]
-    fn append(&mut self, world: &dudes_supervisor::world::World, entry: &Entry) -> Result<Lsn> {
+    fn append_with_publication(
+        &mut self,
+        world: &dudes_supervisor::World,
+        entry: &Entry,
+        publication: FloorPublication,
+    ) -> Result<Lsn> {
         if matches!(
             entry.record,
             Record::Mail { .. }
@@ -7395,8 +7428,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 let snapshot = self
                     .floor_snapshot()
                     .context("building the live Floor projection")?;
-                if self.floor_closing.is_some()
-                    || matches!(entry.record, Record::ClosingTime { .. })
+                if !self.pending_floor.is_empty()
+                    || (publication == FloorPublication::AfterFold
+                        && (self.floor_closing.is_some()
+                            || matches!(entry.record, Record::ClosingTime { .. })))
                 {
                     let patch = self.pending_floor_base.as_ref().map_or_else(
                         || streams.patch(&snapshot),
@@ -7408,6 +7443,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                         PendingFloor {
                             patch,
                             notice: output_notice,
+                            publication,
                         },
                     );
                 } else {

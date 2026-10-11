@@ -689,6 +689,9 @@ where
         if let Some(days) = stream_fault.local_days() {
             daemon.ctx.local_days = days;
         }
+        daemon.ctx.floor_closing = daemon
+            .closing
+            .floor_view(daemon.sup.world(), daemon.ctx.clock.now());
         let initial = daemon
             .ctx
             .floor_snapshot()
