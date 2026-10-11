@@ -40,7 +40,8 @@ pub struct TicketRow {
     pub project: String,
     /// The check that finishes it.
     pub done_when: TicketCheck,
-    /// The goal the ticket's latest start installed. Kept as history after the work stops.
+    /// The goal the ticket's latest start installed. Kept as history after the work stops, and
+    /// cleared when the ticket is given to an agent again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<GoalId>,
     /// Its place in its holder's queue, while it waits there.

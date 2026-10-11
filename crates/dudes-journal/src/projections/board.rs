@@ -218,6 +218,9 @@ fn queue_ticket(
     row.view.claimed_by = Some(agent);
     row.claimed_lsn = Some(lsn);
     if let Some(ticket) = &mut row.ticket {
+        // The previous round's goal, and its Done, belong to that round: only the next start
+        // names the goal that can bring the ticket back to Ready for you.
+        ticket.goal = None;
         ticket.queue = Some(QueueKey { class, lsn });
         if let Some(message) = message {
             ticket.message = Some(message.to_owned());

@@ -49,6 +49,56 @@ struct WatchHost {
     inner: SharedHost,
     journal: PathBuf,
     durable_at_spawn: Arc<Mutex<Vec<usize>>>,
+    gate: Option<Arc<Gate>>,
+}
+
+/// A launch that parks right after it was recorded, so a test can look at the journal while a
+/// turn is durable and not yet spawned.
+#[derive(Default)]
+struct Gate {
+    state: Mutex<(bool, bool)>,
+    changed: std::sync::Condvar,
+}
+
+impl Gate {
+    fn arrive(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.0 = true;
+        self.changed.notify_all();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !state.1 && std::time::Instant::now() < deadline {
+            state = self
+                .changed
+                .wait_timeout(state, std::time::Duration::from_millis(100))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    fn wait_reached(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !self.state.lock().unwrap_or_else(PoisonError::into_inner).0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no launch reached the gate"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn release(&self) {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).1 = true;
+        self.changed.notify_all();
+    }
+}
+
+/// What a boot changes about the ordinary stand-in.
+#[derive(Default)]
+struct Options {
+    /// Refuse the nth append after boot, once, as a clean refusal.
+    refuse_nth_append: Option<std::num::NonZeroUsize>,
+    /// Park the first launch at this gate.
+    gate: Option<Arc<Gate>>,
 }
 
 impl ProcessHost for WatchHost {
@@ -63,6 +113,9 @@ impl ProcessHost for WatchHost {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(durable);
+        if let Some(gate) = &self.gate {
+            gate.arrive();
+        }
         self.inner.spawn(spec, install)
     }
 
@@ -172,6 +225,16 @@ impl Flow {
         repo: PathBuf,
         answers: impl IntoIterator<Item = duded::predicate::PredicateOutcome>,
     ) -> Self {
+        Self::boot_with(fixture, settings, repo, answers, Options::default())
+    }
+
+    fn boot_with(
+        fixture: &Fixture,
+        settings: duded::Settings,
+        repo: PathBuf,
+        answers: impl IntoIterator<Item = duded::predicate::PredicateOutcome>,
+        options: Options,
+    ) -> Self {
         let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
         let host = SharedHost::new();
         let runner = Arc::new(ScriptedRunner::scripted(answers));
@@ -181,6 +244,7 @@ impl Flow {
                 inner: host.clone(),
                 journal: fixture.journal_dir(),
                 durable_at_spawn: Arc::clone(&durable_at_spawn),
+                gate: options.gate,
             },
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -192,6 +256,9 @@ impl Flow {
         }
         let daemon = duded::boot(&settings, seams).unwrap();
         let append_failure = daemon.append_failure();
+        if let Some(nth) = options.refuse_nth_append {
+            append_failure.fail_nth(nth);
+        }
         let running = common::start(daemon);
         let operator = Client::connect(settings.socket()).unwrap();
         Self {
@@ -610,6 +677,18 @@ fn a_passing_check_on_a_paused_agent_moves_nothing_until_the_loop_says_done() {
     fixture.await_record("PredicateResult", |r| {
         matches!(r, Record::PredicateResult { pass: true, .. }).then_some(())
     });
+    let decided = fixture.records().len();
+    let after = settled(&fixture, decided);
+    assert!(
+        after.iter().any(|r| matches!(
+            r,
+            Record::LoopDecided {
+                decision: LoopDecision::Hold { .. },
+                ..
+            }
+        )),
+        "the control gate held the loop before Done"
+    );
     assert_eq!(flow.card(card).status, CardStatus::Doing);
     assert!(
         !kinds(&fixture).contains(&RecordKind::CardTransition),
@@ -733,10 +812,13 @@ fn a_project_runs_one_ticket_and_accept_starts_the_next() {
     assert!(accepted.error.is_none(), "{:?}", accepted.error);
     let done = flow.card(first);
     assert_eq!(done.status, CardStatus::Done);
-    assert!(
-        matches!(done.status_by, Actor::Peer { .. }),
-        "accepted by {:?}",
-        done.status_by
+    assert_eq!(
+        done.status_by,
+        Actor::Peer {
+            pid: std::process::id(),
+            uid: None,
+        },
+        "accepted by the operator's own process"
     );
     assert_eq!(
         flow.card(second).status,
@@ -949,7 +1031,7 @@ fn a_check_that_cannot_run_sends_the_ticket_to_needs_you() {
         outcome,
         TicketAssignOutcome::NeedsYou {
             reason: TicketReason::CheckCannotRun,
-            note: TicketReason::CheckCannotRun.sentence().to_owned(),
+            note: CHECK_CANNOT_RUN.to_owned(),
         }
     );
     let view = flow.card(broken);
@@ -957,11 +1039,31 @@ fn a_check_that_cannot_run_sends_the_ticket_to_needs_you() {
     assert_eq!(view.status_by, Actor::System);
     let detail = flow.read(broken);
     assert_eq!(detail.ticket.reason, Some(TicketReason::CheckCannotRun));
+    assert_eq!(detail.ticket.reason.unwrap().sentence(), CHECK_CANNOT_RUN);
     assert_eq!(detail.ticket.queue, None, "it left the queue");
     assert!(started_goals(&fixture.records()).is_empty());
 
     assert_eq!(flow.give_ok(fine, cody, None), TicketAssignOutcome::Started);
     flow.stop();
+}
+
+const CHECK_CANNOT_RUN: &str = "The check's program was not found. Install it, then Give to agent. If the check itself is wrong, Remove this ticket and create it again.";
+const PROJECT_UNAVAILABLE: &str = "This project is not set up any more. Enroll it again with `dudes workspace add`, then Give to agent, or Remove the ticket.";
+const CEILING_REQUIRED: &str = "Set a spending limit first, because your account bills per use. Add one to the project's enrollment (`dudes workspace add`) or the agent's hire, then Give to agent.";
+const RESERVE_MISSING: &str = "A per-turn spending reserve is missing. Run `dudes config set budget.per_turn_floor.usd <dollars>` (or `budget.per_turn_floor.tokens <count>`), then Give to agent.";
+
+/// A ticket the daemon moved to Needs you at boot: its reason, the literal sentence the operator
+/// reads, and that it left the queue.
+fn assert_needs_you(flow: &mut Flow, card: CardId, reason: TicketReason, sentence: &str) {
+    let view = flow.card(card);
+    assert_eq!(
+        (view.status, view.status_by),
+        (CardStatus::Blocked, Actor::System)
+    );
+    let ticket = flow.read(card).ticket;
+    assert_eq!(ticket.reason, Some(reason));
+    assert_eq!(reason.sentence(), sentence);
+    assert_eq!(ticket.queue, None, "it left the queue");
 }
 
 fn seeded_hire(project: &str, repo: &Path, budget: Option<AgentBudget>) -> Record {
@@ -1126,9 +1228,12 @@ fn a_ticket_that_cannot_start_at_boot_goes_to_needs_you_with_its_reason() {
     };
     seed(&fixture, given("service", &repo, None, card));
     let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
-    let detail = flow.read(card);
-    assert_eq!(flow.card(card).status, CardStatus::Blocked);
-    assert_eq!(detail.ticket.reason, Some(TicketReason::ProjectUnavailable));
+    assert_needs_you(
+        &mut flow,
+        card,
+        TicketReason::ProjectUnavailable,
+        PROJECT_UNAVAILABLE,
+    );
     flow.stop();
 
     let fixture = Fixture::new();
@@ -1146,11 +1251,12 @@ fn a_ticket_that_cannot_start_at_boot_goes_to_needs_you_with_its_reason() {
     };
     seed(&fixture, given("service", &repo, Some(no_ceiling), card));
     let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
-    assert_eq!(
-        flow.read(card).ticket.reason,
-        Some(TicketReason::CeilingRequired)
+    assert_needs_you(
+        &mut flow,
+        card,
+        TicketReason::CeilingRequired,
+        CEILING_REQUIRED,
     );
-    assert_eq!(flow.card(card).status, CardStatus::Blocked);
     flow.stop();
 
     let fixture = Fixture::new();
@@ -1163,9 +1269,11 @@ fn a_ticket_that_cannot_start_at_boot_goes_to_needs_you_with_its_reason() {
     };
     seed(&fixture, given("service", &repo, Some(no_ceiling), card));
     let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
-    assert_eq!(
-        flow.read(card).ticket.reason,
-        Some(TicketReason::ReserveMissing)
+    assert_needs_you(
+        &mut flow,
+        card,
+        TicketReason::ReserveMissing,
+        RESERVE_MISSING,
     );
     assert!(started_goals(&fixture.records()).is_empty());
     flow.stop();
@@ -1183,6 +1291,10 @@ fn a_ticket_start_and_a_goal_set_replay_to_the_same_world() {
     assert_eq!(flow.give_ok(card, cody, None), TicketAssignOutcome::Started);
     flow.stop();
     let live = source.records();
+    assert!(
+        matches!(live[0], Record::AgentHired { .. }),
+        "the journal starts with the hire"
+    );
     let start = live
         .iter()
         .position(|r| matches!(r, Record::TicketStarted { .. }))
@@ -1195,10 +1307,23 @@ fn a_ticket_start_and_a_goal_set_replay_to_the_same_world() {
     for ticket in [true, false] {
         let fixture = Fixture::new();
         let (settings, repo) = enrolled(&fixture);
-        let mut records = live[..=start].to_vec();
-        if !ticket {
-            records = vec![
+        let records = if ticket {
+            live[..=start].to_vec()
+        } else {
+            vec![
                 live[0].clone(),
+                Record::CardCreated {
+                    card,
+                    title: "Fix the parser".into(),
+                    department: "engineering".into(),
+                    by: operator(),
+                    deps: Vec::new(),
+                },
+                Record::Claim {
+                    card,
+                    agent,
+                    expected_seq: Seq(0),
+                },
                 Record::GoalSet {
                     agent,
                     goal: goal.clone(),
@@ -1206,17 +1331,26 @@ fn a_ticket_start_and_a_goal_set_replay_to_the_same_world() {
                     browser_goal: None,
                     goal_replacement: None,
                 },
-            ];
-        }
+                Record::CardTransition {
+                    card,
+                    from: CardStatus::Claimed,
+                    to: CardStatus::Doing,
+                    by: Actor::System,
+                    expected_seq: Seq(1),
+                    reason: None,
+                },
+            ]
+        };
         seed(&fixture, records);
         let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
         let (_, who, goal_id, task) = Flow::await_turn_number(&fixture, 1);
-        worlds.push((flow.agent(agent), who, goal_id, task));
+        let board = flow.board();
+        worlds.push((flow.agent(agent), who, goal_id, task, board));
         flow.stop();
     }
     assert_eq!(worlds[0], worlds[1]);
     assert_eq!(worlds[0].2, goal.id);
-    let _ = card;
+    assert_eq!(worlds[0].4[0].status, CardStatus::Doing);
 }
 
 /// How many appends after position `from` the journal needs to reach the first record `target`
@@ -1229,12 +1363,19 @@ fn appends_between(records: &[Record], from: usize, target: impl Fn(&Record) -> 
         .expect("the reference run reached the target record")
 }
 
-/// Wait until the journal stops growing, which is when a daemon whose append was refused has
-/// stopped writing.
-fn settled(fixture: &Fixture) -> Vec<Record> {
+/// Wait until the journal holds at least `expected` records, then until it stops growing, which
+/// is when a daemon whose append was refused has stopped writing.
+fn settled(fixture: &Fixture, expected: usize) -> Vec<Record> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while fixture.records().len() < expected {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the journal never reached {expected} records"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     let mut seen = fixture.records().len();
     let mut quiet = 0;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while quiet < 5 {
         std::thread::sleep(std::time::Duration::from_millis(60));
         let now = fixture.records().len();
@@ -1270,7 +1411,7 @@ fn crash_and_restart(target: impl Fn(&Record) -> bool, after_restart: impl Fn(&[
     let before = fixture.records().len();
     flow.append_failure.short_write_after(nth - 1, 5);
     let _ = flow.give(card, cody, None);
-    let crashed = settled(&fixture);
+    let crashed = settled(&fixture, before + nth - 1);
     assert_eq!(
         crashed.len(),
         before + nth - 1,
@@ -1282,7 +1423,7 @@ fn crash_and_restart(target: impl Fn(&Record) -> bool, after_restart: impl Fn(&[
     let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
     Flow::await_turn_number(&fixture, 1);
     let _ = flow.card(card);
-    let records = settled(&fixture);
+    let records = settled(&fixture, crashed.len() + 1);
     flow.stop();
     after_restart(&records);
 }
@@ -1351,7 +1492,7 @@ fn a_crash_after_a_passing_check_and_before_ready_for_you_moves_the_ticket_once(
     let before = fixture.records().len();
     flow.append_failure.short_write_after(nth - 1, 5);
     flow.end_turn(turn, Some("Done."));
-    let crashed = settled(&fixture);
+    let crashed = settled(&fixture, before + nth - 1);
     assert_eq!(crashed.len(), before + nth - 1);
     assert!(
         crashed[before..].iter().any(|r| matches!(
@@ -1373,7 +1514,7 @@ fn a_crash_after_a_passing_check_and_before_ready_for_you_moves_the_ticket_once(
     let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
     let view = flow.await_status(card, CardStatus::Review);
     assert_eq!(view.status_by, Actor::System);
-    let records = settled(&fixture);
+    let records = settled(&fixture, crashed.len() + 1);
     flow.stop();
     assert_eq!(
         transitions(&records, card),
@@ -1388,4 +1529,266 @@ fn a_crash_after_a_passing_check_and_before_ready_for_you_moves_the_ticket_once(
         1,
         "no turn follows a latched Done"
     );
+}
+
+/// A ticket given back from Ready for you is not sent to Ready for you again on the previous
+/// round's pass. When its start is refused it ends in Needs you with the reason, and nothing
+/// moves it to Ready for you until a new start has a turn and an observed pass of its own.
+#[test]
+fn a_reworked_ticket_whose_start_is_refused_does_not_return_on_the_old_pass() {
+    let card = CardId::from_parts(4, 1);
+    let agent = sample_agent();
+    let fixture = Fixture::new();
+    let (mut settings, repo) = enrolled(&fixture);
+    settings.enrollment = Enrollment {
+        profiles: Vec::new(),
+    };
+    let check = default_check();
+    let first = Goal {
+        id: GoalId::from_parts(8, 1),
+        text: "Fix the parser".into(),
+        completion_check: duded::ticket_goal_check(&check),
+        predicate: check.predicate.clone(),
+        baseline: Some(CheckBaseline::MayAlreadyPass),
+        budget: GoalBudget {
+            usd: None,
+            tokens: None,
+        },
+        hop_cap: 4,
+    };
+    let mut records = given("service", &repo, None, card);
+    records.extend([
+        Record::TicketStarted {
+            card,
+            agent,
+            goal: first.clone(),
+            expected_seq: Seq(1),
+        },
+        Record::PredicateResult {
+            goal: first.id,
+            turn: None,
+            provenance: dudes_types::Provenance::Observed,
+            pass: true,
+            evidence: dudes_proto::goal::Evidence::Command {
+                argv: vec![common::true_program().into()],
+                program: None,
+                exit: Some(0),
+                output_tail: String::new(),
+            },
+        },
+        Record::LoopDecided {
+            agent,
+            input_digest: String::new(),
+            decision: LoopDecision::Done,
+            gate_trace: Vec::new(),
+        },
+        Record::CardTransition {
+            card,
+            from: CardStatus::Doing,
+            to: CardStatus::Review,
+            by: Actor::System,
+            expected_seq: Seq(2),
+            reason: None,
+        },
+        Record::TicketAssigned {
+            card,
+            agent,
+            by: operator(),
+            message: Some("again".into()),
+            expected_seq: Seq(3),
+        },
+    ]);
+    seed(&fixture, records);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    assert_needs_you(
+        &mut flow,
+        card,
+        TicketReason::ProjectUnavailable,
+        PROJECT_UNAVAILABLE,
+    );
+    let after = settled(&fixture, fixture.records().len());
+    flow.stop();
+    assert_eq!(
+        transitions(&after, card),
+        [
+            (CardStatus::Doing, CardStatus::Review, Actor::System),
+            (CardStatus::Claimed, CardStatus::Blocked, Actor::System),
+        ],
+        "the old pass moved the ticket once, and the refused start moved it to Needs you"
+    );
+}
+
+/// A start that fails does not keep another project from starting its own ticket, and the failed
+/// one is offered again on the next job.
+#[test]
+fn a_failed_start_does_not_stall_the_other_projects() {
+    let fixture = Fixture::new();
+    let (mut settings, repo) = enrolled(&fixture);
+    let docs = fixture.state.path().join("docs");
+    std::fs::create_dir_all(docs.join(".git")).unwrap();
+    let docs = docs.canonicalize().unwrap();
+    settings.enrollment.profiles.push(profile(
+        "docs",
+        &docs,
+        vec![check("default", common::true_program())],
+    ));
+    let (service_card, docs_card) = (CardId::from_parts(4, 1), CardId::from_parts(4, 2));
+    let mut records = given("service", &repo, None, service_card);
+    let dana = AgentId::from_parts(9, 1);
+    let mut second = seeded_hire("docs", &docs, None);
+    let Record::AgentHired { id, name, .. } = &mut second else {
+        unreachable!("the sample is a hire");
+    };
+    (*id, *name) = (dana, "Dana".to_owned());
+    records.push(second);
+    records.push(Record::TicketCreated {
+        card: docs_card,
+        title: "Write the guide".into(),
+        description: String::new(),
+        department: "engineering".into(),
+        project: "docs".into(),
+        done_when: default_check(),
+        by: operator(),
+    });
+    records.push(Record::TicketAssigned {
+        card: docs_card,
+        agent: dana,
+        by: operator(),
+        message: None,
+        expected_seq: Seq(0),
+    });
+    seed(&fixture, records);
+    let mut flow = Flow::boot_with(
+        &fixture,
+        settings,
+        repo,
+        [common::fails()],
+        Options {
+            refuse_nth_append: std::num::NonZeroUsize::new(1),
+            ..Options::default()
+        },
+    );
+    flow.await_status(service_card, CardStatus::Doing);
+    flow.await_status(docs_card, CardStatus::Doing);
+    assert_eq!(started_goals(&fixture.records()).len(), 2);
+    flow.stop();
+}
+
+/// An assignment that is durable is answered even when the start that follows it fails; the
+/// start is offered again and happens.
+#[test]
+fn an_assignment_is_answered_when_the_start_after_it_fails() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let cody = flow.hire("Cody");
+    let card = flow.create("Fix the parser");
+    flow.append_failure
+        .fail_nth(std::num::NonZeroUsize::new(2).unwrap());
+    let outcome = flow.give_ok(card, cody, None);
+    assert_eq!(queued(&outcome).0, 1);
+    assert!(
+        kinds(&fixture).contains(&RecordKind::TicketAssigned),
+        "the assignment is durable"
+    );
+    flow.await_status(card, CardStatus::Doing);
+    assert_eq!(started_goals(&fixture.records()).len(), 1);
+    flow.stop();
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// The window persist-before-spawn exists for: the turn is durable and its process has not been
+/// launched. The stand-in host parks the launch right after noting what was durable, the journal
+/// as it stands is copied (which is what a kill at that instant leaves), and a second daemon
+/// boots on the copy. It finds one start, launches the one durable turn once, and starts nothing
+/// else. The stand-in host has no process group to check.
+#[test]
+fn a_crash_with_the_turn_durable_and_not_launched_launches_it_once() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let gate = Arc::new(Gate::default());
+    let mut flow = Flow::boot_with(
+        &fixture,
+        settings.clone(),
+        repo.clone(),
+        [common::fails()],
+        Options {
+            gate: Some(Arc::clone(&gate)),
+            ..Options::default()
+        },
+    );
+    let cody = flow.hire("Cody");
+    let card = flow.create("Fix the parser");
+    let socket = flow.settings.clone();
+    let giver = std::thread::spawn(move || {
+        let mut client = Client::connect(socket.socket()).unwrap();
+        client
+            .call_as_operator(
+                dudes_proto::rpc::Method::TicketAssign,
+                Some(json!({"card": card, "agent": cody, "expected_seq": 0})),
+                credential(&socket),
+            )
+            .unwrap()
+    });
+    gate.wait_reached();
+
+    let before = fixture.records();
+    assert_eq!(
+        before
+            .iter()
+            .filter(|r| matches!(r, Record::TurnIssued { .. }))
+            .count(),
+        1,
+        "the turn is durable"
+    );
+    assert!(
+        !before
+            .iter()
+            .any(|r| matches!(r, Record::TurnSpawned { .. })),
+        "and not launched"
+    );
+    let issued = Flow::turns(&fixture)[0].0;
+    let second = Fixture::new();
+    copy_dir(&fixture.journal_dir(), &second.journal_dir());
+    let mut settings = second.settings();
+    settings.enrollment = flow.settings.enrollment.clone();
+    let mut revived = Flow::boot(&second, settings, repo, [common::fails()]);
+    let spawned = second.await_record("TurnSpawned", |record| match record {
+        Record::TurnSpawned { turn, .. } => Some(*turn),
+        _ => None,
+    });
+    assert_eq!(spawned, issued, "the durable turn is the one launched");
+    let records = settled(&second, second.records().len());
+    assert_eq!(started_goals(&records).len(), 1, "one start");
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| matches!(r, Record::TurnIssued { .. }))
+            .count(),
+        1,
+        "no second turn"
+    );
+    assert_eq!(
+        revived.host.spawned().len(),
+        1,
+        "one launch after the restart"
+    );
+    assert_eq!(revived.card(card).status, CardStatus::Doing);
+    revived.stop();
+
+    gate.release();
+    let _ = giver.join();
+    flow.stop();
 }

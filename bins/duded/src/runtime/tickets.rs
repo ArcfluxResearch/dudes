@@ -275,7 +275,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             message,
             expected_seq: request.expected_seq,
         })?;
-        self.ticket_reactions()?;
+        if let Err(failure) = self.ticket_reactions() {
+            tracing::error!(
+                failure = %failure.message,
+                "the assignment is durable but the queue could not be advanced"
+            );
+        }
         let (now, ticket) = self.ticket_row(view.id)?;
         let outcome = match now.status {
             CardStatus::Doing => TicketAssignOutcome::Started,

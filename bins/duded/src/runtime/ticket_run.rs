@@ -120,30 +120,38 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// is left. Called with no handler half done: after a job, after an assignment's own append,
     /// and at boot.
     pub(super) fn ticket_reactions(&mut self) -> Result<(), RpcError> {
+        let mut failed = BTreeSet::new();
+        let mut failure = None;
         for _ in 0..MOST_MOVES {
             if self.ctx.journal_writes_stopped() || self.ctx.closing_failed_after.is_some() {
-                return Ok(());
+                break;
             }
-            let (owed, head) = self.with_ticket_facts(|facts| {
-                let head = facts
+            let (owed, heads) = self.with_ticket_facts(|facts| {
+                let heads: Vec<CardId> = facts
                     .queued_projects()
                     .into_iter()
-                    .find_map(|project| facts.next_ticket(project));
-                (facts.owed_ticket_moves().into_iter().next(), head)
+                    .filter_map(|project| facts.next_ticket(project))
+                    .collect();
+                (facts.owed_ticket_moves().into_iter().next(), heads)
             })?;
             let before = self.sup.world().last_applied_lsn;
             if let Some(owed) = owed {
                 self.move_owed(&owed)?;
-            } else if let Some(card) = head {
-                self.start_ticket(card)?;
+            } else if let Some(card) = heads.into_iter().find(|card| !failed.contains(card)) {
+                // A start that fails must not keep the other projects from starting theirs.
+                if let Err(refused) = self.start_ticket(card) {
+                    failed.insert(card);
+                    failure = Some(refused);
+                    continue;
+                }
             } else {
-                return Ok(());
+                break;
             }
             if self.sup.world().last_applied_lsn == before {
-                return Ok(());
+                break;
             }
         }
-        Ok(())
+        failure.map_or(Ok(()), Err)
     }
 
     /// Run the reactions when the journal moved since they last ran, or when `force` says a
@@ -153,10 +161,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if !force && at == self.ctx.ticket_reacted {
             return;
         }
-        let outcome = self.ticket_reactions();
-        self.ctx.ticket_reacted = self.sup.world().last_applied_lsn;
-        if let Err(failure) = outcome {
+        // Only a clean evaluation marks the journal position as handled, so a start that failed
+        // is offered again on the next job.
+        if let Err(failure) = self.ticket_reactions() {
             tracing::error!(failure = %failure.message, "the ticket queue could not be advanced");
+        } else {
+            self.ctx.ticket_reacted = self.sup.world().last_applied_lsn;
         }
     }
 
