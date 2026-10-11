@@ -545,7 +545,7 @@ fn conversation(log: &mut Log, turn: TurnId) {
 
 #[test]
 fn current_conversation_raw_taught_and_wake_history_rebuilds_cache_35_to_38() {
-    assert_eq!(dudes_journal::PROJECTION_VERSION, 45);
+    assert_eq!(dudes_journal::PROJECTION_VERSION, 46);
     let mut log = Log::new(&[0]);
     let conversation_turn = TurnId::from_parts(3, 1);
     let raw_turn = TurnId::from_parts(3, 2);

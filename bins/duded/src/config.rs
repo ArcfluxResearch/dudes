@@ -67,6 +67,10 @@ pub struct OperatorConfig {
     /// `[floor.retire]` are refused at load without `[floor.control]`,
     /// and `[floor.renew]` without both `[floor.goal]` and `[floor.hire]`.
     pub control: FloorControl,
+    /// `[floor.board] enabled`: whether the Floor may create, give, accept, stop and remove
+    /// tickets. Absent or `false` registers no route and sends no `ticket` sibling. It is refused
+    /// at load without both `[floor.control]` and `[floor.goal]`.
+    pub board_enabled: bool,
     /// `[floor.terminal] enabled`.
     pub terminal_enabled: bool,
     /// `[floor.git] enabled`: whether the Floor may read an agent's checkout for its Git tab.
@@ -142,6 +146,7 @@ enum ConfigErrorKind {
     InvalidGoal,
     InvalidRetire,
     InvalidRenew,
+    InvalidBoard,
     InvalidProvider(&'static str),
     UnreadProvider(Option<String>),
     InvalidMcp(dudes_providers::mcp::DeclarationError),
@@ -239,6 +244,10 @@ impl fmt::Display for ConfigError {
                 formatter,
                 "enables [floor.renew] without both [floor.goal] and [floor.hire] enabled"
             ),
+            ConfigErrorKind::InvalidBoard => write!(
+                formatter,
+                "enables [floor.board] without both [floor.control] and [floor.goal] enabled"
+            ),
             ConfigErrorKind::InvalidProvider(name) => write!(
                 formatter,
                 "has an invalid [providers.{name}] table: an unknown key, or a command that is not a bare name or absolute path"
@@ -318,6 +327,7 @@ struct FloorTable {
     goal: Option<GoalTable>,
     retire: Option<RetireTable>,
     renew: Option<RenewTable>,
+    board: Option<BoardTable>,
     terminal: Option<TerminalTable>,
     git: Option<GitTable>,
     chat: Option<ChatTable>,
@@ -369,6 +379,13 @@ struct GoalTable {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RenewTable {
+    enabled: bool,
+}
+
+/// `[floor.board]`: the operator's opt-in to the Floor's tickets, read once at start.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct BoardTable {
     enabled: bool,
 }
 
@@ -712,6 +729,7 @@ pub(crate) fn parse_operator_and_memory_with_options(
     let goal_enabled = floor.goal.unwrap_or_default().enabled;
     let retire_enabled = floor.retire.unwrap_or_default().enabled;
     let renew_enabled = floor.renew.unwrap_or_default().enabled;
+    let board_enabled = floor.board.unwrap_or_default().enabled;
     let terminal_enabled = floor.terminal.unwrap_or_default().enabled;
     let git_enabled = floor.git.unwrap_or_default().enabled;
     let floor_usd_per_day = budget
@@ -747,6 +765,11 @@ pub(crate) fn parse_operator_and_memory_with_options(
     if renew_enabled && !(goal_enabled && hire_enabled) {
         return Err(ConfigError::new(path, ConfigErrorKind::InvalidRenew));
     }
+    // A ticket given to an agent starts paid work, which a goal change alone never does, so the
+    // operator who lets the Floor do it has already let the Floor control agents and set goals.
+    if board_enabled && !(control_enabled && goal_enabled) {
+        return Err(ConfigError::new(path, ConfigErrorKind::InvalidBoard));
+    }
     let mut enrollment = Enrollment {
         profiles: floor
             .onboarding
@@ -771,6 +794,7 @@ pub(crate) fn parse_operator_and_memory_with_options(
                 answer_enabled,
                 hire_enabled,
                 control,
+                board_enabled,
                 terminal_enabled,
                 git_enabled,
                 providers,

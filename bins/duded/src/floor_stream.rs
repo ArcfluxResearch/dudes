@@ -239,6 +239,8 @@ pub(crate) struct Siblings<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) git: Option<&'a crate::floor_git::GitSwitch>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) ticket: Option<&'a crate::floor_ticket::TicketSwitch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) journal_stopped: Option<dudes_proto::rpc::floor::FloorJournalStopped>,
     /// The daemon's count of goals finished on its local day. A caller's value wins over
     /// the one the registry's current snapshot holds, so a new subscription reads the day afresh.
@@ -256,6 +258,7 @@ impl Siblings<'_> {
             && self.retire.is_none()
             && self.terminal.is_none()
             && self.git.is_none()
+            && self.ticket.is_none()
             && self.journal_stopped.is_none()
             && self.finished_today.is_none()
     }
@@ -652,6 +655,7 @@ impl FloorStreams {
                 retire: siblings.retire,
                 terminal: siblings.terminal,
                 git: siblings.git,
+                ticket: siblings.ticket,
                 chat: state.chat.as_ref(),
                 journal_stopped: state.journal_stopped,
                 finished_today: siblings.finished_today,
@@ -2536,6 +2540,7 @@ mod tests {
             seq: dudes_types::Seq::ZERO,
             claimed_by: None,
             deps: Vec::new(),
+            ticket: None,
         });
         let (mut low, mut high) = (0, MAX_MESSAGE_BYTES);
         while low < high {
@@ -2931,6 +2936,7 @@ mod tests {
             seq: dudes_types::Seq(u64::MAX),
             claimed_by: Some(AgentId::NIL),
             deps: vec![],
+            ticket: None,
         };
         let old_empty = serde_json::json!({"type":"floor.snapshot", "projection":FloorProjection {
             lsn:dudes_types::Lsn(u64::MAX), cards:vec![card_view], ..FloorProjection::default()
@@ -3455,6 +3461,7 @@ mod tests {
             seq: dudes_types::Seq(u64::MAX),
             claimed_by: Some(AgentId::NIL),
             deps: vec![],
+            ticket: None,
         };
         let empty = FloorProjection {
             lsn: Lsn(u64::MAX),
@@ -3774,6 +3781,7 @@ mod tests {
             seq: dudes_types::Seq(u64::MAX),
             claimed_by: Some(AgentId::NIL),
             deps: Vec::new(),
+            ticket: None,
         };
         crate::board::admit_cards(Vec::new(), vec![card.clone()]).unwrap();
         let mut snapshot = AgentSnapshot {

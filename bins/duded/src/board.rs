@@ -7,7 +7,8 @@ use dudes_proto::rpc::board::{
 };
 use dudes_proto::rpc::{ErrorCode, Method, RpcError};
 use dudes_proto::{
-    AgentView, CardView, FloorProjection, LiveActivityKind, LiveActivityView, Predicate,
+    AgentView, CardTicket, CardView, FloorProjection, LiveActivityKind, LiveActivityView,
+    Predicate, TicketReason,
 };
 use dudes_rpc::Dispatcher;
 use dudes_rpc::auth::{PeerRole, Requirement};
@@ -120,6 +121,14 @@ pub(crate) fn admit_cards(
         };
         card.seq = Seq(u64::MAX);
         card.claimed_by = Some(AgentId::NIL);
+        card.ticket = Some(CardTicket {
+            project: "p".repeat(128),
+            check: "c".repeat(256),
+            position: Some(u32::MAX),
+            round: u32::MAX,
+            reason: Some(TicketReason::ProjectUnavailable),
+            stopping: true,
+        });
     }
     let projection = FloorProjection {
         lsn: Lsn(u64::MAX),
@@ -171,6 +180,7 @@ mod tests {
             seq: Seq(2),
             claimed_by: Some(agent),
             deps: vec![],
+            ticket: None,
         }
     }
 

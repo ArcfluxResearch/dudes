@@ -91,6 +91,7 @@ use crate::ports::{
 };
 
 mod agent_mcp;
+mod browser_ticket;
 mod ticket_run;
 #[cfg(test)]
 mod ticket_start_tests;
@@ -333,6 +334,10 @@ pub enum OnboardingPausePoint {
     BeforeRetirePermit,
     /// A retirement's append permit is held; the registry lock waits for its fsync.
     AfterRetirePermit,
+    /// A ticket action passed its checks; its append permit is not yet taken.
+    BeforeTicketPermit,
+    /// A ticket action's append permit is held; the registry lock waits for its fsync.
+    AfterTicketPermit,
     /// A `floor.enrollment.reload` has read and hashed the file, on its connection thread, and
     /// has not parsed it.
     AfterReloadHash,
@@ -402,6 +407,8 @@ pub enum OnboardingFailurePoint {
     GoalChange,
     /// A browser retirement is durable but has not folded.
     Retire,
+    /// A browser ticket action is durable but has not folded.
+    Ticket,
     /// A browser rename is durable but has not folded.
     Rename,
     /// A browser appearance edit is durable but has not folded.
@@ -529,6 +536,9 @@ impl OnboardingFailure {
                 ..
             } => OnboardingFailurePoint::Retire,
             Record::AgentRetired { .. } => OnboardingFailurePoint::LocalRetire,
+            record if browser_chat::ticket_session(record).is_some() => {
+                OnboardingFailurePoint::Ticket
+            }
             Record::TurnIssued { .. } => OnboardingFailurePoint::TurnIssued,
             Record::ClosingTime {
                 phase: dudes_proto::ClosingPhase::Announced,
@@ -689,6 +699,11 @@ impl OnboardingPause {
                 Some(Point::AfterRetirePermit),
                 None,
             ),
+            record if browser_chat::ticket_session(record).is_some() => (
+                Some(Point::BeforeTicketPermit),
+                Some(Point::AfterTicketPermit),
+                None,
+            ),
             _ => return,
         };
         let point = match stage {
@@ -833,6 +848,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) retire_index: crate::floor_retire::RetireIndex,
     /// `[floor.git] enabled`, fixed for the run: whether snapshots carry the `git` sibling.
     pub(crate) git_enabled: bool,
+    /// `[floor.board] enabled`, fixed for the run: whether snapshots carry the `ticket` sibling.
+    pub(crate) board_enabled: bool,
     /// `None` while `[floor.terminal]` is off, for the whole run.
     pub(crate) browser_grants: Option<BTreeMap<AgentId, crate::floor_terminal::LiveGrant>>,
     #[cfg(feature = "testing")]
@@ -1395,6 +1412,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let answer = self.browser_retire(&session, &request);
                     let _ = reply.send(answer);
                 }
+                Job::Ticket {
+                    session,
+                    request,
+                    reply,
+                } => {
+                    let answer = self.browser_ticket(&session, request);
+                    let _ = reply.send(answer);
+                }
                 Job::FloorSubscribe { session, reply } => {
                     let answer = self.floor_subscribe(&session);
                     let _ = reply.send(answer);
@@ -1905,6 +1930,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         .ctx
                         .git_enabled
                         .then_some(&crate::floor_git::GIT_SWITCH),
+                    ticket: self
+                        .ctx
+                        .board_enabled
+                        .then_some(&crate::floor_ticket::TICKET_SWITCH),
                     journal_stopped: None,
                     chat: None,
                     finished_today: None,
@@ -1937,6 +1966,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             control: self.ctx.control,
             terminal_enabled: self.ctx.browser_grants.is_some(),
             git_enabled: self.ctx.git_enabled,
+            board_enabled: self.ctx.board_enabled,
             condense_model_enabled: self.ctx.condense_model_enabled,
             condense_model: self.ctx.condense_model.clone(),
             ..crate::config::OperatorConfig::default()
@@ -5548,6 +5578,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             seq: Seq::ZERO,
             claimed_by: None,
             deps: request.deps.clone(),
+            ticket: None,
         })?;
         self.board_append(Record::CardCreated {
             card,
@@ -6080,6 +6111,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Job::FloorMemory { reply, .. } => drop(reply),
                 Job::Retire { reply, .. } => {
                     let _ = reply.send(Err(RetireRefusal::UnavailableNoEffect));
+                }
+                Job::Ticket { reply, .. } => {
+                    let _ = reply.send(crate::floor_ticket::TicketReply::Unavailable);
                 }
                 Job::BaselineEnded { id } => self.ctx.baselines.end(id),
                 Job::PredicateEnded { goal, verdict } => {

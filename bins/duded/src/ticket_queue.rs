@@ -378,6 +378,7 @@ mod tests {
                 seq: Seq::ZERO,
                 claimed_by: holder,
                 deps: Vec::new(),
+                ticket: None,
             },
             TicketRow {
                 description: String::new(),

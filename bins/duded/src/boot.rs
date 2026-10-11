@@ -513,6 +513,7 @@ where
                 .with_answer(settings.floor_answer_enabled)
                 .with_control(settings.floor_control)
                 .with_terminal(settings.floor_terminal_enabled)
+                .with_board(settings.floor_board_enabled)
                 .with_remembered_port(crate::floor_port::remembered(&settings.state_dir))
         });
     if prepared_floor.is_some() {
@@ -598,6 +599,7 @@ where
             look_index,
             retire_index,
             git_enabled: settings.floor_git_enabled,
+            board_enabled: settings.floor_board_enabled,
             browser_grants: settings.floor_terminal_enabled.then(BTreeMap::new),
             #[cfg(feature = "testing")]
             terminal_skew: crate::floor_terminal::TerminalSkew::default(),

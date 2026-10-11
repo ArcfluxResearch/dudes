@@ -66,8 +66,8 @@ pub use messages::{
     ThreadView,
 };
 pub use projection::{
-    ActivityAgent, ActivityCard, ActivityEvent, ActivityView, AgentView, CardView, FloorDelta,
-    FloorProjection, GoalView, LiveActivityKind, LiveActivityView, MAX_ACTIVITY_BYTES,
+    ActivityAgent, ActivityCard, ActivityEvent, ActivityView, AgentView, CardTicket, CardView,
+    FloorDelta, FloorProjection, GoalView, LiveActivityKind, LiveActivityView, MAX_ACTIVITY_BYTES,
     MAX_ACTIVITY_ROWS, MAX_RETIRED_AGENT_BYTES, MAX_RETIRED_AGENTS, MailView, PredicateOutcome,
     RetiredAgentView, WorktreeView, WorktreeViewState,
 };

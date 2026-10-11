@@ -366,6 +366,24 @@ pub(super) fn attribution_session(
             browser_retire: Some(meta),
             ..
         } => Some(meta.session_digest),
+        record => ticket_session(record),
+    }
+}
+
+/// The Floor session that authored a ticket record, when one did. The operator's own tickets, and
+/// every move the daemon makes, name no session.
+pub(super) fn ticket_session(record: &dudes_proto::Record) -> Option<dudes_proto::record::Hex32> {
+    use dudes_proto::{Actor, Record};
+    let (Record::TicketCreated { by, .. }
+    | Record::TicketEdited { by, .. }
+    | Record::TicketAssigned { by, .. }
+    | Record::TicketRemoved { by, .. }
+    | Record::CardTransition { by, .. }) = record
+    else {
+        return None;
+    };
+    match by {
+        Actor::BrowserSession { session_digest } => Some(*session_digest),
         _ => None,
     }
 }

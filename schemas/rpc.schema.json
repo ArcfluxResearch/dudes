@@ -1529,6 +1529,55 @@
         }
       ]
     },
+    "CardTicket": {
+      "description": "What the floor snapshot says of a ticket. It carries no note, message, summary, path, argv or\ncheck output: those come only from `ticket.read`.",
+      "properties": {
+        "check": {
+          "description": "The label of the check that finishes it.",
+          "type": "string"
+        },
+        "position": {
+          "description": "Its place in its holder's queue, counting from 1, while it waits there.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "The enrolled project the ticket runs in.",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the daemon moved the ticket into Needs you, while it is there."
+        },
+        "round": {
+          "default": 0,
+          "description": "How many times work on the ticket has started.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stopping": {
+          "description": "The ticket was stopped and its agent is still finishing its current step.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "project",
+        "check"
+      ],
+      "type": "object"
+    },
     "CardTransitionParams": {
       "additionalProperties": false,
       "description": "`board.transition` params.",
@@ -1605,6 +1654,17 @@
         "status_by": {
           "$ref": "#/$defs/Actor",
           "description": "Who authored [`Self::status`]. The board fold takes it from whichever record last moved\nthe card, so the three records that can put a card into a status collapse into one field\na reader compares once. Not [`Self::claimed_by`], which is who *holds* the card.\nWhat a `BoardState` predicate does with it is decided where that predicate is evaluated, not restated\nhere."
+        },
+        "ticket": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CardTicket"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the board shows of a ticket beyond what every card has. Absent on a plain card. An\nolder reader ignores it."
         },
         "title": {
           "description": "Title.",

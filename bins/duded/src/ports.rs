@@ -858,6 +858,15 @@ pub enum Job {
         /// Durable original result or no-effect refusal.
         reply: Sender<Result<crate::floor_look::LookOutcome, crate::floor_look::LookRefusal>>,
     },
+    /// One authenticated Floor ticket action or read.
+    Ticket {
+        /// Registry-derived session.
+        session: crate::floor_session::SessionIdentity,
+        /// The route's typed members and no others.
+        request: crate::floor_ticket::TicketRequest,
+        /// The fixed reply.
+        reply: Sender<crate::floor_ticket::TicketReply>,
+    },
     /// One typed browser-note operation.
     Chat {
         /// The admitting registry session.
@@ -1115,6 +1124,25 @@ impl Handle {
         answers
             .recv()
             .map_err(|_| crate::floor_rename::RenameRefusal::Unavailable)?
+    }
+    pub(crate) fn ticket(
+        &self,
+        session: crate::floor_session::SessionIdentity,
+        request: crate::floor_ticket::TicketRequest,
+    ) -> crate::floor_ticket::TicketReply {
+        use crate::floor_ticket::TicketReply;
+        let (reply, answers) = mpsc::channel();
+        if self
+            .send_floor(Job::Ticket {
+                session,
+                request,
+                reply,
+            })
+            .is_err()
+        {
+            return TicketReply::Unavailable;
+        }
+        answers.recv().unwrap_or(TicketReply::Unavailable)
     }
     pub(crate) fn look(
         &self,

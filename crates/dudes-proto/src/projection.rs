@@ -276,6 +276,32 @@ pub struct CardView {
     /// Cards that must be `Done` first.
     #[serde(default)]
     pub deps: Vec<CardId>,
+    /// What the board shows of a ticket beyond what every card has. Absent on a plain card. An
+    /// older reader ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<CardTicket>,
+}
+
+/// What the floor snapshot says of a ticket. It carries no note, message, summary, path, argv or
+/// check output: those come only from `ticket.read`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CardTicket {
+    /// The enrolled project the ticket runs in.
+    pub project: String,
+    /// The label of the check that finishes it.
+    pub check: String,
+    /// Its place in its holder's queue, counting from 1, while it waits there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<u32>,
+    /// How many times work on the ticket has started.
+    #[serde(default)]
+    pub round: u32,
+    /// Why the daemon moved the ticket into Needs you, while it is there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<crate::ticket::TicketReason>,
+    /// The ticket was stopped and its agent is still finishing its current step.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopping: bool,
 }
 
 /// Legacy mail projection shape retained for construction compatibility.
