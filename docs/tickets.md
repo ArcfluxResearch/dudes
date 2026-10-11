@@ -1,7 +1,9 @@
 # Tickets
 
 A ticket is a piece of work on the board. It has a title, an optional note, a project and a
-"Done when" check. You make tickets and give them to agents with `dudes ticket`.
+"Done when" check. You make tickets and give them to agents with `dudes ticket`, or on the Floor's
+Board once `floor.board` is on. See [The Floor](floor.md#tickets) for the Floor's form, columns,
+ticket panel and banner. Both do the same things, and what one makes the other shows.
 
 Everything here needs a running daemon (`dudes start`) and an enrolled project, which is a
 repository directory added with `dudes workspace add`. Each command answers at once and waits for

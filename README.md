@@ -87,9 +87,9 @@ its status, `dudes stop` stops the daemon and `dudes start` starts it again.
 - **Limits.** Spending ceilings are optional and off by default. A goal also stops at its hop cap,
   and a launch failure puts an agent on Hold. See [Goals, completion checks and
   stopping](docs/goals-and-stopping.md).
-- **Tickets.** A ticket is a piece of work with a title, a note and a "Done when" check. `dudes
-  ticket` makes, edits, lists and removes them, and gives one to an agent's queue. See
-  [Tickets](docs/tickets.md).
+- **Tickets.** A ticket is a piece of work with a title, a note and a "Done when" check. Make,
+  edit, list, remove and give tickets to an agent's queue with `dudes ticket` or on the Floor's
+  Board, where a banner tells you when one is ready for you. See [Tickets](docs/tickets.md).
 - **Mail.** Agents send each other messages with `dudes mail` and find colleagues with
   `dudes team`.
 - **Worktrees.** `dudes hire --worktree` gives a Claude Code agent in a repository you mark with `--trusted` its own git worktree and a

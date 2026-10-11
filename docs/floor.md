@@ -76,10 +76,13 @@ Set a spending limit when your account bills per use.
   so they need `floor.git` on.
 - **Actions.** Give to agent, Edit and Remove for a ticket nobody has started. Stop for one that is
   Working. Accept, Ask for changes and Remove for one that is Ready for you. Try again, Stop and
-  Remove for one in Needs you. Accept is your verdict that the work is what you asked for. The check
+  Remove for one in Needs you. Remove for one that is Done, to clear it off the board. Accept is your verdict that the work is what you asked for. The check
   passing only means the daemon's own run passed.
-- **Banner.** The top bar says how many tickets are ready for you or need you, and Overview lists
-  them under Waiting on you. A turn ending never raises it.
+- **Banner.** The top bar says how many tickets are ready for you or need you, and how many agents
+  working a ticket are asking you a question. Overview lists the tickets under Waiting on you. A
+  turn ending never raises it. While a ticket waits for you, its agent's crew pill and the top
+  bar's count read "ready for you" or "needs you" instead of "done", and the old goal-done notice
+  is not shown for it.
 
 [Tickets](tickets.md) covers the same actions from the command line.
 

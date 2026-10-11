@@ -26,8 +26,10 @@ Dudes reads no engine's credentials or files.
      program is on your `PATH`, and left as your file has them when it is not. Codex streaming is
      never asked about; see [Chat](chat.md) to opt in.
    - **Floor actions (one question).** Let the Floor hire, pause and resume, answer, change goals,
-     retire and attach a terminal. Yes turns all six on and No turns them off. Anyone holding your
-     one-time Floor link could start agents that act with your account's full reach. When your
+     give tickets to agents, retire and attach a terminal. Yes turns all seven on and No turns them
+     off. A ticket given to an agent starts it, and agents then run and spend under your account.
+     Anyone holding your one-time Floor link could start agents that act with your account's full
+     reach. When your
      file already turns on only some of them, quickstart keeps that choice and does not ask.
      Starting a new goal when an agent's goal has nothing left stays as your file has it, and
      is off in a new file.
@@ -67,7 +69,13 @@ Dudes reads no engine's credentials or files.
    the link is a loopback address. [The Floor](floor.md) explains how it signs in, what each tab shows and what an agent's position
    in the office means.
 
-4. Hire more agents. On the Floor, click **Hire an agent**, choose the workspace and an engine it
+4. Give an agent a ticket from the Floor. Open **Board**, press **New ticket**, type a title and
+   choose **Create ticket**. Open the card and choose **Give to agent**. When the agent's check
+   passes the ticket moves to **Ready for you**, and the top bar says so. Read what the agent
+   says it did and the files it changed, then choose **Accept**, or **Ask for changes** with a
+   message. See [Tickets](tickets.md).
+
+5. Hire more agents. On the Floor, click **Hire an agent**, choose the workspace and an engine it
    offers, and write the briefing. The Floor offers Claude Code, and Codex or Pi once they are
    turned on. From the command line, hire an agent, then give it a goal with the id that `hire`
    prints:
@@ -93,7 +101,7 @@ Dudes reads no engine's credentials or files.
    hired agent and its status. [Goals and stopping](goals-and-stopping.md) covers replacing a goal,
    pausing, halting and retiring an agent.
 
-5. Stop the daemon and the agent processes it started:
+6. Stop the daemon and the agent processes it started:
 
    ```sh
    dudes stop
