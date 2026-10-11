@@ -317,7 +317,7 @@ test('Board takes the working area at every width with one vertical scroll regio
     assert.equal(of('.control-panel', 'width'), 'auto');
     assert.equal(of('.control-panel', 'overflow-y'), 'auto');
     assert.equal(of('.control-panel', 'max-height'), 'none');
-    for (const target of ['.control-view', '.control-detail']) {
+    for (const target of ['.control-view']) {
       assert.equal(declared(rules, selector => selector === `.control-panel[data-view='board'] ${target}`, 'overflow'), 'visible');
     }
   }
@@ -366,6 +366,18 @@ test('Board reserves no hidden terminal row while the first-run guide is open', 
   ]);
   for (const width of [640, 1024, 1440]) {
     assert.equal(declared(rulesAt(css, width), selector => active.has(selector), 'grid-template-rows'), 'auto minmax(0, 1fr)');
+  }
+});
+
+test('Board uses compact Done notices and an empty region takes no working space', async () => {
+  const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
+  const stage = ".floor-stage:has(.control-panel[data-view='board'])";
+  for (const width of [640, 1024, 1440]) {
+    const rules = rulesAt(css, width);
+    assert.equal(declared(rules, selector => selector === stage, '--notice-row'), '2.75rem');
+    assert.equal(declared(rules, selector => selector === `${stage} > .done-notices`, 'height'), 'var(--notice-row)');
+    assert.equal(declared(rules, selector => selector === `${stage} > .done-notices`, 'container'), 'done-row / inline-size');
+    assert.equal(declared(rules, selector => selector === `${stage} > .done-notices:empty`, 'position'), 'absolute');
   }
 });
 

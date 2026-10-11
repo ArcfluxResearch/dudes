@@ -26,7 +26,7 @@ const KIND_LABEL: Readonly<Record<GitChangeKind, string>> = Object.freeze({
   type_changed: 'Type changed', conflicted: 'Conflict',
 });
 
-type Mode = 'none' | 'give' | 'changes' | 'edit' | 'remove';
+type Mode = 'none' | 'give' | 'changes' | 'edit' | 'remove' | 'stop';
 
 function focusHeading(node: HTMLHeadingElement | null): (() => void) | void {
   if (node === null) return undefined;
@@ -94,11 +94,6 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
         {loaded.summary === null || loaded.summary === '' ? <p>{NO_SUMMARY}.</p>
           : <p className="ticket-summary ticket-text">{loaded.summary}</p>}
       </section>}
-      {loaded.result === null ? null : <section aria-label="Check result"><h4>Check result</h4>
-        <p>{loaded.result.pass ? 'The check passed' : 'The check failed'}
-          {loaded.result.exit === null ? '' : `, exit status ${loaded.result.exit}`}
-          {' '}at {recordedTime(loaded.result.at)}.</p>
-      </section>}
     </>}
   </>;
 }
@@ -132,7 +127,9 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
-    if (chosen === null || sending) return;
+    const allowed = actionsOf(card);
+    if (chosen === null || sending || !ticketActionsOpen(floor)
+      || (mode === 'changes' ? !allowed.includes('changes') : !allowed.includes('give') && !allowed.includes('try_again'))) return;
     if (await changeTicket(card, { verb: 'assign', agent: chosen, message: mode === 'changes' ? message : '' })) onDone();
   }
 
@@ -150,7 +147,7 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
       <textarea id={`${ids}-message`} rows={3} maxLength={2048} value={message}
         onChange={(event) => setMessage(event.target.value)} />
     </div> : null}
-    <button type="submit" disabled={sending || chosen === null}>
+    <button type="submit" disabled={sending || chosen === null || !ticketActionsOpen(floor)}>
       {mode === 'changes' ? 'Send back' : 'Give to agent'}</button>
     <button type="button" onClick={onDone}>Cancel</button>
   </form>;
@@ -172,7 +169,7 @@ function EditForm({ floor, card, detail, onDone }: {
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
-    if (sending || title.trim() === '') return;
+    if (sending || title.trim() === '' || !ticketActionsOpen(floor) || !actionsOf(card).includes('edit')) return;
     const saved = await changeTicket(card, {
       verb: 'edit', title, note: text, check: check === null ? null : { id: check.id, revision: check.revision },
     });
@@ -194,7 +191,7 @@ function EditForm({ floor, card, detail, onDone }: {
         {checks.map((entry) => <option key={entry.id} value={entry.id}>{choiceLabel(entry)}</option>)}
       </select>
     </div> : null}
-    <button type="submit" disabled={sending || title.trim() === ''}>Save</button>
+    <button type="submit" disabled={sending || title.trim() === '' || !ticketActionsOpen(floor)}>Save</button>
     <button type="button" onClick={onDone}>Cancel</button>
   </form>;
 }
@@ -215,6 +212,14 @@ export function TicketPanel({ floor, card, onHire }: {
   useEffect(() => { setMode('none'); }, [card.id, card.status]);
   const actions = open ? actionsOf(card) : [];
   const loaded = detail.card === card.id ? detail.detail : null;
+  const ordinary = actions.filter((action) => action !== 'remove' && action !== 'stop');
+  const destructive = actions.filter((action) => action === 'remove' || action === 'stop');
+  const modeAllowed = mode === 'none' || (mode === 'give'
+    ? actions.includes('give') || actions.includes('try_again') : actions.includes(mode));
+
+  const actionButton = (action: TicketAction) => <button key={action} type="button" className="ticket-action" data-action={action}
+    disabled={sending || (action === 'edit' && loaded === null)}
+    onClick={() => press(action)}>{ACTION_LABEL[action]}</button>;
 
   function press(action: TicketAction): void {
     switch (action) {
@@ -224,7 +229,7 @@ export function TicketPanel({ floor, card, onHire }: {
       case 'edit': setMode('edit'); break;
       case 'remove': setMode('remove'); break;
       case 'accept': void changeTicket(card, { verb: 'accept' }); break;
-      case 'stop': void changeTicket(card, { verb: 'stop' }); break;
+      case 'stop': setMode('stop'); break;
     }
   }
 
@@ -235,22 +240,33 @@ export function TicketPanel({ floor, card, onHire }: {
     <TicketNotice />
     <Facts floor={floor} card={card} />
     {card.status === 'review' ? <ChangedFiles floor={floor} card={card} /> : null}
+    {loaded?.result == null ? null : <section aria-label="Check result"><h4>Check result</h4>
+      <p>{loaded.result.pass ? 'The check passed' : 'The check failed'}
+        {loaded.result.exit === null ? '' : `, exit status ${loaded.result.exit}`}
+        {' '}at {recordedTime(loaded.result.at)}.</p>
+    </section>}
     {!floor.ticket ? <TicketOffHint floor={floor} /> : null}
-    {actions.length === 0 ? null : <div className="ticket-actions" role="group" aria-label="Ticket actions">
-      {actions.map((action) => <button key={action} type="button" className="ticket-action" data-action={action}
-        disabled={sending || (action === 'edit' && loaded === null)}
-        onClick={() => press(action)}>{ACTION_LABEL[action]}</button>)}
+    {actions.length === 0 ? null : <div className="ticket-actions" role="group" aria-label="Ticket actions" aria-busy={sending}>
+      {ordinary.length === 0 ? null : <div className="ticket-action-pair">{ordinary.map(actionButton)}</div>}
+      {destructive.length === 0 ? null : <div className="ticket-destructive">{destructive.map(actionButton)}</div>}
+      {sending ? <p className="ticket-sending" role="status">Sending…</p> : null}
     </div>}
+    <div className="ticket-mode" hidden={!open || !modeAllowed}>
     {mode === 'give' || mode === 'changes'
       ? <GiveForm floor={floor} card={card} project={loaded?.project ?? projectOf(floor, card)}
         pending={detail.card === card.id ? detail.problem : null} mode={mode} onDone={() => setMode('none')} onHire={onHire} /> : null}
     {mode === 'edit' && loaded !== null ? <EditForm floor={floor} card={card} detail={loaded} onDone={() => setMode('none')} /> : null}
-    {mode === 'remove' ? <div className="ticket-confirm" role="group" aria-label="Remove ticket">
-      <p>Remove this ticket? It leaves the board. Its record stays in the journal.</p>
-      <button type="button" className="ticket-remove" disabled={sending}
-        onClick={() => { void changeTicket(card, { verb: 'remove' }).then((removed) => { if (removed) setMode('none'); }); }}>Remove ticket</button>
+    {mode === 'remove' || mode === 'stop' ? <div className="ticket-confirm" role="group" aria-label={mode === 'remove' ? 'Remove ticket' : 'Stop ticket'}>
+      <p>{mode === 'remove' ? 'Remove this ticket? It leaves the board. Its record stays in the journal.'
+        : 'Stop this ticket? The agent finishes its current step before stopping.'}</p>
+      <button type="button" className="ticket-remove" disabled={sending || !open || !modeAllowed}
+        onClick={() => {
+          if (!open || !actions.includes(mode)) return;
+          void changeTicket(card, { verb: mode }).then((changed) => { if (changed) setMode('none'); });
+        }}>{mode === 'remove' ? 'Remove ticket' : 'Stop ticket'}</button>
       <button type="button" onClick={() => setMode('none')}>Keep it</button>
     </div> : null}
+    </div>
   </section>;
 }
 

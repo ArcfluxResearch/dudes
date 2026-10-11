@@ -176,7 +176,7 @@ export function WebFloorShell() {
     const onShortcut = (event: KeyboardEvent) => {
       const target = event.target;
       const blocked = target instanceof Element && target.closest(
-        '.terminal-panel, .hire-wizard, .first-run-guide, input, textarea, select',
+        '.terminal-panel, .hire-wizard, .ticket-dialog, .first-run-guide, input, textarea, select',
       ) !== null;
       if (!isFocusShortcut(event, blocked)) return;
       event.preventDefault();

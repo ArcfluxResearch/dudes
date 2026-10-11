@@ -72,7 +72,7 @@ test('the office box is identified with detail in the drawer beside it', async (
   const drawer = await readFile(resolve(import.meta.dirname, '../src/renderer/AgentDrawer.tsx'), 'utf8');
   assert.match(drawer, /<div className="agent-drawer" id="selected-agent-detail"/);
   const control = await readFile(resolve(import.meta.dirname, '../src/renderer/Control.tsx'), 'utf8');
-  assert.match(control, /className="control-detail" id="selected-card-detail"/);
+  assert.match(control, /<dialog className="ticket-dialog" id="selected-card-detail"/);
   const planted = '<div className="office"><p className="office-failure">failed</p></div>';
   assert.equal(divDepthAt(planted, planted.indexOf('office-failure')), 1,
     'the depth scan catches a failure line planted inside the office');

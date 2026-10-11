@@ -304,7 +304,7 @@ const ADMITTED = new Map([
   [HIRE_FORM, ADMITTED_IN_HIRE_FORM], [ANSWER_FORM, ADMITTED_IN_ANSWER_FORM], [CONTROL_PANEL, ADMITTED_IN_CONTROL_PANEL],
   [ACTIVITY_PANEL, Object.freeze(['an input', 'a select', 'a change handler'])],
   [GOAL_PANEL, ADMITTED_IN_GOAL_FORM],
-  [TICKET_BOARD, ADMITTED_IN_TICKET_FORM], [TICKET_PANEL, ADMITTED_IN_TICKET_FORM],
+  [TICKET_BOARD, Object.freeze([...ADMITTED_IN_TICKET_FORM, 'a key handler'])], [TICKET_PANEL, ADMITTED_IN_TICKET_FORM],
   [CHAT_PANEL, Object.freeze(['a textarea', 'a change handler', 'a key handler'])],
   [RENAME_PANEL, Object.freeze(['an input', 'a change handler', 'a key handler'])],
   [LOOK_PANEL, Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler',
@@ -438,6 +438,11 @@ const ADMITTED_HANDLERS = [
     expression: '(event) => setOpen(event.currentTarget.open)' },
   { file: FLOOR_SHELL, tag: 'div', className: 'floor-stage', handler: 'onKeyDown', expression: CLOSE_DRAWER_ON_ESCAPE },
   { file: CONTROL_VIEW, tag: 'section', className: 'control-panel', handler: 'onKeyDown', expression: CLOSE_ON_ESCAPE },
+  { file: CONTROL_VIEW, tag: 'dialog', className: 'ticket-dialog', handler: 'onCancel',
+    expression: '(event) => { event.preventDefault(); closeOverlay(); }' },
+  { file: CONTROL_VIEW, tag: 'dialog', className: 'ticket-dialog', handler: 'onKeyDown',
+    expression: "(event) => { if (event.key === 'Escape') event.stopPropagation(); }" },
+  { file: TICKET_BOARD, tag: 'div', className: 'ticket-card-regions', handler: 'onKeyDown', expression: 'moveCardFocus' },
   { file: FLOOR_SHELL, tag: 'div', className: 'panel-splitter', handler: 'onPointerDown', expression: 'startResize' },
   { file: FLOOR_SHELL, tag: 'div', className: 'panel-splitter', handler: 'onPointerMove', expression: 'moveResize' },
   { file: FLOOR_SHELL, tag: 'div', className: 'panel-splitter', handler: 'onPointerUp', expression: 'endResize' },
@@ -1050,7 +1055,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     'src/renderer/AgentDetail.tsx',
     ...Array(2).fill('src/renderer/CrewList.tsx'),
     ...Array(3).fill(ARCHIVED_AGENTS),
-    ...Array(6).fill('src/renderer/Control.tsx'),
+    ...Array(7).fill('src/renderer/Control.tsx'),
     'src/renderer/DoneNotices.tsx',
     ...Array(3).fill('src/renderer/LiveWork.tsx'),
     'src/renderer/BoardNotes.tsx',
@@ -1063,7 +1068,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(5).fill(PAUSE_ALL_PANEL),
     ...Array(3).fill(GOAL_PANEL),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
-    ...Array(5).fill(TICKET_BOARD),
+    ...Array(6).fill(TICKET_BOARD),
     ...Array(9).fill(TICKET_PANEL),
     ...Array(10).fill(HIRE_FORM),
     HIRE_ENTRY,
@@ -1123,7 +1128,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(notes, /onClick=\{onOpenTasks\}/);
   const tasks = await readFile(resolve(floor, 'src/renderer/BoardPanel.tsx'), 'utf8');
   assert.match(tasks, /onClick=\{\(\) => onSelect\(card\.id\)\}/);
-  assert.match(center, /onSelect=\{setSelectedCardId\}/);
+  assert.match(center, /onSelect=\{openCard\}/);
   assert.match(strip, /className="crew-row"/);
   assert.match(strip, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);
   assert.match(strip, /className="crew-card-note"/);
@@ -1136,7 +1141,11 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(center, /className="agents-roster-row"/);
   assert.match(center, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);
   assert.deepEqual(clicksIn(center), ['() => onSelectAgent(row.id)', 'onToggle', '() => onOpen(item.agentId)',
-    '() => onOpenTicket?.(item.card)', '() => onToggle(entry.view)', 'onClose']);
+    '() => onOpenTicket?.(item.card)', '() => onToggle(entry.view)', 'onClose', 'closeOverlay']);
+  assert.deepEqual(clicksIn(await readFile(resolve(floor, TICKET_BOARD), 'utf8')), [
+    'dismissNotice', '(event) => onHire(event.currentTarget)', 'onCancel',
+    '(event) => onSelect(card.id, event.currentTarget)', '(event) => onNewTicket(event.currentTarget)',
+  ]);
   // Opening Setup or Settings takes a fresh snapshot: the same resubscription Recheck starts.
   assert.match(center, /\{ view: 'setup', label: 'Setup', refresh: true \}/);
   assert.match(center, /\{ view: 'settings', label: 'Settings', refresh: true \}/);

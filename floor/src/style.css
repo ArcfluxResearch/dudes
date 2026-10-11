@@ -365,6 +365,7 @@ samp,
 }
 
 .floor-stage:has(.control-panel[data-view='board']) {
+  --notice-row: 2.75rem;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
@@ -392,12 +393,6 @@ samp,
   box-shadow: none;
 }
 
-.floor-stage:has(.control-panel[data-view='board']) > .done-notices {
-  grid-row: 1;
-  grid-column: 1 / -1;
-  height: auto;
-}
-
 .control-panel[data-view='board'] .control-panel-head {
   flex: 0 0 auto;
   align-items: center;
@@ -419,8 +414,7 @@ samp,
   font-size: 0.8rem;
 }
 
-.control-panel[data-view='board'] .control-view,
-.control-panel[data-view='board'] .control-detail {
+.control-panel[data-view='board'] .control-view {
   flex: 0 0 auto;
   max-height: none;
   overflow: visible;
@@ -451,8 +445,7 @@ samp,
   outline: none;
 }
 
-.control-view,
-.control-detail {
+.control-view {
   min-width: 0;
   min-height: 0;
   overflow: auto;
@@ -460,13 +453,6 @@ samp,
 
 .control-view {
   flex: 1 1 auto;
-}
-
-.control-detail {
-  flex: 0 1 auto;
-  max-height: 45%;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--line);
 }
 
 .panel-close,
@@ -548,7 +534,8 @@ samp,
   grid-row: 2;
 }
 
-.floor-stage:has(.terminal-panel) > .done-notices {
+.floor-stage:has(.terminal-panel) > .done-notices,
+.floor-stage:has(.control-panel[data-view='board']) > .done-notices {
   position: relative;
   inset: auto;
   display: flex;
@@ -566,13 +553,13 @@ samp,
   container: done-row / inline-size;
 }
 
-.floor-stage:not(:has(.terminal-panel)) .done-notices ol {
+.floor-stage:not(:has(.terminal-panel)):not(:has(.control-panel[data-view='board'])) .done-notices ol {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
 }
 
-.floor-stage:not(:has(.terminal-panel)) .done-notice {
+.floor-stage:not(:has(.terminal-panel)):not(:has(.control-panel[data-view='board'])) .done-notice {
   flex: 1 1 16rem;
   max-width: 22rem;
 }
@@ -2725,6 +2712,10 @@ samp,
  * and its first notice would go unannounced.
  */
 .done-notices:empty {
+  position: absolute;
+}
+
+.floor-stage:has(.control-panel[data-view='board']) > .done-notices:empty {
   position: absolute;
 }
 

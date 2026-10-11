@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import type { ReactNode } from 'react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { ArchivedAgents } from './ArchivedAgents.tsx';
 import type { RetiredAgentRow } from './archive.ts';
 import { LogPanel } from './LogPanel.tsx';
 import { ReorderHandle, useAgentOrder } from './AgentOrder.tsx';
 import { journalPosition } from './format.ts';
-import { closesPanel, handFocusOnLeave } from './focus.ts';
+import { closesPanel, handFocusOnLeave, restoreFocusAfterDialog } from './focus.ts';
 import { StreamReadStatus } from './ReadError.tsx';
 import type { FloorState } from './floor/store.ts';
 import { waitingOnYou } from './questions.ts';
@@ -17,7 +17,8 @@ import { fieldsOf } from './scene/label.ts';
 import { SetupView } from './setup/SetupView.tsx';
 import { SettingsView } from './settings/SettingsView.tsx';
 import { Board, CardDetail } from './BoardPanel.tsx';
-import { drawsTickets, TicketBoard } from './ticket/TicketBoard.tsx';
+import { drawsTickets, NewTicketForm, TicketBoard, TicketNotice } from './ticket/TicketBoard.tsx';
+import { viewConfirmed } from './ticket/model.ts';
 import { TicketPanel } from './ticket/TicketPanel.tsx';
 import { workspaceGroups, workspaceLabel } from './workspace.ts';
 import { HireEntry } from './onboarding/HireEntry.tsx';
@@ -34,6 +35,8 @@ export const CONTROL_VIEWS: readonly { readonly view: ControlView; readonly labe
 ];
 
 export const CONTROL_TITLE_ID = 'control-title';
+
+type BoardOverlay = { readonly kind: 'new' } | { readonly kind: 'card'; readonly id: string } | null;
 
 /** A view button's target: no view when that view is already open beside the office, else the view itself. */
 export function toggledView(open: ControlView | null, pressed: ControlView, focused: boolean): ControlView | null {
@@ -213,14 +216,55 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
   readonly onHireAgain?: (row: RetiredAgentRow, opener: HTMLButtonElement) => void;
   readonly onGuide?: () => void;
 }) {
-  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [overlay, setOverlay] = useState<BoardOverlay>(null);
+  const selectedCardId = overlay?.kind === 'card' ? overlay.id : null;
   const selectedCard = (floor.cards ?? []).find((card) => card.id === selectedCardId) ?? null;
+  const opener = useRef<HTMLElement | null>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const seenCard = useRef<string | null>(null);
+  const showing = view === 'board' && overlay !== null;
+
+  function openCard(id: string, from?: HTMLElement): void {
+    opener.current = from ?? document.querySelector<HTMLButtonElement>(`[data-card-id="${id}"]`);
+    seenCard.current = null;
+    setOverlay({ kind: 'card', id });
+  }
+
+  function openNewTicket(from: HTMLElement): void {
+    opener.current = from;
+    seenCard.current = null;
+    setOverlay({ kind: 'new' });
+  }
+
+  function closeOverlay(): void {
+    const replacement = selectedCardId === null ? null
+      : dialog.current?.ownerDocument.querySelector<HTMLButtonElement>(`[data-card-id="${selectedCardId}"]`) ?? null;
+    const fallback = replacement ?? document.getElementById(CONTROL_TITLE_ID) ?? document.getElementById(viewButtonId('board'));
+    dialog.current?.close();
+    setOverlay(null);
+    restoreFocusAfterDialog(opener.current, fallback);
+  }
+
+  useEffect(() => {
+    if (overlay?.kind !== 'card') return;
+    if (selectedCard !== null) seenCard.current = selectedCard.id;
+    else if (seenCard.current === overlay.id && viewConfirmed(floor)) closeOverlay();
+  }, [selectedCardId, selectedCard, floor]);
+
+  useEffect(() => {
+    if (!showing) return undefined;
+    const node = dialog.current;
+    node?.showModal();
+    node?.querySelector<HTMLElement>(overlay?.kind === 'new' ? 'input[name="title"]' : '#card-detail-title')?.focus();
+    return () => { node?.close(); };
+  }, [showing]);
   const panels: Record<ControlView, ReactNode> = {
     overview: <OverviewSummary floor={floor} selectedId={selectedId} onOpenQuestion={onOpenQuestion}
       onOpenTicket={onOpenTicket} onHireAgain={onHireAgain} />,
     board: drawsTickets(floor)
-      ? <TicketBoard floor={floor} selectedId={selectedCardId} onSelect={setSelectedCardId} onHire={onHire} />
-      : <Board floor={floor} selectedId={selectedCardId} onSelect={setSelectedCardId} />,
+      ? <TicketBoard floor={floor} selectedId={selectedCardId} onSelect={openCard}
+        forming={overlay?.kind === 'new'} onNewTicket={openNewTicket} />
+      : <Board floor={floor} selectedId={selectedCardId} onSelect={openCard} />,
     log: <LogPanel floor={floor} />,
     setup: <SetupView floor={floor} onGuide={onGuide} />,
     settings: <SettingsView floor={floor} onSetup={() => onView('setup')} />,
@@ -239,11 +283,23 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
           onClick={onClose}>×</button>
       </header>
       <div className="control-view">{panels[view]}</div>
-      {view === 'board' ? <div className="control-detail" id="selected-card-detail" key={selectedCardId ?? 'card-none'}
-        ref={handFocusOnLeave} data-focus-on-leave={viewButtonId('board')}>
-        {selectedCard?.ticket != null ? <TicketPanel floor={floor} card={selectedCard} onHire={onHire} />
-          : <CardDetail floor={floor} card={selectedCard} />}
-      </div> : null}
+      {view === 'board' ? <dialog className="ticket-dialog" id="selected-card-detail" ref={dialog}
+        data-composer={overlay?.kind === 'new'}
+        aria-label={overlay?.kind === 'new' ? 'New ticket' : 'Ticket detail'}
+        onCancel={(event) => { event.preventDefault(); closeOverlay(); }}
+        onKeyDown={(event) => { if (event.key === 'Escape') event.stopPropagation(); }}>
+        {showing ? <><header className="ticket-dialog-head"><p>{overlay?.kind === 'new' ? 'New ticket' : 'Ticket review'}</p>
+          <button type="button" className="ticket-dialog-close" aria-label="Close ticket dialog" onClick={closeOverlay}>×</button>
+        </header>
+        {overlay?.kind === 'new' ? <div className="ticket-composer"><h3>New ticket</h3>
+          <p>Tell an agent what you want to happen.</p><TicketNotice />
+          <NewTicketForm floor={floor} onHire={onHire} onCancel={closeOverlay}
+            onCreated={(id) => { opener.current = null; seenCard.current = null; setOverlay({ kind: 'card', id }); }} />
+        </div> : selectedCard?.ticket != null ? <TicketPanel key={selectedCard.id} floor={floor} card={selectedCard} onHire={onHire} />
+          : selectedCard !== null ? <CardDetail key={selectedCard.id} floor={floor} card={selectedCard} />
+            : <p role="status">Waiting for the board to confirm this ticket.</p>}
+        </> : null}
+      </dialog> : null}
     </section>
   );
 }

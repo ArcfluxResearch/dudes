@@ -132,6 +132,19 @@ test('an empty ticket board gives one next step in every labelled lane', () => {
   }
 });
 
+test('cards show the recorded agent colour, later rounds and a stopping ticket', () => {
+  subscribe(store, { agents: [agent(ADA, 'Ada', { accent: 'mint' })], cards: [
+    ticketCard(1, 'doing', { claimed_by: ADA }, { round: 2 }),
+    ticketCard(2, 'todo', {}, { stopping: true }),
+  ] });
+  const html = board();
+  assert.match(html, /class="ticket-avatar" aria-hidden="true" style="--agent:#27846f">A<\/span>/);
+  assert.match(html, /Round 2/);
+  assert.match(html, /Stopping…/);
+  assert.match(html, /Stopping: the agent is finishing its current step\./);
+  assert.match(html, /aria-haspopup="dialog"/);
+});
+
 test('a card says its title, its agent, its place in line and why it waits', () => {
   subscribe(store, {
     agents: [agent(ADA, 'Ada', { status: 'running' }), agent(GRACE, 'Grace', { paused: true })],
