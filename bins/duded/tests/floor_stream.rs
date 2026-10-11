@@ -787,42 +787,14 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
         serde_json::json!({"kind":"announced"})
     );
     let progress = &frame["delta"]["closing_progress"];
-    assert_eq!(
-        progress
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>(),
-        std::collections::BTreeSet::from([
-            "acknowledged",
-            "settled",
-            "owed",
-            "running",
-            "remaining_ms"
-        ])
-    );
-    assert_eq!(progress["acknowledged"], 0);
-    assert_eq!(progress["settled"], 0);
-    assert_eq!(progress["owed"], 2);
-    assert_eq!(progress["running"], 2);
+    assert_progress_cut(&fixture, &frame, (0, 0, 2, 2));
     assert!((359_000..=360_000).contains(&progress["remaining_ms"].as_u64().unwrap()));
     assert_eq!(
         frame["delta"]["lsn"],
         answer.result.as_ref().unwrap()["announcement"]
     );
     let announcement = answer.result.as_ref().unwrap()["announcement"].clone();
-    let token = fixture
-        .records()
-        .iter()
-        .find_map(|record| match record {
-            dudes_proto::Record::HookTokenMinted {
-                agent: owner,
-                token_hash,
-            } if *owner == agent => Some(common::token_of(token_hash)),
-            _ => None,
-        })
-        .unwrap();
+    let token = agent_token(&fixture, agent);
     let ack = serde_json::json!({ "action": "ack", "lsn": announcement, "token": token.expose() });
     column.set(dudes_proto::PeerProvenance::Agent(agent));
     let mut caller = Client::connect(settings.socket()).unwrap();
@@ -846,29 +818,7 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
             .is_none()
     );
     assert_eq!(fixture.entries(), before_duplicate);
-    let turn = fixture
-        .records()
-        .iter()
-        .find_map(|record| match record {
-            dudes_proto::Record::TurnIssued {
-                agent: owner, turn, ..
-            } if *owner == agent => Some(*turn),
-            _ => None,
-        })
-        .unwrap();
-    running.handle.input(dudes_supervisor::Input::ChildExited {
-        final_reply: None,
-        elapsed_ms: None,
-        turn,
-        exit: dudes_proto::ExitStatus {
-            code: Some(0),
-            signal: None,
-        },
-        usage: None,
-        model_usage: std::collections::BTreeMap::new(),
-        outcome: dudes_proto::TurnOutcome::Completed,
-        last_message: None,
-    });
+    observe_turn_end(&running.handle, &fixture, agent);
     let ended = next_closing_progress(&mut browser);
     assert!(
         ended["delta"].get("closing_time").is_none(),
@@ -887,6 +837,49 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
     drop(browser);
     drop(client);
     running.stop(duded::ExitCause::ShutdownRpc);
+}
+
+fn agent_token(
+    fixture: &Fixture,
+    agent: dudes_types::AgentId,
+) -> dudes_proto::rpc::hook::HookToken {
+    fixture
+        .records()
+        .iter()
+        .find_map(|record| match record {
+            dudes_proto::Record::HookTokenMinted {
+                agent: owner,
+                token_hash,
+            } if *owner == agent => Some(common::token_of(token_hash)),
+            _ => None,
+        })
+        .unwrap()
+}
+
+fn observe_turn_end(handle: &duded::ports::Handle, fixture: &Fixture, agent: dudes_types::AgentId) {
+    let turn = fixture
+        .records()
+        .iter()
+        .find_map(|record| match record {
+            dudes_proto::Record::TurnIssued {
+                agent: owner, turn, ..
+            } if *owner == agent => Some(*turn),
+            _ => None,
+        })
+        .unwrap();
+    handle.input(dudes_supervisor::Input::ChildExited {
+        final_reply: None,
+        elapsed_ms: None,
+        turn,
+        exit: dudes_proto::ExitStatus {
+            code: Some(0),
+            signal: None,
+        },
+        usage: None,
+        model_usage: std::collections::BTreeMap::new(),
+        outcome: dudes_proto::TurnOutcome::Completed,
+        last_message: None,
+    });
 }
 
 fn next_closing_progress(browser: &mut WebSocket) -> Value {

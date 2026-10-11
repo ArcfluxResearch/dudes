@@ -56,6 +56,22 @@ fn hire_open(daemon: &mut TestDaemon, fixture: &common::Fixture) -> HireResult {
     hired
 }
 
+fn observed_end(turn: TurnId) -> Input {
+    Input::ChildExited {
+        final_reply: None,
+        elapsed_ms: None,
+        turn,
+        exit: dudes_proto::ExitStatus {
+            code: Some(0),
+            signal: None,
+        },
+        usage: None,
+        model_usage: BTreeMap::new(),
+        outcome: dudes_proto::TurnOutcome::Completed,
+        last_message: None,
+    }
+}
+
 #[test]
 fn a_deferred_cut_failure_keeps_its_initiating_error_and_abandons_output() {
     let fixture = common::Fixture::new();
@@ -279,21 +295,7 @@ fn complete_stream_snapshot_keeps_final_counts_and_positive_time_after_waiting_i
     daemon.closing.responses = 0;
     assert!(!daemon.closing_tick().unwrap());
     let turn = daemon.sup.world().agents[&hired.agent].open_turn.unwrap();
-    daemon
-        .pump(Input::ChildExited {
-            final_reply: None,
-            elapsed_ms: None,
-            turn,
-            exit: dudes_proto::ExitStatus {
-                code: Some(0),
-                signal: None,
-            },
-            usage: None,
-            model_usage: BTreeMap::new(),
-            outcome: dudes_proto::TurnOutcome::Completed,
-            last_message: None,
-        })
-        .unwrap();
+    daemon.pump(observed_end(turn)).unwrap();
     assert!(daemon.closing_tick().unwrap());
     let final_progress = daemon.ctx.floor_closing.unwrap().progress;
     assert_eq!(
@@ -482,21 +484,7 @@ fn attached_writes_during_closing_publish_both_audit_cuts_without_replaying_byte
             browser: None,
         }))
         .unwrap();
-    daemon
-        .pump(Input::ChildExited {
-            final_reply: None,
-            elapsed_ms: None,
-            turn,
-            exit: dudes_proto::ExitStatus {
-                code: Some(0),
-                signal: None,
-            },
-            usage: None,
-            model_usage: BTreeMap::new(),
-            outcome: dudes_proto::TurnOutcome::Completed,
-            last_message: None,
-        })
-        .unwrap();
+    daemon.pump(observed_end(turn)).unwrap();
     let actor = Actor::Peer {
         pid: 4242,
         uid: Some(0),
@@ -599,9 +587,7 @@ fn seed_closing(fixture: &common::Fixture, complete: bool) -> common::SharedHost
     for phase in [
         dudes_proto::ClosingPhase::Announced,
         dudes_proto::ClosingPhase::Ack { agent: agents[0] },
-    ]
-    .into_iter()
-    {
+    ] {
         writer
             .append(&Entry {
                 at: Timestamp::from_unix_millis(1_787_394_600_000),
