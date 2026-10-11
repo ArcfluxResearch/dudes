@@ -115,6 +115,20 @@ pub(super) fn apply(
             }
             Ok(())
         }
+        Record::TurnEnded { .. } | Record::PredicateResult { .. } => {
+            apply_outcome(table, turns, entry)
+        }
+        _ => apply_ticket(table, lsn, &entry.record),
+    }
+}
+
+/// What the daemon learned about a ticket's goal: the agent's last words and the check's result.
+fn apply_outcome(
+    table: &mut RowTable<'_>,
+    turns: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
+    entry: &Entry,
+) -> Result<()> {
+    match &entry.record {
         Record::TurnEnded {
             turn,
             mode: Mode::Managed,
@@ -144,7 +158,7 @@ pub(super) fn apply(
                 at: entry.at,
             });
         }),
-        _ => apply_ticket(table, lsn, &entry.record),
+        _ => Ok(()),
     }
 }
 

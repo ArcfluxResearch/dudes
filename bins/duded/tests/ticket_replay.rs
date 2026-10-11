@@ -42,9 +42,21 @@ fn check() -> TicketCheck {
 
 fn hire(project: &str) -> Record {
     let mut hired = samples::record(RecordKind::AgentHired);
-    let Record::AgentHired { workspace, .. } = &mut hired else {
+    let Record::AgentHired {
+        workspace,
+        sandbox,
+        isolation,
+        max_turns,
+        max_budget,
+        trusted,
+        mcp_servers,
+        ..
+    } = &mut hired
+    else {
         unreachable!("the sample is a hire");
     };
+    (*sandbox, *isolation, *max_turns, *max_budget, *trusted) = (None, None, None, None, false);
+    mcp_servers.clear();
     *workspace = Some(RecordedWorkspace {
         id: project.into(),
         label: "Service".into(),

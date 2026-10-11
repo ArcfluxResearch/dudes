@@ -233,9 +233,22 @@ fn sample_agent() -> AgentId {
 
 fn hire_into(repo: &Path) -> Record {
     let mut hired = samples::record(RecordKind::AgentHired);
-    let Record::AgentHired { cwd, workspace, .. } = &mut hired else {
+    let Record::AgentHired {
+        cwd,
+        workspace,
+        sandbox,
+        isolation,
+        max_turns,
+        max_budget,
+        trusted,
+        mcp_servers,
+        ..
+    } = &mut hired
+    else {
         unreachable!("the sample is a hire");
     };
+    (*sandbox, *isolation, *max_turns, *max_budget, *trusted) = (None, None, None, None, false);
+    mcp_servers.clear();
     *cwd = repo.to_path_buf();
     *workspace = Some(RecordedWorkspace {
         id: "service".into(),
