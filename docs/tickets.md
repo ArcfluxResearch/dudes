@@ -29,10 +29,23 @@ Give the ticket to an agent hired into the same project:
 dudes ticket give <card id> --agent <agent id>
 ```
 
-The answer is immediate: `Queued for Cody, 1st.` The ticket waits in that agent's queue, which
-holds up to eight tickets. `--message "<text>"` adds a note for the agent. To make and give a
-ticket in one step, pass `--give-to <agent id>` to `dudes ticket add`. If the give is refused, the
-ticket still exists and the refusal is printed.
+The answer is immediate and says what happened:
+
+- `Cody is working on it.` The agent was idle and its project was free, so the ticket started.
+- `Queued for Cody, 2nd. Waiting for ...` The ticket is in that agent's queue, which holds up to
+  eight tickets, and the sentence says what it waits for: the agent's current work, or the ticket
+  that holds the project. A project runs one ticket at a time, and a ticket that is Ready for you
+  holds it until it is accepted or sent back.
+- `Queued. Cody is paused.` A paused or halted agent starts nothing until it is resumed.
+- `Needs you: ...` The ticket could not start for a reason only you can fix, and the sentence
+  says what to do.
+
+`--message "<text>"` adds a note for the agent. To make and give a ticket in one step, pass
+`--give-to <agent id>` to `dudes ticket add`. If the give is refused, the ticket still exists and
+the refusal is printed.
+
+When the agent's check passes, the daemon moves the ticket to Ready for you. Sending finished
+work back is giving the ticket to an agent again with a `--message`.
 
 ## Look at tickets
 

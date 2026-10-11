@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 
+use dudes_proto::TicketWait;
 use dudes_proto::rpc::Empty;
 use dudes_proto::rpc::ticket::{
     TicketAssignOutcome, TicketAssignResult, TicketCreateResult, TicketReadResult,
@@ -60,9 +61,17 @@ pub fn given(
         return json(out, &result);
     }
     match result.outcome {
-        TicketAssignOutcome::Queued { position } => {
-            writeln!(out, "Queued for {agent}, {}.", ordinal(position))
-        }
+        TicketAssignOutcome::Started => writeln!(out, "{agent} is working on it."),
+        TicketAssignOutcome::Queued { position, waiting } => match waiting.wait {
+            TicketWait::AgentPaused => writeln!(out, "Queued. {agent} is paused."),
+            _ => writeln!(
+                out,
+                "Queued for {agent}, {}. {}",
+                ordinal(position),
+                waiting.note
+            ),
+        },
+        TicketAssignOutcome::NeedsYou { note, .. } => writeln!(out, "Needs you: {note}"),
     }
 }
 

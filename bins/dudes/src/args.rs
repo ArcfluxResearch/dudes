@@ -284,7 +284,7 @@ pub enum TicketCommand {
         /// The sequence the operator observed; the ticket's current one when absent.
         expected_seq: Option<Seq>,
     },
-    /// Put a ticket in an agent's queue.
+    /// Give a ticket to an agent: it starts at once when the agent and the project are free.
     Give {
         /// The ticket.
         card: CardId,
@@ -653,9 +653,10 @@ COMMANDS
     ticket show <card>
         A ticket is a board card with a title, a note, a project and a \"Done when\"
         check. Add makes one and prints its card id. Project defaults to the only
-        enrolled workspace, and Done when to that project's own check. Give puts the
-        ticket in an agent's queue, answers at once and polls nothing; the agent must
-        be hired into the ticket's project. A message tells the agent what to change.
+        enrolled workspace, and Done when to that project's own check. Give starts the
+        ticket at once when the agent and the project are free, and otherwise queues
+        it; it answers at once and polls nothing, and the agent must be hired into
+        the ticket's project. A message tells the agent what to change.
         Edit and remove work on a ticket nobody has started; an empty --note clears
         the note. Every change reads the ticket's current sequence just before the
         call, so --expected-seq is only for a script that wants a stale one refused.

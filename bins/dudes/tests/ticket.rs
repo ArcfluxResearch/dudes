@@ -98,7 +98,10 @@ impl World {
             .args(["--usd-per-day", "10"])
             .run();
         assert_eq!(run.code(), 0, "{}", run.output());
-        run.json::<HireResult>().agent.to_string()
+        let agent = run.json::<HireResult>().agent.to_string();
+        let paused = self.dudes(["pause", &agent]);
+        assert_eq!(paused.code(), 0, "{}", paused.output());
+        agent
     }
 
     fn add(&self, title: &str) -> String {
@@ -164,7 +167,7 @@ fn the_whole_flow_adds_lists_shows_edits_gives_and_removes() {
 
     let given = world.dudes(["ticket", "give", &card, "--agent", &cody]);
     assert_eq!(given.code(), 0, "{}", given.output());
-    assert_eq!(given.stdout, "Queued for Cody, 1st.\n");
+    assert_eq!(given.stdout, "Queued. Cody is paused.\n");
 
     let shown = world.dudes(["--json", "ticket", "show", &card]);
     let read = shown.json::<TicketReadResult>();
@@ -210,12 +213,15 @@ fn give_answers_at_once_in_json_and_carries_the_message() {
             "Please hurry.",
         ]);
         assert_eq!(run.code(), 0, "{}", run.output());
-        let TicketAssignOutcome::Queued { position: got } =
-            run.json::<TicketAssignResult>().outcome;
+        let TicketAssignOutcome::Queued { position: got, .. } =
+            run.json::<TicketAssignResult>().outcome
+        else {
+            panic!("a paused agent only queues");
+        };
         assert_eq!(got, position);
     }
     let text = world.dudes(["ticket", "give", &first, "--agent", &cody]);
-    assert_eq!(text.stdout, "Queued for Cody, 2nd.\n");
+    assert_eq!(text.stdout, "Queued. Cody is paused.\n");
 }
 
 #[test]
@@ -226,7 +232,7 @@ fn add_can_give_the_new_ticket_in_the_same_command() {
     assert_eq!(run.code(), 0, "{}", run.output());
     assert!(run.stdout.starts_with("ticket "), "{}", run.stdout);
     assert!(
-        run.stdout.ends_with("Queued for Cody, 1st.\n"),
+        run.stdout.ends_with("Queued. Cody is paused.\n"),
         "{}",
         run.stdout
     );
