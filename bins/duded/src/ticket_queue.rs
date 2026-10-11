@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dudes_proto::{Actor, CardView};
+use dudes_proto::CardView;
 use dudes_proto::{QueueKey, TicketRow, TicketWait};
 use dudes_supervisor::world::{AgentRow, World};
 use dudes_types::{AgentId, CardId, CardStatus, Seq};
@@ -29,12 +29,6 @@ pub(crate) struct Owed {
     pub(crate) from: CardStatus,
     pub(crate) to: CardStatus,
     pub(crate) seq: Seq,
-}
-
-impl Owed {
-    pub(crate) const fn by() -> Actor {
-        Actor::System
-    }
 }
 
 impl Facts<'_> {

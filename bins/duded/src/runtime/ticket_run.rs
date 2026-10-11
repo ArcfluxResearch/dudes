@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use dudes_proto::rpc::ErrorCode;
 use dudes_proto::rpc::RpcError;
-use dudes_proto::{CardView, Record, TicketReason, TicketRow, TicketWait, TicketWaiting};
+use dudes_proto::{Actor, CardView, Record, TicketReason, TicketRow, TicketWait, TicketWaiting};
 use dudes_supervisor::Input;
 use dudes_supervisor::input::Command;
 use dudes_types::{AgentId, CardId, CardStatus, Lsn};
@@ -166,7 +166,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             card: owed.card,
             from: owed.from,
             to: owed.to,
-            by: Owed::by(),
+            by: Actor::System,
             expected_seq: owed.seq,
             reason: None,
         })
@@ -223,7 +223,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             card: view.id,
             from: view.status,
             to: CardStatus::Blocked,
-            by: Owed::by(),
+            by: Actor::System,
             expected_seq: view.seq,
             reason: Some(reason),
         })
