@@ -53,10 +53,12 @@ test('the banner uses literal counts and keeps the countdown outside the live re
 test('only zero owed, zero running and positive sampled time justify early completion', () => {
   const render = progress => renderToStaticMarkup(createElement(Banner, { closing: 'complete', progress, stale: false }));
   assert.match(render({ ...progress, acknowledged: 2, owed: 0, running: 0 }), /Completed early/);
+  assert.doesNotMatch(render({ ...progress, acknowledged: 2, owed: 0, running: 0 }), /About \d+ seconds? left/);
   for (const changed of [{ remaining_ms: 0 }, { owed: 1 }, { running: 1 }]) {
     const html = render({ ...progress, acknowledged: 2, owed: 0, running: 0, ...changed });
     assert.doesNotMatch(html, /Completed early/);
     assert.match(html, /Closing phase complete/);
+    assert.doesNotMatch(html, /About \d+ seconds? left/);
   }
 });
 

@@ -3924,7 +3924,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
         }
 
-        if outcome.is_err() && !self.ctx.pending_floor.is_empty() {
+        let abandoned_floor = outcome.is_err() && !self.ctx.pending_floor.is_empty();
+        if abandoned_floor {
             self.ctx.pending_floor.clear();
             self.ctx.pending_floor_base = None;
             if let Some(streams) = &self.ctx.floor_streams {
@@ -3957,7 +3958,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         //
         // A peer waiting on the publication barrier is woken from here.
         self.ctx.resolver.publish(self.sup.world());
-        if let Err(error) = self.ctx.publish_chat(&self.sup) {
+        if !abandoned_floor && let Err(error) = self.ctx.publish_chat(&self.sup) {
             self.ctx.fence_journal();
             if let Some(streams) = &self.ctx.floor_streams {
                 streams.end();
@@ -7918,6 +7919,10 @@ mod condense_model_argv_tests {
 #[cfg(test)]
 #[path = "../tests/common/mod.rs"]
 mod work_test_support;
+
+#[cfg(all(test, unix))]
+#[path = "runtime/closing_progress_tests.rs"]
+mod closing_progress_tests;
 
 #[cfg(all(test, unix))]
 mod floor_shutdown_tests {

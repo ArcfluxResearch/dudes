@@ -11,13 +11,21 @@ pub(crate) struct Expiry {
 
 impl Expiry {
     fn remaining_ms(self, now: Timestamp) -> u64 {
-        let monotonic = self.monotonic.saturating_duration_since(Instant::now());
+        self.remaining_ms_at(now, Instant::now())
+    }
+
+    fn remaining_ms_at(self, now: Timestamp, monotonic_now: Instant) -> u64 {
+        let monotonic = self.monotonic.saturating_duration_since(monotonic_now);
         let wall =
             u64::try_from(self.wall.unix_millis().saturating_sub(now.unix_millis())).unwrap_or(0);
         u64::try_from(monotonic.as_millis())
             .unwrap_or(u64::MAX)
             .min(wall)
             .min(CLOSING_GRACE_SECONDS * 1000)
+    }
+
+    fn expired_at(self, now: Timestamp, monotonic_now: Instant) -> bool {
+        monotonic_now >= self.monotonic || now >= self.wall
     }
 }
 
@@ -111,6 +119,19 @@ mod tests {
         );
         assert!(restored.expired(Timestamp::UNIX_EPOCH, session.announced_at));
     }
+
+    #[test]
+    fn displayed_zero_does_not_expire_a_positive_fraction_of_a_millisecond() {
+        let start = Instant::now();
+        let expiry = Expiry {
+            monotonic: start + Duration::from_micros(500),
+            wall: Timestamp::from_unix_millis(1),
+        };
+        assert_eq!(expiry.remaining_ms_at(Timestamp::UNIX_EPOCH, start), 0);
+        assert!(!expiry.expired_at(Timestamp::UNIX_EPOCH, start));
+        assert!(expiry.expired_at(Timestamp::UNIX_EPOCH, expiry.monotonic));
+        assert!(expiry.expired_at(Timestamp::from_unix_millis(1), start));
+    }
 }
 
 #[derive(Debug)]
@@ -172,7 +193,10 @@ impl Waiting {
     }
 
     pub(crate) fn expired(&self, now: Timestamp, at: Timestamp) -> bool {
-        self.remaining_ms(now, at) == 0
+        let wall = self.wall_deadline(at);
+        self.deadline.map_or(now >= wall, |monotonic| {
+            Expiry { monotonic, wall }.expired_at(now, Instant::now())
+        })
     }
 
     pub(crate) fn remaining_ms(&self, now: Timestamp, at: Timestamp) -> u64 {

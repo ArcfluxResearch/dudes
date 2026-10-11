@@ -1,4 +1,4 @@
-//! Closing counts retain immutable membership and distinguish acknowledgement from turn completion.
+//! Closing progress counts.
 
 use std::collections::BTreeMap;
 

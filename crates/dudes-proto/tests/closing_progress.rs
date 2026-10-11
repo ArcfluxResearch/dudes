@@ -1,4 +1,4 @@
-//! Browser closing progress is additive to the existing exhaustive projection types.
+//! Closing progress wire compatibility.
 
 use dudes_proto::projection::{ClosingProgress, FloorDeltaView, FloorProjectionView};
 use dudes_proto::{ClosingPhase, FloorDelta, FloorProjection};

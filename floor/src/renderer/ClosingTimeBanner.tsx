@@ -26,6 +26,6 @@ export function ClosingTimeBanner({ closing, progress = null, stale }: {
     {' '}{early ? 'Completed early.' : closing === 'announced' ? 'The daemon is coordinating closure.' : 'Closure is complete.'}
     {progress !== null && <> {progress.acknowledged} of {progress.acknowledged + progress.settled + progress.owed} acknowledged, {progress.settled} settled, {progress.owed} still owed, {progress.running} turns still running. Settled means nothing left to save.</>}
     </p>
-    {remaining !== null && <p className="closing-time-countdown">{stale ? 'Last observed estimate: ' : ''}About {remaining} {remaining === 1 ? 'second' : 'seconds'} left.</p>}
+    {remaining !== null && closing === 'announced' && <p className="closing-time-countdown">{stale ? 'Last observed estimate: ' : ''}About {remaining} {remaining === 1 ? 'second' : 'seconds'} left.</p>}
   </div>;
 }
