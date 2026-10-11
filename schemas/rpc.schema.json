@@ -12030,7 +12030,7 @@
               "type": "null"
             }
           ],
-          "description": "The goal the ticket's latest start installed. Kept as history after the work stops."
+          "description": "The goal the ticket's latest start installed. Kept as history after the work stops, and\ncleared when the ticket is given to an agent again."
         },
         "message": {
           "description": "What the operator said when sending the work back, until the next start uses it.",
