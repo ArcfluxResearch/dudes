@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
-import { act, createElement } from 'react';
+import { act, createElement, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createServer } from 'vite';
 import ts from 'typescript';
@@ -171,7 +171,7 @@ test('Hire Close and Cancel ignore the click event and restore a removed opener 
   } finally { page.restore(); }
 });
 
-async function mount(cards, { agents = [agent()], onHire = () => {}, hireAvailable = false } = {}) {
+async function mount(cards, { agents = [agent()], onHire = () => {}, hireAvailable = false, strict = false } = {}) {
   subscribe(store, { cards, agents, checks: TWO_PROJECTS });
   const page = pageForTickets();
   const root = createRoot(page.host);
@@ -179,14 +179,73 @@ async function mount(cards, { agents = [agent()], onHire = () => {}, hireAvailab
   const closes = [];
   const render = async (next = floor) => {
     floor = next;
-    await act(async () => root.render(createElement(Control, { floor, view: 'board', selectedId: null,
-      onClose: () => closes.push('board'), onView() {}, onOpenQuestion() {}, onHire })));
+    const control = createElement(Control, { floor, view: 'board', selectedId: null,
+      onClose: () => closes.push('board'), onView() {}, onOpenQuestion() {}, onHire });
+    await act(async () => root.render(strict ? createElement(StrictMode, null, control) : control));
     page.flushFocus();
   };
   await render();
   return { page, root, render, closes, get floor() { return floor; },
     async close() { await act(async () => root.unmount()); page.restore(); } };
 }
+
+for (const replacement of ['closed', 'another card', 'new draft']) {
+  test(`a delayed create cannot replace ${replacement} after the composer is dismissed`, async () => {
+    const app = await mount([ticketCard(1, 'todo')], { strict: true });
+    try {
+      await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+      const title = app.page.host.querySelector('[name="title"]');
+      await act(async () => propsOf(title).onChange({ target: { value: 'The submitted ticket' } }));
+      let finish;
+      const ordinaryReply = reply;
+      reply = (url, body) => url === '/floor/ticket' ? new Promise((resolve) => { finish = resolve; }) : ordinaryReply(url, body);
+      await act(async () => propsOf(app.page.host.querySelector('.ticket-composer').querySelector('form')).onSubmit({ preventDefault() {} }));
+      assert.equal(ticket.getTicketState().sending, true);
+      const dialog = app.page.host.querySelector('.ticket-dialog');
+      if (replacement === 'closed') {
+        await act(async () => propsOf(dialog).onCancel({ preventDefault() {} }));
+      } else {
+        await act(async () => press(app.page.host.querySelector('.ticket-form-cancel')));
+      }
+      app.page.flushFocus();
+      if (replacement === 'another card') {
+        await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
+      } else if (replacement === 'new draft') {
+        await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+        await act(async () => propsOf(app.page.host.querySelector('[name="title"]')).onChange({ target: { value: 'A newer unsent draft' } }));
+      }
+      await act(async () => finish({ status: 200, text: async () => JSON.stringify({
+        state: 'created', card: cardId(2), seq: 0, lsn: '4097',
+      }) }));
+      await app.render({ ...app.floor, cards: [...app.floor.cards, { ...ticketCard(2, 'todo'), seq: 0 }] });
+      assert.equal(ticket.getTicketState().notice.text, 'Ticket created. Choose Give to agent when it is ready.');
+      assert.ok(app.page.host.querySelector(`[data-card-id="${cardId(2)}"]`), 'the saved card remains on the board');
+      assert.equal(seen.filter(([url]) => url === '/floor/ticket').length, 1);
+      if (replacement === 'closed') {
+        assert.equal(dialog.getAttribute('open'), null);
+      } else if (replacement === 'another card') {
+        assert.equal(dialog.querySelector('.ticket-panel').getAttribute('data-selected-card-id'), cardId(1));
+      } else {
+        assert.equal(dialog.getAttribute('data-composer'), 'true');
+        assert.equal(dialog.querySelector('[name="title"]').value, 'A newer unsent draft');
+      }
+    } finally { await app.close(); }
+  });
+}
+
+test('a live composer opens its saved card under StrictMode', async () => {
+  const app = await mount([], { strict: true });
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    await act(async () => propsOf(app.page.host.querySelector('[name="title"]')).onChange({ target: { value: 'Open the saved ticket' } }));
+    reply = () => ({ status: 200, text: async () => JSON.stringify({ state: 'created', card: cardId(2), seq: 0, lsn: '4097' }) });
+    await act(async () => propsOf(app.page.host.querySelector('.ticket-composer').querySelector('form')).onSubmit({ preventDefault() {} }));
+    await app.render({ ...app.floor, cards: [{ ...ticketCard(2, 'todo'), seq: 0 }] });
+    const dialog = app.page.host.querySelector('.ticket-dialog');
+    assert.notEqual(dialog.getAttribute('open'), null);
+    assert.equal(dialog.querySelector('.ticket-panel').getAttribute('data-selected-card-id'), cardId(2));
+  } finally { await app.close(); }
+});
 
 test('a card opens a modal and Escape closes only that modal and returns focus', async () => {
   const app = await mount([ticketCard(1, 'review', { claimed_by: ADA })]);

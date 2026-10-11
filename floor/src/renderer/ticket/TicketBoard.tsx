@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useEffect, useId, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, FormEvent, KeyboardEvent } from 'react';
 
 import type { CardRow } from '../board.ts';
@@ -87,6 +87,11 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
   readonly onCancel?: () => void;
 }) {
   const ids = useId();
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const ticket = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState);
   const projects = projectsOf(floor);
   const [title, setTitle] = useState('');
@@ -109,7 +114,7 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
       check: { id: check.id, revision: check.revision },
       agent: agent === '' || !usable.some((row) => row.id === agent) ? null : agent,
     });
-    if (!made.saved) return;
+    if (!made.saved || !mounted.current) return;
     setTitle('');
     setNote('');
     if (made.card !== null) onCreated(made.card);
