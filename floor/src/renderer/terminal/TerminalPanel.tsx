@@ -54,8 +54,6 @@ const UNAVAILABLE: Readonly<Record<Extract<TerminalOffer, { kind: 'unavailable' 
 const TRUST_WARNING = 'Claude Code may ask you to trust this workspace. Check the folder before accepting in the terminal. '
   + 'No, exit may be selected when the prompt opens.';
 
-type AttachPart = 'all' | 'action' | 'details';
-
 /** Claude Code's workspace trust prompt comes up inside the terminal, so it is read here first. */
 export function AttachConfirmation({ name, onConfirm, onCancel }: {
   readonly name: string; readonly onConfirm: () => void; readonly onCancel: () => void;
@@ -74,41 +72,38 @@ export function AttachConfirmation({ name, onConfirm, onCancel }: {
   );
 }
 
-export function TerminalAttach({ floor, row, part = 'all' }: {
-  readonly floor: FloorState; readonly row: AgentRow; readonly part?: AttachPart;
-}) {
+export function TerminalAttach({ floor, row }: { readonly floor: FloorState; readonly row: AgentRow }) {
   const channel = useSyncExternalStore(subscribeToTerminal, getTerminalState, getTerminalState);
-  return <TerminalAttachView floor={floor} offer={terminalOffer(floor, row, channel)} part={part} />;
+  return <TerminalAttachView floor={floor} offer={terminalOffer(floor, row, channel)} />;
 }
 
-export function TerminalAttachView({ floor, offer, part = 'all' }: {
-  readonly floor: FloorState; readonly offer: TerminalOffer; readonly part?: AttachPart;
-}) {
+function whyNoAttach(floor: FloorState, offer: Exclude<TerminalOffer, { readonly kind: 'none' | 'attach' }>): string {
+  switch (offer.kind) {
+    case 'open-here': return 'This agent’s terminal is open.';
+    case 'open-elsewhere': return `The terminal is open for ${nameOf(floor, offer.agent)}. Detach it before attaching this agent.`;
+    case 'unavailable': return UNAVAILABLE[offer.reason];
+  }
+}
+
+/**
+ * The one Attach button. Its words, or the reason it cannot be pressed, are its tooltip and its
+ * description. While it waits it is aria-disabled, never disabled, so the reason stays reachable by keyboard.
+ */
+export function TerminalAttachView({ floor, offer }: { readonly floor: FloorState; readonly offer: TerminalOffer }) {
   const [confirming, setConfirming] = useState(false);
   if (offer.kind === 'none') return <UnavailableControls floor={floor} control="terminal" />;
-  if (part === 'action' && offer.kind !== 'attach') return null;
-  const claudeTrust = offer.kind === 'attach'
-    && floor.agents.find((row) => row.id === offer.agent)?.provider === 'claude';
+  const target = offer.kind === 'attach' ? offer.agent : null;
+  const hint = offer.kind === 'attach' ? ATTACH_HINT : whyNoAttach(floor, offer);
+  const claudeTrust = target !== null && floor.agents.find((row) => row.id === target)?.provider === 'claude';
   return (
     <div className="agent-detail-terminal" data-terminal-offer={offer.kind}>
-      {offer.kind === 'attach' ? (
-        <>
-          {part === 'details' ? null : <button type="button" className="terminal-attach"
-            aria-describedby="terminal-hint" aria-haspopup={claudeTrust ? 'dialog' : undefined}
-            onClick={() => (claudeTrust ? setConfirming(true) : attachTerminal(offer.agent, browserTerminalPorts()))}>Attach</button>}
-          {confirming && claudeTrust && part !== 'details' ? <AttachConfirmation name={nameOf(floor, offer.agent)}
-            onCancel={() => setConfirming(false)}
-            onConfirm={() => { setConfirming(false); attachTerminal(offer.agent, browserTerminalPorts()); }} /> : null}
-          {part === 'action' ? null : <p className="hire-note" id="terminal-hint">{ATTACH_HINT}</p>}
-        </>
-      ) : (
-        <p className="hire-note">
-          {offer.kind === 'open-here' ? 'This agent’s terminal is open.'
-            : offer.kind === 'open-elsewhere'
-              ? `The terminal is open for ${nameOf(floor, offer.agent)}. Detach it before attaching this agent.`
-              : UNAVAILABLE[offer.reason]}
-        </p>
-      )}
+      <button type="button" className="terminal-attach" title={hint} aria-describedby="terminal-hint"
+        aria-haspopup={claudeTrust ? 'dialog' : undefined} aria-disabled={target === null || undefined}
+        onClick={() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }}>Attach</button>
+      {confirming && target !== null && claudeTrust ? <AttachConfirmation name={nameOf(floor, target)}
+        onCancel={() => setConfirming(false)}
+        onConfirm={() => { setConfirming(false); attachTerminal(target, browserTerminalPorts()); }} /> : null}
+      <span className="visually-hidden" id="terminal-hint">{hint}</span>
     </div>
   );
 }

@@ -44,11 +44,11 @@ async function withViews(run) {
     }));
     run({
       detail: (row) => renderToStaticMarkup(createElement(AgentDetail, { row })),
-      monitor: (floor) => renderToStaticMarkup(createElement(OverviewSummary, { floor, selectedId: null })),
+      monitor: (floor) => renderToStaticMarkup(createElement(OverviewSummary, { floor, selectedId: null, onOpenQuestion() {} })),
       roster: (floor, selectedId) => renderToStaticMarkup(createElement(AgentsRoster,
         { floor, selectedId, onSelectAgent() {} })),
       overview: (floor, selectedId) => renderToStaticMarkup(createElement(Control, {
-        floor, view: 'overview', selectedId, onClose() {}, onView() {},
+        floor, view: 'overview', selectedId, onClose() {}, onView() {}, onOpenQuestion() {},
       })),
       drawer,
       focus: (floor, row, selectedId, collapsed = false) => drawer(floor, row, selectedId)
@@ -76,7 +76,7 @@ test('Overview and the drawer report only published stream and selected-agent fa
     assert.doesNotMatch(html, /<input|<form|<textarea|contenteditable|Terminal|Workers/);
     const other = center(live, grace, GRACE);
     assert.ok(other.includes(GRACE) && other.includes('Grace') && other.includes('$0.11 · 111 tok'));
-    assert.ok(!other.includes('Ship now, or wait for a review?'));
+    assert.ok(!drawer(live, grace, GRACE).includes('Ship now, or wait for a review?'));
   });
 });
 
@@ -166,14 +166,15 @@ test('the header keeps enabled controls beside the tabbed agent facts', async ()
   });
 });
 
-test('a turn without assistant text hides Output while the header retains its status', async () => {
+test('a turn without assistant text offers no output toggle while the header retains its status', async () => {
   await withViews(({ drawer: center }) => {
     const output = { ...live.output, targetId: GRACE, status: 'live', chunks: [] };
     assert.match(center({ ...live, output }, grace, GRACE), /data-status="running"/);
-    assert.doesNotMatch(center({ ...live, output }, grace, GRACE), /role="tab"[^>]*>Output<\/button>/);
-    assert.doesNotMatch(center({ ...live, output: { ...output, status: 'ended' } }, grace, GRACE),
-      /role="tab"[^>]*>Output<\/button>/);
-    assert.doesNotMatch(center({ ...live, stale: true, output }, grace, GRACE), /role="tab"[^>]*>Output<\/button>/);
+    assert.doesNotMatch(center({ ...live, output }, grace, GRACE), /Show full output/);
+    assert.doesNotMatch(center({ ...live, output: { ...output, status: 'ended' } }, grace, GRACE), /Show full output/);
+    assert.doesNotMatch(center({ ...live, stale: true, output }, grace, GRACE), /Show full output/);
+    assert.match(center({ ...live, output: { ...output, status: 'gap' } }, grace, GRACE), /Show full output/,
+      'an incomplete stream still has its output to open');
   });
 });
 

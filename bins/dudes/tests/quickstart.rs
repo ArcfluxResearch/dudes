@@ -1085,6 +1085,64 @@ fn start_names_a_running_daemon_of_another_version() {
     );
 }
 
+/// `ping` and `floor open` name a running daemon of another version on stderr, once, and leave
+/// stdout and `--json` as they were.
+#[cfg(unix)]
+#[test]
+fn ping_and_floor_open_name_a_daemon_of_another_version_on_stderr() {
+    let home = tempfile::tempdir().expect("home");
+    let socket = home.path().join("duded.sock");
+    common::ping_as(&socket, "0.0.1");
+    let cli = Cli::new(&socket, home.path()).env("HOME", home.path());
+    let line = format!(
+        "The running daemon is 0.0.1 and this dudes is {}. Run dudes stop, then dudes start, to \
+         use the new version.\n",
+        env!("CARGO_PKG_VERSION")
+    );
+
+    let ping = cli.clone().args(["ping"]).run();
+    assert_eq!(ping.code(), dudes::exit::SUCCESS, "{ping:?}");
+    assert_eq!(ping.stderr, line, "{ping:?}");
+    assert_eq!(
+        ping.stdout,
+        format!(
+            "duded 0.0.1 on {}\njournal has no records yet\n",
+            socket.display()
+        )
+    );
+
+    let open = cli.clone().args(["floor", "open", "--no-browser"]).run();
+    assert!(open.stderr.starts_with(&line), "{open:?}");
+    assert_eq!(
+        open.stderr.matches("The running daemon is").count(),
+        1,
+        "{open:?}"
+    );
+
+    let machine = cli.clone().args(["--json", "ping"]).run();
+    assert_eq!(machine.stderr, "", "{machine:?}");
+    let machine = cli.args(["--json", "floor", "open", "--no-browser"]).run();
+    assert!(
+        !machine.stderr.contains("The running daemon"),
+        "{machine:?}"
+    );
+}
+
+/// A daemon of this dudes' own version draws no line.
+#[cfg(unix)]
+#[test]
+fn ping_says_nothing_extra_when_the_versions_match() {
+    let home = tempfile::tempdir().expect("home");
+    let socket = home.path().join("duded.sock");
+    common::ping_as(&socket, env!("CARGO_PKG_VERSION"));
+    let ping = Cli::new(&socket, home.path())
+        .env("HOME", home.path())
+        .args(["ping"])
+        .run();
+    assert_eq!(ping.code(), dudes::exit::SUCCESS, "{ping:?}");
+    assert_eq!(ping.stderr, "", "{ping:?}");
+}
+
 /// The first run in an installed layout, with the Floor bundle beside `duded`: `quickstart`, then
 /// `floor open` prints a working sign-in link with no Floor variable set anywhere, and
 /// `stop` ends it. On Windows the daemon binds the Floor listener only with the `SystemRoot` that

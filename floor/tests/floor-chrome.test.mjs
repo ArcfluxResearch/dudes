@@ -116,7 +116,6 @@ test('the top bar reaches every Control view, and the office opens with Crew bes
   assert.deepEqual([...nav.matchAll(/<button type="button" id="([^"]+)" aria-pressed="false">([^<]+)<\/button>/g)]
     .map(([, id, label]) => [id, label]), [
     ['view-overview', 'Overview'],
-    ['view-questions', 'Questions (1)'],
     ['view-board', 'Board'],
     ['view-log', 'Log'],
     ['view-setup', 'Setup'],
@@ -421,9 +420,9 @@ test('closing the drawer hands focus to the Crew row only while Crew is open and
 
 test('each Control view opens under its own heading, with a close button, and hands focus back to its button', () => {
   const floor = store.getFloorState();
-  for (const [view, label] of [['overview', 'Overview'], ['questions', 'Questions'], ['board', 'Board'], ['log', 'Log'],
+  for (const [view, label] of [['overview', 'Overview'], ['board', 'Board'], ['log', 'Log'],
     ['setup', 'Setup'], ['settings', 'Settings']]) {
-    const html = renderToStaticMarkup(createElement(Control, { floor, view, selectedId: null, onClose() {}, onView() {} }));
+    const html = renderToStaticMarkup(createElement(Control, { floor, view, selectedId: null, onClose() {}, onView() {}, onOpenQuestion() {} }));
     assert.match(html, new RegExp(`^<section class="control-panel" id="control-panel" data-view="${view}" `
       + `aria-labelledby="control-title" data-focus-on-leave="view-${view}"><header class="control-panel-head">`
       + `<h2 id="control-title" tabindex="-1">${label}</h2><button type="button" class="panel-close" aria-label="Close ${label}"`),
