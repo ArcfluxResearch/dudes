@@ -9,6 +9,7 @@ import { activityText } from './activity.ts';
 import { journalPosition, recordedTime } from './format.ts';
 import { ReadNotice, snapshotReadState } from './ReadError.tsx';
 import { getReadAvailability, subscribeToReadAvailability } from './floor/reads.ts';
+import { TicketOffHint } from './ticket/TicketGuidance.tsx';
 
 let requestedCard: string | null = null;
 const selectionListeners = new Set<() => void>();
@@ -93,6 +94,7 @@ export function Board({ floor, selectedId, onSelect }: {
   useRequestedCard(floor, selectable, onSelect);
   return <div className="board-view">
     <p className="stream-state" role="status">{selectable ? 'Live — confirmed' : 'View unconfirmed — waiting for the stream'}</p>
+    {!floor.ticket ? <TicketOffHint floor={floor} /> : null}
     <LegacyColumns floor={floor} selectedId={selectedId} onSelect={onSelect} />
   </div>;
 }

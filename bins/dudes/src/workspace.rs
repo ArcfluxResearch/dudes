@@ -15,6 +15,101 @@ use dudes_proto::rpc::goal::{CompletionCheckDeclaration, ENROLLED_CHECK_ID};
 use sha2::{Digest as _, Sha256};
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, value};
 
+/// Enrollment options before repository defaults have been resolved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddOptions {
+    /// Repository directory; the current directory when absent.
+    pub path: Option<PathBuf>,
+    /// Project id; a unique folder slug when absent.
+    pub id: Option<String>,
+    /// Display label; the id when absent.
+    pub label: Option<String>,
+    /// Check label; the check's argv when absent.
+    pub completion_check_label: Option<String>,
+    /// Department.
+    pub department: String,
+    /// Agent dollar ceiling.
+    pub agent_usd_per_day: Option<String>,
+    /// Goal dollar ceiling.
+    pub goal_usd: Option<String>,
+    /// Turn ceiling.
+    pub hop_cap: u32,
+    /// Explicit check; the repository's suggestion when absent.
+    pub predicate_argv: Option<Vec<String>>,
+    /// Check timeout.
+    pub predicate_timeout_s: u64,
+    /// Agent token ceiling.
+    pub tokens_per_day: Option<u64>,
+    /// Goal token ceiling.
+    pub goal_tokens: Option<u64>,
+}
+
+impl AddOptions {
+    pub(crate) fn resolve(
+        &self,
+        cwd: Option<&Path>,
+        ids: &[String],
+    ) -> Result<NewWorkspace, WorkspaceError> {
+        let path = if let Some(path) = &self.path {
+            canonical_repository(path)?
+        } else {
+            let cwd = cwd.ok_or(WorkspaceError::NoCurrentDirectory)?;
+            let canonical = cwd.canonicalize().map_err(|source| WorkspaceError::Io {
+                path: cwd.to_path_buf(),
+                source,
+            })?;
+            canonical_repository(&canonical)?
+        };
+        let argv = self
+            .predicate_argv
+            .clone()
+            .or_else(|| crate::setup::suggest_check(&path))
+            .ok_or(WorkspaceError::NoSuggestedCheck)?;
+        let id = self.id.clone().unwrap_or_else(|| project_id(&path, ids));
+        Ok(NewWorkspace {
+            path,
+            label: self.label.clone().unwrap_or_else(|| id.clone()),
+            id,
+            completion_check_label: self
+                .completion_check_label
+                .clone()
+                .unwrap_or_else(|| argv.join(" ")),
+            department: self.department.clone(),
+            agent_usd_per_day: self.agent_usd_per_day.clone(),
+            goal_usd: self.goal_usd.clone(),
+            hop_cap: self.hop_cap,
+            predicate_argv: argv,
+            predicate_timeout_s: self.predicate_timeout_s,
+            tokens_per_day: self.tokens_per_day,
+            goal_tokens: self.goal_tokens,
+        })
+    }
+}
+
+pub(crate) fn project_id(path: &Path, ids: &[String]) -> String {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let slug: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .take(118)
+        .collect();
+    let base = slug.trim_matches('-');
+    let base = if base.is_empty() { "project" } else { base };
+    let mut id = base.to_owned();
+    let mut suffix = 2_u32;
+    while ids.contains(&id) {
+        id = format!("{base}-{suffix}");
+        suffix += 1;
+    }
+    id
+}
+
 /// One workspace as `dudes workspace add` writes it. The label defaults to the id, and every
 /// ceiling is optional; every other value is the operator's policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,6 +160,16 @@ pub struct NewCheck {
 /// Why an edit was refused. The file is unchanged in every case.
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceError {
+    /// No current directory was available for the default path.
+    #[error(
+        "The current directory cannot be read. Pass the project folder to `dudes workspace add`."
+    )]
+    NoCurrentDirectory,
+    /// The repository has no recognized completion check.
+    #[error(
+        "No completion check was found. Pass one with `dudes workspace add -- <program> [args...]`."
+    )]
+    NoSuggestedCheck,
     /// `add` was given a relative path.
     #[error("{0} is not an absolute path")]
     RelativePath(PathBuf),
@@ -83,7 +188,7 @@ pub enum WorkspaceError {
         canonical: PathBuf,
     },
     /// `add` was given a directory that is not a repository.
-    #[error("{0} has no .git")]
+    #[error("{0} is not a git repository. Run `dudes workspace add` in a folder that holds .git.")]
     NotARepository(PathBuf),
     /// A path TOML cannot carry.
     #[error("{0} is not valid UTF-8")]
@@ -425,6 +530,18 @@ pub fn enrolled(config: &Path) -> Result<Vec<String>, WorkspaceError> {
         .iter()
         .filter_map(|entry| entry.get("workspace_id")?.as_str().map(str::to_owned))
         .collect())
+}
+
+pub(crate) fn directory(config: &Path, id: &str) -> Result<PathBuf, WorkspaceError> {
+    let bytes = read(config)?;
+    let mut document = parse(config, bytes.as_deref())?;
+    let list = workspaces(config, &mut document)?;
+    let index = position(list, id).ok_or_else(|| WorkspaceError::UnknownId(id.to_owned()))?;
+    list.get(index)
+        .and_then(|entry| entry.get("cwd"))
+        .and_then(Item::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| WorkspaceError::Unreadable(config.to_path_buf()))
 }
 
 /// Put the file back as it was before an edit the daemon did not adopt.

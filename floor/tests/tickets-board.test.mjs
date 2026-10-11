@@ -39,6 +39,7 @@ let words;
 let TicketBoard;
 let NewTicketForm;
 let TicketPanel;
+let Control;
 let ticketState;
 
 before(async () => {
@@ -49,6 +50,7 @@ before(async () => {
   words = await server.ssrLoadModule('/src/renderer/ticket/words.ts');
   ({ TicketBoard, NewTicketForm } = await server.ssrLoadModule('/src/renderer/ticket/TicketBoard.tsx'));
   ({ TicketPanel } = await server.ssrLoadModule('/src/renderer/ticket/TicketPanel.tsx'));
+  ({ Control } = await server.ssrLoadModule('/src/renderer/Control.tsx'));
   ticketState = await server.ssrLoadModule('/src/renderer/ticket/ticket.ts');
 });
 after(async () => { await server?.close(); });
@@ -178,10 +180,44 @@ test('with the switch off the board only reads', () => {
   assert.equal(floor.ticket, false);
   const html = board();
   assert.match(html, /Ticket 1/);
-  assert.match(html, /Tickets are read-only here\./);
-  assert.ok(!/ticket-new-toggle|New ticket/.test(html.replace(/Tickets are read-only here\./, '')), 'no form');
+  assert.match(html, /Tickets are off\. Turn them on with <code>dudes config set floor.board on<\/code>, then restart the daemon\./);
+  assert.ok(!/ticket-new-toggle|New ticket/.test(html), 'no form');
   const panel = renderToStaticMarkup(createElement(TicketPanel, { floor, card: floor.cards[0] }));
   assert.ok(!/data-action=/.test(panel), 'no action is drawn');
+});
+
+test('an empty board with tickets off says how to turn them on', () => {
+  subscribe(store, { ticket: null });
+  const html = renderToStaticMarkup(createElement(Control, {
+    floor: store.getFloorState(), view: 'board', selectedId: null,
+    onClose() {}, onView() {}, onOpenQuestion() {},
+  }));
+  assert.match(html, /Tickets are off\. Turn them on with <code>dudes config set floor.board on<\/code>, then restart the daemon\./);
+  assert.match(html, /No board cards\./);
+  assert.doesNotMatch(html, /ticket-new-toggle/);
+});
+
+test('ticket switches are not called off before a snapshot or after the stream closes', () => {
+  assert.doesNotMatch(board(), /Tickets are off/);
+  subscribe(store, { ticket: null });
+  assert.match(board(), /Tickets are off\. Turn them on with <code>dudes config set floor.board on<\/code>, then restart the daemon\./);
+  store.noteTransport('close');
+  assert.doesNotMatch(board(), /Tickets are off/);
+  assert.match(board(), /View unconfirmed/);
+});
+
+test('the tickets-off command includes only companion controls reported off', () => {
+  subscribe(store, { ticket: null });
+  for (const [control, goal, command] of [
+    [false, false, 'dudes config set floor.board on floor.control on floor.goal on'],
+    [false, true, 'dudes config set floor.board on floor.control on'],
+    [true, false, 'dudes config set floor.board on floor.goal on'],
+    [true, true, 'dudes config set floor.board on'],
+  ]) {
+    const floor = { ...store.getFloorState(), settings: { switches: { control, goal } } };
+    const html = renderToStaticMarkup(createElement(TicketBoard, { floor, selectedId: null, onSelect() {} }));
+    assert.ok(html.includes(`<code>${command}</code>, then restart the daemon.`));
+  }
 });
 
 test('actions wait for a live, confirmed view', () => {
@@ -197,6 +233,29 @@ function form(extra = {}) {
     floor: { ...store.getFloorState(), ...extra }, onCreated() {}, onHire() {},
   }));
 }
+
+test('with no project the new ticket form says how to set one up', () => {
+  subscribe(store, { agents: [agent(ADA, 'Ada', { workspace: undefined })], checks: { workspaces: [] } });
+  const html = form();
+  assert.match(html, /Tickets run in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes workspace add<\/code>\./);
+  assert.doesNotMatch(html, /No agent yet/);
+  assert.match(html, /<button type="submit"[^>]*disabled=""[^>]*>Create ticket<\/button>/);
+});
+
+test('unavailable project choices do not imply missing agents or missing enrollment', () => {
+  const settings = {
+    switches: { answer: false, control: true, goal: true, retire: false, terminal: false, hire: true, git: false, renew: false },
+    budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '250000', per_turn_tokens: '20000' },
+    providers: ['claude'], about: { daemon_version: '0.85.0', browser_wire_version: 3 },
+    workspaces: [{ workspace_id: 'service', label: 'Service', agent_usd_per_day_micros: null,
+      agent_tokens_per_day: null, goal_usd_micros: null, goal_tokens: null }],
+  };
+  subscribe(store, { agents: [agent()], checks: null, settings });
+  const html = form();
+  assert.match(html, /Project choices are unavailable\. Open Setup to check the project and its completion check\./);
+  assert.doesNotMatch(html, /No agent works|No agent yet|none is set up yet|ticket-hire/);
+  assert.match(html, /<button type="submit"[^>]*disabled=""[^>]*>Create ticket<\/button>/);
+});
 
 test('the new ticket form is a title, and everything else is optional', () => {
   subscribe(store, { agents: [agent()] });
@@ -234,6 +293,23 @@ test('with no agent hired the Give choice is the sentence and a link to hire', (
   assert.match(withoutHire, /Run <code>dudes hire<\/code> to add one\./);
 });
 
+test('an agent in another project is not described as no agent hired', () => {
+  subscribe(store, { agents: [agent(ADA, 'Ada', { workspace: { id: 'website', label: 'Website' } })] });
+  const html = form({ settings: { switches: { hire: true }, workspaces: [{ workspace_id: 'service', label: 'Service' }] } });
+  assert.match(html, /No agent works in Service yet\. Hire one into it, then give this ticket to it\./);
+  assert.doesNotMatch(html, /No agent yet/);
+  assert.match(html, /<button type="button" class="ticket-hire">Hire an agent<\/button>/);
+});
+
+test('an agent hired without a project is named when no eligible agent exists', () => {
+  subscribe(store, { agents: [agent(ADA, 'Ada', { workspace: undefined })] });
+  const html = form({ onboarding: {} });
+  assert.match(html, /Ada was hired before projects were recorded, so it can&#x27;t take tickets\./);
+  assert.match(html, /No agent works in service yet\. Hire one into it, then give this ticket to it\./);
+  assert.doesNotMatch(html, /No agent yet/);
+  assert.match(html, /<button type="button" class="ticket-hire">Hire an agent<\/button>/);
+});
+
 test('the agent choice lists agents of the project and shows the rest as unavailable', () => {
   subscribe(store, {
     agents: [agent(), agent(GRACE, 'Grace', { workspace: undefined }), agent('01ARZ3NDEKTSV4RRFFQ69G5FAW', 'Other', { workspace: { id: 'website', label: 'Website' } })],
@@ -242,7 +318,7 @@ test('the agent choice lists agents of the project and shows the rest as unavail
   assert.match(html, /<option value="01JBQ8XK2M3N4P5Q6R7S8T9VWX">Ada<\/option>/);
   assert.match(html, /<option value="01ARZ3NDEKTSV4RRFFQ69G5FAV" disabled="">Grace \(hired before projects were recorded\)<\/option>/);
   assert.ok(!/>Other</.test(html), 'an agent of another project is not offered');
-  assert.match(html, /That agent was hired before projects were recorded\. Hire a new agent in this project with `dudes hire`\./);
+  assert.match(html, /Grace was hired before projects were recorded, so it can&#x27;t take tickets\./);
 });
 
 test('creating a ticket sends the title, and the check by id and revision, and nothing else', async () => {

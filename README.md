@@ -70,6 +70,20 @@ The agent takes turns until `/bin/test -f hello.txt` passes. `dudes agents` list
 its status, `dudes stop` stops the daemon and `dudes start` starts it again.
 [Get started](docs/getting-started.md) is the full walk-through.
 
+If you skipped the project in quickstart, add it in one step from its git repository:
+
+```sh
+cd /absolute/path/to/repo
+dudes workspace add
+```
+
+Dudes suggests a completion check from the repository's files and prints the project id.
+If it finds no check, pass one with `dudes workspace add -- <program> [args...]`.
+Tickets and Floor hiring need an enrolled project.
+
+If `dudes` runs something else, check `type dudes` for an alias or shell function and use
+`command dudes`. After removing an old definition from your shell profile, open a new terminal.
+
 ## How it works
 
 - **Daemon and CLI.** The `duded` daemon runs in the background and owns all state. The `dudes`

@@ -4,8 +4,9 @@ use std::io::Write;
 
 use dudes_proto::rpc::board::CardListParams;
 use dudes_proto::rpc::ticket::{
-    TicketAcceptParams, TicketAssignParams, TicketAssignResult, TicketCreateResult,
-    TicketEditParams, TicketReadParams, TicketReadResult, TicketRemoveParams, TicketStopParams,
+    TicketAcceptParams, TicketAssignParams, TicketAssignResult, TicketCreateParams,
+    TicketCreateResult, TicketEditParams, TicketReadParams, TicketReadResult, TicketRemoveParams,
+    TicketStopParams,
 };
 use dudes_proto::rpc::{Empty, ErrorCode, Method, RpcError};
 use dudes_proto::{AgentView, TicketRefusal};
@@ -45,6 +46,31 @@ impl Session<'_> {
     ) -> Result<serde_json::Value, Failure> {
         let cred = operator_credential(self.env)?;
         answer_result(call_presenting(&mut self.client, method, params, cred)?)
+    }
+
+    fn create(
+        &mut self,
+        params: &TicketCreateParams,
+        machine: bool,
+    ) -> Result<TicketCreateResult, Failure> {
+        let result = self.call(Method::TicketCreate, Some(encode(params)?));
+        typed(result.map_err(|failure| {
+            if !machine && let Failure::Refused(mut error) = failure {
+                if error
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("reason"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("project_unavailable")
+                    && super::no_projects(self.env)
+                {
+                    crate::setup::NO_PROJECT_HINT.clone_into(&mut error.message);
+                }
+                Failure::Refused(error)
+            } else {
+                failure
+            }
+        })?)
     }
 
     fn read(&mut self, card: CardId) -> Result<TicketReadResult, Failure> {
@@ -204,8 +230,7 @@ pub(super) fn command(
     };
     match command {
         TicketCommand::Add { params, give_to } => {
-            let created: TicketCreateResult =
-                typed(session.call(Method::TicketCreate, Some(encode(params)?))?)?;
+            let created = session.create(params, machine)?;
             render::ticket::added(out, machine, &created).map_err(local)?;
             if let Some(agent) = give_to {
                 let (result, name) = session.give(created.card, agent, None, None)?;

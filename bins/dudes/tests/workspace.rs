@@ -86,6 +86,108 @@ fn add_args(path: &Path, id: &str) -> Vec<OsString> {
     .collect()
 }
 
+#[test]
+fn add_from_a_cargo_repository_enrolls_it_with_defaults() {
+    let fixture = Fixture::new();
+    let here = repo(fixture.state.path(), "My Service");
+    std::fs::write(here.join("Cargo.toml"), "[package]\nname = 'service'\n").unwrap();
+    let config = fixture.state.path().join("operator.toml");
+    std::fs::write(&config, "[budget]\nfloor_usd_per_day = 100\n[budget.per_turn_floor]\nusd = 0.000001\ntokens = 1\n[memory]\ncondense_model_enabled = false\n").unwrap();
+    let mut settings = fixture.settings();
+    settings.operator_config = Some(config.clone());
+    let _running = start(
+        &settings,
+        SharedHost::new(),
+        Arc::new(OpenRunner::default()),
+    );
+    let cli = Cli::new(&settings.socket(), &settings.runtime_dir)
+        .env("DUDES_CONFIG", &config)
+        .current_dir(&here);
+    let added = cli.clone().args(["workspace", "add"]).run();
+    assert_eq!(added.code(), exit::SUCCESS, "{}", added.output());
+    assert_eq!(
+        added.stdout,
+        format!(
+            "Enrolled project my-service at {} with check cargo test. To change it, run `dudes workspace remove my-service` and add it again with your options.\n",
+            here.display()
+        )
+    );
+    let listed = cli.args(["--json", "workspace", "list"]).run();
+    assert_eq!(listed.code(), exit::SUCCESS, "{}", listed.output());
+    let listed: serde_json::Value = listed.json();
+    assert_eq!(listed["running"], serde_json::json!(["my-service"]));
+    let loaded = duded::config::load_operator(&config).unwrap();
+    let profile = &loaded.enrollment.profiles[0];
+    assert_eq!(profile.id, "my-service");
+    assert_eq!(profile.cwd, here);
+    assert_eq!(profile.department, "engineering");
+    assert_eq!(profile.hop_cap, 5);
+    assert_eq!(profile.checks[0].label, "cargo test");
+    assert_eq!(
+        profile.checks[0].predicate,
+        dudes_proto::Predicate::Command {
+            argv: vec!["cargo".to_owned(), "test".to_owned()],
+            timeout_s: 600,
+        }
+    );
+}
+
+#[test]
+fn default_enrollment_refuses_a_non_repo_and_an_unknown_check() {
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("operator.toml");
+    let cli = Cli::new(&root.path().join("absent.sock"), root.path())
+        .env("DUDES_CONFIG", &config)
+        .current_dir(root.path());
+    let outside = cli.clone().args(["workspace", "add"]).run();
+    assert_eq!(outside.code(), exit::OTHER);
+    assert!(
+        outside.stderr.contains(
+            "is not a git repository. Run `dudes workspace add` in a folder that holds .git."
+        ),
+        "{}",
+        outside.output()
+    );
+    std::fs::write(root.path().join(".git"), "gitdir: elsewhere\n").unwrap();
+    let unknown = cli.clone().args(["workspace", "add"]).run();
+    assert_eq!(unknown.code(), exit::OTHER);
+    assert_eq!(
+        unknown.stderr,
+        "dudes: No completion check was found. Pass one with `dudes workspace add -- <program> [args...]`.\n"
+    );
+    assert!(!config.exists());
+    let explicit = cli.args(["workspace", "add", "--", "/usr/bin/true"]).run();
+    assert_eq!(explicit.code(), exit::SUCCESS, "{}", explicit.output());
+}
+
+#[test]
+fn default_project_ids_are_unique_and_cwd_is_canonical() {
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("operator.toml");
+    let cli = Cli::new(&root.path().join("absent.sock"), root.path()).env("DUDES_CONFIG", &config);
+    for (parent, expected) in [
+        ("first", "service"),
+        ("second", "service-2"),
+        ("third", "service-3"),
+    ] {
+        let here = repo(root.path(), &format!("{parent}/Service"));
+        std::fs::write(here.join("go.mod"), "module service\n").unwrap();
+        let alias = root.path().join(parent).join("alias");
+        std::os::unix::fs::symlink(&here, &alias).unwrap();
+        let added = cli
+            .clone()
+            .current_dir(&alias)
+            .args(["workspace", "add"])
+            .run();
+        assert_eq!(added.code(), exit::SUCCESS, "{}", added.output());
+        let loaded = duded::config::load_operator(&config).unwrap();
+        let last = loaded.enrollment.profiles.last().unwrap();
+        assert_eq!(last.id, expected);
+        assert_eq!(last.cwd, here);
+        assert_eq!(last.checks[0].label, "go test ./...");
+    }
+}
+
 /// The CLI's second spelling of the daemon's config-path rule answers what the daemon's does.
 #[test]
 fn the_cli_and_the_daemon_resolve_one_config_path() {

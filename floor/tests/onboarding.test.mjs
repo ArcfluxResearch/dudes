@@ -40,7 +40,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import {
-  applyServerFrame, beginFloorEpoch, getFloorState, invalidateFloorEpoch, noteTransport, resetFloorStore,
+  applyServerFrame, beginFloorEpoch, getFloorState, invalidateFloorEpoch, noteStale, noteTransport, resetFloorStore,
   selectOutputAgent,
 } from '../src/renderer/floor/store.ts';
 import { RECONNECT_ATTEMPTS, openFloorStream, refreshFloorSnapshot } from '../src/renderer/floor/stream.ts';
@@ -704,6 +704,47 @@ const SETTINGS = Object.freeze({
   switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: true, git: false, renew: false },
   budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '250000', per_turn_tokens: '20000' },
   providers: ['claude', 'pi'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 3 },
+});
+
+test('with no project the Workspace step gives one setup command and no jargon', () => {
+  subscribe({ onboarding: null, checks: null, settings: SETTINGS });
+  hire.showSection('workspace');
+  const html = render();
+  assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes workspace add<\/code>\./);
+  assert.equal((html.match(/none is set up yet/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /No enrolled workspace|operator enrolled|Hire needs a workspace|by its ID/);
+  assert.match(html, /class="hire-submit"[^>]*aria-disabled="true"/);
+  hire.moveSection(1, getFloorState());
+  const afterNext = render();
+  assert.equal((afterNext.match(/none is set up yet/g) ?? []).length, 1);
+  assert.doesNotMatch(afterNext, /No enrolled workspace/);
+  assert.equal(hire.getHireState().section, 'workspace');
+});
+
+test('project setup guidance keeps the disconnected stream reason visible', () => {
+  subscribe({ onboarding: null, checks: null, settings: SETTINGS });
+  hire.showSection('workspace');
+  noteTransport('close');
+  assert.match(render(), /The Floor stream is disconnected, so Hire is unavailable\./);
+});
+
+test('project setup guidance keeps a stale-stream reason visible', () => {
+  subscribe({ onboarding: null, checks: null, settings: SETTINGS });
+  hire.showSection('workspace');
+  noteStale(true);
+  const html = render();
+  assert.match(html, /The view is unconfirmed, so Hire waits for the stream\./);
+  assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes workspace add<\/code>\./);
+});
+
+test('project setup guidance keeps an explicit Hire-off command visible', () => {
+  subscribe({ onboarding: null, checks: null, settings: {
+    ...SETTINGS, switches: { ...SETTINGS.switches, hire: false },
+  } });
+  hire.showSection('workspace');
+  const html = render();
+  assert.match(html, /Hire is off\. Turn it on with dudes config set floor.hire on, then restart the daemon\./);
+  assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes workspace add<\/code>\./);
 });
 const WITHDRAWN = '<p class="hire-note">An engine missing here is turned off in the daemon&#x27;s configuration, or '
   + 'needs a ceiling on this workspace because the daemon holds a billing key for it.</p>';

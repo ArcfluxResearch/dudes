@@ -77,6 +77,42 @@ fn world() -> World {
     }
 }
 
+#[test]
+fn adding_a_ticket_without_a_project_names_the_one_step_setup() {
+    let fixture = Fixture::new();
+    let config = fixture.state.path().join("operator.toml");
+    std::fs::write(&config, "").unwrap();
+    let mut settings = fixture.settings();
+    settings.operator_config = Some(config.clone());
+    let _running = start(
+        &settings,
+        SharedHost::new(),
+        Arc::new(OpenRunner::default()),
+    );
+    let cli = Cli::new(&settings.socket(), &settings.runtime_dir).env("DUDES_CONFIG", config);
+    let refused = cli
+        .clone()
+        .args(["ticket", "add", "--title", "Fix sign-in"])
+        .run();
+    assert_eq!(refused.code(), dudes::exit::REFUSED, "{refused:?}");
+    assert_eq!(
+        refused.stderr,
+        "dudes: No project yet. In your project's folder run `dudes workspace add`. (-32004)\n"
+    );
+    let json = cli
+        .args(["--json", "ticket", "add", "--title", "Fix sign-in"])
+        .run();
+    assert_eq!(json.code(), dudes::exit::REFUSED, "{json:?}");
+    assert_eq!(
+        json.json_error().message,
+        "That project is not set up any more."
+    );
+    assert!(
+        fixture.records().is_empty(),
+        "no ticket or census journals a change"
+    );
+}
+
 impl World {
     fn dudes<const N: usize>(&self, args: [&str; N]) -> common::Run {
         self.cli.clone().args(args).run()

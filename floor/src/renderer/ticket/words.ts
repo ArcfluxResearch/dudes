@@ -105,6 +105,14 @@ export function placeInLine(position: number): string {
 /** The sentence shown with Give to agent when no agent is hired. */
 export const NO_AGENT_YET = "No agent yet. Hire one, then give this ticket to it.";
 
+export function noAgentInProjectSentence(project: string): string {
+  return `No agent works in ${project} yet. Hire one into it, then give this ticket to it.`;
+}
+
+export function agentWithoutProjectSentence(agent: string): string {
+  return `${agent} was hired before projects were recorded, so it can't take tickets.`;
+}
+
 /** Shown when an answer to a create or an action never arrived. */
 export const COULD_NOT_CONFIRM = "We could not confirm that saved. Look at the board before you try again.";
 

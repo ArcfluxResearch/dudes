@@ -44,7 +44,7 @@ export type SectionKey = 'identity' | 'workspace' | 'engine' | 'briefing';
 export const SECTIONS: readonly { readonly key: SectionKey; readonly label: string; readonly hint: string }[] =
   Object.freeze([
     { key: 'identity', label: 'Identity', hint: 'Name, role and appearance' },
-    { key: 'workspace', label: 'Workspace', hint: 'An enrolled workspace' },
+    { key: 'workspace', label: 'Workspace', hint: 'A project to work in' },
     { key: 'engine', label: 'Engine', hint: 'An offered engine' },
     { key: 'briefing', label: 'Briefing', hint: 'First goal and its limits' },
   ]);
