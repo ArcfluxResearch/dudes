@@ -4014,6 +4014,35 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     then,
                 );
             }
+            Command::TicketStart {
+                card,
+                agent,
+                text,
+                predicate,
+                budget,
+                hop_cap,
+                completion_check,
+                expected_seq,
+            } => {
+                let goal = Goal {
+                    completion_check,
+                    id: GoalId::from_ulid(self.rng.ulid()),
+                    text,
+                    predicate,
+                    budget,
+                    hop_cap,
+                    baseline: Some(dudes_proto::CheckBaseline::MayAlreadyPass),
+                };
+                self.persist(
+                    Record::TicketStarted {
+                        card,
+                        agent,
+                        goal,
+                        expected_seq,
+                    },
+                    Then::ClearedCause { agent },
+                );
+            }
             Command::GoalClear { agent, goal } => {
                 self.persist(Record::GoalCleared { agent, goal }, Then::Fold);
             }

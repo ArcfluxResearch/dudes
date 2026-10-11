@@ -1,0 +1,1299 @@
+//! A ticket given to an agent starts work, waits its turn in a queue, holds its project one
+//! ticket at a time, and reaches Ready for you only when the daemon's own check passes.
+//!
+//! Every test boots the real daemon over a scratch state and runtime directory and drives it
+//! through its production socket. The engine is a stand-in: the process host is the fake one, a
+//! turn ends when the test says so, and the check runner answers from a script. No model is called.
+//!
+//! The crash cases fail the nth journal append and restart on the same directories. Appends are
+//! fsynced before they are acknowledged, so the journal a refused append leaves behind is the
+//! journal a `kill -9` at that instant leaves behind.
+#![cfg(unix)]
+
+mod common;
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
+
+use common::{Fixture, ScriptedColumn, ScriptedRunner, SharedHost, TestClock};
+use duded::floor_actions::{EnrolledCheck, Enrollment, Profile};
+use duded::startup::Witness;
+use dudes_proto::record::{RecordedWorkspace, samples};
+use dudes_proto::rpc::agent::HireParams;
+use dudes_proto::rpc::cred::OperatorCredential;
+use dudes_proto::rpc::ticket::{TicketAssignOutcome, TicketAssignResult, TicketReadResult};
+use dudes_proto::{
+    Actor, AgentBudget, AgentView, CardView, CheckBaseline, Entry, ExitStatus, Goal, GoalBudget,
+    LoopDecision, Predicate, Record, RecordKind, TicketCheck, TicketReason, TicketRefusal,
+    TicketWait, TurnOutcome,
+};
+use dudes_providers::adapter::{HookInstall, ManagedInstall};
+use dudes_providers::launch::LaunchSpec;
+use dudes_rpc::Client;
+use dudes_rpc::auth::PeerProvenance;
+use dudes_supervisor::Input;
+use dudes_supervisor::host::{
+    AdoptionKey, HostBoot, KillOutcome, Liveness, ProcessHost, SpawnResult,
+};
+use dudes_types::{
+    AgentId, AgentStatus, CardId, CardStatus, GoalId, IsolationMode, Seq, Timestamp, TurnId, Usd,
+};
+use serde_json::{Value, json};
+
+type Socket =
+    Client<std::io::BufReader<std::os::unix::net::UnixStream>, std::os::unix::net::UnixStream>;
+
+/// A process host that notes, at every launch, how many turns were already durable on disk.
+struct WatchHost {
+    inner: SharedHost,
+    journal: PathBuf,
+    durable_at_spawn: Arc<Mutex<Vec<usize>>>,
+}
+
+impl ProcessHost for WatchHost {
+    fn spawn(&mut self, spec: &LaunchSpec, install: &ManagedInstall) -> SpawnResult {
+        let durable = dudes_journal::Reader::new(&self.journal)
+            .iter_from(dudes_types::Lsn::ZERO)
+            .expect("the journal reads")
+            .filter_map(Result::ok)
+            .filter(|(_, entry)| matches!(entry.record, Record::TurnIssued { .. }))
+            .count();
+        self.durable_at_spawn
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(durable);
+        self.inner.spawn(spec, install)
+    }
+
+    fn kill(&mut self, key: &AdoptionKey) -> KillOutcome {
+        self.inner.kill(key)
+    }
+
+    fn alive(&self, key: &AdoptionKey) -> Liveness {
+        self.inner.alive(key)
+    }
+
+    fn boot_identity(&self) -> HostBoot {
+        self.inner.boot_identity()
+    }
+
+    fn shutdown(&mut self) -> std::io::Result<()> {
+        self.inner.shutdown()
+    }
+
+    fn write_hooks(&mut self, install: &HookInstall) -> std::io::Result<()> {
+        self.inner.write_hooks(install)
+    }
+}
+
+fn check(id: &str, program: &str) -> EnrolledCheck {
+    EnrolledCheck {
+        id: id.to_owned(),
+        label: format!("{id} passes"),
+        predicate: Predicate::Command {
+            argv: vec![program.to_owned()],
+            timeout_s: 10,
+        },
+        may_already_pass: true,
+    }
+}
+
+fn profile(id: &str, cwd: &Path, checks: Vec<EnrolledCheck>) -> Profile {
+    Profile {
+        id: id.to_owned(),
+        label: format!("{id} workspace"),
+        checks,
+        cwd: cwd.to_path_buf(),
+        written_cwd: cwd.to_path_buf(),
+        department: "engineering".to_owned(),
+        isolation: IsolationMode::Default,
+        agent_budget: AgentBudget {
+            usd_per_day: Some(Usd::from_dollars(10)),
+            tokens_per_day: None,
+        },
+        goal_budget: GoalBudget {
+            usd: Some(Usd::from_dollars(5)),
+            tokens: None,
+        },
+        hop_cap: 4,
+        mark: None,
+    }
+}
+
+/// A repository directory under the fixture and settings that enroll it as the project `service`.
+/// Its own check passes, `ghost` names a program that does not exist.
+fn enrolled(fixture: &Fixture) -> (duded::Settings, PathBuf) {
+    let repo = fixture.state.path().join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let repo = repo.canonicalize().unwrap();
+    let mut settings = fixture.settings();
+    settings.enrollment = Enrollment {
+        profiles: vec![profile(
+            "service",
+            &repo,
+            vec![
+                check("default", common::true_program()),
+                check("ghost", "/no/such/program"),
+            ],
+        )],
+    };
+    (settings, repo)
+}
+
+struct Flow {
+    running: common::Running,
+    settings: duded::Settings,
+    operator: Socket,
+    runner: Arc<ScriptedRunner>,
+    host: SharedHost,
+    durable_at_spawn: Arc<Mutex<Vec<usize>>>,
+    append_failure: duded::runtime::AppendFailure,
+    repo: PathBuf,
+}
+
+fn credential(settings: &duded::Settings) -> OperatorCredential {
+    OperatorCredential::new(
+        std::fs::read_to_string(
+            settings
+                .runtime_dir
+                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+impl Flow {
+    /// Boot over `fixture` with the check runner answering `answers` in order, repeating the last.
+    fn boot(
+        fixture: &Fixture,
+        settings: duded::Settings,
+        repo: PathBuf,
+        answers: impl IntoIterator<Item = duded::predicate::PredicateOutcome>,
+    ) -> Self {
+        let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
+        let host = SharedHost::new();
+        let runner = Arc::new(ScriptedRunner::scripted(answers));
+        let durable_at_spawn = Arc::new(Mutex::new(Vec::new()));
+        let mut seams = common::seams_with(
+            WatchHost {
+                inner: host.clone(),
+                journal: fixture.journal_dir(),
+                durable_at_spawn: Arc::clone(&durable_at_spawn),
+            },
+            Arc::clone(&runner),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+            column,
+        );
+        for _ in 0..fixture.records().len() * 8 + 64 {
+            dudes_supervisor::Rng::ulid(&mut seams.rng);
+        }
+        let daemon = duded::boot(&settings, seams).unwrap();
+        let append_failure = daemon.append_failure();
+        let running = common::start(daemon);
+        let operator = Client::connect(settings.socket()).unwrap();
+        Self {
+            running,
+            settings,
+            operator,
+            runner,
+            host,
+            durable_at_spawn,
+            append_failure,
+            repo,
+        }
+    }
+
+    fn call(
+        &mut self,
+        method: dudes_proto::rpc::Method,
+        params: Value,
+    ) -> dudes_proto::rpc::Response {
+        self.operator
+            .call_as_operator(method, Some(params), credential(&self.settings))
+            .unwrap()
+    }
+
+    fn ok<T: serde::de::DeserializeOwned>(
+        &mut self,
+        method: dudes_proto::rpc::Method,
+        params: Value,
+    ) -> T {
+        let response = self.call(method, params);
+        assert!(response.error.is_none(), "{method:?}: {:?}", response.error);
+        serde_json::from_value(response.result.unwrap()).unwrap()
+    }
+
+    fn hire(&mut self, name: &str) -> AgentId {
+        let params = HireParams {
+            name: name.to_owned(),
+            department: "engineering".to_owned(),
+            ..common::hire_params(&self.repo)
+        };
+        match self
+            .running
+            .handle
+            .ask(duded::ports::Ask::Hire(Box::new(params)))
+            .expect("the hire")
+        {
+            duded::ports::Answered::Hired(result) => result.agent,
+            other => panic!("agent.hire answered {other:?}"),
+        }
+    }
+
+    fn create(&mut self, title: &str) -> CardId {
+        self.create_with(json!({"title": title}))
+    }
+
+    fn create_with(&mut self, params: Value) -> CardId {
+        let created: dudes_proto::rpc::ticket::TicketCreateResult =
+            self.ok(dudes_proto::rpc::Method::TicketCreate, params);
+        created.card
+    }
+
+    fn board(&mut self) -> Vec<CardView> {
+        self.ok(dudes_proto::rpc::Method::BoardList, json!({}))
+    }
+
+    fn card(&mut self, card: CardId) -> CardView {
+        self.board()
+            .into_iter()
+            .find(|view| view.id == card)
+            .expect("the card is on the board")
+    }
+
+    fn read(&mut self, card: CardId) -> TicketReadResult {
+        self.ok(dudes_proto::rpc::Method::TicketRead, json!({"card": card}))
+    }
+
+    fn give(
+        &mut self,
+        card: CardId,
+        agent: AgentId,
+        message: Option<&str>,
+    ) -> dudes_proto::rpc::Response {
+        let seq = self.card(card).seq;
+        self.call(
+            dudes_proto::rpc::Method::TicketAssign,
+            json!({"card": card, "agent": agent, "message": message, "expected_seq": seq}),
+        )
+    }
+
+    fn give_ok(
+        &mut self,
+        card: CardId,
+        agent: AgentId,
+        message: Option<&str>,
+    ) -> TicketAssignOutcome {
+        let response = self.give(card, agent, message);
+        assert!(response.error.is_none(), "{:?}", response.error);
+        serde_json::from_value::<TicketAssignResult>(response.result.unwrap())
+            .unwrap()
+            .outcome
+    }
+
+    fn accept(&mut self, card: CardId) -> dudes_proto::rpc::Response {
+        let seq = self.card(card).seq;
+        self.call(
+            dudes_proto::rpc::Method::TicketAccept,
+            json!({"card": card, "expected_seq": seq}),
+        )
+    }
+
+    fn agent(&mut self, agent: AgentId) -> AgentView {
+        let agents: Vec<AgentView> = self.ok(dudes_proto::rpc::Method::AgentList, json!({}));
+        agents
+            .into_iter()
+            .find(|view| view.id == agent)
+            .expect("the agent is listed")
+    }
+
+    fn control(&mut self, method: dudes_proto::rpc::Method, agent: AgentId) {
+        self.ok::<Value>(method, json!({"agent": agent}));
+    }
+
+    /// Every turn the journal has issued so far, oldest first.
+    fn turns(fixture: &Fixture) -> Vec<(TurnId, AgentId, GoalId, String)> {
+        fixture
+            .records()
+            .into_iter()
+            .filter_map(|record| match record {
+                Record::TurnIssued {
+                    turn,
+                    agent,
+                    goal,
+                    task,
+                    ..
+                } => Some((turn, agent, goal, task)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Wait until the journal holds `count` issued turns, and answer the newest.
+    fn await_turn_number(fixture: &Fixture, count: usize) -> (TurnId, AgentId, GoalId, String) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let turns = Self::turns(fixture);
+            if turns.len() >= count {
+                return turns[count - 1].clone();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "turn {count} was never issued; records: {:?}",
+                fixture
+                    .records()
+                    .iter()
+                    .map(Record::kind)
+                    .collect::<Vec<_>>()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// The agent's engine finishes `turn` and says `message`.
+    fn end_turn(&self, turn: TurnId, message: Option<&str>) {
+        self.running.handle.input(Input::ChildExited {
+            final_reply: None,
+            elapsed_ms: Some(5),
+            turn,
+            exit: ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: None,
+            model_usage: BTreeMap::new(),
+            outcome: TurnOutcome::Completed,
+            last_message: message.map(str::to_owned),
+        });
+    }
+
+    /// Wait until `card` has `status`, and answer it.
+    fn await_status(&mut self, card: CardId, status: CardStatus) -> CardView {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let view = self.card(card);
+            if view.status == status {
+                return view;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{card} is {:?}, not {status:?}",
+                view.status
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn stop(mut self) {
+        drop(self.operator);
+        self.running.stop(duded::ExitCause::ShutdownRpc);
+    }
+}
+
+fn kinds(fixture: &Fixture) -> Vec<RecordKind> {
+    fixture.records().iter().map(Record::kind).collect()
+}
+
+fn position_of(records: &[Record], wanted: impl Fn(&Record) -> bool) -> usize {
+    records.iter().position(wanted).unwrap_or_else(|| {
+        panic!(
+            "no such record in {:?}",
+            records.iter().map(Record::kind).collect::<Vec<_>>()
+        )
+    })
+}
+
+fn started_goals(records: &[Record]) -> Vec<(CardId, AgentId, Goal)> {
+    records
+        .iter()
+        .filter_map(|record| match record {
+            Record::TicketStarted {
+                card, agent, goal, ..
+            } => Some((*card, *agent, goal.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn transitions(records: &[Record], card: CardId) -> Vec<(CardStatus, CardStatus, Actor)> {
+    records
+        .iter()
+        .filter_map(|record| match record {
+            Record::CardTransition {
+                card: moved,
+                from,
+                to,
+                by,
+                ..
+            } if *moved == card => Some((*from, *to, *by)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn queued(outcome: &TicketAssignOutcome) -> (u32, TicketWait, &str) {
+    match outcome {
+        TicketAssignOutcome::Queued { position, waiting } => {
+            (*position, waiting.wait, waiting.note.as_str())
+        }
+        other => panic!("expected a queued ticket, got {other:?}"),
+    }
+}
+
+fn refusal_reason(response: &dudes_proto::rpc::Response) -> String {
+    response
+        .error
+        .as_ref()
+        .and_then(|error| error.data.as_ref())
+        .and_then(|data| data.get("reason"))
+        .and_then(Value::as_str)
+        .expect("a ticket refusal names its reason")
+        .to_owned()
+}
+
+/// An idle agent in a free project starts the ticket on the same fold that records the
+/// assignment. The journal shows the assignment, the start with the daemon-chosen baseline, the
+/// loop's decision and the fsynced turn, in that order, and no check ran before the turn.
+#[test]
+fn giving_a_ticket_to_an_idle_agent_starts_it_at_once() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let agent = flow.hire("Cody");
+    let card = flow
+        .create_with(json!({"title": "Fix the parser", "description": "Cover the empty input."}));
+    assert_eq!(flow.agent(agent).status, AgentStatus::Idle);
+
+    let outcome = flow.give_ok(card, agent, None);
+    assert_eq!(outcome, TicketAssignOutcome::Started);
+
+    let (turn, who, goal_id, task) = Flow::await_turn_number(&fixture, 1);
+    assert_eq!(who, agent);
+    assert!(
+        task.starts_with("Fix the parser\n\nCover the empty input."),
+        "{task}"
+    );
+    assert_eq!(flow.agent(agent).status, AgentStatus::Running);
+    let view = flow.card(card);
+    assert_eq!(view.status, CardStatus::Doing);
+    assert_eq!(view.status_by, Actor::System);
+    assert_eq!(view.claimed_by, Some(agent));
+    assert_eq!(flow.read(card).ticket.goal, Some(goal_id));
+    assert_eq!(flow.read(card).ticket.round, 1);
+
+    let records = fixture.records();
+    let assigned = position_of(&records, |r| matches!(r, Record::TicketAssigned { .. }));
+    let started = position_of(&records, |r| matches!(r, Record::TicketStarted { .. }));
+    let decided = position_of(&records, |r| {
+        matches!(
+            r,
+            Record::LoopDecided {
+                decision: LoopDecision::Continue { .. },
+                ..
+            }
+        )
+    });
+    let issued = position_of(&records, |r| matches!(r, Record::TurnIssued { .. }));
+    assert!(
+        assigned < started && started < decided && decided < issued,
+        "{:?}",
+        kinds(&fixture)
+    );
+
+    let goals = started_goals(&records);
+    assert_eq!(goals.len(), 1);
+    let (started_card, started_agent, goal) = &goals[0];
+    assert_eq!(
+        (*started_card, *started_agent, goal.id),
+        (card, agent, goal_id)
+    );
+    assert_eq!(goal.baseline, Some(CheckBaseline::MayAlreadyPass));
+    assert_eq!(goal.text, "Fix the parser\n\nCover the empty input.");
+    let ticket_check = flow.read(card).ticket.done_when;
+    assert_eq!(goal.predicate, ticket_check.predicate);
+    assert_eq!(
+        goal.completion_check,
+        duded::ticket_goal_check(&ticket_check)
+    );
+    assert_eq!(
+        (goal.hop_cap, goal.budget.usd),
+        (4, Some(Usd::from_dollars(5)))
+    );
+
+    assert_eq!(flow.runner.runs(), 0, "no check runs before the first turn");
+    assert_eq!(
+        *flow.durable_at_spawn.lock().unwrap(),
+        [1],
+        "the turn was durable when its process launched"
+    );
+    assert_eq!(flow.host.spawned().len(), 1);
+    let _ = turn;
+    flow.stop();
+}
+
+/// The agent's own words move nothing. A failing check after its turn leaves the ticket Working
+/// and the loop issues another turn. The daemon's own passing run, after a later turn, moves the
+/// ticket to Ready for you, authored by the daemon. The summary and check result are the next
+/// step's work.
+#[test]
+fn the_agents_word_moves_nothing_and_the_daemons_pass_does() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(
+        &fixture,
+        settings,
+        repo,
+        [common::fails(), common::passes()],
+    );
+    let agent = flow.hire("Cody");
+    let card = flow.create("Fix the parser");
+    flow.give_ok(card, agent, None);
+
+    let (first, ..) = Flow::await_turn_number(&fixture, 1);
+    flow.end_turn(first, Some("All done. The check passes now."));
+    let (second, ..) = Flow::await_turn_number(&fixture, 2);
+    assert_eq!(
+        flow.card(card).status,
+        CardStatus::Doing,
+        "a claim of success with a failing check moves nothing"
+    );
+    assert!(transitions(&fixture.records(), card).is_empty());
+
+    flow.end_turn(second, Some("Fixed."));
+    let view = flow.await_status(card, CardStatus::Review);
+    assert_eq!(view.status_by, Actor::System);
+    let records = fixture.records();
+    let moves = transitions(&records, card);
+    assert_eq!(
+        moves,
+        [(CardStatus::Doing, CardStatus::Review, Actor::System)]
+    );
+    let pass = position_of(&records, |r| {
+        matches!(r, Record::PredicateResult { pass: true, .. })
+    });
+    let done = position_of(&records, |r| {
+        matches!(
+            r,
+            Record::LoopDecided {
+                decision: LoopDecision::Done,
+                ..
+            }
+        )
+    });
+    let ready = position_of(&records, |r| matches!(r, Record::CardTransition { .. }));
+    assert!(
+        pass < done && done < ready,
+        "Ready for you follows the loop's Done: {:?}",
+        kinds(&fixture)
+    );
+    flow.stop();
+}
+
+/// Ready for you needs the loop's verdict, not just a passing run. A paused agent's passing check
+/// is journaled, the control gate holds the loop before Done, and the ticket stays Working until
+/// the agent is resumed.
+#[test]
+fn a_passing_check_on_a_paused_agent_moves_nothing_until_the_loop_says_done() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    let agent = flow.hire("Cody");
+    let card = flow.create("Fix the parser");
+    flow.give_ok(card, agent, None);
+    let (turn, ..) = Flow::await_turn_number(&fixture, 1);
+
+    flow.control(dudes_proto::rpc::Method::LoopPause, agent);
+    flow.end_turn(turn, None);
+    fixture.await_record("PredicateResult", |r| {
+        matches!(r, Record::PredicateResult { pass: true, .. }).then_some(())
+    });
+    assert_eq!(flow.card(card).status, CardStatus::Doing);
+    assert!(
+        !kinds(&fixture).contains(&RecordKind::CardTransition),
+        "no move before the loop decides Done: {:?}",
+        kinds(&fixture)
+    );
+
+    flow.control(dudes_proto::rpc::Method::LoopResume, agent);
+    flow.await_status(card, CardStatus::Review);
+    flow.stop();
+}
+
+/// A check that already passes still takes one turn and an observed pass after it, in the first
+/// round and in a round that sends the work back. Neither refuses the ticket, and neither runs
+/// the check before the turn.
+#[test]
+fn a_check_that_already_passes_still_needs_a_turn_in_every_round() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    let agent = flow.hire("Cody");
+    let card = flow.create("Fix the parser");
+
+    assert_eq!(
+        flow.give_ok(card, agent, None),
+        TicketAssignOutcome::Started
+    );
+    assert_eq!(flow.runner.runs(), 0);
+    assert_eq!(flow.card(card).status, CardStatus::Doing);
+    let (turn, ..) = Flow::await_turn_number(&fixture, 1);
+    flow.end_turn(turn, Some("Nothing needed changing."));
+    flow.await_status(card, CardStatus::Review);
+    assert_eq!(flow.runner.runs(), 1);
+
+    let outcome = flow.give_ok(card, agent, Some("Please add a test."));
+    assert_eq!(outcome, TicketAssignOutcome::Started);
+    assert_eq!(flow.card(card).status, CardStatus::Doing);
+    assert_eq!(flow.read(card).ticket.round, 2);
+    let (turn, _, goal, task) = Flow::await_turn_number(&fixture, 2);
+    assert!(
+        task.starts_with(
+            "Fix the parser\n\nThe operator reviewed the previous work and asked for changes:\nPlease add a test."
+        ),
+        "{task}"
+    );
+    let goals = started_goals(&fixture.records());
+    assert_eq!(goals.len(), 2);
+    assert_eq!(goals[1].2.baseline, Some(CheckBaseline::MayAlreadyPass));
+    assert_eq!(goals[1].2.id, goal);
+    assert_ne!(goals[0].2.id, goals[1].2.id, "a fresh goal for every round");
+    assert_eq!(
+        flow.runner.runs(),
+        1,
+        "the second round has not run its check before its turn"
+    );
+    assert_eq!(
+        flow.read(card).ticket.message,
+        None,
+        "the message is spent by the start"
+    );
+
+    flow.end_turn(turn, None);
+    flow.await_status(card, CardStatus::Review);
+    assert_eq!(flow.runner.runs(), 2);
+    let moves = transitions(&fixture.records(), card);
+    assert_eq!(moves.len(), 2);
+    flow.stop();
+}
+
+/// Two agents hired into one project take one ticket at a time. The second ticket waits with a
+/// note that names the first, keeps waiting while the first is Ready for you, and starts on the
+/// fold that records Accept. Accept is authored by the operator and refuses a ticket in any
+/// other state.
+#[test]
+fn a_project_runs_one_ticket_and_accept_starts_the_next() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    let cody = flow.hire("Cody");
+    let dana = flow.hire("Dana");
+    let first = flow.create("Fix the parser");
+    let second = flow.create("Add the lexer");
+
+    assert_eq!(
+        flow.give_ok(first, cody, None),
+        TicketAssignOutcome::Started
+    );
+    let outcome = flow.give_ok(second, dana, None);
+    let (position, wait, note) = queued(&outcome);
+    assert_eq!(position, 1);
+    assert_eq!(wait, TicketWait::Ticket { card: first });
+    assert_eq!(
+        note,
+        "Waiting for Fix the parser to be finished, accepted or sent back."
+    );
+    assert_eq!(flow.read(second).waiting.unwrap().wait, wait);
+
+    let (turn, ..) = Flow::await_turn_number(&fixture, 1);
+    flow.end_turn(turn, Some("Done."));
+    flow.await_status(first, CardStatus::Review);
+    assert_eq!(
+        flow.card(second).status,
+        CardStatus::Claimed,
+        "a ticket that is Ready for you holds its project"
+    );
+    assert_eq!(Flow::turns(&fixture).len(), 1);
+
+    let wrong = flow.accept(second);
+    assert_eq!(refusal_reason(&wrong), TicketRefusal::WrongState.code());
+    let seq = flow.card(first).seq;
+    let stale = flow.call(
+        dudes_proto::rpc::Method::TicketAccept,
+        json!({"card": first, "expected_seq": seq.0 + 7}),
+    );
+    assert_eq!(
+        stale.error.unwrap().code,
+        dudes_proto::rpc::ErrorCode::Conflict.code()
+    );
+
+    let accepted = flow.accept(first);
+    assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    let done = flow.card(first);
+    assert_eq!(done.status, CardStatus::Done);
+    assert!(
+        matches!(done.status_by, Actor::Peer { .. }),
+        "accepted by {:?}",
+        done.status_by
+    );
+    assert_eq!(
+        flow.card(second).status,
+        CardStatus::Doing,
+        "Accept started the next ticket"
+    );
+    let (_, who, ..) = Flow::await_turn_number(&fixture, 2);
+    assert_eq!(who, dana);
+    let records = fixture.records();
+    let accepted_at = position_of(&records, |r| {
+        matches!(
+            r,
+            Record::CardTransition {
+                to: CardStatus::Done,
+                ..
+            }
+        )
+    });
+    let started_at = records
+        .iter()
+        .rposition(|r| matches!(r, Record::TicketStarted { .. }))
+        .unwrap();
+    assert!(accepted_at < started_at);
+    flow.stop();
+}
+
+/// One agent with three tickets works them in the order they were given. While the first is
+/// Working the others wait with positions 1 and 2 and a note naming the agent. Sending the first
+/// back after review puts it ahead of the ticket that was only waiting.
+#[test]
+fn a_busy_agent_queues_in_order_and_sent_back_work_goes_first() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    let cody = flow.hire("Cody");
+    let (one, two, three) = (flow.create("One"), flow.create("Two"), flow.create("Three"));
+
+    assert_eq!(flow.give_ok(one, cody, None), TicketAssignOutcome::Started);
+    let waiting_two = flow.give_ok(two, cody, None);
+    let (position, wait, note) = queued(&waiting_two);
+    assert_eq!((position, wait), (1, TicketWait::AgentBusy));
+    assert_eq!(note, "Waiting for Cody to finish its current work.");
+    let waiting_three = flow.give_ok(three, cody, None);
+    assert_eq!(queued(&waiting_three).0, 2);
+
+    let (turn, ..) = Flow::await_turn_number(&fixture, 1);
+    flow.end_turn(turn, None);
+    flow.await_status(one, CardStatus::Review);
+    assert_eq!(flow.card(two).status, CardStatus::Claimed);
+    assert_eq!(
+        flow.read(two).waiting.unwrap().wait,
+        TicketWait::Ticket { card: one }
+    );
+
+    assert!(flow.accept(one).error.is_none());
+    assert_eq!(
+        flow.card(two).status,
+        CardStatus::Doing,
+        "the earlier assignment starts first"
+    );
+    assert_eq!(flow.card(three).status, CardStatus::Claimed);
+
+    let (turn, ..) = Flow::await_turn_number(&fixture, 2);
+    flow.end_turn(turn, None);
+    flow.await_status(two, CardStatus::Review);
+    let outcome = flow.give_ok(two, cody, Some("Rename it."));
+    assert_eq!(outcome, TicketAssignOutcome::Started);
+    assert_eq!(
+        flow.card(three).status,
+        CardStatus::Claimed,
+        "sent-back work goes ahead of new work"
+    );
+    let (_, _, _, task) = Flow::await_turn_number(&fixture, 3);
+    assert!(task.starts_with("Two\n\n"), "{task}");
+    assert!(task.contains("Rename it."));
+    flow.stop();
+}
+
+/// An edit made while a ticket waits is the text it starts with.
+#[test]
+fn an_edit_to_a_queued_ticket_is_used_when_it_starts() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    let cody = flow.hire("Cody");
+    let (one, two) = (flow.create("One"), flow.create("Two"));
+    flow.give_ok(one, cody, None);
+    flow.give_ok(two, cody, None);
+
+    let seq = flow.card(two).seq;
+    flow.ok::<Value>(
+        dudes_proto::rpc::Method::TicketEdit,
+        json!({"card": two, "title": "Two, renamed", "description": "With the new note.", "expected_seq": seq}),
+    );
+    let (turn, ..) = Flow::await_turn_number(&fixture, 1);
+    flow.end_turn(turn, None);
+    flow.await_status(one, CardStatus::Review);
+    flow.accept(one);
+    assert_eq!(flow.card(two).status, CardStatus::Doing);
+    let (.., task) = Flow::await_turn_number(&fixture, 2);
+    assert!(
+        task.starts_with("Two, renamed\n\nWith the new note."),
+        "{task}"
+    );
+    flow.stop();
+}
+
+/// A paused agent keeps the ticket in its queue with a note that names the agent. Resume starts it.
+/// An agent that has a goal of its own is not given a second one.
+#[test]
+fn a_held_agent_starts_nothing_and_a_goal_of_its_own_is_kept() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let cody = flow.hire("Cody");
+    let card = flow.create("Fix the parser");
+    flow.control(dudes_proto::rpc::Method::LoopPause, cody);
+    let outcome = flow.give_ok(card, cody, None);
+    let (position, wait, note) = queued(&outcome);
+    assert_eq!((position, wait), (1, TicketWait::AgentPaused));
+    assert_eq!(note, "Waiting for Cody to be resumed.");
+    assert!(started_goals(&fixture.records()).is_empty());
+    flow.control(dudes_proto::rpc::Method::LoopResume, cody);
+    flow.await_status(card, CardStatus::Doing);
+    flow.stop();
+
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    let dana = flow.hire("Dana");
+    let own = common::set_goal(
+        &flow.running.handle,
+        common::goal_params(dana, &["/usr/bin/false"]),
+    );
+    let card = flow.create("Fix the parser");
+    let outcome = flow.give_ok(card, dana, None);
+    assert_eq!(queued(&outcome).1, TicketWait::AgentBusy);
+    assert!(started_goals(&fixture.records()).is_empty());
+    let held = flow.agent(dana);
+    assert_eq!(
+        held.goal.map(|goal| goal.id),
+        Some(own),
+        "the operator's goal is not replaced"
+    );
+    let (turn, ..) = Flow::await_turn_number(&fixture, 1);
+    flow.end_turn(turn, None);
+    flow.await_status(card, CardStatus::Doing);
+    assert_eq!(
+        started_goals(&fixture.records()).len(),
+        1,
+        "it started once the goal was done"
+    );
+    flow.stop();
+}
+
+/// A check whose program cannot run moves the ticket to Needs you with the reason and the next
+/// step, appends no goal, and leaves the agent free for the next ticket.
+#[test]
+fn a_check_that_cannot_run_sends_the_ticket_to_needs_you() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    let cody = flow.hire("Cody");
+    let broken = flow.create_with(json!({"title": "Broken check", "done_when": "ghost"}));
+    let fine = flow.create("Fine");
+
+    let outcome = flow.give_ok(broken, cody, None);
+    assert_eq!(
+        outcome,
+        TicketAssignOutcome::NeedsYou {
+            reason: TicketReason::CheckCannotRun,
+            note: TicketReason::CheckCannotRun.sentence().to_owned(),
+        }
+    );
+    let view = flow.card(broken);
+    assert_eq!(view.status, CardStatus::Blocked);
+    assert_eq!(view.status_by, Actor::System);
+    let detail = flow.read(broken);
+    assert_eq!(detail.ticket.reason, Some(TicketReason::CheckCannotRun));
+    assert_eq!(detail.ticket.queue, None, "it left the queue");
+    assert!(started_goals(&fixture.records()).is_empty());
+
+    assert_eq!(flow.give_ok(fine, cody, None), TicketAssignOutcome::Started);
+    flow.stop();
+}
+
+fn seeded_hire(project: &str, repo: &Path, budget: Option<AgentBudget>) -> Record {
+    let mut hired = samples::record(RecordKind::AgentHired);
+    let Record::AgentHired {
+        cwd,
+        workspace,
+        budget: hired_budget,
+        sandbox,
+        isolation,
+        max_turns,
+        max_budget,
+        trusted,
+        mcp_servers,
+        ..
+    } = &mut hired
+    else {
+        unreachable!("the sample is a hire");
+    };
+    *sandbox = None;
+    *isolation = None;
+    *max_turns = None;
+    *max_budget = None;
+    *trusted = false;
+    mcp_servers.clear();
+    *cwd = repo.to_path_buf();
+    *workspace = Some(RecordedWorkspace {
+        id: project.into(),
+        label: "Service".into(),
+    });
+    if let Some(budget) = budget {
+        *hired_budget = budget;
+    }
+    hired
+}
+
+fn sample_agent() -> AgentId {
+    let Record::AgentHired { id, .. } = samples::record(RecordKind::AgentHired) else {
+        unreachable!("the sample is a hire");
+    };
+    id
+}
+
+fn operator() -> Actor {
+    Actor::Peer { pid: 1, uid: None }
+}
+
+fn default_check() -> TicketCheck {
+    TicketCheck {
+        id: "default".into(),
+        label: "default passes".into(),
+        predicate: Predicate::Command {
+            argv: vec![common::true_program().into()],
+            timeout_s: 10,
+        },
+    }
+}
+
+/// The records a daemon leaves when a ticket was given to an agent and nothing else happened.
+fn given(project: &str, repo: &Path, budget: Option<AgentBudget>, card: CardId) -> Vec<Record> {
+    vec![
+        seeded_hire(project, repo, budget),
+        Record::TicketCreated {
+            card,
+            title: "Fix the parser".into(),
+            description: String::new(),
+            department: "engineering".into(),
+            project: project.into(),
+            done_when: default_check(),
+            by: operator(),
+        },
+        Record::TicketAssigned {
+            card,
+            agent: sample_agent(),
+            by: operator(),
+            message: None,
+            expected_seq: Seq(0),
+        },
+    ]
+}
+
+fn seed(fixture: &Fixture, records: Vec<Record>) {
+    let settings = fixture.settings();
+    let (mut writer, _) = dudes_journal::open(&fixture.journal_dir(), settings.journal).unwrap();
+    for record in records {
+        writer
+            .append(&Entry {
+                at: Timestamp::from_unix_millis(1_000),
+                record,
+            })
+            .unwrap();
+    }
+}
+
+/// The reasons that only show at boot, because the hire that makes them possible cannot be
+/// made on a running daemon: a project that is no longer enrolled, a spending limit that is
+/// required and absent, and a per-turn reserve that is not set. Each moves a queued ticket to
+/// Needs you when the daemon starts, with the sentence for its reason, and starts nothing.
+#[test]
+fn a_ticket_that_cannot_start_at_boot_goes_to_needs_you_with_its_reason() {
+    let card = CardId::from_parts(4, 1);
+    let no_ceiling = AgentBudget {
+        usd_per_day: None,
+        tokens_per_day: None,
+    };
+
+    let fixture = Fixture::new();
+    let (mut settings, repo) = enrolled(&fixture);
+    settings.enrollment = Enrollment {
+        profiles: Vec::new(),
+    };
+    seed(&fixture, given("service", &repo, None, card));
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    let detail = flow.read(card);
+    assert_eq!(flow.card(card).status, CardStatus::Blocked);
+    assert_eq!(detail.ticket.reason, Some(TicketReason::ProjectUnavailable));
+    flow.stop();
+
+    let fixture = Fixture::new();
+    let (mut settings, repo) = enrolled(&fixture);
+    settings.floor_usd_per_day = None;
+    settings
+        .daemon_env
+        .push(dudes_providers::launch::EnvVar::new(
+            "ANTHROPIC_API_KEY",
+            "fixture-value-not-a-credential",
+        ));
+    settings.enrollment.profiles[0].goal_budget = GoalBudget {
+        usd: None,
+        tokens: None,
+    };
+    seed(&fixture, given("service", &repo, Some(no_ceiling), card));
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    assert_eq!(
+        flow.read(card).ticket.reason,
+        Some(TicketReason::CeilingRequired)
+    );
+    assert_eq!(flow.card(card).status, CardStatus::Blocked);
+    flow.stop();
+
+    let fixture = Fixture::new();
+    let (mut settings, repo) = enrolled(&fixture);
+    settings.floor_usd_per_day = None;
+    settings.per_turn_floor = dudes_proto::Spend {
+        usd: Usd::ZERO,
+        tokens: dudes_types::Tokens::ZERO,
+        work_tokens: dudes_types::Tokens::ZERO,
+    };
+    seed(&fixture, given("service", &repo, Some(no_ceiling), card));
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    assert_eq!(
+        flow.read(card).ticket.reason,
+        Some(TicketReason::ReserveMissing)
+    );
+    assert!(started_goals(&fixture.records()).is_empty());
+    flow.stop();
+}
+
+/// The journal a daemon wrote when it started a ticket, and the journal of a goal set on the
+/// same agent with the same goal, replay to the same agent, the same goal and the same first task.
+#[test]
+fn a_ticket_start_and_a_goal_set_replay_to_the_same_world() {
+    let source = Fixture::new();
+    let (settings, repo) = enrolled(&source);
+    let mut flow = Flow::boot(&source, settings, repo, [common::fails()]);
+    let cody = flow.hire("Cody");
+    let card = flow.create("Fix the parser");
+    assert_eq!(flow.give_ok(card, cody, None), TicketAssignOutcome::Started);
+    flow.stop();
+    let live = source.records();
+    let start = live
+        .iter()
+        .position(|r| matches!(r, Record::TicketStarted { .. }))
+        .expect("the daemon started the ticket");
+    let Record::TicketStarted { agent, goal, .. } = live[start].clone() else {
+        unreachable!("found by its kind");
+    };
+
+    let mut worlds = Vec::new();
+    for ticket in [true, false] {
+        let fixture = Fixture::new();
+        let (settings, repo) = enrolled(&fixture);
+        let mut records = live[..=start].to_vec();
+        if !ticket {
+            records = vec![
+                live[0].clone(),
+                Record::GoalSet {
+                    agent,
+                    goal: goal.clone(),
+                    browser_onboarding: None,
+                    browser_goal: None,
+                    goal_replacement: None,
+                },
+            ];
+        }
+        seed(&fixture, records);
+        let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+        let (_, who, goal_id, task) = Flow::await_turn_number(&fixture, 1);
+        worlds.push((flow.agent(agent), who, goal_id, task));
+        flow.stop();
+    }
+    assert_eq!(worlds[0], worlds[1]);
+    assert_eq!(worlds[0].2, goal.id);
+    let _ = card;
+}
+
+/// How many appends after position `from` the journal needs to reach the first record `target`
+/// names, in a run that was not interrupted.
+fn appends_between(records: &[Record], from: usize, target: impl Fn(&Record) -> bool) -> usize {
+    records[from..]
+        .iter()
+        .position(target)
+        .map(|index| index + 1)
+        .expect("the reference run reached the target record")
+}
+
+/// Wait until the journal stops growing, which is when a daemon whose append was refused has
+/// stopped writing.
+fn settled(fixture: &Fixture) -> Vec<Record> {
+    let mut seen = fixture.records().len();
+    let mut quiet = 0;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while quiet < 5 {
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let now = fixture.records().len();
+        quiet = if now == seen { quiet + 1 } else { 0 };
+        seen = now;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the journal never settled"
+        );
+    }
+    fixture.records()
+}
+
+/// Run the story once to learn which append is `target`, again failing that append, and then
+/// restart on the same directories and check what the restart made of it.
+fn crash_and_restart(target: impl Fn(&Record) -> bool, after_restart: impl Fn(&[Record])) {
+    let reference = Fixture::new();
+    let (settings, repo) = enrolled(&reference);
+    let mut flow = Flow::boot(&reference, settings, repo, [common::passes()]);
+    let cody = flow.hire("Cody");
+    let card = flow.create("Fix the parser");
+    let before = reference.records().len();
+    flow.give_ok(card, cody, None);
+    Flow::await_turn_number(&reference, 1);
+    let nth = appends_between(&reference.records(), before, &target);
+    flow.stop();
+
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings.clone(), repo.clone(), [common::passes()]);
+    let cody = flow.hire("Cody");
+    let card = flow.create("Fix the parser");
+    let before = fixture.records().len();
+    flow.append_failure.short_write_after(nth - 1, 5);
+    let _ = flow.give(card, cody, None);
+    let crashed = settled(&fixture);
+    assert_eq!(
+        crashed.len(),
+        before + nth - 1,
+        "the failed append and everything after it are not in the journal"
+    );
+    assert!(!crashed[before..].iter().any(&target));
+    flow.stop();
+
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    Flow::await_turn_number(&fixture, 1);
+    let _ = flow.card(card);
+    let records = settled(&fixture);
+    flow.stop();
+    after_restart(&records);
+}
+
+/// Crash after the assignment is durable and before the start: the restart finds the ticket in
+/// the queue and starts it once.
+#[test]
+fn a_crash_between_the_assignment_and_the_start_starts_the_ticket_once() {
+    crash_and_restart(
+        |r| matches!(r, Record::TicketStarted { .. }),
+        |records| {
+            assert_eq!(started_goals(records).len(), 1, "one start");
+            let assigned = records
+                .iter()
+                .filter(|r| matches!(r, Record::TicketAssigned { .. }))
+                .count();
+            assert_eq!(assigned, 1);
+        },
+    );
+}
+
+/// Crash after the start and before the first turn is durable: the restart decides again and
+/// issues exactly one turn, with no second start.
+#[test]
+fn a_crash_between_the_start_and_the_turn_issues_one_turn() {
+    crash_and_restart(
+        |r| matches!(r, Record::TurnIssued { .. }),
+        |records| {
+            assert_eq!(started_goals(records).len(), 1, "one start");
+            let issued = records
+                .iter()
+                .filter(|r| matches!(r, Record::TurnIssued { .. }))
+                .count();
+            assert_eq!(issued, 1, "one turn, no duplicate");
+        },
+    );
+}
+
+/// Crash after the loop latched Done and before the move to Ready for you is appended: the
+/// restart owes the move, makes it once, and issues no turn.
+#[test]
+fn a_crash_after_a_passing_check_and_before_ready_for_you_moves_the_ticket_once() {
+    let moved = |r: &Record| matches!(r, Record::CardTransition { .. });
+    let drive = |fixture: &Fixture, flow: &mut Flow| {
+        let cody = flow.hire("Cody");
+        let card = flow.create("Fix the parser");
+        flow.give_ok(card, cody, None);
+        let (turn, ..) = Flow::await_turn_number(fixture, 1);
+        (card, turn)
+    };
+
+    let reference = Fixture::new();
+    let (settings, repo) = enrolled(&reference);
+    let mut flow = Flow::boot(&reference, settings, repo, [common::passes()]);
+    let (card, turn) = drive(&reference, &mut flow);
+    let before = reference.records().len();
+    flow.end_turn(turn, Some("Done."));
+    flow.await_status(card, CardStatus::Review);
+    let nth = appends_between(&reference.records(), before, moved);
+    flow.stop();
+
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut flow = Flow::boot(&fixture, settings.clone(), repo.clone(), [common::passes()]);
+    let (card, turn) = drive(&fixture, &mut flow);
+    let before = fixture.records().len();
+    flow.append_failure.short_write_after(nth - 1, 5);
+    flow.end_turn(turn, Some("Done."));
+    let crashed = settled(&fixture);
+    assert_eq!(crashed.len(), before + nth - 1);
+    assert!(
+        crashed[before..].iter().any(|r| matches!(
+            r,
+            Record::LoopDecided {
+                decision: LoopDecision::Done,
+                ..
+            }
+        )),
+        "Done is latched and the move is not: {:?}",
+        crashed[before..]
+            .iter()
+            .map(Record::kind)
+            .collect::<Vec<_>>()
+    );
+    assert!(!crashed[before..].iter().any(&moved));
+    flow.stop();
+
+    let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
+    let view = flow.await_status(card, CardStatus::Review);
+    assert_eq!(view.status_by, Actor::System);
+    let records = settled(&fixture);
+    flow.stop();
+    assert_eq!(
+        transitions(&records, card),
+        [(CardStatus::Doing, CardStatus::Review, Actor::System)],
+        "one move to Ready for you"
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| matches!(r, Record::TurnIssued { .. }))
+            .count(),
+        1,
+        "no turn follows a latched Done"
+    );
+}

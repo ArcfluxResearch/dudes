@@ -2,7 +2,8 @@
 //! the caller is resolved structurally and no request names an author.
 
 use dudes_proto::rpc::ticket::{
-    TicketAssignParams, TicketCreateParams, TicketEditParams, TicketReadParams, TicketRemoveParams,
+    TicketAcceptParams, TicketAssignParams, TicketCreateParams, TicketEditParams, TicketReadParams,
+    TicketRemoveParams,
 };
 use dudes_proto::rpc::{ErrorCode, Method};
 use dudes_rpc::Dispatcher;
@@ -20,7 +21,7 @@ fn wrong_answer(method: Method) -> dudes_proto::rpc::RpcError {
     )
 }
 
-/// Register the five ticket methods with their declared caller role.
+/// Register the six ticket methods with their declared caller role.
 pub(crate) fn register(dispatcher: &mut Dispatcher, handle: &Handle) {
     let create = handle.clone();
     dispatcher.register_audited(
@@ -71,6 +72,18 @@ pub(crate) fn register(dispatcher: &mut Dispatcher, handle: &Handle) {
             let by = actor(call.role, pid)?;
             remove.ask(Ask::Ticket(TicketAsk::Remove { request, by }))?;
             encode(Method::TicketRemove, &dudes_proto::rpc::Empty {})
+        },
+    );
+
+    let accept = handle.clone();
+    dispatcher.register_audited(
+        Method::TicketAccept,
+        Requirement::Operator,
+        move |call, pid| {
+            let request: TicketAcceptParams = params(&call)?;
+            let by = actor(call.role, pid)?;
+            accept.ask(Ask::Ticket(TicketAsk::Accept { request, by }))?;
+            encode(Method::TicketAccept, &dudes_proto::rpc::Empty {})
         },
     );
 

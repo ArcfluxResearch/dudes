@@ -3,15 +3,16 @@
 
 use super::{Answered, Clock, Daemon, PredicateRunner, ProcessHost, Rng, TicketAsk, error};
 use dudes_proto::rpc::ticket::{
-    TicketAssignOutcome, TicketAssignParams, TicketAssignResult, TicketCreateParams,
-    TicketCreateResult, TicketEditParams, TicketReadParams, TicketReadResult, TicketRemoveParams,
+    TicketAcceptParams, TicketAssignOutcome, TicketAssignParams, TicketAssignResult,
+    TicketCreateParams, TicketCreateResult, TicketEditParams, TicketReadParams, TicketReadResult,
+    TicketRemoveParams,
 };
 use dudes_proto::rpc::{ErrorCode, RpcError};
 use dudes_proto::ticket::{
     MAX_MESSAGE_BYTES, MAX_NOTE_BYTES, MAX_OPEN_TICKETS, MAX_QUEUE, MAX_TITLE_BYTES, clean_text,
     clean_title, trim,
 };
-use dudes_proto::{Actor, CardView, Record, TicketCheck, TicketRefusal, TicketRow};
+use dudes_proto::{Actor, CardView, Record, TicketCheck, TicketRefusal, TicketRow, TicketWait};
 use dudes_types::{AgentId, CardId, CardStatus, Seq};
 
 use crate::floor_actions::Profile;
@@ -110,12 +111,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             TicketAsk::Edit { request, by } => self.ticket_edit(&request, by),
             TicketAsk::Assign { request, by } => self.ticket_assign(&request, by),
             TicketAsk::Remove { request, by } => self.ticket_remove(&request, by),
+            TicketAsk::Accept { request, by } => self.ticket_accept(&request, by),
             TicketAsk::Read(request) => self.ticket_read(request),
         }
     }
 
     /// The card and what the board keeps of it, or the reason the card is not a ticket.
-    fn ticket_row(&self, card: CardId) -> Result<(CardView, TicketRow), RpcError> {
+    pub(super) fn ticket_row(&self, card: CardId) -> Result<(CardView, TicketRow), RpcError> {
         let ticket = self
             .ctx
             .projections
@@ -273,14 +275,64 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             message,
             expected_seq: request.expected_seq,
         })?;
-        let position = self
-            .agent_queue(request.agent)?
-            .iter()
-            .position(|(card, _)| *card == view.id)
-            .map_or(1, |index| u32::try_from(index + 1).unwrap_or(u32::MAX));
-        Ok(Answered::TicketAssigned(TicketAssignResult {
-            outcome: TicketAssignOutcome::Queued { position },
-        }))
+        self.ticket_reactions()?;
+        let (now, ticket) = self.ticket_row(view.id)?;
+        let outcome = match now.status {
+            CardStatus::Doing => TicketAssignOutcome::Started,
+            CardStatus::Blocked => {
+                let reason = ticket.reason.ok_or_else(|| {
+                    error(ErrorCode::InternalError, "a blocked ticket has no reason")
+                })?;
+                TicketAssignOutcome::NeedsYou {
+                    reason,
+                    note: reason.sentence().to_owned(),
+                }
+            }
+            _ => {
+                let (position, wait, tickets) = self.with_ticket_facts(|facts| {
+                    (
+                        facts.position(request.agent, view.id),
+                        facts.wait_of(view.id),
+                        facts.tickets.to_vec(),
+                    )
+                })?;
+                TicketAssignOutcome::Queued {
+                    position: position.unwrap_or(1),
+                    waiting: self.waiting(
+                        wait.unwrap_or(TicketWait::AgentBusy),
+                        Some(request.agent),
+                        &tickets,
+                    ),
+                }
+            }
+        };
+        Ok(Answered::TicketAssigned(TicketAssignResult { outcome }))
+    }
+
+    /// The operator's verdict that a ticket that is Ready for you is done. It frees the project,
+    /// and the reactions that follow start the next queued ticket.
+    fn ticket_accept(
+        &mut self,
+        request: &TicketAcceptParams,
+        by: Actor,
+    ) -> Result<Answered, RpcError> {
+        operator(by)?;
+        let (view, _) = self.ticket_row(request.card)?;
+        if view.seq != request.expected_seq {
+            return Err(stale(&view));
+        }
+        if view.status != CardStatus::Review {
+            return Err(refusal(TicketRefusal::WrongState, view.status));
+        }
+        self.board_append(Record::CardTransition {
+            card: view.id,
+            from: CardStatus::Review,
+            to: CardStatus::Done,
+            by,
+            expected_seq: request.expected_seq,
+            reason: None,
+        })?;
+        Ok(Answered::Done)
     }
 
     /// The agent must be live and hired into the ticket's project.
@@ -365,10 +417,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 .map(|index| u32::try_from(index + 1).unwrap_or(u32::MAX)),
             _ => None,
         };
+        let (wait, tickets) =
+            self.with_ticket_facts(|facts| (facts.wait_of(card.id), facts.tickets.to_vec()))?;
+        let waiting = wait.map(|wait| self.waiting(wait, card.claimed_by, &tickets));
         Ok(Answered::TicketRead(Box::new(TicketReadResult {
             card,
             ticket,
             position,
+            waiting,
         })))
     }
 }

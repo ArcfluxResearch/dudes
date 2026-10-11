@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::projection::CardView;
 use crate::record::Hex32;
-use crate::ticket::TicketRow;
+use crate::ticket::{TicketReason, TicketRow, TicketWaiting};
 
 /// `ticket.create` params. Only the title is required.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -77,18 +77,29 @@ pub struct TicketAssignParams {
 }
 
 /// What became of an assigned ticket.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum TicketAssignOutcome {
-    /// The ticket is in the agent's queue.
+    /// The agent is working on it.
+    Started,
+    /// The ticket is in the agent's queue and has not started.
     Queued {
         /// Its place there, counting from 1.
         position: u32,
+        /// Why it has not started.
+        waiting: TicketWaiting,
+    },
+    /// The ticket could not start for a reason only the operator can fix, and left the queue.
+    NeedsYou {
+        /// The reason, as the board shows it.
+        reason: TicketReason,
+        /// The sentence that names the next step.
+        note: String,
     },
 }
 
 /// `ticket.assign` result.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TicketAssignResult {
     /// What became of it.
     pub outcome: TicketAssignOutcome,
@@ -122,4 +133,17 @@ pub struct TicketReadResult {
     /// Its place in its holder's queue, counting from 1, while it waits there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<u32>,
+    /// Why a ticket that was given to an agent has not started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<TicketWaiting>,
+}
+
+/// `ticket.accept` params: the operator's verdict that a ticket that is Ready for you is done.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TicketAcceptParams {
+    /// The ticket.
+    pub card: CardId,
+    /// The ticket's `seq` as last seen.
+    pub expected_seq: Seq,
 }

@@ -249,6 +249,13 @@ pub enum TicketAsk {
         /// Caller identity resolved by the router.
         by: Actor,
     },
+    /// `ticket.accept`.
+    Accept {
+        /// The conditional acceptance.
+        request: dudes_proto::rpc::ticket::TicketAcceptParams,
+        /// Caller identity resolved by the router.
+        by: Actor,
+    },
     /// `ticket.read`.
     Read(dudes_proto::rpc::ticket::TicketReadParams),
 }

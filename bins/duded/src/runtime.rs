@@ -91,6 +91,7 @@ use crate::ports::{
 };
 
 mod agent_mcp;
+mod ticket_run;
 #[cfg(test)]
 mod ticket_start_tests;
 mod tickets;
@@ -837,6 +838,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     #[cfg(feature = "testing")]
     pub(crate) terminal_skew: crate::floor_terminal::TerminalSkew,
     pub(crate) closing_failed_after: Option<Lsn>,
+    /// The journal position the ticket reactions last ran at.
+    pub(crate) ticket_reacted: Option<Lsn>,
     pub(crate) floor_closing: Option<dudes_proto::ClosingPhase>,
     /// Set only while one typed browser intent is passing through the persist ledger.
     pub(crate) browser_session: Option<crate::floor_session::SessionIdentity>,
@@ -1242,6 +1245,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     fn serve(&mut self) -> Result<ExitCause> {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let mut mailbox_due = std::time::Instant::now();
+        self.react_to_tickets(true);
         loop {
             if self.closing_tick()? {
                 return Ok(ExitCause::ShutdownRpc);
@@ -1280,6 +1284,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     return Ok(ExitCause::Ended);
                 }
             };
+            let check_run_ended =
+                matches!(job, Job::BaselineEnded { .. } | Job::PredicateEnded { .. });
             match job {
                 Job::Chat {
                     session,
@@ -1560,6 +1566,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     self.attachment_lost(agent, pty, reason);
                 }
             }
+            self.react_to_tickets(check_run_ended);
             self.revoke_unattachable_terminals();
         }
     }
@@ -5824,10 +5831,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// It reads only the agent's directory, which no record changes after the hire, so it needs no
     /// pump. An agent this arm cannot see yet, or one already retired, falls through to the pump.
     fn refuse_a_check_that_cannot_run(&self, params: &GoalSetParams) -> Result<(), RpcError> {
-        let Predicate::Command { argv, .. } = &params.predicate else {
+        self.check_can_run(params.agent, &params.predicate)
+    }
+
+    /// As [`Self::refuse_a_check_that_cannot_run`], for a check and the agent that would run it.
+    fn check_can_run(&self, agent: AgentId, predicate: &Predicate) -> Result<(), RpcError> {
+        let Predicate::Command { argv, .. } = predicate else {
             return Ok(());
         };
-        let Some(row) = self.sup.world().agents.get(&params.agent) else {
+        let Some(row) = self.sup.world().agents.get(&agent) else {
             return Ok(());
         };
         if row.retired {

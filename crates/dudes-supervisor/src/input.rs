@@ -505,6 +505,26 @@ pub enum Command {
         /// What goal set saw of the check before the first turn.
         baseline: Option<dudes_proto::CheckBaseline>,
     },
+    /// The start of a ticket: one record that installs the ticket's goal and moves its card to
+    /// Working. The daemon chooses the baseline, `MayAlreadyPass`, and never runs the check first.
+    TicketStart {
+        /// The ticket.
+        card: dudes_types::CardId,
+        /// The agent that holds it in its queue.
+        agent: AgentId,
+        /// The goal as the model reads it.
+        text: String,
+        /// The ticket's check.
+        predicate: Predicate,
+        /// Ceiling for the whole goal.
+        budget: GoalBudget,
+        /// Most managed turns it may consume.
+        hop_cap: u32,
+        /// The check's recorded name.
+        completion_check: Option<dudes_proto::CompletionCheckRef>,
+        /// The card's sequence the daemon decided against.
+        expected_seq: dudes_types::Seq,
+    },
     /// `goal.clear`.
     GoalClear {
         /// The agent.

@@ -138,6 +138,7 @@ where
 mod goal_replacement;
 mod ticket;
 mod ticket_index;
+mod ticket_queue;
 
 /// The name a ticket's goal records for its check, for tests that build a ticket's start.
 #[doc(hidden)]

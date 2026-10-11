@@ -1,7 +1,7 @@
 //! A ticket is a board card with a note, a project and a required completion check. These are the
 //! values its journal records carry and the words the operator sees when a request is refused.
 
-use dudes_types::{CardStatus, GoalId, Lsn};
+use dudes_types::{CardId, CardStatus, GoalId, Lsn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -152,6 +152,58 @@ impl TicketReason {
             Self::WorktreeMissing => {
                 "The agent's worktree is missing. Restore it and resume the agent, or Stop and give the ticket to another agent."
             }
+        }
+    }
+}
+
+/// Why a ticket that was given to an agent has not started. Nothing is journaled for it: the
+/// card shows the note, and the daemon offers the ticket again when something relevant changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TicketWait {
+    /// The ticket has not been given to an agent.
+    NotGiven,
+    /// The agent has a turn, a check run or an unfinished goal.
+    AgentBusy,
+    /// Another ticket holds the project.
+    Ticket {
+        /// The ticket that holds it.
+        card: CardId,
+    },
+    /// The project has a turn or a check run that no ticket started.
+    ProjectBusy,
+    /// The agent is halted, paused or held.
+    AgentPaused,
+    /// A person holds the agent's keyboard.
+    AgentAttached,
+    /// The daemon is shutting down.
+    Closing,
+}
+
+/// A wait and the sentence that says it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TicketWaiting {
+    /// Which wait.
+    pub wait: TicketWait,
+    /// The sentence the operator reads.
+    pub note: String,
+}
+
+impl TicketWait {
+    /// The sentence the operator reads. `agent` is the holder's name and `title` the title of the
+    /// ticket that holds the project; each is used only by the wait that names it.
+    #[must_use]
+    pub fn sentence(self, agent: &str, title: &str) -> String {
+        match self {
+            Self::NotGiven => "Not given to an agent yet. Choose Give to agent.".to_owned(),
+            Self::AgentBusy => format!("Waiting for {agent} to finish its current work."),
+            Self::Ticket { .. } => {
+                format!("Waiting for {title} to be finished, accepted or sent back.")
+            }
+            Self::ProjectBusy => "Waiting for the project to be free.".to_owned(),
+            Self::AgentPaused => format!("Waiting for {agent} to be resumed."),
+            Self::AgentAttached => format!("Waiting for {agent}'s keyboard session to end."),
+            Self::Closing => "Dudes is shutting down.".to_owned(),
         }
     }
 }

@@ -679,6 +679,8 @@ names! {
     "ticket.remove" => TicketRemove / ticket_remove : ticket::TicketRemoveParams => Empty;
     /// One ticket with its note, check and queue place. Operator-only.
     "ticket.read" => TicketRead / ticket_read : ticket::TicketReadParams => ticket::TicketReadResult;
+    /// Accept a ticket that is Ready for you as done. Operator-only.
+    "ticket.accept" => TicketAccept / ticket_accept : ticket::TicketAcceptParams => Empty;
 }
 
 impl From<crate::record::ConditionedMethod> for Method {
@@ -870,11 +872,12 @@ mod tests {
     fn the_method_table_keeps_old_rows_and_appends_tickets() {
         assert_eq!(
             Method::ALL.len(),
-            49,
-            "agent.mcp stays at row 44; the five ticket methods append rows 45 to 49"
+            50,
+            "agent.mcp stays at row 44; the ticket methods append rows 45 to 50"
         );
         assert_eq!(Method::ALL[44], Method::TicketCreate);
         assert_eq!(Method::ALL[48], Method::TicketRead);
+        assert_eq!(Method::ALL[49], Method::TicketAccept);
         assert_eq!(
             "floor.enrollment.reload".parse::<Method>(),
             Ok(Method::FloorEnrollmentReload)

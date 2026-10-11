@@ -77,6 +77,9 @@ pub(super) fn apply(table: &mut RowTable<'_>, lsn: Lsn, entry: &Entry) -> Result
             row.view.seq = expected_seq.next();
             if let Some(ticket) = &mut row.ticket {
                 ticket.reason = *reason;
+                if *to != CardStatus::Claimed {
+                    ticket.queue = None;
+                }
                 if *to == CardStatus::Todo {
                     row.release();
                 }

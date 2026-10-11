@@ -164,6 +164,14 @@ impl Daemon {
         )
     }
 
+    /// An agent hired into the project and paused, so a ticket given to it waits in its queue
+    /// instead of starting. These tests are about the data the methods keep, not about the start.
+    fn paused_agent(&mut self, repo: &Path) -> AgentId {
+        let agent = common::hire(&self.running.handle, repo);
+        self.ok::<Value>(Method::LoopPause, json!({"agent": agent}));
+        agent
+    }
+
     fn stop(mut self) {
         drop(self.operator);
         self.running.stop(duded::ExitCause::ShutdownRpc);
@@ -195,7 +203,9 @@ fn assert_refused(response: &Response, reason: TicketRefusal, state: CardStatus)
 fn position(response: Response) -> u32 {
     assert!(response.error.is_none(), "{:?}", response.error);
     let result: TicketAssignResult = serde_json::from_value(response.result.unwrap()).unwrap();
-    let TicketAssignOutcome::Queued { position } = result.outcome;
+    let TicketAssignOutcome::Queued { position, .. } = result.outcome else {
+        panic!("a paused agent only queues: {:?}", result.outcome);
+    };
     position
 }
 
@@ -310,7 +320,7 @@ fn a_created_ticket_replays_to_the_same_board_after_the_cache_is_deleted() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
     let mut daemon = start(&fixture, settings.clone());
-    let agent = common::hire(&daemon.running.handle, &repo);
+    let agent = daemon.paused_agent(&repo);
     let first = daemon.create("  Fix the parser \n");
     let created: dudes_proto::rpc::ticket::TicketCreateResult = daemon.ok(
         Method::TicketCreate,
@@ -370,7 +380,7 @@ fn the_ticket_records_are_journaled_in_required_frames() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
     let mut daemon = start(&fixture, settings);
-    let agent = common::hire(&daemon.running.handle, &repo);
+    let agent = daemon.paused_agent(&repo);
     let card = daemon.create("Frame check");
     daemon.assign(card, agent, None);
     let seq = daemon.card(card).seq;
@@ -400,7 +410,7 @@ fn edit_changes_the_three_fields_and_keeps_the_queue_place() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
     let mut daemon = start(&fixture, settings);
-    let agent = common::hire(&daemon.running.handle, &repo);
+    let agent = daemon.paused_agent(&repo);
     let first = daemon.create("First");
     let second = daemon.create("Second");
     assert_eq!(position(daemon.assign(first, agent, None)), 1);
@@ -644,7 +654,7 @@ fn every_refusal_carries_its_fixed_code_and_plain_sentence_and_appends_nothing()
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
     let mut daemon = start(&fixture, settings);
-    let agent = common::hire(&daemon.running.handle, &repo);
+    let agent = daemon.paused_agent(&repo);
     let elsewhere = common::hire(&daemon.running.handle, fixture.state.path());
     let card = daemon.create("Subject");
     let plain: dudes_proto::rpc::board::CardCreateResult = daemon.ok(
@@ -852,7 +862,7 @@ fn an_assignment_message_is_trimmed_and_refuses_control_characters() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
     let mut daemon = start(&fixture, settings);
-    let agent = common::hire(&daemon.running.handle, &repo);
+    let agent = daemon.paused_agent(&repo);
     let card = daemon.create("Messaged");
     let before = fixture.records().len();
     for message in ["esc\u{1b}[2J", "nul\0", "del\u{7f}", &"x".repeat(2_049)] {

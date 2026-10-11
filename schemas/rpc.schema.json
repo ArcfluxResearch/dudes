@@ -9699,6 +9699,24 @@
           ],
           "type": "object"
         },
+        "ticket.accept": {
+          "description": "Accept a ticket that is Ready for you as done. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketAcceptParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "ticket.assign": {
           "description": "Put a ticket in an agent's queue. Operator-only.",
           "properties": {
@@ -9878,7 +9896,8 @@
         "ticket.edit",
         "ticket.assign",
         "ticket.remove",
-        "ticket.read"
+        "ticket.read",
+        "ticket.accept"
       ],
       "type": "object"
     },
@@ -11601,11 +11620,43 @@
       "title": "ThreadView",
       "type": "object"
     },
+    "TicketAcceptParams": {
+      "additionalProperties": false,
+      "description": "`ticket.accept` params: the operator's verdict that a ticket that is Ready for you is done.",
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "The ticket."
+        },
+        "expected_seq": {
+          "$ref": "#/$defs/Seq",
+          "description": "The ticket's `seq` as last seen."
+        }
+      },
+      "required": [
+        "card",
+        "expected_seq"
+      ],
+      "type": "object"
+    },
     "TicketAssignOutcome": {
       "description": "What became of an assigned ticket.",
       "oneOf": [
         {
-          "description": "The ticket is in the agent's queue.",
+          "description": "The agent is working on it.",
+          "properties": {
+            "state": {
+              "const": "started",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The ticket is in the agent's queue and has not started.",
           "properties": {
             "position": {
               "description": "Its place there, counting from 1.",
@@ -11616,11 +11667,39 @@
             "state": {
               "const": "queued",
               "type": "string"
+            },
+            "waiting": {
+              "$ref": "#/$defs/TicketWaiting",
+              "description": "Why it has not started."
             }
           },
           "required": [
             "state",
-            "position"
+            "position",
+            "waiting"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The ticket could not start for a reason only the operator can fix, and left the queue.",
+          "properties": {
+            "note": {
+              "description": "The sentence that names the next step.",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/TicketReason",
+              "description": "The reason, as the board shows it."
+            },
+            "state": {
+              "const": "needs_you",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "note"
           ],
           "type": "object"
         }
@@ -11828,6 +11907,17 @@
         "ticket": {
           "$ref": "#/$defs/TicketRow",
           "description": "What the board keeps of the ticket."
+        },
+        "waiting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketWaiting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why a ticket that was given to an agent has not started."
         }
       },
       "required": [
@@ -11987,6 +12077,125 @@
         "description",
         "project",
         "done_when"
+      ],
+      "type": "object"
+    },
+    "TicketWait": {
+      "description": "Why a ticket that was given to an agent has not started. Nothing is journaled for it: the\ncard shows the note, and the daemon offers the ticket again when something relevant changes.",
+      "oneOf": [
+        {
+          "description": "The ticket has not been given to an agent.",
+          "properties": {
+            "kind": {
+              "const": "not_given",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The agent has a turn, a check run or an unfinished goal.",
+          "properties": {
+            "kind": {
+              "const": "agent_busy",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Another ticket holds the project.",
+          "properties": {
+            "card": {
+              "$ref": "#/$defs/CardId",
+              "description": "The ticket that holds it."
+            },
+            "kind": {
+              "const": "ticket",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "card"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The project has a turn or a check run that no ticket started.",
+          "properties": {
+            "kind": {
+              "const": "project_busy",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The agent is halted, paused or held.",
+          "properties": {
+            "kind": {
+              "const": "agent_paused",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A person holds the agent's keyboard.",
+          "properties": {
+            "kind": {
+              "const": "agent_attached",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The daemon is shutting down.",
+          "properties": {
+            "kind": {
+              "const": "closing",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TicketWaiting": {
+      "description": "A wait and the sentence that says it.",
+      "properties": {
+        "note": {
+          "description": "The sentence the operator reads.",
+          "type": "string"
+        },
+        "wait": {
+          "$ref": "#/$defs/TicketWait",
+          "description": "Which wait."
+        }
+      },
+      "required": [
+        "wait",
+        "note"
       ],
       "type": "object"
     },

@@ -602,6 +602,7 @@ where
             #[cfg(feature = "testing")]
             terminal_skew: crate::floor_terminal::TerminalSkew::default(),
             closing_failed_after: None,
+            ticket_reacted: None,
             floor_closing,
             browser_session: None,
             onboarding_pause: crate::runtime::OnboardingPause::default(),
