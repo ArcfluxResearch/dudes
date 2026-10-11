@@ -3897,26 +3897,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
             self.abandon_mail_refreshes(mail_requests);
         }
-        if outcome.as_ref().is_err_and(|error| {
-            error
-                .downcast_ref::<dudes_supervisor::closing::ClosingError>()
-                .is_none()
-        }) && (origin == PumpOrigin::Closing || self.sup.is_closing())
-        {
-            self.ctx.closing_failed_after =
-                Some(self.sup.world().last_applied_lsn.unwrap_or(Lsn::ZERO));
-            if self.ctx.writer.poisoned().is_none() {
-                self.ctx.fence_journal();
-            }
-        }
-
-        let abandoned_floor = outcome.is_err() && !self.ctx.pending_floor.is_empty();
-        if abandoned_floor {
-            self.ctx.pending_floor.clear();
-            self.ctx.pending_floor_base = None;
-            if let Some(streams) = &self.ctx.floor_streams {
-                streams.end();
-            }
+        if let Err(error) = &outcome {
+            self.fence_closing_pump_failure(origin, error);
         }
 
         // **Here, and not inside `append`.** On success the queue is quiescent, so the snapshot is
@@ -3954,6 +3936,27 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
         }
         outcome
+    }
+
+    fn fence_closing_pump_failure(&mut self, origin: PumpOrigin, error: &anyhow::Error) {
+        if error
+            .downcast_ref::<dudes_supervisor::closing::ClosingError>()
+            .is_none()
+            && (origin == PumpOrigin::Closing || self.sup.is_closing())
+        {
+            self.ctx.closing_failed_after =
+                Some(self.sup.world().last_applied_lsn.unwrap_or(Lsn::ZERO));
+            if self.ctx.writer.poisoned().is_none() {
+                self.ctx.fence_journal();
+            }
+        }
+        if !self.ctx.pending_floor.is_empty() {
+            self.ctx.pending_floor.clear();
+            self.ctx.pending_floor_base = None;
+            if let Some(streams) = &self.ctx.floor_streams {
+                streams.end();
+            }
+        }
     }
 
     fn composed_work(&self) -> Result<BTreeMap<AgentId, dudes_policy::WorkInput>> {
@@ -6885,7 +6888,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 let output = self.children.output();
                 streams
                     .publish_patch(pending.patch, self.floor_closing, || {
-                        pending.notice.apply(&output)
+                        pending.notice.apply(&output);
                     })
                     .inspect_err(|_| {
                         self.fence_journal();
@@ -7447,7 +7450,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 } else {
                     streams
                         .publish_closing_with_output(snapshot, self.floor_closing, || {
-                            output_notice.apply(&output)
+                            output_notice.apply(&output);
                         })
                         .context("publishing the live Floor projection")?;
                 }
