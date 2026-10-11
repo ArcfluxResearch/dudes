@@ -13,14 +13,11 @@ use dudes_proto::rpc::ticket::{
     TicketReadResult, TicketRemoveParams, TicketStopParams,
 };
 use dudes_proto::{TicketRefusal, TicketRow};
-use dudes_types::CardStatus;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 /// The most bytes of a ticket request, and of the answer to a read.
 pub const MAX_TICKET_BODY_BYTES: usize = 24_576;
-/// The most bytes of any other answer.
-pub const MAX_TICKET_REPLY_BYTES: usize = 512;
 /// The most JSON nesting a request may carry.
 const MAX_DEPTH: usize = 8;
 /// The most tickets one session may create.
@@ -28,7 +25,7 @@ pub const MOST_CREATES: u32 = 64;
 /// The most assignments one session may make, counting each that was accepted.
 pub const MOST_ASSIGNS: u32 = 32;
 /// How long a session's counts are kept after its last request.
-const KEEP: Duration = Duration::from_secs(24 * 60 * 60);
+const KEEP: Duration = Duration::from_hours(24);
 
 /// The `ticket` sibling a Floor snapshot carries exactly when `[floor.board]` is enabled: an empty
 /// object, outside `FloorProjection` and `floor.delta`. A page shows no ticket form without it.
@@ -379,12 +376,6 @@ pub fn done_body(
         body["start"] = start;
     }
     body
-}
-
-/// The word a state takes in `wrong_state` and on the page.
-#[must_use]
-pub const fn state_word(status: CardStatus) -> &'static str {
-    dudes_proto::ticket::state_name(status)
 }
 
 #[cfg(test)]

@@ -687,6 +687,23 @@ fn parse_operator_and_memory(
         .map(|(startup, memory)| (startup.operator, memory))
 }
 
+/// The refusal for a switch whose companions are not on, if any. A renewal funds turns from
+/// enrollment, which only an operator who let the Floor hire has already granted the browser. A
+/// ticket given to an agent starts paid work, which a goal change alone never does, so the operator
+/// who allows it has already let the Floor control agents and set goals.
+const fn unmet_companion(
+    (control, goal, hire): (bool, bool, bool),
+    (renew, board): (bool, bool),
+) -> Option<ConfigErrorKind> {
+    if renew && !(goal && hire) {
+        Some(ConfigErrorKind::InvalidRenew)
+    } else if board && !(control && goal) {
+        Some(ConfigErrorKind::InvalidBoard)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn parse_operator_with_options(
     path: &Path,
     bytes: Option<&[u8]>,
@@ -694,6 +711,10 @@ pub(crate) fn parse_operator_with_options(
     parse_operator_and_memory_with_options(path, bytes).map(|(startup, _)| startup)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass reads every operator table and applies the start rules in the order they are reported"
+)]
 pub(crate) fn parse_operator_and_memory_with_options(
     path: &Path,
     bytes: Option<&[u8]>,
@@ -760,15 +781,11 @@ pub(crate) fn parse_operator_and_memory_with_options(
             renew: renew_enabled,
         },
     };
-    // A renewal funds turns from enrollment, which only an operator who let the Floor hire has
-    // already granted the browser.
-    if renew_enabled && !(goal_enabled && hire_enabled) {
-        return Err(ConfigError::new(path, ConfigErrorKind::InvalidRenew));
-    }
-    // A ticket given to an agent starts paid work, which a goal change alone never does, so the
-    // operator who lets the Floor do it has already let the Floor control agents and set goals.
-    if board_enabled && !(control_enabled && goal_enabled) {
-        return Err(ConfigError::new(path, ConfigErrorKind::InvalidBoard));
+    if let Some(kind) = unmet_companion(
+        (control_enabled, goal_enabled, hire_enabled),
+        (renew_enabled, board_enabled),
+    ) {
+        return Err(ConfigError::new(path, kind));
     }
     let mut enrollment = Enrollment {
         profiles: floor

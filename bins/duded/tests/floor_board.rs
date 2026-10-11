@@ -6,6 +6,7 @@
 
 mod common;
 
+use std::fmt::Write as _;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -288,9 +289,9 @@ impl Page {
     fn raw(&self, path: &str, headers: &[(&str, &str)], body: &[u8]) -> Answer {
         let mut request = format!("POST {path} HTTP/1.1\r\n");
         for (name, value) in headers {
-            request.push_str(&format!("{name}: {value}\r\n"));
+            let _ = write!(request, "{name}: {value}\r\n");
         }
-        request.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+        let _ = write!(request, "Content-Length: {}\r\n\r\n", body.len());
         let mut bytes = request.into_bytes();
         bytes.extend_from_slice(body);
         self.send(&bytes)
@@ -1036,9 +1037,19 @@ fn a_session_has_one_request_in_flight() {
         std::thread::spawn(move || page.create(&json!({"title": "First"})))
     };
     assert!(board.pause.wait_reached(Duration::from_secs(5)));
-    page.create(&json!({"title": "Second"}))
-        .refused("limit_reached");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let second = {
+        let page = page.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(page.create(&json!({"title": "Second"})));
+        })
+    };
+    let answered = rx.recv_timeout(Duration::from_secs(3));
     board.pause.release();
+    second.join().unwrap();
+    answered
+        .expect("a second request is answered without waiting for the writer")
+        .refused("limit_reached");
     first.join().unwrap().ok();
     assert_eq!(tickets_made(&fixture), 1);
     board.stop();

@@ -1084,12 +1084,9 @@ impl ActionRoute {
             LOOK_PATH if catalog.control.pause_resume() => Some(Self::Look),
             RETIRE_PATH if catalog.control.retire() => Some(Self::Retire),
             GIT_PATH if catalog.git.is_some() => Some(Self::Git),
-            _ if catalog.board.is_some() && TicketRoute::of(path).is_some() => {
-                TicketRoute::of(path).map(Self::Ticket)
-            }
             MEMORY_PAGE_PATH => Some(Self::Memory(MemoryRoute::Page)),
             MEMORY_ENTRY_PATH => Some(Self::Memory(MemoryRoute::Entry)),
-            _ => None,
+            _ => catalog.board.and(TicketRoute::of(path)).map(Self::Ticket),
         }
     }
 
