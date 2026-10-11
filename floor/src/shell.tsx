@@ -129,8 +129,7 @@ export function WebFloorShell() {
     markRevealed(reveal);
     selectAgent(reveal);
     if (hire.outcome?.kind === 'complete') {
-      hireDialog.current?.close();
-      setHiring(false);
+      closeHire(true);
       setGuide('closed');
       setFocused(false);
       setArchiveHireKept(false);
@@ -242,12 +241,17 @@ export function WebFloorShell() {
     setHiring(true);
   }
 
-  function closeHire(): void {
+  function closeHire(revealed = false): void {
     backdropPress.current = null;
     hireDialog.current?.close();
     setHiring(false);
-    restoreFocusAfterDialog(hireOpener.current,
-      document.getElementById('hire-open') ?? document.getElementById('crew-toggle'));
+    const ticketDialog = document.getElementById('selected-card-detail');
+    const ticketFallback = ticketDialog?.getAttribute('open') != null
+      ? ticketDialog.querySelector<HTMLElement>('.ticket-dialog-close') : null;
+    if (!revealed || ticketFallback !== null) {
+      restoreFocusAfterDialog(hireOpener.current,
+        ticketFallback ?? document.getElementById('hire-open') ?? document.getElementById('crew-toggle'));
+    }
   }
 
   useEffect(() => {

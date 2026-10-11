@@ -355,10 +355,10 @@
   padding: 0.85rem 1rem;
 }
 
-.ticket-lane .ticket-card-meta { display: none; }
+.ticket-lane .ticket-card-meta { grid-column: 1 / -1; }
 .ticket-lane .ticket-card > strong { font-size: 0.8rem; }
 .ticket-lane .ticket-note { grid-column: 1; }
-.ticket-lane .ticket-card-footer { grid-column: 2; grid-row: 1 / span 2; align-self: start; }
+.ticket-lane .ticket-card-footer { grid-column: 2; grid-row: 2 / span 2; align-self: start; }
 
 .ticket-dialog {
   position: fixed;
@@ -528,7 +528,7 @@
 .ticket-dialog .ticket-create { background: var(--accent-ink); color: var(--on-accent); }
 
 @media (max-width: 800px) {
-  .ticket-lane .ticket-card-footer { grid-row: 1; }
+  .ticket-lane .ticket-card-footer { grid-row: 2; }
   .ticket-lane .ticket-note { grid-column: 1 / -1; }
 }
 

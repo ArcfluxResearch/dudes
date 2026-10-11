@@ -19,6 +19,7 @@ import { SettingsView } from './settings/SettingsView.tsx';
 import { Board, CardDetail } from './BoardPanel.tsx';
 import { drawsTickets, NewTicketForm, TicketBoard, TicketNotice } from './ticket/TicketBoard.tsx';
 import { viewConfirmed } from './ticket/model.ts';
+import { TicketOffHint } from './ticket/TicketGuidance.tsx';
 import { TicketPanel } from './ticket/TicketPanel.tsx';
 import { workspaceGroups, workspaceLabel } from './workspace.ts';
 import { HireEntry } from './onboarding/HireEntry.tsx';
@@ -238,7 +239,7 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
 
   function closeOverlay(): void {
     const replacement = selectedCardId === null ? null
-      : dialog.current?.ownerDocument.querySelector<HTMLButtonElement>(`[data-card-id="${selectedCardId}"]`) ?? null;
+      : dialog.current?.ownerDocument.querySelector<HTMLButtonElement>(`[data-card-id="${selectedCardId}"]:not(:disabled)`) ?? null;
     const fallback = replacement ?? document.getElementById(CONTROL_TITLE_ID) ?? document.getElementById(viewButtonId('board'));
     dialog.current?.close();
     setOverlay(null);
@@ -291,8 +292,10 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
         {showing ? <><header className="ticket-dialog-head"><p>{overlay?.kind === 'new' ? 'New ticket' : 'Ticket review'}</p>
           <button type="button" className="ticket-dialog-close" aria-label="Close ticket dialog" onClick={closeOverlay}>×</button>
         </header>
+        {viewConfirmed(floor) ? null : <p className="stream-state" role="alert">View unconfirmed — waiting for the stream</p>}
         {overlay?.kind === 'new' ? <div className="ticket-composer"><h3>New ticket</h3>
           <p>Tell an agent what you want to happen.</p><TicketNotice />
+          {floor.ticket ? null : <TicketOffHint floor={floor} />}
           <NewTicketForm floor={floor} onHire={onHire} onCancel={closeOverlay}
             onCreated={(id) => { opener.current = null; seenCard.current = null; setOverlay({ kind: 'card', id }); }} />
         </div> : selectedCard?.ticket != null ? <TicketPanel key={selectedCard.id} floor={floor} card={selectedCard} onHire={onHire} />

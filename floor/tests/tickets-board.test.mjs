@@ -145,6 +145,15 @@ test('cards show the recorded agent colour, later rounds and a stopping ticket',
   assert.match(html, /aria-haspopup="dialog"/);
 });
 
+test('Needs-you cards carry their later round and stopping metadata', () => {
+  subscribe(store, { agents: [agent()], cards: [
+    ticketCard(1, 'blocked', { claimed_by: ADA }, { round: 2, stopping: true, reason: 'held_unsure' }),
+  ] });
+  const lane = board().match(/<section[^>]*data-lane="needs-you"[\s\S]*?<\/section>/)?.[0];
+  assert.ok(lane);
+  assert.match(lane, /class="ticket-card-meta"[\s\S]*?Stopping…[\s\S]*?Round 2/);
+});
+
 test('a card says its title, its agent, its place in line and why it waits', () => {
   subscribe(store, {
     agents: [agent(ADA, 'Ada', { status: 'running' }), agent(GRACE, 'Grace', { paused: true })],

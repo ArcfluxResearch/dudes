@@ -381,6 +381,18 @@ test('Board uses compact Done notices and an empty region takes no working space
   }
 });
 
+test('Needs you keeps card metadata visible above the title at every width', async () => {
+  const css = await readFile(resolve(root, 'src/renderer/ticket/ticket.css'), 'utf8');
+  for (const width of [640, 1024, 1440]) {
+    const rules = rulesAt(css, width);
+    const meta = selector => ['.ticket-card .ticket-card-meta', '.ticket-lane .ticket-card-meta'].includes(selector);
+    assert.equal(declared(rules, meta, 'display'), 'flex', `${width}: round and stopping metadata is visible`);
+    assert.equal(declared(rules, meta, 'grid-column'), '1 / -1', `${width}: metadata has its own row`);
+    assert.match(declared(rules, selector => selector === '.ticket-lane .ticket-card-footer', 'grid-row'), /^2(?: \/ span 2)?$/,
+      `${width}: the agent does not overlap metadata`);
+  }
+});
+
 test('the first-run guide has a separate row above an expanded terminal and its controls', async () => {
   const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
   const stage = ".shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']):has(.first-run-guide):not(:has(.control-panel[data-view='board']))";

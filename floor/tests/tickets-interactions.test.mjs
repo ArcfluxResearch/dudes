@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test, { after, before, beforeEach } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createServer } from 'vite';
+import ts from 'typescript';
 
+import { restoreFocusAfterDialog } from '../src/renderer/focus.ts';
 import { fakePage, press } from './helpers/fake-page.mjs';
 import { ADA, agent, cardId, subscribe, ticketCard, TWO_PROJECTS } from './helpers/tickets.mjs';
 
@@ -48,6 +51,7 @@ function pageForTickets() {
   const page = fakePage();
   const prototype = Object.getPrototypeOf(page.host);
   const queued = [];
+  const modals = [];
   const previousRaf = globalThis.requestAnimationFrame;
   globalThis.requestAnimationFrame = (run) => { queued.push(run); return queued.length; };
   page.flushFocus = () => { for (const run of queued.splice(0)) run(); };
@@ -86,8 +90,22 @@ function pageForTickets() {
     for (let node = this; node?.nodeType === 1; node = node.parentNode) if (matches(node, selector)) return node;
     return null;
   };
-  prototype.showModal = function () { this.setAttribute('open', ''); };
-  prototype.close = function () { this.removeAttribute('open'); };
+  prototype.showModal = function () {
+    this.setAttribute('open', '');
+    if (!modals.includes(this)) modals.push(this);
+  };
+  prototype.close = function () {
+    this.removeAttribute('open');
+    const at = modals.indexOf(this);
+    if (at !== -1) modals.splice(at, 1);
+  };
+  prototype.focus = function () {
+    if (!this.isConnected || this.disabled || this.closest('[hidden]') !== null) return;
+    const dialog = this.closest('dialog');
+    if (dialog !== null && dialog.getAttribute('open') === null) return;
+    if (modals.length > 0 && !modals.at(-1).contains(this)) return;
+    page.document.activeElement = this;
+  };
   page.document.querySelector = (selector) => page.document.body.querySelector(selector);
   const restore = page.restore;
   page.restore = () => { restore(); globalThis.requestAnimationFrame = previousRaf; };
@@ -96,6 +114,43 @@ function pageForTickets() {
 
 const propsOf = (element) => element[Object.keys(element).find((key) => key.startsWith('__reactProps$'))];
 const textOf = (element) => element.nodeType === 3 ? element.nodeValue : element.childNodes.map(textOf).join('');
+
+async function closeHireCallback(page, dialog, opener) {
+  const source = await readFile(resolve(import.meta.dirname, '../src/shell.tsx'), 'utf8');
+  const syntax = ts.createSourceFile('shell.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let callback, completion;
+  (function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'closeHire') callback = node.getText(syntax);
+    if (ts.isCallExpression(node) && node.expression.getText(syntax) === 'useEffect'
+      && node.arguments[0]?.getText(syntax).includes('markRevealed(reveal)')) completion = node.arguments[0].getText(syntax);
+    ts.forEachChild(node, visit);
+  })(syntax);
+  assert.ok(callback && completion);
+  const code = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const closeHire = new Function('backdropPress', 'hireDialog', 'hireOpener', 'document', 'setHiring', 'restoreFocusAfterDialog',
+    `${code}\nreturn closeHire;`)({ current: null }, { current: dialog }, { current: opener }, page.document,
+    () => {}, restoreFocusAfterDialog);
+  const selections = [];
+  const completed = ts.transpileModule(`const complete = ${completion};`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const completeHire = new Function('reveal', 'hire', 'markRevealed', 'selectAgent', 'closeHire', 'hireDialog',
+    'setHiring', 'setGuide', 'setFocused', 'setArchiveHireKept', `${completed}\nreturn complete;`)(ADA,
+    { outcome: { kind: 'complete' } }, (id) => selections.push(['revealed', id]), (id) => selections.push(['selected', id]),
+    closeHire, { current: dialog }, () => {}, () => {}, () => {}, () => {});
+  return { closeHire, completeHire, selections };
+}
+
+function hireLayer(page) {
+  const topbar = page.document.body.appendChild(page.document.createElement('button'));
+  topbar.setAttribute('id', 'hire-open');
+  const dialog = page.document.body.appendChild(page.document.createElement('dialog'));
+  const field = dialog.appendChild(page.document.createElement('input'));
+  dialog.showModal();
+  field.focus();
+  topbar.focus();
+  assert.equal(page.document.activeElement, field, 'controls outside the top modal are inert');
+  return { topbar, dialog, field };
+}
 
 async function mount(cards, { agents = [agent()], onHire = () => {}, hireAvailable = false } = {}) {
   subscribe(store, { cards, agents, checks: TWO_PROJECTS });
@@ -150,6 +205,21 @@ test('closing a changed card targets its replacement and a removed card targets 
     await app.render({ ...app.floor, cards: [] });
     assert.equal(app.page.host.querySelector('.ticket-dialog').getAttribute('open'), null);
     assert.equal(app.page.document.activeElement.id, 'control-title');
+  } finally { await app.close(); }
+});
+
+test('closing a stale card skips its disabled opener and replacement for Board', async () => {
+  const app = await mount([ticketCard(1, 'review', { claimed_by: ADA })]);
+  try {
+    const opener = app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`);
+    await act(async () => press(opener));
+    await app.render({ ...app.floor, stale: true });
+    assert.equal(opener.disabled, true);
+    await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
+    app.page.flushFocus();
+    assert.equal(app.page.document.activeElement.id, 'control-title');
+    opener.focus();
+    assert.equal(app.page.document.activeElement.id, 'control-title', 'disabled cards cannot take focus');
   } finally { await app.close(); }
 });
 
@@ -217,6 +287,92 @@ test('the composer keeps its draft while Hire is opened and the roster changes',
   } finally { await app.close(); }
 });
 
+test('closing nested Hire stays inside the composer after its opener disappears', async () => {
+  const app = await mount([], { agents: [], hireAvailable: true });
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    const opener = app.page.host.querySelector('.ticket-hire');
+    const hire = hireLayer(app.page);
+    await app.render({ ...app.floor, agents: [agent()] });
+    assert.equal(opener.isConnected, false);
+    const { closeHire } = await closeHireCallback(app.page, hire.dialog, opener);
+    closeHire();
+    app.page.flushFocus();
+    assert.equal(app.page.document.activeElement.getAttribute('class'), 'ticket-dialog-close');
+    hire.topbar.focus();
+    assert.notEqual(app.page.document.activeElement, hire.topbar, 'underlying ticket keeps the top bar inert');
+    await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
+    app.page.flushFocus();
+    hire.dialog.showModal();
+    hire.field.focus();
+    closeHire();
+    app.page.flushFocus();
+    assert.equal(app.page.document.activeElement, hire.topbar, 'standalone Hire keeps its normal fallback');
+  } finally { await app.close(); }
+});
+
+test('closing nested Hire skips a connected Give opener hidden by revoked authority', async () => {
+  const app = await mount([ticketCard(1, 'todo')], { agents: [], hireAvailable: true });
+  try {
+    await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
+    await act(async () => press(app.page.host.querySelector('[data-action="give"]')));
+    const opener = app.page.host.querySelector('.ticket-hire');
+    const hire = hireLayer(app.page);
+    await app.render({ ...app.floor, stale: true });
+    assert.equal(opener.isConnected, true);
+    assert.equal(opener.disabled, false);
+    assert.notEqual(opener.closest('[hidden]'), null);
+    (await closeHireCallback(app.page, hire.dialog, opener)).closeHire();
+    app.page.flushFocus();
+    assert.equal(app.page.document.activeElement.getAttribute('class'), 'ticket-dialog-close');
+  } finally { await app.close(); }
+});
+
+test('successful Hire preserves selection and returns to the underlying composer', async () => {
+  const app = await mount([], { agents: [], hireAvailable: true });
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    const opener = app.page.host.querySelector('.ticket-hire');
+    const hire = hireLayer(app.page);
+    await app.render({ ...app.floor, agents: [agent()] });
+    const { completeHire, closeHire, selections } = await closeHireCallback(app.page, hire.dialog, opener);
+    completeHire();
+    app.page.flushFocus();
+    assert.deepEqual(selections, [['revealed', ADA], ['selected', ADA]]);
+    assert.equal(app.page.document.activeElement.getAttribute('class'), 'ticket-dialog-close');
+    await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
+    app.page.flushFocus();
+    hire.dialog.showModal();
+    hire.field.focus();
+    closeHire(true);
+    const selected = app.page.document.body.appendChild(app.page.document.createElement('h2'));
+    selected.focus();
+    app.page.flushFocus();
+    assert.equal(app.page.document.activeElement, selected, 'standalone completion does not override newly revealed focus');
+  } finally { await app.close(); }
+});
+
+test('the composer explains revoked authority inside its modal and keeps the draft', async () => {
+  for (const closed of [{ stale: true }, { ticket: false }]) {
+    const app = await mount([]);
+    try {
+      await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+      const title = app.page.host.querySelector('[name="title"]');
+      await act(async () => propsOf(title).onChange({ target: { value: 'Keep the ticket draft.' } }));
+      seen.length = 0;
+      await app.render({ ...app.floor, ...closed });
+      const dialog = app.page.host.querySelector('.ticket-dialog');
+      assert.ok(textOf(dialog).includes(closed.stale ? 'View unconfirmed — waiting for the stream'
+        : 'Tickets are off. Turn them on with dudes config set floor.board on, then restart the daemon.'));
+      assert.equal(dialog.querySelector('.ticket-create').disabled, true);
+      await act(async () => propsOf(dialog.querySelector('form')).onSubmit({ preventDefault() {} }));
+      assert.deepEqual(seen, []);
+      await app.render({ ...app.floor, stale: false, ticket: true });
+      assert.equal(title.value, 'Keep the ticket draft.');
+    } finally { await app.close(); }
+  }
+});
+
 test('the drawer shows pending and an unconfirmed answer without retrying it', async () => {
   const app = await mount([ticketCard(1, 'review', { claimed_by: ADA })]);
   try {
@@ -263,6 +419,8 @@ test('Give, Edit and changes retain unsent fields while authority is unavailable
         seen.length = 0;
         await app.render({ ...app.floor, ...closed });
         assert.notEqual(mode.getAttribute('hidden'), null);
+        assert.ok(textOf(app.page.host.querySelector('.ticket-dialog')).includes(closed.stale
+          ? 'View unconfirmed — waiting for the stream' : 'Tickets are off. Turn them on with'));
         assert.equal(app.page.host.querySelector('.ticket-action'), null);
         const form = mode.querySelector('form');
         await act(async () => propsOf(form).onSubmit({ preventDefault() {} }));
