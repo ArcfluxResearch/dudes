@@ -9,7 +9,9 @@
 # publish and attest, and uploads the body as the `release-notes` artifact to preview; it falls
 # back to the Unreleased changelog section when the version has none yet. Action refs are pinned to
 # commit SHAs with the tag in the comment, as in ci.yml. Every cargo invocation is `--locked`.
-# Windows has no installer yet, so it has no archive.
+# Windows has no installer yet, so it has no archive. On a tag push the first job refuses a tag whose
+# commit is not on `main`, or whose `push` run of ci.yml on `main` has not succeeded; it waits up to
+# 45 minutes for a run that is still going.
 
 name: Release
 
@@ -34,11 +36,45 @@ jobs:
   floor:
     name: floor
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Tag is on main and main's CI passed
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          git merge-base --is-ancestor "$SHA" origin/main || {
+            echo "commit $SHA is not on main; releases are cut only from main" >&2
+            exit 1
+          }
+          deadline=$((SECONDS + 45 * 60))
+          while :; do
+            runs=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&branch=main&event=push" \
+              --jq '[.workflow_runs[] | {status, conclusion}]')
+            if [ "$(jq 'any(.conclusion == "success")' <<<"$runs")" = true ]; then
+              echo "CI passed on main for $SHA"
+              exit 0
+            fi
+            if [ "$(jq 'length > 0 and all(.status == "completed")' <<<"$runs")" = true ]; then
+              echo "CI on main did not pass for $SHA; fix main and tag a passing commit" >&2
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "CI on main for $SHA did not finish within 45 minutes" >&2
+              exit 1
+            fi
+            echo "waiting for CI on main for $SHA"
+            sleep 30
+          done
       - name: Tag matches the workspace version
         if: github.ref_type == 'tag'
         env:
