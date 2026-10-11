@@ -52,6 +52,8 @@ use serde::Serialize;
 use crate::config;
 use crate::floor::FloorUrl;
 
+pub mod ticket;
+
 /// Render the durable memory append receipt.
 pub fn memory_appended(
     out: &mut dyn Write,

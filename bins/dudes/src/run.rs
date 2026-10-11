@@ -61,6 +61,8 @@ use crate::setup::{self, Plan, Stopped, Terminal};
 use crate::workspace::{self, Edit, NewWorkspace};
 use crate::{exit, render};
 
+mod ticket;
+
 /// The client this binary drives: one local connection, buffered on the read side.
 type Socket = LocalClient;
 
@@ -307,6 +309,7 @@ fn dispatch(
             return workspace_command(command, env, invocation.json, out, err);
         }
         Command::Config(command) => return config_command(command, env, out, err),
+        Command::Ticket(command) => return ticket::command(command, env, invocation.json, out),
         Command::Worktree(command) => {
             return worktree_command(command, env, invocation.json, out, err);
         }
@@ -1794,6 +1797,7 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         | Command::Workspace(_)
         | Command::Worktree(_)
         | Command::Config(_)
+        | Command::Ticket(_)
         | Command::Mail(_) => {
             return Err(Failure::Other(Message::Local(
                 "internal: a locally dispatched command reached the call path".to_owned(),
