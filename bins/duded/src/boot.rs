@@ -566,13 +566,16 @@ where
     // or `CLAUDE.md`. Created once, at boot, and never written to afterward.
     let condense_cwd = settings.state_dir.join("condense-model-cwd");
     open_condense_cwd(&condense_cwd)?;
-    let closing = crate::closing::Waiting::new(sup.world());
-    let floor_closing = sup
+    let mut closing = crate::closing::Waiting::new(sup.world());
+    if let Some(session) = sup
         .world()
         .closing
         .as_ref()
         .filter(|session| !session.is_complete())
-        .map(|_| dudes_proto::ClosingPhase::Announced);
+    {
+        closing.observe(session);
+    }
+    let floor_closing = closing.floor_view(sup.world(), clock.now());
     let mut daemon = Daemon {
         closing,
         sup,
@@ -606,6 +609,8 @@ where
             closing_failed_after: None,
             ticket_reacted: None,
             floor_closing,
+            pending_floor: BTreeMap::new(),
+            pending_floor_base: None,
             browser_session: None,
             onboarding_pause: crate::runtime::OnboardingPause::default(),
             onboarding_failure: crate::runtime::OnboardingFailure::default(),

@@ -45,8 +45,8 @@ import { decodeFinishedToday, FINISHED_TODAY_UNAVAILABLE } from '../finished-tod
 import type { FinishedToday } from '../finished-today.ts';
 import { decodeJournalStopped } from '../journal-stopped.ts';
 import type { JournalStopped } from '../journal-stopped.ts';
-import { decodeClosingTime } from '../closing-time.ts';
-import type { ClosingTime } from '../closing-time.ts';
+import { decodeClosingProgress, decodeClosingTime } from '../closing-time.ts';
+import type { ClosingDisplay, ClosingTime } from '../closing-time.ts';
 import { decodeSwitchSibling } from './sibling.ts';
 import { decodeCards } from '../board.ts';
 import { decodeWorkspace } from '../workspace.ts';
@@ -282,6 +282,7 @@ export interface FloorState {
    */
   readonly finishedToday: FinishedToday;
   readonly closingTime: ClosingTime;
+  readonly closingDisplay: ClosingDisplay | null;
   readonly doneNotices: readonly DoneNotice[];
 }
 
@@ -316,6 +317,7 @@ const EMPTY: FloorState = Object.freeze({
   journalStopped: null,
   finishedToday: FINISHED_TODAY_UNAVAILABLE,
   closingTime: null,
+  closingDisplay: null,
   doneNotices: Object.freeze([]),
 });
 
@@ -768,6 +770,7 @@ function byId(rows: readonly AgentRow[]): readonly AgentRow[] {
 function fromSnapshot(message: ServerMessage): FloorState {
   const projection = asRecord(message.projection, 'projection');
   const closing = decodeClosingTime(projection.closing_time);
+  const progress = decodeClosingProgress(projection.closing_progress);
   const sifted = sift(projection.agents);
   const cards = decodeCards(projection.cards);
   const activity = decodeActivity(projection.activity);
@@ -796,6 +799,7 @@ function fromSnapshot(message: ServerMessage): FloorState {
     journalStopped: decodeJournalStopped(message.journal_stopped),
     finishedToday: decodeFinishedToday(message.finished_today),
     closingTime: closing.value,
+    closingDisplay: closing.value === null ? null : Object.freeze({ phase: closing.value, progress: progress.value }),
     lsn: lsnOf(projection),
     agents: byId(sifted.rows),
     cards: cards.rows,
@@ -807,7 +811,7 @@ function fromSnapshot(message: ServerMessage): FloorState {
     output: state.output.targetId !== null && !sifted.rows.some((row) => row.id === state.output.targetId)
       ? emptyOutput(state.output, 'unavailable') : state.output,
     rejected: state.rejected + sifted.rejected + cards.rejected + activity.rejected + retired.rejected + messages.rejected
-      + (message.chat !== undefined && chat === null ? 1 : 0) + closing.rejected,
+      + (message.chat !== undefined && chat === null ? 1 : 0) + closing.rejected + progress.rejected,
   };
 }
 
@@ -842,6 +846,12 @@ function fromDelta(delta: Record<string, unknown>, message: ServerMessage): Floo
       ? { messages: EMPTY.messages, threads: EMPTY.threads, messagesLsn: null } : {}) };
   const closing = delta.closing_time === undefined || state.snapshotEpoch !== state.epoch
     ? { value: state.closingTime, rejected: 0 } : decodeClosingTime(delta.closing_time);
+  const progress = delta.closing_progress === undefined || state.snapshotEpoch !== state.epoch || closing.value === null
+    ? { value: state.closingDisplay?.progress ?? null, rejected: 0 } : decodeClosingProgress(delta.closing_progress);
+  const closingDisplay = state.snapshotEpoch !== state.epoch ? state.closingDisplay
+    : closing.value === null ? null
+      : delta.closing_time === undefined && delta.closing_progress === undefined ? state.closingDisplay
+        : Object.freeze({ phase: closing.value, progress: progress.value });
   const replaceMail = message.messages !== undefined || message.threads !== undefined;
   const messages = messagesLsn === null
     ? { rows: EMPTY.messages, threads: EMPTY.threads, cut: null,
@@ -879,6 +889,7 @@ function fromDelta(delta: Record<string, unknown>, message: ServerMessage): Floo
     finishedToday: message.finished_today === undefined || state.snapshotEpoch !== state.epoch
       ? state.finishedToday : decodeFinishedToday(message.finished_today),
     closingTime: closing.value,
+    closingDisplay,
     lsn,
     agents,
     chat,
@@ -892,7 +903,7 @@ function fromDelta(delta: Record<string, unknown>, message: ServerMessage): Floo
     output: state.output.targetId !== null && !next.has(state.output.targetId)
       ? emptyOutput(state.output, 'unavailable') : state.output,
     rejected: state.rejected + sifted.rejected + cardChanges.rejected + activity.rejected + retired.rejected + messages.rejected
-      + (message.chat !== undefined && chat === null ? 1 : 0) + closing.rejected,
+      + (message.chat !== undefined && chat === null ? 1 : 0) + closing.rejected + progress.rejected,
   };
 }
 
@@ -936,6 +947,7 @@ function unchanged(current: FloorState, next: FloorState): boolean {
     && current.journalStopped === next.journalStopped
     && current.finishedToday === next.finishedToday
     && current.closingTime === next.closingTime
+    && current.closingDisplay === next.closingDisplay
     && current.doneNotices === next.doneNotices
     && current.agents.length === next.agents.length
     && current.threads === next.threads

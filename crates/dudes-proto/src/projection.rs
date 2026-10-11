@@ -63,6 +63,43 @@ pub struct FloorDelta {
     pub closing_time: Option<ClosingPhase>,
 }
 
+/// Browser snapshot with optional aggregate closing progress.
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+pub struct FloorProjectionView<'a> {
+    /// The existing projection at the same durable cut.
+    #[serde(flatten)]
+    pub projection: &'a FloorProjection,
+    /// Aggregate progress while this run is closing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closing_progress: Option<ClosingProgress>,
+}
+
+/// Browser delta with optional aggregate closing progress.
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+pub struct FloorDeltaView<'a> {
+    /// The existing changes at the same durable cut.
+    #[serde(flatten)]
+    pub delta: &'a FloorDelta,
+    /// Aggregate progress when counts or the phase changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closing_progress: Option<ClosingProgress>,
+}
+
+/// Read-only closing progress without participant identities.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ClosingProgress {
+    /// Participants with a durable acknowledgement.
+    pub acknowledged: u32,
+    /// Unacknowledged participants with nothing left to save.
+    pub settled: u32,
+    /// Participants that still owe an acknowledgement.
+    pub owed: u32,
+    /// Participants with at least one turn awaiting an Observed end.
+    pub running: u32,
+    /// Earlier monotonic or wall time remaining, in milliseconds.
+    pub remaining_ms: u64,
+}
+
 /// Where a worktree is in its life, as the Floor and `worktree.list` show it.
 ///
 /// Derived from the journal. The Floor's copy cannot see an agent's recorded children, so it reads

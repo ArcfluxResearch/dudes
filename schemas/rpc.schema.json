@@ -2063,6 +2063,49 @@
         }
       ]
     },
+    "ClosingProgress": {
+      "description": "Read-only closing progress without participant identities.",
+      "properties": {
+        "acknowledged": {
+          "description": "Participants with a durable acknowledgement.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "owed": {
+          "description": "Participants that still owe an acknowledgement.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "remaining_ms": {
+          "description": "Earlier monotonic or wall time remaining, in milliseconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "running": {
+          "description": "Participants with at least one turn awaiting an Observed end.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "settled": {
+          "description": "Unacknowledged participants with nothing left to save.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "acknowledged",
+        "settled",
+        "owed",
+        "running",
+        "remaining_ms"
+      ],
+      "type": "object"
+    },
     "ClosingReport": {
       "additionalProperties": false,
       "description": "Final journal-derived census for one addressed daemon run.",
@@ -6367,6 +6410,99 @@
       },
       "type": "object"
     },
+    "FloorDeltaView": {
+      "description": "Browser delta with optional aggregate closing progress.",
+      "properties": {
+        "activity": {
+          "description": "Complete recent activity window when it changed, including an empty replacement.",
+          "items": {
+            "$ref": "#/$defs/ActivityView"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "agents": {
+          "default": [],
+          "description": "Agents whose view changed.",
+          "items": {
+            "$ref": "#/$defs/AgentView"
+          },
+          "type": "array"
+        },
+        "cards": {
+          "default": [],
+          "description": "Cards whose view changed.",
+          "items": {
+            "$ref": "#/$defs/CardView"
+          },
+          "type": "array"
+        },
+        "closing_progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClosingProgress"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Aggregate progress when counts or the phase changed."
+        },
+        "closing_time": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClosingPhase"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The closing-time step, when it changed."
+        },
+        "lsn": {
+          "$ref": "#/$defs/Lsn",
+          "default": 0,
+          "description": "The journal position after applying this delta."
+        },
+        "mail": {
+          "default": [],
+          "description": "Mail whose view changed or that is new.",
+          "items": {
+            "$ref": "#/$defs/MailView"
+          },
+          "type": "array"
+        },
+        "removed_agents": {
+          "default": [],
+          "description": "Agents retired since the previous delta.",
+          "items": {
+            "$ref": "#/$defs/AgentId"
+          },
+          "type": "array"
+        },
+        "removed_cards": {
+          "description": "Cards removed from the board since the previous delta. An older reader ignores it.",
+          "items": {
+            "$ref": "#/$defs/CardId"
+          },
+          "type": "array"
+        },
+        "retired_agents": {
+          "description": "Complete retired-agent archive when changed, including an empty replacement.",
+          "items": {
+            "$ref": "#/$defs/RetiredAgentView"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "title": "FloorDeltaView",
+      "type": "object"
+    },
     "FloorFinishedToday": {
       "description": "The daemon's count of goals first finished, with an observed pass, on its own local calendar day.\nA sibling of `floor.snapshot` and `floor.delta`; a present delta replaces the whole\nvalue, and an absent sibling means the daemon does not support it, never a count of zero.\n\n`local_date` and `utc_offset_minutes` are the daemon host's at the instant it answered, so a\nbrowser in another timezone can say whose day it is showing and never converts it.",
       "oneOf": [
@@ -6459,7 +6595,7 @@
       },
       "properties": {
         "delta": {
-          "$ref": "#/$defs/FloorDelta"
+          "$ref": "#/$defs/FloorDeltaView"
         },
         "finished_today": {
           "$ref": "#/$defs/FloorFinishedToday"
@@ -6554,7 +6690,7 @@
           ]
         },
         "projection": {
-          "$ref": "#/$defs/FloorProjection"
+          "$ref": "#/$defs/FloorProjectionView"
         },
         "threads": {
           "description": "Complete live thread graph, at most 65,536 serialized-array bytes.",
@@ -6650,6 +6786,80 @@
           "type": "array"
         }
       },
+      "type": "object"
+    },
+    "FloorProjectionView": {
+      "description": "Browser snapshot with optional aggregate closing progress.",
+      "properties": {
+        "activity": {
+          "default": [],
+          "description": "Recent permitted journal events in ascending journal order.",
+          "items": {
+            "$ref": "#/$defs/ActivityView"
+          },
+          "type": "array"
+        },
+        "agents": {
+          "default": [],
+          "description": "Every hired, unretired agent.",
+          "items": {
+            "$ref": "#/$defs/AgentView"
+          },
+          "type": "array"
+        },
+        "cards": {
+          "default": [],
+          "description": "Every card on the board.",
+          "items": {
+            "$ref": "#/$defs/CardView"
+          },
+          "type": "array"
+        },
+        "closing_progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClosingProgress"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Aggregate progress while this run is closing."
+        },
+        "closing_time": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClosingPhase"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The closing-time step in progress, if any."
+        },
+        "lsn": {
+          "$ref": "#/$defs/Lsn",
+          "default": 0,
+          "description": "The journal position this projection reflects."
+        },
+        "mail": {
+          "default": [],
+          "description": "Recent mail, newest last.",
+          "items": {
+            "$ref": "#/$defs/MailView"
+          },
+          "type": "array"
+        },
+        "retired_agents": {
+          "default": [],
+          "description": "Retired agents in retirement journal order, within the archive limits.",
+          "items": {
+            "$ref": "#/$defs/RetiredAgentView"
+          },
+          "type": "array"
+        }
+      },
+      "title": "FloorProjectionView",
       "type": "object"
     },
     "Gate": {

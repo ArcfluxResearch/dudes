@@ -37,7 +37,7 @@ const snapshot = (projection = {}, siblings = {}) => ({ type: 'floor.snapshot',
 const delta = (changes = {}, siblings = {}) => ({ type: 'floor.delta', delta: { lsn: 8, ...changes }, ...siblings });
 const render = () => {
   const floor = getFloorState();
-  return renderToStaticMarkup(createElement(Banner, { closing: floor.closingTime, stale: floor.stale }));
+  return renderToStaticMarkup(createElement(Banner, { closing: floor.closingDisplay?.phase ?? null, progress: floor.closingDisplay?.progress ?? null, stale: floor.stale || floor.closingTime === null }));
 };
 
 test('an announced closing snapshot publishes the observed phase', () => {
@@ -191,7 +191,7 @@ test('closing uses the exact paired mail cut when numeric positions coincide', (
   assert.equal(getFloorState().rejected, 0);
 });
 
-test('every subscription-ending path clears the phase and requires a fresh snapshot', () => {
+test('every subscription-ending path revokes authority and retains a last-observed display', () => {
   for (const end of [() => noteTransport('close'), () => invalidateFloorEpoch(),
     () => apply({ type: 'floor.resync' }), () => apply({ type: 'disconnected' }), () => beginFloorEpoch()]) {
     resetFloorStore();
@@ -199,7 +199,7 @@ test('every subscription-ending path clears the phase and requires a fresh snaps
     apply(snapshot({ closing_time: announced }));
     end();
     assert.equal(getFloorState().closingTime, null);
-    assert.equal(render(), '');
+    assert.match(render(), /Last observed: Closing time announced/);
     beginFloorEpoch();
     noteTransport('open');
     apply(delta({ lsn: 10, closing_time: complete }));
@@ -246,18 +246,18 @@ test('duplicate phases and heartbeats add no notifications when other state is u
   unsubscribe();
 });
 
-test('banner copy permits acknowledgement or timeout and exposes no controls or success inference', () => {
+test('phase-only completion stays neutral and exposes no controls or success inference', () => {
   apply(snapshot({ closing_time: complete }));
   const html = render();
   assert.match(html, /Closing phase complete/);
-  assert.match(html, /All participants acknowledged or the grace period elapsed\./);
+  assert.match(html, /Closure is complete\./);
   assert.match(html, /role="status" aria-atomic="true"/);
   assert.doesNotMatch(html, /button|href|countdown|deadline|saved|exited|saving/);
   noteStale(true);
   assert.match(render(), /Last observed: Closing phase complete/);
 });
 
-test('closing coexists with journal-stopped and stream notices, then disconnect owns the end state', () => {
+test('closing coexists with journal-stopped and remains last-observed after disconnect', () => {
   apply(snapshot({ closing_time: announced }, { journal_stopped: { lsn: '99' } }));
   const floor = getFloorState();
   assert.match(render(), /Closing time announced/);
@@ -267,7 +267,7 @@ test('closing coexists with journal-stopped and stream notices, then disconnect 
   assert.match(render(), /Last observed/);
   assert.match(renderToStaticMarkup(createElement(Notice, { floor: getFloorState() })), /View unconfirmed/);
   apply({ type: 'disconnected' });
-  assert.equal(render(), '');
+  assert.match(render(), /Last observed: Closing time announced/);
   const disconnected = renderToStaticMarkup(createElement(Notice, { floor: getFloorState() }));
   assert.match(disconnected, /Disconnected/);
   assert.doesNotMatch(disconnected, /participants acknowledged|saved|exited|Closing phase complete/);

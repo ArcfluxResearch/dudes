@@ -348,7 +348,7 @@ export function WebFloorShell() {
         </div>
         <PastedLinkNotice />
         <JournalStoppedBanner stopped={floor.journalStopped} />
-        <ClosingTimeBanner closing={floor.closingTime} stale={floor.stale} />
+        <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
         <TicketBanner floor={floor} onOpen={() => openView('board')} />
         {firstLink === null ? <StreamNotice floor={floor} /> : null}
         <div className="office-bar" ref={setOfficeBar} />

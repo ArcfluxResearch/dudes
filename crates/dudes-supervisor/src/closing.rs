@@ -145,6 +145,19 @@ pub struct ClosingSession {
     pub(crate) attached_cleanup: BTreeSet<AgentId>,
 }
 
+/// Aggregate progress of the immutable closing participants.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClosingCounts {
+    /// Participants with a durable acknowledgement.
+    pub acknowledged: u32,
+    /// Unacknowledged participants with nothing left to save.
+    pub settled: u32,
+    /// Participants that still owe an acknowledgement.
+    pub owed: u32,
+    /// Participants with at least one turn awaiting an Observed end.
+    pub running: u32,
+}
+
 impl ClosingSession {
     pub(crate) fn participant_ids(world: &World) -> BTreeSet<AgentId> {
         world
@@ -215,11 +228,27 @@ impl ClosingSession {
     /// Whether every participant acknowledged or is settled, and every Managed turn ended Observed.
     #[must_use]
     pub fn ready(&self, world: &World) -> bool {
-        self.participants.iter().all(|(agent, row)| {
-            row.unfinished.is_empty()
-                && (row.acknowledged.is_some()
-                    || world.closing_standing(*agent, row) != Standing::Open)
-        })
+        let counts = self.counts(world);
+        counts.owed == 0 && counts.running == 0
+    }
+
+    /// Count folded acknowledgements, settled standing and outstanding turns without identities.
+    #[must_use]
+    pub fn counts(&self, world: &World) -> ClosingCounts {
+        let mut counts = ClosingCounts::default();
+        for (agent, row) in &self.participants {
+            if row.acknowledged.is_some() {
+                counts.acknowledged += 1;
+            } else if world.closing_standing(*agent, row) != Standing::Open {
+                counts.settled += 1;
+            } else {
+                counts.owed += 1;
+            }
+            if !row.unfinished.is_empty() {
+                counts.running += 1;
+            }
+        }
+        counts
     }
 
     /// Whether completion eligibility is durable.
