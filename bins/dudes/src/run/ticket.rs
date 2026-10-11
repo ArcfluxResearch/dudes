@@ -4,17 +4,18 @@ use std::io::Write;
 
 use dudes_proto::rpc::board::CardListParams;
 use dudes_proto::rpc::ticket::{
-    TicketAssignParams, TicketAssignResult, TicketCreateResult, TicketEditParams, TicketReadParams,
-    TicketReadResult, TicketRemoveParams,
+    TicketAcceptParams, TicketAssignParams, TicketAssignResult, TicketCreateResult,
+    TicketEditParams, TicketReadParams, TicketReadResult, TicketRemoveParams, TicketStopParams,
 };
-use dudes_proto::rpc::{Empty, Method};
+use dudes_proto::rpc::{Empty, ErrorCode, Method, RpcError};
+use dudes_proto::{AgentView, TicketRefusal};
 use dudes_types::{AgentId, CardId, CardStatus, Seq};
 
 use super::{
     Failure, Socket, answer_result, call_presenting, connect, encode, local, operator_credential,
     typed,
 };
-use crate::args::{TicketCommand, TicketStatus};
+use crate::args::{AgentRef, TicketCommand, TicketStatus};
 use crate::env::Environment;
 use crate::render::ticket::{AgentNames, agent_name};
 use crate::{exit, render};
@@ -59,18 +60,56 @@ impl Session<'_> {
         }
     }
 
+    fn agents(&mut self) -> Result<Vec<AgentView>, Failure> {
+        typed(self.call(Method::AgentList, None)?)
+    }
+
     fn names(&mut self) -> AgentNames {
-        let Ok(agents) = self.call(Method::AgentList, None) else {
-            return AgentNames::new();
-        };
-        typed::<Vec<dudes_proto::AgentView>>(agents)
+        self.agents()
             .unwrap_or_default()
             .into_iter()
             .map(|agent| (agent.id, agent.name))
             .collect()
     }
 
+    /// The agent an id or a name stands for. A name must match exactly one live agent. An id is
+    /// passed on as typed, and the daemon decides whether it can take the ticket.
+    fn resolve(&mut self, agent: &AgentRef) -> Result<AgentId, Failure> {
+        let name = match agent {
+            AgentRef::Id(id) => return Ok(*id),
+            AgentRef::Name(name) => name,
+        };
+        let matching: Vec<AgentId> = self
+            .agents()?
+            .into_iter()
+            .filter(|live| live.name == *name)
+            .map(|live| live.id)
+            .collect();
+        match matching[..] {
+            [only] => Ok(only),
+            [] => Err(local(format!("No live agent is named \"{name}\"."))),
+            _ => {
+                let ids: Vec<String> = matching.iter().map(ToString::to_string).collect();
+                Err(local(format!(
+                    "More than one live agent is named \"{name}\": {}. Use an agent id.",
+                    ids.join(", ")
+                )))
+            }
+        }
+    }
+
     fn give(
+        &mut self,
+        card: CardId,
+        agent: &AgentRef,
+        message: Option<String>,
+        named: Option<Seq>,
+    ) -> Result<(TicketAssignResult, String), Failure> {
+        let agent = self.resolve(agent)?;
+        self.assign(card, agent, message, named)
+    }
+
+    fn assign(
         &mut self,
         card: CardId,
         agent: AgentId,
@@ -87,6 +126,40 @@ impl Session<'_> {
         let result = typed(self.call(Method::TicketAssign, Some(params))?)?;
         let name = agent_name(&self.names(), agent);
         Ok((result, name))
+    }
+
+    /// Give a ticket that is Ready for you or in Needs you back with what to change, to the agent
+    /// named or else the one that did the work.
+    fn send_back(
+        &mut self,
+        card: CardId,
+        message: String,
+        agent: Option<&AgentRef>,
+        named: Option<Seq>,
+    ) -> Result<(TicketAssignResult, String), Failure> {
+        let read = self.read(card)?;
+        if !matches!(read.card.status, CardStatus::Review | CardStatus::Blocked) {
+            return Err(Failure::Refused(RpcError {
+                code: ErrorCode::Refused.code(),
+                message: TicketRefusal::WrongState.sentence(read.card.status),
+                data: None,
+            }));
+        }
+        let agent = match (agent, read.card.claimed_by) {
+            (Some(named), _) => self.resolve(named)?,
+            (None, Some(previous)) => previous,
+            (None, None) => {
+                return Err(local(
+                    "No agent has worked on this ticket. Name one with --agent.",
+                ));
+            }
+        };
+        self.assign(
+            card,
+            agent,
+            Some(message),
+            Some(named.unwrap_or(read.card.seq)),
+        )
     }
 
     /// Every ticket on the board. The board holds plain cards too, and a plain card is refused by
@@ -135,7 +208,7 @@ pub(super) fn command(
                 typed(session.call(Method::TicketCreate, Some(encode(params)?))?)?;
             render::ticket::added(out, machine, &created).map_err(local)?;
             if let Some(agent) = give_to {
-                let (result, name) = session.give(created.card, *agent, None, None)?;
+                let (result, name) = session.give(created.card, agent, None, None)?;
                 render::ticket::given(out, machine, &name, result).map_err(local)?;
             }
         }
@@ -163,8 +236,35 @@ pub(super) fn command(
             message,
             expected_seq,
         } => {
-            let (result, name) = session.give(*card, *agent, message.clone(), *expected_seq)?;
+            let (result, name) = session.give(*card, agent, message.clone(), *expected_seq)?;
             render::ticket::given(out, machine, &name, result).map_err(local)?;
+        }
+        TicketCommand::Changes {
+            card,
+            message,
+            agent,
+            expected_seq,
+        } => {
+            let (result, name) =
+                session.send_back(*card, message.clone(), agent.as_ref(), *expected_seq)?;
+            render::ticket::given(out, machine, &name, result).map_err(local)?;
+        }
+        TicketCommand::Accept { card, expected_seq } => {
+            let params = encode(&TicketAcceptParams {
+                card: *card,
+                expected_seq: session.seq(*card, *expected_seq)?,
+            })?;
+            let result: Empty = typed(session.call(Method::TicketAccept, Some(params))?)?;
+            render::ticket::changed(out, machine, "Ticket accepted.", result).map_err(local)?;
+        }
+        TicketCommand::Stop { card, expected_seq } => {
+            let params = encode(&TicketStopParams {
+                card: *card,
+                expected_seq: session.seq(*card, *expected_seq)?,
+            })?;
+            let result: Empty = typed(session.call(Method::TicketStop, Some(params))?)?;
+            render::ticket::changed(out, machine, "Ticket stopped. It is back in To do.", result)
+                .map_err(local)?;
         }
         TicketCommand::Remove { card, expected_seq } => {
             let params = encode(&TicketRemoveParams {
@@ -185,7 +285,7 @@ pub(super) fn command(
         TicketCommand::Show { card } => {
             let read = session.read(*card)?;
             let names = session.names();
-            render::ticket::show(out, machine, &read, &names).map_err(local)?;
+            render::ticket::show(out, machine, &read, &names, &chrono::Local).map_err(local)?;
         }
     }
     Ok(exit::SUCCESS)
