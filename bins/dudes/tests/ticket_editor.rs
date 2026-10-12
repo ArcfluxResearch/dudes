@@ -36,8 +36,8 @@ fn an_explicit_editor_receives_only_the_recorded_directory_and_owns_the_exit_cod
                 },
                 may_already_pass: true,
             }],
-            cwd: repo.clone(),
-            written_cwd: repo,
+            cwd: directory.clone(),
+            written_cwd: directory.clone(),
             department: "engineering".to_owned(),
             isolation: IsolationMode::Default,
             agent_budget: AgentBudget {
