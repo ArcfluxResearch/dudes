@@ -13,7 +13,7 @@ use duded::startup::Witness;
 use dudes_proto::record::{Hex32, RecordedWorkspace, samples};
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::ticket::{TicketAssignOutcome, TicketAssignResult, TicketReadResult};
-use dudes_proto::rpc::{ConflictData, ErrorCode, Method, Response};
+use dudes_proto::rpc::{ConflictData, CurrentMethod, ErrorCode, Method, Response};
 use dudes_proto::{
     Actor, AgentBudget, CardView, Entry, Goal, GoalBudget, Predicate, Record, RecordKind,
     TicketCheck, TicketRefusal,
@@ -133,6 +133,16 @@ impl Daemon {
         let response = self.call(method, params);
         assert!(response.error.is_none(), "{method:?}: {:?}", response.error);
         serde_json::from_value(response.result.unwrap()).unwrap()
+    }
+
+    fn checkout(&mut self, params: Value) -> Response {
+        self.operator
+            .call_current_as_operator(
+                CurrentMethod::TicketCheckout,
+                Some(params),
+                credential(&self.settings),
+            )
+            .unwrap()
     }
 
     fn create(&mut self, title: &str) -> CardId {
@@ -326,6 +336,72 @@ fn seed(fixture: &Fixture, records: Vec<Record>) {
 
 fn kinds(fixture: &Fixture) -> Vec<RecordKind> {
     fixture.records().iter().map(Record::kind).collect()
+}
+
+#[test]
+fn checkout_returns_the_recorded_subdirectory_and_appends_nothing() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let directory = repo.join("source files");
+    std::fs::create_dir(&directory).unwrap();
+    let card = CardId::from_parts(4, 1);
+    seed(
+        &fixture,
+        vec![
+            hire_into(&directory),
+            ticket_created(card, "Review the source"),
+            ticket_assigned(card, sample_agent(), 0),
+        ],
+    );
+    let mut daemon = start(&fixture, settings);
+    let seq = daemon.card(card).seq;
+    let before = fixture.records();
+    let result = daemon.checkout(json!({"card": card, "expected_seq": seq}));
+    assert!(result.error.is_none(), "{:?}", result.error);
+    assert_eq!(result.result.unwrap(), json!({"directory": directory}));
+    assert_eq!(fixture.records(), before);
+    daemon.stop();
+}
+
+#[test]
+fn checkout_refuses_stale_unassigned_and_removed_tickets_without_appending() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let mut daemon = start(&fixture, settings);
+    let agent = daemon.paused_agent(&repo);
+    let card = daemon.create("Assigned");
+    assert_eq!(position(daemon.assign(card, agent, None)), 1);
+    let free = daemon.create("Unassigned");
+    let removed = daemon.create("Removed");
+    daemon.ok::<Value>(
+        Method::TicketRemove,
+        json!({"card": removed, "expected_seq": 0}),
+    );
+    let before = fixture.records();
+    let stale = daemon.checkout(json!({"card": card, "expected_seq": 0}));
+    let error = stale.error.unwrap();
+    assert_eq!(error.code, ErrorCode::Conflict.code());
+    assert_eq!(
+        serde_json::from_value::<ConflictData>(error.data.unwrap())
+            .unwrap()
+            .current_seq,
+        daemon.card(card).seq
+    );
+    let unassigned = daemon.checkout(json!({"card": free, "expected_seq": 0}));
+    assert_eq!(
+        refusal(&unassigned),
+        (
+            ErrorCode::Refused.code(),
+            Some("unassigned".into()),
+            "That ticket has no current agent.".into()
+        )
+    );
+    let removed = daemon.checkout(json!({"card": removed, "expected_seq": 0}));
+    assert_eq!(removed.error.unwrap().code, ErrorCode::NotFound.code());
+    let forged = daemon.checkout(json!({"card": card, "expected_seq": 1, "directory": repo}));
+    assert_eq!(forged.error.unwrap().code, ErrorCode::InvalidParams.code());
+    assert_eq!(fixture.records(), before);
+    daemon.stop();
 }
 
 #[test]
