@@ -116,6 +116,11 @@ If `dudes` runs something else, check `type dudes` for an alias or shell functio
 
 ## What agents can do on your machine
 
+Dudes' installed binaries make no outbound Internet connections of their own.
+Engines and other programs they run can connect independently.
+[What Dudes and its engines send](TELEMETRY.md) explains the boundary, engine
+telemetry controls, and the installer downloads.
+
 Dudes runs every agent and every completion check as your user account. It adds no sandbox of its
 own. Before you hire an agent, know what each engine can reach:
 

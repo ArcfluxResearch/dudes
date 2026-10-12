@@ -1,5 +1,8 @@
 # Getting help
 
+For network traffic, engine telemetry controls, and privacy documentation, read
+[what Dudes and its engines send](TELEMETRY.md).
+
 - **Questions** about installing, setting up or running Dudes: ask in
   [Discussions Q&A](https://github.com/ArcfluxResearch/dudes/discussions/categories/q-a). Include
   the output of `dudes --version` and, when it helps, `dudes doctor`.
