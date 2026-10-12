@@ -755,3 +755,22 @@ fn opening_an_assigned_ticket_prints_its_recorded_directory() {
     assert_eq!(opened.stdout, format!("{}\n", world.repo.display()));
     assert_eq!(opened.stderr, "");
 }
+
+#[test]
+fn opening_without_editor_configuration_prints_the_explicit_launch_form() {
+    let world = world();
+    let agent = world.hire("Cody", &world.repo);
+    let card = world.add("Review locally");
+    assert_eq!(world.dudes(["ticket", "give", &card, "--agent", &agent]).code(), 0);
+
+    let opened = world.dudes(["ticket", "open", &card]);
+    assert_eq!(opened.code(), 0, "{}", opened.output());
+    assert_eq!(
+        opened.stdout,
+        format!(
+            "{}\nTo open an editor, run `dudes ticket open {card} --editor /absolute/program`.\n",
+            world.repo.display()
+        )
+    );
+    assert_eq!(opened.stderr, "");
+}
