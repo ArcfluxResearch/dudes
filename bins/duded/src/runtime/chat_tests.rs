@@ -2173,6 +2173,7 @@ fn chat_capacity_history(fixture: &common::Fixture, agent: AgentId) {
         seq: dudes_types::Seq(0),
         claimed_by: None,
         deps: Vec::new(),
+        ticket: None,
     };
     let (mut fits, mut refused) = (0, crate::floor_websocket::MAX_MESSAGE_BYTES);
     while refused - fits > 1 {

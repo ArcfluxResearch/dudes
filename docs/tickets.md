@@ -2,11 +2,25 @@
 
 A ticket is a piece of work on the board. It has a title, an optional note, a project and a
 "Done when" check. You make tickets, give them to agents, and review the agents' work with
-`dudes ticket`.
+`dudes ticket`, or on the Floor's Board once `floor.board` is on. See [The Floor](floor.md#tickets)
+for the Floor's form, columns, ticket panel and banner. Both do the same things, and what one makes
+the other shows.
 
 Everything here needs a running daemon (`dudes start`) and an enrolled project, which is a
 repository directory added with `dudes workspace add`. Each command answers at once and waits for
 nothing.
+
+To set up a project, run this from its git repository:
+
+```sh
+cd /absolute/path/to/repo
+dudes workspace add
+```
+
+The command uses the repository's suggested completion check. If it finds none, pass one with
+`dudes workspace add -- <program> [args...]`. It prints the enrolled project id.
+Hire the agent into that project. Without `--cwd`, `dudes hire` uses the only project or asks which
+one on a terminal. An agent hired without a project cannot take tickets.
 
 ## Make a ticket and give it to an agent
 

@@ -1,0 +1,15 @@
+# Changes to these paths need a second person's review before they merge: they decide what CI
+# runs, what a release publishes, what the installer does, and which dependencies are allowed.
+# Everything else needs only the required CI checks.
+
+/.github/CODEOWNERS         @alexnthnz @tristanphvn
+/.github/workflows/         @alexnthnz @tristanphvn
+/.github/dependabot.yml     @alexnthnz @tristanphvn
+/install.sh                 @alexnthnz @tristanphvn
+/SECURITY.md                @alexnthnz @tristanphvn
+/deny.toml                  @alexnthnz @tristanphvn
+/rust-toolchain.toml        @alexnthnz @tristanphvn
+/.cargo/                    @alexnthnz @tristanphvn
+/xtask/src/dist.rs          @alexnthnz @tristanphvn
+/xtask/src/dist/            @alexnthnz @tristanphvn
+/xtask/src/release_notes.rs @alexnthnz @tristanphvn

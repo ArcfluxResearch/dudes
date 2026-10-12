@@ -391,7 +391,7 @@ fn a_value_the_key_does_not_take_is_refused_before_any_write() {
         (
             &["floor.bogus", "on"],
             "`floor.bogus` is not a config key; the keys are providers.codex, providers.codex.streaming, providers.pi, \
-             floor.answer, floor.hire, floor.control, floor.goal, floor.renew, floor.retire, floor.terminal, \
+             floor.answer, floor.hire, floor.control, floor.goal, floor.renew, floor.retire, floor.board, floor.terminal, \
              floor.git, budget.floor_usd_per_day, budget.per_turn_floor.usd, budget.per_turn_floor.tokens"
                 .to_owned(),
         ),
@@ -463,6 +463,7 @@ floor.control                 on
 floor.goal                    off
 floor.renew                   off
 floor.retire                  off
+floor.board                   off
 floor.terminal                off
 floor.git                     off
 budget.floor_usd_per_day      5

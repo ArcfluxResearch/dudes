@@ -4,3 +4,7 @@
   flex: 0 0 100%;
   margin: 0;
 }
+
+.closing-time-banner p {
+  margin: 0;
+}

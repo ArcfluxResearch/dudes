@@ -303,6 +303,7 @@ impl Fixture {
             floor_control: duded::settings::FloorControl::Off,
             floor_terminal_enabled: false,
             floor_git_enabled: false,
+            floor_board_enabled: false,
             // Off by default here too: nothing in this suite exercises the
             // memory-condense model path, and turning it on would let the daemon's own resolution
             // step find this harness's stand-in `claude` and hand it to a real `PredicateRunner`.

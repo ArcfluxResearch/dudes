@@ -3353,6 +3353,7 @@ fn post_fsync_cuts_replay_one_hire_goal_and_turn() {
                 | OnboardingFailurePoint::Rename
                 | OnboardingFailurePoint::Look
                 | OnboardingFailurePoint::Retire
+                | OnboardingFailurePoint::Ticket
                 | OnboardingFailurePoint::ClosingAnnounced
                 | OnboardingFailurePoint::ClosingAck
                 | OnboardingFailurePoint::ClosingComplete

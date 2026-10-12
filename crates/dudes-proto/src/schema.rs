@@ -47,10 +47,16 @@ fn insert_rpc_definition<T: JsonSchema>(doc: &mut Exported, name: &str) {
         .insert(name.to_owned(), schema);
 }
 
+fn insert_floor_views(doc: &mut Exported) {
+    insert_rpc_definition::<crate::projection::FloorProjectionView<'_>>(doc, "FloorProjectionView");
+    insert_rpc_definition::<crate::projection::FloorDeltaView<'_>>(doc, "FloorDeltaView");
+}
+
 fn export_rpc() -> Exported {
     let mut doc = export::<Rpc>("rpc.schema.json");
     insert_rpc_definition::<crate::rpc::team::RosterAgentParams>(&mut doc, "RosterAgentParams");
     insert_rpc_definition::<crate::rpc::closing::ClosingSchema>(&mut doc, "ClosingSchema");
+    insert_floor_views(&mut doc);
     let mut doctor = schema_for::<crate::rpc::system::DoctorJournalResult>().to_value();
     let definitions = doctor.as_object_mut().unwrap().remove("$defs").unwrap();
     let defs = doc.schema["$defs"].as_object_mut().unwrap();
@@ -108,7 +114,7 @@ fn export_rpc() -> Exported {
             "FloorMessagesSnapshot",
             "floor.snapshot",
             "projection",
-            "FloorProjection",
+            "FloorProjectionView",
             vec![
                 "type",
                 "projection",
@@ -122,7 +128,7 @@ fn export_rpc() -> Exported {
             "FloorMessagesDelta",
             "floor.delta",
             "delta",
-            "FloorDelta",
+            "FloorDeltaView",
             vec!["type", "delta", "messages_lsn", "threads_lsn"],
         ),
     ] {

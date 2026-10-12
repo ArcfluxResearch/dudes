@@ -11,6 +11,65 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-10-12
+
+### Highlights
+
+- **A board with room to work.** Board has its own working area, four counted workflow columns and a separate Needs you lane. All four columns fit at 1024 × 768, and Crew, office and terminal navigation keep their state when you leave Board. (#41, #44)
+- **Review tickets in a side drawer.** Read the agent's summary, the daemon's check result and changed file names, then Accept or Ask for changes. New ticket opens a form with an optional agent; keyboard navigation and focus return keep the review flow usable. (#42)
+- **See closing-time progress.** During `dudes stop`, the Floor shows acknowledged, settled, owed and running counts, plus time left. Disconnected views freeze their last observed values, and completion retains final counts. No Floor shutdown control or participant identities are added. (#45)
+
+### Changes
+
+- Give Board a full working area with a prominent New ticket action, counted workflow columns, empty-lane guidance and the newest 20 Done tickets. (#41)
+- Add native ticket review and composer dialogs with plain-text content, state-appropriate actions and separated Stop/Remove confirmations. (#42)
+- Add aggregate closing-time counts and a local countdown sampled from the daemon's existing deadline. Show early completion only when nothing remains owed or running and positive time remained; shutdown does not guarantee delivery of the final Complete frame to every subscriber. (#45)
+
+### Fixes
+
+- Keep ticket focus valid when a card changes or disappears, during nested Hire and after authority changes. Dismissed or replaced composers ignore late creation replies. (#42)
+- Reduce workflow gaps in the existing tablet band so Done is fully visible at 1024 × 768, including the native vertical-scrollbar case. (#44)
+- Publish closing-time updates in durable order and retain the original error when publication fails. (#45)
+
+## [0.85.1] - 2026-10-12
+
+### Highlights
+
+- **Set up a project in one step.** Run `dudes workspace add` in a git repository to enroll it with its suggested completion check and sensible defaults. (#40)
+
+### Changes
+
+- Update TOML parsing and editing dependencies. (#37)
+- `dudes workspace add` defaults to the canonical current directory, a unique folder id, the suggested check and its label, department `engineering`, five turns per goal and a 600-second check timeout. Explicit options override these defaults. (#40)
+- Quickstart asks for a project folder outside a repository, explains when you skip it, and asks at most five questions including confirmation. Its first hire starts idle, and sign-in commands are printed. (#40)
+- Without `--cwd`, `dudes hire` uses the only enrolled project or asks which one on a terminal. An agent hired without a project is named in a warning that explains it cannot take tickets. (#40)
+
+### Fixes
+
+- Start, Floor open, quickstart and ticket creation now explain when no project is set up and name `dudes workspace add` as the next step. The hint stays out of JSON output. The docs also explain how to bypass a shell alias or function named `dudes`. (#40)
+- The Floor explains when tickets are off, when a project is missing, when no agent works in the selected project and when an agent hired without a project cannot take tickets. (#39)
+
+## [0.85.0] - 2026-10-11
+
+### Highlights
+
+- **A ticket board.** Write a ticket, give it to an agent, and it starts at once. Each agent has a queue, and one ticket runs per project at a time. When the daemon's own run of the ticket's check passes, the ticket waits in Ready for you with the agent's summary, the changed files and the check result. You Accept it or Ask for changes. Tickets that can't go on wait in Needs you with a sentence that says what to do. Use it from the Floor's Board or with `dudes ticket`. (#19, #20, #21, #22, #23, #24, #25, #32, #33)
+- **A quieter agent drawer.** The Output and Terminal tabs are gone: the full output opens from the agent's reply in Chat or from Overview, and Attach sits with the other actions. Open questions moved from the top bar to a "Waiting on you" section on Overview, which also lists tickets that need you. (#15, #16, #17)
+- **Upgrades tell you to restart.** After an install, and in `dudes ping` and `dudes floor open`, Dudes says when the running daemon is still an older version and how to replace it. (#18)
+
+### Changes
+
+- New `dudes ticket` commands: `add`, `edit`, `give`, `show`, `list`, `accept`, `changes`, `stop` and `remove`. `--agent` takes an agent's name or id. (#21, #24)
+- Giving a ticket starts the agent at once when it and the project are free, and queues it otherwise. A ticket sent back for changes goes ahead of new ones. Stop ends the agent's goal and puts the ticket back in To do; the agent's current step finishes first. (#22, #23)
+- A ticket reaches Ready for you only after the daemon's own check passes following the agent's work. Only you move it to Done. Agents can't move ticket cards themselves. (#19, #20, #22)
+- The Floor's Board shows To do, Working, Ready for you and Done, plus Needs you, with a ticket form, a panel for each ticket and a banner when one is ready or needs you. It is behind the new `floor.board` switch, which needs `floor.control` and `floor.goal`. `dudes quickstart`'s one Floor question now includes it and says that agents then run and spend under your account. To turn it on for an existing setup, run `dudes config set floor.board on` and restart the daemon. (#25, #32, #33)
+- Once you create a ticket, the journal holds records that older versions of Dudes refuse to open, so downgrading after that is not possible. (#19)
+- Releases are published only from commits on `main` whose CI passed. (#30)
+
+### Fixes
+
+- After an upgrade, a daemon left running on the old version is now named, instead of silently serving the old Floor. (#18)
+
 ## [0.84.0] - 2026-10-11
 
 ### Highlights
@@ -62,6 +121,9 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.84.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.86.0...HEAD
+[0.86.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.85.1...v0.86.0
+[0.85.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.85.0...v0.85.1
+[0.85.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.84.0...v0.85.0
 [0.84.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.79.0...v0.84.0
 [0.79.0]: https://github.com/ArcfluxResearch/dudes/releases/tag/v0.79.0

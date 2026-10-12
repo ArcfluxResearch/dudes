@@ -26,6 +26,7 @@ import { selectedAgentRow } from './renderer/scene/selection';
 import { TerminalPanel } from './renderer/terminal/TerminalPanel';
 import { JournalStoppedBanner } from './renderer/JournalStoppedBanner';
 import { ClosingTimeBanner } from './renderer/ClosingTimeBanner';
+import { TicketBanner } from './renderer/ticket/TicketBanner';
 import { requestCardSelection } from './renderer/BoardPanel';
 import { StreamNotice } from './renderer/StreamNotice';
 import './failure.css';
@@ -128,8 +129,7 @@ export function WebFloorShell() {
     markRevealed(reveal);
     selectAgent(reveal);
     if (hire.outcome?.kind === 'complete') {
-      hireDialog.current?.close();
-      setHiring(false);
+      closeHire(true);
       setGuide('closed');
       setFocused(false);
       setArchiveHireKept(false);
@@ -175,7 +175,7 @@ export function WebFloorShell() {
     const onShortcut = (event: KeyboardEvent) => {
       const target = event.target;
       const blocked = target instanceof Element && target.closest(
-        '.terminal-panel, .hire-wizard, .first-run-guide, input, textarea, select',
+        '.terminal-panel, .hire-wizard, .ticket-dialog, .first-run-guide, input, textarea, select',
       ) !== null;
       if (!isFocusShortcut(event, blocked)) return;
       event.preventDefault();
@@ -209,7 +209,11 @@ export function WebFloorShell() {
   }
 
   function toggleCrew(): void {
-    if (focused) {
+    if (view === 'board') {
+      setView(null);
+      setFocused(false);
+      setCrewOpen(true);
+    } else if (focused) {
       setFocused(false);
       setCrewOpen(true);
     } else {
@@ -237,12 +241,17 @@ export function WebFloorShell() {
     setHiring(true);
   }
 
-  function closeHire(): void {
+  function closeHire(revealed = false): void {
     backdropPress.current = null;
     hireDialog.current?.close();
     setHiring(false);
-    restoreFocusAfterDialog(hireOpener.current,
-      document.getElementById('hire-open') ?? document.getElementById('crew-toggle'));
+    const ticketDialog = document.getElementById('selected-card-detail');
+    const ticketFallback = ticketDialog?.getAttribute('open') != null
+      ? ticketDialog.querySelector<HTMLElement>('.ticket-dialog-close') : null;
+    if (!revealed || ticketFallback !== null) {
+      restoreFocusAfterDialog(hireOpener.current,
+        ticketFallback ?? document.getElementById('hire-open') ?? document.getElementById('crew-toggle'));
+    }
   }
 
   useEffect(() => {
@@ -318,11 +327,11 @@ export function WebFloorShell() {
       data-theme={preferences.theme} style={{ '--side-width': `${preferences.sidebarWidth}px` } as CSSProperties}>
       <header className="top-bar">
         <h1 id="floor-title" className="wordmark">dudes</h1>
-        <CrewStats agents={floor.agents} />
+        <CrewStats agents={floor.agents} cards={floor.cards} />
         <ControlNav floor={floor} view={focused ? null : view} onToggle={toggleView} />
         <div className="top-bar-actions" role="group" aria-label="Floor actions">
-          <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={crewOpen && !focused}
-            aria-controls={crewOpen && !focused ? 'crew-list' : undefined}
+          <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={crewOpen && !focused && view !== 'board'}
+            aria-controls={crewOpen && !focused && view !== 'board' ? 'crew-list' : undefined}
             onClick={toggleCrew}>Crew</button>
           <button type="button" className="focus-toggle" id="focus-toggle" aria-pressed={focused}
             aria-keyshortcuts="Alt+Shift+F" onClick={toggleFocus}>
@@ -339,7 +348,8 @@ export function WebFloorShell() {
         </div>
         <PastedLinkNotice />
         <JournalStoppedBanner stopped={floor.journalStopped} />
-        <ClosingTimeBanner closing={floor.closingTime} stale={floor.stale} />
+        <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
+        <TicketBanner floor={floor} onOpen={() => openView('board')} />
         {firstLink === null ? <StreamNotice floor={floor} /> : null}
         <div className="office-bar" ref={setOfficeBar} />
       </header>
@@ -350,7 +360,8 @@ export function WebFloorShell() {
           onOpenCard={openCard}
           addAgent={<HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded />} /> : null}
         {view === null || focused ? null : <Control key={view} floor={floor} view={view} selectedId={currentSelectedId}
-          onClose={() => setView(null)} onView={openView} onOpenQuestion={openQuestion} onHireAgain={hireAgain}
+          onClose={() => setView(null)} onView={openView} onOpenQuestion={openQuestion} onOpenTicket={openCard}
+          onHire={openHire} onHireAgain={hireAgain}
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
         <div className="office-slot">
           <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
@@ -397,7 +408,7 @@ export function WebFloorShell() {
         }}
         onPointerCancel={() => { backdropPress.current = null; }}>
         {archiveHireKept ? <p role="status">The current Hire is kept. Resolve it before preparing another agent.</p> : null}
-        <HireWizard floor={floor} onClose={closeHire} />
+        <HireWizard floor={floor} onClose={() => closeHire()} />
       </dialog> : null}
     </main>
   );

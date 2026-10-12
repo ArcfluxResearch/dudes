@@ -43,6 +43,9 @@ use crate::floor_session::{
     StreamSession, TerminalSession,
 };
 use crate::floor_stream::{ClientMessage, FloorStreams, QueueRead, decode_client};
+use crate::floor_ticket::{
+    MAX_TICKET_BODY_BYTES, TicketLimits, TicketReply, TicketRequest, TicketRoute,
+};
 use crate::floor_websocket::{Decoder, Message, accept_key, close_frame, pong_frame};
 use crate::settings::{FloorControl, FloorSettings};
 use crate::{ExitCause, Handle};
@@ -217,6 +220,8 @@ pub struct PreparedAssets {
     pub(crate) terminal: bool,
     /// `Some` exactly when `[floor.git] enabled`: the route's reader and limits.
     git: Option<Arc<GitReads>>,
+    /// `Some` exactly when `[floor.board] enabled`: the ticket routes' per-session limits.
+    board: Option<Arc<TicketLimits>>,
 }
 
 impl PreparedAssets {
@@ -490,6 +495,14 @@ impl PreparedAssets {
         self
     }
 
+    /// Route the seven `POST /floor/ticket` paths when `enabled`, and leave them unrouted paths
+    /// otherwise.
+    #[must_use]
+    pub(crate) fn with_board(mut self, enabled: bool) -> Self {
+        self.board = enabled.then(|| Arc::new(TicketLimits::new()));
+        self
+    }
+
     /// Route `POST /floor/git` over `reads`, and leave it an unrouted path otherwise.
     #[must_use]
     pub(crate) fn with_git(mut self, reads: Arc<GitReads>) -> Self {
@@ -629,6 +642,7 @@ impl PreparedAssets {
         let control = self.control;
         let terminal = self.terminal;
         let git = self.git;
+        let board = self.board;
         let memory = fault
             .0
             .memory_interval
@@ -655,6 +669,7 @@ impl PreparedAssets {
                             control,
                             terminal,
                             git: git.as_deref(),
+                            board: board.as_deref(),
                             memory: &memory,
                         },
                         &thread_sessions,
@@ -1018,6 +1033,7 @@ struct Catalog<'a> {
     control: FloorControl,
     terminal: bool,
     git: Option<&'a GitReads>,
+    board: Option<&'a TicketLimits>,
     memory: &'a MemoryReads,
 }
 
@@ -1042,6 +1058,7 @@ enum ActionRoute {
     Git,
     Memory(MemoryRoute),
     Chat(ChatVerb),
+    Ticket(TicketRoute),
 }
 
 impl ActionRoute {
@@ -1069,7 +1086,7 @@ impl ActionRoute {
             GIT_PATH if catalog.git.is_some() => Some(Self::Git),
             MEMORY_PAGE_PATH => Some(Self::Memory(MemoryRoute::Page)),
             MEMORY_ENTRY_PATH => Some(Self::Memory(MemoryRoute::Entry)),
-            _ => None,
+            _ => catalog.board.and(TicketRoute::of(path)).map(Self::Ticket),
         }
     }
 
@@ -1086,6 +1103,7 @@ impl ActionRoute {
             Self::Git => MAX_GIT_BODY_BYTES,
             Self::Memory(_) => MAX_MEMORY_BODY_BYTES,
             Self::Chat(_) => MAX_CHAT_BODY_BYTES,
+            Self::Ticket(_) => MAX_TICKET_BODY_BYTES,
         }
     }
 }
@@ -1293,6 +1311,9 @@ fn read_request<'a>(
                         }
                         ActionRoute::Chat(verb) => {
                             chat_response(verb, sessions, handle, &action, &body)
+                        }
+                        ActionRoute::Ticket(route) => {
+                            ticket_response(route, sessions, handle, catalog, &action, &body)
                         }
                     })))
                 }
@@ -2193,6 +2214,55 @@ fn memory_response<'a>(
     json_response(200, "OK", reply)
 }
 
+/// The session and body checks, then the session's limits, then one request on the writer. A
+/// retry after success finds the card on a newer sequence and is refused `stale_card`, so no
+/// request carries an identity.
+fn ticket_response<'a>(
+    route: TicketRoute,
+    sessions: &FloorSessions,
+    handle: &Handle,
+    catalog: Catalog<'_>,
+    head: &ActionHead,
+    body: &[u8],
+) -> Response<'a> {
+    // A lost answer to a create is not retried; Remove clears a duplicate.
+    let Some(limits) = catalog.board else {
+        return error_response(403, "Forbidden");
+    };
+    let Some(session) =
+        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
+    else {
+        return error_response(403, "Forbidden");
+    };
+    let Ok(request) = TicketRequest::parse(route, body) else {
+        return error_response(400, "Bad Request");
+    };
+    let turn = match limits.begin(session.limit_key(), request.kind()) {
+        Ok(turn) => turn,
+        Err(reason) => {
+            return action_json(
+                409,
+                "Conflict",
+                &serde_json::json!({"state": "refused", "reason": reason}),
+            );
+        }
+    };
+    match handle.ticket(session, request) {
+        TicketReply::Done(value) => {
+            turn.succeeded();
+            action_json(200, "OK", &value)
+        }
+        TicketReply::Refused(reason) => action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({"state": "refused", "reason": reason}),
+        ),
+        TicketReply::Invalid => error_response(400, "Bad Request"),
+        TicketReply::Forbidden => error_response(403, "Forbidden"),
+        TicketReply::Unavailable => error_response(503, "Service Unavailable"),
+    }
+}
+
 fn chat_response<'a>(
     verb: ChatVerb,
     sessions: &FloorSessions,
@@ -2980,6 +3050,7 @@ pub fn prepare(settings: &FloorSettings) -> Result<PreparedAssets> {
         control: FloorControl::Off,
         terminal: false,
         git: None,
+        board: None,
     })
 }
 
@@ -3267,6 +3338,7 @@ mod tests {
             control: FloorControl::Off,
             terminal: false,
             git: None,
+            board: None,
             memory: &MEMORY,
         }
     }

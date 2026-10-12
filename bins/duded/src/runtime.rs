@@ -91,6 +91,7 @@ use crate::ports::{
 };
 
 mod agent_mcp;
+mod browser_ticket;
 mod ticket_run;
 #[cfg(test)]
 mod ticket_start_tests;
@@ -333,6 +334,10 @@ pub enum OnboardingPausePoint {
     BeforeRetirePermit,
     /// A retirement's append permit is held; the registry lock waits for its fsync.
     AfterRetirePermit,
+    /// A ticket action passed its checks; its append permit is not yet taken.
+    BeforeTicketPermit,
+    /// A ticket action's append permit is held; the registry lock waits for its fsync.
+    AfterTicketPermit,
     /// A `floor.enrollment.reload` has read and hashed the file, on its connection thread, and
     /// has not parsed it.
     AfterReloadHash,
@@ -402,6 +407,8 @@ pub enum OnboardingFailurePoint {
     GoalChange,
     /// A browser retirement is durable but has not folded.
     Retire,
+    /// A browser ticket action is durable but has not folded.
+    Ticket,
     /// A browser rename is durable but has not folded.
     Rename,
     /// A browser appearance edit is durable but has not folded.
@@ -529,6 +536,9 @@ impl OnboardingFailure {
                 ..
             } => OnboardingFailurePoint::Retire,
             Record::AgentRetired { .. } => OnboardingFailurePoint::LocalRetire,
+            record if browser_chat::ticket_session(record).is_some() => {
+                OnboardingFailurePoint::Ticket
+            }
             Record::TurnIssued { .. } => OnboardingFailurePoint::TurnIssued,
             Record::ClosingTime {
                 phase: dudes_proto::ClosingPhase::Announced,
@@ -689,6 +699,11 @@ impl OnboardingPause {
                 Some(Point::AfterRetirePermit),
                 None,
             ),
+            record if browser_chat::ticket_session(record).is_some() => (
+                Some(Point::BeforeTicketPermit),
+                Some(Point::AfterTicketPermit),
+                None,
+            ),
             _ => return,
         };
         let point = match stage {
@@ -833,6 +848,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) retire_index: crate::floor_retire::RetireIndex,
     /// `[floor.git] enabled`, fixed for the run: whether snapshots carry the `git` sibling.
     pub(crate) git_enabled: bool,
+    /// `[floor.board] enabled`, fixed for the run: whether snapshots carry the `ticket` sibling.
+    pub(crate) board_enabled: bool,
     /// `None` while `[floor.terminal]` is off, for the whole run.
     pub(crate) browser_grants: Option<BTreeMap<AgentId, crate::floor_terminal::LiveGrant>>,
     #[cfg(feature = "testing")]
@@ -840,7 +857,9 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) closing_failed_after: Option<Lsn>,
     /// The journal position the ticket reactions last ran at.
     pub(crate) ticket_reacted: Option<Lsn>,
-    pub(crate) floor_closing: Option<dudes_proto::ClosingPhase>,
+    pub(crate) floor_closing: Option<crate::closing::FloorClosing>,
+    pub(crate) pending_floor: BTreeMap<Lsn, PendingFloor>,
+    pub(crate) pending_floor_base: Option<crate::floor::AgentSnapshot>,
     /// Set only while one typed browser intent is passing through the persist ledger.
     pub(crate) browser_session: Option<crate::floor_session::SessionIdentity>,
     pub(crate) onboarding_pause: OnboardingPause,
@@ -1395,6 +1414,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let answer = self.browser_retire(&session, &request);
                     let _ = reply.send(answer);
                 }
+                Job::Ticket {
+                    session,
+                    request,
+                    reply,
+                } => {
+                    let answer = self.browser_ticket(&session, request);
+                    let _ = reply.send(answer);
+                }
                 Job::FloorSubscribe { session, reply } => {
                     let answer = self.floor_subscribe(&session);
                     let _ = reply.send(answer);
@@ -1905,6 +1932,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         .ctx
                         .git_enabled
                         .then_some(&crate::floor_git::GIT_SWITCH),
+                    ticket: self
+                        .ctx
+                        .board_enabled
+                        .then_some(&crate::floor_ticket::TICKET_SWITCH),
                     journal_stopped: None,
                     chat: None,
                     finished_today: None,
@@ -1937,6 +1968,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             control: self.ctx.control,
             terminal_enabled: self.ctx.browser_grants.is_some(),
             git_enabled: self.ctx.git_enabled,
+            board_enabled: self.ctx.board_enabled,
             condense_model_enabled: self.ctx.condense_model_enabled,
             condense_model: self.ctx.condense_model.clone(),
             ..crate::config::OperatorConfig::default()
@@ -3784,7 +3816,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 {
                     break 'work Err(error);
                 }
-                let Self { sup, ctx, .. } = self;
+                let Self {
+                    sup, ctx, closing, ..
+                } = self;
                 let folds_journal_record = if let Some(input) = queue.pop_front() {
                     let folds = matches!(
                         &input,
@@ -3808,6 +3842,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 // exit must publish that completed fold even if an effect below fails.
                 if folds_journal_record {
                     ctx.tokens.mark_folded();
+                }
+                if let Err(error) = ctx.publish_folded_floor(sup.world(), closing) {
+                    break 'work Err(error);
                 }
                 // Read the post-fold owner map only when this folded input emitted a Spawn. A
                 // startup re-issue can spawn without a fold in this pump, but startup publishes
@@ -3860,17 +3897,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
             self.abandon_mail_refreshes(mail_requests);
         }
-        if outcome.as_ref().is_err_and(|error| {
-            error
-                .downcast_ref::<dudes_supervisor::closing::ClosingError>()
-                .is_none()
-        }) && (origin == PumpOrigin::Closing || self.sup.is_closing())
-        {
-            self.ctx.closing_failed_after =
-                Some(self.sup.world().last_applied_lsn.unwrap_or(Lsn::ZERO));
-            if self.ctx.writer.poisoned().is_none() {
-                self.ctx.fence_journal();
-            }
+        if let Err(error) = &outcome {
+            self.fence_closing_pump_failure(origin, error);
         }
 
         // **Here, and not inside `append`.** On success the queue is quiescent, so the snapshot is
@@ -3903,9 +3931,32 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             if let Some(streams) = &self.ctx.floor_streams {
                 streams.end();
             }
-            return Err(error);
+            if outcome.is_ok() {
+                return Err(error);
+            }
         }
         outcome
+    }
+
+    fn fence_closing_pump_failure(&mut self, origin: PumpOrigin, error: &anyhow::Error) {
+        if error
+            .downcast_ref::<dudes_supervisor::closing::ClosingError>()
+            .is_none()
+            && (origin == PumpOrigin::Closing || self.sup.is_closing())
+        {
+            self.ctx.closing_failed_after =
+                Some(self.sup.world().last_applied_lsn.unwrap_or(Lsn::ZERO));
+            if self.ctx.writer.poisoned().is_none() {
+                self.ctx.fence_journal();
+            }
+        }
+        if !self.ctx.pending_floor.is_empty() {
+            self.ctx.pending_floor.clear();
+            self.ctx.pending_floor_base = None;
+            if let Some(streams) = &self.ctx.floor_streams {
+                streams.end();
+            }
+        }
     }
 
     fn composed_work(&self) -> Result<BTreeMap<AgentId, dudes_policy::WorkInput>> {
@@ -4920,7 +4971,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     fn append_memory_entry(&mut self, record: Record, action: &str) -> Result<Lsn, RpcError> {
         self.ctx
-            .append(
+            .append_projection_only(
                 self.sup.world(),
                 &Entry {
                     at: self.ctx.clock.now(),
@@ -5245,7 +5296,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     fn append_pty_entry(&mut self, record: Record, action: &str) -> Result<Lsn, RpcError> {
         self.ctx
-            .append(
+            .append_projection_only(
                 self.sup.world(),
                 &Entry {
                     at: self.ctx.clock.now(),
@@ -5548,6 +5599,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             seq: Seq::ZERO,
             claimed_by: None,
             deps: request.deps.clone(),
+            ticket: None,
         })?;
         self.board_append(Record::CardCreated {
             card,
@@ -5561,7 +5613,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     /// Refuse a card that would push the complete Floor snapshot past its budget.
     fn admit_new_card(&mut self, view: CardView) -> Result<(), RpcError> {
-        let mut cards = self.ctx.projections.cards().map_err(|failure| {
+        let mut cards = crate::floor::cards(&self.ctx.projections).map_err(|failure| {
             error(
                 ErrorCode::InternalError,
                 format!("could not read the board: {failure}"),
@@ -6081,6 +6133,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Job::Retire { reply, .. } => {
                     let _ = reply.send(Err(RetireRefusal::UnavailableNoEffect));
                 }
+                Job::Ticket { reply, .. } => {
+                    let _ = reply.send(crate::floor_ticket::TicketReply::Unavailable);
+                }
                 Job::BaselineEnded { id } => self.ctx.baselines.end(id),
                 Job::PredicateEnded { goal, verdict } => {
                     if let Err(error) = self.predicate_ended(goal, verdict) {
@@ -6205,7 +6260,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     /// A confirmed exit close is journaled without a new managed decision: the daemon is stopping.
     fn detach_during_shutdown(&mut self, agent: AgentId, pty: PtyId) -> bool {
-        match self.ctx.append(
+        match self.ctx.append_projection_only(
             self.sup.world(),
             &Entry {
                 at: self.ctx.clock.now(),
@@ -6747,7 +6802,19 @@ fn liveness_unknown_refusal() -> RpcError {
     }
 }
 
-enum OutputNotice<'a> {
+pub(crate) struct PendingFloor {
+    patch: crate::floor_stream::FloorPatch,
+    notice: OutputNotice,
+    publication: FloorPublication,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FloorPublication {
+    AfterFold,
+    ProjectionOnly,
+}
+
+enum OutputNotice {
     None,
     Replace {
         agent: AgentId,
@@ -6756,7 +6823,7 @@ enum OutputNotice<'a> {
     Confirm {
         agent: AgentId,
         turn: TurnId,
-        session: &'a SessionId,
+        session: SessionId,
     },
     End {
         agent: AgentId,
@@ -6767,7 +6834,7 @@ enum OutputNotice<'a> {
     },
 }
 
-impl OutputNotice<'_> {
+impl OutputNotice {
     fn apply(self, output: &crate::output::OutputRegistry) {
         match self {
             Self::None => {}
@@ -6776,7 +6843,7 @@ impl OutputNotice<'_> {
                 agent,
                 turn,
                 session,
-            } => output.confirm(agent, turn, session),
+            } => output.confirm(agent, turn, &session),
             Self::End { agent, turn } => output.end(agent, turn),
             Self::Retire { agent } => output.retire(agent),
         }
@@ -6784,6 +6851,54 @@ impl OutputNotice<'_> {
 }
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
+    fn publish_folded_floor(
+        &mut self,
+        world: &dudes_supervisor::World,
+        waiting: &mut crate::closing::Waiting,
+    ) -> Result<()> {
+        while let Some((&lsn, pending)) = self.pending_floor.first_key_value() {
+            if pending.publication == FloorPublication::AfterFold
+                && world.last_applied_lsn != Some(lsn)
+            {
+                break;
+            }
+            let (_, pending) = self
+                .pending_floor
+                .pop_first()
+                .expect("the oldest cut exists");
+            if self.pending_floor.is_empty() {
+                self.pending_floor_base = None;
+            }
+            if pending.publication == FloorPublication::AfterFold {
+                if let Some(session) = world
+                    .closing
+                    .as_ref()
+                    .filter(|session| !session.is_complete())
+                {
+                    waiting.observe(session);
+                }
+                if !self
+                    .floor_closing
+                    .is_some_and(|view| view.phase == dudes_proto::ClosingPhase::Complete)
+                {
+                    self.floor_closing = waiting.floor_view(world, self.clock.now());
+                }
+            }
+            if let Some(streams) = self.floor_streams.clone() {
+                let output = self.children.output();
+                streams
+                    .publish_patch(pending.patch, self.floor_closing, || {
+                        pending.notice.apply(&output);
+                    })
+                    .inspect_err(|_| {
+                        self.fence_journal();
+                        streams.end();
+                    })
+                    .context("publishing the folded closing Floor projection")?;
+            }
+        }
+        Ok(())
+    }
     /// The UTC day the budget projections are read for, from the daemon's one clock.
     pub(crate) fn today(&self) -> UtcDay {
         self.clock.now().utc_day()
@@ -6797,6 +6912,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             &self.projections,
             &self.local_days,
         ));
+        // With the board off a ticket is a card like any other, and the page is told nothing more.
+        if !self.board_enabled {
+            for card in &mut snapshot.cards {
+                card.ticket = None;
+            }
+        }
         Ok(snapshot)
     }
 
@@ -7155,16 +7276,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
     }
 
-    /// Append one entry, and publish it.
-    ///
-    /// `Writer::append` returns only after the fsync, so everything after this line is acting on a
-    /// record that already exists — which is invariant 2 and, for `Control`, its durability
-    /// promise.
+    fn append(&mut self, world: &dudes_supervisor::World, entry: &Entry) -> Result<Lsn> {
+        self.append_with_publication(world, entry, FloorPublication::AfterFold)
+    }
+
+    fn append_projection_only(
+        &mut self,
+        world: &dudes_supervisor::World,
+        entry: &Entry,
+    ) -> Result<Lsn> {
+        self.append_with_publication(world, entry, FloorPublication::ProjectionOnly)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "durability, projections and publication retain one visible first-error boundary"
     )]
-    fn append(&mut self, world: &dudes_supervisor::world::World, entry: &Entry) -> Result<Lsn> {
+    fn append_with_publication(
+        &mut self,
+        world: &dudes_supervisor::World,
+        entry: &Entry,
+        publication: FloorPublication,
+    ) -> Result<Lsn> {
         if matches!(
             entry.record,
             Record::Mail { .. }
@@ -7218,9 +7351,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             }
             self.last_lsn.store(lsn.0, Ordering::Relaxed);
             self.index_browser_record(lsn, &entry.record)?;
-            if let Record::ClosingTime { phase } = entry.record {
-                self.floor_closing = Some(dudes_supervisor::closing::floor_phase(phase));
-            }
             let output_notice = match &entry.record {
                 Record::ConversationTurnIssued { agent, turn, .. }
                 | Record::TurnIssued {
@@ -7280,7 +7410,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     OutputNotice::Confirm {
                         agent: *agent,
                         turn: *turn,
-                        session,
+                        session: session.clone(),
                     }
                 }
                 Record::TurnEnded {
@@ -7299,11 +7429,31 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 let snapshot = self
                     .floor_snapshot()
                     .context("building the live Floor projection")?;
-                streams
-                    .publish_closing_with_output(snapshot, self.floor_closing, || {
-                        output_notice.apply(&output);
-                    })
-                    .context("publishing the live Floor projection")?;
+                if !self.pending_floor.is_empty()
+                    || (publication == FloorPublication::AfterFold
+                        && (self.floor_closing.is_some()
+                            || matches!(entry.record, Record::ClosingTime { .. })))
+                {
+                    let patch = self.pending_floor_base.as_ref().map_or_else(
+                        || streams.patch(&snapshot),
+                        |previous| crate::floor_stream::FloorPatch::between(previous, &snapshot),
+                    );
+                    self.pending_floor_base = Some(snapshot);
+                    self.pending_floor.insert(
+                        lsn,
+                        PendingFloor {
+                            patch,
+                            notice: output_notice,
+                            publication,
+                        },
+                    );
+                } else {
+                    streams
+                        .publish_closing_with_output(snapshot, self.floor_closing, || {
+                            output_notice.apply(&output);
+                        })
+                        .context("publishing the live Floor projection")?;
+                }
             } else {
                 output_notice.apply(&output);
             }
@@ -7806,6 +7956,10 @@ mod condense_model_argv_tests {
 #[cfg(test)]
 #[path = "../tests/common/mod.rs"]
 mod work_test_support;
+
+#[cfg(all(test, unix))]
+#[path = "runtime/closing_progress_tests.rs"]
+mod closing_progress_tests;
 
 #[cfg(all(test, unix))]
 mod floor_shutdown_tests {

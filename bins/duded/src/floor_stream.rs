@@ -11,6 +11,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use dudes_proto::projection::{FloorDeltaView, FloorProjectionView};
 use dudes_proto::rpc::floor::FloorFinishedToday;
 use dudes_proto::{AgentView, CardView, FloorDelta, FloorProjection};
 use dudes_types::{AgentId, CardId, Mode, Timestamp, TurnId};
@@ -204,7 +205,7 @@ pub fn client_type_is_listed(value: &str) -> bool {
 struct SnapshotMessage<'a> {
     #[serde(rename = "type")]
     kind: &'static str,
-    projection: &'a FloorProjection,
+    projection: FloorProjectionView<'a>,
     question_history: &'a [dudes_proto::AnsweredQuestionView],
     traces: &'a [dudes_proto::TurnTraceView],
     messages: &'a [dudes_proto::MessageView],
@@ -239,6 +240,8 @@ pub(crate) struct Siblings<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) git: Option<&'a crate::floor_git::GitSwitch>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) ticket: Option<&'a crate::floor_ticket::TicketSwitch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) journal_stopped: Option<dudes_proto::rpc::floor::FloorJournalStopped>,
     /// The daemon's count of goals finished on its local day. A caller's value wins over
     /// the one the registry's current snapshot holds, so a new subscription reads the day afresh.
@@ -256,6 +259,7 @@ impl Siblings<'_> {
             && self.retire.is_none()
             && self.terminal.is_none()
             && self.git.is_none()
+            && self.ticket.is_none()
             && self.journal_stopped.is_none()
             && self.finished_today.is_none()
     }
@@ -280,7 +284,7 @@ struct DeltaMessage<'a> {
     chat: Option<&'a dudes_proto::ChatView>,
     #[serde(rename = "type")]
     kind: &'static str,
-    delta: &'a FloorDelta,
+    delta: FloorDeltaView<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     question_history: Option<&'a [dudes_proto::AnsweredQuestionView]>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -314,7 +318,7 @@ struct Inner {
 struct State {
     current: AgentSnapshot,
     chat: Option<dudes_proto::ChatView>,
-    closing: Option<dudes_proto::ClosingPhase>,
+    closing: Option<crate::closing::FloorClosing>,
     snapshot: Vec<u8>,
     journal_stopped: Option<dudes_proto::rpc::floor::FloorJournalStopped>,
     subscriptions: Vec<Weak<Queue>>,
@@ -337,6 +341,87 @@ enum ChatReplacement {
     Keep,
     Clear,
     Replace(dudes_proto::ChatView),
+}
+
+fn same_closing(
+    left: Option<crate::closing::FloorClosing>,
+    right: Option<crate::closing::FloorClosing>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => left.phase == right.phase && left.same_counts(right),
+        _ => false,
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct FloorPatch {
+    changes: FloorDelta,
+    questions: Option<Vec<dudes_proto::AnsweredQuestionView>>,
+    traces: Option<Vec<dudes_proto::TurnTraceView>>,
+    mail: Option<dudes_journal::projections::MailView>,
+    finished_today: Option<FloorFinishedToday>,
+}
+
+impl FloorPatch {
+    pub(crate) fn between(previous: &AgentSnapshot, next: &AgentSnapshot) -> Self {
+        Self {
+            changes: delta(previous, next),
+            questions: (previous.question_history != next.question_history)
+                .then(|| next.question_history.clone()),
+            traces: (previous.traces != next.traces).then(|| next.traces.clone()),
+            mail: (previous.mail.messages != next.mail.messages
+                || previous.mail.threads != next.mail.threads)
+                .then(|| next.mail.clone()),
+            finished_today: next.finished_today.clone(),
+        }
+    }
+
+    fn apply(self, mut previous: AgentSnapshot) -> AgentSnapshot {
+        previous.lsn = self.changes.lsn;
+        let mut agents: BTreeMap<_, _> = previous
+            .agents
+            .into_iter()
+            .map(|row| (row.id, row))
+            .collect();
+        for id in self.changes.removed_agents {
+            agents.remove(&id);
+        }
+        for row in self.changes.agents {
+            agents.insert(row.id, row);
+        }
+        previous.agents = agents.into_values().collect();
+        let mut cards: BTreeMap<_, _> = previous
+            .cards
+            .into_iter()
+            .map(|row| (row.id, row))
+            .collect();
+        for id in self.changes.removed_cards {
+            cards.remove(&id);
+        }
+        for row in self.changes.cards {
+            cards.insert(row.id, row);
+        }
+        previous.cards = cards.into_values().collect();
+        if let Some(activity) = self.changes.activity {
+            previous.activity = activity;
+        }
+        if let Some(retired) = self.changes.retired_agents {
+            previous.retired_agents = retired;
+        }
+        if let Some(questions) = self.questions {
+            previous.question_history = questions;
+        }
+        if let Some(traces) = self.traces {
+            previous.traces = traces;
+        }
+        if let Some(mail) = self.mail {
+            previous.mail = mail;
+        }
+        previous.mail.lsn = previous.lsn;
+        previous.finished_today = self.finished_today;
+        previous
+    }
 }
 
 impl FloorStreams {
@@ -652,6 +737,7 @@ impl FloorStreams {
                 retire: siblings.retire,
                 terminal: siblings.terminal,
                 git: siblings.git,
+                ticket: siblings.ticket,
                 chat: state.chat.as_ref(),
                 journal_stopped: state.journal_stopped,
                 finished_today: siblings.finished_today,
@@ -661,7 +747,7 @@ impl FloorStreams {
                 .agents
                 .iter()
                 .any(|agent| agent.live_activity.is_some());
-            let snapshot = if siblings.is_empty() && !has_activity {
+            let snapshot = if siblings.is_empty() && !has_activity && state.closing.is_none() {
                 state.snapshot.clone()
             } else {
                 self.0
@@ -671,7 +757,14 @@ impl FloorStreams {
                     .fetch_add(1, Ordering::Relaxed);
                 let mut current = state.current.clone();
                 crate::floor::refresh_live_activity(&mut current.agents, now);
-                serialize_snapshot_with_closing(&current, siblings, state.closing)?
+                serialize_snapshot_with_closing(
+                    &current,
+                    siblings,
+                    state.closing.map(|mut view| {
+                        view.progress = view.progress(now);
+                        view
+                    }),
+                )?
             };
             (snapshot, queue)
         };
@@ -777,16 +870,38 @@ impl FloorStreams {
     pub(crate) fn publish_closing_with_output(
         &self,
         next: AgentSnapshot,
-        closing: Option<dudes_proto::ClosingPhase>,
+        closing: Option<crate::closing::FloorClosing>,
         output_notice: impl FnOnce(),
     ) -> Result<()> {
         self.publish_chat(next, closing, ChatReplacement::Keep, output_notice)
     }
 
+    pub(crate) fn patch(&self, next: &AgentSnapshot) -> FloorPatch {
+        let state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
+        FloorPatch::between(&state.current, next)
+    }
+
+    pub(crate) fn publish_patch(
+        &self,
+        patch: FloorPatch,
+        closing: Option<crate::closing::FloorClosing>,
+        output_notice: impl FnOnce(),
+    ) -> Result<()> {
+        let mut state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let next = patch.apply(state.current.clone());
+        self.publish_locked(
+            &mut state,
+            next,
+            closing,
+            ChatReplacement::Keep,
+            output_notice,
+        )
+    }
+
     pub(crate) fn publish_closing_with_chat_output(
         &self,
         next: AgentSnapshot,
-        closing: Option<dudes_proto::ClosingPhase>,
+        closing: Option<crate::closing::FloorClosing>,
         chat: Option<dudes_proto::ChatView>,
         output_notice: impl FnOnce(),
     ) -> Result<()> {
@@ -800,11 +915,22 @@ impl FloorStreams {
     fn publish_chat(
         &self,
         next: AgentSnapshot,
-        closing: Option<dudes_proto::ClosingPhase>,
+        closing: Option<crate::closing::FloorClosing>,
         replacement: ChatReplacement,
         output_notice: impl FnOnce(),
     ) -> Result<()> {
         let mut state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
+        self.publish_locked(&mut state, next, closing, replacement, output_notice)
+    }
+
+    fn publish_locked(
+        &self,
+        state: &mut State,
+        next: AgentSnapshot,
+        closing: Option<crate::closing::FloorClosing>,
+        replacement: ChatReplacement,
+        output_notice: impl FnOnce(),
+    ) -> Result<()> {
         if state.ended {
             bail!("the Floor stream registry has ended");
         }
@@ -816,7 +942,7 @@ impl FloorStreams {
         if !replace_chat && let Some(chat) = &mut chat {
             crate::floor_chat::retain_current_agents(chat, &next.agents);
         }
-        if replace_chat && state.current == next && state.closing == closing && state.chat == chat {
+        if state.current == next && same_closing(state.closing, closing) && state.chat == chat {
             output_notice();
             return Ok(());
         }
@@ -825,13 +951,19 @@ impl FloorStreams {
             crate::floor_chat::validate_current_agents(chat, &next.agents)?;
         }
         let mut delta = delta(&state.current, &next);
-        if state.closing != closing {
-            delta.closing_time = closing;
+        if state.closing.map(|view| view.phase) != closing.map(|view| view.phase) {
+            delta.closing_time = closing.map(|view| view.phase);
         }
+        let progress = (!same_closing(state.closing, closing))
+            .then(|| closing.map(|view| view.progress))
+            .flatten();
         let frame = match serialize_frame(&DeltaMessage {
             chat: (state.chat != chat).then_some(chat.as_ref()).flatten(),
             kind: "floor.delta",
-            delta: &delta,
+            delta: FloorDeltaView {
+                delta: &delta,
+                closing_progress: progress,
+            },
             question_history: (state.current.question_history != next.question_history)
                 .then_some(next.question_history.as_slice()),
             traces: (state.current.traces != next.traces).then_some(next.traces.as_slice()),
@@ -853,7 +985,7 @@ impl FloorStreams {
         }) {
             Ok(frame) => Arc::<[u8]>::from(frame),
             Err(error) => {
-                end_locked(&mut state, &self.0.ended);
+                end_locked(state, &self.0.ended);
                 return Err(error);
             }
         };
@@ -868,7 +1000,7 @@ impl FloorStreams {
         ) {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                end_locked(&mut state, &self.0.ended);
+                end_locked(state, &self.0.ended);
                 return Err(error);
             }
         };
@@ -902,7 +1034,10 @@ impl FloorStreams {
         let frame = Arc::<[u8]>::from(serialize_frame(&DeltaMessage {
             chat: None,
             kind: "floor.delta",
-            delta: &delta(&state.current, &state.current),
+            delta: FloorDeltaView {
+                delta: &delta(&state.current, &state.current),
+                closing_progress: None,
+            },
             question_history: None,
             traces: None,
             journal_stopped: Some(stopped),
@@ -1067,6 +1202,14 @@ impl FloorStreams {
     /// open; the page closes it and takes a fresh snapshot within the same session.
     pub(crate) fn resync(&self) -> usize {
         broadcast(&self.0, RESYNC_TYPE)
+    }
+
+    pub(crate) fn is_ended(&self) -> bool {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ended
     }
 
     /// End every current epoch before the listener is released.
@@ -2244,6 +2387,11 @@ fn delta(previous: &AgentSnapshot, next: &AgentSnapshot) -> FloorDelta {
             })
             .cloned()
             .collect(),
+        removed_cards: old_cards
+            .keys()
+            .filter(|card| !next.cards.iter().any(|kept| kept.id == **card))
+            .copied()
+            .collect(),
         mail: Vec::new(),
         closing_time: None,
     }
@@ -2369,17 +2517,20 @@ fn serialize_snapshot_with(snapshot: &AgentSnapshot, siblings: Siblings<'_>) -> 
 fn serialize_snapshot_with_closing(
     snapshot: &AgentSnapshot,
     siblings: Siblings<'_>,
-    closing: Option<dudes_proto::ClosingPhase>,
+    closing: Option<crate::closing::FloorClosing>,
 ) -> Result<Vec<u8>> {
     let mut projection = projection(snapshot);
-    projection.closing_time = closing;
+    projection.closing_time = closing.map(|view| view.phase);
     let siblings = Siblings {
         finished_today: siblings.finished_today.or(snapshot.finished_today.as_ref()),
         ..siblings
     };
     serialize_frame(&SnapshotMessage {
         kind: "floor.snapshot",
-        projection: &projection,
+        projection: FloorProjectionView {
+            projection: &projection,
+            closing_progress: closing.map(|view| view.progress),
+        },
         question_history: &snapshot.question_history,
         traces: &snapshot.traces,
         messages: &snapshot.mail.messages,
@@ -2536,6 +2687,7 @@ mod tests {
             seq: dudes_types::Seq::ZERO,
             claimed_by: None,
             deps: Vec::new(),
+            ticket: None,
         });
         let (mut low, mut high) = (0, MAX_MESSAGE_BYTES);
         while low < high {
@@ -2649,6 +2801,71 @@ mod tests {
     use dudes_types::{AgentStatus, BreakerRung, Lsn, Mode, Provider};
     use serde_json::Value;
 
+    fn closing_view(phase: dudes_proto::ClosingPhase) -> crate::closing::FloorClosing {
+        let mut world = dudes_supervisor::World::default();
+        let mut waiting = crate::closing::Waiting::new(&world);
+        world.apply(
+            Lsn(1),
+            &dudes_proto::Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: dudes_proto::Record::ClosingTime {
+                    phase: dudes_proto::ClosingPhase::Announced,
+                },
+            },
+        );
+        waiting.observe(world.closing.as_ref().unwrap());
+        world.apply(
+            Lsn(2),
+            &dudes_proto::Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: dudes_proto::Record::ClosingTime { phase },
+            },
+        );
+        waiting.floor_view(&world, Timestamp::UNIX_EPOCH).unwrap()
+    }
+
+    #[test]
+    fn pending_cuts_retain_changed_rows_and_reconstruct_each_large_roster_cut() {
+        let mut projections = dudes_journal::Projections::in_memory().unwrap();
+        let mut previous = crate::floor::snapshot(&mut projections, Timestamp::UNIX_EPOCH).unwrap();
+        for index in 0..4096 {
+            let mut row = agent(format!("Agent {index}"));
+            row.id = AgentId::from_parts(0, index);
+            row.name = format!("Agent {index}");
+            previous.agents.push(row);
+        }
+        let base = previous.clone();
+        let mut pending = Vec::new();
+        let mut bytes = 0;
+        for index in 0..100 {
+            let mut next = previous.clone();
+            next.lsn = Lsn(index + 1);
+            next.mail.lsn = next.lsn;
+            next.agents[usize::try_from(index).unwrap()].name.push('!');
+            let patch = super::FloorPatch::between(&previous, &next);
+            assert_eq!(patch.changes.agents.len(), 1);
+            assert!(patch.changes.cards.is_empty());
+            assert!(patch.changes.activity.is_none());
+            assert!(patch.changes.retired_agents.is_none());
+            assert!(patch.questions.is_none() && patch.traces.is_none() && patch.mail.is_none());
+            bytes += serde_json::to_vec(&patch.changes).unwrap().len();
+            pending.push(patch);
+            previous = next;
+        }
+        assert!(
+            bytes < 100_000,
+            "100 queued changes retain bounded changed rows, not 100 full rosters: {bytes}"
+        );
+        let mut cut = base;
+        for (index, patch) in pending.into_iter().enumerate() {
+            cut = patch.apply(cut);
+            assert_eq!(cut.lsn.0, index as u64 + 1);
+            assert_eq!(cut.agents[index].name, format!("Agent {index}!"));
+            assert_eq!(cut.agents.len(), 4096);
+        }
+        assert_eq!(cut, previous);
+    }
+
     #[test]
     fn closing_snapshot_and_delta_exclude_ack_identity_and_counts() {
         let mut projections = dudes_journal::Projections::in_memory().unwrap();
@@ -2666,7 +2883,7 @@ mod tests {
             agent: AgentId::from_parts(1, 2),
         });
         streams
-            .publish_closing_with_output(next, Some(phase), || {})
+            .publish_closing_with_output(next, Some(closing_view(phase)), || {})
             .unwrap();
         let state = streams.0.state.lock().unwrap();
         let snapshot: Value =
@@ -2714,7 +2931,7 @@ mod tests {
             ] {
                 snapshot.lsn = Lsn(snapshot.lsn.0 + 1);
                 streams
-                    .publish_closing_with_output(snapshot.clone(), Some(phase), || {})
+                    .publish_closing_with_output(snapshot.clone(), Some(closing_view(phase)), || {})
                     .unwrap();
                 let opened = streams
                     .subscribe_with_siblings(
@@ -2733,6 +2950,10 @@ mod tests {
                     serde_json::json!({"kind":"announced"}),
                     "sibling={with_sibling} activity={with_activity}"
                 );
+                assert_eq!(
+                    frame["projection"]["closing_progress"]["remaining_ms"],
+                    359_000
+                );
                 assert_eq!(frame.get("control").is_some(), with_sibling);
                 assert!(
                     !std::str::from_utf8(payload)
@@ -2745,6 +2966,71 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn time_changes_do_not_publish_progress_but_every_subscription_refreshes_it() {
+        let mut projections = dudes_journal::Projections::in_memory().unwrap();
+        let snapshot = crate::floor::snapshot(&mut projections, Timestamp::UNIX_EPOCH).unwrap();
+        let streams = FloorStreams::new(
+            snapshot.clone(),
+            FloorStreamFault::default().without_heartbeat(),
+        )
+        .unwrap();
+        let opened = streams.subscribe().unwrap();
+        let mut closing = closing_view(dudes_proto::ClosingPhase::Announced);
+        streams
+            .publish_closing_with_output(snapshot.clone(), Some(closing), || {})
+            .unwrap();
+        assert_eq!(opened.subscription.queue.usage().0, 1);
+        closing.progress.remaining_ms = 10_000;
+        streams
+            .publish_closing_with_output(snapshot, Some(closing), || {})
+            .unwrap();
+        assert_eq!(
+            opened.subscription.queue.usage().0,
+            1,
+            "time alone cannot create another delta"
+        );
+        for time in [10_000, 20_000] {
+            let subscription = streams
+                .subscribe_with_siblings(
+                    Siblings::default(),
+                    None,
+                    Timestamp::from_unix_millis(time),
+                )
+                .unwrap();
+            let frame: Value =
+                serde_json::from_slice(text_payload(&subscription.snapshot).unwrap()).unwrap();
+            assert_eq!(
+                frame["projection"]["closing_progress"]["remaining_ms"],
+                360_000 - time
+            );
+            assert_eq!(
+                frame["projection"]["closing_time"],
+                serde_json::json!({"kind":"announced"})
+            );
+        }
+    }
+
+    #[test]
+    fn snapshots_and_deltas_outside_closing_have_no_progress() {
+        let mut projections = dudes_journal::Projections::in_memory().unwrap();
+        let mut snapshot = crate::floor::snapshot(&mut projections, Timestamp::UNIX_EPOCH).unwrap();
+        let streams = FloorStreams::new(
+            snapshot.clone(),
+            FloorStreamFault::default().without_heartbeat(),
+        )
+        .unwrap();
+        let opened = streams.subscribe().unwrap();
+        let frame: Value = serde_json::from_slice(text_payload(&opened.snapshot).unwrap()).unwrap();
+        assert!(frame["projection"].get("closing_time").is_none());
+        assert!(frame["projection"].get("closing_progress").is_none());
+        snapshot.lsn = Lsn(1);
+        streams.publish(snapshot).unwrap();
+        let frame = queued_json(opened.subscription.next(Duration::ZERO));
+        assert!(frame["delta"].get("closing_time").is_none());
+        assert!(frame["delta"].get("closing_progress").is_none());
     }
 
     #[test]
@@ -2931,6 +3217,7 @@ mod tests {
             seq: dudes_types::Seq(u64::MAX),
             claimed_by: Some(AgentId::NIL),
             deps: vec![],
+            ticket: None,
         };
         let old_empty = serde_json::json!({"type":"floor.snapshot", "projection":FloorProjection {
             lsn:dudes_types::Lsn(u64::MAX), cards:vec![card_view], ..FloorProjection::default()
@@ -3422,7 +3709,10 @@ mod tests {
             finished_today: None,
             chat: None,
             kind: "floor.delta",
-            delta: &changes,
+            delta: FloorDeltaView {
+                delta: &changes,
+                closing_progress: None,
+            },
             question_history: None,
             traces: None,
             journal_stopped: None,
@@ -3455,6 +3745,7 @@ mod tests {
             seq: dudes_types::Seq(u64::MAX),
             claimed_by: Some(AgentId::NIL),
             deps: vec![],
+            ticket: None,
         };
         let empty = FloorProjection {
             lsn: Lsn(u64::MAX),
@@ -3677,7 +3968,10 @@ mod tests {
             finished_today: None,
             chat: None,
             kind: "floor.delta",
-            delta: &change,
+            delta: FloorDeltaView {
+                delta: &change,
+                closing_progress: None,
+            },
             question_history: None,
             traces: None,
             journal_stopped: None,
@@ -3755,6 +4049,21 @@ mod tests {
         let change = delta(&before, &after);
         assert_eq!(change.cards.len(), 1);
         assert!(delta(&after, &after).cards.is_empty());
+        assert!(change.removed_cards.is_empty());
+        let mut gone = after.clone();
+        gone.cards.clear();
+        let removal = delta(&after, &gone);
+        assert_eq!(removal.removed_cards.len(), after.cards.len());
+        assert!(removal.removed_cards.contains(&card));
+        assert!(removal.cards.is_empty());
+        assert!(delta(&gone, &gone).removed_cards.is_empty());
+        assert!(
+            serde_json::to_value(delta(&after, &after))
+                .unwrap()
+                .get("removed_cards")
+                .is_none(),
+            "an unchanged board adds nothing to the wire"
+        );
         let wire = serde_json::to_value(change).unwrap();
         assert_eq!(wire["cards"][0]["status"], "done");
         assert_eq!(wire["cards"][0]["seq"], 1);
@@ -3774,6 +4083,7 @@ mod tests {
             seq: dudes_types::Seq(u64::MAX),
             claimed_by: Some(AgentId::NIL),
             deps: Vec::new(),
+            ticket: None,
         };
         crate::board::admit_cards(Vec::new(), vec![card.clone()]).unwrap();
         let mut snapshot = AgentSnapshot {
@@ -5341,10 +5651,13 @@ mod tests {
                 finished_today: None,
                 chat: None,
                 kind: "floor.delta",
-                delta: &FloorDelta {
-                    lsn: Lsn(2),
-                    agents: vec![view],
-                    ..FloorDelta::default()
+                delta: FloorDeltaView {
+                    delta: &FloorDelta {
+                        lsn: Lsn(2),
+                        agents: vec![view],
+                        ..FloorDelta::default()
+                    },
+                    closing_progress: None
                 },
                 question_history: None,
                 traces: None,

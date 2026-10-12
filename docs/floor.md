@@ -54,6 +54,38 @@ accepted and changes nothing, because printing is now the default. The link is a
 registered providers and enrolled workspace labels. The Floor reads configuration without editing
 it. **About**, within Settings, shows the daemon, Floor build and browser wire versions.
 
+## Tickets
+
+With `floor.board` on, the Board view makes tickets and moves them. It needs `floor.control` and
+`floor.goal` on too, and the daemon refuses to start without them. Turn it on with
+`dudes config set floor.board on`, then restart the daemon. `dudes quickstart` turns it on with the
+other Floor actions when you say yes to its one question.
+
+**Giving a ticket to an agent starts that agent, which then runs and spends under your account.**
+Anyone holding your Floor session can do that until the session ends, so keep the link to yourself.
+Set a spending limit when your account bills per use.
+
+- **New ticket.** A title is all it needs. The note, the project, the "Done when" check and the
+  agent are optional. The project is asked for only when more than one is enrolled. With no agent
+  hired, the form says so and offers to hire one.
+- **The board.** To do, Working, Ready for you and Done, and a Needs you row for tickets that are
+  stuck. Done shows the newest 20. A card shows the title, the agent, its place in the queue or why
+  it waits, and in Needs you the sentence that names the next step.
+- **A ticket.** Open a card to read its note, what the agent says it did, the check result and the
+  files that changed. The agent's words are shown as plain text. The files come from the Git tab,
+  so they need `floor.git` on.
+- **Actions.** Give to agent, Edit and Remove for a ticket nobody has started. Stop for one that is
+  Working. Accept, Ask for changes and Remove for one that is Ready for you. Try again, Stop and
+  Remove for one in Needs you. Remove for one that is Done, to clear it off the board. Accept is your verdict that the work is what you asked for. The check
+  passing only means the daemon's own run passed.
+- **Banner.** The top bar says how many tickets are ready for you or need you, and how many agents
+  working a ticket are asking you a question. Overview lists the tickets under Waiting on you. A
+  turn ending never raises it. While a ticket waits for you, its agent's crew pill and the top
+  bar's count read "ready for you" or "needs you" instead of "done", and the old goal-done notice
+  is not shown for it.
+
+[Tickets](tickets.md) covers the same actions from the command line.
+
 ## After you upgrade
 
 After upgrading Dudes, copy any unsent drafts before reloading an open Floor tab. The daemon and

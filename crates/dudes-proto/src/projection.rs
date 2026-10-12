@@ -55,9 +55,49 @@ pub struct FloorDelta {
     pub retired_agents: Option<Vec<RetiredAgentView>>,
     /// Agents retired since the previous delta.
     pub removed_agents: Vec<AgentId>,
+    /// Cards removed from the board since the previous delta. An older reader ignores it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub removed_cards: Vec<CardId>,
     /// The closing-time step, when it changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closing_time: Option<ClosingPhase>,
+}
+
+/// Browser snapshot with optional aggregate closing progress.
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+pub struct FloorProjectionView<'a> {
+    /// The existing projection at the same durable cut.
+    #[serde(flatten)]
+    pub projection: &'a FloorProjection,
+    /// Aggregate progress while this run is closing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closing_progress: Option<ClosingProgress>,
+}
+
+/// Browser delta with optional aggregate closing progress.
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+pub struct FloorDeltaView<'a> {
+    /// The existing changes at the same durable cut.
+    #[serde(flatten)]
+    pub delta: &'a FloorDelta,
+    /// Aggregate progress when counts or the phase changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closing_progress: Option<ClosingProgress>,
+}
+
+/// Read-only closing progress without participant identities.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ClosingProgress {
+    /// Participants with a durable acknowledgement.
+    pub acknowledged: u32,
+    /// Unacknowledged participants with nothing left to save.
+    pub settled: u32,
+    /// Participants that still owe an acknowledgement.
+    pub owed: u32,
+    /// Participants with at least one turn awaiting an Observed end.
+    pub running: u32,
+    /// Earlier monotonic or wall time remaining, in milliseconds.
+    pub remaining_ms: u64,
 }
 
 /// Where a worktree is in its life, as the Floor and `worktree.list` show it.
@@ -276,6 +316,34 @@ pub struct CardView {
     /// Cards that must be `Done` first.
     #[serde(default)]
     pub deps: Vec<CardId>,
+    /// What the board shows of a ticket beyond what every card has. Absent on a plain card. An
+    /// older reader ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<CardTicket>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero(count: &u32) -> bool {
+    *count == 0
+}
+
+/// What the floor snapshot says of a ticket. It carries no note, message, summary, path, argv,
+/// check name or check output: those come only from `ticket.read`. It is small on purpose, because
+/// the snapshot's card budget has to hold the most tickets the board allows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CardTicket {
+    /// Its place in its holder's queue, counting from 1, while it waits there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<u32>,
+    /// How many times work on the ticket has started; absent before the first start.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub round: u32,
+    /// Why the daemon moved the ticket into Needs you, while it is there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<crate::ticket::TicketReason>,
+    /// The ticket was stopped and its agent is still finishing its current step.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopping: bool,
 }
 
 /// Legacy mail projection shape retained for construction compatibility.
@@ -459,6 +527,58 @@ mod tests {
         let delta: FloorDelta = serde_json::from_str(r#"{"lsn": 5}"#).unwrap();
         assert_eq!(delta.lsn, Lsn(5));
         assert!(delta.agents.is_empty());
+    }
+
+    /// A reader from before the board names none of the new members, and ignores each of them: a
+    /// card's `ticket` and a delta's `removed_cards`.
+    #[test]
+    fn an_older_reader_ignores_the_ticket_members() {
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct OlderCard {
+            id: CardId,
+            title: String,
+            department: String,
+            status: CardStatus,
+            status_by: Actor,
+            seq: Seq,
+            claimed_by: Option<AgentId>,
+            deps: Vec<CardId>,
+        }
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct OlderDelta {
+            lsn: Lsn,
+            agents: Vec<AgentView>,
+            cards: Vec<OlderCard>,
+            removed_agents: Vec<AgentId>,
+        }
+        let card = CardView {
+            id: CardId::from_parts(1, 1),
+            title: "Ticket".to_owned(),
+            department: "engineering".to_owned(),
+            status: CardStatus::Claimed,
+            status_by: Actor::System,
+            seq: Seq(2),
+            claimed_by: Some(AgentId::from_parts(1, 2)),
+            deps: Vec::new(),
+            ticket: Some(CardTicket {
+                position: Some(2),
+                round: 1,
+                reason: None,
+                stopping: false,
+            }),
+        };
+        let delta = FloorDelta {
+            cards: vec![card],
+            removed_cards: vec![CardId::from_parts(1, 3)],
+            ..FloorDelta::default()
+        };
+        let wire = serde_json::to_value(&delta).unwrap();
+        assert!(wire.get("removed_cards").is_some());
+        let older: OlderDelta = serde_json::from_value(wire).unwrap();
+        assert_eq!(older.cards.len(), 1);
+        assert_eq!(older.cards[0].title, "Ticket");
     }
 
     /// A result that ran keeps today's bytes, and older bytes read as a result that ran.

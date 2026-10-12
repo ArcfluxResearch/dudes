@@ -2,11 +2,13 @@
 
 use anyhow::{Context as _, Result};
 use dudes_journal::{AgentRow, GoalRow, Projections};
+use dudes_proto::QueueKey;
 use dudes_proto::rpc::floor::FloorFinishedToday;
 use dudes_proto::{
-    ActivityView, AgentView, CardView, GoalView, LiveActivityView, RetiredAgentView,
+    ActivityView, AgentView, CardTicket, CardView, GoalView, LiveActivityView, RetiredAgentView,
 };
-use dudes_types::{GoalId, Lsn, Timestamp};
+use dudes_types::{AgentId, CardStatus, GoalId, GoalStatus, Lsn, Timestamp};
+use std::collections::BTreeMap;
 
 pub(crate) const MAX_MAIL_BYTES: usize = dudes_proto::MAX_MESSAGES_BYTES;
 pub(crate) const ARCHIVE_RESERVE_BYTES: usize =
@@ -57,9 +59,7 @@ pub fn snapshot(projections: &mut Projections, now: Timestamp) -> Result<AgentSn
         .context("could not read paired mail metadata")?;
     let lsn = mail.lsn;
     let agents = agents(projections, now)?;
-    let cards = projections
-        .cards()
-        .context("could not read projected board cards")?;
+    let cards = cards(projections)?;
     let activity = projections
         .activity()
         .context("could not read projected activity")?;
@@ -78,6 +78,74 @@ pub fn snapshot(projections: &mut Projections, now: Timestamp) -> Result<AgentSn
         mail,
         finished_today: None,
     })
+}
+
+/// Every board card, with the summary a ticket card carries. The summary holds codes and counts
+/// only: the note, the agent's summary and the check result come from `ticket.read`.
+pub(crate) fn cards(projections: &Projections) -> Result<Vec<CardView>> {
+    let mut cards = projections
+        .cards()
+        .context("could not read projected board cards")?;
+    let tickets = projections
+        .tickets()
+        .context("could not read projected tickets")?;
+    let by_id: BTreeMap<_, _> = tickets
+        .iter()
+        .map(|(view, ticket)| (view.id, ticket))
+        .collect();
+    // Each agent's queue in serving order, so a place is a lookup and not a scan.
+    let mut queues: BTreeMap<AgentId, Vec<QueueKey>> = BTreeMap::new();
+    for (view, ticket) in &tickets {
+        if let (CardStatus::Claimed, Some(agent), Some(key)) =
+            (view.status, view.claimed_by, ticket.queue)
+        {
+            queues.entry(agent).or_default().push(key);
+        }
+    }
+    for queue in queues.values_mut() {
+        queue.sort_unstable();
+    }
+    for card in &mut cards {
+        let Some(ticket) = by_id.get(&card.id) else {
+            continue;
+        };
+        let position = match (card.status, card.claimed_by, ticket.queue) {
+            (CardStatus::Claimed, Some(agent), Some(key)) => queues
+                .get(&agent)
+                .and_then(|queue| queue.binary_search(&key).ok())
+                .and_then(|at| u32::try_from(at + 1).ok()),
+            _ => None,
+        };
+        card.ticket = Some(CardTicket {
+            position,
+            round: ticket.round,
+            reason: if card.status == CardStatus::Blocked {
+                ticket.reason
+            } else {
+                None
+            },
+            stopping: card.status == CardStatus::Todo && finishing(projections, ticket)?,
+        });
+    }
+    Ok(cards)
+}
+
+/// A stopped ticket's old goal is cleared while its agent is still in a turn.
+fn finishing(projections: &Projections, ticket: &dudes_proto::TicketRow) -> Result<bool> {
+    let Some(goal) = ticket.goal else {
+        return Ok(false);
+    };
+    let Some(goal) = projections
+        .goal(goal)
+        .context("could not read a ticket's goal")?
+        .filter(|row| row.status == GoalStatus::Abandoned)
+    else {
+        return Ok(false);
+    };
+    Ok(projections
+        .agent(goal.agent)
+        .context("could not read a ticket's agent")?
+        .is_some_and(|row| row.open_turn.is_some()))
 }
 
 /// The count of goals first finished, with an observed pass, on the daemon's local day.

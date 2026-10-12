@@ -513,6 +513,7 @@ where
                 .with_answer(settings.floor_answer_enabled)
                 .with_control(settings.floor_control)
                 .with_terminal(settings.floor_terminal_enabled)
+                .with_board(settings.floor_board_enabled)
                 .with_remembered_port(crate::floor_port::remembered(&settings.state_dir))
         });
     if prepared_floor.is_some() {
@@ -565,13 +566,16 @@ where
     // or `CLAUDE.md`. Created once, at boot, and never written to afterward.
     let condense_cwd = settings.state_dir.join("condense-model-cwd");
     open_condense_cwd(&condense_cwd)?;
-    let closing = crate::closing::Waiting::new(sup.world());
-    let floor_closing = sup
+    let mut closing = crate::closing::Waiting::new(sup.world());
+    if let Some(session) = sup
         .world()
         .closing
         .as_ref()
         .filter(|session| !session.is_complete())
-        .map(|_| dudes_proto::ClosingPhase::Announced);
+    {
+        closing.observe(session);
+    }
+    let floor_closing = closing.floor_view(sup.world(), clock.now());
     let mut daemon = Daemon {
         closing,
         sup,
@@ -598,12 +602,15 @@ where
             look_index,
             retire_index,
             git_enabled: settings.floor_git_enabled,
+            board_enabled: settings.floor_board_enabled,
             browser_grants: settings.floor_terminal_enabled.then(BTreeMap::new),
             #[cfg(feature = "testing")]
             terminal_skew: crate::floor_terminal::TerminalSkew::default(),
             closing_failed_after: None,
             ticket_reacted: None,
             floor_closing,
+            pending_floor: BTreeMap::new(),
+            pending_floor_base: None,
             browser_session: None,
             onboarding_pause: crate::runtime::OnboardingPause::default(),
             onboarding_failure: crate::runtime::OnboardingFailure::default(),
@@ -682,6 +689,9 @@ where
         if let Some(days) = stream_fault.local_days() {
             daemon.ctx.local_days = days;
         }
+        daemon.ctx.floor_closing = daemon
+            .closing
+            .floor_view(daemon.sup.world(), daemon.ctx.clock.now());
         let initial = daemon
             .ctx
             .floor_snapshot()

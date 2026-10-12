@@ -9,6 +9,7 @@ import { activityText } from './activity.ts';
 import { journalPosition, recordedTime } from './format.ts';
 import { ReadNotice, snapshotReadState } from './ReadError.tsx';
 import { getReadAvailability, subscribeToReadAvailability } from './floor/reads.ts';
+import { TicketOffHint } from './ticket/TicketGuidance.tsx';
 
 let requestedCard: string | null = null;
 const selectionListeners = new Set<() => void>();
@@ -44,12 +45,8 @@ function author(floor: FloorState, by: CardActor): string {
   return by.kind === 'system' ? 'Daemon' : 'Browser session';
 }
 
-export function Board({ floor, selectedId, onSelect }: {
-  readonly floor: FloorState;
-  readonly selectedId: string | null;
-  readonly onSelect: (id: string) => void;
-}) {
-  const selectable = floor.phase === 'live' && !floor.stale;
+/** Select the card another part of the page asked the Board to open, once the snapshot holds it. */
+export function useRequestedCard(floor: FloorState, selectable: boolean, onSelect: (id: string) => void): void {
   const requested = useSyncExternalStore(subscribeToCardSelection, cardSelectionRequest, cardSelectionRequest);
   useEffect(() => {
     if (requested === null) return;
@@ -57,8 +54,16 @@ export function Board({ floor, selectedId, onSelect }: {
     for (const listener of selectionListeners) listener();
     if (selectable && floor.cards.some((card) => card.id === requested)) onSelect(requested);
   }, [requested, selectable, floor.cards, onSelect]);
-  return <div className="board-view">
-    <p className="stream-state" role="status">{selectable ? 'Live — confirmed' : 'View unconfirmed — waiting for the stream'}</p>
+}
+
+/** The legacy columns: every card in To do, Doing, Blocked or Done, as plain cards show. */
+export function LegacyColumns({ floor, selectedId, onSelect }: {
+  readonly floor: FloorState;
+  readonly selectedId: string | null;
+  readonly onSelect: (id: string) => void;
+}) {
+  const selectable = floor.phase === 'live' && !floor.stale;
+  return <>
     <div className="task-columns">
       {COLUMNS.map((column) => {
         const cards = cardsForColumn(floor.cards ?? [], column.key);
@@ -77,6 +82,20 @@ export function Board({ floor, selectedId, onSelect }: {
       })}
     </div>
     {(floor.cards ?? []).length === 0 ? <p>No board cards.</p> : null}
+  </>;
+}
+
+export function Board({ floor, selectedId, onSelect }: {
+  readonly floor: FloorState;
+  readonly selectedId: string | null;
+  readonly onSelect: (id: string) => void;
+}) {
+  const selectable = floor.phase === 'live' && !floor.stale;
+  useRequestedCard(floor, selectable, onSelect);
+  return <div className="board-view">
+    <p className="stream-state" role="status">{selectable ? 'Live — confirmed' : 'View unconfirmed — waiting for the stream'}</p>
+    {!floor.ticket ? <TicketOffHint floor={floor} /> : null}
+    <LegacyColumns floor={floor} selectedId={selectedId} onSelect={onSelect} />
   </div>;
 }
 

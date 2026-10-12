@@ -70,6 +70,20 @@ The agent takes turns until `/bin/test -f hello.txt` passes. `dudes agents` list
 its status, `dudes stop` stops the daemon and `dudes start` starts it again.
 [Get started](docs/getting-started.md) is the full walk-through.
 
+If you skipped the project in quickstart, add it in one step from its git repository:
+
+```sh
+cd /absolute/path/to/repo
+dudes workspace add
+```
+
+Dudes suggests a completion check from the repository's files and prints the project id.
+If it finds no check, pass one with `dudes workspace add -- <program> [args...]`.
+Tickets and Floor hiring need an enrolled project.
+
+If `dudes` runs something else, check `type dudes` for an alias or shell function and use
+`command dudes`. After removing an old definition from your shell profile, open a new terminal.
+
 ## How it works
 
 - **Daemon and CLI.** The `duded` daemon runs in the background and owns all state. The `dudes`
@@ -87,10 +101,10 @@ its status, `dudes stop` stops the daemon and `dudes start` starts it again.
 - **Limits.** Spending ceilings are optional and off by default. A goal also stops at its hop cap,
   and a launch failure puts an agent on Hold. See [Goals, completion checks and
   stopping](docs/goals-and-stopping.md).
-- **Tickets.** A ticket is a piece of work with a title, a note and a "Done when" check. `dudes
-  ticket` makes, edits, lists and removes them, gives one to an agent's queue, and lets you review,
-  accept, send back or stop the agent's work. See
-  [Tickets](docs/tickets.md).
+- **Tickets.** A ticket is a piece of work with a title, a note and a "Done when" check. Make,
+  edit, list, remove and give tickets to an agent's queue, and review, accept, send back or stop
+  the agent's work, with `dudes ticket` or on the Floor's Board, where a banner tells you when one
+  is ready for you. See [Tickets](docs/tickets.md).
 - **Mail.** Agents send each other messages with `dudes mail` and find colleagues with
   `dudes team`.
 - **Worktrees.** `dudes hire --worktree` gives a Claude Code agent in a repository you mark with `--trusted` its own git worktree and a
@@ -121,11 +135,12 @@ to change. The [full text](docs/what-agents-can-do.md) has the details.
 ## Documentation
 
 - [Get started](docs/getting-started.md): the full first run, from `dudes quickstart` to a goal.
-- [The Floor](docs/floor.md): the office view, how it opens and how to serve it.
+- [The Floor](docs/floor.md): the office view, how it opens and how to serve it, and tickets on the
+  Board.
 - [Chat](docs/chat.md): message an agent from the Floor, and Codex streaming.
 - [Goals, completion checks and stopping](docs/goals-and-stopping.md): replace a goal, pause, halt,
   retire and stop.
-- [Tickets](docs/tickets.md): make a ticket and give it to an agent.
+- [Tickets](docs/tickets.md): make a ticket and give it to an agent, from the command line or the Floor.
 - [Give an agent MCP servers](docs/mcp-servers.md): declare servers and opt agents in.
 - [Configuration](docs/configuration.md): the operator file, settings, budgets and environment
   variables.

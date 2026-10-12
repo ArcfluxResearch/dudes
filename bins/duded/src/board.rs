@@ -7,7 +7,8 @@ use dudes_proto::rpc::board::{
 };
 use dudes_proto::rpc::{ErrorCode, Method, RpcError};
 use dudes_proto::{
-    AgentView, CardView, FloorProjection, LiveActivityKind, LiveActivityView, Predicate,
+    AgentView, CardTicket, CardView, FloorProjection, LiveActivityKind, LiveActivityView,
+    Predicate, TicketReason,
 };
 use dudes_rpc::Dispatcher;
 use dudes_rpc::auth::{PeerRole, Requirement};
@@ -102,6 +103,17 @@ pub(crate) fn predicate_result(view: &CardView, predicate: &Predicate) -> (bool,
     )
 }
 
+/// The summary a new ticket's card will carry, at the size it can grow to: a place in
+/// the longest queue, a round count no ticket reaches and every optional member present.
+pub(crate) fn largest_ticket() -> CardTicket {
+    CardTicket {
+        position: u32::try_from(dudes_proto::ticket::MAX_QUEUE).ok(),
+        round: u32::from(u16::MAX),
+        reason: Some(TicketReason::ProjectUnavailable),
+        stopping: true,
+    }
+}
+
 pub(crate) fn admit_cards(
     mut agents: Vec<AgentView>,
     mut cards: Vec<CardView>,
@@ -171,6 +183,7 @@ mod tests {
             seq: Seq(2),
             claimed_by: Some(agent),
             deps: vec![],
+            ticket: None,
         }
     }
 

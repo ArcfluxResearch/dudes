@@ -44,6 +44,9 @@ pub enum Key {
     Renew,
     /// `[floor.retire] enabled`: the Floor retires an agent.
     Retire,
+    /// `[floor.board] enabled`: the Floor makes tickets and gives them to agents, which then run
+    /// and spend under your account.
+    Board,
     /// `[floor.terminal] enabled`: the Floor attaches a terminal.
     Terminal,
     /// `[floor.git] enabled`: the Floor reads an agent's checkout for its Git tab.
@@ -92,19 +95,21 @@ impl Place {
 
 /// The file's own start rules: when the first key is on or set, the daemon starts only while the
 /// second is on or above zero. Goal change and retirement give the first two rows, renewal's
-/// need for goal change and Hire the next two, and the boot check that a floor ceiling has a dollar
-/// reserve the last.
-const RULES: [(Key, Key); 5] = [
+/// need for goal change and Hire the next two, the board's need for goal change and pause and
+/// resume the two after, and the boot check that a floor ceiling has a dollar reserve the last.
+const RULES: [(Key, Key); 7] = [
     (Key::Goal, Key::Control),
     (Key::Retire, Key::Control),
     (Key::Renew, Key::Goal),
     (Key::Renew, Key::Hire),
+    (Key::Board, Key::Goal),
+    (Key::Board, Key::Control),
     (Key::FloorUsdPerDay, Key::PerTurnUsd),
 ];
 
 impl Key {
     /// Every key, in the order `dudes config` shows them.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Codex,
         Self::CodexStreaming,
         Self::Pi,
@@ -114,6 +119,7 @@ impl Key {
         Self::Goal,
         Self::Renew,
         Self::Retire,
+        Self::Board,
         Self::Terminal,
         Self::Git,
         Self::FloorUsdPerDay,
@@ -134,6 +140,7 @@ impl Key {
             Self::Goal => "floor.goal",
             Self::Renew => "floor.renew",
             Self::Retire => "floor.retire",
+            Self::Board => "floor.board",
             Self::Terminal => "floor.terminal",
             Self::Git => "floor.git",
             Self::FloorUsdPerDay => "budget.floor_usd_per_day",
@@ -163,6 +170,7 @@ impl Key {
             Self::Goal => Place::Switch(&["floor", "goal"], "enabled"),
             Self::Renew => Place::Switch(&["floor", "renew"], "enabled"),
             Self::Retire => Place::Switch(&["floor", "retire"], "enabled"),
+            Self::Board => Place::Switch(&["floor", "board"], "enabled"),
             Self::Terminal => Place::Switch(&["floor", "terminal"], "enabled"),
             Self::Git => Place::Switch(&["floor", "git"], "enabled"),
             Self::FloorUsdPerDay => Place::Dollars(&["budget"], "floor_usd_per_day"),

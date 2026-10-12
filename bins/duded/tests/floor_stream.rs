@@ -742,6 +742,377 @@ fn snapshot_precedes_live_deltas() {
 }
 
 #[test]
+fn first_closing_frame_uses_the_durable_participant_cut() {
+    let fixture = Fixture::new();
+    let settings = settings(&fixture, free_port());
+    let column = common::ScriptedColumn::new(dudes_proto::PeerProvenance::NoRecordedAgent);
+    let daemon = duded::boot::boot_with_floor_faults(
+        &settings,
+        common::seams_with(
+            SharedHost::new(),
+            Arc::new(ScriptedRunner::default()),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+            column.clone(),
+        ),
+        None,
+        FloorStreamFault::default().without_heartbeat(),
+    )
+    .unwrap();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    common::set_goal(&running.handle, goal_params(agent, &["/usr/bin/true"]));
+    let unanswered = common::hire(&running.handle, fixture.state.path());
+    common::set_goal(&running.handle, goal_params(unanswered, &["/usr/bin/true"]));
+    let issued = issue(&settings);
+    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
+    let mut browser = WebSocket::connect(addr, &cookie, &csrf);
+    browser.send(r#"{"type":"floor.subscribe"}"#);
+    let before = browser.json();
+    assert!(before["projection"].get("closing_progress").is_none());
+    let mut client = Client::connect(settings.socket()).unwrap();
+    let answer = client
+        .call_as_operator(
+            Method::SystemClosingTime,
+            Some(serde_json::json!({"action":"announce"})),
+            credential_of(&settings),
+        )
+        .unwrap();
+    assert!(answer.error.is_none());
+    let frame = browser.json();
+    assert_eq!(frame["type"], "floor.delta");
+    assert_eq!(
+        frame["delta"]["closing_time"],
+        serde_json::json!({"kind":"announced"})
+    );
+    let progress = &frame["delta"]["closing_progress"];
+    assert_progress_cut(&fixture, &frame, (0, 0, 2, 2));
+    assert!((359_000..=360_000).contains(&progress["remaining_ms"].as_u64().unwrap()));
+    assert_eq!(
+        frame["delta"]["lsn"],
+        answer.result.as_ref().unwrap()["announcement"]
+    );
+    let announcement = answer.result.as_ref().unwrap()["announcement"].clone();
+    let token = agent_token(&fixture, agent);
+    let ack = serde_json::json!({ "action": "ack", "lsn": announcement, "token": token.expose() });
+    column.set(dudes_proto::PeerProvenance::Agent(agent));
+    let mut caller = Client::connect(settings.socket()).unwrap();
+    let acknowledged_reply = caller
+        .call(Method::SystemClosingTime, Some(ack.clone()))
+        .unwrap();
+    assert!(
+        acknowledged_reply.error.is_none(),
+        "{:?}",
+        acknowledged_reply.error
+    );
+    let acknowledged = next_closing_progress(&mut browser);
+    assert!(acknowledged["delta"].get("closing_time").is_none());
+    assert_progress_cut(&fixture, &acknowledged, (1, 0, 1, 2));
+    let before_duplicate = fixture.entries();
+    assert!(
+        caller
+            .call(Method::SystemClosingTime, Some(ack))
+            .unwrap()
+            .error
+            .is_none()
+    );
+    assert_eq!(fixture.entries(), before_duplicate);
+    observe_turn_end(&running.handle, &fixture, agent);
+    let ended = next_closing_progress(&mut browser);
+    assert!(
+        ended["delta"].get("closing_time").is_none(),
+        "an observed turn end is a progress-only delta"
+    );
+    assert_progress_cut(&fixture, &ended, (1, 0, 1, 1));
+    let cut = ended["delta"]["lsn"].as_u64().unwrap();
+    assert!(fixture.entries().iter().any(|(lsn, entry)| lsn.0 == cut
+        && matches!(entry.record, dudes_proto::Record::TurnEnded { .. })));
+    assert!(!fixture.records().iter().any(|record| matches!(
+        record,
+        dudes_proto::Record::ClosingTime {
+            phase: dudes_proto::ClosingPhase::Complete
+        }
+    )));
+    drop(browser);
+    drop(client);
+    running.stop(duded::ExitCause::ShutdownRpc);
+}
+
+fn agent_token(
+    fixture: &Fixture,
+    agent: dudes_types::AgentId,
+) -> dudes_proto::rpc::hook::HookToken {
+    fixture
+        .records()
+        .iter()
+        .find_map(|record| match record {
+            dudes_proto::Record::HookTokenMinted {
+                agent: owner,
+                token_hash,
+            } if *owner == agent => Some(common::token_of(token_hash)),
+            _ => None,
+        })
+        .unwrap()
+}
+
+fn observe_turn_end(handle: &duded::ports::Handle, fixture: &Fixture, agent: dudes_types::AgentId) {
+    let turn = fixture
+        .records()
+        .iter()
+        .find_map(|record| match record {
+            dudes_proto::Record::TurnIssued {
+                agent: owner, turn, ..
+            } if *owner == agent => Some(*turn),
+            _ => None,
+        })
+        .unwrap();
+    handle.input(dudes_supervisor::Input::ChildExited {
+        final_reply: None,
+        elapsed_ms: None,
+        turn,
+        exit: dudes_proto::ExitStatus {
+            code: Some(0),
+            signal: None,
+        },
+        usage: None,
+        model_usage: std::collections::BTreeMap::new(),
+        outcome: dudes_proto::TurnOutcome::Completed,
+        last_message: None,
+    });
+}
+
+fn next_closing_progress(browser: &mut WebSocket) -> Value {
+    loop {
+        let frame = browser.json();
+        if frame["delta"].get("closing_progress").is_some() {
+            return frame;
+        }
+        assert!(
+            frame["delta"].get("closing_time").is_none(),
+            "every changed closing phase has progress"
+        );
+    }
+}
+
+fn assert_progress_cut(fixture: &Fixture, frame: &Value, expected: (u32, u32, u32, u32)) {
+    let cut = &frame[if frame["type"] == "floor.snapshot" {
+        "projection"
+    } else {
+        "delta"
+    }];
+    let progress = &cut["closing_progress"];
+    assert!(
+        progress.is_object(),
+        "missing progress at expected durable cut: {frame}"
+    );
+    assert_eq!(
+        progress
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([
+            "acknowledged",
+            "settled",
+            "owed",
+            "running",
+            "remaining_ms"
+        ])
+    );
+    assert_eq!(
+        (
+            progress["acknowledged"].as_u64().unwrap(),
+            progress["settled"].as_u64().unwrap(),
+            progress["owed"].as_u64().unwrap(),
+            progress["running"].as_u64().unwrap()
+        ),
+        (
+            u64::from(expected.0),
+            u64::from(expected.1),
+            u64::from(expected.2),
+            u64::from(expected.3)
+        )
+    );
+    let mut world = dudes_supervisor::World::default();
+    for (lsn, entry) in fixture.entries() {
+        if lsn.0 > cut["lsn"].as_u64().unwrap() {
+            break;
+        }
+        world.apply(lsn, &entry);
+    }
+    let session = world.closing.as_ref().unwrap();
+    assert_eq!(
+        u64::from(expected.0 + expected.1 + expected.2),
+        session.participants.len() as u64
+    );
+    assert_eq!(expected.2 == 0 && expected.3 == 0, session.ready(&world));
+    let counts = session.counts(&world);
+    assert_eq!(
+        (
+            counts.acknowledged,
+            counts.settled,
+            counts.owed,
+            counts.running
+        ),
+        expected
+    );
+    assert!(progress["remaining_ms"].as_u64().unwrap() <= 360_000);
+}
+
+#[test]
+fn an_unfolded_announcement_never_publishes_a_mismatched_closing_cut() {
+    let fixture = Fixture::new();
+    let settings = settings(&fixture, free_port());
+    let daemon = duded::boot::boot_with_floor_faults(
+        &settings,
+        seams(
+            SharedHost::new(),
+            Arc::new(ScriptedRunner::default()),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+        ),
+        None,
+        FloorStreamFault::default().without_heartbeat(),
+    )
+    .unwrap();
+    let addr = daemon.floor_addr().unwrap();
+    let failure = daemon.onboarding_failure();
+    let mut running = common::start(daemon);
+    let issued = issue(&settings);
+    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
+    let mut browser = WebSocket::connect(addr, &cookie, &csrf);
+    browser.send(r#"{"type":"floor.subscribe"}"#);
+    let before = browser.json();
+    failure.arm(duded::runtime::OnboardingFailurePoint::ClosingAnnounced);
+    let mut client = Client::connect(settings.socket()).unwrap();
+    let response = client
+        .call_as_operator(
+            Method::SystemClosingTime,
+            Some(serde_json::json!({ "action": "announce" })),
+            credential_of(&settings),
+        )
+        .unwrap();
+    assert_eq!(response.error.unwrap().code, -32603);
+    while let Some(payload) = browser.frame() {
+        let frame: Value = serde_json::from_slice(&payload).unwrap();
+        assert!(frame["delta"].get("closing_time").is_none());
+        assert!(frame["delta"].get("closing_progress").is_none());
+        assert_eq!(frame["delta"]["lsn"], before["projection"]["lsn"]);
+    }
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(
+                record,
+                dudes_proto::Record::ClosingTime {
+                    phase: dudes_proto::ClosingPhase::Announced
+                }
+            ))
+            .count(),
+        1
+    );
+    assert!(
+        client
+            .call_as_operator(Method::AgentList, None, credential_of(&settings))
+            .unwrap()
+            .error
+            .is_none()
+    );
+    running.stop(duded::ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn ten_quiet_seconds_send_no_progress_and_a_new_subscription_samples_fresh_time() {
+    let fixture = Fixture::new();
+    let settings = settings(&fixture, free_port());
+    let daemon = duded::boot(
+        &settings,
+        seams(
+            SharedHost::new(),
+            Arc::new(ScriptedRunner::default()),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+        ),
+    )
+    .unwrap();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    common::set_goal(&running.handle, goal_params(agent, &["/usr/bin/true"]));
+    let issued = issue(&settings);
+    let (cookie, csrf) = exchange(addr, &issued.bootstrap);
+    let mut browser = WebSocket::connect(addr, &cookie, &csrf);
+    browser.send(r#"{"type":"floor.subscribe"}"#);
+    assert!(
+        browser.json()["projection"]
+            .get("closing_progress")
+            .is_none()
+    );
+    let mut operator = Client::connect(settings.socket()).unwrap();
+    assert!(
+        operator
+            .call_as_operator(
+                Method::SystemClosingTime,
+                Some(serde_json::json!({ "action": "announce" })),
+                credential_of(&settings)
+            )
+            .unwrap()
+            .error
+            .is_none()
+    );
+    let first = next_closing_progress(&mut browser);
+    assert_progress_cut(&fixture, &first, (0, 0, 1, 1));
+    let sampled = first["delta"]["closing_progress"]["remaining_ms"]
+        .as_u64()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        browser.read_timeout(
+            deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .max(Duration::from_millis(1)),
+        );
+        let mut byte = [0_u8; 1];
+        match browser.stream.peek(&mut byte) {
+            Ok(1) => {
+                let next = browser.json();
+                assert!(
+                    next["delta"].get("closing_progress").is_none(),
+                    "time alone published progress: {next}"
+                );
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            other => panic!("the owned closing stream remains live: {other:?}"),
+        }
+    }
+    let mut fresh = WebSocket::connect(addr, &cookie, &csrf);
+    fresh.send(r#"{"type":"floor.subscribe"}"#);
+    let snapshot = fresh.json();
+    assert_progress_cut(&fixture, &snapshot, (0, 0, 1, 1));
+    assert_eq!(
+        snapshot["projection"]["closing_time"],
+        serde_json::json!({ "kind": "announced" })
+    );
+    assert!(
+        snapshot["projection"]["closing_progress"]["remaining_ms"]
+            .as_u64()
+            .unwrap()
+            <= sampled - 9_500
+    );
+    drop(fresh);
+    drop(browser);
+    drop(operator);
+    running.stop(duded::ExitCause::ShutdownRpc);
+}
+
+#[test]
 fn only_generation_three_upgrades_before_any_domain_frame() {
     let fixture = Fixture::new();
     let settings = settings(&fixture, free_port());

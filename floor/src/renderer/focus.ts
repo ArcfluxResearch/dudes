@@ -46,11 +46,17 @@ export function closesDrawer(event: PanelKey & { readonly target: unknown }, ope
 }
 
 export function restoreFocusAfterDialog(
-  opener: Pick<HTMLElement, 'isConnected' | 'focus'> & { readonly disabled?: boolean } | null,
+  opener: Pick<HTMLElement, 'isConnected' | 'focus'> & { readonly disabled?: boolean; readonly ownerDocument?: Document } | null,
   fallback: Pick<HTMLElement, 'focus'> | null,
   schedule: (callback: () => void) => void = (callback) => { requestAnimationFrame(callback); },
 ): void {
-  schedule(() => { (opener?.isConnected && opener.disabled !== true ? opener : fallback)?.focus(); });
+  schedule(() => {
+    if (opener?.isConnected && opener.disabled !== true) {
+      opener.focus();
+      if (opener.ownerDocument === undefined || Object.is(opener.ownerDocument.activeElement, opener)) return;
+    }
+    fallback?.focus();
+  });
 }
 
 /**

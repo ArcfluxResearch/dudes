@@ -17,8 +17,13 @@ pub(super) struct BoardRow {
     pub(super) view: CardView,
     #[serde(default)]
     pub(super) claimed_lsn: Option<Lsn>,
-    /// Present only for a ticket.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Present only for a ticket. Stored under its own name because the flattened card has a
+    /// `ticket` of its own.
+    #[serde(
+        default,
+        rename = "ticket_row",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(super) ticket: Option<TicketRow>,
 }
 
@@ -59,6 +64,7 @@ pub(super) fn apply(
                     seq: Seq::ZERO,
                     claimed_by: None,
                     deps: deps.clone(),
+                    ticket: None,
                 },
                 claimed_lsn: None,
                 ticket: None,
@@ -203,6 +209,7 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
                 seq: Seq::ZERO,
                 claimed_by: None,
                 deps: Vec::new(),
+                ticket: None,
             };
             let ticket = TicketRow {
                 description: description.clone(),

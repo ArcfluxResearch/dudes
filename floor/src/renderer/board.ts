@@ -7,6 +7,29 @@ export type CardActor = { readonly kind: 'peer'; readonly pid: number }
   | { readonly kind: 'system' }
   | { readonly kind: 'browser_session'; readonly session_digest: string };
 
+/** Why the daemon moved a ticket into Needs you. */
+export type TicketReason = 'project_unavailable' | 'check_cannot_run' | 'ceiling_required' | 'reserve_missing'
+  | 'goal_changed' | 'limit_goal' | 'slowed' | 'no_turns' | 'held_launch' | 'held_failing' | 'held_unsure'
+  | 'worktree_missing';
+
+export const TICKET_REASONS: readonly TicketReason[] = Object.freeze([
+  'project_unavailable', 'check_cannot_run', 'ceiling_required', 'reserve_missing', 'goal_changed', 'limit_goal',
+  'slowed', 'no_turns', 'held_launch', 'held_failing', 'held_unsure', 'worktree_missing',
+]);
+
+/**
+ * What a snapshot says of a ticket: codes and counts, never the note, the agent's summary, a path or
+ * the check's output. Those come from the read route when a ticket is opened.
+ */
+export interface CardTicketRow {
+  /** Its place in its agent's queue, counting from 1, while it waits there. */
+  readonly position: number | null;
+  readonly round: number;
+  readonly reason: TicketReason | null;
+  /** The ticket was stopped and its agent is still finishing its current step. */
+  readonly stopping: boolean;
+}
+
 export interface CardRow {
   readonly id: string;
   readonly title: string;
@@ -16,7 +39,11 @@ export interface CardRow {
   readonly seq: number;
   readonly claimed_by: string | null;
   readonly deps: readonly string[];
+  /** `null` for a plain card. */
+  readonly ticket: CardTicketRow | null;
 }
+
+import { readable } from './ticket/words.ts';
 
 export const COLUMNS = Object.freeze([
   { key: 'todo', title: 'Todo' }, { key: 'doing', title: 'Doing' },
@@ -42,6 +69,28 @@ function actorOf(value: unknown): CardActor | null {
   return null;
 }
 
+
+function count(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 4_294_967_295;
+}
+
+/** The `ticket` member of a card: absent for a plain card, otherwise exactly the daemon's members or nothing. */
+function ticketOf(value: unknown): CardTicketRow | null | undefined {
+  if (value === undefined) return null;
+  const ticket = object(value);
+  if (ticket === null) return undefined;
+  const { position, round, reason, stopping } = ticket;
+  const place = position ?? null;
+  if (place !== null && (!count(place) || place < 1)) return undefined;
+  const rounds = round ?? 0;
+  if (!count(rounds)) return undefined;
+  const why = reason ?? null;
+  if (why !== null && !(typeof why === 'string' && (TICKET_REASONS as readonly string[]).includes(why))) return undefined;
+  const stop = stopping ?? false;
+  if (typeof stop !== 'boolean') return undefined;
+  return Object.freeze({ position: place, round: rounds, reason: why as TicketReason | null, stopping: stop });
+}
+
 function cardOf(value: unknown): CardRow | null {
   const row = object(value);
   if (row === null || typeof row.id !== 'string' || !CARD_ID.test(row.id)
@@ -54,9 +103,11 @@ function cardOf(value: unknown): CardRow | null {
   if (claimed !== null && (typeof claimed !== 'string' || !CARD_ID.test(claimed))) return null;
   const deps = row.deps ?? [];
   if (!Array.isArray(deps) || !deps.every((id) => typeof id === 'string' && CARD_ID.test(id))) return null;
-  return Object.freeze({ id: row.id, title: row.title, department: row.department,
+  const ticket = ticketOf(row.ticket);
+  if (ticket === undefined) return null;
+  return Object.freeze({ id: row.id, title: readable(row.title), department: row.department,
     status: row.status as CardStatus, status_by: Object.freeze(by), seq: row.seq,
-    claimed_by: claimed, deps: Object.freeze([...deps]) });
+    claimed_by: claimed, deps: Object.freeze([...deps]), ticket });
 }
 
 export function decodeCards(value: unknown): { readonly rows: readonly CardRow[]; readonly rejected: number } {

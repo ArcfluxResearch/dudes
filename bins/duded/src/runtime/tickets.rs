@@ -48,7 +48,7 @@ fn invalid(message: &str) -> RpcError {
 }
 
 fn operator(by: Actor) -> Result<(), RpcError> {
-    if matches!(by, Actor::Peer { .. }) {
+    if matches!(by, Actor::Peer { .. } | Actor::BrowserSession { .. }) {
         Ok(())
     } else {
         Err(error(
@@ -177,6 +177,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             seq: Seq::ZERO,
             claimed_by: None,
             deps: Vec::new(),
+            ticket: Some(crate::board::largest_ticket()),
         })?;
         self.board_append(Record::TicketCreated {
             card,

@@ -139,6 +139,9 @@ pub fn run(
             quickstart(invocation.json, plan.as_deref(), terminal, env, out, err)
         }
         Command::Start => start_command(invocation.json, env, out, err),
+        Command::SelectHire(params) => {
+            select_hire(params, invocation.json, terminal, env, out, err)
+        }
         Command::Login(provider) => login(*provider, terminal.is_some(), env, out),
         Command::Mail(command) => crate::mail::run(command, env, out)
             .map(|()| exit::SUCCESS)
@@ -440,15 +443,103 @@ fn dispatch(
         .flatten()
         .and_then(|result| serde_json::from_value::<HireResult>(result).ok());
     let status = render_answer(invocation, method, response, out)?;
+    if status == exit::SUCCESS && invocation.command == Command::FloorOpen {
+        project_hint(env, invocation.json, out)?;
+    }
     if let Some(version) = ping_version {
         write_restart_nudge(err, &version).map_err(local)?;
     }
-    if let (Some(hired), Command::Hire(params)) = (hired, &invocation.command)
-        && params.checkout.is_none()
-    {
-        warn_if_sharing(env, hired.agent, err);
+    if let (Some(hired), Command::Hire(params)) = (hired, &invocation.command) {
+        if params.checkout.is_none() {
+            warn_if_sharing(env, hired.agent, err);
+        }
+        if !invocation.json {
+            warn_if_no_project(env, hired.agent, err);
+        }
     }
     Ok(status)
+}
+
+fn select_hire(
+    params: &HireParams,
+    machine: bool,
+    terminal: Option<&mut dyn BufRead>,
+    env: &Environment,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<u8, Failure> {
+    let config = operator_config(env)?;
+    let check = match checked_reload(env, config)? {
+        ReloadCheck::Known(check) => check,
+        ReloadCheck::Unknown(mismatch) => return Err(local(mismatch.with_advice())),
+    };
+    let selected = match check.workspaces.as_slice() {
+        [] => None,
+        [only] => Some(only.clone()),
+        ids => {
+            let input = terminal.filter(|_| !machine).ok_or_else(|| local(
+                "More than one project is enrolled. Run `dudes hire` in a terminal to choose one, or pass --cwd <project folder>.",
+            ))?;
+            let mut term = Terminal::new(input, out);
+            Some(
+                term.value(&format!("Project ({})", ids.join(", ")), None, |text| {
+                    ids.iter()
+                        .find(|id| id.as_str() == text)
+                        .cloned()
+                        .ok_or_else(|| format!("Choose one of {}.", ids.join(", ")))
+                })
+                .map_err(local)?,
+            )
+        }
+    };
+    let cwd = if let Some(id) = selected {
+        if check.removed.contains(&id) || check.changed.iter().any(|changed| changed.id == id) {
+            return Err(local(
+                "Project settings have changed. Run `dudes workspace reload` before hiring, or pass --cwd <project folder>.",
+            ));
+        }
+        workspace::directory(config, &id).map_err(local)?
+    } else {
+        PathBuf::from(".")
+    };
+    dispatch(
+        &Invocation {
+            json: machine,
+            command: Command::Hire(Box::new(HireParams {
+                cwd,
+                ..params.clone()
+            })),
+        },
+        env,
+        out,
+        err,
+    )
+}
+
+fn warn_if_no_project(env: &Environment, agent: AgentId, err: &mut dyn Write) {
+    let Ok(agents) =
+        operator_call(env, Method::AgentList, None).and_then(typed::<Vec<dudes_proto::AgentView>>)
+    else {
+        return;
+    };
+    if let Some(hired) = agents
+        .iter()
+        .find(|hired| hired.id == agent && hired.workspace.is_none())
+    {
+        let advice = if no_projects(env) {
+            setup::NO_PROJECT_HINT
+        } else {
+            "Hire a new agent in a project with `dudes hire` to take tickets."
+        };
+        let _ = render::warning(
+            err,
+            &format!(
+                "{} has no project and can't take tickets. {}",
+                render::Escaped(&hired.name),
+                advice
+            ),
+        );
+    }
 }
 
 /// `dudes goal`: say first that the daemon runs the check once when it will, then make the call,
@@ -970,17 +1061,18 @@ fn quickstart(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<u8, Failure> {
-    let mut terminal = terminal.filter(|_| !machine);
+    let terminal = terminal.filter(|_| !machine);
     if plan.is_none() && terminal.is_none() {
         let answer = start(env, err)?;
         render::ping(out, machine, &answer).map_err(local)?;
+        project_hint(env, machine, out)?;
         return Ok(exit::SUCCESS);
     }
     env.state_dir().and(env.runtime_dir()).map_err(local)?;
     let config = operator_config(env)?;
     let cwd = env.current_dir().and_then(|dir| dir.canonicalize().ok());
     let mut draft = Draft::open(config).map_err(local)?;
-    let settled = match (plan, terminal.as_deref_mut()) {
+    let settled = match (plan, terminal) {
         (Some(plan), _) => scripted(plan.clone(), &mut draft)?,
         (None, Some(input)) => {
             let running = ping_once(env).is_ok();
@@ -1006,7 +1098,8 @@ fn quickstart(
     // A check is named on the first goal only when this run enrolls it, so the name is the one
     // the daemon records for the workspace's own check.
     let mut enrolled = None;
-    if let Some(new) = enrollment(&settled, cwd.as_deref())? {
+    let project = settled.project.as_deref().or(cwd.as_deref());
+    if let Some(new) = enrollment(&settled, project)? {
         if let Some(id) = draft.settings().enrolled_at(&new.path) {
             writeln!(
                 out,
@@ -1048,7 +1141,7 @@ fn quickstart(
             hire,
             department,
             settled.check.as_ref(),
-            cwd.as_deref(),
+            project,
             enrolled.as_ref().map(|(id, check)| Enrolled {
                 id,
                 config,
@@ -1057,64 +1150,25 @@ fn quickstart(
             out,
         )?;
     }
-    offer_login(env, &doctor.providers, terminal.filter(|_| guided), out)
+    project_hint(env, machine, out)?;
+    login_guidance(&doctor.providers, out)
 }
 
-/// Quickstart's last act: name each engine the daemon reports signed out, and on a
-/// terminal offer to sign in to the first. A yes replaces this process with the login, so nothing
-/// may be printed after it.
-fn offer_login(
-    env: &Environment,
-    providers: &[ProviderProbe],
-    terminal: Option<&mut dyn BufRead>,
-    out: &mut dyn Write,
-) -> Result<u8, Failure> {
-    let signed_out: Vec<(Engine, &ProviderProbe)> = providers
+fn login_guidance(providers: &[ProviderProbe], out: &mut dyn Write) -> Result<u8, Failure> {
+    for engine in providers
         .iter()
         .filter(|row| row.sign_in == Some(SignIn::SignedOut))
-        .filter_map(|row| Engine::of(row.provider).map(|engine| (engine, row)))
-        .collect();
-    let Some(((first, row), others)) = signed_out.split_first() else {
-        return Ok(exit::SUCCESS);
-    };
-    let name = |out: &mut dyn Write, engine: Engine| {
+        .filter_map(|row| Engine::of(row.provider))
+    {
         writeln!(
             out,
             "{} is signed out. Sign in with: dudes login {}",
             engine.title(),
             engine.provider()
         )
-        .map_err(local)
-    };
-    for (engine, _) in others {
-        name(out, *engine)?;
+        .map_err(local)?;
     }
-    let offer = Login::from_row(*first, Some(row))
-        .ok()
-        .filter(|_| cfg!(unix))
-        .zip(terminal);
-    let Some((login, input)) = offer else {
-        name(out, *first)?;
-        return Ok(exit::SUCCESS);
-    };
-    let question = if login.working_directory().is_some() {
-        format!(
-            "Sign in to {} for Dudes streaming now? This uses a separate sign-in home.",
-            first.title()
-        )
-    } else {
-        format!(
-            "Sign in to {} now? This runs {} in this terminal.",
-            first.title(),
-            login.command()
-        )
-    };
-    let answer = Terminal::new(input, out).yes(&question, false);
-    match answer {
-        Ok(true) => run_login(&login, env, out),
-        Ok(false) | Err(Stopped::Ended) => Ok(exit::SUCCESS),
-        Err(other) => Err(local(other)),
-    }
+    Ok(exit::SUCCESS)
 }
 
 /// `dudes login <engine>`: the daemon's answer first, then the engine's own login when it is not
@@ -1294,7 +1348,21 @@ fn start_command(
     if !machine {
         write_restart_nudge(out, &answer.version).map_err(local)?;
     }
+    project_hint(env, machine, out)?;
     Ok(exit::SUCCESS)
+}
+
+fn project_hint(env: &Environment, machine: bool, out: &mut dyn Write) -> Result<(), Failure> {
+    if !machine && no_projects(env) {
+        writeln!(out, "{}", setup::NO_PROJECT_HINT).map_err(local)?;
+    }
+    Ok(())
+}
+
+fn no_projects(env: &Environment) -> bool {
+    connect(env)
+        .and_then(|mut client| reload(&mut client, env, None))
+        .is_ok_and(|result| result.workspaces.is_empty())
 }
 
 /// The line that names a running daemon of another version and the way to replace it; nothing
@@ -1784,6 +1852,7 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         // Dispatched above. Reported rather than `unreachable!`, because a panic is a worse
         // diagnosis than a message and this binary has no state worth aborting to protect.
         Command::Quickstart(_)
+        | Command::SelectHire(_)
         | Command::Start
         | Command::Login(_)
         | Command::PauseAll
@@ -1819,8 +1888,14 @@ fn workspace_command(
     let config = operator_config(env)?;
     match command {
         WorkspaceCommand::Add(new) => {
-            let edit = workspace::add(config, new).map_err(local)?;
-            adopt(
+            let new = new
+                .resolve(
+                    env.current_dir(),
+                    &workspace::enrolled(config).map_err(local)?,
+                )
+                .map_err(local)?;
+            let edit = workspace::add(config, &new).map_err(local)?;
+            let status = adopt(
                 env,
                 config,
                 &edit,
@@ -1830,7 +1905,12 @@ fn workspace_command(
                 },
                 machine,
                 (out, err),
-            )
+            )?;
+            if status == exit::SUCCESS && !machine {
+                writeln!(out, "Enrolled project {} at {} with check {}. To change it, run `dudes workspace remove {}` and add it again with your options.", render::Escaped(&new.id), render::Escaped(&new.path.display().to_string()), render::Escaped(&new.completion_check_label), render::Escaped(&new.id))
+                    .map_err(|error| Failure::Other(Message::Local(error.to_string())))?;
+            }
+            Ok(status)
         }
         WorkspaceCommand::Remove { id } => {
             let edit = workspace::remove(config, id).map_err(local)?;
@@ -2045,6 +2125,7 @@ fn adopt(
     machine: bool,
     (out, err): (&mut dyn Write, &mut dyn Write),
 ) -> Result<u8, Failure> {
+    let adding = change.added.len() == 1 && change.removed.is_empty() && change.changed.is_empty();
     let Ok(mut client) = connect(env) else {
         let _ = writeln!(
             out,
@@ -2113,7 +2194,19 @@ fn adopt(
             ),
         );
     }
-    finish(out, machine, &result)
+    if adding && !machine && result.applied {
+        if !result.not_applied.is_empty() {
+            writeln!(
+                out,
+                "needs a daemon restart: {}",
+                render::Escaped(&result.not_applied.join(", "))
+            )
+            .map_err(local)?;
+        }
+        Ok(exit::SUCCESS)
+    } else {
+        finish(out, machine, &result)
+    }
 }
 
 /// One `floor.enrollment.reload` call over the operator door.
