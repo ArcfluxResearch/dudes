@@ -1,11 +1,13 @@
 //! Static outbound-network regression controls for the shipped binaries.
 //!
-//! The source scan resolves file-local imports and simple type aliases. It reads every Rust file
+//! The source scan recognizes known paths through file-wide import and type-alias candidates and
+//! local qualifiers. It does not resolve Rust namespaces or types. It reads every Rust file
 //! under the reachable workspace members' `src` directories, including out-of-line test files.
 //! Inline items and whole files whose `cfg` requires tests are skipped. Other configurations are
-//! scanned together. Macro tokens expose concrete paths, but synthesized paths, external
-//! reexports, implicit hostname lookup through listener APIs and arbitrary FFI remain outside
-//! this check. Dependency bans cover known clients, not every possible client implementation.
+//! scanned together. Macro tokens expose concrete paths, but synthesized paths, reexports and
+//! qualified members through user-defined modules, implicit hostname lookup through listener APIs
+//! and arbitrary FFI remain outside this check. Dependency bans cover known clients, not every
+//! possible client implementation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -285,15 +287,11 @@ impl Collector {
     fn check_path(&mut self, path: Vec<String>, span: Span) {
         let mut pending = vec![(path, BTreeSet::new())];
         while let Some((path, mut seen)) = pending.pop() {
+            let path = path
+                .into_iter()
+                .skip_while(|segment| matches!(segment.as_str(), "self" | "crate" | "super"))
+                .collect::<Vec<_>>();
             let Some(first) = path.first() else { continue };
-            if matches!(first.as_str(), "self" | "crate")
-                && path
-                    .get(1)
-                    .is_some_and(|name| self.aliases.contains_key(name))
-            {
-                pending.push((path[1..].to_vec(), seen));
-                continue;
-            }
             for (prefix, operations, capability) in CAPABILITIES {
                 if path
                     .iter()
@@ -755,6 +753,26 @@ mod tests {
                 capability: "outbound TCP"
             }]
         );
+    }
+
+    #[test]
+    fn file_local_parent_qualifiers_resolve_network_aliases_and_allow_ipc() {
+        for source in [
+            "use std::net::TcpStream as Stream; mod child { fn run() { super::Stream::connect(addr); } }",
+            "use std::net::TcpStream as Stream; mod child { mod nested { fn run() { super::super::Stream::connect(addr); } } }",
+            "use std::net::TcpStream as Stream; fn run() { crate::Stream::connect(addr); }",
+        ] {
+            assert_eq!(
+                violations(source).unwrap(),
+                vec![Violation {
+                    line: 1,
+                    capability: "outbound TCP"
+                }],
+                "{source}"
+            );
+        }
+        let ipc = "use std::os::unix::net::UnixStream as Stream; mod child { fn run() { super::Stream::connect(path); } }";
+        assert!(violations(ipc).unwrap().is_empty());
     }
 
     fn fixture(root: &Path) -> Value {
