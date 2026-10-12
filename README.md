@@ -114,6 +114,10 @@ If `dudes` runs something else, check `type dudes` for an alias or shell functio
   goal is Done. [The Floor](docs/floor.md) explains the rest, and [Chat](docs/chat.md) lets you
   message an agent from it.
 
+![Ticket board with a Needs you lane above To do, Working, Ready for you and Done columns.](.github/readme/board.png)
+
+Example tickets on the Board. Open a card to review the agent's summary and the daemon's check result.
+
 ## What agents can do on your machine
 
 Dudes' installed binaries use local connections by default. Usage and error
