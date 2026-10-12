@@ -761,7 +761,12 @@ fn opening_without_editor_configuration_prints_the_explicit_launch_form() {
     let world = world();
     let agent = world.hire("Cody", &world.repo);
     let card = world.add("Review locally");
-    assert_eq!(world.dudes(["ticket", "give", &card, "--agent", &agent]).code(), 0);
+    assert_eq!(
+        world
+            .dudes(["ticket", "give", &card, "--agent", &agent])
+            .code(),
+        0
+    );
 
     let opened = world.dudes(["ticket", "open", &card]);
     assert_eq!(opened.code(), 0, "{}", opened.output());
@@ -781,7 +786,12 @@ fn checkout_reads_survive_a_stopped_writer_while_ticket_changes_stay_fenced() {
     let world = world();
     let agent = world.hire("Cody", &world.repo);
     let card = world.add("Review after a write failure");
-    assert_eq!(world.dudes(["ticket", "give", &card, "--agent", &agent]).code(), 0);
+    assert_eq!(
+        world
+            .dudes(["ticket", "give", &card, "--agent", &agent])
+            .code(),
+        0
+    );
     world.running.append_failure.short_write_next(5);
     let failed = world.dudes(["--json", "ticket", "add", "--title", "Fail this append"]);
     assert_eq!(failed.json_error().code, -32603, "{}", failed.output());
@@ -794,5 +804,8 @@ fn checkout_reads_survive_a_stopped_writer_while_ticket_changes_stay_fenced() {
     assert_eq!(opened.stdout, format!("{}\n", world.repo.display()));
     let changed = world.dudes(["--json", "ticket", "add", "--title", "Still fenced"]);
     assert_eq!(changed.json_error().code, -32006, "{}", changed.output());
-    assert_eq!(world.dudes(["--json", "ping"]).json::<serde_json::Value>()["lsn"], before);
+    assert_eq!(
+        world.dudes(["--json", "ping"]).json::<serde_json::Value>()["lsn"],
+        before
+    );
 }

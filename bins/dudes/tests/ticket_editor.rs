@@ -1,21 +1,29 @@
-//! An explicit editor receives the ticket's exact recorded directory through the real CLI.
+//! Editors receive the ticket's exact recorded directory through the real CLI.
 #![cfg(unix)]
 
 mod common;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use common::{Cli, Fixture, OpenRunner, SharedHost, start};
+use common::{Cli, Fixture, OpenRunner, Running, SharedHost, start};
 use duded::floor_actions::{EnrolledCheck, Enrollment, Profile};
 use dudes_proto::rpc::agent::HireResult;
 use dudes_proto::rpc::ticket::TicketCreateResult;
 use dudes_proto::{AgentBudget, GoalBudget, Predicate};
 use dudes_types::{IsolationMode, Usd};
 
-#[test]
-fn an_explicit_editor_receives_only_the_recorded_directory_and_owns_the_exit_code() {
+struct Review {
+    _running: Running,
+    fixture: Fixture,
+    cli: Cli,
+    directory: PathBuf,
+    card: String,
+}
+
+fn review() -> Review {
     let fixture = Fixture::new();
     let repo = fixture.state.path().join("repository");
     fs::create_dir_all(repo.join(".git")).unwrap();
@@ -100,22 +108,74 @@ fn an_explicit_editor_receives_only_the_recorded_directory_and_owns_the_exit_cod
         .run();
     assert_eq!(assigned.code(), 0, "{}", assigned.output());
 
-    let editor = fixture.runtime.path().join("recording editor");
-    fs::write(
-        &editor,
-        b"#!/bin/sh\nprintf 'argc=%s\\noperand=%s\\nsocket=%s\\n' \"$#\" \"$1\" \"${DUDES_SOCK-unset}\"\nexit 37\n",
-    )
-    .unwrap();
+    Review {
+        _running,
+        fixture,
+        cli,
+        directory,
+        card,
+    }
+}
+
+fn recorder(review: &Review, name: &str, source: &[u8]) -> PathBuf {
+    let editor = review.fixture.runtime.path().join(name);
+    fs::write(&editor, source).unwrap();
     fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
-    let opened = cli
-        .args(["ticket", "open", &card, "--editor"])
+    editor
+}
+
+#[test]
+fn an_explicit_editor_receives_only_the_recorded_directory_and_owns_the_exit_code() {
+    let review = review();
+    let editor = recorder(
+        &review,
+        "recording editor",
+        b"#!/bin/sh\nprintf 'argc=%s\\noperand=%s\\nsocket=%s\\n' \"$#\" \"$1\" \"${DUDES_SOCK-unset}\"\nexit 37\n",
+    );
+    let opened = review
+        .cli
+        .args(["ticket", "open", &review.card, "--editor"])
         .arg(&editor)
         .run();
 
     assert_eq!(opened.code(), 37, "{}", opened.output());
     assert_eq!(
         opened.stdout,
-        format!("argc=1\noperand={}\nsocket=unset\n", directory.display())
+        format!("argc=1\noperand={}\nsocket=unset\n", review.directory.display())
+    );
+    assert_eq!(opened.stderr, "");
+}
+
+#[test]
+fn visual_takes_precedence_and_passes_its_arguments_before_the_recorded_directory() {
+    let review = review();
+    let visual = recorder(
+        &review,
+        "visual-editor",
+        b"#!/bin/sh\nprintf 'argc=%s\\n' \"$#\"\nprintf '%s\\n' \"$@\"\nexit 37\n",
+    );
+    let editor = recorder(
+        &review,
+        "fallback-editor",
+        b"#!/bin/sh\nprintf 'EDITOR ran\\n'\nexit 83\n",
+    );
+    let opened = review
+        .cli
+        .env(
+            "VISUAL",
+            format!("  {} \t --reuse-window   review-mode  ", visual.display()),
+        )
+        .env("EDITOR", editor)
+        .args(["ticket", "open", &review.card])
+        .run();
+
+    assert_eq!(opened.code(), 37, "{}", opened.output());
+    assert_eq!(
+        opened.stdout,
+        format!(
+            "argc=3\n--reuse-window\nreview-mode\n{}\n",
+            review.directory.display()
+        )
     );
     assert_eq!(opened.stderr, "");
 }
