@@ -4096,6 +4096,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Ask::AgentList
                     | Ask::BoardList(_)
                     | Ask::Ticket(TicketAsk::Read(_))
+                    | Ask::Ticket(TicketAsk::Checkout { .. })
                     | Ask::MemoryRead { caller: None, .. }
                     | Ask::MemorySearch { caller: None, .. }
                     | Ask::TeamRoster { caller: None }
