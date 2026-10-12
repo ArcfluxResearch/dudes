@@ -16,7 +16,7 @@ use super::{
     Failure, Socket, answer_result, call_presenting, connect, encode, local, operator_credential,
     typed,
 };
-use crate::args::{AgentRef, TicketCommand, TicketStatus};
+use crate::args::{AgentRef, EditorSelection, TicketCommand, TicketStatus};
 use crate::env::Environment;
 use crate::render::ticket::{AgentNames, agent_name};
 use crate::{exit, render};
@@ -229,7 +229,7 @@ pub(super) fn command(
         env,
     };
     match command {
-        TicketCommand::Open { card } => {
+        TicketCommand::Open { card, selection } => {
             let expected_seq = session.seq(*card, None)?;
             let cred = operator_credential(env)?;
             let params = encode(&TicketCheckoutParams {
@@ -256,6 +256,10 @@ pub(super) fn command(
                     render::Escaped(&result.directory.to_string_lossy())
                 )
                 .map_err(local)?;
+                if *selection == EditorSelection::Configured {
+                    writeln!(out, "To open an editor, run `dudes ticket open {card} --editor /absolute/program`.")
+                        .map_err(local)?;
+                }
             }
         }
         TicketCommand::Add { params, give_to } => {

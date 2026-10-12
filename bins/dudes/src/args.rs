@@ -285,6 +285,8 @@ pub enum TicketCommand {
     Open {
         /// The ticket.
         card: CardId,
+        /// The operator's local review choice.
+        selection: EditorSelection,
     },
     /// Create a ticket, and give it to an agent when `give_to` is set.
     Add {
@@ -359,6 +361,15 @@ pub enum TicketCommand {
         /// The ticket.
         card: CardId,
     },
+}
+
+/// How the operator wants the recorded directory handed off.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditorSelection {
+    /// Print without consulting editor configuration.
+    Print,
+    /// Use operator configuration, or print the explicit launch form when it is absent.
+    Configured,
 }
 
 /// One `worktree` subcommand.
@@ -1486,10 +1497,10 @@ fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
         let card = required(card, "<card>")?;
         return match subcommand.as_ref() {
             "open" => {
-                if !print {
-                    return Err(ArgError::Requires("ticket open", "--print"));
-                }
-                Ok(TicketCommand::Open { card })
+                Ok(TicketCommand::Open {
+                    card,
+                    selection: if print { EditorSelection::Print } else { EditorSelection::Configured },
+                })
             }
             "edit" => {
                 if title.is_none() && note.is_none() && done_when.is_none() {
