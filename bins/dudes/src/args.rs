@@ -746,6 +746,18 @@ COMMANDS
             dudes ticket changes <card> --message \"Also cover the empty form.\"
             dudes ticket stop <card>
 
+    ticket open <card> [--editor <absolute-program> | --print]
+        Review the current agent's recorded directory without changing the ticket.
+        --editor selects one absolute executable, with the directory as its only argument.
+        Otherwise use the first nonblank VISUAL, then EDITOR, on the operator's PATH.
+        Environment arguments split on whitespace; quotes and shell characters stay literal.
+        Use --editor for a program path containing spaces, or a wrapper for grouped arguments.
+        Invalid selected editors are refused without falling back to another selection.
+        --print and --json never launches an editor; both bypass editor configuration.
+        Neither can be combined with --editor. Without configuration, print the directory
+        and the explicit launch command. Windows and SSH sessions only print the directory.
+        Lease verification requires macOS or Linux; other platforms refuse leased checkouts.
+
     workspace add [<path>] [--id <id>] [--completion-check-label <text>] [--department <dept>]
                   [--hop-cap <n>] [--timeout-s <n>] [--label <text>]
                   [--agent-usd-per-day <usd>] [--goal-usd <usd>]
