@@ -164,6 +164,7 @@ test('Settings offers opt-in before a daemon report, renders denial guidance and
   let permission = 'default';
   let requests = 0;
   let saved = false;
+  const writeChoice = (_key, value) => { saved = value === 'true'; };
   const previousNotification = globalThis.Notification;
   const previousWindow = globalThis.window;
   globalThis.Notification = class {
@@ -172,13 +173,14 @@ test('Settings offers opt-in before a daemon report, renders denial guidance and
   };
   globalThis.window = { localStorage: {
     getItem: () => saved ? 'true' : null,
-    setItem: (_key, value) => { saved = value === 'true'; },
+    setItem: writeChoice,
   } };
   const root = resolve(import.meta.dirname, '..');
   const server = await createServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
   try {
     const { SettingsView } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
-    const { desktopNotificationPreference } = await server.ssrLoadModule('/src/renderer/desktopNotifications.ts');
+    const { desktopNotificationPreference, createNotificationPreference: reloadPreference }
+      = await server.ssrLoadModule('/src/renderer/desktopNotifications.ts');
     const html = () => renderToStaticMarkup(createElement(SettingsView, { floor: store.getFloorState(), onSetup() {} }));
     assert.match(html(), /Desktop notifications/);
     assert.match(html(), /aria-pressed="false"[^>]*>Turn notifications on/);
@@ -186,6 +188,14 @@ test('Settings offers opt-in before a daemon report, renders denial guidance and
     await desktopNotificationPreference.setEnabled(true);
     assert.match(html(), /aria-pressed="true"[^>]*>Turn notifications off/);
     assert.equal(requests, 1);
+    globalThis.window.localStorage.setItem = () => { throw Error('storage write'); };
+    await desktopNotificationPreference.setEnabled(false);
+    assert.deepEqual(desktopNotificationPreference.getState(), { kind: 'off', remembered: false });
+    assert.equal(saved, true);
+    assert.match(html(), /aria-pressed="false"[^>]*>Turn notifications on/);
+    assert.match(html(), /choice lasts only for this page/);
+    assert.deepEqual(reloadPreference().getState(), { kind: 'on', remembered: true });
+    globalThis.window.localStorage.setItem = writeChoice;
     await desktopNotificationPreference.setEnabled(false);
     permission = 'denied';
     await desktopNotificationPreference.setEnabled(true);
