@@ -54,6 +54,10 @@ fn insert_floor_views(doc: &mut Exported) {
 
 fn export_rpc() -> Exported {
     let mut doc = export::<Rpc>("rpc.schema.json");
+    insert_rpc_definition::<crate::rpc::CurrentMethods>(&mut doc, "CurrentMethods");
+    doc.schema["properties"]["methods"] = serde_json::json!({
+        "$ref": "#/$defs/CurrentMethods",
+    });
     insert_rpc_definition::<crate::rpc::team::RosterAgentParams>(&mut doc, "RosterAgentParams");
     insert_rpc_definition::<crate::rpc::closing::ClosingSchema>(&mut doc, "ClosingSchema");
     insert_floor_views(&mut doc);

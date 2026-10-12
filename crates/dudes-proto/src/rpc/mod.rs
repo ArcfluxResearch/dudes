@@ -50,6 +50,8 @@ pub mod agent;
 pub mod board;
 pub mod closing;
 pub mod cred;
+mod current;
+pub use current::{CurrentMethod, CurrentMethods};
 pub mod floor;
 pub mod goal;
 pub mod hook;

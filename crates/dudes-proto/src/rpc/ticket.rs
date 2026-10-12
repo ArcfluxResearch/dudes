@@ -1,7 +1,9 @@
 //! `ticket.*` params and results. Every change carries `expected_seq`, and a stale one is
 //! refused as `stale_card`. The caller is never a field: the daemon resolves who is asking.
 
-use dudes_types::{AgentId, CardId, Seq};
+use std::path::PathBuf;
+
+use dudes_types::{AgentId, CardId, Seq, WorktreeId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -121,6 +123,35 @@ pub struct TicketRemoveParams {
 pub struct TicketReadParams {
     /// The ticket.
     pub card: CardId,
+}
+
+/// `ticket.checkout` params. The observed card sequence binds the recorded claimant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TicketCheckoutParams {
+    /// The ticket.
+    pub card: CardId,
+    /// The card sequence the operator observed.
+    pub expected_seq: Seq,
+}
+
+/// The recorded layout needed to revalidate one leased checkout locally.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TicketCheckoutLease {
+    /// The daemon-created worktree identity.
+    pub worktree: WorktreeId,
+    /// The recorded origin repository.
+    pub origin: PathBuf,
+}
+
+/// `ticket.checkout` result. Paths are returned only to the local operator.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TicketCheckoutResult {
+    /// The absolute recorded working directory, without walking to a parent repository.
+    pub directory: PathBuf,
+    /// A lease whose `.git` and `commondir` layout the CLI must revalidate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<TicketCheckoutLease>,
 }
 
 /// `ticket.read` result.
