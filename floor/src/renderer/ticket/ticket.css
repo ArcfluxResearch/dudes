@@ -181,6 +181,12 @@
   margin-top: 1.5rem;
 }
 
+@media (min-width: 801px) and (max-width: 1199px) {
+  .ticket-card-regions > .task-columns {
+    gap: 0.75rem;
+  }
+}
+
 @media (max-width: 800px) {
   .ticket-new-toggle {
     top: 1.6rem;
