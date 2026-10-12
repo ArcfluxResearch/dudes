@@ -214,3 +214,93 @@ fn a_bare_editor_is_found_on_the_operators_path_with_its_arguments() {
     );
     assert_eq!(opened.stderr, "");
 }
+
+#[test]
+fn a_relative_path_entry_finds_an_editor_from_the_operator_directory() {
+    let review = review();
+    let editor = recorder(
+        &review,
+        "relative-editor",
+        b"#!/bin/sh\nprintf 'argc=%s\\n' \"$#\"\nprintf '%s\\n' \"$@\"\nexit 37\n",
+    );
+    let path =
+        std::env::join_paths([Path::new("."), Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+    let opened = review
+        .cli
+        .current_dir(editor.parent().unwrap())
+        .env("PATH", path)
+        .env("VISUAL", "relative-editor")
+        .args(["ticket", "open", &review.card])
+        .run();
+
+    assert_eq!(opened.code(), 37, "{}", opened.output());
+    assert_eq!(
+        opened.stdout,
+        format!("argc=1\n{}\n", review.directory.display())
+    );
+    assert_eq!(opened.stderr, "");
+}
+
+#[test]
+fn an_empty_path_entry_finds_an_editor_from_the_operator_directory() {
+    let review = review();
+    let editor = recorder(
+        &review,
+        "empty-editor",
+        b"#!/bin/sh\nprintf 'argc=%s\\n' \"$#\"\nprintf '%s\\n' \"$@\"\nexit 37\n",
+    );
+    let path =
+        std::env::join_paths([Path::new(""), Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+    let opened = review
+        .cli
+        .current_dir(editor.parent().unwrap())
+        .env("PATH", path)
+        .env("VISUAL", "empty-editor")
+        .args(["ticket", "open", &review.card])
+        .run();
+
+    assert_eq!(opened.code(), 37, "{}", opened.output());
+    assert_eq!(
+        opened.stdout,
+        format!("argc=1\n{}\n", review.directory.display())
+    );
+    assert_eq!(opened.stderr, "");
+}
+
+#[test]
+fn the_first_executable_inside_the_checkout_refuses_even_with_a_later_safe_candidate() {
+    let review = review();
+    let outside = recorder(
+        &review,
+        "selected-editor",
+        b"#!/bin/sh\nprintf 'safe editor ran\\n'\nexit 37\n",
+    );
+    let inside = review.directory.join("selected-editor");
+    fs::write(
+        &inside,
+        b"#!/bin/sh\nprintf 'inside editor ran\\n'\nexit 83\n",
+    )
+    .unwrap();
+    fs::set_permissions(&inside, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths([
+        Path::new(""),
+        outside.parent().unwrap(),
+        Path::new("/usr/bin"),
+        Path::new("/bin"),
+    ])
+    .unwrap();
+    let opened = review
+        .cli
+        .current_dir(&review.directory)
+        .env("PATH", path)
+        .env("VISUAL", "selected-editor")
+        .args(["ticket", "open", &review.card])
+        .run();
+
+    assert_eq!(opened.code(), 4, "{}", opened.output());
+    assert_eq!(opened.stdout, "");
+    assert_eq!(
+        opened.stderr,
+        "dudes: The editor must be outside the recorded checkout.\n"
+    );
+}
