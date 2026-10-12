@@ -128,11 +128,6 @@ pub(crate) struct Graph {
 }
 
 impl Graph {
-    /// Run `cargo metadata --all-features --locked` in the current workspace and parse it.
-    pub(crate) fn from_cargo() -> Result<Self> {
-        Self::from_value(&cargo_metadata()?)
-    }
-
     /// Build the graph from parsed `cargo metadata` JSON (format version 1).
     ///
     /// Edges that exist only as `dev-dependencies` are dropped: they never link into the artefact.

@@ -15,12 +15,17 @@
 //! - **Every row has a workspace member** ([`verdict`] under `--strict`) — enforced on request,
 //!   because a row for a crate that has not been written yet is how the gate stays ahead of the
 //!   code.
+//!
+//! Shipped binary closures also reject known network clients and outbound source capabilities.
 
 use std::collections::BTreeSet;
 
 use anyhow::{Result, bail};
 
-use crate::metadata::Graph;
+use crate::metadata::{self, Graph};
+
+#[path = "outbound.rs"]
+mod outbound;
 
 /// A layering rule: `member` must not transitively depend on any of `forbidden`.
 #[derive(Debug, Clone, Copy)]
@@ -371,7 +376,10 @@ pub(crate) fn check(graph: &Graph, rule: &Rule) -> Result<Outcome> {
         return Ok(Outcome::Skipped);
     };
     let mut paths = Vec::new();
-    for target in rule.forbidden {
+    let network = outbound::FORBIDDEN_DEPS.iter().filter(|target| {
+        outbound::BINARIES.contains(&rule.member) && !rule.forbidden.contains(target)
+    });
+    for target in rule.forbidden.iter().chain(network) {
         if let Some(path) = graph.path_to(start, target)? {
             paths.push(path);
         }
@@ -407,7 +415,10 @@ pub(crate) fn uncovered_members(graph: &Graph) -> Result<Vec<String>> {
 /// Run every rule against the real workspace and fail on any violation. With `strict`, a rule whose
 /// member crate is missing also fails.
 pub(crate) fn run(strict: bool) -> Result<()> {
-    evaluate(&Graph::from_cargo()?, strict)
+    let metadata = metadata::cargo_metadata()?;
+    let graph = Graph::from_value(&metadata)?;
+    evaluate(&graph, strict)?;
+    outbound::check(&metadata, &graph)
 }
 
 /// Evaluate the whole table against `graph`: every rule, then member coverage, then the verdict.
@@ -431,11 +442,19 @@ pub(crate) fn evaluate(graph: &Graph, strict: bool) -> Result<()> {
             Outcome::Violated(paths) => {
                 violations += paths.len();
                 for path in paths {
+                    let why = if outbound::BINARIES.contains(&rule.member)
+                        && path.last().is_some_and(|target| {
+                            outbound::FORBIDDEN_DEPS.contains(&target.as_str())
+                        }) {
+                        "shipped binaries link no outbound network clients"
+                    } else {
+                        rule.why
+                    };
                     println!(
                         "layering: {:<18} VIOLATION {} ({})",
                         rule.member,
                         path.join(" -> "),
-                        rule.why
+                        why
                     );
                 }
             }
@@ -968,6 +987,73 @@ mod tests {
         }
     }
 
+    #[test]
+    fn shipped_network_bans_are_pinned_and_enforced_transitively() {
+        let binaries = ["duded", "dudes", "dudes-hook"];
+        let clients = [
+            "async-net",
+            "awc",
+            "curl",
+            "curl-sys",
+            "hickory-resolver",
+            "hyper",
+            "hyper-util",
+            "isahc",
+            "native-tls",
+            "openssl",
+            "openssl-sys",
+            "reqwest",
+            "rustls",
+            "socket2",
+            "surf",
+            "trust-dns-resolver",
+            "tungstenite",
+            "ureq",
+        ];
+        assert_eq!(outbound::BINARIES, binaries);
+        assert_eq!(outbound::FORBIDDEN_DEPS, clients);
+        for binary in binaries {
+            for client in clients {
+                assert_direct_edge_is_a_violation(binary, client);
+                let graph = graph(
+                    &[binary],
+                    &[
+                        (binary, &[("middle", None)]),
+                        ("middle", &[(client, None)]),
+                        (client, NO_DEPS),
+                    ],
+                );
+                assert_eq!(
+                    check(&graph, rule(binary)).unwrap(),
+                    violated(&[&[binary, "middle", client]])
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hook_reqwest_dev_only_is_allowed_but_mixed_edge_fails() {
+        let clean = graph(
+            &["dudes-hook"],
+            &[
+                ("dudes-hook", &[("reqwest", Some("dev"))]),
+                ("reqwest", NO_DEPS),
+            ],
+        );
+        assert_eq!(check(&clean, rule("dudes-hook")).unwrap(), Outcome::Ok);
+        let mixed = graph_of_mixed(
+            &["dudes-hook"],
+            &[
+                ("dudes-hook", &[("reqwest", &[None, Some("dev")])]),
+                ("reqwest", NO_MIXED_DEPS),
+            ],
+        );
+        assert_eq!(
+            check(&mixed, rule("dudes-hook")).unwrap(),
+            violated(&[&["dudes-hook", "reqwest"]])
+        );
+    }
+
     /// Invariant 9: every row in `RULES` names a distinct member, so `run()` checks each member
     /// exactly once and a lookup by member binds to the only row for it. A duplicate row would be
     /// checked twice by the gate, and `rule()` would silently return whichever row came first —
@@ -1449,7 +1535,9 @@ mod tests {
 
     #[test]
     fn current_normal_pty_consumers_are_exactly_the_daemon() {
-        let graph = Graph::from_cargo().expect("current locked metadata");
+        let graph =
+            Graph::from_value(&metadata::cargo_metadata().expect("current locked metadata"))
+                .expect("current resolved graph");
         let pty = graph
             .nodes
             .iter()
