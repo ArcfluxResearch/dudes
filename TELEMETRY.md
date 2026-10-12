@@ -1,7 +1,7 @@
 # What Dudes and its engines send
 
 The `duded`, `dudes`, and `dudes-hook` binaries make no outbound Internet connections
-of their own. Dudes has no service that collects usage metrics or error reports.
+of their own. Dudes sends no usage metrics or error reports over the Internet.
 This boundary applies to the Dudes binaries, not to the separate programs they run.
 
 ## Dudes uses local connections
