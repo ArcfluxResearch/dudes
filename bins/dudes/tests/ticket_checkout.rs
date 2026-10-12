@@ -10,9 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use common::{Cli, Fixture, OpenRunner, Running, SharedHost, start};
-use dudes_proto::record::samples;
-use dudes_proto::{Actor, Entry, Predicate, Record, RecordKind, TicketCheck};
-use dudes_types::{CardId, GitCommit, Seq, Timestamp, WorktreeId};
+use dudes_proto::{Actor, AgentBudget, Entry, Predicate, Record, TicketCheck};
+use dudes_types::{AgentId, CardId, GitCommit, Provider, Seq, Timestamp, WorktreeId};
 
 fn git(repo: &Path, args: &[OsString]) -> String {
     let environment = BTreeMap::from([
@@ -80,19 +79,30 @@ fn lease() -> Lease {
     args.push(directory.clone().into_os_string());
     git(&origin, &args);
     let card = CardId::from_parts(4, 1);
-    let mut hired = samples::record(RecordKind::AgentHired);
-    let Record::AgentHired {
-        id,
-        cwd,
-        worktree: hired_worktree,
-        ..
-    } = &mut hired
-    else {
-        unreachable!()
+    let agent = AgentId::from_parts(0, 1);
+    let hired = Record::AgentHired {
+        id: agent,
+        name: "Kim".into(),
+        character: None,
+        accent: None,
+        role: "engineer".into(),
+        department: "engineering".into(),
+        provider: Provider::Claude,
+        cwd: directory.clone(),
+        workspace: None,
+        budget: AgentBudget {
+            usd_per_day: None,
+            tokens_per_day: None,
+        },
+        sandbox: None,
+        isolation: None,
+        max_turns: None,
+        max_budget: None,
+        trusted: false,
+        worktree: Some(worktree),
+        mcp_servers: Vec::new(),
+        browser_onboarding: None,
     };
-    let agent = *id;
-    *cwd = directory.clone();
-    *hired_worktree = Some(worktree);
     let records = [
         Record::WorktreeLeased {
             worktree,
