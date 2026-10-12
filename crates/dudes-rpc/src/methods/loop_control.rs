@@ -1,12 +1,5 @@
 //! `loop.pause`, `loop.resume` and `loop.halt`.
 //!
-//! **Three methods, not one.** They share params (`AgentRef`), a result (`Empty`) and a
-//! requirement, which is exactly what makes collapsing them into one parameterised handler look
-//! reasonable — and it is the thing to avoid. `CurrentMethod` is the key of the dispatch table, a row of
-//! `Requirement` is per method, and a client calls `loop.resume` by name; a single handler switching on
-//! `call.method` would put the method's identity inside the handler, where the registration table
-//! can no longer see it.
-//!
 //! Named `loop_control` because `loop` is a keyword.
 
 use std::sync::Arc;
