@@ -682,6 +682,18 @@ fn an_agent_cannot_claim_a_ticket_or_move_its_own_to_done_and_a_plain_card_is_un
         let refused = as_agent.call(method, Some(params)).unwrap().error.unwrap();
         assert_eq!(refused.code, ErrorCode::Unauthorized.code(), "{method:?}");
     }
+    for cred in [None, Some(credential(&daemon.settings))] {
+        let refused = as_agent
+            .call_current_presenting(
+                CurrentMethod::TicketCheckout,
+                Some(json!({"card": held, "expected_seq": held_seq, "token": token.expose()})),
+                cred,
+            )
+            .unwrap()
+            .error
+            .unwrap();
+        assert_eq!(refused.code, ErrorCode::Unauthorized.code());
+    }
     assert_eq!(
         fixture.records().len(),
         before,

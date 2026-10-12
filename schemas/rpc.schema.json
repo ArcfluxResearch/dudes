@@ -2573,6 +2573,1015 @@
       ],
       "type": "object"
     },
+    "CurrentMethods": {
+      "description": "Current method params and results, for schema export.",
+      "properties": {
+        "agent.answer": {
+          "description": "Answer an open `HumanQuestion`.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/AgentText",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "agent.ask": {
+          "description": "A managed agent asks its human something; the loop holds it at gate 3 until `agent.answer`.\nAgent-only, and the caller is the token's agent, never a params field.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/AskParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "agent.attach": {
+          "description": "Take the keyboard: opens the vendor TUI in a PTY and streams `pty.data`. Refused with\n`managed_only`, `exhausted` or `halted`.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/AttachParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/AttachResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "agent.detach": {
+          "description": "Give the keyboard back; the loop re-decides.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/AgentRef",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "agent.get": {
+          "description": "One agent.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/AgentRef",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/AgentView",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "agent.hire": {
+          "description": "Hire a managed agent.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/HireParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/HireResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "agent.list": {
+          "description": "Every hired, unretired agent.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "description": "The result.",
+              "items": {
+                "$ref": "#/$defs/AgentView"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "agent.look": {
+          "description": "Change a live agent's role and authored appearance.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/LookParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "agent.mcp": {
+          "description": "Read or replace one live agent's desired MCP names for later managed launches.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/McpParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/McpResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "agent.rename": {
+          "description": "Change only a live agent's display name.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/RenameParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "agent.retire": {
+          "description": "Retire an agent; its children are killed.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/RetireParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "agent.steer": {
+          "description": "Inject context on the agent's next event.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/AgentText",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "agent.why": {
+          "description": "The last `LoopDecided` with its gate trace.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/AgentRef",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/WhyResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "board.claim": {
+          "description": "Claim a card; `conflict` when `expected_seq` is stale.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/CardClaimParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "board.create": {
+          "description": "Create a card.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/CardCreateParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/CardCreateResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "board.list": {
+          "description": "Cards, filtered.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/CardListParams",
+              "description": "The params object."
+            },
+            "result": {
+              "description": "The result.",
+              "items": {
+                "$ref": "#/$defs/CardView"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "board.transition": {
+          "description": "Move a card; `conflict` when `expected_seq` is stale.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/CardTransitionParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "floor.enrollment.reload": {
+          "description": "Make the daemon adopt the `[floor.onboarding]` workspaces now in its own operator file,\nonly when the file and the change are the caller's.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/EnrollmentReloadParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/EnrollmentReloadResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "floor.session.issue": {
+          "description": "Issue a bounded, single-use bootstrap bearer for the read-only Floor.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/SessionIssueResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "floor.subscribe": {
+          "description": "The current projection, then `floor.delta` notifications.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/FloorProjection",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "floor.unsubscribe": {
+          "description": "Stop `floor.delta` notifications.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "goal.clear": {
+          "description": "Clear an agent's goal.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/AgentRef",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "goal.reassign": {
+          "description": "Hand a goal to another agent; refused with `open_turn` while a turn is in flight.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/GoalReassignParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "goal.replace": {
+          "description": "Replace the current goal and completion check without adding allowance.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/GoalReplaceParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/GoalReplaceResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "goal.set": {
+          "description": "Give an agent a goal.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/GoalSetParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/GoalSetResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "hook.event": {
+          "description": "A vendor hook event, verbatim, with the agent's token over the local transport.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/HookEventParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/VendorReply",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "journal.replay": {
+          "description": "Rebuild every projection from the journal.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "journal.tail": {
+          "description": "Subscribe to records from an lsn; each arrives as `journal.appended`.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/JournalTailParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "loop.halt": {
+          "description": "Stop the agent: no turns, and a running one is ended at its next boundary.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/AgentRef",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "loop.pause": {
+          "description": "Stop issuing turns for an agent; hooks and mail keep working.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/AgentRef",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "loop.resume": {
+          "description": "Lift a pause.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/AgentRef",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "mail.send": {
+          "description": "Send mail as the operator (`from` is `human`).",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/MailSendParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/MailSendResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "memory.append": {
+          "description": "Append to the calling agent's memory (agent token).",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/MemoryAppendParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/MemoryAppendResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "memory.read": {
+          "description": "Read memory from an lsn.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/MemoryReadParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/MemoryReadResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "memory.search": {
+          "description": "Bounded literal search of valid original memory and the current summary.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/MemorySearchParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/MemorySearchResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "pty.resize": {
+          "description": "Resize the PTY.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/PtyResizeParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "pty.write": {
+          "description": "The attacher's keystrokes, relayed verbatim to the PTY. Only the attacher may call it.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/PtyWriteParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "system.closingTime": {
+          "description": "Start the closing-time protocol.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "system.doctor": {
+          "description": "Everything `ping` says plus a provider probe table and per-agent health.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/DoctorResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "system.ping": {
+          "description": "Liveness: version, socket path and journal lsn.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/PingResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "system.shutdown": {
+          "description": "Stop issuing turns, wait for running ones, flush and exit.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/ShutdownResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "team.roster": {
+          "description": "Public colleagues. Agent calls present `team::RosterAgentParams`; business input is empty.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "description": "The result.",
+              "items": {
+                "$ref": "#/$defs/RosterEntry"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "ticket.accept": {
+          "description": "Accept a ticket that is Ready for you as done. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketAcceptParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "ticket.assign": {
+          "description": "Put a ticket in an agent's queue. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketAssignParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/TicketAssignResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "ticket.checkout": {
+          "description": "The operator's recorded-checkout read.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketCheckoutParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/TicketCheckoutResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "ticket.create": {
+          "description": "Make a ticket: a board card with a note, a project and a completion check. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketCreateParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/TicketCreateResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "ticket.edit": {
+          "description": "Change a ticket's title, note or check while it is in To do. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketEditParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "ticket.read": {
+          "description": "One ticket with its note, check and queue place. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketReadParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/TicketReadResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "ticket.remove": {
+          "description": "Take a ticket off the board. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketRemoveParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "ticket.stop": {
+          "description": "Stop work on a ticket and return it to To do. The running turn finishes by itself. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TicketStopParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "worktree.list": {
+          "description": "Every worktree lease that is not removed, with its path. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "description": "The result.",
+              "items": {
+                "$ref": "#/$defs/WorktreeEntry"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "worktree.removed": {
+          "description": "The operator removed a released lease's tree: journal it, refusing while the path exists.\nOperator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/RemovedParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/Empty",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "system.ping",
+        "system.doctor",
+        "system.shutdown",
+        "system.closingTime",
+        "agent.hire",
+        "agent.list",
+        "agent.get",
+        "agent.retire",
+        "agent.steer",
+        "agent.answer",
+        "agent.attach",
+        "agent.detach",
+        "agent.why",
+        "goal.set",
+        "goal.clear",
+        "goal.reassign",
+        "loop.pause",
+        "loop.resume",
+        "loop.halt",
+        "pty.write",
+        "pty.resize",
+        "board.create",
+        "board.claim",
+        "board.transition",
+        "board.list",
+        "mail.send",
+        "memory.append",
+        "memory.read",
+        "hook.event",
+        "journal.tail",
+        "journal.replay",
+        "floor.subscribe",
+        "floor.unsubscribe",
+        "agent.ask",
+        "floor.session.issue",
+        "floor.enrollment.reload",
+        "agent.rename",
+        "agent.look",
+        "team.roster",
+        "goal.replace",
+        "worktree.list",
+        "worktree.removed",
+        "memory.search",
+        "agent.mcp",
+        "ticket.create",
+        "ticket.edit",
+        "ticket.assign",
+        "ticket.remove",
+        "ticket.read",
+        "ticket.accept",
+        "ticket.stop",
+        "ticket.checkout"
+      ],
+      "title": "CurrentMethods",
+      "type": "object"
+    },
     "DoctorResult": {
       "description": "Additive operator-only journal diagnostic beside the existing doctor fields.",
       "properties": {
@@ -12081,6 +13090,67 @@
       ],
       "type": "object"
     },
+    "TicketCheckoutLease": {
+      "description": "The recorded layout needed to revalidate one leased checkout locally.",
+      "properties": {
+        "origin": {
+          "description": "The recorded origin repository.",
+          "type": "string"
+        },
+        "worktree": {
+          "$ref": "#/$defs/WorktreeId",
+          "description": "The daemon-created worktree identity."
+        }
+      },
+      "required": [
+        "worktree",
+        "origin"
+      ],
+      "type": "object"
+    },
+    "TicketCheckoutParams": {
+      "additionalProperties": false,
+      "description": "`ticket.checkout` params. The observed card sequence binds the recorded claimant.",
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "The ticket."
+        },
+        "expected_seq": {
+          "$ref": "#/$defs/Seq",
+          "description": "The card sequence the operator observed."
+        }
+      },
+      "required": [
+        "card",
+        "expected_seq"
+      ],
+      "type": "object"
+    },
+    "TicketCheckoutResult": {
+      "description": "`ticket.checkout` result. Paths are returned only to the local operator.",
+      "properties": {
+        "directory": {
+          "description": "The absolute recorded working directory, without walking to a parent repository.",
+          "type": "string"
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketCheckoutLease"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A lease whose `.git` and `commondir` layout the CLI must revalidate."
+        }
+      },
+      "required": [
+        "directory"
+      ],
+      "type": "object"
+    },
     "TicketCreateParams": {
       "additionalProperties": false,
       "description": "`ticket.create` params. Only the title is required.",
@@ -12994,8 +14064,7 @@
       "description": "Typed `error.data` shapes."
     },
     "methods": {
-      "$ref": "#/$defs/Methods",
-      "description": "Every method."
+      "$ref": "#/$defs/CurrentMethods"
     },
     "notification": {
       "$ref": "#/$defs/Notification",

@@ -254,6 +254,30 @@ fn the_exported_current_catalog_matches_the_production_dispatcher() {
     );
 }
 
+#[test]
+fn checkout_requires_the_operator_connections_peer_pid() {
+    use dudes_proto::rpc::{ErrorCode, JSONRPC, Request, RequestId};
+    use dudes_rpc::Outbound;
+    use dudes_rpc::auth::PeerProvenance;
+
+    let request = Request {
+        jsonrpc: JSONRPC.to_owned(),
+        id: RequestId::Number(1),
+        method: CurrentMethod::TicketCheckout.name().to_owned(),
+        params: Some(serde_json::json!({"card": dudes_types::CardId::NIL, "expected_seq": 0})),
+        v: None,
+        cred: Some(credential()),
+    };
+    let response = production_dispatcher().dispatch(
+        &request,
+        PeerProvenance::NoRecordedAgent,
+        &Arc::new(Outbound::sink()),
+    );
+    let refusal = response.error.unwrap();
+    assert_eq!(refusal.code, ErrorCode::Unauthorized.code());
+    assert_eq!(refusal.message, "board caller has no peer pid");
+}
+
 /// `system.doctor` is Operator-only on the daemon's own dispatcher.
 ///
 /// The assertion is deliberately over [`routed`], which constructs `boot::dispatch`: registering
