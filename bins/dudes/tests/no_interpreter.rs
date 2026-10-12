@@ -3062,6 +3062,62 @@ mod route_items {
         violations.into_iter().collect()
     }
 
+    fn path_lookups(name: &str, text: &str) -> Vec<String> {
+        struct Lookups<'a> {
+            file: &'a str,
+            function: String,
+            violations: Vec<String>,
+        }
+        impl<'ast> Visit<'ast> for Lookups<'_> {
+            fn visit_item_fn(&mut self, function: &'ast ItemFn) {
+                let previous =
+                    std::mem::replace(&mut self.function, function.sig.ident.to_string());
+                visit::visit_item_fn(self, function);
+                self.function = previous;
+            }
+            fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+                if let Expr::Path(path) = call.func.as_ref() {
+                    let name = path.path.segments.last().unwrap().ident.to_string();
+                    let reads_path = matches!(name.as_str(), "var" | "var_os")
+                        && call
+                            .args
+                            .first()
+                            .is_some_and(|argument| render(argument) == "\"PATH\"");
+                    if (name == "split_paths" || reads_path)
+                        && !matches!(
+                            (self.file, self.function.as_str()),
+                            ("editor.rs", "resolve_configured_program") | ("setup.rs", "on_path")
+                        )
+                    {
+                        self.violations
+                            .push(format!("{}::{}: {name}", self.file, self.function));
+                    }
+                }
+                visit::visit_expr_call(self, call);
+            }
+            fn visit_use_tree(&mut self, tree: &'ast UseTree) {
+                let name = match tree {
+                    UseTree::Name(name) => Some(&name.ident),
+                    UseTree::Rename(name) => Some(&name.ident),
+                    _ => None,
+                };
+                if name.is_some_and(|name| name == "split_paths") {
+                    self.violations
+                        .push(format!("{}: split_paths import", self.file));
+                }
+                visit::visit_use_tree(self, tree);
+            }
+        }
+        let file = syn::parse_file(text).expect("the lookup source parses");
+        let mut found = Lookups {
+            file: name,
+            function: String::new(),
+            violations: Vec::new(),
+        };
+        found.visit_file(&file);
+        found.violations
+    }
+
     fn managed_login_branch(statements: &[Stmt]) -> bool {
         let forms = |body: &syn::Block| {
             body.stmts
@@ -3161,6 +3217,36 @@ mod route_items {
             source("editor.rs")
         );
         assert!(!editor(&another).is_empty());
+    }
+
+    #[test]
+    fn path_lookup_stays_in_the_editor_resolver_and_existing_setup_probe() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        super::walk(&root, &mut |path| {
+            if path.extension().is_some_and(|extension| extension == "rs") {
+                let source = std::fs::read_to_string(path).unwrap();
+                assert!(
+                    path_lookups(path.file_name().unwrap().to_str().unwrap(), &source).is_empty(),
+                    "{}",
+                    path.display()
+                );
+            }
+        });
+        for name in ["editor.rs", "run.rs"] {
+            let mutant = format!(
+                "{}\nfn another_lookup() {{ let path = std::env::var_os(\"PATH\").unwrap(); let _ = std::env::split_paths(&path); }}\n",
+                source(name)
+            );
+            let rejected = path_lookups(name, &mutant);
+            assert_eq!(rejected.len(), 2, "{name}: {rejected:?}");
+            println!("PATH lookup outside resolver in {name}: {rejected:?}");
+        }
+        let aliased =
+            "use std::env::split_paths as elsewhere; fn another() { let _ = elsewhere(\"x\"); }";
+        assert_eq!(
+            path_lookups("run.rs", aliased),
+            ["run.rs: split_paths import"]
+        );
     }
 
     #[test]

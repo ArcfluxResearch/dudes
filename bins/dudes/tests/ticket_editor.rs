@@ -3,15 +3,17 @@
 
 mod common;
 
+use std::ffi::OsString;
 use std::fs;
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::ffi::OsStringExt as _;
+use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use common::{Cli, Fixture, OpenRunner, Running, SharedHost, start};
 use duded::floor_actions::{EnrolledCheck, Enrollment, Profile};
 use dudes_proto::rpc::agent::HireResult;
-use dudes_proto::rpc::ticket::TicketCreateResult;
+use dudes_proto::rpc::ticket::{TicketCheckoutResult, TicketCreateResult};
 use dudes_proto::{AgentBudget, GoalBudget, Predicate};
 use dudes_types::{IsolationMode, Usd};
 
@@ -303,4 +305,221 @@ fn the_first_executable_inside_the_checkout_refuses_even_with_a_later_safe_candi
         opened.stderr,
         "dudes: The editor must be outside the recorded checkout.\n"
     );
+}
+
+#[test]
+fn a_blank_visual_falls_through_to_editor() {
+    let review = review();
+    let editor = recorder(
+        &review,
+        "blank-visual-editor",
+        b"#!/bin/sh\nprintf 'argc=%s\\n' \"$#\"\nprintf '%s\\n' \"$@\"\nexit 37\n",
+    );
+    let opened = review
+        .cli
+        .env("VISUAL", " \t\n ")
+        .env("EDITOR", format!("{} --reuse-window", editor.display()))
+        .args(["ticket", "open", &review.card])
+        .run();
+
+    assert_eq!(opened.code(), 37, "{}", opened.output());
+    assert_eq!(
+        opened.stdout,
+        format!("argc=2\n--reuse-window\n{}\n", review.directory.display())
+    );
+    assert_eq!(opened.stderr, "");
+}
+
+#[test]
+fn an_invalid_selected_visual_refuses_without_switching_to_editor() {
+    let review = review();
+    let fallback = recorder(
+        &review,
+        "valid-fallback",
+        b"#!/bin/sh\nprintf 'fallback ran\\n'\nexit 37\n",
+    );
+    let non_executable = review.fixture.runtime.path().join("not-executable");
+    fs::write(&non_executable, b"#!/bin/sh\nexit 37\n").unwrap();
+    fs::set_permissions(&non_executable, fs::Permissions::from_mode(0o644)).unwrap();
+    let inside = review.directory.join("inside-editor");
+    fs::write(&inside, b"#!/bin/sh\nexit 83\n").unwrap();
+    fs::set_permissions(&inside, fs::Permissions::from_mode(0o755)).unwrap();
+    let alias = review.fixture.runtime.path().join("outside-alias");
+    symlink(&inside, &alias).unwrap();
+
+    for (selected, sentence) in [
+        (
+            review.fixture.runtime.path().join("missing-editor"),
+            "The editor is not an executable file.",
+        ),
+        (non_executable, "The editor is not an executable file."),
+        (
+            review.fixture.runtime.path().to_path_buf(),
+            "The editor is not an executable file.",
+        ),
+        (
+            PathBuf::from("./relative-editor"),
+            "The editor must name an absolute program.",
+        ),
+        (alias, "The editor must be outside the recorded checkout."),
+    ] {
+        let opened = review
+            .cli
+            .clone()
+            .env("VISUAL", selected)
+            .env("EDITOR", &fallback)
+            .args(["ticket", "open", &review.card])
+            .run();
+        assert_eq!(opened.code(), 4, "{}", opened.output());
+        assert_eq!(opened.stdout, "");
+        assert_eq!(opened.stderr, format!("dudes: {sentence}\n"));
+    }
+
+    let valid = review
+        .cli
+        .env("VISUAL", fallback)
+        .args(["ticket", "open", &review.card])
+        .run();
+    assert_eq!(valid.code(), 37, "{}", valid.output());
+    assert_eq!(valid.stdout, "fallback ran\n");
+    assert_eq!(valid.stderr, "");
+}
+
+#[test]
+fn an_unsupported_visual_encoding_refuses_without_editor_fallback() {
+    let review = review();
+    let fallback = recorder(
+        &review,
+        "encoding-fallback",
+        b"#!/bin/sh\nprintf 'fallback ran\\n'\nexit 37\n",
+    );
+    let opened = review
+        .cli
+        .clone()
+        .env("VISUAL", OsString::from_vec(vec![0xff]))
+        .env("EDITOR", &fallback)
+        .args(["ticket", "open", &review.card])
+        .run();
+
+    assert_eq!(opened.code(), 4, "{}", opened.output());
+    assert_eq!(opened.stdout, "");
+    assert_eq!(
+        opened.stderr,
+        "dudes: The selected editor configuration is not valid UTF-8.\n"
+    );
+
+    let valid = review
+        .cli
+        .env("VISUAL", fallback)
+        .args(["ticket", "open", &review.card])
+        .run();
+    assert_eq!(valid.code(), 37, "{}", valid.output());
+    assert_eq!(valid.stdout, "fallback ran\n");
+    assert_eq!(valid.stderr, "");
+}
+
+#[test]
+fn an_explicit_editor_ignores_malformed_editor_configuration() {
+    let review = review();
+    let editor = recorder(
+        &review,
+        "explicit-editor",
+        b"#!/bin/sh\nprintf 'argc=%s\\n' \"$#\"\nprintf '%s\\n' \"$@\"\nexit 37\n",
+    );
+    let opened = review
+        .cli
+        .env("VISUAL", OsString::from_vec(vec![0xff]))
+        .env("EDITOR", "./invalid-selection --extra")
+        .args(["ticket", "open", &review.card, "--editor"])
+        .arg(editor)
+        .run();
+
+    assert_eq!(opened.code(), 37, "{}", opened.output());
+    assert_eq!(
+        opened.stdout,
+        format!("argc=1\n{}\n", review.directory.display())
+    );
+    assert_eq!(opened.stderr, "");
+}
+
+#[test]
+fn configured_shell_characters_remain_literal_argument_content() {
+    let review = review();
+    let editor = recorder(
+        &review,
+        "literal-editor",
+        b"#!/bin/sh\nprintf 'argc=%s\\n' \"$#\"\nprintf '%s\\n' \"$@\"\nexit 37\n",
+    );
+    let opened = review
+        .cli
+        .env(
+            "VISUAL",
+            format!(
+                r#"{} 'two words' "$NAME" $(printf ignored) *.rs \path"#,
+                editor.display()
+            ),
+        )
+        .args(["ticket", "open", &review.card])
+        .run();
+
+    assert_eq!(opened.code(), 37, "{}", opened.output());
+    assert_eq!(
+        opened.stdout,
+        format!(
+            "argc=8\n'two\nwords'\n\"$NAME\"\n$(printf\nignored)\n*.rs\n\\path\n{}\n",
+            review.directory.display()
+        )
+    );
+    assert_eq!(opened.stderr, "");
+}
+
+#[test]
+fn print_and_json_bypass_malformed_editor_configuration() {
+    let review = review();
+    let cli = review
+        .cli
+        .env("VISUAL", OsString::from_vec(vec![0xff]))
+        .env("EDITOR", "./invalid-selection --extra");
+    let printed = cli
+        .clone()
+        .args(["ticket", "open", &review.card, "--print"])
+        .run();
+    assert_eq!(printed.code(), 0, "{}", printed.output());
+    assert_eq!(printed.stdout, format!("{}\n", review.directory.display()));
+    assert_eq!(printed.stderr, "");
+
+    let machine = cli.args(["--json", "ticket", "open", &review.card]).run();
+    assert_eq!(machine.code(), 0, "{}", machine.output());
+    let checkout = machine.json::<TicketCheckoutResult>();
+    assert_eq!(checkout.directory, review.directory);
+    assert_eq!(checkout.worktree, None);
+    assert_eq!(machine.stderr, "");
+}
+
+#[test]
+fn ssh_sessions_print_for_both_configured_and_explicit_editor_selections() {
+    let review = review();
+    let editor = recorder(
+        &review,
+        "ssh-editor",
+        b"#!/bin/sh\nprintf 'editor launched\\n'\nexit 37\n",
+    );
+    for marker in ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] {
+        for explicit in [false, true] {
+            let mut cli = review
+                .cli
+                .clone()
+                .env(marker, "present")
+                .env("VISUAL", OsString::from_vec(vec![0xff]))
+                .env("EDITOR", "./invalid-selection")
+                .args(["ticket", "open", &review.card]);
+            if explicit {
+                cli = cli.args(["--editor"]).arg(&editor);
+            }
+            let opened = cli.run();
+            assert_eq!(opened.code(), 0, "{}", opened.output());
+            assert_eq!(opened.stdout, format!("{}\n", review.directory.display()));
+            assert_eq!(opened.stderr, "");
+        }
+    }
 }
