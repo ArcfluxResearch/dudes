@@ -719,3 +719,24 @@ fn changes_needs_a_message_and_the_review_commands_take_a_card() {
         run.stderr
     );
 }
+#[test]
+fn opening_a_ticket_cannot_print_and_launch_an_editor() {
+    let run = Cli::bare()
+        .args([
+            "ticket",
+            "open",
+            "00000000000000000000000004",
+            "--print",
+            "--editor",
+            "/usr/bin/true",
+        ])
+        .run();
+
+    assert_eq!(run.code(), 1, "{}", run.output());
+    assert_eq!(run.stdout, "");
+    assert_eq!(
+        run.stderr,
+        "dudes: `--print` cannot be combined with `--editor`\n\
+         Run `dudes --help` for every command and its options.\n"
+    );
+}
