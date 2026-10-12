@@ -179,7 +179,25 @@ impl<'ast> Visit<'ast> for Imports<'_> {
     }
 
     fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
-        import_paths(&item.tree, &[], self.0);
+        import_paths(&item.tree, &[], self.0, true);
+    }
+
+    fn visit_impl_item(&mut self, item: &'ast syn::ImplItem) {
+        if !test_only(impl_attrs(item)) {
+            visit::visit_impl_item(self, item);
+        }
+    }
+
+    fn visit_trait_item(&mut self, item: &'ast syn::TraitItem) {
+        if !test_only(trait_attrs(item)) {
+            visit::visit_trait_item(self, item);
+        }
+    }
+
+    fn visit_expr_block(&mut self, block: &'ast syn::ExprBlock) {
+        if !test_only(&block.attrs) {
+            visit::visit_expr_block(self, block);
+        }
     }
 
     fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
@@ -201,12 +219,12 @@ impl<'ast> Visit<'ast> for Imports<'_> {
     }
 }
 
-fn import_paths(tree: &UseTree, prefix: &[String], aliases: &mut Aliases) {
+fn import_paths(tree: &UseTree, prefix: &[String], aliases: &mut Aliases, expand_globs: bool) {
     match tree {
         UseTree::Path(path) => {
             let mut prefix = prefix.to_vec();
             prefix.push(path.ident.to_string());
-            import_paths(&path.tree, &prefix, aliases);
+            import_paths(&path.tree, &prefix, aliases, expand_globs);
         }
         UseTree::Name(name) => {
             let mut path = prefix.to_vec();
@@ -230,14 +248,26 @@ fn import_paths(tree: &UseTree, prefix: &[String], aliases: &mut Aliases) {
         }
         UseTree::Group(group) => {
             for tree in &group.items {
-                import_paths(tree, prefix, aliases);
+                import_paths(tree, prefix, aliases, expand_globs);
             }
         }
         UseTree::Glob(_) => {
-            for name in ["TcpStream", "UdpSocket", "ToSocketAddrs"] {
-                let mut path = prefix.to_vec();
-                path.push(name.to_owned());
-                aliases.entry(name.to_owned()).or_default().insert(path);
+            if expand_globs {
+                let names: BTreeSet<_> = CAPABILITIES
+                    .iter()
+                    .flat_map(|(path, operations, _)| {
+                        path.last()
+                            .filter(|_| path.len() > 1)
+                            .copied()
+                            .into_iter()
+                            .chain(operations.iter().copied())
+                    })
+                    .collect();
+                for name in names {
+                    let mut path = prefix.to_vec();
+                    path.push(name.to_owned());
+                    aliases.entry(name.to_owned()).or_default().insert(path);
+                }
             }
         }
     }
@@ -261,7 +291,7 @@ impl Collector {
         let mut pending = vec![(path, BTreeSet::new())];
         while let Some((path, mut seen)) = pending.pop() {
             let Some(first) = path.first() else { continue };
-            if matches!(first.as_str(), "self" | "super" | "crate")
+            if matches!(first.as_str(), "self" | "crate")
                 && path
                     .get(1)
                     .is_some_and(|name| self.aliases.contains_key(name))
@@ -292,7 +322,11 @@ impl Collector {
                 continue;
             }
             for alias in &aliases {
-                if alias == std::slice::from_ref(first) {
+                if alias == std::slice::from_ref(first)
+                    || (alias.first().is_some_and(|prefix| {
+                        matches!(prefix.as_str(), "self" | "super" | "crate")
+                    }) && alias.last() == Some(first))
+                {
                     continue;
                 }
                 let expanded = alias.iter().chain(&path[1..]).cloned().collect();
@@ -312,12 +346,21 @@ impl Collector {
             };
             let mut path = vec![ident.to_string()];
             let mut next = at + 1;
-            while let [
-                TokenTree::Punct(a),
-                TokenTree::Punct(b),
-                TokenTree::Ident(ident),
-            ] = &tokens[next..tokens.len().min(next + 3)]
-            {
+            loop {
+                if matches!(tokens.get(next), Some(TokenTree::Punct(punct)) if punct.as_char() == '>')
+                {
+                    next += 1;
+                }
+                let Some(
+                    [
+                        TokenTree::Punct(a),
+                        TokenTree::Punct(b),
+                        TokenTree::Ident(ident),
+                    ],
+                ) = tokens.get(next..next + 3)
+                else {
+                    break;
+                };
                 if a.as_char() != ':' || b.as_char() != ':' {
                     break;
                 }
@@ -344,6 +387,24 @@ impl<'ast> Visit<'ast> for Collector {
         visit::visit_path(self, path);
     }
 
+    fn visit_impl_item(&mut self, item: &'ast syn::ImplItem) {
+        if !test_only(impl_attrs(item)) {
+            visit::visit_impl_item(self, item);
+        }
+    }
+
+    fn visit_trait_item(&mut self, item: &'ast syn::TraitItem) {
+        if !test_only(trait_attrs(item)) {
+            visit::visit_trait_item(self, item);
+        }
+    }
+
+    fn visit_expr_block(&mut self, block: &'ast syn::ExprBlock) {
+        if !test_only(&block.attrs) {
+            visit::visit_expr_block(self, block);
+        }
+    }
+
     fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
         if let Some(qself) = &expr.qself
             && let Type::Path(ty) = &*qself.ty
@@ -359,7 +420,7 @@ impl<'ast> Visit<'ast> for Collector {
 
     fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
         let mut aliases = Aliases::new();
-        import_paths(&item.tree, &[], &mut aliases);
+        import_paths(&item.tree, &[], &mut aliases, false);
         for path in aliases.into_values().flatten() {
             self.check_path(path, item.span());
         }
@@ -401,6 +462,26 @@ fn item_attrs(item: &Item) -> &[Attribute] {
         Item::Type(item) => &item.attrs,
         Item::Union(item) => &item.attrs,
         Item::Use(item) => &item.attrs,
+        _ => &[],
+    }
+}
+
+fn impl_attrs(item: &syn::ImplItem) -> &[Attribute] {
+    match item {
+        syn::ImplItem::Const(item) => &item.attrs,
+        syn::ImplItem::Fn(item) => &item.attrs,
+        syn::ImplItem::Type(item) => &item.attrs,
+        syn::ImplItem::Macro(item) => &item.attrs,
+        _ => &[],
+    }
+}
+
+fn trait_attrs(item: &syn::TraitItem) -> &[Attribute] {
+    match item {
+        syn::TraitItem::Const(item) => &item.attrs,
+        syn::TraitItem::Fn(item) => &item.attrs,
+        syn::TraitItem::Type(item) => &item.attrs,
+        syn::TraitItem::Macro(item) => &item.attrs,
         _ => &[],
     }
 }
@@ -500,6 +581,18 @@ mod tests {
                 "raw socket connect",
             ),
             (
+                "use nix::sys::socket::*; fn run() { connect(fd, addr); }",
+                "raw socket connect",
+            ),
+            (
+                "use libc::*; fn run() { getaddrinfo(host, service, hint, result); }",
+                "DNS lookup",
+            ),
+            (
+                "use windows_sys::Win32::Networking::WinSock::*; fn run() { WSAConnect(socket, addr, len, ptr, ptr, ptr, ptr); }",
+                "WinSock outbound/DNS",
+            ),
+            (
                 "use windows_sys::Win32::Networking::WinSock as sockets; fn run() { sockets::WSAConnect(socket, addr, len, ptr, ptr, ptr, ptr); }",
                 "WinSock outbound/DNS",
             ),
@@ -527,6 +620,13 @@ mod tests {
             fn pipe() { std::fs::OpenOptions::new().open(r"\\.\pipe\control"); }
         "#;
         assert!(violations(source).unwrap().is_empty());
+        assert!(
+            violations(
+                "use std::net::*; fn accepted(stream: TcpStream) { stream.write_all(b\"ok\"); }"
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
 
     #[test]
@@ -540,6 +640,18 @@ mod tests {
                 capability: "outbound TCP"
             }]
         );
+        for source in [
+            "fn run() { wrap!(<std::net::TcpStream>::connect(addr)); }",
+            "use std::net::TcpStream as Stream; fn run() { wrap!(<Stream>::connect(addr)); }",
+        ] {
+            assert_eq!(
+                violations(source).unwrap(),
+                vec![Violation {
+                    line: 1,
+                    capability: "outbound TCP"
+                }]
+            );
+        }
         let clean = r#"
             // std::net::TcpStream::connect(addr)
             fn run() { let text = "std::net::TcpStream::connect(addr)"; format!("{}", text); }
@@ -592,12 +704,51 @@ mod tests {
     }
 
     #[test]
+    fn test_only_associated_items_and_blocks_are_skipped() {
+        let source = "struct App; impl App { #[cfg(test)] fn run() { std::net::TcpStream::connect(addr); } } trait AppTrait { #[cfg(test)] fn run() { std::net::TcpStream::connect(addr); } } fn run() { #[cfg(test)] { std::net::TcpStream::connect(addr); } }";
+        assert!(violations(source).unwrap().is_empty());
+        for source in [
+            "struct App; impl App { #[cfg(any(test, unix))] fn run() { std::net::TcpStream::connect(addr); } }",
+            "trait AppTrait { #[cfg(any(test, unix))] fn run() { std::net::TcpStream::connect(addr); } }",
+            "fn run() { #[cfg(any(test, unix))] { std::net::TcpStream::connect(addr); } }",
+        ] {
+            assert_eq!(
+                violations(source).unwrap(),
+                vec![Violation {
+                    line: 1,
+                    capability: "outbound TCP"
+                }]
+            );
+        }
+    }
+
+    #[test]
     fn recursive_alias_resolution_fails_closed() {
         assert!(
             violations("type A = B; type B = A; fn run() { A::connect(addr); }")
                 .unwrap_err()
                 .to_string()
                 .contains("recursive")
+        );
+    }
+
+    #[test]
+    fn qualified_same_name_imports_are_terminal() {
+        for source in [
+            "use super::secret; fn run() { secret::open(); }",
+            "use super::{Method, Event}; fn run(method: Method, event: Event) {}",
+            "use self::local::Stream; fn run() { Stream::connect(addr); }",
+            "use crate::local::Stream; fn run() { Stream::connect(addr); }",
+        ] {
+            assert!(violations(source).unwrap().is_empty(), "{source}");
+        }
+        assert_eq!(
+            violations("type Conn = std::net::TcpStream; fn run() { self::Conn::connect(addr); }")
+                .unwrap(),
+            vec![Violation {
+                line: 1,
+                capability: "outbound TCP"
+            }]
         );
     }
 
