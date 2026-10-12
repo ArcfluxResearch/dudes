@@ -4,11 +4,11 @@ use std::io::Write;
 
 use dudes_proto::rpc::board::CardListParams;
 use dudes_proto::rpc::ticket::{
-    TicketAcceptParams, TicketAssignParams, TicketAssignResult, TicketCreateParams,
-    TicketCreateResult, TicketEditParams, TicketReadParams, TicketReadResult, TicketRemoveParams,
-    TicketStopParams,
+    TicketAcceptParams, TicketAssignParams, TicketAssignResult, TicketCheckoutParams,
+    TicketCheckoutResult, TicketCreateParams, TicketCreateResult, TicketEditParams,
+    TicketReadParams, TicketReadResult, TicketRemoveParams, TicketStopParams,
 };
-use dudes_proto::rpc::{Empty, ErrorCode, Method, RpcError};
+use dudes_proto::rpc::{CurrentMethod, Empty, ErrorCode, Method, RpcError};
 use dudes_proto::{AgentView, TicketRefusal};
 use dudes_types::{AgentId, CardId, CardStatus, Seq};
 
@@ -229,6 +229,35 @@ pub(super) fn command(
         env,
     };
     match command {
+        TicketCommand::Open { card } => {
+            let expected_seq = session.seq(*card, None)?;
+            let cred = operator_credential(env)?;
+            let params = encode(&TicketCheckoutParams {
+                card: *card,
+                expected_seq,
+            })?;
+            let result: TicketCheckoutResult = typed(answer_result(
+                session
+                    .client
+                    .call_current_as_operator(CurrentMethod::TicketCheckout, Some(params), cred)
+                    .map_err(local)?,
+            )?)?;
+            if !result.directory.is_dir() {
+                return Err(local(
+                    "The recorded checkout directory is no longer available.",
+                ));
+            }
+            if machine {
+                render::json(out, &result).map_err(local)?;
+            } else {
+                writeln!(
+                    out,
+                    "{}",
+                    render::Escaped(&result.directory.to_string_lossy())
+                )
+                .map_err(local)?;
+            }
+        }
         TicketCommand::Add { params, give_to } => {
             let created = session.create(params, machine)?;
             render::ticket::added(out, machine, &created).map_err(local)?;

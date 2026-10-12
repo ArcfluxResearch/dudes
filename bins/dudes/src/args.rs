@@ -281,6 +281,11 @@ impl From<String> for AgentRef {
 /// One operator ticket command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TicketCommand {
+    /// Print the ticket's recorded checkout for local review.
+    Open {
+        /// The ticket.
+        card: CardId,
+    },
     /// Create a ticket, and give it to an agent when `give_to` is set.
     Add {
         /// The ticket's fields.
@@ -1425,18 +1430,28 @@ fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
     }
     if !matches!(
         subcommand.as_ref(),
-        "add" | "edit" | "give" | "changes" | "accept" | "stop" | "remove" | "list" | "show"
+        "add"
+            | "edit"
+            | "give"
+            | "changes"
+            | "accept"
+            | "stop"
+            | "remove"
+            | "list"
+            | "show"
+            | "open"
     ) {
         return Err(ArgError::UnknownCommand(format!("ticket {subcommand}")));
     }
     let takes_card = matches!(
         subcommand.as_ref(),
-        "edit" | "give" | "changes" | "accept" | "stop" | "remove" | "show"
+        "edit" | "give" | "changes" | "accept" | "stop" | "remove" | "show" | "open"
     );
     let mut flags = Flags::new(rest);
     let mut card = None;
     let (mut title, mut note, mut project, mut done_when) = (None, None, None, None);
     let (mut agent, mut message, mut status, mut seq) = (None, None, None, None);
+    let mut print = false;
     while let Some(arg) = flags.next() {
         match (subcommand.as_ref(), arg.to_string_lossy().as_ref()) {
             (_, "--help" | "-h") => return Err(ArgError::HelpRequested),
@@ -1451,6 +1466,7 @@ fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
                 seq = Some(Seq(flags.parsed::<u64>("--expected-seq", "a whole number")?));
             }
             ("list", "--status") => status = Some(ticket_status(&mut flags)?),
+            ("open", "--print") => print = true,
             (_, other) if takes_card && card.is_none() && !other.starts_with('-') => {
                 card = Some(
                     arg.to_str()
@@ -1469,6 +1485,12 @@ fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
     if takes_card {
         let card = required(card, "<card>")?;
         return match subcommand.as_ref() {
+            "open" => {
+                if !print {
+                    return Err(ArgError::Requires("ticket open", "--print"));
+                }
+                Ok(TicketCommand::Open { card })
+            }
             "edit" => {
                 if title.is_none() && note.is_none() && done_when.is_none() {
                     return Err(ArgError::Requires(

@@ -54,7 +54,7 @@ mod tests {
         let outbound = std::sync::Arc::new(crate::outbound::Outbound::sink());
         let call = || Call {
             goal_replacement: None,
-            method: Method::SystemPing,
+            method: Method::SystemPing.into(),
             params: None,
             role: &role,
             outbound: &outbound,

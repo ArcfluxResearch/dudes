@@ -1,11 +1,12 @@
-//! The ticket methods. Each runs on the writer thread, decides against the board projection and
-//! appends one record. A refusal appends nothing.
+//! Ticket methods resolve against the board on the writer thread. Mutations append records;
+//! reads and refusals append nothing.
 
 use super::{Answered, Clock, Daemon, PredicateRunner, ProcessHost, Rng, TicketAsk, error};
 use dudes_proto::rpc::ticket::{
     TicketAcceptParams, TicketAssignOutcome, TicketAssignParams, TicketAssignResult,
-    TicketCreateParams, TicketCreateResult, TicketEditParams, TicketReadParams, TicketReadResult,
-    TicketRemoveParams, TicketStopParams,
+    TicketCheckoutLease, TicketCheckoutParams, TicketCheckoutResult, TicketCreateParams,
+    TicketCreateResult, TicketEditParams, TicketReadParams, TicketReadResult, TicketRemoveParams,
+    TicketStopParams,
 };
 use dudes_proto::rpc::{ErrorCode, RpcError};
 use dudes_proto::ticket::{
@@ -114,6 +115,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             TicketAsk::Accept { request, by } => self.ticket_accept(&request, by),
             TicketAsk::Stop { request, by } => self.ticket_stop(&request, by),
             TicketAsk::Read(request) => self.ticket_read(request),
+            TicketAsk::Checkout { request, by } => self.ticket_checkout(request, by),
         }
     }
 
@@ -439,6 +441,77 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             reason: None,
         })?;
         Ok(Answered::Done)
+    }
+
+    fn ticket_checkout(
+        &self,
+        request: TicketCheckoutParams,
+        by: Actor,
+    ) -> Result<Answered, RpcError> {
+        if !matches!(by, Actor::Peer { .. }) {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "checkout requires a local operator",
+            ));
+        }
+        let (card, _) = self.ticket_row(request.card)?;
+        if card.seq != request.expected_seq {
+            return Err(stale(&card));
+        }
+        let unavailable = |reason: &'static str, message: &'static str| RpcError {
+            code: ErrorCode::Refused.code(),
+            message: String::from(message),
+            data: Some(serde_json::json!({"reason": reason})),
+        };
+        let owner = card
+            .claimed_by
+            .ok_or_else(|| unavailable("unassigned", "That ticket has no current agent."))?;
+        let world = self.sup.world();
+        let agent = world
+            .agents
+            .get(&owner)
+            .filter(|agent| !agent.retired)
+            .ok_or_else(|| {
+                unavailable(
+                    "agent_unavailable",
+                    "That ticket's agent is no longer available.",
+                )
+            })?;
+        let (directory, worktree) = match agent.worktree {
+            None => (agent.cwd.clone(), None),
+            Some(id) => {
+                let lease = world
+                    .worktrees
+                    .get(&id)
+                    .filter(|lease| lease.agent == Some(owner))
+                    .filter(|_| {
+                        world.worktree_state(id) == Some(dudes_supervisor::WorktreeState::Active)
+                    })
+                    .ok_or_else(|| {
+                        unavailable(
+                            "worktree_unavailable",
+                            "That ticket's recorded worktree is no longer available.",
+                        )
+                    })?;
+                (
+                    lease.path.clone(),
+                    Some(TicketCheckoutLease {
+                        worktree: id,
+                        origin: lease.origin.clone(),
+                    }),
+                )
+            }
+        };
+        if !directory.is_absolute() {
+            return Err(unavailable(
+                "directory_unavailable",
+                "The recorded checkout is not an absolute directory.",
+            ));
+        }
+        Ok(Answered::TicketCheckout(TicketCheckoutResult {
+            directory,
+            worktree,
+        }))
     }
 
     fn ticket_read(&self, request: TicketReadParams) -> Result<Answered, RpcError> {

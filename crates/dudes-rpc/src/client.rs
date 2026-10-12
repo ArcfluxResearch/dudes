@@ -8,7 +8,9 @@
 use std::io::{BufRead, Write};
 
 use dudes_proto::rpc::cred::OperatorCredential;
-use dudes_proto::rpc::{JSONRPC, Method, Notification, Request, RequestId, Response};
+use dudes_proto::rpc::{
+    CurrentMethod, JSONRPC, Method, Notification, Request, RequestId, Response,
+};
 use serde_json::Value;
 
 use crate::codec::{FrameError, read_frame, write_frame};
@@ -202,7 +204,21 @@ impl<R: BufRead, W: Write> Client<R, W> {
         params: Option<Value>,
         cred: OperatorCredential,
     ) -> Result<Response, ClientError> {
-        self.send_presenting(method, params, Some(cred))?;
+        self.call_current_as_operator(method.into(), params, cred)
+    }
+
+    /// Call a current contract method while presenting an operator credential.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError`] when the conversation failed. A refusal is an answer.
+    pub fn call_current_as_operator(
+        &mut self,
+        method: CurrentMethod,
+        params: Option<Value>,
+        cred: OperatorCredential,
+    ) -> Result<Response, ClientError> {
+        self.send_current_presenting(method, params, Some(cred))?;
         self.read_response()
     }
 
@@ -235,6 +251,15 @@ impl<R: BufRead, W: Write> Client<R, W> {
         params: Option<Value>,
         cred: Option<OperatorCredential>,
     ) -> Result<RequestId, ClientError> {
+        self.send_current_presenting(method.into(), params, cred)
+    }
+
+    fn send_current_presenting(
+        &mut self,
+        method: CurrentMethod,
+        params: Option<Value>,
+        cred: Option<OperatorCredential>,
+    ) -> Result<RequestId, ClientError> {
         let id = RequestId::Number(self.next_id);
         self.next_id += 1;
         let request = Request {
@@ -245,7 +270,7 @@ impl<R: BufRead, W: Write> Client<R, W> {
             v: None,
             cred,
         };
-        if method == Method::GoalReplace {
+        if method == CurrentMethod::Legacy(Method::GoalReplace) {
             let bytes = serde_json::to_vec(&request)
                 .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
             if bytes.len() > dudes_proto::rpc::goal::MAX_GOAL_REPLACE_BYTES {
@@ -334,6 +359,68 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn current_and_legacy_operator_calls_share_the_typed_frame_path() {
+        let replies = concat!(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"checkout\":true}}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"ping\":true}}\n",
+        );
+        let mut client = Client::new(Cursor::new(replies.as_bytes()), Vec::new());
+        let credential = || OperatorCredential::new("C".repeat(43)).unwrap();
+        let current = client
+            .call_current_as_operator(
+                CurrentMethod::TicketCheckout,
+                Some(json!({"card": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "expected_seq": 7})),
+                credential(),
+            )
+            .unwrap();
+        let legacy = client
+            .call_as_operator(Method::SystemPing, None, credential())
+            .unwrap();
+        assert_eq!(current.result.unwrap(), json!({"checkout": true}));
+        assert_eq!(legacy.result.unwrap(), json!({"ping": true}));
+
+        let frames: Vec<Value> = std::str::from_utf8(&client.writer)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            frames,
+            vec![
+                json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "ticket.checkout",
+                    "params": {"card": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "expected_seq": 7},
+                    "cred": "C".repeat(43),
+                }),
+                json!({
+                    "jsonrpc": "2.0", "id": 2, "method": "system.ping",
+                    "cred": "C".repeat(43),
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn current_operator_goal_replacement_refuses_oversized_frames_before_writing() {
+        let mut client = Client::new(Cursor::new(Vec::<u8>::new()), Vec::new());
+        let error = client
+            .call_current_as_operator(
+                CurrentMethod::Legacy(Method::GoalReplace),
+                Some(json!({"padding": " ".repeat(131_072)})),
+                OperatorCredential::new("C".repeat(43)).unwrap(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, ClientError::Io(ref err) if err.kind() == std::io::ErrorKind::InvalidInput)
+        );
+        assert!(client.writer.is_empty());
+        client.send(Method::SystemPing, None).unwrap();
+        let written: Value = serde_json::from_slice(&client.writer).unwrap();
+        assert_eq!(written["method"], "system.ping");
+        assert_eq!(written["id"], 2);
+    }
 
     /// The two envelopes are told apart, and neither is read as the other. The pair is the point:
     /// a classifier that answered `Notification` to everything would satisfy either arm alone.

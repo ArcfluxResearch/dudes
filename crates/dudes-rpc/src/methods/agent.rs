@@ -579,7 +579,7 @@ mod tests {
         let sent = serde_json::json!({ "token": token(), "text": "q".repeat(len) });
         let answer = handler(Call {
             goal_replacement: None,
-            method: Method::AgentAsk,
+            method: Method::AgentAsk.into(),
             params: Some(&sent),
             role: &role,
             outbound: &outbound,

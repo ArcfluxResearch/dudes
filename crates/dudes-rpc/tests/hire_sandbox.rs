@@ -78,7 +78,7 @@ fn hire(request: &Value) -> (Result<Value, RpcError>, Vec<String>) {
     let outbound = Arc::new(Outbound::sink());
     let answer = handler(Call {
         goal_replacement: None,
-        method: Method::AgentHire,
+        method: Method::AgentHire.into(),
         params: Some(request),
         role: &role,
         outbound: &outbound,

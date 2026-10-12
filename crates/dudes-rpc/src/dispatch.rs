@@ -65,7 +65,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use dudes_proto::rpc::{
-    ErrorCode, JSONRPC, Method, RefusalGate, RefusedData, Request, RequestId, Response, RpcError,
+    CurrentMethod, ErrorCode, JSONRPC, Method, RefusalGate, RefusedData, Request, RequestId,
+    Response, RpcError,
 };
 use serde_json::Value;
 
@@ -88,8 +89,8 @@ use crate::outbound::Outbound;
 /// conditioned row and stays on its separate bounded-question route. Neither is a field on this type.
 #[derive(Debug)]
 pub struct Call<'a> {
-    /// The method name, which is [`Method::name`] of a method that exists.
-    pub method: Method,
+    /// The registered contract method for this call.
+    pub method: CurrentMethod,
     /// The params object as it arrived, unvalidated: each handler owns its own schema.
     pub params: Option<&'a Value>,
     /// Strictly decoded original-frame params for `goal.replace`.
@@ -163,7 +164,7 @@ impl DispatchOutcome<'_> {
 
 /// The method table plus the seam every call passes through.
 pub struct Dispatcher {
-    methods: BTreeMap<Method, Registered>,
+    methods: BTreeMap<CurrentMethod, Registered>,
     authorizer: Box<dyn Authorizer>,
 }
 
@@ -212,7 +213,7 @@ impl Dispatcher {
             method.name()
         );
         self.methods.insert(
-            method,
+            method.into(),
             Registered {
                 requires,
                 route: Route::Ordinary(Box::new(handler)),
@@ -240,7 +241,7 @@ impl Dispatcher {
             method.name()
         );
         self.methods.insert(
-            method,
+            method.into(),
             Registered {
                 requires,
                 route: Route::Ordinary(Box::new(handler)),
@@ -257,8 +258,22 @@ impl Dispatcher {
         requires: Requirement,
         handler: impl Fn(Call<'_>, Option<u32>) -> Result<Value, RpcError> + Send + Sync + 'static,
     ) -> &mut Self {
+        self.register_current_audited(method.into(), requires, handler)
+    }
+
+    /// Register a current ordinary method with its caller's reported pid for auditing.
+    ///
+    /// # Panics
+    ///
+    /// A conditioned method requires its dedicated registration route.
+    pub fn register_current_audited(
+        &mut self,
+        method: CurrentMethod,
+        requires: Requirement,
+        handler: impl Fn(Call<'_>, Option<u32>) -> Result<Value, RpcError> + Send + Sync + 'static,
+    ) -> &mut Self {
         assert!(
-            R5Method::from_method(method).is_none(),
+            method.legacy().and_then(R5Method::from_method).is_none(),
             "{} requires its dedicated conditioned registration route",
             method.name()
         );
@@ -283,7 +298,7 @@ impl Dispatcher {
         handler: impl Fn(Call<'_>) -> Result<Value, RpcError> + Send + Sync + 'static,
     ) -> &mut Self {
         self.methods.insert(
-            Method::AgentAsk,
+            Method::AgentAsk.into(),
             Registered {
                 requires,
                 route: Route::BoundedQuestion(Box::new(handler)),
@@ -318,7 +333,7 @@ impl Dispatcher {
         S: Fn(AppliedEffect<M>, R) -> Result<Value, RpcError> + Send + Sync + 'static,
     {
         self.methods.insert(
-            method.into(),
+            CurrentMethod::Legacy(method.into()),
             Registered {
                 requires,
                 route: Route::Conditioned(crate::conditioned::route(
@@ -352,7 +367,7 @@ impl Dispatcher {
             + 'static,
     {
         self.methods.insert(
-            Method::AgentAttach,
+            Method::AgentAttach.into(),
             Registered {
                 requires,
                 route: Route::Conditioned(crate::conditioned::attach_route(
@@ -386,7 +401,7 @@ impl Dispatcher {
             + 'static,
     {
         self.methods.insert(
-            Method::AgentDetach,
+            Method::AgentDetach.into(),
             Registered {
                 requires,
                 route: Route::Conditioned(crate::conditioned::detach_route(decoder, persist)),
@@ -420,7 +435,7 @@ impl Dispatcher {
             + 'static,
     {
         self.methods.insert(
-            Method::PtyWrite,
+            Method::PtyWrite.into(),
             Registered {
                 requires,
                 route: Route::Conditioned(crate::conditioned::write_route(decoder, persist)),
@@ -433,11 +448,22 @@ impl Dispatcher {
     /// What `method` requires, if it is registered. For diagnostics and tests.
     #[must_use]
     pub fn requirement(&self, method: Method) -> Option<Requirement> {
+        self.current_requirement(method.into())
+    }
+
+    /// What a current method requires, if it is registered.
+    #[must_use]
+    pub fn current_requirement(&self, method: CurrentMethod) -> Option<Requirement> {
         self.methods.get(&method).map(|entry| entry.requires)
     }
 
-    /// The methods registered, in table order. For diagnostics and tests.
+    /// The legacy methods registered, in table order. For diagnostics and tests.
     pub fn methods(&self) -> impl Iterator<Item = Method> + '_ {
+        self.current_methods().filter_map(CurrentMethod::legacy)
+    }
+
+    /// All current methods registered, in table order.
+    pub fn current_methods(&self) -> impl Iterator<Item = CurrentMethod> + '_ {
         self.methods.keys().copied()
     }
 
@@ -546,7 +572,7 @@ impl Dispatcher {
         if connection.transport_pid_is_unreadable()
             && request
                 .method
-                .parse::<Method>()
+                .parse::<CurrentMethod>()
                 .ok()
                 .and_then(|method| self.methods.get(&method))
                 .is_some_and(|entry| {
@@ -574,7 +600,7 @@ impl Dispatcher {
             }
         };
 
-        let Ok(method) = request.method.parse::<Method>() else {
+        let Ok(method) = request.method.parse::<CurrentMethod>() else {
             return DispatchOutcome::response(Response::err(
                 id,
                 error(ErrorCode::MethodNotFound, "no such method"),
@@ -595,7 +621,7 @@ impl Dispatcher {
             ));
         }
 
-        if method == Method::GoalReplace && replacement.is_none() {
+        if method == CurrentMethod::Legacy(Method::GoalReplace) && replacement.is_none() {
             return DispatchOutcome::response(Response::err(
                 id,
                 error(
@@ -738,6 +764,58 @@ mod tests {
     /// on anything the connection carried.
     fn nowhere() -> Arc<Outbound> {
         Arc::new(Outbound::sink())
+    }
+
+    #[test]
+    fn unreadable_transport_pid_refuses_current_agent_grants_before_authorization() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug)]
+        struct CountingAuthorizer(Arc<AtomicUsize>);
+
+        impl Authorizer for CountingAuthorizer {
+            fn authorize(
+                &self,
+                _presented: Presented,
+                _provenance: PeerProvenance,
+                _method: &str,
+            ) -> Result<PeerRole, Refusal> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(PeerRole::Unproven)
+            }
+        }
+
+        let authorizations = Arc::new(AtomicUsize::new(0));
+        let mut dispatcher = Dispatcher::new(CountingAuthorizer(Arc::clone(&authorizations)));
+        let connection = ConditionedConnectionContext::from_peer(
+            crate::auth::PeerIdentity::unknown(),
+            PeerProvenance::Unresolvable,
+        );
+        for requires in [Requirement::Agent, Requirement::OperatorOrAgent] {
+            dispatcher.register_current_audited(CurrentMethod::TicketCheckout, requires, |_, _| {
+                Ok(json!({"checkout": true}))
+            });
+            let response = dispatcher.dispatch_on_connection(
+                &request("ticket.checkout"),
+                &connection,
+                &nowhere(),
+            );
+            assert_eq!(code(&response), ErrorCode::Unauthorized.code());
+        }
+        assert_eq!(authorizations.load(Ordering::SeqCst), 0);
+
+        dispatcher.register_current_audited(
+            CurrentMethod::TicketCheckout,
+            Requirement::AnyRole,
+            |call, pid| Ok(json!({"method": call.method.name(), "pid": pid})),
+        );
+        let response =
+            dispatcher.dispatch_on_connection(&request("ticket.checkout"), &connection, &nowhere());
+        assert_eq!(
+            response.result.unwrap(),
+            json!({"method": "ticket.checkout", "pid": null})
+        );
+        assert_eq!(authorizations.load(Ordering::SeqCst), 1);
     }
 
     /// The seam runs before the method table is consulted, so a refused peer cannot use the

@@ -2,14 +2,14 @@
 //! the caller is resolved structurally and no request names an author.
 
 use dudes_proto::rpc::ticket::{
-    TicketAcceptParams, TicketAssignParams, TicketCreateParams, TicketEditParams, TicketReadParams,
-    TicketRemoveParams, TicketStopParams,
+    TicketAcceptParams, TicketAssignParams, TicketCheckoutParams, TicketCreateParams,
+    TicketEditParams, TicketReadParams, TicketRemoveParams, TicketStopParams,
 };
-use dudes_proto::rpc::{ErrorCode, Method};
+use dudes_proto::rpc::{CurrentMethod, ErrorCode, Method};
 use dudes_rpc::Dispatcher;
 use dudes_rpc::auth::Requirement;
 use dudes_rpc::dispatch::error;
-use dudes_rpc::methods::{encode, params};
+use dudes_rpc::methods::{encode, encode_current, params};
 
 use crate::board::actor;
 use crate::ports::{Answered, Ask, Handle, TicketAsk};
@@ -23,6 +23,24 @@ fn wrong_answer(method: Method) -> dudes_proto::rpc::RpcError {
 
 /// Register the seven ticket methods with their declared caller role.
 pub(crate) fn register(dispatcher: &mut Dispatcher, handle: &Handle) {
+    let checkout = handle.clone();
+    dispatcher.register_current_audited(
+        CurrentMethod::TicketCheckout,
+        Requirement::Operator,
+        move |call, pid| {
+            let request: TicketCheckoutParams = params(&call)?;
+            let by = actor(call.role, pid)?;
+            match checkout.ask(Ask::Ticket(TicketAsk::Checkout { request, by }))? {
+                Answered::TicketCheckout(result) => {
+                    encode_current(CurrentMethod::TicketCheckout, &result)
+                }
+                _ => Err(error(
+                    ErrorCode::InternalError,
+                    "ticket.checkout returned the wrong result",
+                )),
+            }
+        },
+    );
     let create = handle.clone();
     dispatcher.register_audited(
         Method::TicketCreate,

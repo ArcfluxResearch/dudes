@@ -16,7 +16,7 @@ fn invoke(control: Arc<FakeControl>, request: &Value) -> Result<Value, dudes_pro
     let outbound = Arc::new(Outbound::sink());
     agent::mcp(control)(Call {
         goal_replacement: None,
-        method: Method::AgentMcp,
+        method: Method::AgentMcp.into(),
         params: Some(request),
         role: &PeerRole::Operator,
         outbound: &outbound,

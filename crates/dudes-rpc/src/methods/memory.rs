@@ -273,7 +273,7 @@ mod read_tests {
         let params = serde_json::json!({"agent":other,"since_lsn":3});
         handler(Call {
             goal_replacement: None,
-            method: Method::MemoryRead,
+            method: Method::MemoryRead.into(),
             params: Some(&params),
             role: &PeerRole::Agent { agent },
             outbound: &outbound,
@@ -282,7 +282,7 @@ mod read_tests {
         .unwrap();
         handler(Call {
             goal_replacement: None,
-            method: Method::MemoryRead,
+            method: Method::MemoryRead.into(),
             params: Some(&params),
             role: &PeerRole::Operator,
             outbound: &outbound,
@@ -307,7 +307,7 @@ mod read_tests {
         assert!(
             handler(Call {
                 goal_replacement: None,
-                method: Method::MemoryRead,
+                method: Method::MemoryRead.into(),
                 params: None,
                 role: &PeerRole::Operator,
                 outbound: &outbound,

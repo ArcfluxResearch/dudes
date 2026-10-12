@@ -22,7 +22,7 @@ fn call(
     let outbound = Arc::new(Outbound::sink());
     handler(Call {
         goal_replacement: None,
-        method,
+        method: method.into(),
         params: Some(request),
         role: &role,
         outbound: &outbound,

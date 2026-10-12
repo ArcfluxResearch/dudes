@@ -265,6 +265,13 @@ pub enum TicketAsk {
     },
     /// `ticket.read`.
     Read(dudes_proto::rpc::ticket::TicketReadParams),
+    /// `ticket.checkout`, for the local operator.
+    Checkout {
+        /// The ticket and its observed sequence.
+        request: dudes_proto::rpc::ticket::TicketCheckoutParams,
+        /// Caller identity resolved by the router.
+        by: Actor,
+    },
 }
 
 /// A command that changes state, waiting for the loop.
@@ -553,6 +560,8 @@ pub enum Answered {
     TicketAssigned(dudes_proto::rpc::ticket::TicketAssignResult),
     /// One ticket in full.
     TicketRead(Box<dudes_proto::rpc::ticket::TicketReadResult>),
+    /// The ticket claimant's recorded local checkout.
+    TicketCheckout(dudes_proto::rpc::ticket::TicketCheckoutResult),
     /// Current cards matching a board list filter.
     Cards(Vec<CardView>),
     /// Every hired, unretired agent.

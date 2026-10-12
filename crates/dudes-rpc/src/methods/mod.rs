@@ -50,7 +50,7 @@ use dudes_proto::rpc::goal::{GoalSetParams, GoalSetResult};
 use dudes_proto::rpc::memory::MemoryAppendParams;
 use dudes_proto::rpc::memory::{MemoryReadResult, MemorySearchOptions, MemorySearchResult};
 use dudes_proto::rpc::pty::{PtyId, PtyWriteParams};
-use dudes_proto::rpc::{AgentRef, AgentText, Empty, ErrorCode, Method, RpcError};
+use dudes_proto::rpc::{AgentRef, AgentText, CurrentMethod, Empty, ErrorCode, Method, RpcError};
 use dudes_proto::{PtyCloseOutcome, PtyWriteOutcome};
 use dudes_types::{AgentId, Lsn};
 use serde::Serialize;
@@ -644,6 +644,15 @@ pub(crate) fn refuse_nul(method: Method, text: &str) -> Result<(), RpcError> {
 ///
 /// [`ErrorCode::InternalError`] when the result could not be serialized.
 pub fn encode(method: Method, result: &impl Serialize) -> Result<Value, RpcError> {
+    encode_current(method.into(), result)
+}
+
+/// Encode a result for a current contract method.
+///
+/// # Errors
+///
+/// [`ErrorCode::InternalError`] when the result could not be serialized.
+pub fn encode_current(method: CurrentMethod, result: &impl Serialize) -> Result<Value, RpcError> {
     serde_json::to_value(result).map_err(|err| {
         error(
             ErrorCode::InternalError,
@@ -671,7 +680,7 @@ mod tests {
     ) -> Call<'a> {
         Call {
             goal_replacement: None,
-            method,
+            method: method.into(),
             params,
             role,
             outbound,

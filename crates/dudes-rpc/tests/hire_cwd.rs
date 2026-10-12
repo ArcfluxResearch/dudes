@@ -21,7 +21,7 @@ fn hire(cwd: &str) -> (Result<Value, RpcError>, Vec<String>) {
     let outbound = Arc::new(Outbound::sink());
     let answer = agent::hire(Arc::clone(&control))(Call {
         goal_replacement: None,
-        method: Method::AgentHire,
+        method: Method::AgentHire.into(),
         params: Some(&request),
         role: &role,
         outbound: &outbound,
