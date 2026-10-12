@@ -465,7 +465,7 @@ fn checkout_returns_an_active_recorded_lease_but_refuses_removed_and_retired_own
             let expected = if ending == "removed" {
                 "worktree_unavailable"
             } else {
-                "agent_unavailable"
+                "unassigned"
             };
             let (code, reason, _) = refusal(&response);
             assert_eq!(code, ErrorCode::Refused.code());

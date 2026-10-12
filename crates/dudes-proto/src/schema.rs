@@ -52,12 +52,16 @@ fn insert_floor_views(doc: &mut Exported) {
     insert_rpc_definition::<crate::projection::FloorDeltaView<'_>>(doc, "FloorDeltaView");
 }
 
-fn export_rpc() -> Exported {
-    let mut doc = export::<Rpc>("rpc.schema.json");
-    insert_rpc_definition::<crate::rpc::CurrentMethods>(&mut doc, "CurrentMethods");
+fn insert_current_methods(doc: &mut Exported) {
+    insert_rpc_definition::<crate::rpc::CurrentMethods>(doc, "CurrentMethods");
     doc.schema["properties"]["methods"] = serde_json::json!({
         "$ref": "#/$defs/CurrentMethods",
     });
+}
+
+fn export_rpc() -> Exported {
+    let mut doc = export::<Rpc>("rpc.schema.json");
+    insert_current_methods(&mut doc);
     insert_rpc_definition::<crate::rpc::team::RosterAgentParams>(&mut doc, "RosterAgentParams");
     insert_rpc_definition::<crate::rpc::closing::ClosingSchema>(&mut doc, "ClosingSchema");
     insert_floor_views(&mut doc);
