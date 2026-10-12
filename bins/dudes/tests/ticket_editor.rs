@@ -5,7 +5,7 @@ mod common;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use common::{Cli, Fixture, OpenRunner, Running, SharedHost, start};
@@ -169,6 +169,38 @@ fn visual_takes_precedence_and_passes_its_arguments_before_the_recorded_director
             format!("  {} \t --reuse-window   review-mode  ", visual.display()),
         )
         .env("EDITOR", editor)
+        .args(["ticket", "open", &review.card])
+        .run();
+
+    assert_eq!(opened.code(), 37, "{}", opened.output());
+    assert_eq!(
+        opened.stdout,
+        format!(
+            "argc=3\n--reuse-window\nreview-mode\n{}\n",
+            review.directory.display()
+        )
+    );
+    assert_eq!(opened.stderr, "");
+}
+
+#[test]
+fn a_bare_editor_is_found_on_the_operators_path_with_its_arguments() {
+    let review = review();
+    let editor = recorder(
+        &review,
+        "path-editor",
+        b"#!/bin/sh\nprintf 'argc=%s\\n' \"$#\"\nprintf '%s\\n' \"$@\"\nexit 37\n",
+    );
+    let path = std::env::join_paths([
+        editor.parent().unwrap(),
+        Path::new("/usr/bin"),
+        Path::new("/bin"),
+    ])
+    .unwrap();
+    let opened = review
+        .cli
+        .env("PATH", path)
+        .env("VISUAL", "path-editor --reuse-window review-mode")
         .args(["ticket", "open", &review.card])
         .run();
 
