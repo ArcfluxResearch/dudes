@@ -13,8 +13,9 @@ use std::sync::Arc;
 use common::{Cli, Fixture, OpenRunner, Running, SharedHost, start};
 use duded::floor_actions::{EnrolledCheck, Enrollment, Profile};
 use dudes_proto::rpc::agent::HireResult;
-use dudes_proto::rpc::ticket::{TicketCheckoutResult, TicketCreateResult};
-use dudes_proto::{AgentBudget, GoalBudget, Predicate};
+use dudes_proto::rpc::hook::{HOOK_TOKEN_LEN, HookToken};
+use dudes_proto::rpc::ticket::{TicketCheckoutResult, TicketCreateResult, TicketReadResult};
+use dudes_proto::{AgentBudget, GoalBudget, Predicate, Record};
 use dudes_types::{IsolationMode, Usd};
 
 struct Review {
@@ -522,4 +523,75 @@ fn ssh_sessions_print_for_both_configured_and_explicit_editor_selections() {
             assert_eq!(opened.stderr, "");
         }
     }
+}
+
+#[test]
+fn an_editor_receives_no_minted_agent_token_or_control_socket() {
+    let review = review();
+    let shown = review
+        .cli
+        .clone()
+        .args(["--json", "ticket", "show", &review.card])
+        .run();
+    assert_eq!(shown.code(), 0, "{}", shown.output());
+    let owner = shown
+        .json::<TicketReadResult>()
+        .card
+        .claimed_by
+        .expect("the fixture ticket has an assigned agent");
+    let agent = owner.to_string();
+    let resumed = review.cli.clone().args(["resume", &agent]).run();
+    assert_eq!(resumed.code(), 0, "{}", resumed.output());
+    let token_hash =
+        review
+            .fixture
+            .await_record("the owner's minted token", |record| match record {
+                Record::HookTokenMinted { agent, token_hash } if *agent == owner => {
+                    Some(token_hash.clone())
+                }
+                _ => None,
+            });
+    let token = (1_u32..=256)
+        .find_map(|counter| {
+            let candidate = format!("{counter:A>width$}", width = HOOK_TOKEN_LEN);
+            if dudes_supervisor::blake3_hex(candidate.as_bytes()) == token_hash {
+                Some(HookToken::new(candidate).expect("a matching fixture token is well formed"))
+            } else {
+                None
+            }
+        })
+        .expect("the minted fixture token is recoverable within 256 counters");
+    review
+        .fixture
+        .await_record("the owner's fake turn spawn", |record| match record {
+            Record::TurnSpawned { agent, .. } if *agent == owner => Some(()),
+            _ => None,
+        });
+    let before = review.fixture.records();
+    let editor = recorder(
+        &review,
+        "credential-check-editor",
+        b"#!/bin/sh\ntoken_present=0\nsocket_present=0\nif [ \"${DUDES_TOKEN+x}\" = x ]; then token_present=1; fi\nif [ \"${DUDES_SOCK+x}\" = x ]; then socket_present=1; fi\nprintf 'token_present=%s\\nsocket_present=%s\\nargc=%s\\noperand=%s\\n' \"$token_present\" \"$socket_present\" \"$#\" \"$1\"\nexit 37\n",
+    );
+    let opened = review
+        .cli
+        .env("DUDES_TOKEN", token.expose())
+        .args(["ticket", "open", &review.card, "--editor"])
+        .arg(editor)
+        .run();
+
+    assert_eq!(opened.code, Some(37), "the editor owns the exit status");
+    assert!(
+        opened.stdout
+            == format!(
+                "token_present=0\nsocket_present=0\nargc=1\noperand={}\n",
+                review.directory.display()
+            ),
+        "the editor receives one recorded operand and neither control variable"
+    );
+    assert!(opened.stderr.is_empty(), "the editor emits no error text");
+    assert!(
+        before == review.fixture.records(),
+        "the editor handoff leaves the daemon's journal unchanged"
+    );
 }
