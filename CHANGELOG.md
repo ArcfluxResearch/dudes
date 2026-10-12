@@ -11,6 +11,26 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-10-12
+
+### Highlights
+
+- **A board with room to work.** Board has its own working area, four counted workflow columns and a separate Needs you lane. All four columns fit at tablet width, and Crew, office and terminal navigation keep their state when you leave Board. (#41, #44)
+- **Review tickets in a side drawer.** Read the agent's summary, the daemon's check result and changed file names, then Accept or Ask for changes. New ticket opens a form with an optional agent; keyboard navigation and focus return keep the review flow usable. (#42)
+- **See closing-time progress.** During `dudes stop`, the Floor shows acknowledged, settled, owed and running counts, plus time left. Disconnected views freeze their last observed values, and completion retains final counts. No Floor shutdown control or participant identities are added. (#45)
+
+### Changes
+
+- Give Board a full working area with a prominent New ticket action, counted workflow columns, empty-lane guidance and the newest 20 Done tickets. (#41)
+- Add native ticket review and composer dialogs with plain-text content, state-appropriate actions and separated Stop/Remove confirmations. (#42)
+- Add aggregate closing-time counts and a local countdown sampled from the daemon's existing deadline. Show early completion only when nothing remains owed or running and positive time remained; shutdown does not guarantee delivery of the final Complete frame to every subscriber. (#45)
+
+### Fixes
+
+- Keep ticket focus valid when a card changes or disappears, during nested Hire and after authority changes. Dismissed or replaced composers ignore late creation replies. (#42)
+- Reduce workflow gaps in the existing tablet band so Done is fully visible at 1024 × 768, including the native vertical-scrollbar case. (#44)
+- Publish closing-time updates in durable order and retain the original error when publication fails. (#45)
+
 ## [0.85.1] - 2026-10-12
 
 ### Highlights
@@ -101,7 +121,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.85.1...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.86.0...HEAD
+[0.86.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.85.1...v0.86.0
 [0.85.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.85.0...v0.85.1
 [0.85.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.84.0...v0.85.0
 [0.84.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.79.0...v0.84.0
