@@ -500,9 +500,15 @@ fn help_lists_the_ticket_commands_with_one_worked_example() {
         "ticket remove <card>",
         "ticket list [--status",
         "ticket show <card>",
+        "ticket open <card> [--editor <absolute-program> | --print]",
     ] {
         assert!(run.stdout.contains(command), "{command}");
     }
+    assert!(run.stdout.contains("--json never launches an editor"));
+    assert!(
+        run.stdout
+            .contains("Lease verification requires macOS or Linux")
+    );
     assert_eq!(run.stdout.matches("EXAMPLE: tickets").count(), 1);
     for command in [
         "ticket accept <card>",
@@ -754,6 +760,37 @@ fn opening_an_assigned_ticket_prints_its_recorded_directory() {
     assert_eq!(opened.code(), 0, "{}", opened.output());
     assert_eq!(opened.stdout, format!("{}\n", world.repo.display()));
     assert_eq!(opened.stderr, "");
+}
+
+#[test]
+fn machine_checkout_output_cannot_be_combined_with_an_explicit_editor() {
+    const CARD: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    for args in [
+        vec![
+            "--json",
+            "ticket",
+            "open",
+            CARD,
+            "--editor",
+            "/usr/bin/true",
+        ],
+        vec![
+            "ticket",
+            "open",
+            CARD,
+            "--editor",
+            "/usr/bin/true",
+            "--json",
+        ],
+    ] {
+        let run = Cli::bare().args(args).run();
+        assert_eq!(run.code(), 1, "{}", run.output());
+        assert_eq!(run.stdout, "");
+        assert_eq!(
+            run.stderr,
+            "dudes: `--json` cannot be combined with `--editor`\nRun `dudes --help` for every command and its options.\n"
+        );
+    }
 }
 
 #[test]
