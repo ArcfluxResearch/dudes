@@ -562,9 +562,7 @@ fn hire_step(
 ) -> Result<(), Stopped> {
     let project = plan.project.as_deref().or(cwd);
     if plan.enroll.is_none() && project.and_then(|cwd| file.enrolled_at(cwd)).is_none() {
-        term.say(
-            "Add a project before hiring an agent. Run `dudes hire` after enrolling it.",
-        )?;
+        term.say("Add a project before hiring an agent. Run `dudes hire` after enrolling it.")?;
         return Ok(());
     }
     let engines: Vec<Provider> = [Provider::Claude, Provider::Codex, Provider::Pi]
@@ -1141,7 +1139,10 @@ mod tests {
             Some(""),
             &[
                 (FLOOR, "n"),
-                ("Completion check for this repository [go test ./...] (- to skip):", ""),
+                (
+                    "Completion check for this repository [go test ./...] (- to skip):",
+                    "",
+                ),
                 ("Hire an agent named Kim on claude, idle? [y/N]", ""),
             ],
             Some(go.path()),
@@ -1159,7 +1160,10 @@ mod tests {
             Some(""),
             &[
                 (FLOOR, "n"),
-                ("Completion check for this repository [go test ./...] (- to skip):", ""),
+                (
+                    "Completion check for this repository [go test ./...] (- to skip):",
+                    "",
+                ),
                 ("Agent engine (claude, codex; Enter to skip):", ""),
             ],
             Some(go.path()),
@@ -1254,7 +1258,12 @@ mod tests {
             "{}",
             run.shown
         );
-        let run = run_guided(None, &[(FLOOR, "y"), questions[1]], Some(bare.path()), &quiet);
+        let run = run_guided(
+            None,
+            &[(FLOOR, "y"), questions[1]],
+            Some(bare.path()),
+            &quiet,
+        );
         assert!(
             run.shown
                 .contains("Enrolled, the Floor can hire agents into it. "),

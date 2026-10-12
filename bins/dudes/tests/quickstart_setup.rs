@@ -998,14 +998,18 @@ fn billed_and_unbilled_guides_ask_at_most_five_questions_and_hire_idle() {
 }
 
 fn repeat_cli(layout: &Layout) -> Cli {
-    layout.cli().without("HOME").env("DUDES_CONFIG", layout.path("operator.toml"))
+    layout
+        .cli()
+        .without("HOME")
+        .env("DUDES_CONFIG", layout.path("operator.toml"))
 }
 
 fn repeat_guide(cli: &Cli, enroll: bool) -> String {
     let pty = nix::pty::openpty(
         None::<&nix::pty::Winsize>,
         None::<&nix::sys::termios::Termios>,
-    ).expect("a pseudo-terminal");
+    )
+    .expect("a pseudo-terminal");
     let mut child = cli.clone().arg("quickstart").spawn_on_terminal(&pty.slave);
     drop(pty.slave);
     let mut screen = Screen::new(pty.master);
@@ -1019,11 +1023,17 @@ fn repeat_guide(cli: &Cli, enroll: bool) -> String {
     screen.answer("");
     screen.expect("and go ahead? [Y/n]");
     screen.answer("y");
-    assert!(exit_status(&mut child, &screen).success(), "{}", screen.shown());
+    assert!(
+        exit_status(&mut child, &screen).success(),
+        "{}",
+        screen.shown()
+    );
     let shown = screen.shown();
     assert!(!shown.contains("first agent"), "{shown}");
     let questions = ["[Y/n]", "[y/N]", "]:", "):"]
-        .iter().map(|ending| shown.matches(ending).count()).sum::<usize>();
+        .iter()
+        .map(|ending| shown.matches(ending).count())
+        .sum::<usize>();
     assert!(questions <= 5, "{shown}");
     shown
 }
@@ -1034,10 +1044,19 @@ fn a_repeat_keeps_the_existing_idle_agent_when_enter_skips_hiring() {
         let layout = Layout::new();
         std::fs::remove_file(layout.path("engines/codex")).unwrap();
         let cli = repeat_cli(&layout);
-        let seeded = cli.clone().args([
-            "quickstart", "--enroll", "--hire", "already-here", "--provider", "claude",
-            "--", "/usr/bin/true",
-        ]).run();
+        let seeded = cli
+            .clone()
+            .args([
+                "quickstart",
+                "--enroll",
+                "--hire",
+                "already-here",
+                "--provider",
+                "claude",
+                "--",
+                "/usr/bin/true",
+            ])
+            .run();
         assert_eq!(seeded.code(), 0, "{seeded:?}");
         let before = cli.clone().args(["--json", "agents"]).run();
         let original: Vec<dudes_proto::AgentView> = before.json();
@@ -1046,7 +1065,10 @@ fn a_repeat_keeps_the_existing_idle_agent_when_enter_skips_hiring() {
         if stopped {
             let stop = cli.clone().args(["stop", "--hard"]).run();
             assert_eq!(stop.code(), 0, "{stop:?}");
-            assert_eq!(cli.clone().arg("ping").run().code(), dudes::exit::UNREACHABLE);
+            assert_eq!(
+                cli.clone().arg("ping").run().code(),
+                dudes::exit::UNREACHABLE
+            );
         }
         repeat_guide(&cli, false);
         let after = cli.clone().args(["--json", "agents"]).run();
@@ -1057,14 +1079,19 @@ fn a_repeat_keeps_the_existing_idle_agent_when_enter_skips_hiring() {
         assert!(agents[0].goal.is_none());
         assert_eq!(agents[0].turns, 0);
         assert_only_status_checks(&layout);
-        let explicit = cli.clone().args([
-            "quickstart", "--hire", "requested", "--provider", "claude",
-        ]).run();
+        let explicit = cli
+            .clone()
+            .args(["quickstart", "--hire", "requested", "--provider", "claude"])
+            .run();
         assert_eq!(explicit.code(), 0, "{explicit:?}");
         let listed = cli.args(["--json", "agents"]).run();
         let agents: Vec<dudes_proto::AgentView> = listed.json();
         assert_eq!(agents.len(), 2);
-        assert!(agents.iter().any(|agent| agent.name == "requested" && agent.goal.is_none()));
+        assert!(
+            agents
+                .iter()
+                .any(|agent| agent.name == "requested" && agent.goal.is_none())
+        );
     }
 }
 
