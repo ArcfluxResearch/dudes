@@ -719,6 +719,7 @@ fn changes_needs_a_message_and_the_review_commands_take_a_card() {
         run.stderr
     );
 }
+
 #[test]
 fn opening_a_ticket_cannot_print_and_launch_an_editor() {
     let run = Cli::bare()
@@ -739,4 +740,18 @@ fn opening_a_ticket_cannot_print_and_launch_an_editor() {
         "dudes: `--print` cannot be combined with `--editor`\n\
          Run `dudes --help` for every command and its options.\n"
     );
+}
+
+#[test]
+fn opening_an_assigned_ticket_prints_its_recorded_directory() {
+    let world = world();
+    let agent = world.hire("Cody", &world.repo);
+    let card = world.add("Review the recorded checkout");
+    let given = world.dudes(["ticket", "give", &card, "--agent", &agent]);
+    assert_eq!(given.code(), 0, "{}", given.output());
+
+    let opened = world.dudes(["ticket", "open", &card, "--print"]);
+    assert_eq!(opened.code(), 0, "{}", opened.output());
+    assert_eq!(opened.stdout, format!("{}\n", world.repo.display()));
+    assert_eq!(opened.stderr, "");
 }
