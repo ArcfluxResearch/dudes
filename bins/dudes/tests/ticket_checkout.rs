@@ -52,6 +52,32 @@ struct Lease {
     card: CardId,
 }
 
+fn hired(agent: AgentId, directory: &Path, worktree: WorktreeId) -> Record {
+    Record::AgentHired {
+        id: agent,
+        name: "Kim".into(),
+        character: None,
+        accent: None,
+        role: "engineer".into(),
+        department: "engineering".into(),
+        provider: Provider::Claude,
+        cwd: directory.to_path_buf(),
+        workspace: None,
+        budget: AgentBudget {
+            usd_per_day: None,
+            tokens_per_day: None,
+        },
+        sandbox: None,
+        isolation: None,
+        max_turns: None,
+        max_budget: None,
+        trusted: false,
+        worktree: Some(worktree),
+        mcp_servers: Vec::new(),
+        browser_onboarding: None,
+    }
+}
+
 fn lease() -> Lease {
     let fixture = Fixture::new();
     let origin = fixture.state.path().join("origin");
@@ -80,29 +106,7 @@ fn lease() -> Lease {
     git(&origin, &args);
     let card = CardId::from_parts(4, 1);
     let agent = AgentId::from_parts(0, 1);
-    let hired = Record::AgentHired {
-        id: agent,
-        name: "Kim".into(),
-        character: None,
-        accent: None,
-        role: "engineer".into(),
-        department: "engineering".into(),
-        provider: Provider::Claude,
-        cwd: directory.clone(),
-        workspace: None,
-        budget: AgentBudget {
-            usd_per_day: None,
-            tokens_per_day: None,
-        },
-        sandbox: None,
-        isolation: None,
-        max_turns: None,
-        max_budget: None,
-        trusted: false,
-        worktree: Some(worktree),
-        mcp_servers: Vec::new(),
-        browser_onboarding: None,
-    };
+    let hired = hired(agent, &directory, worktree);
     let records = [
         Record::WorktreeLeased {
             worktree,

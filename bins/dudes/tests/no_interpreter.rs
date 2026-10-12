@@ -2395,6 +2395,7 @@ fn spawn() -> Result<(), Error> {
 // admitted, in call position.
 mod route_items {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::io::Write as _;
     use std::path::Path;
 
     use syn::visit::{self, Visit};
@@ -3210,7 +3211,7 @@ mod route_items {
         ] {
             let found = editor(&mutant("editor.rs", from, to));
             assert!(!found.is_empty(), "surviving {name}");
-            println!("{name}: {found:?}");
+            writeln!(std::io::stdout().lock(), "{name}: {found:?}").unwrap();
         }
         let another = format!(
             "{}\nfn another(program: &Path) {{ std::process::Command::new(program).spawn(); }}\n",
@@ -3239,7 +3240,11 @@ mod route_items {
             );
             let rejected = path_lookups(name, &mutant);
             assert_eq!(rejected.len(), 2, "{name}: {rejected:?}");
-            println!("PATH lookup outside resolver in {name}: {rejected:?}");
+            writeln!(
+                std::io::stdout().lock(),
+                "PATH lookup outside resolver in {name}: {rejected:?}"
+            )
+            .unwrap();
         }
         let aliased =
             "use std::env::split_paths as elsewhere; fn another() { let _ = elsewhere(\"x\"); }";
