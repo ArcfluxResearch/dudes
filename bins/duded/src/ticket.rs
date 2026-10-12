@@ -21,7 +21,6 @@ fn wrong_answer(method: Method) -> dudes_proto::rpc::RpcError {
     )
 }
 
-/// Register the seven ticket methods with their declared caller role.
 pub(crate) fn register(dispatcher: &mut Dispatcher, handle: &Handle) {
     let checkout = handle.clone();
     dispatcher.register_current_audited(

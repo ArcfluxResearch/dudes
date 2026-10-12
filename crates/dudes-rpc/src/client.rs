@@ -218,7 +218,21 @@ impl<R: BufRead, W: Write> Client<R, W> {
         params: Option<Value>,
         cred: OperatorCredential,
     ) -> Result<Response, ClientError> {
-        self.send_current_presenting(method, params, Some(cred))?;
+        self.call_current_presenting(method, params, Some(cred))
+    }
+
+    /// Call a current method with the caller's available operator presentation.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError`] when the conversation failed. Missing credentials remain a server refusal.
+    pub fn call_current_presenting(
+        &mut self,
+        method: CurrentMethod,
+        params: Option<Value>,
+        cred: Option<OperatorCredential>,
+    ) -> Result<Response, ClientError> {
+        self.send_current_presenting(method, params, cred)?;
         self.read_response()
     }
 

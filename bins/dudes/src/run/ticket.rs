@@ -239,7 +239,7 @@ pub(super) fn command(
             let result: TicketCheckoutResult = typed(answer_result(
                 session
                     .client
-                    .call_current_as_operator(CurrentMethod::TicketCheckout, Some(params), cred)
+                    .call_current_presenting(CurrentMethod::TicketCheckout, Some(params), cred)
                     .map_err(local)?,
             )?)?;
             if !result.directory.is_dir() {
