@@ -262,6 +262,7 @@ pub fn guided(
     config: &Path,
     cwd: Option<&Path>,
     host: &Host,
+    existing_setup: bool,
 ) -> Result<Plan, Stopped> {
     let mut plan = Plan::default();
     term.say(&format!(
@@ -280,7 +281,7 @@ pub fn guided(
     {
         project_folder_step(term, cwd, &mut plan)?;
     }
-    hire_step(term, draft.settings(), cwd, host, &mut plan)?;
+    hire_step(term, draft.settings(), cwd, host, existing_setup, &mut plan)?;
     Ok(plan)
 }
 
@@ -556,20 +557,24 @@ fn hire_step(
     file: &Settings,
     cwd: Option<&Path>,
     host: &Host,
+    existing_setup: bool,
     plan: &mut Plan,
 ) -> Result<(), Stopped> {
     let project = plan.project.as_deref().or(cwd);
     if plan.enroll.is_none() && project.and_then(|cwd| file.enrolled_at(cwd)).is_none() {
-        term.say(
-            "Add a project before hiring your first agent. Run `dudes hire` after enrolling it.",
-        )?;
+        term.say("Add a project before hiring an agent. Run `dudes hire` after enrolling it.")?;
         return Ok(());
     }
     let engines: Vec<Provider> = [Provider::Claude, Provider::Codex, Provider::Pi]
         .into_iter()
         .filter(|provider| engine_on(file, *provider) && host.found.contains(provider))
         .collect();
-    term.say(&format!("The first agent is named {DEFAULT_NAME} and starts idle. For a different name, a goal or agent limits, use `dudes quickstart --hire <name>` with explicit options."))?;
+    term.say(&format!("An agent hired here is named {DEFAULT_NAME} and starts idle. For a different name, a goal or agent limits, use `dudes quickstart --hire <name>` with explicit options."))?;
+    let (agent, engine_question) = if existing_setup {
+        ("an agent", "Agent engine")
+    } else {
+        ("a first agent", "First agent engine")
+    };
     let provider = match engines.as_slice() {
         [] => {
             term.say("No agent engine was found. Install an engine, then run `dudes hire`.")?;
@@ -577,8 +582,8 @@ fn hire_step(
         }
         [only] => {
             if !term.yes(
-                &format!("Hire a first agent named {DEFAULT_NAME} on {only}, idle?"),
-                true,
+                &format!("Hire {agent} named {DEFAULT_NAME} on {only}, idle?"),
+                !existing_setup,
             )? {
                 return Ok(());
             }
@@ -587,7 +592,7 @@ fn hire_step(
         _ => {
             let names: Vec<&str> = engines.iter().map(|provider| provider.as_str()).collect();
             let chosen = term.value(
-                &format!("First agent engine ({}; Enter to skip)", names.join(", ")),
+                &format!("{engine_question} ({}; Enter to skip)", names.join(", ")),
                 None,
                 |text| {
                     if text.is_empty() || text == "-" {
@@ -795,23 +800,30 @@ mod tests {
         asked: usize,
     }
 
-    /// Run [`guided`] over `original` as the operator file, answering one line per question, and
-    /// check that the `script` questions were asked in that order.
-    fn run_guided(original: &str, script: &[(&str, &str)], cwd: Option<&Path>, host: &Host) -> Run {
+    fn run_guided(
+        original: Option<&str>,
+        script: &[(&str, &str)],
+        cwd: Option<&Path>,
+        host: &Host,
+    ) -> Run {
         let home = tempfile::tempdir().expect("a home");
         let config = home.path().join("config.toml");
-        std::fs::write(&config, original).expect("a file");
+        if let Some(original) = original {
+            std::fs::write(&config, original).expect("a file");
+        }
         let mut draft = Draft::open(&config).expect("the file opens");
         let answers: Vec<&str> = script.iter().map(|(_, answer)| *answer).collect();
         let input = answers.join("\n") + "\n";
         let mut reader = io::Cursor::new(input.clone());
         let mut out = Vec::new();
+        let existing_setup = draft.settings().exists();
         let plan = guided(
             &mut Terminal::new(&mut reader, &mut out),
             &mut draft,
             &config,
             cwd,
             host,
+            existing_setup,
         );
         let shown = String::from_utf8(out).expect("the questions are text");
         let mut rest = shown.as_str();
@@ -851,7 +863,7 @@ mod tests {
             ("Hire a first agent named Kim on claude, idle? [Y/n]", ""),
         ];
         let run = run_guided(
-            "",
+            None,
             &script,
             Some(repo.path()),
             &host(&[Provider::Claude], &[]),
@@ -892,7 +904,7 @@ mod tests {
     fn engines_are_detected_not_asked() {
         let found = host(&[Provider::Claude, Provider::Codex, Provider::Pi], &[]);
         let run = run_guided(
-            "",
+            None,
             &[(FLOOR, "n"), ("Project folder (Enter to skip):", "")],
             None,
             &found,
@@ -912,7 +924,7 @@ mod tests {
 
         let none = host(&[Provider::Claude], &[]);
         let run = run_guided(
-            "",
+            None,
             &[(FLOOR, "n"), ("Project folder (Enter to skip):", "")],
             None,
             &none,
@@ -926,7 +938,7 @@ mod tests {
 
         let original = "[providers.codex]\nstreaming = true\n";
         let run = run_guided(
-            original,
+            Some(original),
             &[(FLOOR, "n"), ("Project folder (Enter to skip):", "")],
             None,
             &found,
@@ -945,7 +957,7 @@ mod tests {
     fn one_floor_question_turns_the_actions_on_or_off_together() {
         let quiet = host(&[Provider::Claude], &[]);
         let run = run_guided(
-            "",
+            None,
             &[(FLOOR, "y"), ("Project folder (Enter to skip):", "")],
             None,
             &quiet,
@@ -965,7 +977,7 @@ mod tests {
 
         let all_on = "[floor.answer]\nenabled = true\n[floor.hire]\nenabled = true\n[floor.control]\nenabled = true\n[floor.goal]\nenabled = true\n[floor.renew]\nenabled = true\n[floor.retire]\nenabled = true\n[floor.board]\nenabled = true\n[floor.terminal]\nenabled = true\n";
         let run = run_guided(
-            all_on,
+            Some(all_on),
             &[(FLOOR, "n"), ("Project folder (Enter to skip):", "")],
             None,
             &quiet,
@@ -983,7 +995,7 @@ mod tests {
     fn a_mixed_floor_is_kept_and_not_asked_about() {
         let mixed = "[floor.answer]\nenabled = true\n";
         let run = run_guided(
-            mixed,
+            Some(mixed),
             &[("Project folder (Enter to skip):", "")],
             None,
             &host(&[Provider::Claude], &[]),
@@ -1001,7 +1013,7 @@ mod tests {
     fn the_floor_cap_is_asked_only_beside_an_api_key() {
         let cap = "Daily dollar cap for the whole floor (Enter for none):";
         let run = run_guided(
-            "",
+            None,
             &[
                 (FLOOR, "n"),
                 (cap, "25"),
@@ -1017,7 +1029,7 @@ mod tests {
 
         for billed in [&[][..], &[Provider::Codex][..]] {
             let run = run_guided(
-                "",
+                None,
                 &[(FLOOR, "n"), ("Project folder (Enter to skip):", "")],
                 None,
                 &host(&[Provider::Claude], billed),
@@ -1027,7 +1039,7 @@ mod tests {
         }
 
         let run = run_guided(
-            "[budget]\nfloor_usd_per_day = 9\n",
+            Some("[budget]\nfloor_usd_per_day = 9\n"),
             &[(FLOOR, "n"), ("Project folder (Enter to skip):", "")],
             None,
             &host(&[Provider::Claude], &[Provider::Claude]),
@@ -1080,7 +1092,7 @@ mod tests {
         let quiet = host(&[Provider::Claude], &[]);
         let go = repo(&[("go.mod", "")]);
         let run = run_guided(
-            "",
+            None,
             &[
                 (FLOOR, "n"),
                 (
@@ -1097,7 +1109,7 @@ mod tests {
         assert_eq!(plan.enroll.expect("enrolled").check_label, "make check");
 
         let run = run_guided(
-            "",
+            None,
             &[(FLOOR, "n"), ("(- to skip):", "-")],
             Some(go.path()),
             &quiet,
@@ -1107,7 +1119,7 @@ mod tests {
 
         let bare = repo(&[]);
         let run = run_guided(
-            "",
+            None,
             &[
                 (FLOOR, "n"),
                 ("Completion check for this repository (- to skip):", ""),
@@ -1120,10 +1132,51 @@ mod tests {
     }
 
     #[test]
+    fn a_present_empty_file_defaults_an_idle_hire_to_no() {
+        let go = repo(&[("go.mod", "")]);
+        let run = run_guided(
+            Some(""),
+            &[
+                (FLOOR, "n"),
+                (
+                    "Completion check for this repository [go test ./...] (- to skip):",
+                    "",
+                ),
+                ("Hire an agent named Kim on claude, idle? [y/N]", ""),
+            ],
+            Some(go.path()),
+            &host(&[Provider::Claude], &[]),
+        );
+        assert!(run.plan.expect("answered").hire.is_none());
+        assert_eq!(run.asked, 3);
+        assert!(!run.shown.contains("first agent"), "{}", run.shown);
+    }
+
+    #[test]
+    fn a_repeat_with_multiple_engines_keeps_enter_as_skip() {
+        let go = repo(&[("go.mod", "")]);
+        let run = run_guided(
+            Some(""),
+            &[
+                (FLOOR, "n"),
+                (
+                    "Completion check for this repository [go test ./...] (- to skip):",
+                    "",
+                ),
+                ("Agent engine (claude, codex; Enter to skip):", ""),
+            ],
+            Some(go.path()),
+            &host(&[Provider::Claude, Provider::Codex], &[]),
+        );
+        assert!(run.plan.expect("answered").hire.is_none());
+        assert_eq!(run.asked, 3);
+    }
+
+    #[test]
     fn the_first_hire_is_idle_and_chooses_only_installed_engines() {
         let go = repo(&[("go.mod", "")]);
         let run = run_guided(
-            "",
+            None,
             &[
                 (FLOOR, "n"),
                 (
@@ -1157,7 +1210,7 @@ mod tests {
         assert_eq!(run.asked, 4);
         assert!(run.shown.contains("agent limits"));
         let run = run_guided(
-            "",
+            None,
             &[
                 (FLOOR, "n"),
                 (
@@ -1176,7 +1229,7 @@ mod tests {
     fn hiring_is_skipped_without_an_engine_program() {
         let go = repo(&[("go.mod", "")]);
         let run = run_guided(
-            "",
+            None,
             &[
                 (FLOOR, "n"),
                 (
@@ -1197,14 +1250,19 @@ mod tests {
         let bare = repo(&[]);
         let quiet = host(&[Provider::Claude], &[]);
         let questions = [(FLOOR, "n"), ("(- to skip):", "-")];
-        let run = run_guided("", &questions, Some(bare.path()), &quiet);
+        let run = run_guided(None, &questions, Some(bare.path()), &quiet);
         assert!(
             run.shown
                 .contains("Enrolled, the Floor can hire agents into it once floor.hire is on."),
             "{}",
             run.shown
         );
-        let run = run_guided("", &[(FLOOR, "y"), questions[1]], Some(bare.path()), &quiet);
+        let run = run_guided(
+            None,
+            &[(FLOOR, "y"), questions[1]],
+            Some(bare.path()),
+            &quiet,
+        );
         assert!(
             run.shown
                 .contains("Enrolled, the Floor can hire agents into it. "),
@@ -1216,7 +1274,7 @@ mod tests {
     /// The input ending is a stop, never a default: nothing is planned.
     #[test]
     fn an_ended_input_stops_without_a_plan() {
-        let run = run_guided("", &[(FLOOR, "n")], None, &host(&[Provider::Claude], &[]));
+        let run = run_guided(None, &[(FLOOR, "n")], None, &host(&[Provider::Claude], &[]));
         assert!(matches!(run.plan, Err(Stopped::Ended)), "{:?}", run.plan);
     }
 

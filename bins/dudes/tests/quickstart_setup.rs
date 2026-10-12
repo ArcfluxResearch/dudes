@@ -973,7 +973,7 @@ fn billed_and_unbilled_guides_ask_at_most_five_questions_and_hire_idle() {
             screen.answer("claude");
         } else {
             screen.expect("Hire a first agent named Kim on claude, idle? [Y/n]");
-            screen.answer("y");
+            screen.answer("");
         }
         screen.expect("and go ahead? [Y/n]");
         screen.answer("y");
@@ -995,6 +995,119 @@ fn billed_and_unbilled_guides_ask_at_most_five_questions_and_hire_idle() {
         assert!(agents[0].goal.is_none(), "an idle hire has no goal");
         assert_only_status_checks(&layout);
     }
+}
+
+fn repeat_cli(layout: &Layout) -> Cli {
+    layout
+        .cli()
+        .without("HOME")
+        .env("DUDES_CONFIG", layout.path("operator.toml"))
+}
+
+fn repeat_guide(cli: &Cli, enroll: bool) -> String {
+    let pty = nix::pty::openpty(
+        None::<&nix::pty::Winsize>,
+        None::<&nix::sys::termios::Termios>,
+    )
+    .expect("a pseudo-terminal");
+    let mut child = cli.clone().arg("quickstart").spawn_on_terminal(&pty.slave);
+    drop(pty.slave);
+    let mut screen = Screen::new(pty.master);
+    screen.expect(FLOOR_QUESTION);
+    screen.answer("y");
+    if enroll {
+        screen.expect("Completion check for this repository (- to skip):");
+        screen.answer("/usr/bin/true");
+    }
+    screen.expect("Hire an agent named Kim on claude, idle? [y/N]");
+    screen.answer("");
+    screen.expect("and go ahead? [Y/n]");
+    screen.answer("y");
+    assert!(
+        exit_status(&mut child, &screen).success(),
+        "{}",
+        screen.shown()
+    );
+    let shown = screen.shown();
+    assert!(!shown.contains("first agent"), "{shown}");
+    let questions = ["[Y/n]", "[y/N]", "]:", "):"]
+        .iter()
+        .map(|ending| shown.matches(ending).count())
+        .sum::<usize>();
+    assert!(questions <= 5, "{shown}");
+    shown
+}
+
+#[test]
+fn a_repeat_keeps_the_existing_idle_agent_when_enter_skips_hiring() {
+    for stopped in [false, true] {
+        let layout = Layout::new();
+        std::fs::remove_file(layout.path("engines/codex")).unwrap();
+        let cli = repeat_cli(&layout);
+        let seeded = cli
+            .clone()
+            .args([
+                "quickstart",
+                "--enroll",
+                "--hire",
+                "already-here",
+                "--provider",
+                "claude",
+                "--",
+                "/usr/bin/true",
+            ])
+            .run();
+        assert_eq!(seeded.code(), 0, "{seeded:?}");
+        let before = cli.clone().args(["--json", "agents"]).run();
+        let original: Vec<dudes_proto::AgentView> = before.json();
+        assert_eq!(original.len(), 1);
+        assert!(original[0].goal.is_none());
+        if stopped {
+            let stop = cli.clone().args(["stop", "--hard"]).run();
+            assert_eq!(stop.code(), 0, "{stop:?}");
+            assert_eq!(
+                cli.clone().arg("ping").run().code(),
+                dudes::exit::UNREACHABLE
+            );
+        }
+        repeat_guide(&cli, false);
+        let after = cli.clone().args(["--json", "agents"]).run();
+        let agents: Vec<dudes_proto::AgentView> = after.json();
+        assert_eq!(agents.len(), 1, "{after:?}");
+        assert_eq!(agents[0].id, original[0].id);
+        assert_eq!(agents[0].name, "already-here");
+        assert!(agents[0].goal.is_none());
+        assert_eq!(agents[0].turns, 0);
+        assert_only_status_checks(&layout);
+        let explicit = cli
+            .clone()
+            .args(["quickstart", "--hire", "requested", "--provider", "claude"])
+            .run();
+        assert_eq!(explicit.code(), 0, "{explicit:?}");
+        let listed = cli.args(["--json", "agents"]).run();
+        let agents: Vec<dudes_proto::AgentView> = listed.json();
+        assert_eq!(agents.len(), 2);
+        assert!(
+            agents
+                .iter()
+                .any(|agent| agent.name == "requested" && agent.goal.is_none())
+        );
+    }
+}
+
+#[test]
+fn a_responding_daemon_without_a_config_defaults_hiring_to_no() {
+    let layout = Layout::new();
+    std::fs::remove_file(layout.path("engines/codex")).unwrap();
+    let cli = repeat_cli(&layout);
+    let started = cli.clone().arg("start").run();
+    assert_eq!(started.code(), 0, "{started:?}");
+    assert!(!layout.path("operator.toml").exists());
+    repeat_guide(&cli, true);
+    let listed = cli.args(["--json", "agents"]).run();
+    let agents: Vec<dudes_proto::AgentView> = listed.json();
+    assert!(agents.is_empty(), "{listed:?}");
+    assert_only_status_checks(&layout);
 }
 
 #[test]

@@ -1411,7 +1411,8 @@ fn guided(
     host: &setup::Host,
     running: bool,
 ) -> Result<Plan, Stopped> {
-    let mut plan = setup::guided(term, draft, config, cwd, host)?;
+    let existing_setup = running || draft.settings().exists();
+    let mut plan = setup::guided(term, draft, config, cwd, host, existing_setup)?;
     setup::summary(term, &plan, cwd)?;
     if running {
         term.say(
