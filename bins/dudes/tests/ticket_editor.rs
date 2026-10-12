@@ -63,7 +63,7 @@ fn review() -> Review {
             mark: None,
         }],
     };
-    let _running = start(
+    let running = start(
         &settings,
         SharedHost::new(),
         Arc::new(OpenRunner::default()),
@@ -112,7 +112,7 @@ fn review() -> Review {
     assert_eq!(assigned.code(), 0, "{}", assigned.output());
 
     Review {
-        _running,
+        _running: running,
         fixture,
         cli,
         directory,
@@ -553,7 +553,7 @@ fn an_editor_receives_no_minted_agent_token_or_control_socket() {
             });
     let token = (1_u32..=256)
         .find_map(|counter| {
-            let candidate = format!("{counter:A>width$}", width = HOOK_TOKEN_LEN);
+            let candidate = format!("{counter:A>HOOK_TOKEN_LEN$}");
             if dudes_supervisor::blake3_hex(candidate.as_bytes()) == token_hash {
                 Some(HookToken::new(candidate).expect("a matching fixture token is well formed"))
             } else {

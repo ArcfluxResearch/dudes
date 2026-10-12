@@ -153,14 +153,14 @@ fn lease() -> Lease {
                 .unwrap();
         }
     }
-    let _running = start(
+    let running = start(
         &settings,
         SharedHost::new(),
         Arc::new(OpenRunner::default()),
     );
     let cli = Cli::new(&settings.socket(), &settings.runtime_dir);
     Lease {
-        _running,
+        _running: running,
         fixture,
         cli,
         origin,
