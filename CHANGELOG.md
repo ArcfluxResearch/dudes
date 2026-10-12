@@ -15,7 +15,7 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ### Highlights
 
-- **A board with room to work.** Board has its own working area, four counted workflow columns and a separate Needs you lane. All four columns fit at tablet width, and Crew, office and terminal navigation keep their state when you leave Board. (#41, #44)
+- **A board with room to work.** Board has its own working area, four counted workflow columns and a separate Needs you lane. All four columns fit at 1024 × 768, and Crew, office and terminal navigation keep their state when you leave Board. (#41, #44)
 - **Review tickets in a side drawer.** Read the agent's summary, the daemon's check result and changed file names, then Accept or Ask for changes. New ticket opens a form with an optional agent; keyboard navigation and focus return keep the review flow usable. (#42)
 - **See closing-time progress.** During `dudes stop`, the Floor shows acknowledged, settled, owed and running counts, plus time left. Disconnected views freeze their last observed values, and completion retains final counts. No Floor shutdown control or participant identities are added. (#45)
 
