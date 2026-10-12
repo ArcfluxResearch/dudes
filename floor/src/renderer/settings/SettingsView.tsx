@@ -143,7 +143,7 @@ export function DesktopNotificationChoice() {
       browser's site settings, then turn them on here. The banner still shows what needs you.</p>
       : notifications.kind === 'unsupported' || notifications.kind === 'unavailable' ? <p role="status">
         Desktop notifications are unavailable in this browser. The banner still shows what needs you.</p> : null}
-    {on && !notifications.remembered ? <p role="status">This choice lasts only for this page because browser storage is unavailable.</p> : null}
+    {!notifications.remembered ? <p role="status">This choice lasts only for this page because browser storage is unavailable.</p> : null}
   </section>;
 }
 
