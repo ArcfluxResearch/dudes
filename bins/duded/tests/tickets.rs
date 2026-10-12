@@ -405,6 +405,78 @@ fn checkout_refuses_stale_unassigned_and_removed_tickets_without_appending() {
 }
 
 #[test]
+fn checkout_returns_an_active_recorded_lease_but_refuses_removed_and_retired_owners() {
+    for ending in ["active", "removed", "retired"] {
+        let fixture = Fixture::new();
+        let (settings, origin) = enrolled(&fixture);
+        let directory = origin.parent().unwrap().join("leased");
+        std::fs::create_dir(&directory).unwrap();
+        let mut leased = samples::record(RecordKind::WorktreeLeased);
+        let Record::WorktreeLeased {
+            worktree,
+            origin: recorded_origin,
+            path,
+            ..
+        } = &mut leased
+        else {
+            unreachable!()
+        };
+        let id = *worktree;
+        *recorded_origin = origin.clone();
+        *path = directory.clone();
+        let mut hired = hire_into(&directory);
+        let Record::AgentHired { worktree, .. } = &mut hired else {
+            unreachable!()
+        };
+        *worktree = Some(id);
+        let card = CardId::from_parts(4, 1);
+        let agent = sample_agent();
+        let mut records = vec![
+            leased,
+            hired,
+            ticket_created(card, "Leased checkout"),
+            ticket_assigned(card, agent, 0),
+        ];
+        match ending {
+            "active" => {}
+            "removed" => records.push(Record::WorktreeRemoved {
+                worktree: id,
+                how: dudes_proto::WorktreeRemoval::Operator,
+            }),
+            "retired" => records.push(Record::AgentRetired {
+                id: agent,
+                reason: "Finished".into(),
+                browser_retire: None,
+            }),
+            _ => unreachable!(),
+        }
+        seed(&fixture, records);
+        let mut daemon = start(&fixture, settings);
+        let seq = daemon.card(card).seq;
+        let before = fixture.records();
+        let response = daemon.checkout(json!({"card": card, "expected_seq": seq}));
+        if ending == "active" {
+            assert!(response.error.is_none(), "{:?}", response.error);
+            assert_eq!(
+                response.result.unwrap(),
+                json!({"directory": directory, "worktree": {"worktree": id, "origin": origin}})
+            );
+        } else {
+            let expected = if ending == "removed" {
+                "worktree_unavailable"
+            } else {
+                "agent_unavailable"
+            };
+            let (code, reason, _) = refusal(&response);
+            assert_eq!(code, ErrorCode::Refused.code());
+            assert_eq!(reason.as_deref(), Some(expected));
+        }
+        assert_eq!(fixture.records(), before);
+        daemon.stop();
+    }
+}
+
+#[test]
 fn a_created_ticket_replays_to_the_same_board_after_the_cache_is_deleted() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);

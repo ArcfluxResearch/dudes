@@ -281,7 +281,7 @@ impl From<String> for AgentRef {
 /// One operator ticket command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TicketCommand {
-    /// Print the ticket's recorded checkout for local review.
+    /// Review the ticket's recorded checkout locally.
     Open {
         /// The ticket.
         card: CardId,

@@ -1,7 +1,8 @@
 //! The RPC surface: JSON-RPC 2.0, newline-delimited, one method table for every client.
 //!
 //! [`Request`], [`Response`] and [`Notification`] are the envelopes. Every method's params and
-//! result are typed in the submodules and listed once in [`Method`]; the generated
+//! result are typed in the submodules. [`CurrentMethod`] extends the original [`Method`] table;
+//! the generated
 //! `schemas/rpc.schema.json` is the source of truth for the floor's TypeScript client.
 //!
 //! Identity is structural (invariant 8), and the peer credential is only half of it: it admits

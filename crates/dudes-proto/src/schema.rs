@@ -1333,10 +1333,9 @@ mod tests {
         );
     }
 
-    /// The RPC document carries every method and notification by wire name, so a generated
-    /// client cannot miss one.
+    /// The original RPC method table and notifications retain their wire names.
     #[test]
-    fn rpc_schema_lists_every_method_and_notification() {
+    fn legacy_rpc_schema_lists_every_method_and_notification() {
         let rpc = schema_for::<Rpc>().to_value();
         let methods = &rpc["$defs"]["Methods"]["properties"];
         for method in crate::rpc::Method::ALL {
