@@ -216,3 +216,88 @@ fn a_gitfile_repointed_to_another_worktree_is_refused_before_printing() {
     );
     assert_eq!(lease.fixture.records(), before);
 }
+
+#[test]
+fn a_commondir_repointed_away_from_the_recorded_origin_is_refused() {
+    let lease = lease();
+    let other = lease.fixture.runtime.path().join("other-origin");
+    fs::create_dir(&other).unwrap();
+    git(&other, &strings(&["init", "--quiet"]));
+    let admin = lease
+        .origin
+        .join(".git/worktrees")
+        .join(lease.worktree.to_string());
+    fs::write(
+        admin.join("commondir"),
+        format!("{}\n", other.join(".git").display()),
+    )
+    .unwrap();
+    let before = lease.fixture.records();
+    let printed = lease
+        .cli
+        .args(["ticket", "open", &lease.card.to_string(), "--print"])
+        .run();
+    assert_eq!(printed.code(), 4, "{}", printed.output());
+    assert_eq!(printed.stdout, "");
+    assert_eq!(lease.fixture.records(), before);
+}
+
+#[test]
+fn lease_files_and_administrative_directories_must_not_be_symlinks() {
+    for component in ["gitfile", "commondir", "admin", "common", "tree"] {
+        let lease = lease();
+        let admin = lease
+            .origin
+            .join(".git/worktrees")
+            .join(lease.worktree.to_string());
+        let target = match component {
+            "gitfile" => lease.directory.join(".git"),
+            "commondir" => admin.join("commondir"),
+            "admin" => admin,
+            "common" => lease.origin.join(".git"),
+            "tree" => lease.directory.clone(),
+            _ => unreachable!(),
+        };
+        let relocated = lease.fixture.runtime.path().join("relocated");
+        fs::rename(&target, &relocated).unwrap();
+        std::os::unix::fs::symlink(&relocated, &target).unwrap();
+        let before = lease.fixture.records();
+        let printed = lease
+            .cli
+            .args(["ticket", "open", &lease.card.to_string(), "--print"])
+            .run();
+        assert_eq!(printed.code(), 4, "{component}: {}", printed.output());
+        assert_eq!(printed.stdout, "", "{component}");
+        assert_eq!(lease.fixture.records(), before);
+    }
+}
+
+#[test]
+fn malformed_or_oversized_lease_link_files_are_refused() {
+    for (name, bytes) in [
+        (".git", Vec::new()),
+        (".git", b"gitdir: /one\n/another\n".to_vec()),
+        (".git", b"gitdir: /one\0\n".to_vec()),
+        ("commondir", vec![b'x'; 4097]),
+    ] {
+        let lease = lease();
+        let path = if name == ".git" {
+            lease.directory.join(name)
+        } else {
+            lease
+                .origin
+                .join(".git/worktrees")
+                .join(lease.worktree.to_string())
+                .join(name)
+        };
+        fs::write(path, bytes).unwrap();
+        let before = lease.fixture.records();
+        let printed = lease
+            .cli
+            .args(["ticket", "open", &lease.card.to_string(), "--print"])
+            .run();
+        assert_eq!(printed.code(), 4, "{}", printed.output());
+        assert_eq!(printed.stdout, "");
+        assert_eq!(lease.fixture.records(), before);
+    }
+}

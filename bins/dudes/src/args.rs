@@ -753,7 +753,7 @@ COMMANDS
         Environment arguments split on whitespace; quotes and shell characters stay literal.
         Use --editor for a program path containing spaces, or a wrapper for grouped arguments.
         Invalid selected editors are refused without falling back to another selection.
-        --print and --json never launches an editor; both bypass editor configuration.
+        --print only prints; --json never launches an editor. Both bypass editor configuration.
         Neither can be combined with --editor. Without configuration, print the directory
         and the explicit launch command. Windows and SSH sessions only print the directory.
         Lease verification requires macOS or Linux; other platforms refuse leased checkouts.
