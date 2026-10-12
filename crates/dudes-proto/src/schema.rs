@@ -47,24 +47,20 @@ fn insert_rpc_definition<T: JsonSchema>(doc: &mut Exported, name: &str) {
         .insert(name.to_owned(), schema);
 }
 
-fn insert_floor_views(doc: &mut Exported) {
-    insert_rpc_definition::<crate::projection::FloorProjectionView<'_>>(doc, "FloorProjectionView");
-    insert_rpc_definition::<crate::projection::FloorDeltaView<'_>>(doc, "FloorDeltaView");
-}
-
-fn insert_current_methods(doc: &mut Exported) {
+fn insert_rpc_extensions(doc: &mut Exported) {
     insert_rpc_definition::<crate::rpc::CurrentMethods>(doc, "CurrentMethods");
     doc.schema["properties"]["methods"] = serde_json::json!({
         "$ref": "#/$defs/CurrentMethods",
     });
+    insert_rpc_definition::<crate::rpc::team::RosterAgentParams>(doc, "RosterAgentParams");
+    insert_rpc_definition::<crate::rpc::closing::ClosingSchema>(doc, "ClosingSchema");
+    insert_rpc_definition::<crate::projection::FloorProjectionView<'_>>(doc, "FloorProjectionView");
+    insert_rpc_definition::<crate::projection::FloorDeltaView<'_>>(doc, "FloorDeltaView");
 }
 
 fn export_rpc() -> Exported {
     let mut doc = export::<Rpc>("rpc.schema.json");
-    insert_current_methods(&mut doc);
-    insert_rpc_definition::<crate::rpc::team::RosterAgentParams>(&mut doc, "RosterAgentParams");
-    insert_rpc_definition::<crate::rpc::closing::ClosingSchema>(&mut doc, "ClosingSchema");
-    insert_floor_views(&mut doc);
+    insert_rpc_extensions(&mut doc);
     let mut doctor = schema_for::<crate::rpc::system::DoctorJournalResult>().to_value();
     let definitions = doctor.as_object_mut().unwrap().remove("$defs").unwrap();
     let defs = doc.schema["$defs"].as_object_mut().unwrap();
