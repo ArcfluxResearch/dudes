@@ -50,9 +50,53 @@ What to expect:
 
 `cargo xtask dist` builds binaries with `cargo build --release --locked`. On macOS and Linux,
 it writes an archive and records its SHA-256 in `SHA256SUMS`. The install script checks the
-downloaded archive against that file. This detects a mismatch with the listed hash; it does not
-authenticate the publisher. The distribution command does not generate release signatures, an SBOM,
-or build provenance attestations.
+downloaded archive against that file.
+
+The [release workflow](https://github.com/ArcfluxResearch/dudes/blob/main/.github/workflows/release.yml)
+adds [GitHub build provenance attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
+for the archives and `SHA256SUMS`. Before publication, the workflow requires a tag commit reachable
+from `main` and a successful `main` push CI run for that exact commit.
+
+### Verify a release
+
+1. Download the archive for your platform and `SHA256SUMS` from the same
+   [GitHub release](https://github.com/ArcfluxResearch/dudes/releases).
+2. In the download directory, check the archive against `SHA256SUMS`.
+
+   On Linux, run:
+
+   ```sh
+   sha256sum --ignore-missing --check SHA256SUMS
+   ```
+
+   On macOS, run:
+
+   ```sh
+   shasum -a 256 --ignore-missing --check SHA256SUMS
+   ```
+
+   Confirm that the output names your downloaded archive and reports `OK`. These commands ignore
+   missing archives for other platforms. The checksum check detects a mismatch with the listed
+   hash. It does not authenticate the publisher.
+3. With the [GitHub CLI](https://cli.github.com/) installed, verify the archive's attestation.
+   Replace `dudes-VERSION-TARGET.tar.gz` with your downloaded archive's filename:
+
+   ```sh
+   gh attestation verify dudes-VERSION-TARGET.tar.gz --repo ArcfluxResearch/dudes
+   ```
+
+   Verify the checksum file's attestation too:
+
+   ```sh
+   gh attestation verify SHA256SUMS --repo ArcfluxResearch/dudes
+   ```
+
+   See the [GitHub CLI attestation verification reference](https://cli.github.com/manual/gh_attestation_verify)
+   for the repository identity checks and verification options.
+
+Extract or install the archive only after the checksum check and attestation verification succeed.
+
+### Dependency checks
 
 CI is configured to run `cargo deny --locked check` for RustSec advisories, licences, bans and
 sources on pull requests and weekly. Dependabot is configured to open update pull requests for
