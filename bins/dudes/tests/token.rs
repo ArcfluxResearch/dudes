@@ -30,12 +30,6 @@
 //! There is also a **structural** defence: `render_answer` does not take the [`Environment`] at all, so no renderer can reach the
 //! token without a signature change. The only place a leak could be written is `dispatch`.
 //!
-//! # Control variables
-//!
-//! Quickstart excludes `DUDES_TOKEN` from the daemon's environment. The editor exec removes
-//! `DUDES_TOKEN` and `DUDES_SOCK`; `ticket_editor.rs` observes those removals with a minted token.
-//! `no_interpreter.rs` confines each admitted process item. This file checks that the token
-//! reaches neither output stream on the operator and agent paths exercised below.
 #![cfg(unix)]
 
 use std::collections::BTreeMap;

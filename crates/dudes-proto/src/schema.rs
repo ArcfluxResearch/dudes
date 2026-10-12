@@ -1333,7 +1333,6 @@ mod tests {
         );
     }
 
-    /// The original RPC method table and notifications retain their wire names.
     #[test]
     fn legacy_rpc_schema_lists_every_method_and_notification() {
         let rpc = schema_for::<Rpc>().to_value();
