@@ -141,7 +141,10 @@ fn an_explicit_editor_receives_only_the_recorded_directory_and_owns_the_exit_cod
     assert_eq!(opened.code(), 37, "{}", opened.output());
     assert_eq!(
         opened.stdout,
-        format!("argc=1\noperand={}\nsocket=unset\n", review.directory.display())
+        format!(
+            "argc=1\noperand={}\nsocket=unset\n",
+            review.directory.display()
+        )
     );
     assert_eq!(opened.stderr, "");
 }

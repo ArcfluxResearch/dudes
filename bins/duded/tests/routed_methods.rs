@@ -76,8 +76,8 @@ use std::sync::mpsc;
 use common::{Fixture, TestClock};
 use duded::classify::WorldTokens;
 use duded::ports::{Handle, Job};
-use dudes_proto::rpc::Method;
 use dudes_proto::rpc::cred::{OPERATOR_CREDENTIAL_LEN, OperatorCredential};
+use dudes_proto::rpc::{CurrentMethod, Method};
 use dudes_rpc::auth::{PeerClassifier, PeerRole};
 use dudes_rpc::{Dispatcher, Requirement, Subscribers};
 use dudes_types::AgentId;
@@ -212,6 +212,45 @@ fn every_declared_method_is_routed_or_exempt() {
     assert!(
         routed.contains(&Method::AgentHire),
         "control: the fold reached a real dispatcher, so the pass above is not a fold over nothing"
+    );
+}
+
+#[test]
+fn the_exported_current_catalog_matches_the_production_dispatcher() {
+    let rpc = dudes_proto::schema::schemas()
+        .into_iter()
+        .find(|document| document.file_name == "rpc.schema.json")
+        .unwrap()
+        .schema;
+    assert_eq!(
+        rpc["properties"]["methods"]["$ref"],
+        "#/$defs/CurrentMethods"
+    );
+    let declared: BTreeSet<CurrentMethod> = rpc["$defs"]["CurrentMethods"]["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|name| name.parse().unwrap())
+        .collect();
+    let dispatcher = production_dispatcher();
+    let routed: BTreeSet<_> = dispatcher.current_methods().collect();
+    let exempt: BTreeSet<_> = UNROUTED.iter().copied().map(CurrentMethod::from).collect();
+    assert!(routed.is_disjoint(&exempt));
+    assert_eq!(declared, routed.union(&exempt).copied().collect());
+    assert_eq!(
+        dispatcher.current_requirement(CurrentMethod::TicketCheckout),
+        Some(Requirement::Operator)
+    );
+    assert_eq!(
+        dispatcher
+            .methods()
+            .map(CurrentMethod::from)
+            .collect::<BTreeSet<_>>(),
+        routed
+            .iter()
+            .copied()
+            .filter(|method| method.legacy().is_some())
+            .collect()
     );
 }
 

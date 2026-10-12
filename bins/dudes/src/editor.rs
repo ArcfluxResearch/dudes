@@ -1,7 +1,9 @@
-//! Hand a ticket's recorded checkout to the operator's explicit editor.
+//! Hand a ticket's recorded checkout to the operator's selected editor.
 
 #[cfg(unix)]
-use std::path::Path;
+use std::ffi::OsString;
+#[cfg(unix)]
+use std::path::{Path, PathBuf};
 
 use dudes_proto::rpc::ticket::TicketCheckoutResult;
 
@@ -27,6 +29,9 @@ pub(crate) enum EditorError {
     #[error("The editor must be outside the recorded checkout.")]
     InsideCheckout,
     #[cfg(unix)]
+    #[error("The selected editor configuration is not valid UTF-8.")]
+    UnsupportedEncoding,
+    #[cfg(unix)]
     #[error("Could not start the editor: {0}")]
     Exec(#[source] std::io::Error),
 }
@@ -39,55 +44,93 @@ pub(crate) fn handoff(
     if !checkout.directory.is_absolute() || !checkout.directory.is_dir() {
         return Err(EditorError::CheckoutUnavailable);
     }
-    if machine {
+    if machine || matches!(selection, EditorSelection::Print) {
         return Ok(PrintDisposition::DirectoryOnly);
     }
-    match selection {
-        EditorSelection::Print => Ok(PrintDisposition::DirectoryOnly),
-        EditorSelection::Configured => Ok(PrintDisposition::LaunchForm),
-        #[cfg(not(unix))]
-        EditorSelection::Explicit(_) => Ok(PrintDisposition::DirectoryOnly),
-        #[cfg(unix)]
-        EditorSelection::Explicit(program) => {
-            use std::os::unix::fs::PermissionsExt as _;
 
-            if ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
-                .iter()
-                .any(|name| std::env::var_os(name).is_some())
-            {
-                return Ok(PrintDisposition::DirectoryOnly);
+    #[cfg(not(unix))]
+    {
+        Ok(match selection {
+            EditorSelection::Configured => PrintDisposition::LaunchForm,
+            EditorSelection::Print | EditorSelection::Explicit(_) => {
+                PrintDisposition::DirectoryOnly
             }
-            if !program.is_absolute() {
-                return Err(EditorError::RelativeProgram);
+        })
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        if ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+            .iter()
+            .any(|name| std::env::var_os(name).is_some())
+        {
+            return Ok(PrintDisposition::DirectoryOnly);
+        }
+        let (program, args) = match selection {
+            EditorSelection::Print => return Ok(PrintDisposition::DirectoryOnly),
+            EditorSelection::Explicit(program) => (program.clone(), Vec::new()),
+            EditorSelection::Configured => {
+                let Some(selected) = configured_editor()? else {
+                    return Ok(PrintDisposition::LaunchForm);
+                };
+                selected
             }
-            let program = program
-                .canonicalize()
-                .map_err(|_| EditorError::NotExecutable)?;
-            let metadata = program.metadata().map_err(|_| EditorError::NotExecutable)?;
-            if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
-                return Err(EditorError::NotExecutable);
-            }
-            let directory = checkout
-                .directory
-                .canonicalize()
-                .map_err(|_| EditorError::CheckoutUnavailable)?;
-            if program.starts_with(directory) {
-                return Err(EditorError::InsideCheckout);
-            }
-            Err(EditorError::Exec(exec(&program, &checkout.directory)))
+        };
+        if !program.is_absolute() {
+            return Err(EditorError::RelativeProgram);
+        }
+        let program = program
+            .canonicalize()
+            .map_err(|_| EditorError::NotExecutable)?;
+        let metadata = program.metadata().map_err(|_| EditorError::NotExecutable)?;
+        if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+            return Err(EditorError::NotExecutable);
+        }
+        let directory = checkout
+            .directory
+            .canonicalize()
+            .map_err(|_| EditorError::CheckoutUnavailable)?;
+        if program.starts_with(directory) {
+            return Err(EditorError::InsideCheckout);
+        }
+        Err(EditorError::Exec(exec(
+            &program,
+            &args,
+            &checkout.directory,
+        )))
+    }
+}
+
+#[cfg(unix)]
+fn configured_editor() -> Result<Option<(PathBuf, Vec<OsString>)>, EditorError> {
+    for name in ["VISUAL", "EDITOR"] {
+        let value = match std::env::var(name) {
+            Ok(value) => value,
+            Err(std::env::VarError::NotPresent) => continue,
+            Err(std::env::VarError::NotUnicode(_)) => return Err(EditorError::UnsupportedEncoding),
+        };
+        let mut tokens = value.split_whitespace();
+        if let Some(program) = tokens.next() {
+            return Ok(Some((
+                PathBuf::from(program),
+                tokens.map(OsString::from).collect(),
+            )));
         }
     }
+    Ok(None)
 }
 
 #[cfg(unix)]
 #[expect(
     clippy::disallowed_types,
-    reason = "the operator's explicit editor replaces this process with the recorded directory"
+    reason = "the operator's selected editor replaces this process with the recorded directory"
 )]
-fn exec(program: &Path, directory: &Path) -> std::io::Error {
+fn exec(program: &Path, args: &[OsString], directory: &Path) -> std::io::Error {
     use std::os::unix::process::CommandExt as _;
 
     let mut command = std::process::Command::new(program);
+    command.args(args);
     command.arg(directory);
     command.env_remove("DUDES_TOKEN");
     command.env_remove("DUDES_SOCK");
