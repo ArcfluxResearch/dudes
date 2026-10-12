@@ -31,13 +31,14 @@
 //! # Nothing is interpolated into a shell
 //!
 //! Invariant 7. A goal's text, an agent's name and a predicate's argv are typed values carried as
-//! parameters over the socket. The CLI performs no `PATH` lookup: quickstart forwards an allowlisted
-//! `PATH`, and the daemon alone resolves a program against it.
+//! parameters over the socket. Only the operator's editor selection may resolve a program on
+//! the CLI's PATH. Quickstart forwards an allowlisted PATH for daemon-owned programs.
 //!
-//! The CLI starts exactly two programs, each from one spawn item with an expiring `#[expect]`:
+//! The CLI starts programs from three item-scoped grants with an expiring `#[expect]`:
 //! quickstart's daemon, an absolute `duded` path with no arguments; and an engine's own
-//! login, from the absolute path in the daemon's `system.doctor` row. `tests/no_interpreter.rs`
-//! confines the command types to those two files, lists each item's admitted calls, and keeps
+//! login, from the absolute path in the daemon's `system.doctor` row; and the operator's selected
+//! editor, with the recorded directory. `tests/no_interpreter.rs`
+//! confines the command types to those files, lists each item's admitted calls, and keeps
 //! every interpreter route absent, with planted controls that prove the scan fires. The programs
 //! themselves may be scripts; what Dudes composes is typed argv and no shell string.
 //!
@@ -52,6 +53,7 @@ pub mod args;
 pub mod call;
 pub mod config;
 pub mod credential;
+mod editor;
 pub mod env;
 pub mod exit;
 pub mod floor;

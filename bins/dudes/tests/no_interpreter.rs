@@ -111,7 +111,7 @@ const QUOTED_ROUTES: &[&str] = &["\"sh\"", "\"bash\"", "\"/bin/sh\"", "\"-c\""];
 const MIN_FILES: usize = 6;
 
 /// The files that may name a command type, each with one spawn item.
-const ROUTE_FILES: [&str; 2] = ["quickstart.rs", "login.rs"];
+const ROUTE_FILES: [&str; 3] = ["quickstart.rs", "login.rs", "editor.rs"];
 
 /// The lints whose `allow` or `expect` silences the command-type ban: the two lints it is made of,
 /// the clippy groups that hold them, and every warning at once.
@@ -126,9 +126,10 @@ const BAN_LINTS: [&str; 5] = [
 /// The files of this package that may carry one `#[expect(clippy::disallowed_types)]`, and nothing
 /// else from [`BAN_LINTS`]: the two route items, and the two test helpers that start a real
 /// process (`bins/dudes/clippy.toml` item 3).
-const ADMITTED_EXPECTATIONS: [&str; 4] = [
+const ADMITTED_EXPECTATIONS: [&str; 5] = [
     "src/quickstart.rs",
     "src/login.rs",
+    "src/editor.rs",
     "tests/common/mod.rs",
     "tests/windows_pipe_owner.rs",
 ];
@@ -374,6 +375,7 @@ fn route_violations(package: &Path) -> Vec<String> {
     for (file, routes) in [
         ("quickstart.rs", &COMMAND_ROUTES[..]),
         ("login.rs", &COMMAND_ROUTES[..1]),
+        ("editor.rs", &COMMAND_ROUTES[..1]),
     ] {
         for route in routes {
             if !found

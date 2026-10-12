@@ -61,8 +61,17 @@ fn an_explicit_editor_receives_only_the_recorded_directory_and_owns_the_exit_cod
     let hired = cli
         .clone()
         .args([
-            "--json", "hire", "--name", "Cody", "--role", "engineer",
-            "--department", "engineering", "--provider", "claude", "--cwd",
+            "--json",
+            "hire",
+            "--name",
+            "Cody",
+            "--role",
+            "engineer",
+            "--department",
+            "engineering",
+            "--provider",
+            "claude",
+            "--cwd",
         ])
         .arg(&directory)
         .args(["--usd-per-day", "10"])
@@ -73,11 +82,22 @@ fn an_explicit_editor_receives_only_the_recorded_directory_and_owns_the_exit_cod
     assert_eq!(paused.code(), 0, "{}", paused.output());
     let added = cli
         .clone()
-        .args(["--json", "ticket", "add", "--title", "Review locally", "--project", "service"])
+        .args([
+            "--json",
+            "ticket",
+            "add",
+            "--title",
+            "Review locally",
+            "--project",
+            "service",
+        ])
         .run();
     assert_eq!(added.code(), 0, "{}", added.output());
     let card = added.json::<TicketCreateResult>().card.to_string();
-    let assigned = cli.clone().args(["ticket", "give", &card, "--agent", &agent]).run();
+    let assigned = cli
+        .clone()
+        .args(["ticket", "give", &card, "--agent", &agent])
+        .run();
     assert_eq!(assigned.code(), 0, "{}", assigned.output());
 
     let editor = fixture.runtime.path().join("recording editor");

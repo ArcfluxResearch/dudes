@@ -370,6 +370,8 @@ pub enum EditorSelection {
     Print,
     /// Use operator configuration, or print the explicit launch form when it is absent.
     Configured,
+    /// Use this absolute operator-selected executable without environment arguments.
+    Explicit(PathBuf),
 }
 
 /// One `worktree` subcommand.
@@ -978,7 +980,21 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "workspace" => Command::Workspace(workspace(tail, payload)?),
         "worktree" => Command::Worktree(worktree(tail)?),
         "board" => Command::Board(board(tail)?),
-        "ticket" => Command::Ticket(ticket(tail)?),
+        "ticket" => {
+            let ticket = ticket(tail)?;
+            if json
+                && matches!(
+                    ticket,
+                    TicketCommand::Open {
+                        selection: EditorSelection::Explicit(_),
+                        ..
+                    }
+                )
+            {
+                return Err(ArgError::Conflicting("--json", "--editor"));
+            }
+            Command::Ticket(ticket)
+        }
         "config" if json => return Err(ArgError::TextOnly("config")),
         "config" => Command::Config(config_command(tail)?),
         other => return Err(ArgError::UnknownCommand(other.to_owned())),
@@ -1433,12 +1449,6 @@ fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
         return Err(ArgError::HelpRequested);
     }
     let subcommand = command.to_string_lossy();
-    if subcommand == "open"
-        && rest.iter().any(|arg| arg == "--print")
-        && rest.iter().any(|arg| arg == "--editor")
-    {
-        return Err(ArgError::Conflicting("--print", "--editor"));
-    }
     if !matches!(
         subcommand.as_ref(),
         "add"
@@ -1463,6 +1473,7 @@ fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
     let (mut title, mut note, mut project, mut done_when) = (None, None, None, None);
     let (mut agent, mut message, mut status, mut seq) = (None, None, None, None);
     let mut print = false;
+    let mut editor = None;
     while let Some(arg) = flags.next() {
         match (subcommand.as_ref(), arg.to_string_lossy().as_ref()) {
             (_, "--help" | "-h") => return Err(ArgError::HelpRequested),
@@ -1478,6 +1489,7 @@ fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
             }
             ("list", "--status") => status = Some(ticket_status(&mut flags)?),
             ("open", "--print") => print = true,
+            ("open", "--editor") => editor = Some(flags.path("--editor")?),
             (_, other) if takes_card && card.is_none() && !other.starts_with('-') => {
                 card = Some(
                     arg.to_str()
@@ -1497,9 +1509,30 @@ fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
         let card = required(card, "<card>")?;
         return match subcommand.as_ref() {
             "open" => {
+                if print && editor.is_some() {
+                    return Err(ArgError::Conflicting("--print", "--editor"));
+                }
+                if let Some(program) = &editor
+                    && !program.is_absolute()
+                {
+                    return Err(ArgError::BadValue {
+                        flag: "--editor",
+                        value: program.to_string_lossy().into_owned(),
+                        what: "an absolute program path",
+                    });
+                }
                 Ok(TicketCommand::Open {
                     card,
-                    selection: if print { EditorSelection::Print } else { EditorSelection::Configured },
+                    selection: editor.map_or_else(
+                        || {
+                            if print {
+                                EditorSelection::Print
+                            } else {
+                                EditorSelection::Configured
+                            }
+                        },
+                        EditorSelection::Explicit,
+                    ),
                 })
             }
             "edit" => {

@@ -16,7 +16,7 @@ use super::{
     Failure, Socket, answer_result, call_presenting, connect, encode, local, operator_credential,
     typed,
 };
-use crate::args::{AgentRef, EditorSelection, TicketCommand, TicketStatus};
+use crate::args::{AgentRef, TicketCommand, TicketStatus};
 use crate::env::Environment;
 use crate::render::ticket::{AgentNames, agent_name};
 use crate::{exit, render};
@@ -242,11 +242,7 @@ pub(super) fn command(
                     .call_current_presenting(CurrentMethod::TicketCheckout, Some(params), cred)
                     .map_err(local)?,
             )?)?;
-            if !result.directory.is_dir() {
-                return Err(local(
-                    "The recorded checkout directory is no longer available.",
-                ));
-            }
+            let disposition = crate::editor::handoff(&result, selection, machine).map_err(local)?;
             if machine {
                 render::json(out, &result).map_err(local)?;
             } else {
@@ -256,7 +252,7 @@ pub(super) fn command(
                     render::Escaped(&result.directory.to_string_lossy())
                 )
                 .map_err(local)?;
-                if *selection == EditorSelection::Configured {
+                if disposition == crate::editor::PrintDisposition::LaunchForm {
                     writeln!(out, "To open an editor, run `dudes ticket open {card} --editor /absolute/program`.")
                         .map_err(local)?;
                 }
