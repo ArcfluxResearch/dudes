@@ -262,6 +262,7 @@ pub fn guided(
     config: &Path,
     cwd: Option<&Path>,
     host: &Host,
+    existing_setup: bool,
 ) -> Result<Plan, Stopped> {
     let mut plan = Plan::default();
     term.say(&format!(
@@ -280,7 +281,7 @@ pub fn guided(
     {
         project_folder_step(term, cwd, &mut plan)?;
     }
-    hire_step(term, draft.settings(), cwd, host, &mut plan)?;
+    hire_step(term, draft.settings(), cwd, host, existing_setup, &mut plan)?;
     Ok(plan)
 }
 
@@ -556,12 +557,13 @@ fn hire_step(
     file: &Settings,
     cwd: Option<&Path>,
     host: &Host,
+    existing_setup: bool,
     plan: &mut Plan,
 ) -> Result<(), Stopped> {
     let project = plan.project.as_deref().or(cwd);
     if plan.enroll.is_none() && project.and_then(|cwd| file.enrolled_at(cwd)).is_none() {
         term.say(
-            "Add a project before hiring your first agent. Run `dudes hire` after enrolling it.",
+            "Add a project before hiring an agent. Run `dudes hire` after enrolling it.",
         )?;
         return Ok(());
     }
@@ -569,7 +571,12 @@ fn hire_step(
         .into_iter()
         .filter(|provider| engine_on(file, *provider) && host.found.contains(provider))
         .collect();
-    term.say(&format!("The first agent is named {DEFAULT_NAME} and starts idle. For a different name, a goal or agent limits, use `dudes quickstart --hire <name>` with explicit options."))?;
+    term.say(&format!("An agent hired here is named {DEFAULT_NAME} and starts idle. For a different name, a goal or agent limits, use `dudes quickstart --hire <name>` with explicit options."))?;
+    let (agent, engine_question) = if existing_setup {
+        ("an agent", "Agent engine")
+    } else {
+        ("a first agent", "First agent engine")
+    };
     let provider = match engines.as_slice() {
         [] => {
             term.say("No agent engine was found. Install an engine, then run `dudes hire`.")?;
@@ -577,8 +584,8 @@ fn hire_step(
         }
         [only] => {
             if !term.yes(
-                &format!("Hire a first agent named {DEFAULT_NAME} on {only}, idle?"),
-                true,
+                &format!("Hire {agent} named {DEFAULT_NAME} on {only}, idle?"),
+                !existing_setup,
             )? {
                 return Ok(());
             }
@@ -587,7 +594,7 @@ fn hire_step(
         _ => {
             let names: Vec<&str> = engines.iter().map(|provider| provider.as_str()).collect();
             let chosen = term.value(
-                &format!("First agent engine ({}; Enter to skip)", names.join(", ")),
+                &format!("{engine_question} ({}; Enter to skip)", names.join(", ")),
                 None,
                 |text| {
                     if text.is_empty() || text == "-" {
@@ -812,12 +819,14 @@ mod tests {
         let input = answers.join("\n") + "\n";
         let mut reader = io::Cursor::new(input.clone());
         let mut out = Vec::new();
+        let existing_setup = draft.settings().exists();
         let plan = guided(
             &mut Terminal::new(&mut reader, &mut out),
             &mut draft,
             &config,
             cwd,
             host,
+            existing_setup,
         );
         let shown = String::from_utf8(out).expect("the questions are text");
         let mut rest = shown.as_str();
