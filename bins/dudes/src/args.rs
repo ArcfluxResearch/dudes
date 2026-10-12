@@ -992,21 +992,7 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "workspace" => Command::Workspace(workspace(tail, payload)?),
         "worktree" => Command::Worktree(worktree(tail)?),
         "board" => Command::Board(board(tail)?),
-        "ticket" => {
-            let ticket = ticket(tail)?;
-            if json
-                && matches!(
-                    ticket,
-                    TicketCommand::Open {
-                        selection: EditorSelection::Explicit(_),
-                        ..
-                    }
-                )
-            {
-                return Err(ArgError::Conflicting("--json", "--editor"));
-            }
-            Command::Ticket(ticket)
-        }
+        "ticket" => Command::Ticket(ticket(tail, json)?),
         "config" if json => return Err(ArgError::TextOnly("config")),
         "config" => Command::Config(config_command(tail)?),
         other => return Err(ArgError::UnknownCommand(other.to_owned())),
@@ -1453,7 +1439,7 @@ fn board(tail: &[OsString]) -> Result<BoardCommand, ArgError> {
     clippy::too_many_lines,
     reason = "one parser reads every ticket subcommand's flags, and each subcommand adds its arm"
 )]
-fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
+fn ticket(tail: &[OsString], json: bool) -> Result<TicketCommand, ArgError> {
     let Some((command, rest)) = tail.split_first() else {
         return Err(ArgError::NoSubcommand("ticket"));
     };
@@ -1532,6 +1518,9 @@ fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
                         value: program.to_string_lossy().into_owned(),
                         what: "an absolute program path",
                     });
+                }
+                if json && editor.is_some() {
+                    return Err(ArgError::Conflicting("--json", "--editor"));
                 }
                 Ok(TicketCommand::Open {
                     card,

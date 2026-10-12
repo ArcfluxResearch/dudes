@@ -16,7 +16,7 @@ use super::{
     Failure, Socket, answer_result, call_presenting, connect, encode, local, operator_credential,
     typed,
 };
-use crate::args::{AgentRef, TicketCommand, TicketStatus};
+use crate::args::{AgentRef, EditorSelection, TicketCommand, TicketStatus};
 use crate::env::Environment;
 use crate::render::ticket::{AgentNames, agent_name};
 use crate::{exit, render};
@@ -39,6 +39,43 @@ struct Session<'a> {
 }
 
 impl Session<'_> {
+    fn open(
+        &mut self,
+        card: CardId,
+        selection: &EditorSelection,
+        machine: bool,
+        out: &mut dyn Write,
+    ) -> Result<(), Failure> {
+        let expected_seq = self.seq(card, None)?;
+        let cred = operator_credential(self.env)?;
+        let params = encode(&TicketCheckoutParams { card, expected_seq })?;
+        let result: TicketCheckoutResult = typed(answer_result(
+            self.client
+                .call_current_presenting(CurrentMethod::TicketCheckout, Some(params), cred)
+                .map_err(local)?,
+        )?)?;
+        crate::checkout::validate(&result).map_err(local)?;
+        let disposition = crate::editor::handoff(&result, selection, machine).map_err(local)?;
+        if machine {
+            render::json(out, &result).map_err(local)?;
+        } else {
+            writeln!(
+                out,
+                "{}",
+                render::Escaped(&result.directory.to_string_lossy())
+            )
+            .map_err(local)?;
+            if disposition == crate::editor::PrintDisposition::LaunchForm {
+                writeln!(
+                    out,
+                    "To open an editor, run `dudes ticket open {card} --editor /absolute/program`."
+                )
+                .map_err(local)?;
+            }
+        }
+        Ok(())
+    }
+
     fn call(
         &mut self,
         method: Method,
@@ -230,34 +267,7 @@ pub(super) fn command(
     };
     match command {
         TicketCommand::Open { card, selection } => {
-            let expected_seq = session.seq(*card, None)?;
-            let cred = operator_credential(env)?;
-            let params = encode(&TicketCheckoutParams {
-                card: *card,
-                expected_seq,
-            })?;
-            let result: TicketCheckoutResult = typed(answer_result(
-                session
-                    .client
-                    .call_current_presenting(CurrentMethod::TicketCheckout, Some(params), cred)
-                    .map_err(local)?,
-            )?)?;
-            crate::checkout::validate(&result).map_err(local)?;
-            let disposition = crate::editor::handoff(&result, selection, machine).map_err(local)?;
-            if machine {
-                render::json(out, &result).map_err(local)?;
-            } else {
-                writeln!(
-                    out,
-                    "{}",
-                    render::Escaped(&result.directory.to_string_lossy())
-                )
-                .map_err(local)?;
-                if disposition == crate::editor::PrintDisposition::LaunchForm {
-                    writeln!(out, "To open an editor, run `dudes ticket open {card} --editor /absolute/program`.")
-                        .map_err(local)?;
-                }
-            }
+            session.open(*card, selection, machine, out)?;
         }
         TicketCommand::Add { params, give_to } => {
             let created = session.create(params, machine)?;
