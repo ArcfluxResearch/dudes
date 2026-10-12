@@ -1349,6 +1349,53 @@ mod tests {
     }
 
     #[test]
+    fn the_generated_and_committed_current_method_catalogs_agree() {
+        use crate::rpc::{CurrentMethod, Method};
+        use std::collections::BTreeSet;
+
+        let generated = schemas()
+            .into_iter()
+            .find(|document| document.file_name == "rpc.schema.json")
+            .unwrap()
+            .schema;
+        let committed = exported_file("rpc.schema.json");
+        let legacy: BTreeSet<_> = Method::ALL.iter().map(|method| method.name()).collect();
+        let current: BTreeSet<_> = legacy
+            .iter()
+            .copied()
+            .chain([CurrentMethod::TicketCheckout.name()])
+            .collect();
+        for schema in [&generated, &committed] {
+            assert_eq!(
+                schema["properties"]["methods"]["$ref"],
+                "#/$defs/CurrentMethods"
+            );
+            for (definition, expected) in [("Methods", &legacy), ("CurrentMethods", &current)] {
+                let actual: BTreeSet<_> = schema["$defs"][definition]["properties"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect();
+                assert_eq!(&actual, expected);
+            }
+            let checkout = &schema["$defs"]["CurrentMethods"]["properties"]["ticket.checkout"];
+            assert_eq!(
+                checkout["properties"]["params"]["$ref"],
+                "#/$defs/TicketCheckoutParams"
+            );
+            assert_eq!(
+                checkout["properties"]["result"]["$ref"],
+                "#/$defs/TicketCheckoutResult"
+            );
+            assert_eq!(
+                schema["$defs"]["TicketCheckoutParams"]["additionalProperties"],
+                false
+            );
+        }
+    }
+
+    #[test]
     fn roster_schema_separates_empty_business_input_from_agent_presentation() {
         let rpc = exported_file("rpc.schema.json");
         let agent_schema = def_of(&rpc, "RosterAgentParams");
