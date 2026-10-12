@@ -800,7 +800,6 @@ mod tests {
         asked: usize,
     }
 
-    /// `None` leaves the operator file absent; `Some("")` creates a present empty file.
     fn run_guided(
         original: Option<&str>,
         script: &[(&str, &str)],
