@@ -1417,6 +1417,12 @@ fn ticket(tail: &[OsString]) -> Result<TicketCommand, ArgError> {
         return Err(ArgError::HelpRequested);
     }
     let subcommand = command.to_string_lossy();
+    if subcommand == "open"
+        && rest.iter().any(|arg| arg == "--print")
+        && rest.iter().any(|arg| arg == "--editor")
+    {
+        return Err(ArgError::Conflicting("--print", "--editor"));
+    }
     if !matches!(
         subcommand.as_ref(),
         "add" | "edit" | "give" | "changes" | "accept" | "stop" | "remove" | "list" | "show"
