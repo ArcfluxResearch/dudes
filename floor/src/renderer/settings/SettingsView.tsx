@@ -8,6 +8,7 @@ import { OFFICES } from '../office3d/offices.ts';
 import { formatUsdMicros } from '../onboarding/catalog.ts';
 import { ReadNotice, snapshotReadState } from '../ReadError.tsx';
 import { getOfficePin, setOfficePin, subscribeToOfficePin } from '../view.ts';
+import { desktopNotificationPreference } from '../desktopNotifications.ts';
 
 const SWITCHES = [
   ['answer', 'Answer questions'], ['control', 'Pause, resume and rename'], ['goal', 'Change goals'],
@@ -65,10 +66,12 @@ export function SettingsView({ floor, onSetup }: {
 }) {
   const report = floor.settings;
   const state = snapshotReadState(floor, report !== null);
-  if (state !== 'ready' || report === null) return <ReadNotice state={state} label="Settings"
-    message="Settings are not reported by this daemon, or this page could not read them." />;
+  if (state !== 'ready' || report === null) return <div className="settings-view"><DesktopNotificationChoice />
+    <ReadNotice state={state} label="Settings"
+      message="Settings are not reported by this daemon, or this page could not read them." /></div>;
   return <div className="settings-view">
-    <p>The Floor only reads these settings. Run the commands locally to change them.</p>
+    <DesktopNotificationChoice />
+    <p>The Floor only reads daemon settings. Run the commands locally to change them.</p>
     {floor.stale ? <p role="status">View unconfirmed. These values are from the last snapshot.</p> : null}
     <p>After a config edit, restart with <code>dudes quickstart --restart</code>, which ends any running turn.
       Workspace commands apply enrollment changes to the running daemon.</p>
@@ -123,6 +126,25 @@ export function SettingsView({ floor, onSetup }: {
         <div><dt>Browser wire</dt><dd>browser-wire-v{report.about.browser_wire_version}</dd></div></dl>
     </section>
   </div>;
+}
+
+export function DesktopNotificationChoice() {
+  const notifications = useSyncExternalStore(desktopNotificationPreference.subscribe,
+    desktopNotificationPreference.getState, desktopNotificationPreference.getState);
+  const on = notifications.kind === 'on';
+  return <section aria-labelledby="settings-notifications"><h3 id="settings-notifications">Desktop notifications</h3>
+    <p>Get a desktop notification when a ticket is ready, needs you, or an agent asks a question.
+      This browser keeps the choice. Keep the Floor tab open.</p>
+    <button type="button" aria-pressed={on} disabled={notifications.kind === 'unsupported' || notifications.kind === 'asking'}
+      onClick={() => { void desktopNotificationPreference.setEnabled(!on); }}>
+      {on ? 'Turn notifications off' : notifications.kind === 'asking' ? 'Waiting for browser permission' : 'Turn notifications on'}
+    </button>
+    {notifications.kind === 'denied' ? <p role="status">Notifications are blocked. Allow notifications for this page in your
+      browser's site settings, then turn them on here. The banner still shows what needs you.</p>
+      : notifications.kind === 'unsupported' || notifications.kind === 'unavailable' ? <p role="status">
+        Desktop notifications are unavailable in this browser. The banner still shows what needs you.</p> : null}
+    {on && !notifications.remembered ? <p role="status">This choice lasts only for this page because browser storage is unavailable.</p> : null}
+  </section>;
 }
 
 /** A viewer preference kept in this browser, like the theme: the daemon never sees it. */

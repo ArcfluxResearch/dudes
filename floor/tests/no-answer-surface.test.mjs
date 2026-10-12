@@ -1042,7 +1042,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
 test('the only activators are named selection, retry, view, Hire, answer, Chat, pause, Pause all, resume, goal change, look edit and dismiss buttons, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, Retire\'s own four, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
-  + 'Settings\' office layout choice, and the guide\'s navigation and Hire opener', async () => {
+  + 'Settings\' office layout and desktop notification choices, and the guide\'s navigation and Hire opener', async () => {
   const buttons = [];
   const clicks = [];
   for (const path of await filesUnder(source, ['.ts', '.tsx', '.html'])) {
@@ -1078,7 +1078,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(RENAME_PANEL),
     ...Array(4).fill(LOOK_PANEL),
     ...Array(3).fill(SETUP_VIEW),
-    ...Array(4).fill(SETTINGS_VIEW),
+    ...Array(5).fill(SETTINGS_VIEW),
     ...Array(7).fill(FIRST_RUN_GUIDE),
     ...Array(10).fill(TERMINAL_PANEL),
     ...Array(4).fill('src/shell.tsx'),
@@ -1151,7 +1151,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(center, /\{ view: 'settings', label: 'Settings', refresh: true \}/);
   assert.match(center, /onSetup=\{\(\) => onView\('setup'\)\}/);
   assert.match(shell, /function openView\(next: ControlView\): void \{\s*setFocused\(false\);\s*setView\(next\);\s*if \(CONTROL_VIEWS\.some\(\(entry\) => entry\.view === next && entry\.refresh\)\) refreshFloorSnapshot\(\);\s*\}/);
-  assert.deepEqual(clicksIn(await readFile(resolve(floor, SETTINGS_VIEW), 'utf8')), ['onSetup', 'onSetup', '() => setOfficePin(id)', 'onCopyAdd']);
+  assert.deepEqual(clicksIn(await readFile(resolve(floor, SETTINGS_VIEW), 'utf8')), ['onSetup', 'onSetup',
+    '() => { void desktopNotificationPreference.setEnabled(!on); }', '() => setOfficePin(id)', 'onCopyAdd']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETUP_VIEW), 'utf8')).sort(), [
     '() => copyToClipboard(install)',
     '() => refreshFloorSnapshot()',
@@ -2146,7 +2147,7 @@ test('session material has no browser persistence, URL, argv or log sink', async
     [['./floor/store.ts', true], ['./archive.ts', true], ['./detailTabs.ts', true], ['./office3d/offices.ts', false],
       ['./office3d/offices.ts', true]], 'view preferences gained a runtime source of daemon or session material');
   for (const name of ['readViewPreferences', 'writeViewPreferences', 'readAgentIds', 'writeAgentIds', 'readDetailTab', 'writeDetailTab',
-    'readOfficePin', 'writeOfficePin']) {
+    'readOfficePin', 'writeOfficePin', 'readDesktopNotificationChoice', 'writeDesktopNotificationChoice']) {
     const fn = viewSyntax.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name);
     assert.equal(fn?.body?.statements.length, 1, `${name} moved storage outside its try/catch`);
     assert.ok(ts.isTryStatement(fn.body.statements[0]) && fn.body.statements[0].catchClause !== undefined,
@@ -2397,10 +2398,38 @@ const ADMITTED_LISTENERS = Object.freeze([
   { path: 'src/renderer/OfficeCanvas.tsx', line: "box.addEventListener('focusin', schedule);" },
   { path: 'src/renderer/OfficeCanvas.tsx', line: "box.addEventListener('focusout', schedule);" },
   { path: 'src/renderer/OfficeCanvas.tsx', line: "canvas.addEventListener('webglcontextlost', onContextLost);" },
+  { path: 'src/renderer/desktopNotifications.ts', line: "notification.addEventListener('click', () => {" },
   { path: 'src/shell.tsx', line: "preference.addEventListener('change', onThemePreference);" },
   { path: 'src/shell.tsx', line: "document.addEventListener('keydown', onShortcut);" },
 ]);
 const SOCKET_LISTENER = /(socket|live)\.addEventListener\('(open|message|close)'|addEventListener\(type: '(open|close|message)'/;
+
+test('desktop notifications have one opt-in handler, one permission request and one fixed payload shape', async () => {
+  const permission = [];
+  const constructors = [];
+  const optIn = [];
+  for (const path of await filesUnder(source, ['.ts', '.tsx'])) {
+    const relative = path.slice(floor.length + 1);
+    const text = await readFile(path, 'utf8');
+    const syntax = parsedByExtension(text, relative);
+    (function walk(node) {
+      if (ts.isCallExpression(node) && node.expression.getText(syntax) === 'Notification.requestPermission') {
+        permission.push([relative, node.getText(syntax)]);
+      }
+      if (ts.isNewExpression(node) && node.expression.getText(syntax) === 'Notification') {
+        constructors.push([relative, node.getText(syntax)]);
+      }
+      if (ts.isCallExpression(node) && node.expression.getText(syntax) === 'desktopNotificationPreference.setEnabled') {
+        optIn.push([relative, node.getText(syntax)]);
+      }
+      ts.forEachChild(node, walk);
+    })(syntax);
+  }
+  assert.deepEqual(permission, [['src/renderer/desktopNotifications.ts', 'Notification.requestPermission()']]);
+  assert.deepEqual(constructors, [['src/renderer/desktopNotifications.ts',
+    'new Notification(notice.title, { body: notice.body, tag: notice.key })']]);
+  assert.deepEqual(optIn, [[SETTINGS_VIEW, 'desktopNotificationPreference.setEnabled(!on)']]);
+});
 
 test('each addEventListener line under floor/src is a socket or an admitted view listener', async () => {
   const attaching = [];

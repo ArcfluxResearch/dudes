@@ -28,6 +28,7 @@ const STORAGE_KEY = 'dudes.floor.view-preferences';
 const GUIDE_CLOSED_STORAGE_KEY = 'dudes.floor.first-run-guide.closed';
 const ACTIVITY_FILTERS_STORAGE_KEY = 'dudes.floor.activity-filters';
 const OFFICE_PIN_STORAGE_KEY = 'dudes.floor.office-layout';
+const DESKTOP_NOTIFICATIONS_STORAGE_KEY = 'dudes.floor.desktop-notifications';
 const ACTIVITY_KIND = /^[a-z_]{1,32}$/;
 const MAX_ACTIVITY_QUERY = 128;
 
@@ -43,6 +44,18 @@ interface ViewStorage {
 
 function browserStorage(): ViewStorage {
   return window.localStorage;
+}
+
+export function readDesktopNotificationChoice(storage: () => ViewStorage = browserStorage): {
+  readonly enabled: boolean; readonly remembered: boolean;
+} {
+  try { return { enabled: storage().getItem(DESKTOP_NOTIFICATIONS_STORAGE_KEY) === 'true', remembered: true }; }
+  catch { return { enabled: false, remembered: false }; }
+}
+
+export function writeDesktopNotificationChoice(enabled: boolean, storage: () => ViewStorage = browserStorage): boolean {
+  try { storage().setItem(DESKTOP_NOTIFICATIONS_STORAGE_KEY, enabled ? 'true' : 'false'); return true; }
+  catch { return false; }
 }
 
 export function readGuideClosed(storage: () => ViewStorage = browserStorage): boolean {

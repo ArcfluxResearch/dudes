@@ -27,6 +27,7 @@ import { TerminalPanel } from './renderer/terminal/TerminalPanel';
 import { JournalStoppedBanner } from './renderer/JournalStoppedBanner';
 import { ClosingTimeBanner } from './renderer/ClosingTimeBanner';
 import { TicketBanner } from './renderer/ticket/TicketBanner';
+import { useDesktopNotifications } from './renderer/useDesktopNotifications';
 import { requestCardSelection } from './renderer/BoardPanel';
 import { StreamNotice } from './renderer/StreamNotice';
 import './failure.css';
@@ -123,6 +124,13 @@ export function WebFloorShell() {
   const drawerOpen = displayRow !== null || floor.output.targetId !== null;
   const home = focused ? 'focus-toggle' : 'crew-toggle';
   const leaveDrawerTo = drawerHandBack({ agent: currentSelectedId, focused, crewOpen, viewOpen: view !== null });
+
+  useDesktopNotifications((target) => {
+    setGuide('closed');
+    if (hiring) closeHire(true);
+    if (target.kind === 'ticket') openCard(target.id);
+    else { setFocused(false); setView(null); setCrewOpen(true); openQuestion(target.id); }
+  });
 
   useEffect(() => {
     if (reveal === null) return;
