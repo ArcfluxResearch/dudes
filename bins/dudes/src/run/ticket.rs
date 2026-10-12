@@ -242,6 +242,7 @@ pub(super) fn command(
                     .call_current_presenting(CurrentMethod::TicketCheckout, Some(params), cred)
                     .map_err(local)?,
             )?)?;
+            crate::checkout::validate(&result).map_err(local)?;
             let disposition = crate::editor::handoff(&result, selection, machine).map_err(local)?;
             if machine {
                 render::json(out, &result).map_err(local)?;

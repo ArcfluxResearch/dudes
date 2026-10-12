@@ -50,17 +50,10 @@ pub(crate) fn handoff(
 
     #[cfg(not(unix))]
     {
-        Ok(match selection {
-            EditorSelection::Configured => PrintDisposition::LaunchForm,
-            EditorSelection::Print | EditorSelection::Explicit(_) => {
-                PrintDisposition::DirectoryOnly
-            }
-        })
+        Ok(PrintDisposition::DirectoryOnly)
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-
         if ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
             .iter()
             .any(|name| std::env::var_os(name).is_some())
@@ -71,10 +64,10 @@ pub(crate) fn handoff(
             EditorSelection::Print => return Ok(PrintDisposition::DirectoryOnly),
             EditorSelection::Explicit(program) => (program.clone(), Vec::new()),
             EditorSelection::Configured => {
-                let Some(selected) = configured_editor()? else {
+                let Some((program, args)) = configured_editor()? else {
                     return Ok(PrintDisposition::LaunchForm);
                 };
-                selected
+                (resolve_configured_program(program)?, args)
             }
         };
         if !program.is_absolute() {
@@ -83,8 +76,7 @@ pub(crate) fn handoff(
         let program = program
             .canonicalize()
             .map_err(|_| EditorError::NotExecutable)?;
-        let metadata = program.metadata().map_err(|_| EditorError::NotExecutable)?;
-        if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        if !runnable(&program) {
             return Err(EditorError::NotExecutable);
         }
         let directory = checkout
@@ -119,6 +111,46 @@ fn configured_editor() -> Result<Option<(PathBuf, Vec<OsString>)>, EditorError> 
         }
     }
     Ok(None)
+}
+
+#[cfg(unix)]
+fn resolve_configured_program(program: PathBuf) -> Result<PathBuf, EditorError> {
+    if program.is_absolute() {
+        return Ok(program);
+    }
+    if program.file_name() != Some(program.as_os_str()) {
+        return Err(EditorError::RelativeProgram);
+    }
+    let path = std::env::var_os("PATH").ok_or(EditorError::NotExecutable)?;
+    let cwd = std::env::current_dir();
+    for entry in std::env::split_paths(&path) {
+        let entry = if entry.is_absolute() {
+            entry
+        } else {
+            cwd.as_ref()
+                .map_err(|_| EditorError::NotExecutable)?
+                .join(entry)
+        };
+        let candidate = entry.join(&program);
+        if runnable(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(EditorError::NotExecutable)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn runnable(candidate: &Path) -> bool {
+    candidate.is_file() && rustix::fs::access(candidate, rustix::fs::Access::EXEC_OK).is_ok()
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+fn runnable(candidate: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    candidate
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(unix)]

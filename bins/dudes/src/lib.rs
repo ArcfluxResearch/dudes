@@ -51,6 +51,7 @@
 
 pub mod args;
 pub mod call;
+mod checkout;
 pub mod config;
 pub mod credential;
 mod editor;
