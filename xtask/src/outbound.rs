@@ -158,14 +158,10 @@ fn violations(source: &str) -> Result<Vec<Violation>> {
     let mut collector = Collector {
         aliases: Aliases::new(),
         violations: BTreeSet::new(),
-        alias_limit: false,
     };
     let mut imports = Imports(&mut collector.aliases);
     imports.visit_file(&file);
     collector.visit_file(&file);
-    if collector.alias_limit {
-        bail!("source aliases are recursive or exceed 32 substitutions");
-    }
     Ok(collector.violations.into_iter().collect())
 }
 
@@ -276,7 +272,6 @@ fn import_paths(tree: &UseTree, prefix: &[String], aliases: &mut Aliases, expand
 struct Collector {
     aliases: Aliases,
     violations: BTreeSet<Violation>,
-    alias_limit: bool,
 }
 
 impl Collector {
@@ -317,18 +312,10 @@ impl Collector {
                 continue;
             };
             let aliases = aliases.clone();
-            if seen.len() >= 32 || !seen.insert(first.clone()) {
-                self.alias_limit = true;
+            if !seen.insert(first.clone()) {
                 continue;
             }
             for alias in &aliases {
-                if alias == std::slice::from_ref(first)
-                    || (alias.first().is_some_and(|prefix| {
-                        matches!(prefix.as_str(), "self" | "super" | "crate")
-                    }) && alias.last() == Some(first))
-                {
-                    continue;
-                }
                 let expanded = alias.iter().chain(&path[1..]).cloned().collect();
                 pending.push((expanded, seen.clone()));
             }
@@ -723,13 +710,31 @@ mod tests {
     }
 
     #[test]
-    fn recursive_alias_resolution_fails_closed() {
+    fn alias_cycles_do_not_hide_network_alternatives() {
         assert!(
             violations("type A = B; type B = A; fn run() { A::connect(addr); }")
-                .unwrap_err()
-                .to_string()
-                .contains("recursive")
+                .unwrap()
+                .is_empty()
         );
+        for source in [
+            "type Stream = Loop; type Loop = Stream; use std::net::TcpStream as Stream; fn run() { Stream::connect(addr); }",
+            "use std::net as std; fn run() { std::TcpStream::connect(addr); }",
+        ] {
+            assert_eq!(
+                violations(source).unwrap(),
+                vec![Violation {
+                    line: 1,
+                    capability: "outbound TCP"
+                }],
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn crate_and_imported_macro_names_do_not_recurse() {
+        let source = "use anyhow::{Context as _, Result, anyhow, bail}; fn run() -> Result<()> { bail!(\"failure\"); }";
+        assert!(violations(source).unwrap().is_empty());
     }
 
     #[test]
