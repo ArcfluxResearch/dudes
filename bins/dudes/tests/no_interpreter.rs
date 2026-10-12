@@ -2,10 +2,9 @@
 //! the scan that says so fires.
 //!
 //! The CLI's three process items start quickstart's daemon, an engine's login, or the
-//! operator's selected editor. The programs it
-//! starts may themselves be scripts, as a `#!/usr/bin/env node` vendor CLI is; what they do inside is the platform's or the vendor's.
-//! What this file holds is what Dudes composes: typed argv, an absolute program, no shell string
-//! and no shell string. Only the editor resolves a launch program on the operator's `PATH`.
+//! operator's selected editor. Those programs may themselves be scripts. This file confines
+//! what Dudes composes: typed argv, an absolute program, and no shell string. Only the editor
+//! resolves a launch program on the operator's `PATH`.
 //!
 //! # Why a scan when `clippy.toml` already bans the type
 //!

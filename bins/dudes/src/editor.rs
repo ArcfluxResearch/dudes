@@ -3,6 +3,8 @@
 #[cfg(unix)]
 use std::ffi::OsString;
 #[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 
 use dudes_proto::rpc::ticket::TicketCheckoutResult;
@@ -159,8 +161,6 @@ fn runnable(candidate: &Path) -> bool {
     reason = "the operator's selected editor replaces this process with the recorded directory"
 )]
 fn exec(program: &Path, args: &[OsString], directory: &Path) -> std::io::Error {
-    use std::os::unix::process::CommandExt as _;
-
     let mut command = std::process::Command::new(program);
     command.args(args);
     command.arg(directory);
