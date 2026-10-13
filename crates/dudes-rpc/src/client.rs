@@ -86,6 +86,15 @@ type WindowsBytePipe = interprocess::os::windows::named_pipe::DuplexPipeStream<
     interprocess::os::windows::named_pipe::pipe_mode::Bytes,
 >;
 
+#[cfg(any(windows, test))]
+fn connect_local_windows_pipe<T>(
+    path_units: impl IntoIterator<Item = u16>,
+    connect: impl FnOnce() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let _ = path_units;
+    connect()
+}
+
 /// Connect, inspect the still-whole pipe, then expose its read and write halves.
 ///
 /// Keeping inspection before `split` makes refusal structural: an error drops the only stream and
@@ -95,7 +104,12 @@ fn connect_windows_with_inspector(
     path: impl AsRef<std::path::Path>,
     inspect: impl FnOnce(&WindowsBytePipe) -> std::io::Result<()>,
 ) -> std::io::Result<LocalClient> {
-    let stream = WindowsBytePipe::connect_by_path(path.as_ref())?;
+    use std::os::windows::ffi::OsStrExt as _;
+
+    let path = path.as_ref();
+    let stream = connect_local_windows_pipe(path.as_os_str().encode_wide(), || {
+        WindowsBytePipe::connect_by_path(path)
+    })?;
     inspect(&stream)?;
     let (reader, writer) = stream.split();
     Ok(Client::new(std::io::BufReader::new(reader), writer))
@@ -373,6 +387,67 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn invalid_windows_pipe_paths_refuse_before_the_connector() {
+        for path in [
+            "",
+            "dudes.pipe",
+            r"pipe\dudes",
+            r"\\.\pipe\",
+            r"\\server\pipe\dudes",
+            r"\\localhost\pipe\dudes",
+            r"\\127.0.0.1\pipe\dudes",
+            r"\\[::1]\pipe\dudes",
+            r"\\?\pipe\dudes",
+            r"\??\pipe\dudes",
+            r"\\?\GLOBALROOT\Device\NamedPipe\dudes",
+            r"\\.\pipe\nested\dudes",
+            r"\\.\pipe\nested/dudes",
+            r"//./pipe/dudes",
+            r"\\.\pipe/dudes",
+            "\\\\.\\pipe\\dudes\0suffix",
+        ] {
+            let error = connect_local_windows_pipe(path.encode_utf16(), || -> std::io::Result<()> {
+                panic!("connector reached for rejected pipe path {path:?}")
+            })
+            .expect_err("invalid pipe path must be refused");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{path:?}");
+        }
+    }
+
+    #[test]
+    fn local_windows_pipe_paths_preserve_units_and_connector_results() {
+        let mut unpaired = r"\\.\pipe\".encode_utf16().collect::<Vec<_>>();
+        unpaired.extend([0xd800, 0x0061, 0xdc00]);
+        for units in [
+            r"\\.\pipe\dudes.custom".encode_utf16().collect::<Vec<_>>(),
+            r"\\.\PiPe\dudes.東京🦀".encode_utf16().collect(),
+            unpaired,
+        ] {
+            let mut calls = 0;
+            let result = connect_local_windows_pipe(units.iter().copied(), || {
+                calls += 1;
+                Ok(units.clone())
+            })
+            .expect("local spelling reaches the connector");
+            assert_eq!(result, units);
+            assert_eq!(calls, 1);
+
+            let mut calls = 0;
+            let error = connect_local_windows_pipe(units.iter().copied(), || {
+                calls += 1;
+                Err::<(), _>(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "injected connector refusal",
+                ))
+            })
+            .expect_err("connector failure is preserved");
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+            assert_eq!(error.to_string(), "injected connector refusal");
+            assert_eq!(calls, 1);
+        }
+    }
 
     #[test]
     fn current_and_legacy_operator_calls_share_the_typed_frame_path() {
