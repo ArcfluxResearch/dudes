@@ -52,7 +52,7 @@ fn the_cli_refuses_unsupported_local_pipe_spellings() {
         );
         assert!(output.stdout.is_empty());
         let stderr = String::from_utf8(output.stderr).expect("CLI diagnostic");
-        assert!(stderr.contains(r"must use \\.\pipe\"), "{stderr}");
+        assert!(stderr.contains("must use \\\\.\\pipe\\"), "{stderr}");
     }
 }
 
