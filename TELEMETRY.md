@@ -1,7 +1,7 @@
 # What Dudes and its engines send
 
-The `duded`, `dudes`, and `dudes-hook` binaries send no usage metrics or error reports.
-With their default endpoints, their connections stay on your computer. A custom
+The `duded`, `dudes`, and `dudes-hook` binaries use local connections by default.
+Usage and error information can pass through those local connections. A custom
 Windows `DUDES_SOCK` path can select a remote named-pipe server, as described below.
 Separate programs launched by Dudes can make their own network connections.
 
@@ -18,7 +18,8 @@ On Windows, the CLI and hook use `DUDES_SOCK` as the pipe path when you set it.
 They do not require a local pipe name before connecting. Windows allows a pipe
 path to name another computer, so a custom value can cause a connection attempt
 to that computer. See [Windows pipe names](https://learn.microsoft.com/en-us/windows/win32/ipc/pipe-names).
-Leave `DUDES_SOCK` unset to use Dudes' default local endpoint.
+For ordinary CLI use, leave `DUDES_SOCK` unset to use Dudes' default local endpoint.
+Dudes sets the hook's endpoint when it launches an engine.
 
 Dudes gives engines their task input and reads the output and protocol messages
 they expose locally. Dudes does not intercept or proxy the engines' network
