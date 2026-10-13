@@ -431,16 +431,19 @@ mod tests {
             r"\\?\pipe\dudes",
             r"\??\pipe\dudes",
             r"\\?\GLOBALROOT\Device\NamedPipe\dudes",
+            r"\\.\GLOBALROOT\Device\NamedPipe\dudes",
+            r"\Device\NamedPipe\dudes",
             r"\\.\pipe\nested\dudes",
             r"\\.\pipe\nested/dudes",
             r"//./pipe/dudes",
             r"\\.\pipe/dudes",
             "\\\\.\\pipe\\dudes\0suffix",
         ] {
-            let error = connect_local_windows_pipe(path.encode_utf16(), || -> std::io::Result<()> {
-                panic!("connector reached for rejected pipe path {path:?}")
-            })
-            .expect_err("invalid pipe path must be refused");
+            let error =
+                connect_local_windows_pipe(path.encode_utf16(), || -> std::io::Result<()> {
+                    panic!("connector reached for rejected pipe path {path:?}")
+                })
+                .expect_err("invalid pipe path must be refused");
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{path:?}");
         }
     }
@@ -567,6 +570,87 @@ mod tests {
     fn a_frame_that_is_neither_envelope_is_malformed() {
         let mut client = Client::new(Cursor::new(b"{\"nope\":1}\n".to_vec()), Vec::new());
         assert!(matches!(client.recv(), Err(ClientError::Malformed(_))));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_windows_pipe_connections_borrow_the_path_once() {
+        use std::cell::Cell;
+        use std::path::{Path, PathBuf};
+
+        use interprocess::os::windows::named_pipe::{PipeListenerOptions, PipeMode, pipe_mode};
+        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+        use widestring::U16CString;
+
+        struct BorrowOnce {
+            path: PathBuf,
+            calls: Cell<usize>,
+        }
+        impl AsRef<Path> for BorrowOnce {
+            fn as_ref(&self) -> &Path {
+                assert_eq!(self.calls.replace(1), 0, "path borrowed more than once");
+                &self.path
+            }
+        }
+
+        let root = tempfile::tempdir().expect("temporary root");
+        let default = crate::local_endpoint(root.path(), "duded.sock");
+        let custom = PathBuf::from(format!(
+            "{}.東京🦀",
+            default
+                .to_str()
+                .expect("derived endpoint is ASCII")
+                .replacen(r"\\.\pipe\", r"\\.\PiPe\", 1)
+        ));
+        for path in [default, custom] {
+            let sid = dudes_win::current_user_sid().expect("current user SID");
+            let sddl = U16CString::from_str(format!("O:{sid}D:P(A;;GA;;;{sid})")).unwrap();
+            let listener = PipeListenerOptions::new()
+                .path(&path)
+                .mode(PipeMode::Bytes)
+                .accept_remote(false)
+                .security_descriptor(Some(SecurityDescriptor::deserialize(&sddl).unwrap()))
+                .create_duplex::<pipe_mode::Bytes>()
+                .expect("bind owned local pipe");
+            let server = std::thread::spawn(move || {
+                let stream = listener.accept().expect("accept local client");
+                let (reader, mut writer) = stream.split();
+                let mut reader = std::io::BufReader::new(reader);
+                let frame = read_frame(&mut reader).unwrap().expect("client request");
+                let request: Request = serde_json::from_str(&frame).unwrap();
+                write_frame(
+                    &mut writer,
+                    &Response::ok(request.id, json!({"local": true})),
+                )
+                .unwrap();
+                request.method
+            });
+            let input = BorrowOnce {
+                path,
+                calls: Cell::new(0),
+            };
+            let mut client = LocalClient::connect(&input).expect("connect owned local pipe");
+            let response = client.call(Method::SystemPing, None).expect("local reply");
+            assert_eq!(response.result, Some(json!({"local": true})));
+            assert_eq!(input.calls.get(), 1);
+            assert_eq!(server.join().unwrap(), "system.ping");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_windows_client_reports_invalid_input_for_unsupported_local_spellings() {
+        for path in [
+            "",
+            "relative.pipe",
+            r"\\?\pipe\dudes",
+            r"\\.\pipe\dudes/invalid",
+            "\\\\.\\pipe\\dudes\0suffix",
+        ] {
+            let error = LocalClient::connect(path).expect_err("unsupported pipe spelling");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{path:?}");
+            assert!(error.to_string().contains(r"must use \\.\pipe\"));
+        }
     }
 
     /// A platform identity read that refuses closes the connected pipe before a writer can escape.

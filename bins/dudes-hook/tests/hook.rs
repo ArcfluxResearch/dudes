@@ -98,6 +98,30 @@ fn wait_bounded(mut child: Child) -> Output {
     }
     child.wait_with_output().expect("collect hook output")
 }
+
+#[cfg(windows)]
+#[test]
+fn the_hook_refuses_unsupported_local_pipe_spellings() {
+    for endpoint in [
+        "relative.pipe",
+        r"\\?\pipe\dudes",
+        r"\\.\pipe\dudes/invalid",
+    ] {
+        let endpoint = Path::new(endpoint);
+        let error = LocalClient::connect(endpoint).expect_err("unsupported pipe spelling");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        let output = wait_bounded(spawn_hook(
+            Some(endpoint),
+            Some(OsStr::new(TOKEN)),
+            br#"{"hook_event_name":"Stop"}"#,
+            InputDelivery::Required,
+        ));
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, FAILURE);
+    }
+}
+
 fn serve_one(
     transport: LocalTransport,
     reply: Result<VendorReply, RpcError>,

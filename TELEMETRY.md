@@ -1,8 +1,7 @@
 # What Dudes and its engines send
 
-The `duded`, `dudes`, and `dudes-hook` binaries use local connections by default.
-Usage and error information can pass through those local connections. A custom
-Windows `DUDES_SOCK` path can select a remote named-pipe server, as described below.
+The `duded`, `dudes`, and `dudes-hook` binaries use local connections.
+Usage and error information can pass through those local connections.
 Separate programs launched by Dudes can make their own network connections.
 
 ## Dudes connections and endpoint overrides
@@ -15,9 +14,9 @@ scripts, or analytics. Opening a setup documentation link visits an external sit
 in your browser.
 
 On Windows, the CLI and hook use `DUDES_SOCK` as the pipe path when you set it.
-They do not require a local pipe name before connecting. Windows allows a pipe
-path to name another computer, so a custom value can cause a connection attempt
-to that computer. See [Windows pipe names](https://learn.microsoft.com/en-us/windows/win32/ipc/pipe-names).
+The client requires the literal `\\.\pipe\` prefix, compared without ASCII case,
+followed by a nonempty name without NUL, backslashes, or forward slashes.
+It refuses server UNC paths and other device namespaces before a connection attempt.
 For ordinary CLI use, leave `DUDES_SOCK` unset to use Dudes' default local endpoint.
 Dudes sets the hook's endpoint when it launches an engine.
 
@@ -105,7 +104,7 @@ extensions. Set these controls in Pi's user settings.
 The source is available for inspection. CI's `cargo xtask layering --strict`
 checks dependency layering, rejects known HTTP and TLS client dependencies for
 the shipped binaries, and scans their reachable Rust source for known outbound
-socket and DNS APIs. It permits IPC and does not validate custom Windows pipe
-destinations. These static checks do not isolate engines or other child programs.
+socket and DNS APIs. It permits IPC. The client separately validates custom
+Windows pipe paths before connecting. These static checks do not isolate engines or other child programs.
 They are not a runtime traffic recording or proof against every possible
 implementation.
