@@ -1,17 +1,24 @@
 # What Dudes and its engines send
 
-The `duded`, `dudes`, and `dudes-hook` binaries make no outbound Internet connections
-of their own. Dudes sends no usage metrics or error reports over the Internet.
-This boundary applies to the Dudes binaries, not to the separate programs they run.
+The `duded`, `dudes`, and `dudes-hook` binaries send no usage metrics or error reports.
+With their default endpoints, their connections stay on your computer. A custom
+Windows `DUDES_SOCK` path can select a remote named-pipe server, as described below.
+Separate programs launched by Dudes can make their own network connections.
 
-## Dudes uses local connections
+## Dudes connections and endpoint overrides
 
-The CLI and hook communicate with the daemon through a Unix socket or a Windows
-named pipe. The Windows pipe refuses remote clients. The daemon serves the Floor
-on `127.0.0.1`. The Floor loads its assets from that server and uses the page's
-origin for HTTP requests and its WebSocket connection. It loads no remote fonts,
+By default, the CLI and hook communicate with the daemon through a Unix socket or
+a Windows named pipe. The daemon's Windows pipe refuses remote clients. The daemon
+serves the Floor on `127.0.0.1`. The Floor loads its assets from that server and
+uses the page's origin for HTTP requests and its WebSocket connection. It loads no remote fonts,
 scripts, or analytics. Opening a setup documentation link visits an external site
 in your browser.
+
+On Windows, the CLI and hook use `DUDES_SOCK` as the pipe path when you set it.
+They do not require a local pipe name before connecting. Windows allows a pipe
+path to name another computer, so a custom value can cause a connection attempt
+to that computer. See [Windows pipe names](https://learn.microsoft.com/en-us/windows/win32/ipc/pipe-names).
+Leave `DUDES_SOCK` unset to use Dudes' default local endpoint.
 
 Dudes gives engines their task input and reads the output and protocol messages
 they expose locally. Dudes does not intercept or proxy the engines' network
@@ -95,7 +102,9 @@ extensions. Set these controls in Pi's user settings.
 ## Check the boundary
 
 The source is available for inspection. CI's `cargo xtask layering --strict`
-checks dependency layering. Source review also checks for outbound socket and DNS
-APIs. These checks do not isolate engines or other child programs. A static
-dependency check is not a runtime traffic recording or proof against every
-possible implementation.
+checks dependency layering, rejects known HTTP and TLS client dependencies for
+the shipped binaries, and scans their reachable Rust source for known outbound
+socket and DNS APIs. It permits IPC and does not validate custom Windows pipe
+destinations. These static checks do not isolate engines or other child programs.
+They are not a runtime traffic recording or proof against every possible
+implementation.

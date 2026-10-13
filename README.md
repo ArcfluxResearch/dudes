@@ -116,8 +116,10 @@ If `dudes` runs something else, check `type dudes` for an alias or shell functio
 
 ## What agents can do on your machine
 
-Dudes' installed binaries make no outbound Internet connections of their own.
-Engines and other programs they run can connect independently.
+Dudes' installed binaries send no usage metrics or error reports. Their default
+endpoints stay on your computer. A custom Windows `DUDES_SOCK` path can select a
+remote named-pipe server. Engines and other programs Dudes runs can make their own
+network connections.
 [What Dudes and its engines send](TELEMETRY.md) explains the boundary, engine
 telemetry controls, and the installer downloads.
 
