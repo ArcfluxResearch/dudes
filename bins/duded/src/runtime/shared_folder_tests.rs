@@ -1,0 +1,149 @@
+use super::work_test_support as common;
+use super::*;
+use dudes_types::IsolationMode;
+
+type TestDaemon = Daemon<
+    common::SharedHost,
+    common::ScriptedRunner,
+    common::TestClock,
+    dudes_supervisor::testing::FakeRng,
+>;
+
+fn hire(daemon: &mut TestDaemon, cwd: &std::path::Path, inherit: bool) -> AgentId {
+    let answer = daemon
+        .ask(Ask::Hire(Box::new(HireParams {
+            isolation: inherit.then_some(IsolationMode::Inherit),
+            ..common::hire_params(cwd)
+        })))
+        .expect("a hire before any child is admitted");
+    let Answered::Hired(result) = answer else {
+        panic!("unexpected {answer:?}")
+    };
+    result.agent
+}
+
+fn prepared(daemon: &mut TestDaemon, agent: AgentId) -> Effect {
+    let params = common::goal_params(agent, &["/usr/bin/true"]);
+    let mut queue = VecDeque::from([Input::Command(Command::GoalSet {
+        agent,
+        text: params.text,
+        predicate: params.predicate,
+        budget: params.budget,
+        hop_cap: params.hop_cap,
+        browser_goal: None,
+        goal_replacement: None,
+        completion_check: None,
+        baseline: None,
+    })]);
+    for _ in 0..64 {
+        let input = queue.pop_front().expect("launch preparation continues");
+        daemon.sup.handle(input);
+        for effect in daemon.sup.take_effects() {
+            if matches!(effect, Effect::Spawn { .. }) {
+                return effect;
+            }
+            daemon
+                .ctx
+                .execute(
+                    &effect,
+                    &mut queue,
+                    &mut PumpReport::Discard,
+                    &mut daemon.sup,
+                )
+                .expect("prepare through the real persistence executor");
+        }
+    }
+    panic!("bounded launch preparation did not produce Spawn")
+}
+
+#[test]
+fn a_batch_sees_the_created_child_before_its_spawn_receipt_is_folded() {
+    for shared in [true, false] {
+        let fixture = common::Fixture::new();
+        let distinct = fixture.state.path().join("distinct");
+        std::fs::create_dir(&distinct).unwrap();
+        let host = common::SharedHost::new();
+        let mut seams = common::seams(
+            host.clone(),
+            Arc::new(common::ScriptedRunner::default()),
+            Arc::new(common::TestClock::new()),
+            Witness::default(),
+        );
+        seams.adapters = [Box::new(dudes_providers::claude::ClaudeAdapter::new(
+            dudes_providers::claude::config::ClaudeConfig {
+                command: "/usr/bin/true".into(),
+                ..dudes_providers::claude::config::ClaudeConfig::default()
+            },
+        )) as Box<dyn dudes_providers::adapter::Adapter>]
+        .into_iter()
+        .collect();
+        let mut daemon = crate::boot(&fixture.settings(), seams).unwrap();
+        let first_agent = hire(&mut daemon, fixture.state.path(), false);
+        let second_agent = hire(
+            &mut daemon,
+            if shared {
+                fixture.state.path()
+            } else {
+                &distinct
+            },
+            true,
+        );
+        let first = prepared(&mut daemon, first_agent);
+        let second = prepared(&mut daemon, second_agent);
+        let Effect::Spawn {
+            turn: first_turn, ..
+        } = &first
+        else {
+            unreachable!()
+        };
+        let mut queue = VecDeque::new();
+        daemon
+            .ctx
+            .execute(
+                &first,
+                &mut queue,
+                &mut PumpReport::Discard,
+                &mut daemon.sup,
+            )
+            .unwrap();
+        assert!(
+            daemon.sup.world().turns[first_turn]
+                .adoption_key()
+                .is_none()
+        );
+        assert!(matches!(queue.front(), Some(Input::Spawned { turn, .. }) if turn == first_turn));
+        daemon
+            .ctx
+            .execute(
+                &second,
+                &mut queue,
+                &mut PumpReport::Discard,
+                &mut daemon.sup,
+            )
+            .unwrap();
+        if shared {
+            assert_eq!(host.spawned().len(), 1);
+            assert!(queue.iter().any(|input| matches!(input,
+                Input::LaunchAdmissionRefused { agent, refusal: dudes_supervisor::SharedFolderRefusal::LivePeer { agent: peer, .. }, .. }
+                    if *agent == second_agent && *peer == first_agent)));
+        } else {
+            assert_eq!(host.spawned().len(), 2);
+            assert_eq!(
+                queue
+                    .iter()
+                    .filter(|input| matches!(input, Input::Spawned { .. }))
+                    .count(),
+                2
+            );
+        }
+        while let Some(input) = queue.pop_front() {
+            daemon.pump(input).unwrap();
+        }
+        if shared {
+            assert!(matches!(
+                daemon.sup.world().agents[&second_agent].automatic_hold,
+                Some(dudes_proto::AutomaticHold::LaunchRefused { .. })
+            ));
+        }
+    }
+}

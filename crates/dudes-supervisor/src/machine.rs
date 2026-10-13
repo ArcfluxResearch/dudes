@@ -252,6 +252,10 @@ enum Then {
     ClearedCause {
         agent: AgentId,
     },
+    LaunchAdmissionHeld {
+        agent: AgentId,
+        turn: Option<TurnId>,
+    },
     /// The `HumanQuestion` landed: tell the subscribers, then re-decide (gate 3 answers `Wait`).
     Question {
         agent: AgentId,
@@ -1054,6 +1058,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 mcp_grant,
             } => self.on_spawned(turn, &key, mcp_grant),
             Input::SpawnFailed { turn, reason } => self.on_spawn_failed(turn, reason),
+            Input::LaunchAdmissionRefused {
+                agent,
+                turn,
+                refusal,
+                dispatch_token,
+            } => self.on_launch_admission_refused(agent, turn, &refusal, dispatch_token),
+            Input::BrowserDispatchAdmissionReady { token, turn } => {
+                self.retry_browser_dispatch_admission(token, turn);
+            }
             Input::BrowserLaunchReady {
                 turn,
                 generation,
@@ -1575,6 +1588,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             }
             Then::Decide { agent } => self.decide(agent),
             Then::ClearedCause { agent } => self.on_cause_cleared(agent),
+            Then::LaunchAdmissionHeld { agent, turn } => {
+                if let Some(turn) = turn {
+                    self.mcp_attempts.remove(&turn);
+                    if !self.retain_failed_browser_replay(turn) {
+                        self.browser_launches.remove(&turn);
+                        self.spawning.remove(&turn);
+                        self.reissued.remove(&turn);
+                        self.reissue_confirmations.remove(&turn);
+                    }
+                }
+                self.decide(agent);
+            }
             Then::Question { agent, text } => {
                 self.notify_question(agent, &text);
                 self.decide(agent);
@@ -2698,6 +2723,46 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         for (observed_key, observation) in observations {
             self.on_session_observed(turn, observed_key, mcp_grant, observation);
         }
+    }
+
+    fn on_launch_admission_refused(
+        &mut self,
+        agent: AgentId,
+        turn: Option<TurnId>,
+        refusal: &crate::SharedFolderRefusal,
+        dispatch_token: Option<PersistToken>,
+    ) {
+        if self.launch_held(agent)
+            || self.world.agents.get(&agent).is_none_or(|row| row.retired)
+            || turn.is_some_and(|turn| {
+                self.world
+                    .turns
+                    .get(&turn)
+                    .is_none_or(|row| row.agent != agent || !row.is_issued_not_spawned())
+            })
+        {
+            return;
+        }
+        if let Some(token) = dispatch_token {
+            if self.ledger.get(&token).is_none_or(|parked| {
+                !matches!(&parked.entry.record,
+                    Record::BrowserNoteDispatchIntent { turn: issued, agent: owner, .. }
+                        if Some(*issued) == turn && *owner == agent)
+            }) {
+                return;
+            }
+            self.ledger.remove(&token);
+        }
+        self.persist(
+            Record::AgentHeld {
+                agent,
+                provenance: Provenance::Observed,
+                cause: dudes_proto::AutomaticHold::LaunchRefused {
+                    reason: refusal.to_string(),
+                },
+            },
+            Then::LaunchAdmissionHeld { agent, turn },
+        );
     }
 
     /// The host confirmed this attempt left no process. Earlier browser dispatch uncertainty

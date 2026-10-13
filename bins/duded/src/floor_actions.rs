@@ -555,7 +555,7 @@ pub enum OnboardStep {
 }
 
 /// An empty HTTP refusal with no invented domain identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OnboardRefusal {
     /// Session or pre-hire admission refused without an effect.
     Forbidden,
@@ -574,6 +574,8 @@ pub enum OnboardRefusal {
     /// The hire's check refused it before any append, or a limit on the session's check runs
     /// did; the reason names which.
     Check(&'static str),
+    /// Current owned-child admission refused before a hire was appended.
+    SharedFolder(dudes_supervisor::SharedFolderRefusal),
 }
 
 #[derive(Deserialize)]

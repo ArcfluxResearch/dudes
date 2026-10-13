@@ -1771,6 +1771,14 @@ fn onboard_response<'a>(
             "Conflict",
             &serde_json::json!({ "attempt_id": attempt_wire, "state": "refused", "reason": reason }),
         ),
+        Err(OnboardRefusal::SharedFolder(refusal)) => action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({
+                "attempt_id": attempt_wire, "state": "refused", "reason": "shared_folder",
+                "note": refusal.to_string()
+            }),
+        ),
     }
 }
 

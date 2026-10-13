@@ -30,8 +30,8 @@ use dudes_types::{AgentId, ModelSelection, Provider, Tier};
 use serde_json::{Map, Value};
 
 use crate::adapter::{
-    Adapter, AgentCtx, HookInstall, Isolation, ManagedInstall, SessionAcquisition, TurnSession,
-    UsageSource,
+    Adapter, AgentCtx, ContextMode, HookInstall, Isolation, ManagedInstall, SessionAcquisition,
+    TurnSession, UsageSource,
 };
 use dudes_types::IsolationMode;
 
@@ -502,6 +502,13 @@ impl Adapter for ClaudeAdapter {
             IsolationMode::Default => Isolation::Flags(ISOLATION_FLAGS),
             IsolationMode::Bare => Isolation::Flags(BARE_FLAG),
             IsolationMode::Inherit => Isolation::None,
+        }
+    }
+
+    fn context_mode(&self, mode: dudes_types::Mode) -> ContextMode {
+        match mode {
+            dudes_types::Mode::Managed => ContextMode::ClaudeManaged(self.config.isolation),
+            dudes_types::Mode::Attached => ContextMode::ClaudeAttached,
         }
     }
 

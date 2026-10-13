@@ -793,7 +793,13 @@ impl<H: ProcessHost> ProcessHost for PeerBarrier<H> {
 pub(crate) struct PtyBarrier {
     inner: Box<dyn PtyHostPort>,
     resolver: Resolver,
-    tracked: BTreeMap<PtyId, Box<dyn ExternalChild>>,
+    tracked: BTreeMap<PtyId, TrackedPty>,
+}
+
+struct TrackedPty {
+    _child: Box<dyn ExternalChild>,
+    key: AdoptionKey,
+    cwd: std::path::PathBuf,
 }
 
 impl PtyBarrier {
@@ -812,6 +818,7 @@ impl PtyBarrier {
         cols: u16,
         rows: u16,
     ) -> Result<(PtyId, Option<AdoptionKey>), PtyOpenFailure> {
+        let cwd = spec.cwd.clone();
         let Some(mut spawn) = self.resolver.begin_external() else {
             #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
             {
@@ -845,7 +852,14 @@ impl PtyBarrier {
         });
         match registered {
             Ok(key) => {
-                self.tracked.insert(pty, spawn.child);
+                self.tracked.insert(
+                    pty,
+                    TrackedPty {
+                        _child: spawn.child,
+                        key: key.clone(),
+                        cwd,
+                    },
+                );
                 Ok((pty, Some(key)))
             }
             // Closed before the barrier aborts, so a peer of the child waits out the close.
@@ -864,6 +878,12 @@ impl PtyBarrier {
                 Err(failure)
             }
         }
+    }
+
+    pub(crate) fn receipt(&self, pty: PtyId) -> Option<(&AdoptionKey, &std::path::Path)> {
+        self.tracked
+            .get(&pty)
+            .map(|child| (&child.key, child.cwd.as_path()))
     }
 
     pub(crate) fn write(&mut self, pty: PtyId, bytes: &[u8]) -> io::Result<usize> {

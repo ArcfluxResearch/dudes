@@ -55,6 +55,7 @@ pub mod doctor;
 pub mod effect;
 pub mod host;
 pub mod input;
+mod launch_admission;
 pub mod machine;
 mod predicate_evidence;
 // Off in a default build. `src/testing.rs`'s header owns the reason; `cfg(test)` is here because
@@ -76,6 +77,7 @@ pub use host::{
 pub use input::{
     BrowserAnswerCommand, ClientId, Command, HookId, Input, PersistToken, RuntimeSignal, SpendView,
 };
+pub use launch_admission::SharedFolderRefusal;
 pub use machine::{Config, Supervisor};
 pub use predicate_evidence::predicate_evidence_eligible;
 pub use world::{MintedFor, WorktreeRow, WorktreeState, World};

@@ -101,6 +101,9 @@ use agent_mcp::pi_retry;
 mod browser_chat;
 #[cfg(test)]
 mod chat_tests;
+mod shared_folder;
+#[cfg(all(test, unix))]
+mod shared_folder_tests;
 use crate::predicate::{self, PredicateRunner};
 use crate::startup::{TeardownStep, Witness};
 
@@ -2284,6 +2287,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if self.refuse_overlap(&profile.cwd, None).is_err() {
             return Err(OnboardRefusal::Forbidden);
         }
+        self.ctx
+            .admit_shared_folder(
+                &self.sup,
+                None,
+                request.provider,
+                browser_isolation(request.provider, &profile),
+                dudes_types::Mode::Managed,
+                &profile.cwd,
+            )
+            .map_err(OnboardRefusal::SharedFolder)?;
         let (id, revision) = request.check.as_ref().ok_or(OnboardRefusal::InvalidInput)?;
         let check = profile
             .check(id)
@@ -3873,7 +3886,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     {
                         ctx.tokens.publish_completed_folds(|| owners);
                     }
-                    if let Err(error) = ctx.execute(effect, &mut queue, report, sup) {
+                    let executed = if matches!(effect, Effect::Persist { entry, .. }
+                        if matches!(entry.record, Record::BrowserNoteDispatchIntent { .. }))
+                    {
+                        ctx.dispatch_browser_intent(effect, &mut queue, sup, closing)
+                    } else {
+                        ctx.execute(effect, &mut queue, report, sup)
+                    };
+                    if let Err(error) = executed {
                         // The first error stops later effects and abandons queued inputs.
                         // Their durable acknowledgements remain unfolded; this pump does not drain
                         // them or claim that its failed call reached quiescence.
@@ -4142,6 +4162,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 }
                 self.require_reserve(crate::reserve::Candidate::Agent(&params.budget))?;
                 self.refuse_overlap(&params.cwd, None)?;
+                self.refuse_shared_hire(&params, &params.cwd)?;
                 if params.checkout.is_some() || params.from.is_some() {
                     return Err(error(
                         ErrorCode::InvalidParams,
@@ -4232,6 +4253,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 };
                 self.worktree_admission(&params)?;
                 self.refuse_overlap(&lease.path, Some(worktree))?;
+                self.refuse_shared_hire(&params, &lease.path)?;
                 let workspace = self.ctx.enrollment.workspace_for_cwd(&params.cwd);
                 let before = self.newest_agent();
                 self.pump_or_refuse(Input::Command(Command::Hire {
@@ -5998,6 +6020,23 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         self.refuse_overlap(&params.cwd, own)
     }
 
+    fn refuse_shared_hire(
+        &self,
+        params: &HireParams,
+        cwd: &std::path::Path,
+    ) -> Result<(), RpcError> {
+        self.ctx
+            .admit_shared_folder(
+                &self.sup,
+                None,
+                params.provider,
+                params.isolation,
+                dudes_types::Mode::Managed,
+                cwd,
+            )
+            .map_err(|refusal| error(ErrorCode::Refused, refusal.to_string()))
+    }
+
     /// The declared MCP servers a hire names, admitted before anything is appended by the same rules,
     /// in the same order, that every launch of the agent applies again. A request no daemon state
     /// could accept is `-32602`; a missing variable or an untrusted repository is `-32004`.
@@ -7184,7 +7223,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 install,
                 cols,
                 rows,
-            } => self.open_pty(*agent, spec.clone(), install, (*cols, *rows), queue, report)?,
+            } => self.open_pty(
+                *agent,
+                spec.clone(),
+                install,
+                (*cols, *rows),
+                queue,
+                report,
+                sup,
+            )?,
             Effect::ClosePty { agent } => self.close_pty(*agent),
         }
         Ok(())
@@ -7200,7 +7247,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
     }
 
-    fn open_pty(
+    fn open_pty<R: Rng>(
         &mut self,
         agent: AgentId,
         spec: dudes_providers::launch::LaunchSpec,
@@ -7208,7 +7255,32 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         (cols, rows): (u16, u16),
         queue: &mut VecDeque<Input>,
         report: &mut PumpReport,
+        sup: &mut Supervisor<Shared<C>, R>,
     ) -> Result<()> {
+        let row = sup
+            .world()
+            .agents
+            .get(&agent)
+            .ok_or_else(|| anyhow::anyhow!("attached launch owner is unavailable"))?;
+        if let Err(refusal) = self.admit_shared_folder(
+            sup,
+            Some(agent),
+            row.provider,
+            row.mcp.isolation,
+            dudes_types::Mode::Attached,
+            &spec.cwd,
+        ) {
+            let message = refusal.to_string();
+            queue.push_back(Input::LaunchAdmissionRefused {
+                agent,
+                turn: None,
+                refusal,
+                dispatch_token: None,
+            });
+            queue.push_back(Input::PtyExited { agent });
+            report.record_open(agent, Err(message))?;
+            return Ok(());
+        }
         // The hook settings the launch names exist before the child can read them.
         let opened = self
             .host

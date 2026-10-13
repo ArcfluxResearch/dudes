@@ -254,6 +254,24 @@ pub enum Input {
         /// The host error that prevented launch, rendered by the runtime.
         reason: String,
     },
+    /// Admission refused before the host was called; an issued task remains owed.
+    LaunchAdmissionRefused {
+        /// Owning agent.
+        agent: AgentId,
+        /// Issued managed work, or an owned Attached launch without a managed issue.
+        turn: Option<TurnId>,
+        /// Typed current evidence, without provider launch inputs.
+        refusal: crate::SharedFolderRefusal,
+        /// The not-appended browser dispatch intent being refused, when applicable.
+        dispatch_token: Option<PersistToken>,
+    },
+    /// Earlier durable acknowledgments have folded; retry the same unappended browser intent.
+    BrowserDispatchAdmissionReady {
+        /// Exact parked intent.
+        token: PersistToken,
+        /// Exact issued work.
+        turn: TurnId,
+    },
     /// The stream reader saw the vendor's session id for this turn.
     SessionLearned {
         /// The turn.

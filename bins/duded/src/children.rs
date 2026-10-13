@@ -59,6 +59,7 @@ type PendingObservations = BTreeMap<ActivityKey, Vec<(Option<Lsn>, SessionObserv
 pub struct ChildEnds {
     handle: OnceLock<Handle>,
     open: Mutex<BTreeMap<u32, Registered>>,
+    uncertain: Mutex<UncertainChildren>,
     next_reader: Mutex<Option<Box<dyn TurnReader>>>,
     next_startup: Mutex<Option<CodexStartup>>,
     next_outbox: Mutex<Option<Arc<crate::mailbox::OutboxGrant>>>,
@@ -72,6 +73,12 @@ pub struct ChildEnds {
     output: Arc<OutputRegistry>,
 }
 
+#[derive(Debug, Default)]
+struct UncertainChildren {
+    launches: BTreeMap<TurnId, std::path::PathBuf>,
+    overflow: bool,
+}
+
 /// One spawned child, as the loop registered it.
 #[derive(Debug)]
 struct Registered {
@@ -80,6 +87,7 @@ struct Registered {
     boot: Option<String>,
     turn: TurnId,
     mcp_grant: Option<Lsn>,
+    cwd: Option<std::path::PathBuf>,
 }
 
 /// An owned child that exited before `Effect::Spawn` could register its full key.
@@ -237,6 +245,70 @@ impl ChildEnds {
     /// Called by the executor on the `Effect::Spawn` the host answered, which is the only moment
     /// the two facts — the turn and the key — are in the same hand.
     pub fn spawned(&self, turn: TurnId, key: &AdoptionKey, mcp_grant: Option<Lsn>) {
+        self.register_spawn(turn, key, mcp_grant, None);
+    }
+
+    pub(crate) fn spawned_in(
+        &self,
+        turn: TurnId,
+        key: &AdoptionKey,
+        mcp_grant: Option<Lsn>,
+        cwd: &std::path::Path,
+    ) {
+        self.register_spawn(turn, key, mcp_grant, Some(cwd.to_path_buf()));
+    }
+
+    pub(crate) fn visit_owned<E>(
+        &self,
+        mut visit: impl FnMut(TurnId, AdoptionKey, Option<&std::path::Path>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        for (pid, child) in self.open().iter() {
+            visit(
+                child.turn,
+                AdoptionKey {
+                    pid: *pid,
+                    start_time: child.start_time,
+                    boot: child.boot.clone(),
+                },
+                child.cwd.as_deref(),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn retain_uncertain(&self, turn: TurnId, cwd: &std::path::Path) {
+        let mut uncertain = self
+            .uncertain
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if uncertain.launches.len() < MAX_PENDING_ENDS {
+            uncertain.launches.insert(turn, cwd.to_path_buf());
+        } else {
+            uncertain.overflow = true;
+        }
+    }
+
+    pub(crate) fn visit_uncertain<E>(
+        &self,
+        mut visit: impl FnMut(TurnId, &std::path::Path) -> Result<(), E>,
+    ) -> Result<bool, E> {
+        let uncertain = self
+            .uncertain
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (turn, cwd) in &uncertain.launches {
+            visit(*turn, cwd)?;
+        }
+        Ok(uncertain.overflow)
+    }
+
+    fn register_spawn(
+        &self,
+        turn: TurnId,
+        key: &AdoptionKey,
+        mcp_grant: Option<Lsn>,
+        cwd: Option<std::path::PathBuf>,
+    ) {
         let mut open = self.open();
         open.insert(
             key.pid,
@@ -245,6 +317,7 @@ impl ChildEnds {
                 boot: key.boot.clone(),
                 turn,
                 mcp_grant,
+                cwd,
             },
         );
         for (observed_grant, observation) in self.take_pending_observation(key) {

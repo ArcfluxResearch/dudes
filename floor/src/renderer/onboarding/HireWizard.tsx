@@ -570,6 +570,9 @@ function AnswerBody({ outcome, hire, floor }: {
       );
     case 'refused': {
       const session = sessionAfterRefusal(floor, hire.askedAtEpoch);
+      if (outcome.note !== undefined && !hire.uncertain) {
+        return <p className="hire-error" role="alert">{outcome.note}</p>;
+      }
       if (hire.uncertain) {
         // This refusal answered a check. The request before it has no known
         // result, so nothing here may say that no agent was hired.

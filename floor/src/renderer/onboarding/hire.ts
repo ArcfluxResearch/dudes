@@ -133,8 +133,8 @@ export type HireOutcome =
   | { readonly kind: 'unavailable' }
   /** A lost response, an unexpected status or an unreadable body. No agent. */
   | { readonly kind: 'unknown' }
-  /** Empty 403: refused before any effect. */
-  | { readonly kind: 'refused' }
+  /** Empty 403 or a structured 409 shared-folder refusal, before any effect. */
+  | { readonly kind: 'refused'; readonly note?: string }
   /** Empty 409: this attempt names a different request. Refused before any effect. */
   | { readonly kind: 'conflict' }
   /**
@@ -581,6 +581,12 @@ export function decodeHireResponse(status: number, text: string, attemptId: stri
     case 409: {
       if (text === '') return Object.freeze({ kind: 'conflict' });
       const body = json(text);
+      if (exactly(body, ['attempt_id', 'state', 'reason', 'note'])
+        && body.attempt_id === attemptId && body.state === 'refused' && body.reason === 'shared_folder'
+        && typeof body.note === 'string' && body.note.length > 0 && body.note.length <= 512
+        && !/[\u0000-\u001f\u007f]/u.test(body.note)) {
+        return Object.freeze({ kind: 'refused', note: body.note });
+      }
       if (exactly(body, REFUSED_KEYS)) {
         if (body.attempt_id !== attemptId || body.state !== 'refused') return unknown;
         if (body.reason === 'profile_changed') return Object.freeze({ kind: 'stale' });

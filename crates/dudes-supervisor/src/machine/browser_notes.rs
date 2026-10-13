@@ -370,6 +370,50 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         );
     }
 
+    /// The exact launch authorized by a still-parked, not-appended dispatch intent.
+    #[must_use]
+    pub fn browser_dispatch_spec(
+        &self,
+        token: crate::PersistToken,
+        turn: TurnId,
+    ) -> Option<&LaunchSpec> {
+        let parked = self.ledger.get(&token)?;
+        let Then::BrowserDispatch {
+            turn: issued,
+            generation,
+        } = parked.then
+        else {
+            return None;
+        };
+        if issued != turn
+            || !matches!(&parked.entry.record, Record::BrowserNoteDispatchIntent { turn: issued, .. } if *issued == turn)
+        {
+            return None;
+        }
+        let BrowserLaunchPhase::IntentPending {
+            generation: prepared,
+            spec,
+            ..
+        } = self.browser_launches.get(&turn)?
+        else {
+            return None;
+        };
+        let agent = self.world.turns.get(&turn)?.agent;
+        (generation == *prepared && self.browser_launch_allowed(agent, turn))
+            .then_some(spec.as_ref())
+    }
+
+    pub(super) fn retry_browser_dispatch_admission(
+        &mut self,
+        token: crate::PersistToken,
+        turn: TurnId,
+    ) {
+        if self.browser_dispatch_spec(token, turn).is_some() {
+            let entry = self.ledger[&token].entry.clone();
+            self.pending.push(Effect::Persist { token, entry });
+        }
+    }
+
     pub(super) fn dispatch_browser_launch(&mut self, turn: TurnId, generation: u64) {
         let Some(agent) = self.world.turns.get(&turn).map(|row| row.agent) else {
             return;

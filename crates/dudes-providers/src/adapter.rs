@@ -13,7 +13,7 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use dudes_types::{AgentId, ModelSelection, Provider, SessionId, Tier, Usd};
+use dudes_types::{AgentId, IsolationMode, Mode, ModelSelection, Provider, SessionId, Tier, Usd};
 
 use crate::launch::{EnvVar, LaunchError, LaunchSpec};
 use crate::mcp::{McpLaunch, McpSupport};
@@ -170,6 +170,28 @@ pub enum Isolation {
     None,
 }
 
+/// The provider context composition used by one launch mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextMode {
+    /// A composition without a Claude isolation selector.
+    Other,
+    /// The configured selector used by Claude's managed composer.
+    ClaudeManaged(IsolationMode),
+    /// Claude's resume composer, which adds hook settings without managed exclusions.
+    ClaudeAttached,
+}
+
+impl ContextMode {
+    /// Whether this composition inherits Claude context.
+    #[must_use]
+    pub const fn claude_inherit(self) -> bool {
+        matches!(
+            self,
+            Self::ClaudeManaged(IsolationMode::Inherit) | Self::ClaudeAttached
+        )
+    }
+}
+
 /// Where a turn's usage comes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UsageSource {
@@ -222,6 +244,10 @@ pub trait Adapter: Send + Sync {
     fn tier(&self) -> Tier;
     /// The isolation every managed launch from this adapter carries.
     fn isolation(&self) -> Isolation;
+    /// The actual context composition, independent of the recorded hire selector.
+    fn context_mode(&self, _mode: Mode) -> ContextMode {
+        ContextMode::Other
+    }
     /// How this provider's session id comes into existence. Pure and constant.
     fn session_acquisition(&self) -> SessionAcquisition;
     /// The model this adapter would select for a managed turn right now, as its own raw spelling.
