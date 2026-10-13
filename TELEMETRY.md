@@ -1,6 +1,7 @@
 # What Dudes and its engines send
 
-The `duded`, `dudes`, and `dudes-hook` binaries use local connections.
+This guide describes the current source. The `duded`, `dudes`, and `dudes-hook`
+binaries built from this source use local connections.
 Usage and error information can pass through those local connections.
 Separate programs launched by Dudes can make their own network connections.
 
@@ -19,6 +20,10 @@ followed by a nonempty name without NUL, backslashes, or forward slashes.
 It refuses server UNC paths and other device namespaces before a connection attempt.
 For ordinary CLI use, leave `DUDES_SOCK` unset to use Dudes' default local endpoint.
 Dudes sets the hook's endpoint when it launches an engine.
+
+The local pipe path check was added after the published 0.86.0 release. In that
+release, a Windows `DUDES_SOCK` override can still cause the CLI or hook to attempt
+a connection to a remote pipe server.
 
 Dudes gives engines their task input and reads the output and protocol messages
 they expose locally. Dudes does not intercept or proxy the engines' network

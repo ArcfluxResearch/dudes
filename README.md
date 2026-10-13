@@ -120,10 +120,10 @@ Example tickets on the Board. Open a card to review the agent's summary and the 
 
 ## What agents can do on your machine
 
-Dudes' installed binaries use local connections. Usage and error information can
-pass through those local connections. On Windows, a custom `DUDES_SOCK` must use
-a local named-pipe path. Engines and other programs Dudes runs can make their own
-network connections.
+Dudes uses local connections by default. Usage and error information can pass
+through them. In the published 0.86.0 release, a Windows `DUDES_SOCK` override can
+select a remote pipe server. The current source requires a local pipe path.
+Engines and other programs Dudes runs can make their own network connections.
 [What Dudes and its engines send](TELEMETRY.md) explains the boundary, engine
 telemetry controls, and the installer downloads.
 
