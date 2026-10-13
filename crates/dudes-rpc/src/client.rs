@@ -606,7 +606,7 @@ mod tests {
             let sid = dudes_win::current_user_sid().expect("current user SID");
             let sddl = U16CString::from_str(format!("O:{sid}D:P(A;;GA;;;{sid})")).unwrap();
             let listener = PipeListenerOptions::new()
-                .path(&path)
+                .path(path.as_path())
                 .mode(PipeMode::Bytes)
                 .accept_remote(false)
                 .security_descriptor(Some(SecurityDescriptor::deserialize(&sddl).unwrap()))
