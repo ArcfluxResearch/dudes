@@ -91,8 +91,33 @@ fn connect_local_windows_pipe<T>(
     path_units: impl IntoIterator<Item = u16>,
     connect: impl FnOnce() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
-    let _ = path_units;
+    if !is_local_windows_pipe(path_units) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            r"Windows control endpoint must use \\.\pipe\ followed by a nonempty name without NUL or path separators",
+        ));
+    }
     connect()
+}
+
+#[cfg(any(windows, test))]
+fn is_local_windows_pipe(path_units: impl IntoIterator<Item = u16>) -> bool {
+    let mut units = path_units.into_iter();
+    for expected in br"\\.\pipe\" {
+        if !units.next().is_some_and(|unit| {
+            unit == u16::from(*expected) || unit == u16::from(expected.to_ascii_uppercase())
+        }) {
+            return false;
+        }
+    }
+    let mut nonempty = false;
+    for unit in units {
+        if matches!(unit, 0 | 0x2f | 0x5c) {
+            return false;
+        }
+        nonempty = true;
+    }
+    nonempty
 }
 
 /// Connect, inspect the still-whole pipe, then expose its read and write halves.
@@ -167,6 +192,10 @@ impl
     /// Connect to the local named pipe at `path`.
     ///
     /// # Errors
+    ///
+    /// [`std::io::ErrorKind::InvalidInput`] when `path` does not use the literal
+    /// `\\.\pipe\` prefix, compared without ASCII case, followed by a nonempty name without
+    /// NUL or path separators.
     ///
     /// Whatever reading the current Windows user, connecting, or reading the connected pipe's
     /// owner and DACL returns; [`std::io::ErrorKind::PermissionDenied`] when the pipe is not owned
