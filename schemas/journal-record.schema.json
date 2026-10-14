@@ -2119,6 +2119,11 @@
           "$ref": "#/$defs/InstructionPathContext",
           "description": "The affected path context; lease-local gaps cannot hide shared-input gaps."
         },
+        "origin": {
+          "$ref": "#/$defs/InstructionGapOrigin",
+          "default": "observed",
+          "description": "Whether the gap is a standing engine limit or something this run found."
+        },
         "path": {
           "anyOf": [
             {
@@ -2586,6 +2591,21 @@
         {
           "const": "ending_boundary_missing",
           "description": "No independently recorded ending boundary is available after recovery.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionGapOrigin": {
+      "description": "Where a coverage gap came from. It is part of a gap's identity, so a declared gap never\nabsorbs an observed one that is otherwise equal.",
+      "oneOf": [
+        {
+          "const": "declared",
+          "description": "A standing limit of the engine itself: an input the engine reads that Dudes can never see.\nIt annotates a passing ticket and does not hold it.",
+          "type": "string"
+        },
+        {
+          "const": "observed",
+          "description": "Raised by sampling or comparing this run. A record without an origin reads as this, so an\nolder record keeps holding.",
           "type": "string"
         }
       ]

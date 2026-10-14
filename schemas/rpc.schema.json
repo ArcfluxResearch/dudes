@@ -9394,6 +9394,11 @@
           "$ref": "#/$defs/InstructionPathContext",
           "description": "The affected path context; lease-local gaps cannot hide shared-input gaps."
         },
+        "origin": {
+          "$ref": "#/$defs/InstructionGapOrigin",
+          "default": "observed",
+          "description": "Whether the gap is a standing engine limit or something this run found."
+        },
         "path": {
           "anyOf": [
             {
@@ -9861,6 +9866,21 @@
         {
           "const": "ending_boundary_missing",
           "description": "No independently recorded ending boundary is available after recovery.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionGapOrigin": {
+      "description": "Where a coverage gap came from. It is part of a gap's identity, so a declared gap never\nabsorbs an observed one that is otherwise equal.",
+      "oneOf": [
+        {
+          "const": "declared",
+          "description": "A standing limit of the engine itself: an input the engine reads that Dudes can never see.\nIt annotates a passing ticket and does not hold it.",
+          "type": "string"
+        },
+        {
+          "const": "observed",
+          "description": "Raised by sampling or comparing this run. A record without an origin reads as this, so an\nolder record keeps holding.",
           "type": "string"
         }
       ]
@@ -15704,6 +15724,38 @@
       ],
       "type": "object"
     },
+    "TicketCoverageNote": {
+      "description": "What Dudes could not see during a ticket that passed without a seen change. It lists the\nstanding engine limits only; it is not an instruction review and holds nothing.",
+      "properties": {
+        "limits": {
+          "description": "The standing limits, each kind once.",
+          "items": {
+            "$ref": "#/$defs/InstructionGapKind"
+          },
+          "type": "array"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Provider"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The engine whose limits these are, when the recorded baseline names it."
+        },
+        "saw_no_change": {
+          "description": "Dudes saw no change and met no limit of its own while comparing the files it can read.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "limits",
+        "saw_no_change"
+      ],
+      "type": "object"
+    },
     "TicketCreateParams": {
       "additionalProperties": false,
       "description": "`ticket.create` params. Only the title is required.",
@@ -15965,6 +16017,17 @@
             }
           ],
           "description": "The daemon's newest run of the check on the ticket's goal."
+        },
+        "coverage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketCoverageNote"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The standing engine limits Dudes met while this ticket's work passed without a seen\nchange. It is shown on Ready for you and holds nothing."
         },
         "description": {
           "description": "The note; empty when there is none.",
