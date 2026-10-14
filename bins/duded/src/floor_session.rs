@@ -1982,7 +1982,18 @@ mod carry_tests {
 
         let first = new.carry.import(NEW_RUN, &exported);
         assert_eq!(first, 1);
-        assert_eq!(new.carry.import(NEW_RUN, &exported), 0, "a second import");
+        let later = sign_in(&old);
+        assert_eq!(
+            new.carry.import(NEW_RUN, &old.carry.export(OLD_RUN)),
+            0,
+            "a second import admits nothing, not even a session the first one lacked"
+        );
+        assert!(
+            new.carry
+                .sessions()
+                .recover(HOST, ORIGIN, &later.cookie)
+                .is_none()
+        );
 
         let other = run(&clock, HOST);
         let mut moved = exported.clone();
