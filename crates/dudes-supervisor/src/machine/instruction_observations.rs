@@ -227,6 +227,27 @@ fn gap(reason: InstructionGapKind, agent: AgentId) -> InstructionCoverageGap {
 }
 
 impl<C: Clock, R: Rng> Supervisor<C, R> {
+    /// Whether this agent owes a managed post-turn check deferred by instruction observation.
+    #[must_use]
+    pub fn pending_instruction_check(&self, agent: AgentId) -> bool {
+        let judges = |owner, then: &Then| {
+            matches!(owner, InstructionObservationOwner::Managed { agent: who, .. } if who == agent)
+                && matches!(then, Then::Judge { agent: who, goal } if *who == agent
+                    && self.world.goals.get(goal).is_some_and(|row| !row.cleared))
+        };
+        self.instructions.awaiting.values().any(|awaiting| {
+            matches!(awaiting, Awaiting::End(ending) if judges(ending.owner, &ending.then))
+        }) || self.ledger.values().any(|parked| {
+            matches!((&parked.entry.record, &parked.then),
+                (Record::InstructionObservationFinished { owner, .. },
+                 Then::InstructionCompared { baseline, then })
+                    if self.instructions.ending.contains(baseline) && judges(*owner, then))
+        }) || self.instructions.recovery_checks.iter().any(|check| {
+            check.agent == agent && self.recovery_check_due(*check)
+        }) || matches!(self.instructions.recovery, Recovery::Checking(goal)
+            if self.world.goals.get(&goal).is_some_and(|row| row.agent == agent))
+    }
+
     pub(super) fn instruction_journaled(&mut self, lsn: Lsn, entry: &Entry) {
         if lsn == Lsn::ZERO
             || self.world.last_applied_lsn.is_some_and(|last| lsn <= last)
@@ -1735,6 +1756,149 @@ mod tests {
         assert!(harness.supervisor.spawning.contains(&turn));
     }
 
+    fn held_end_sample(
+        harness: &mut Harness,
+        turn: TurnId,
+    ) -> (InstructionRequest, Box<InstructionSnapshot>) {
+        let effects = harness.step(exited(turn));
+        let effects = acknowledge_actual_persist(harness, &effects);
+        effects
+            .into_iter()
+            .find_map(|effect| match effect {
+                crate::testing::Seen::SampleInstructions {
+                    request,
+                    baseline: Some(snapshot),
+                    ..
+                } => Some((request, snapshot)),
+                _ => None,
+            })
+            .expect("the ended managed turn samples its baseline")
+    }
+
+    fn finish_held_sample(
+        harness: &mut Harness,
+        request: InstructionRequest,
+        snapshot: Box<InstructionSnapshot>,
+    ) -> Vec<crate::testing::Seen> {
+        harness.step(Input::InstructionSampled {
+            request,
+            snapshot,
+            ticket: None,
+            comparison: Some(Box::new(InstructionComparison {
+                changes: Vec::new(),
+                gaps: Vec::new(),
+                usage: InstructionSampleUsage::default(),
+            })),
+        })
+    }
+
+    #[test]
+    fn pending_instruction_check_owns_the_sample_and_finish_persist_until_judge_handoff() {
+        let mut harness = Harness::new();
+        let (agent, goal) = harness.hire_with_goal(&["/usr/bin/false"]);
+        let other = harness.hire();
+        let turn = harness.open_turn(agent).unwrap();
+        assert!(!harness.supervisor.pending_instruction_check(agent));
+        let (request, snapshot) = held_end_sample(&mut harness, turn);
+        assert!(harness.supervisor.pending_instruction_check(agent));
+        assert!(!harness.supervisor.pending_instruction_check(other));
+        let effects = finish_held_sample(&mut harness, request, snapshot);
+        assert!(harness.supervisor.pending_instruction_check(agent));
+        assert!(!harness.supervisor.pending_instruction_check(other));
+        let effects = acknowledge_actual_persist(&mut harness, &effects);
+        assert_eq!(recovered_checks(&effects, goal), 1);
+        assert!(!harness.supervisor.pending_instruction_check(agent));
+    }
+
+    #[test]
+    fn clearing_a_goal_during_comparison_removes_its_pending_instruction_check() {
+        let mut harness = Harness::new();
+        let (agent, goal) = harness.hire_with_goal(&["/usr/bin/false"]);
+        let turn = harness.open_turn(agent).unwrap();
+        let (request, snapshot) = held_end_sample(&mut harness, turn);
+        assert!(harness.supervisor.pending_instruction_check(agent));
+        harness.drive(Input::Command(Command::GoalClear { agent, goal }));
+        assert!(harness.supervisor.world().goals[&goal].cleared);
+        assert!(!harness.supervisor.pending_instruction_check(agent));
+        let effects = finish_held_sample(&mut harness, request, snapshot);
+        assert!(!harness.supervisor.pending_instruction_check(agent));
+        let effects = acknowledge_actual_persist(&mut harness, &effects);
+        assert_eq!(recovered_checks(&effects, goal), 0);
+        assert!(!harness.supervisor.pending_instruction_check(agent));
+    }
+
+    #[test]
+    fn managed_notes_owe_no_pending_instruction_check() {
+        let mut harness = Harness::new();
+        let agent = harness.hire();
+        harness.drive(Input::Spend {
+            agent,
+            view: SpendView::default(),
+        });
+        harness.drive(Input::Command(Command::ConversationMessageQueued {
+            agent,
+            text: "read this finite note".into(),
+            browser: browser_attribution(),
+            context_lsn: harness.supervisor.world().agents[&agent].context_lsn,
+            context_reset_turn: None,
+        }));
+        let turn = harness.open_turn(agent).expect("the note's managed turn");
+        let (request, snapshot) = held_end_sample(&mut harness, turn);
+        assert!(!harness.supervisor.pending_instruction_check(agent));
+        let effects = finish_held_sample(&mut harness, request, snapshot);
+        assert!(!harness.supervisor.pending_instruction_check(agent));
+        let effects = acknowledge_actual_persist(&mut harness, &effects);
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, crate::testing::Seen::RunPredicate { .. }))
+        );
+        assert!(!harness.supervisor.pending_instruction_check(agent));
+    }
+
+    #[test]
+    fn pending_instruction_checks_include_due_recovery_queued_behind_another_agent() {
+        for pause_queued in [false, true] {
+            let mut live = Harness::new();
+            let (first, first_goal) = live.hire_with_goal(&["/usr/bin/false"]);
+            let first_turn = live.open_turn(first).unwrap();
+            live.drive(exited(first_turn));
+            let (second, second_goal) = live.hire_with_goal(&["/usr/bin/false"]);
+            let second_turn = live.open_turn(second).unwrap();
+            live.drive(exited(second_turn));
+            let other = live.hire();
+            let mut recovered = replay_prefix(&live.journal);
+            let effects = recovered.step(Input::Started);
+            assert_eq!(recovered_checks(&effects, first_goal), 1);
+            assert_eq!(recovered_checks(&effects, second_goal), 0);
+            assert!(recovered.supervisor.pending_instruction_check(first));
+            assert!(recovered.supervisor.pending_instruction_check(second));
+            assert!(!recovered.supervisor.pending_instruction_check(other));
+            if pause_queued {
+                recovered.drive(Input::Command(Command::Pause {
+                    agent: second,
+                    browser: None,
+                }));
+                assert!(!recovered.supervisor.pending_instruction_check(second));
+            }
+            let trace_start = recovered.trace.len();
+            recovered.drive(observed_failure(first_goal));
+            assert!(!recovered.supervisor.pending_instruction_check(first));
+            assert_eq!(
+                recovered_checks(&recovered.trace[trace_start..], second_goal),
+                usize::from(!pause_queued)
+            );
+            assert_eq!(
+                recovered.supervisor.pending_instruction_check(second),
+                !pause_queued
+            );
+            if !pause_queued {
+                recovered.drive(observed_failure(second_goal));
+                assert!(!recovered.supervisor.pending_instruction_check(second));
+            }
+        }
+    }
+
     fn actual_turn_end_to_check(harness: &mut Harness, turn: TurnId) {
         let effects = harness.step(exited(turn));
         let effects = acknowledge_actual_persist(harness, &effects);
@@ -2272,6 +2436,7 @@ mod tests {
                 .pending_for_goal(goal)
         );
         assert_instruction_hold_denies_hooks(&harness, agent);
+        assert!(!harness.supervisor.pending_instruction_check(agent));
     }
 
     #[test]
@@ -3142,6 +3307,7 @@ mod tests {
             },
         });
         assert!(harness.supervisor.instructions.recovering());
+        assert!(harness.supervisor.pending_instruction_check(agent));
         assert_eq!(harness.supervisor.world().agents[&agent].open_turn, None);
         let trace_start = harness.trace.len();
         harness.restart();

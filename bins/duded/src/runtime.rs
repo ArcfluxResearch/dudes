@@ -3612,24 +3612,27 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 
     fn replacement_work_pending(&self, agent: AgentId) -> bool {
-        self.ctx.predicate_runs.keys().any(|goal| {
-            self.sup
+        self.sup.pending_instruction_check(agent)
+            || self.ctx.predicate_runs.keys().any(|goal| {
+                self.sup
+                    .world()
+                    .goals
+                    .get(goal)
+                    .is_none_or(|row| row.agent == agent)
+            })
+            || self
+                .sup
                 .world()
-                .goals
-                .get(goal)
-                .is_none_or(|row| row.agent == agent)
-        }) || self
-            .sup
-            .world()
-            .issued_not_spawned()
-            .any(|(_, turn)| turn.agent == agent)
+                .issued_not_spawned()
+                .any(|(_, turn)| turn.agent == agent)
     }
 
     /// The refusal reasons before the carry-over, the first that holds, read from the
     /// supervisor's fold and this thread's run marks: `agent_absent` for an unknown or retired
     /// agent; `agent_halted`; `stale_goal` when the agent's current goal is not the presented one,
     /// including when it has none; `turn_open` while a turn is issued and not ended, or while a
-    /// predicate run for that goal has not ended.
+    /// predicate run for that goal has not ended, or instruction observation owns a managed
+    /// post-turn check for the agent.
     fn goal_refusal(&self, request: &GoalRequest) -> Option<&'static str> {
         let Some(row) = self
             .sup
@@ -3648,7 +3651,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
         (row.open_turn.is_some()
             || self.ctx.predicate_runs.contains_key(&request.goal)
-            || self.ctx.baselines.local_running(request.agent))
+            || self.ctx.baselines.local_running(request.agent)
+            || self.sup.pending_instruction_check(request.agent))
         .then_some("turn_open")
     }
 
