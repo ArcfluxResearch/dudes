@@ -149,6 +149,17 @@ pub enum Command {
     Worktree(WorktreeCommand),
     /// `config`: show or edit the operator file's start-time settings. Local; nothing is sent.
     Config(ConfigCommand),
+    /// Install the latest release over this copy.
+    Upgrade(UpgradeOptions),
+}
+
+/// The flags of `upgrade`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UpgradeOptions {
+    /// Print the current and latest versions and change nothing.
+    pub check: bool,
+    /// Restart a daemon whose agents are mid-turn, ending those turns at once.
+    pub now: bool,
 }
 
 /// One `config` subcommand.
@@ -559,6 +570,19 @@ COMMANDS
         a managed turn it warns that it cannot prove nothing an agent process
         started left its process group or job; that warning alone is success.
         Any other teardown failure is an error.
+
+    upgrade [--check] [--now]
+        Install the latest release over this copy, then restart the daemon. It asks
+        GitHub which release is latest, downloads that release's install.sh, and runs it
+        with --version and this copy's prefix, so the installer's checksum check and
+        restore logic do the work. Both steps use the system curl at /usr/bin/curl over
+        HTTPS only. This is the only time Dudes connects to GitHub, and it never checks
+        for updates on its own. --check prints the current and latest versions and changes
+        nothing. When already on the latest release it says so and changes nothing, and it
+        never installs an older one. It refuses a copy that install.sh did not put there,
+        such as a source build. A running daemon is stopped the way dudes stop does it and
+        started the way dudes start does it; one with an agent mid-turn is refused unless
+        --now, which ends those turns at once. Not supported on Windows yet.
 
     closing ack --announcement-lsn <lsn>
         Acknowledge your own participation using DUDES_TOKEN. The daemon derives
@@ -995,6 +1019,8 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "ticket" => Command::Ticket(ticket(tail, json)?),
         "config" if json => return Err(ArgError::TextOnly("config")),
         "config" => Command::Config(config_command(tail)?),
+        "upgrade" if json => return Err(ArgError::TextOnly("upgrade")),
+        "upgrade" => Command::Upgrade(upgrade(tail)?),
         other => return Err(ArgError::UnknownCommand(other.to_owned())),
     };
     Ok(Invocation { json, command })
@@ -1301,6 +1327,23 @@ fn stop(tail: &[OsString]) -> Result<Command, ArgError> {
     } else {
         Command::Stop
     })
+}
+
+fn upgrade(tail: &[OsString]) -> Result<UpgradeOptions, ArgError> {
+    let mut flags = Flags::new(tail);
+    let mut options = UpgradeOptions::default();
+    while let Some(arg) = flags.next() {
+        match arg.to_string_lossy().as_ref() {
+            "--check" => options.check = true,
+            "--now" => options.now = true,
+            "--help" | "-h" => return Err(ArgError::HelpRequested),
+            other => return Err(ArgError::UnknownFlag(other.to_owned())),
+        }
+    }
+    if options.check && options.now {
+        return Err(ArgError::Conflicting("--check", "--now"));
+    }
+    Ok(options)
 }
 
 fn closing(tail: &[OsString]) -> Result<Command, ArgError> {
@@ -3782,6 +3825,40 @@ mod closing_tests {
 
     fn parse_line(line: &[&str]) -> Result<Invocation, ArgError> {
         parse(&line.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn upgrade_takes_check_and_now_but_not_both() {
+        assert_eq!(
+            parse_line(&["upgrade"]).unwrap().command,
+            Command::Upgrade(UpgradeOptions::default())
+        );
+        assert_eq!(
+            parse_line(&["upgrade", "--check"]).unwrap().command,
+            Command::Upgrade(UpgradeOptions {
+                check: true,
+                now: false
+            })
+        );
+        assert_eq!(
+            parse_line(&["upgrade", "--now"]).unwrap().command,
+            Command::Upgrade(UpgradeOptions {
+                check: false,
+                now: true
+            })
+        );
+        assert_eq!(
+            parse_line(&["upgrade", "--check", "--now"]),
+            Err(ArgError::Conflicting("--check", "--now"))
+        );
+        assert_eq!(
+            parse_line(&["upgrade", "--force"]),
+            Err(ArgError::UnknownFlag("--force".to_owned()))
+        );
+        assert_eq!(
+            parse_line(&["--json", "upgrade"]),
+            Err(ArgError::TextOnly("upgrade"))
+        );
     }
 
     #[test]

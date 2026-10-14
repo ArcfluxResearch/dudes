@@ -128,7 +128,7 @@ Dudes reads no engine's credentials or files.
    `stop` gives each agent a short closing time to save its work. See
    [Stop Dudes](goals-and-stopping.md#stop-the-daemon-and-closing-time).
 
-   To start the daemon again, for example after you rerun the installer to upgrade, run
+   To start the daemon again, for example after you rerun the installer instead of using `dudes upgrade`, run
    `dudes start`. It asks nothing, changes no settings and hires no agent. If a daemon is
    already running it says so, and it tells you when that daemon is a different version from
    `dudes`.

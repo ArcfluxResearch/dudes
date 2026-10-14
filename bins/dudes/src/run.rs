@@ -143,6 +143,7 @@ pub fn run(
             select_hire(params, invocation.json, terminal, env, out, err)
         }
         Command::Login(provider) => login(*provider, terminal.is_some(), env, out),
+        Command::Upgrade(options) => upgrade_command(*options, env, out, err),
         Command::Mail(command) => crate::mail::run(command, env, out)
             .map(|()| exit::SUCCESS)
             .map_err(local),
@@ -158,6 +159,92 @@ pub fn run(
             let _ = failure.render(invocation.json, err);
             failure.code()
         }
+    }
+}
+
+/// `dudes upgrade`: the only command that reaches GitHub, through the system curl.
+fn upgrade_command(
+    options: args::UpgradeOptions,
+    env: &Environment,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<u8, Failure> {
+    if env.agent_token().is_some() {
+        return Err(local(
+            "upgrade is for the operator and refuses to run with an agent's DUDES_TOKEN set",
+        ));
+    }
+    let inputs = crate::upgrade::Inputs {
+        windows: cfg!(windows),
+        current: env!("CARGO_PKG_VERSION").to_owned(),
+        executable: std::env::current_exe().map_err(local)?,
+        temp_dir: std::env::temp_dir(),
+        child_env: env
+            .upgrade_env()
+            .iter()
+            .map(|var| (var.name().to_owned(), var.expose_value().to_owned()))
+            .collect(),
+    };
+    Ok(crate::upgrade::run(
+        &inputs,
+        options,
+        &SystemRunner,
+        &UpgradeDaemon(env),
+        out,
+        err,
+    ))
+}
+
+struct SystemRunner;
+
+impl crate::upgrade::Runner for SystemRunner {
+    fn exists(&self, program: &Path) -> bool {
+        program.is_file()
+    }
+
+    fn run(
+        &self,
+        program: &Path,
+        args: &[OsString],
+        env: &[(OsString, OsString)],
+    ) -> std::io::Result<crate::runner::Output> {
+        crate::runner::run(program, args, env)
+    }
+}
+
+struct UpgradeDaemon<'a>(&'a Environment);
+
+impl crate::upgrade::Daemon for UpgradeDaemon<'_> {
+    fn running(&self) -> bool {
+        ping_once(self.0).is_ok()
+    }
+
+    fn mid_turn(&self) -> Result<Vec<String>, String> {
+        let agents = operator_call(self.0, Method::AgentList, None)
+            .and_then(typed::<Vec<dudes_proto::AgentView>>)
+            .map_err(|failure| failure.message().to_owned())?;
+        Ok(agents
+            .iter()
+            .filter(|agent| agent.status == dudes_types::AgentStatus::Running)
+            .map(|agent| format!("{} ({})", agent.name, agent.id))
+            .collect())
+    }
+
+    fn stop(&self, now: bool, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), String> {
+        let stopped = if now {
+            hard_stop_daemon(self.0, err).map(|()| exit::SUCCESS)
+        } else {
+            stop_closing(false, self.0, out, err)
+        };
+        stopped
+            .map(|_| ())
+            .map_err(|failure| failure.message().to_owned())
+    }
+
+    fn start(&self, err: &mut dyn Write) -> Result<String, String> {
+        start(self.0, err)
+            .map(|answer| answer.version)
+            .map_err(|failure| failure.message().to_owned())
     }
 }
 
@@ -1867,6 +1954,7 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         | Command::Workspace(_)
         | Command::Worktree(_)
         | Command::Config(_)
+        | Command::Upgrade(_)
         | Command::Ticket(_)
         | Command::Mail(_) => {
             return Err(Failure::Other(Message::Local(
