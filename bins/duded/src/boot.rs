@@ -1429,7 +1429,7 @@ fn check_socket(
 fn register_floor_carry(
     dispatcher: &mut Dispatcher,
     carry: Option<crate::floor_session::FloorCarry>,
-    run: String,
+    run: Option<String>,
 ) {
     use dudes_proto::rpc::floor::{SessionExport, SessionImportParams, SessionImportResult};
     use dudes_proto::rpc::{CurrentMethod, Empty};
@@ -1443,11 +1443,11 @@ fn register_floor_carry(
             let _: Empty = dudes_rpc::methods::params(&call)?;
             let exported = exporting.as_ref().map_or_else(
                 || SessionExport {
-                    run: exporting_run.clone(),
+                    run: String::new(),
                     origin: String::new(),
                     sessions: Vec::new(),
                 },
-                |carry| carry.export(&exporting_run),
+                |carry| carry.export(exporting_run.as_deref()),
             );
             tracing::info!(
                 ?pid,
@@ -1464,7 +1464,7 @@ fn register_floor_carry(
             let params: SessionImportParams = dudes_rpc::methods::params(&call)?;
             let restored = carry
                 .as_ref()
-                .map_or(0, |carry| carry.import(&run, &params.exported));
+                .map_or(0, |carry| carry.import(run.as_deref(), &params.exported));
             tracing::info!(?pid, restored, "floor sign-ins imported");
             dudes_rpc::methods::encode_current(
                 CurrentMethod::FloorSessionImport,
@@ -1571,7 +1571,7 @@ where
     let run = completion
         .completion
         .as_ref()
-        .map_or_else(String::new, |receipt| receipt.run.clone());
+        .map(|receipt| receipt.run.clone());
     let issue_carry = floor_carry.clone();
     register_floor_carry(&mut dispatcher, floor_carry, run);
     dispatcher.register(

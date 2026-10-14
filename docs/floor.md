@@ -109,6 +109,9 @@ no daemon for ten minutes stops checking and shows that same sign-in message. An
 cannot keep a sign-in, for example because the Floor comes back on a different port or the upgrade
 is interrupted, ends the same way.
 
+The first upgrade from a version that predates this feature still signs open tabs out, because
+the older daemon cannot hand its sign-ins over.
+
 One sign-in serves one tab at a time. If you opened a second tab with the same sign-in, it asks you
 to sign in again after the reload.
 
