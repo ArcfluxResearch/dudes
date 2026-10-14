@@ -1742,7 +1742,7 @@ fn a_failed_predicate_thread_spawn_and_a_lost_run_never_invent_a_pass() {
             &running.handle,
             common::goal_params(agent, &["/usr/bin/true"]),
         );
-        let turn = fixture.await_turn();
+        let turn = spawned_goal(&fixture, old);
         call(&settings, Method::LoopPause, json!({"agent":agent}));
         if spawn_failure {
             failure.arm();
@@ -1752,6 +1752,12 @@ fn a_failed_predicate_thread_spawn_and_a_lost_run_never_invent_a_pass() {
             matches!(record,Record::TurnEnded {turn:ended,..} if *ended==turn).then_some(())
         });
         if spawn_failure {
+            fixture.await_record("the ended turn's instruction comparison", |record| {
+                matches!(record, Record::InstructionObservationFinished {
+                    owner: dudes_proto::InstructionObservationOwner::Managed { agent: who, turn: ended, .. }, ..
+                } if *who == agent && *ended == turn).then_some(())
+            });
+            running.handle.doctor().unwrap();
             assert!(matches!(
                 replace(&settings, &request(agent, old, 63)),
                 GoalReplaceResult::Changed { .. }
