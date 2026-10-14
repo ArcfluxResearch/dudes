@@ -41,7 +41,8 @@ no separate upgrade command, and a running daemon keeps using the old binary unt
 To build from source, or on Windows, see [Build Dudes from source](docs/building-from-source.md).
 If the daemon later refuses to start because a Floor directory is writable by its group, run the
 `chmod go-w` command that its error names (see [Get started](docs/getting-started.md#troubleshooting)).
-To remove Dudes, see [Where Dudes keeps its data, and how to uninstall](docs/data-and-uninstall.md).
+To remove Dudes, run `dudes uninstall`. [Where Dudes keeps its data, and how to uninstall](docs/data-and-uninstall.md)
+says what it deletes and gives the manual steps.
 
 ## Quick start
 

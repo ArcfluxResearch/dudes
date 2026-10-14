@@ -64,6 +64,7 @@ mod quickstart;
 pub mod render;
 pub mod run;
 pub mod setup;
+mod uninstall;
 pub mod workspace;
 
 pub use call::call_presenting;

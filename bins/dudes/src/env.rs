@@ -99,6 +99,7 @@ pub struct Environment {
     daemon_env: Vec<EnvVar>,
     agent_token: Option<HookToken>,
     config: Result<PathBuf, NoConfig>,
+    config_overridden: bool,
     current_dir: Option<PathBuf>,
     home: Option<PathBuf>,
     declared: Declared,
@@ -331,6 +332,7 @@ impl Environment {
             daemon_env,
             agent_token,
             config,
+            config_overridden: lookup("DUDES_CONFIG").is_some(),
             current_dir: None,
             home,
             declared: Declared::default(),
@@ -359,6 +361,11 @@ impl Environment {
     /// root for the platform default.
     pub fn config(&self) -> Result<&Path, NoConfig> {
         self.config.as_deref().map_err(|error| *error)
+    }
+
+    /// Whether `DUDES_CONFIG` names the operator file, rather than the platform default.
+    pub(crate) fn config_overridden(&self) -> bool {
+        self.config_overridden
     }
 
     /// The local control endpoint this CLI connects to.
