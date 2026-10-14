@@ -1,7 +1,7 @@
 //! Local replacement admission and recovery over the production socket.
 #![cfg(unix)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use duded::startup::Witness;
 use duded::{ExitCause, boot};
@@ -11,7 +11,7 @@ use dudes_proto::rpc::goal::{CompletionCheckDeclaration, GoalReplaceParams, Goal
 use dudes_proto::rpc::{ErrorCode, Method, Request, RequestId, Response};
 use dudes_proto::{Predicate, Record};
 use dudes_rpc::Client;
-use dudes_types::{AgentId, GoalId, TurnId};
+use dudes_types::{AgentId, GoalId, Lsn, TurnId};
 use serde_json::{Value, json};
 
 mod common;
@@ -1550,6 +1550,136 @@ fn every_changed_reviewed_field_conflicts_both_inflight_and_durable() {
     running.stop(ExitCause::Ended);
 }
 
+struct ReplaySampleClock {
+    clock: TestClock,
+    state: Mutex<(bool, bool)>,
+    changed: Condvar,
+}
+
+impl ReplaySampleClock {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            clock: TestClock::new(),
+            state: Mutex::new((false, false)),
+            changed: Condvar::new(),
+        })
+    }
+
+    fn hold(self: &Arc<Self>) -> ReleaseReplaySample {
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner) = (true, false);
+        ReleaseReplaySample(Arc::clone(self))
+    }
+
+    fn wait_held(&self) {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, std::time::Duration::from_secs(5), |state| !state.1)
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(state.1, "the replay sample reached its clock");
+    }
+}
+
+impl dudes_supervisor::Clock for ReplaySampleClock {
+    fn now(&self) -> dudes_types::Timestamp {
+        if matches!(
+            std::thread::current().name(),
+            Some("dudes-instructions-io" | "dudes-instructions-deadline")
+        ) {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.0 {
+                state.1 = true;
+                self.changed.notify_all();
+                while state.0 {
+                    state = self
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+            }
+        }
+        dudes_supervisor::Clock::now(&self.clock)
+    }
+}
+
+struct ReleaseReplaySample(Arc<ReplaySampleClock>);
+
+impl Drop for ReleaseReplaySample {
+    fn drop(&mut self) {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0 = false;
+        self.0.changed.notify_all();
+    }
+}
+
+fn unconfirmed_instruction_attempt(
+    fixture: &Fixture,
+    handle: &duded::Handle,
+    owner: dudes_proto::InstructionObservationOwner,
+    after: Lsn,
+) -> Lsn {
+    let started =
+        fixture.await_record(
+            "the exact unconfirmed instruction attempt",
+            |record| match record {
+                Record::InstructionObservationFinished {
+                    owner: seen,
+                    baseline: dudes_proto::InstructionBaselineRef::Started { lsn },
+                    settlement:
+                        dudes_proto::InstructionSettlement::Unknown {
+                            reason: dudes_proto::InstructionUnknownReason::CleanupUnconfirmed,
+                            end: None,
+                            sampled_at: None,
+                            recovery: false,
+                            comparison,
+                        },
+                    ..
+                } if *seen == owner
+                    && *lsn > after
+                    && comparison.gaps.iter().any(|gap| {
+                        gap.reason == dudes_proto::InstructionGapKind::CleanupUnconfirmed
+                    }) =>
+                {
+                    Some(*lsn)
+                }
+                _ => None,
+            },
+        );
+    handle.doctor().unwrap();
+    started
+}
+
+fn replay_sample_seams(
+    host: common::UnconfirmedHost,
+    clock: &Arc<ReplaySampleClock>,
+) -> duded::settings::Seams<
+    common::UnconfirmedHost,
+    ScriptedRunner,
+    ReplaySampleClock,
+    dudes_supervisor::testing::FakeRng,
+> {
+    let parts = common::seams(
+        host,
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    duded::settings::Seams {
+        clock: Arc::clone(clock),
+        host: parts.host,
+        pty_host: parts.pty_host,
+        predicates: parts.predicates,
+        rng: parts.rng,
+        resolver: parts.resolver,
+        adapters: parts.adapters,
+        children: parts.children,
+        witness: parts.witness,
+    }
+}
+
 #[test]
 fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_goal() {
     let fixture = Fixture::new();
@@ -1573,6 +1703,12 @@ fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_go
     );
     let issued = issued_goal(&fixture, goal);
     call(&settings, Method::LoopPause, json!({"agent":agent}));
+    let initial_owner = dudes_proto::InstructionObservationOwner::Managed {
+        agent,
+        turn: issued,
+        issue: dudes_proto::InstructionIssueAssociation::Prospective,
+    };
+    unconfirmed_instruction_attempt(&fixture, &running.handle, initial_owner, Lsn::ZERO);
     let before = fixture.records();
     assert_eq!(host.children(), 0);
     assert!(matches!(
@@ -1584,19 +1720,43 @@ fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_go
     ));
     assert_eq!(fixture.records(), before);
     running.stop(ExitCause::Ended);
+    let after = fixture.entries().last().unwrap().0;
+    let issue_lsn = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| {
+            matches!(entry.record, Record::TurnIssued { turn, .. } if turn == issued).then_some(lsn)
+        })
+        .unwrap();
+    let replay_owner = dudes_proto::InstructionObservationOwner::Managed {
+        agent,
+        turn: issued,
+        issue: dudes_proto::InstructionIssueAssociation::Issued { issue_lsn },
+    };
     let reissue = common::UnconfirmedHost::new(true);
-    let daemon = boot(
-        &settings,
-        common::seams(
-            reissue.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .unwrap();
+    let clock = ReplaySampleClock::new();
+    let early_release = clock.hold();
+    let daemon = boot(&settings, replay_sample_seams(reissue.clone(), &clock)).unwrap();
     let mut restarted = common::start(daemon);
+    let release = early_release;
+    clock.wait_held();
     restarted.handle.doctor().unwrap();
+    assert_eq!(reissue.children(), 0);
+    let held_before = fixture.records();
+    assert!(matches!(
+        replace(&settings, &request(agent, goal, 55)),
+        GoalReplaceResult::Refused {
+            reason: dudes_proto::rpc::goal::GoalReplaceRefusal::TurnOpen,
+            ..
+        }
+    ));
+    assert_eq!(
+        fixture.records(),
+        held_before,
+        "a refusal while the sample is held appends nothing"
+    );
+    drop(release);
+    unconfirmed_instruction_attempt(&fixture, &restarted.handle, replay_owner, after);
     assert_eq!(reissue.children(), 0);
     let before = fixture.records();
     assert!(matches!(
