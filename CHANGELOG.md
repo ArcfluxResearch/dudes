@@ -20,7 +20,7 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ### Changes
 
-- Refuse inherited Claude context beside a live or uncertain owned peer in the same folder. Use a separate worktree for that agent. (#57)
+- Refuse inherited Claude context when a live peer shares the folder or owned-peer evidence is unresolved. Refusals explain when to use a separate worktree or wait for confirmed absence. (#57)
 - When instruction review is pending, `dudes ticket accept` and `dudes ticket changes` require an explicit `--expected-seq` from `dudes ticket show`. (#57)
 - Opt in to desktop notifications in Floor settings for tickets ready for review, tickets needing you and agent questions. Keep the Floor tab open; delivery depends on browser permission and the operating system.
 - Open a ticket's recorded checkout with `dudes ticket open <card>`, using `VISUAL`, `EDITOR` or `--editor`. `--print` and `--json` inspect the directory without launching an editor. (#48)
