@@ -888,11 +888,17 @@ fn an_upgrade_carries_open_sign_ins_through_the_operator_door_and_a_plain_restar
     .expect("the operator imports");
     assert_eq!(imported, serde_json::json!({ "restored": 2 }));
     assert!(
-        authorize(&authorizer, &host, &origin, &cookie, &csrf).is_none(),
+        authorizer
+            .authorize_read(&host, &origin, &cookie, &csrf)
+            .is_none(),
         "the old CSRF secret is refused"
     );
     let rotated = recovered_csrf(addr, &host, &origin, &cookie);
-    assert!(authorize(&authorizer, &host, &origin, &cookie, &rotated).is_some());
+    assert!(
+        authorizer
+            .authorize_read(&host, &origin, &cookie, &rotated)
+            .is_some()
+    );
     let protocols = format!("dudes-floor-v3, dudes-csrf.{rotated}");
     let (mut browser, upgrade) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
     assert!(upgrade.starts_with("HTTP/1.1 101 "), "{upgrade:?}");
@@ -923,14 +929,4 @@ fn an_upgrade_carries_open_sign_ins_through_the_operator_door_and_a_plain_restar
         assert_empty_refusal(&raw_recover(addr, &host, Some(&origin), Some(carried)));
     }
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
-
-fn authorize(
-    authorizer: &duded::floor_session::FloorSessionAuthorizer,
-    host: &str,
-    origin: &str,
-    cookie: &str,
-    csrf: &str,
-) -> Option<duded::floor_session::ReadOnlySession> {
-    authorizer.authorize_read(host, origin, cookie, csrf)
 }
