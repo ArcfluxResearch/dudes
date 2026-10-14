@@ -1194,6 +1194,66 @@ mod tests {
         assert_eq!(mapped.discovery.validate(), Ok(()));
     }
 
+    fn engine_participant(
+        adapter: &dyn dudes_providers::adapter::Adapter,
+    ) -> InstructionParticipant {
+        use dudes_providers::adapter::AgentCtx;
+        use dudes_types::{Mode, ModelSelection};
+        let env = [dudes_types::EnvVar::new("HOME", "/home/operator")];
+        let ctx = AgentCtx {
+            agent: agent(),
+            cwd: Path::new(FOLDER),
+            agent_dir: Path::new("/state/agents/owner"),
+            daemon_env: &env,
+            sandbox: None,
+            trusted: true,
+            max_turns: None,
+            max_budget: None,
+            mcp_servers: &[],
+        };
+        let declaration =
+            adapter.instruction_manifest(&ctx, Mode::Managed, &ModelSelection::provider_default());
+        let evidence = evidence();
+        let mut facts = facts(&evidence);
+        facts.project_context = ProjectInstructionContext::Shared;
+        facts.daemon_configuration_digest = None;
+        instruction_participant(agent(), adapter.provider(), &declaration, &facts)
+    }
+
+    #[test]
+    fn every_gap_a_stock_engine_declaration_carries_is_a_standing_limit() {
+        use dudes_providers::{
+            claude::ClaudeAdapter, claude::config::ClaudeConfig, codex::CodexAdapter,
+            codex::config::CodexConfig, pi::PiAdapter,
+        };
+        let adapters: [Box<dyn dudes_providers::adapter::Adapter>; 3] = [
+            Box::new(ClaudeAdapter::new(ClaudeConfig::default())),
+            Box::new(CodexAdapter::new(CodexConfig::default())),
+            Box::new(PiAdapter::default()),
+        ];
+        for adapter in adapters {
+            let participant = engine_participant(adapter.as_ref());
+            let comparison = dudes_proto::instruction::InstructionComparison {
+                changes: Vec::new(),
+                gaps: participant.discovery.gaps.clone(),
+                usage: dudes_proto::InstructionSampleUsage::default(),
+            };
+            let holding: Vec<_> = comparison.gaps.iter().filter(|gap| gap.holds()).collect();
+            assert!(
+                holding.is_empty(),
+                "{:?} declaration leaves gaps that hold: {holding:?}",
+                adapter.provider()
+            );
+            assert!(!comparison.has_shared_gaps());
+            let note = dudes_proto::TicketCoverageNote::from_comparison(
+                &comparison,
+                Some(adapter.provider()),
+            )
+            .expect("a stock declaration always carries standing limits");
+            assert!(note.saw_no_change);
+        }
+    }
+
     #[test]
     fn metadata_overflow_keeps_a_known_rule_and_a_bounded_honest_gap() {
         let mut inputs = vec![input(

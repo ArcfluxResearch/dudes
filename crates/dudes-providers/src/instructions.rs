@@ -1562,6 +1562,36 @@ mod tests {
     }
 
     #[test]
+    fn project_engine_settings_files_are_fingerprinted_inputs() {
+        let supplied = [EnvVar::new("HOME", "/home/operator")];
+        let settings = |manifest: &InstructionDeclaration, files: &[&str]| {
+            manifest.inputs.iter().any(|input| {
+                matches!(input.root, InstructionRoot::ExecutionDirectory(_))
+                    && input.activation == Activation::Active
+                    && matches!(&input.rule,
+                        DiscoveryRule::FixedCandidates { names: found, .. }
+                        | DiscoveryRule::AncestorCandidates { names: found, .. }
+                        if found == &names(files))
+            })
+        };
+        let claude = declaration(
+            &ClaudeAdapter::default(),
+            &ctx(&supplied, true),
+            Mode::Managed,
+        );
+        assert!(settings(
+            &claude,
+            &[".claude/settings.json", ".claude/settings.local.json"]
+        ));
+        let codex = declaration(
+            &CodexAdapter::default(),
+            &ctx(&supplied, true),
+            Mode::Managed,
+        );
+        assert!(settings(&codex, &[".codex/config.toml"]));
+    }
+
+    #[test]
     fn pi_retains_all_five_priority_names_and_global_system_candidates() {
         let supplied = [EnvVar::new("PI_CODING_AGENT_DIR", "profiles/pi")];
         let manifest = declaration(&PiAdapter::default(), &ctx(&supplied, true), Mode::Managed);

@@ -1170,6 +1170,43 @@ impl TicketCoverageNote {
         })
     }
 
+    /// The note in plain words for the operator, without a trailing newline.
+    #[must_use]
+    pub fn sentence(&self) -> String {
+        let engine = match self.provider {
+            Some(Provider::Codex) => "Codex",
+            Some(Provider::Claude) => "Claude",
+            Some(Provider::Pi) => "Pi",
+            _ => "the engine",
+        };
+        let mut phrases: Vec<&str> = Vec::new();
+        for limit in &self.limits {
+            let phrase = match limit {
+                InstructionGapKind::ConfigurationUnknown => "settings in its home folder",
+                InstructionGapKind::FallbackUnknown => "fallback file names",
+                InstructionGapKind::RootMarkerUnknown => "root markers",
+                InstructionGapKind::PluginUnknown => "plugins",
+                InstructionGapKind::PolicyUnknown => "managed policy",
+                _ => continue,
+            };
+            if !phrases.contains(&phrase) {
+                phrases.push(phrase);
+            }
+        }
+        let last = phrases.pop();
+        let list = match last {
+            Some(last) if phrases.is_empty() => last.to_owned(),
+            Some(last) => format!("{} or {last}", phrases.join(", ")),
+            None => "some of its own inputs".to_owned(),
+        };
+        let mut sentence = format!("Dudes cannot see {engine}'s {list}.");
+        if self.saw_no_change {
+            sentence
+                .push_str(" It saw no change to the instruction and settings files it can read.");
+        }
+        sentence
+    }
+
     /// Fold a later interval of the same ticket into this note.
     pub fn merge(&mut self, other: Self) {
         self.provider = other.provider.or(self.provider);

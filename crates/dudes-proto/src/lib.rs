@@ -60,7 +60,6 @@ pub use git::{
 };
 pub use goal::{CheckBaseline, CheckBaselineKind, CompletionCheckRef, Evidence, Goal, Predicate};
 pub use instruction::{
-    TicketCoverageNote,
     InstructionAcceptCompletion, InstructionActivation, InstructionAncestorStop,
     InstructionBaselineRef, InstructionBootIdentity, InstructionBoundaryAbsenceProof,
     InstructionCandidate, InstructionChangedPath, InstructionComparison, InstructionCondition,
@@ -80,7 +79,7 @@ pub use instruction::{
     MAX_INSTRUCTION_DESCENDANTS, MAX_INSTRUCTION_IMPORT_EDGES, MAX_INSTRUCTION_INPUTS,
     MAX_INSTRUCTION_METADATA_BYTES, MAX_INSTRUCTION_PARTICIPANTS, MAX_INSTRUCTION_PATH_BYTES,
     MAX_INSTRUCTION_SOURCE_BYTES, MAX_INSTRUCTION_SYMLINK_HOPS, NativeInstructionPath,
-    validate_instruction_record,
+    TicketCoverageNote, validate_instruction_record,
 };
 pub use mail_wake::{
     MailRef, MailWakeAdmission, MailWakeDecision, MailWakeDigest, MailWakeDigestDomain,

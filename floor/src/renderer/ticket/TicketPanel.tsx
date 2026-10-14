@@ -22,7 +22,7 @@ import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
 import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, reasonSentence, stateName } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
-import { instructionContextText } from './instructions.ts';
+import { coverageText, instructionContextText } from './instructions.ts';
 import type { InstructionReview } from './instructions.ts';
 
 const TRUNCATED_LABEL: Readonly<Record<TruncatedTicketField, string>> = Object.freeze({
@@ -327,6 +327,8 @@ export function TicketPanel({ floor, card, onHire }: {
       <button type="button" className="ticket-look" disabled={detail.phase === 'loading'}
         onClick={() => { void loadDetail(card); }}>Read again</button>
     </div> : null}
+    {card.status === 'review' && loaded?.instruction_review == null && loaded?.coverage != null
+      ? <section aria-label="What Dudes could not see"><h4>What Dudes could not see</h4><p>{coverageText(loaded.coverage)}</p></section> : null}
     {card.status === 'review' ? <ChangedFiles floor={floor} card={card} /> : null}
     {loaded?.result == null ? null : <section aria-label="Check result"><h4>Check result</h4>
       <p>{loaded.result.pass ? 'The check passed' : 'The check failed'}

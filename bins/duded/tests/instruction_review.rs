@@ -276,6 +276,22 @@ fn start_review_daemon(
     (running, gate)
 }
 
+fn hire_one(running: &common::Running, project: &std::path::Path) -> dudes_types::AgentId {
+    match running
+        .handle
+        .ask(duded::ports::Ask::Hire(Box::new(
+            dudes_proto::rpc::agent::HireParams {
+                trusted: true,
+                ..common::hire_params(project)
+            },
+        )))
+        .unwrap()
+    {
+        duded::ports::Answered::Hired(result) => result.agent,
+        other => panic!("unexpected hire answer: {other:?}"),
+    }
+}
+
 fn hire_shared_peers(running: &common::Running, project: &std::path::Path) -> dudes_types::AgentId {
     let hire = || match running
         .handle
@@ -633,4 +649,129 @@ fn healthy_unpaused_work_continues_through_ordinary_admission_after_review() {
 #[test]
 fn acknowledgment_waits_for_an_inflight_observed_completion_check() {
     managed_review(true, Completion::Fails, false, true);
+}
+
+/// One agent alone in a shared project, with a passing check. `edited` names a project file the
+/// stand-in rewrites while the ticket runs.
+fn lone_claude_ticket(edited: Option<&str>) {
+    let fixture = common::Fixture::new();
+    let project = fixture.state.path().join("project");
+    let work = fixture.state.path().join("child");
+    let home = fixture.state.path().join("owned-home");
+    for path in [&project, &work, &home] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let project = project.canonicalize().unwrap();
+    std::fs::write(project.join("CLAUDE.md"), "initial project instruction\n").unwrap();
+    let target = edited.map(|name| project.join(name));
+    if let Some(target) = &target {
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, "{}\n").unwrap();
+    }
+    let sampled = target.clone().unwrap_or_else(|| project.join("CLAUDE.md"));
+    let command = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/two-roles/bin/claude")
+        .canonicalize()
+        .unwrap();
+    let settings = owned_settings(&fixture, &project, &work, &home, true, false);
+    let (mut running, _) = start_review_daemon(&settings, command, true, false);
+    let agent = hire_one(&running, &project);
+    let mut socket = Client::connect(settings.socket()).unwrap();
+    let credential = || {
+        OperatorCredential::new(
+            std::fs::read_to_string(
+                settings
+                    .runtime_dir
+                    .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let mut call = |method, params| {
+        socket
+            .call_as_operator(method, Some(params), credential())
+            .unwrap()
+    };
+    let (card, turn) = start_ticket(&fixture, &mut call, agent);
+    let started_lsn = assert_sampled_start(&fixture, turn, &sampled);
+    if let Some(target) = &target {
+        std::fs::write(target, "{\"changed\":true}\n").unwrap();
+    }
+    std::fs::write(work.join("release.1"), "").unwrap();
+    assert_finished_boundary(&fixture, turn, started_lsn);
+    let wanted = if target.is_some() {
+        CardStatus::Blocked
+    } else {
+        CardStatus::Review
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let read = loop {
+        let read: TicketReadResult =
+            serde_json::from_value(success(call(Method::TicketRead, json!({"card":card}))))
+                .unwrap();
+        let settled = fixture.records().iter().any(|record| {
+            matches!(record, Record::InstructionObservationFinished { owner: dudes_proto::InstructionObservationOwner::Managed { turn: observed, .. }, .. } if *observed == turn)
+        }) && read.card.status == wanted;
+        if settled {
+            break read;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the ticket settles in {wanted:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    if let Some(target) = &target {
+        assert_eq!(
+            read.ticket.reason,
+            Some(TicketReason::SharedInstructionsChanged)
+        );
+        let review = read.ticket.instruction_review.as_ref().unwrap();
+        assert!(
+            review
+                .changed_paths
+                .iter()
+                .any(|path| path.path.to_path().ok().as_deref() == Some(target.as_path()))
+        );
+    } else {
+        assert_eq!(read.ticket.reason, None);
+        assert!(read.ticket.instruction_review.is_none());
+        let note = read
+            .ticket
+            .coverage
+            .as_ref()
+            .expect("the standing limits are listed");
+        assert_eq!(note.provider, Some(dudes_types::Provider::Claude));
+        assert!(note.saw_no_change);
+        for kind in [
+            dudes_proto::InstructionGapKind::ConfigurationUnknown,
+            dudes_proto::InstructionGapKind::PluginUnknown,
+            dudes_proto::InstructionGapKind::PolicyUnknown,
+        ] {
+            assert!(note.limits.contains(&kind), "{kind:?} is listed");
+        }
+        let accepted = call(
+            Method::TicketAccept,
+            json!({"card":card,"expected_seq":read.card.seq}),
+        );
+        assert!(accepted.error.is_none(), "{:?}", accepted.error);
+    }
+    drop(socket);
+    running.stop(duded::ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn a_lone_claude_ticket_with_a_passing_check_reaches_ready_with_its_standing_limits() {
+    lone_claude_ticket(None);
+}
+
+#[test]
+fn editing_claudes_project_settings_holds_the_ticket() {
+    lone_claude_ticket(Some(".claude/settings.json"));
+}
+
+#[test]
+fn editing_claudes_local_project_settings_holds_the_ticket() {
+    lone_claude_ticket(Some(".claude/settings.local.json"));
 }

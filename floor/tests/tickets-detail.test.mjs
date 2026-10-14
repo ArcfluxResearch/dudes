@@ -147,7 +147,7 @@ test('a ticket in Needs you shows its sentence, and a queued one the daemon\'s o
 test('the decoder keeps exactly the daemon\'s members and refuses the rest', async () => {
   const decode = (value, card = NEW) => detail.decodeDetail(value, card);
   assert.deepEqual(decode(reply()), {
-    instruction_review: null, truncated: [], note: 'Fix the flaky test', project: 'service', check: { id: 'default', label: 'default passes' }, round: 1, reason: null,
+    instruction_review: null, coverage: null, truncated: [], note: 'Fix the flaky test', project: 'service', check: { id: 'default', label: 'default passes' }, round: 1, reason: null,
     summary: 'I fixed the test.', result: { pass: true, exit: 0, at: 1_787_394_600_000 }, position: null, waiting: null,
   });
   assert.equal(decode(reply(), cardId(2)), null, 'another ticket\'s reply');
@@ -163,6 +163,37 @@ test('the decoder keeps exactly the daemon\'s members and refuses the rest', asy
     assert.equal(decode(reply(fields)), null, what);
   }
   assert.equal(decode({ state: 'ok', card: { id: NEW } }), null);
+});
+
+test('a ready ticket names what Dudes could not see, and a held one does not', async () => {
+  const coverage = { provider: 'codex', limits: ['configuration_unknown', 'fallback_unknown', 'root_marker_unknown'], saw_no_change: true };
+  await open({ coverage });
+  const html = panel();
+  assert.match(html, /<h4>What Dudes could not see<\/h4><p>Dudes cannot see Codex&#x27;s settings in its home folder, fallback file names or root markers\. It saw no change to the instruction and settings files it can read\.<\/p>/);
+  detail.resetDetail();
+  store.resetFloorStore();
+  await open({ coverage: { ...coverage, provider: 'claude', limits: ['plugin_unknown'], saw_no_change: false } });
+  const claude = panel();
+  assert.match(claude, /Dudes cannot see Claude&#x27;s plugins\./);
+  assert.ok(!/saw no change/.test(claude), 'no reassurance when the run met a limit of its own');
+  detail.resetDetail();
+  store.resetFloorStore();
+  await open({ coverage }, { status: 'blocked' });
+  assert.ok(!/What Dudes could not see/.test(panel()), 'Needs you keeps its own reasons');
+});
+
+test('the decoder refuses a coverage note it does not know', () => {
+  const decode = (coverage) => detail.decodeDetail(reply({ coverage }), NEW);
+  assert.ok(decode({ provider: 'pi', limits: ['configuration_unknown'], saw_no_change: true }));
+  for (const bad of [
+    { provider: 'pi', limits: [], saw_no_change: true },
+    { provider: 'pi', limits: ['read_failed'], saw_no_change: true },
+    { provider: 'pi', limits: ['plugin_unknown', 'plugin_unknown'], saw_no_change: true },
+    { provider: 'pi', limits: ['plugin_unknown'] },
+    { provider: 7, limits: ['plugin_unknown'], saw_no_change: true },
+  ]) {
+    assert.equal(decode(bad), null);
+  }
 });
 
 test('the changed files come from the Git read, or one plain line says how to turn it on', async () => {

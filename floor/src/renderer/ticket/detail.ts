@@ -14,8 +14,8 @@ import { problemText, readTicket } from './ticket.ts';
 import { WAITS, readable } from './words.ts';
 import type { Wait } from './words.ts';
 
-import { decodeInstructionReview, sameInstructionWatermark } from './instructions.ts';
-import type { InstructionReview, InstructionWatermark } from './instructions.ts';
+import { decodeCoverageNote, decodeInstructionReview, sameInstructionWatermark } from './instructions.ts';
+import type { CoverageNote, InstructionReview, InstructionWatermark } from './instructions.ts';
 
 const UTF8 = new TextEncoder();
 const MAX_NOTE_BYTES = 8_192;
@@ -33,6 +33,7 @@ export type TruncatedTicketField = (typeof TRUNCATED_FIELDS)[number];
 
 export interface TicketDetail {
   readonly instruction_review: InstructionReview | null;
+  readonly coverage: CoverageNote | null;
   readonly truncated: readonly TruncatedTicketField[];
   readonly note: string;
   readonly project: string;
@@ -90,8 +91,10 @@ export function decodeDetail(body: Record<string, unknown>, card: string): Ticke
     || new Set(truncated).size !== truncated.length) return null;
   const review = ticket.instruction_review == null ? null : decodeInstructionReview(ticket.instruction_review);
   if (ticket.instruction_review != null && review === null) return null;
+  const coverage = ticket.coverage == null ? null : decodeCoverageNote(ticket.coverage);
+  if (ticket.coverage != null && coverage === null) return null;
   return Object.freeze({
-    instruction_review: review, truncated: Object.freeze([...truncated]) as readonly TruncatedTicketField[], note: readable(note), project, check: Object.freeze({ id: check.id, label: check.label }), round, reason: why as TicketReason | null,
+    instruction_review: review, coverage, truncated: Object.freeze([...truncated]) as readonly TruncatedTicketField[], note: readable(note), project, check: Object.freeze({ id: check.id, label: check.label }), round, reason: why as TicketReason | null,
     summary: words === null ? null : readable(words), result: outcome, position: place, waiting: wait,
   });
 }

@@ -1594,6 +1594,121 @@ mod tests {
         }
     }
 
+    fn gap_of(
+        origin: crate::instruction::InstructionGapOrigin,
+        reason: InstructionGapKind,
+    ) -> InstructionCoverageGap {
+        InstructionCoverageGap {
+            origin,
+            reason,
+            context: InstructionPathContext::SharedInput {
+                source: crate::instruction::InstructionSharedInput::Profile,
+            },
+            agent: Some(samples::agent()),
+            path: None,
+        }
+    }
+
+    fn finish_ticket(gaps: Vec<InstructionCoverageGap>) -> (InstructionState, InstructionFold) {
+        let mut state = seeded();
+        let issue = InstructionIssueAssociation::Prospective;
+        state
+            .apply(Lsn(4), &stamp(start(issue)), None, hash)
+            .unwrap();
+        for (lsn, kind) in [(5, RecordKind::TurnIssued), (6, RecordKind::TurnEnded)] {
+            state
+                .apply(Lsn(lsn), &stamp(samples::record(kind)), None, hash)
+                .unwrap();
+        }
+        let finished = Record::InstructionObservationFinished {
+            owner: owner(issue),
+            ticket: Some(ticket()),
+            baseline: InstructionBaselineRef::Started { lsn: Lsn(4) },
+            settlement: InstructionSettlement::Compared {
+                end: InstructionEndBoundary::ManagedTurn {
+                    turn: samples::turn(),
+                    end_lsn: Lsn(6),
+                },
+                sampled_at: Timestamp::UNIX_EPOCH,
+                recovery: false,
+                comparison: InstructionComparison {
+                    changes: Vec::new(),
+                    gaps,
+                    usage: crate::InstructionSampleUsage::default(),
+                },
+            },
+        };
+        let folded = state.apply(Lsn(7), &stamp(finished), None, hash).unwrap();
+        (state, folded)
+    }
+
+    #[test]
+    fn standing_engine_limits_annotate_a_passing_ticket_without_holding_it() {
+        use crate::instruction::InstructionGapOrigin::{Declared, Observed};
+        let (state, folded) = finish_ticket(vec![
+            gap_of(Declared, InstructionGapKind::ConfigurationUnknown),
+            gap_of(Declared, InstructionGapKind::FallbackUnknown),
+        ]);
+        assert!(!state.pending_for_goal(samples::goal()));
+        assert_eq!(state.ticket_reason(samples::card()), None);
+        assert_eq!(state.review(samples::card(), hash).unwrap(), None);
+        let (card, note) = folded.coverage_note.expect("the standing limits are noted");
+        assert_eq!(card, samples::card());
+        assert!(note.saw_no_change);
+        assert_eq!(
+            note.limits,
+            [
+                InstructionGapKind::ConfigurationUnknown,
+                InstructionGapKind::FallbackUnknown
+            ]
+        );
+
+        let (state, folded) = finish_ticket(vec![
+            gap_of(Declared, InstructionGapKind::ConfigurationUnknown),
+            gap_of(Observed, InstructionGapKind::ConfigurationUnknown),
+        ]);
+        assert!(
+            state.pending_for_goal(samples::goal()),
+            "an observed gap equal to a declared one except for origin still holds"
+        );
+        assert_eq!(
+            state.ticket_reason(samples::card()),
+            Some(TicketReason::SharedInstructionsUnknown)
+        );
+        assert!(folded.coverage_note.is_none());
+    }
+
+    #[test]
+    fn a_gap_record_without_an_origin_reads_as_observed_and_holds() {
+        let gap: InstructionCoverageGap = serde_json::from_value(serde_json::json!({
+            "reason": "configuration_unknown",
+            "context": {"kind": "unresolved"},
+            "agent": null,
+            "path": null,
+        }))
+        .unwrap();
+        assert_eq!(
+            gap.origin,
+            crate::instruction::InstructionGapOrigin::Observed
+        );
+        let (state, _) = finish_ticket(vec![gap]);
+        assert!(state.pending_for_goal(samples::goal()));
+    }
+
+    #[test]
+    fn a_note_leaves_out_the_unchanged_sentence_when_the_run_found_its_own_gap() {
+        use crate::instruction::InstructionGapOrigin::{Declared, Observed};
+        let mut local = gap_of(Observed, InstructionGapKind::ReadFailed);
+        local.context = InstructionPathContext::UnsharedProject;
+        let (_, folded) = finish_ticket(vec![
+            gap_of(Declared, InstructionGapKind::PluginUnknown),
+            local,
+        ]);
+        let (_, note) = folded.coverage_note.expect("noted");
+        assert!(!note.saw_no_change);
+        assert!(!note.sentence().contains("saw no change"));
+    }
+
     #[test]
     fn running_baseline_does_not_hold_work_but_an_ended_comparison_does() {
         let mut state = seeded();
