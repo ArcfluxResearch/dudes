@@ -32,6 +32,7 @@ import { getFloorState } from '../floor/store.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { mintAttemptId } from '../onboarding/hire.ts';
 import type { AgentRow } from '../scene/cast.ts';
+import { floorFetch } from '../../transport.ts';
 
 export type ControlVerb = 'pause' | 'resume';
 
@@ -191,7 +192,7 @@ export interface ControlDeps {
 }
 
 export const browserControlDeps: ControlDeps = {
-  fetch: (url, init) => window.fetch(url, init),
+  fetch: floorFetch,
   csrf: () => currentFloorSession()?.csrf ?? null,
   random: (bytes) => {
     crypto.getRandomValues(bytes);

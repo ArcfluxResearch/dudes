@@ -210,7 +210,10 @@ test('the entry point opens one stream or surfaces the closed phase', async () =
   // A fresh link pasted into the open tab is exchanged in place and handed to
   // the one stream; nothing reloads the page to take it.
   assert.equal([...main.matchAll(/addEventListener\(/g)].length, 1);
-  assert.match(main, /window\.addEventListener\('hashchange', \(\) => \{\s*void takePastedLink\(reauthenticateFloorSession, BROWSER\);/);
+  assert.match(
+    main,
+    /window\.addEventListener\('hashchange', \(\) => \{\s*(?:\/\/[^\n]*\n\s*)?if \(floorRequestsPaused\(\)\) return;\s*void takePastedLink\(reauthenticateFloorSession, BROWSER\);/,
+  );
   assert.match(main, /const BROWSER: StreamPorts = \{ location: window\.location, socket: browserSocket \};/);
   assert.match(entry, /if \(session === null\) return;\s*try \{\s*connect\(session, ports\);\s*\} catch \{/);
   assert.match(entry,

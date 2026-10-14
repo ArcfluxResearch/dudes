@@ -29,6 +29,7 @@ import { ClosingTimeBanner } from './renderer/ClosingTimeBanner';
 import { TicketBanner } from './renderer/ticket/TicketBanner';
 import { useDesktopNotifications } from './renderer/useDesktopNotifications';
 import { requestCardSelection } from './renderer/BoardPanel';
+import { SignInExpired } from './renderer/SignInExpired';
 import { StreamNotice } from './renderer/StreamNotice';
 import './failure.css';
 import {
@@ -67,14 +68,7 @@ export function PastedLinkNotice() {
       </p>
     );
   }
-  if (first === 'expired') {
-    return (
-      <p className="link-refused" role="alert">
-        This sign-in has expired. Run <code>dudes floor open</code> for a new link. Each link works once, in one
-        browser.
-      </p>
-    );
-  }
+  if (first === 'expired') return <SignInExpired />;
   if (!refused) return null;
   if (buildMismatch) {
     return (

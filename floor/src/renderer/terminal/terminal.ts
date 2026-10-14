@@ -20,6 +20,7 @@
 import type { FloorState } from '../floor/store.ts';
 import { CSRF_PROTOCOL_PREFIX } from '../floor/stream.ts';
 import type { CloseLike, LocationLike, MessageLike, SocketFactory, SocketLike } from '../floor/stream.ts';
+import { floorRequestsPaused } from '../../transport.ts';
 import { ATTEMPT_ID } from '../onboarding/hire.ts';
 import type { AgentRow } from '../scene/cast.ts';
 
@@ -199,7 +200,7 @@ export function terminalOffer(floor: FloorState, row: AgentRow | null, channel: 
 export function attachTerminal(agent: string, ports: TerminalPorts): void {
   if (state.phase !== 'idle' && state.phase !== 'ended') return;
   const id = nextId++;
-  const csrf = ports.csrf();
+  const csrf = floorRequestsPaused() ? null : ports.csrf();
   if (csrf === null) {
     commit({ phase: 'ended', id, agent, ending: 'unopened' });
     return;

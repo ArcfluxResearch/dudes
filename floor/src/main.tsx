@@ -6,6 +6,7 @@ import { noteTransport } from './renderer/floor/store';
 import { browserSocket } from './renderer/floor/stream';
 import { LinkRefused, currentFloorSession, establishFloorSession, reauthenticateFloorSession } from './session';
 import { WebFloorShell } from './shell';
+import { floorRequestsPaused } from './transport';
 import './style.css';
 
 /** The browser's own socket, beside the page that authenticated, on the browser's clock. */
@@ -39,6 +40,8 @@ void establishFloorSession()
 // in memory survives the session it was sent under. A link the daemon refuses
 // leaves the page as it was, and the page says so.
 window.addEventListener('hashchange', () => {
+  // A page waiting for a reload leaves the link in its address, so the reload takes it.
+  if (floorRequestsPaused()) return;
   void takePastedLink(reauthenticateFloorSession, BROWSER);
 });
 

@@ -37,6 +37,7 @@ import { HIRE_ENGINES, isHireEngine } from './catalog.ts';
 import type { EnrolledWorkspace, HireEngine, OnboardingCatalog } from './catalog.ts';
 import { checkRefusalText, checksFor, isCheckRefusal } from './checks.ts';
 import type { CheckCatalog, CheckRefusal, EnrolledCheck } from './checks.ts';
+import { floorFetch } from '../../transport.ts';
 
 export type SectionKey = 'identity' | 'workspace' | 'engine' | 'briefing';
 
@@ -199,7 +200,7 @@ export interface HireDeps {
 }
 
 export const browserHireDeps: HireDeps = {
-  fetch: (url, init) => window.fetch(url, init),
+  fetch: floorFetch,
   csrf: () => currentFloorSession()?.csrf ?? null,
   random: (bytes) => {
     crypto.getRandomValues(bytes);
