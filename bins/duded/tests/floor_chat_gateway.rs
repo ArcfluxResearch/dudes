@@ -1350,6 +1350,45 @@ fn conversation_no_result_before_confirmation_requires_exact_context_reset() {
     conversation_context_loss_after(dudes_proto::TurnOutcome::NoResult);
 }
 
+fn await_conversation_end_comparison(
+    fixture: &Fixture,
+    agent: dudes_types::AgentId,
+    turn: dudes_types::TurnId,
+) {
+    let end_lsn = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| match entry.record {
+            Record::TurnEnded {
+                agent: ended,
+                turn: seen,
+                ..
+            } if ended == agent && seen == turn => Some(lsn),
+            _ => None,
+        })
+        .expect("the exact conversation turn ended");
+    fixture.await_record("the exact conversation end comparison", |record| {
+        matches!(record, Record::InstructionObservationFinished {
+            owner: dudes_proto::InstructionObservationOwner::Managed {
+                agent: owner, turn: observed, ..
+            },
+            settlement:
+                dudes_proto::InstructionSettlement::Compared {
+                    end: dudes_proto::InstructionEndBoundary::ManagedTurn {
+                        turn: ended, end_lsn: seen
+                    }, ..
+                }
+                | dudes_proto::InstructionSettlement::Unknown {
+                    end: Some(dudes_proto::InstructionEndBoundary::ManagedTurn {
+                        turn: ended, end_lsn: seen
+                    }), ..
+                },
+            ..
+        } if *owner == agent && *observed == turn && *ended == turn && *seen == end_lsn)
+        .then_some(())
+    });
+}
+
 fn conversation_context_loss_after(outcome: dudes_proto::TurnOutcome) {
     let fixture = Fixture::new();
     let (_, mut running, browser) = start(&fixture);
@@ -1375,6 +1414,8 @@ fn conversation_context_loss_after(outcome: dudes_proto::TurnOutcome) {
     let old_queue = conversation_request(&browser, agent, 2, "queued before loss");
     assert_eq!(old_queue.0, 200);
     end_conversation(&browser, &fixture, second, outcome);
+    await_conversation_end_comparison(&fixture, agent, second);
+    running.handle.doctor().unwrap();
     assert_eq!(
         conversation_request(&browser, agent, 1, "second"),
         second_receipt

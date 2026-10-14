@@ -688,6 +688,8 @@ fn snapshot_precedes_live_deltas() {
     }
 
     wait_for_live(&probe, 0);
+    closing_participant_spawned(&fixture, goal);
+    running.handle.doctor().unwrap();
     let before_unlisted = fixture.entries();
     let mut unlisted = WebSocket::connect(addr, &cookie, &csrf);
     unlisted.send(r#"{"type":"floor.write"}"#);
