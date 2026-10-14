@@ -277,7 +277,7 @@ test('each away state says its one thing, in words', async () => {
   away.resetAway();
   const timers = manualTimers();
   away.beginAway({ fetchIndex: async () => null, ownRefs: OWN }, timers);
-  while (away.getAway().kind === 'watching') await timers.step(AWAY_POLL_MS);
+  for (let looks = 0; away.getAway().kind === 'watching' && looks < 400; looks += 1) await timers.step(AWAY_POLL_MS);
   assert.equal(
     text(),
     'This sign-in has expired. Run dudes floor open for a new link. Each link works once, in one browser.',
