@@ -3,34 +3,21 @@
 //!
 //! The installer step is replaced by writing a second Floor bundle beside the daemon, which is all
 //! the installer changes that the Floor can see. Everything from the export to the import is the
-//! shipped code, driven against two real daemon runs.
+//! shipped code, run against two real daemon runs.
+#![cfg(unix)]
 
-use std::io::Read as _;
+use std::ffi::OsString;
+use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use dudes_proto::rpc::Method;
-use dudes_proto::rpc::floor::SessionIssueResult;
+use dudes::Environment;
 use sha2::{Digest as _, Sha256};
 
-use super::*;
-use crate::env::Environment;
-use crate::run::Lifecycle;
-
-struct NoRunner;
-
-impl Runner for NoRunner {
-    fn run(&self, _: &Path, _: &[OsString], _: &[EnvVar], _: Duration) -> std::io::Result<Output> {
-        Err(std::io::Error::other("the restart runs no installer"))
-    }
-}
-
 fn built_daemon() -> PathBuf {
-    let mut daemon = std::env::current_exe().expect("the test executable");
-    daemon.pop();
-    daemon.pop();
-    daemon.push(format!("duded{}", std::env::consts::EXE_SUFFIX));
+    let mut daemon = PathBuf::from(env!("CARGO_BIN_EXE_dudes"));
+    daemon.set_file_name("duded");
     assert!(
         daemon.is_file(),
         "{} is absent; run `cargo build -p duded --locked` before the filtered nextest command",
@@ -91,13 +78,13 @@ fn write_bundle(dir: &Path, tag: &str) {
     .expect("the manifest file");
 }
 
-fn http(origin: &str, request: &str, body: &str) -> (String, String) {
+fn http(origin: &str, request_line: &str, extra: &str, body: &str) -> (String, String) {
     let mut stream = TcpStream::connect(origin).expect("the Floor listener");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("a read timeout");
     let request = format!(
-        "{request} HTTP/1.1\r\nHost: {origin}\r\nOrigin: http://{origin}\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "{request_line} HTTP/1.1\r\nHost: {origin}\r\nOrigin: http://{origin}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(request.as_bytes()).expect("the request");
@@ -108,7 +95,7 @@ fn http(origin: &str, request: &str, body: &str) -> (String, String) {
 }
 
 struct Installed {
-    root: tempfile::TempDir,
+    _root: tempfile::TempDir,
     env: Environment,
     floor: PathBuf,
     origin: String,
@@ -120,7 +107,7 @@ impl Installed {
         let root = tempfile::tempdir().expect("a scratch install");
         let bin = root.path().join("bin");
         std::fs::create_dir_all(&bin).expect("the install directory");
-        let daemon = bin.join(format!("duded{}", std::env::consts::EXE_SUFFIX));
+        let daemon = bin.join("duded");
         std::fs::copy(built_daemon(), &daemon).expect("copy duded");
         let floor = bin.join("floor");
         write_bundle(&floor, "aaaaaaaa");
@@ -149,49 +136,58 @@ impl Installed {
                 .map(|(_, value)| value.clone())
         });
         let mut installed = Self {
-            root,
+            _root: root,
             env,
             floor,
             origin: String::new(),
             cookie: String::new(),
         };
-        let version = Lifecycle(&installed.env)
-            .start(&mut Vec::new())
-            .expect("the daemon starts");
-        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+        let (code, out, err) = installed.cli(&["start"]);
+        assert_eq!(code, 0, "{out}{err}");
         installed.sign_in();
         installed
     }
 
-    /// One browser's sign-in, as the Floor page does it: issue a link, exchange its bearer.
-    fn sign_in(&mut self) {
-        let credential = crate::credential::read_operator_credential(
-            self.env.runtime_dir().expect("a runtime directory"),
+    fn cli(&self, words: &[&str]) -> (u8, String, String) {
+        let argv: Vec<OsString> = words.iter().map(OsString::from).collect();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = dudes::run(&argv, &self.env, None, &mut out, &mut err);
+        (
+            code,
+            String::from_utf8(out).expect("text"),
+            String::from_utf8(err).expect("text"),
         )
-        .expect("the credential reads");
-        let mut client = dudes_rpc::LocalClient::connect(self.env.socket().expect("a socket"))
-            .expect("connect to the daemon");
-        let response =
-            crate::call::call_presenting(&mut client, Method::FloorSessionIssue, None, credential)
-                .expect("floor.session.issue is answered");
-        let issued: SessionIssueResult =
-            serde_json::from_value(response.result.expect("an issue result")).expect("typed");
-        issued
-            .base_url
+    }
+
+    /// One browser's sign-in, as the Floor page does it: open a link, exchange its bearer.
+    fn sign_in(&mut self) {
+        let (code, out, err) = self.cli(&["floor", "open"]);
+        assert_eq!(code, 0, "{out}{err}");
+        let link = out.lines().next().expect("a sign-in link");
+        let (address, bearer) = link
+            .split_once("/floor/#bootstrap=")
+            .expect("a bootstrap link");
+        self.origin = address
             .strip_prefix("http://")
-            .expect("a loopback origin")
-            .clone_into(&mut self.origin);
-        let (head, _) = http(&self.origin, "POST /floor/session", &issued.bootstrap);
+            .expect("loopback")
+            .to_owned();
+        let (head, _) = http(
+            &self.origin,
+            "POST /floor/session",
+            "Content-Type: text/plain;charset=UTF-8\r\n",
+            bearer,
+        );
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-        head.lines()
+        self.cookie = head
+            .lines()
             .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
             .and_then(|rest| rest.split(';').next())
             .expect("a session cookie")
-            .clone_into(&mut self.cookie);
+            .to_owned();
     }
 
     fn build(&self) -> String {
-        let (_, manifest) = http(&self.origin, "GET /floor/release-manifest.json", "");
+        let (_, manifest) = http(&self.origin, "GET /floor/release-manifest.json", "", "");
         let manifest: serde_json::Value = serde_json::from_str(&manifest).expect("a manifest");
         manifest["asset_tree_sha256"]
             .as_str()
@@ -200,38 +196,26 @@ impl Installed {
     }
 
     fn recovers(&self) -> bool {
-        let request = format!(
-            "POST /floor/session/recover HTTP/1.1\r\nHost: {origin}\r\nOrigin: http://{origin}\r\nCookie: dudes_floor_session={cookie}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            origin = self.origin,
-            cookie = self.cookie
+        let (head, _) = http(
+            &self.origin,
+            "POST /floor/session/recover",
+            &format!("Cookie: dudes_floor_session={}\r\n", self.cookie),
+            "",
         );
-        let mut stream = TcpStream::connect(&self.origin).expect("the Floor listener");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("a read timeout");
-        stream.write_all(request.as_bytes()).expect("the request");
-        let mut response = String::new();
-        let _ = stream.read_to_string(&mut response);
-        response.starts_with("HTTP/1.1 200 OK")
+        head.starts_with("HTTP/1.1 200 OK")
     }
 
-    fn inputs(&self) -> Inputs {
-        Inputs {
-            windows: false,
-            current: "0.86.0".to_owned(),
-            executable: self.root.path().join("bin/dudes"),
-            temp_dir: self.root.path().to_path_buf(),
-            child_env: Vec::new(),
-            state_dir: self.root.path().join("state"),
-            lock_wait: Duration::from_secs(10),
-            daemon_override: None,
-        }
+    fn plain_restart(&self) {
+        let (code, out, err) = self.cli(&["stop"]);
+        assert_eq!(code, 0, "{out}{err}");
+        let (code, out, err) = self.cli(&["start"]);
+        assert_eq!(code, 0, "{out}{err}");
     }
 }
 
 impl Drop for Installed {
     fn drop(&mut self) {
-        let _ = Lifecycle(&self.env).stop(&mut Vec::new(), &mut Vec::new());
+        let _ = self.cli(&["stop", "--hard"]);
     }
 }
 
@@ -239,31 +223,21 @@ impl Drop for Installed {
 fn an_upgrade_keeps_the_open_sign_in_and_a_plain_restart_does_not() {
     let installed = Installed::start();
     let before = installed.build();
-    assert!(!installed.cookie.is_empty());
+    assert!(
+        installed.recovers(),
+        "control: the sign-in works before the upgrade"
+    );
 
     write_bundle(&installed.floor, "bbbbbbbb");
-    let inputs = installed.inputs();
-    let daemon = Lifecycle(&installed.env);
-    let context = Context {
-        inputs: &inputs,
-        runner: &NoRunner,
-        daemon: &daemon,
-    };
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    let code = restart(
-        &context,
+    let code = dudes::run::upgrade_restart_for_test(
+        &installed.env,
         env!("CARGO_PKG_VERSION"),
-        &installed.root.path().join("prefix"),
-        true,
         &mut out,
         &mut err,
     );
     let out = String::from_utf8(out).expect("text");
-    assert!(
-        code.is_ok(),
-        "{code:?}\n{out}\n{}",
-        String::from_utf8_lossy(&err)
-    );
+    assert_eq!(code, Ok(0), "{out}\n{}", String::from_utf8_lossy(&err));
     assert!(
         out.ends_with("Kept 1 of 1 Floor sign-ins. Reload an open Floor tab to continue.\n"),
         "{out}"
@@ -278,14 +252,7 @@ fn an_upgrade_keeps_the_open_sign_in_and_a_plain_restart_does_not() {
         "the sign-in from before the upgrade reaches the new run"
     );
 
-    let _ = Lifecycle(&installed.env).stop(&mut Vec::new(), &mut Vec::new());
-    assert!(lifecycle::wait_for_unlock(
-        &inputs.state_dir,
-        inputs.lock_wait
-    ));
-    Lifecycle(&installed.env)
-        .start(&mut Vec::new())
-        .expect("a plain start");
+    installed.plain_restart();
     assert!(
         !installed.recovers(),
         "a plain stop and start signs the browser out"
@@ -293,25 +260,19 @@ fn an_upgrade_keeps_the_open_sign_in_and_a_plain_restart_does_not() {
 }
 
 #[test]
-fn an_upgrade_that_dies_between_the_stop_and_the_import_restores_nothing() {
-    let installed = Installed::start();
-    let daemon = Lifecycle(&installed.env);
-    let exported = daemon.export_sign_ins().expect("the operator exports");
-    assert_eq!(exported.sessions.len(), 1);
-    daemon.stop(&mut Vec::new(), &mut Vec::new()).expect("stop");
-    assert!(lifecycle::wait_for_unlock(
-        &installed.root.path().join("state"),
-        Duration::from_secs(10)
-    ));
-    daemon.start(&mut Vec::new()).expect("start");
-    assert!(
-        !installed.recovers(),
-        "an export that was never imported signs nobody back in"
+fn a_restart_with_no_open_sign_in_says_nothing_about_sign_ins() {
+    let mut installed = Installed::start();
+    installed.plain_restart();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = dudes::run::upgrade_restart_for_test(
+        &installed.env,
+        env!("CARGO_PKG_VERSION"),
+        &mut out,
+        &mut err,
     );
-    assert_eq!(
-        daemon.import_sign_ins(&exported),
-        Ok(1),
-        "control: the same export does restore when it is imported"
-    );
+    let out = String::from_utf8(out).expect("text");
+    assert_eq!(code, Ok(0), "{out}");
+    assert!(!out.contains("sign-in"), "{out}");
+    installed.sign_in();
     assert!(installed.recovers());
 }

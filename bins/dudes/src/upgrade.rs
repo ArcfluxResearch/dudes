@@ -544,8 +544,45 @@ fn sign_in_report(daemon: &dyn Restart, exported: Result<SessionExport, String>)
     })
 }
 
+/// The restart half of `dudes upgrade` against the daemon `daemon` reaches, for the tests that run
+/// it against a real daemon. It installs nothing: the caller has already put the new files where
+/// the daemon looks for them.
+pub(crate) fn restart_only(
+    daemon: &dyn Restart,
+    state_dir: &Path,
+    latest: &str,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<u8, String> {
+    struct NoRunner;
+    impl Runner for NoRunner {
+        fn run(
+            &self,
+            _: &Path,
+            _: &[OsString],
+            _: &[EnvVar],
+            _: Duration,
+        ) -> std::io::Result<Output> {
+            Err(std::io::Error::other("the restart runs no installer"))
+        }
+    }
+    let inputs = Inputs {
+        windows: false,
+        current: String::new(),
+        executable: PathBuf::new(),
+        temp_dir: PathBuf::new(),
+        child_env: Vec::new(),
+        state_dir: state_dir.to_path_buf(),
+        lock_wait: Duration::from_secs(10),
+        daemon_override: None,
+    };
+    let context = Context {
+        inputs: &inputs,
+        runner: &NoRunner,
+        daemon,
+    };
+    restart(&context, latest, Path::new("/"), true, out, err)
+}
+
 #[cfg(test)]
 mod tests;
-
-#[cfg(all(test, unix))]
-mod real_daemon;

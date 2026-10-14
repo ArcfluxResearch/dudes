@@ -248,6 +248,24 @@ fn upgrade_command(
     ))
 }
 
+/// The restart half of `dudes upgrade` against the real daemon `env` names. It installs nothing: the
+/// caller has already put the new release's files where the daemon looks for them. For the tests that
+/// run an upgrade against a real daemon, which is why it is not documented.
+///
+/// # Errors
+///
+/// The upgrade's own failure message.
+#[doc(hidden)]
+pub fn upgrade_restart_for_test(
+    env: &Environment,
+    latest: &str,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<u8, String> {
+    let state_dir = env.state_dir().map_err(|missing| missing.to_string())?;
+    crate::upgrade::restart_only(&Lifecycle(env), state_dir, latest, out, err)
+}
+
 struct SystemRunner;
 
 impl crate::upgrade::Runner for SystemRunner {
@@ -291,7 +309,7 @@ impl crate::upgrade::Restart for Lifecycle<'_> {
 
 /// The daemon `uninstall` and `upgrade` ask, through the same calls `dudes stop` and
 /// `dudes worktree list` make.
-pub(crate) struct Lifecycle<'a>(pub(crate) &'a Environment);
+struct Lifecycle<'a>(&'a Environment);
 
 impl crate::lifecycle::Daemon for Lifecycle<'_> {
     fn running(&self) -> bool {
