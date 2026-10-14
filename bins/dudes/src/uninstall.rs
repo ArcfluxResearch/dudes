@@ -835,7 +835,7 @@ fn uninstall(
     } else {
         Vec::new()
     };
-    let found = trees(&layout.state_dir, listed);
+    let found = trees(&layout.state_dir, listed.clone());
     if !found.is_empty() {
         writeln!(out).map_err(io)?;
         refuse_worktrees(&found, err).map_err(io)?;
@@ -845,6 +845,7 @@ fn uninstall(
         writeln!(out, "\nThis was a dry run. Nothing was deleted.").map_err(io)?;
         return Ok(exit::SUCCESS);
     }
+    let listed_before = listed;
     if let Some(code) = confirm(options, terminal, out, err)? {
         return Ok(code);
     }
@@ -861,11 +862,7 @@ fn uninstall(
                 ),
             );
         }
-        let listed = match daemon.worktrees() {
-            Ok(listed) => listed,
-            Err(reason) => return refuse(err, &unlisted(&reason)),
-        };
-        let found = trees(&layout.state_dir, listed);
+        let found = trees(&layout.state_dir, listed_before);
         if !found.is_empty() {
             refuse_worktrees(&found, err).map_err(io)?;
             return Ok(exit::REFUSED);

@@ -6,7 +6,9 @@ use crate::lifecycle::fake::Fake;
 
 impl Owned for Fake {
     fn worktrees(&self) -> Result<Vec<PathBuf>, String> {
-        if self.list_fails {
+        if self.list_fails
+            || (self.gone_after_stop && self.events.borrow().contains(&"stop".to_owned()))
+        {
             return Err("unauthorized".to_owned());
         }
         Ok(self.listed.clone())
@@ -227,6 +229,18 @@ fn a_tree_only_the_daemon_lists_also_refuses_and_a_listing_error_is_a_refusal() 
         "{err}"
     );
     assert!(fixture.everything_exists());
+}
+
+#[test]
+fn a_stopped_daemon_is_not_asked_again_so_the_delete_proceeds() {
+    let fixture = Fixture::new();
+    let daemon = Fake {
+        gone_after_stop: true,
+        ..running()
+    };
+    let (code, _, err) = fixture.run(yes(), None, &daemon);
+    assert_eq!((code, err.as_str()), (exit::SUCCESS, ""));
+    assert!(!fixture.layout.state_dir.exists());
 }
 
 #[test]

@@ -117,6 +117,7 @@ pub(crate) mod fake {
         pub(crate) stop_fails: bool,
         pub(crate) listed: Vec<PathBuf>,
         pub(crate) list_fails: bool,
+        pub(crate) gone_after_stop: bool,
         pub(crate) plant_on_stop: Option<PathBuf>,
         pub(crate) events: RefCell<Vec<String>>,
     }
@@ -144,5 +145,48 @@ pub(crate) mod fake {
             }
             writeln!(out, "the daemon stopped").map_err(|error| error.to_string())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn agent(id: &str, name: &str, status: &str) -> AgentView {
+        serde_json::from_value(json!({
+            "id": id, "name": name, "role": "engineer", "department": "engineering",
+            "provider": "claude", "status": status, "mode": "managed",
+        }))
+        .expect("one projected agent")
+    }
+
+    #[test]
+    fn running_waiting_and_attached_agents_are_busy_and_the_rest_are_not() {
+        let agents = [
+            agent("01JBQ8XK2M3N4P5Q6R7S8T9VWX", "Ada", "running"),
+            agent("01ARZ3NDEKTSV4RRFFQ69G5FAV", "Bob", "waiting"),
+            agent("01ARZ3NDEKTSV4RRFFQ69G5FAW", "Cy", "attached"),
+            agent("01ARZ3NDEKTSV4RRFFQ69G5FAX", "Dee", "idle"),
+            agent("01ARZ3NDEKTSV4RRFFQ69G5FAY", "Eve", "done"),
+            agent("01ARZ3NDEKTSV4RRFFQ69G5FAZ", "Fay", "exhausted"),
+        ];
+        assert_eq!(
+            agents_busy(&agents),
+            [
+                "Ada (01JBQ8XK2M3N4P5Q6R7S8T9VWX) is running a turn",
+                "Bob (01ARZ3NDEKTSV4RRFFQ69G5FAV) is waiting for an answer",
+                "Cy (01ARZ3NDEKTSV4RRFFQ69G5FAW) is attached to a person's live session",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_closing_note_says_six_minutes() {
+        assert_eq!(
+            closing_note(),
+            "Closing time: every agent gets up to 6 minutes to save its work before the daemon stops."
+        );
     }
 }
