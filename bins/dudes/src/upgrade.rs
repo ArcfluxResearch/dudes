@@ -246,9 +246,14 @@ impl PrivateDir {
             let mut random = [0_u8; 8];
             getrandom::fill(&mut random).map_err(std::io::Error::other)?;
             let path = base.join(format!("dudes-upgrade-{:016x}", u64::from_le_bytes(random)));
-            let mut builder = DirBuilder::new();
             #[cfg(unix)]
-            builder.mode(0o700);
+            let builder = {
+                let mut builder = DirBuilder::new();
+                builder.mode(0o700);
+                builder
+            };
+            #[cfg(not(unix))]
+            let builder = DirBuilder::new();
             match builder.create(&path) {
                 Ok(()) => return Ok(Self(path)),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
