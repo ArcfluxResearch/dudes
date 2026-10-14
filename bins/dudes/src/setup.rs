@@ -1145,7 +1145,7 @@ mod tests {
             &[
                 (FLOOR, "n"),
                 (prompt, "./test.sh"),
-                (prompt, "sh test.sh"),
+                (prompt, "make check"),
                 ("Hire a first agent named Kim on claude, idle? [Y/n]", "n"),
             ],
             Some(go.path()),
@@ -1158,7 +1158,7 @@ mod tests {
             run.shown
         );
         let plan = run.plan.expect("answered");
-        assert_eq!(plan.check.expect("a check").argv, ["sh", "test.sh"]);
+        assert_eq!(plan.check.expect("a check").argv, ["make", "check"]);
     }
 
     #[test]
