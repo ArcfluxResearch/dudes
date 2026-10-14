@@ -886,14 +886,16 @@ impl FloorCarry {
 
     /// Every live session as this run holds it. Nothing is refreshed, and no cookie, CSRF secret,
     /// pending bootstrap, terminal grant or reservation leaves.
-    pub(crate) fn export(&self, run: &str) -> SessionExport {
+    ///
+    /// A run with no identity exports nothing: an import could not tell its own run from another.
+    pub(crate) fn export(&self, run: Option<&str>) -> SessionExport {
         let inner = &self.sessions.0;
         let mut exported = SessionExport {
-            run: run.to_owned(),
+            run: run.unwrap_or_default().to_owned(),
             origin: inner.origin.clone(),
             sessions: Vec::new(),
         };
-        if !inner.valid.load(Ordering::Acquire) {
+        if run.is_none() || !inner.valid.load(Ordering::Acquire) {
             return exported;
         }
         let registry::Locked { mut state, now } = inner.registry.lock_at_now();
@@ -924,8 +926,12 @@ impl FloorCarry {
 
     /// Admit the sessions an earlier run exported, and say how many were admitted. Each one
     /// becomes the session it was, except that it matches no CSRF secret until recovery issues
-    /// one. A run takes one import, from a run other than itself.
-    pub(crate) fn import(&self, run: &str, exported: &SessionExport) -> u32 {
+    /// one. A run takes one import, from a run other than itself, and any attempt that passes the run check uses it up,
+    /// whatever else it is refused for.
+    pub(crate) fn import(&self, run: Option<&str>, exported: &SessionExport) -> u32 {
+        let Some(run) = run else {
+            return 0;
+        };
         let inner = &self.sessions.0;
         let registry::Locked { mut state, now } = inner.registry.lock_at_now();
         if !inner.valid.load(Ordering::Acquire) || state.imported || exported.run == run {
@@ -1874,7 +1880,7 @@ mod carry_tests {
         created(&old, &one, 3, 2, 5);
         clock.advance(60_000);
 
-        let exported = old.carry.export(OLD_RUN);
+        let exported = old.carry.export(Some(OLD_RUN));
         let text = serde_json::to_string(&exported).expect("serializes");
         let value: serde_json::Value = serde_json::from_str(&text).expect("json");
         let top: Vec<_> = value.as_object().expect("object").keys().cloned().collect();
@@ -1914,11 +1920,11 @@ mod carry_tests {
         let old = run(&clock, HOST);
         let one = sign_in(&old);
         created(&old, &one, 3, 2, 5);
-        let exported = old.carry.export(OLD_RUN);
+        let exported = old.carry.export(Some(OLD_RUN));
         old.carry.sessions().invalidate();
 
         let new = run(&clock, HOST);
-        assert_eq!(new.carry.import(NEW_RUN, &exported), 1);
+        assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 1);
 
         assert!(
             !can_read(&new, &one, &one.csrf),
@@ -1957,7 +1963,7 @@ mod carry_tests {
             }],
         };
         let new = run(&clock, HOST);
-        assert_eq!(new.carry.import(NEW_RUN, &exported), 1);
+        assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 1);
         clock.advance(10_001);
         assert!(
             new.carry.sessions().recover(HOST, ORIGIN, cookie).is_none(),
@@ -1970,21 +1976,22 @@ mod carry_tests {
         let clock = Arc::new(FakeClock::frozen(10_000));
         let old = run(&clock, HOST);
         let one = sign_in(&old);
-        let exported = old.carry.export(OLD_RUN);
+        let exported = old.carry.export(Some(OLD_RUN));
 
         assert_eq!(
-            old.carry.import(OLD_RUN, &exported),
+            old.carry.import(Some(OLD_RUN), &exported),
             0,
             "the run that exported"
         );
         let new = run(&clock, HOST);
-        assert_eq!(new.carry.import(OLD_RUN, &exported), 0, "same run id");
+        assert_eq!(new.carry.import(Some(OLD_RUN), &exported), 0, "same run id");
 
-        let first = new.carry.import(NEW_RUN, &exported);
+        let first = new.carry.import(Some(NEW_RUN), &exported);
         assert_eq!(first, 1);
         let later = sign_in(&old);
         assert_eq!(
-            new.carry.import(NEW_RUN, &old.carry.export(OLD_RUN)),
+            new.carry
+                .import(Some(NEW_RUN), &old.carry.export(Some(OLD_RUN))),
             0,
             "a second import admits nothing, not even a session the first one lacked"
         );
@@ -1998,7 +2005,11 @@ mod carry_tests {
         let other = run(&clock, HOST);
         let mut moved = exported.clone();
         moved.origin = "http://127.0.0.1:43212".to_owned();
-        assert_eq!(other.carry.import(NEW_RUN, &moved), 0, "another origin");
+        assert_eq!(
+            other.carry.import(Some(NEW_RUN), &moved),
+            0,
+            "another origin"
+        );
         assert!(
             other
                 .carry
@@ -2014,7 +2025,7 @@ mod carry_tests {
         let new = run(&clock, HOST);
         let live = sign_in(&new);
         created(&new, &live, 1, 1, 1);
-        let before = new.carry.export(NEW_RUN).sessions;
+        let before = new.carry.export(Some(NEW_RUN)).sessions;
         let mut entry = before[0];
         entry.ticket_creates = 30;
         entry.created = Timestamp::from_unix_millis(5_000);
@@ -2023,8 +2034,8 @@ mod carry_tests {
             origin: ORIGIN.to_owned(),
             sessions: vec![entry],
         };
-        assert_eq!(new.carry.import(NEW_RUN, &exported), 0);
-        assert_eq!(new.carry.export(NEW_RUN).sessions, before);
+        assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 0);
+        assert_eq!(new.carry.export(Some(NEW_RUN)).sessions, before);
         assert!(can_read(&new, &live, &live.csrf), "its secret still works");
     }
 
@@ -2042,7 +2053,7 @@ mod carry_tests {
         };
         let restored = |entry: ExportedSession| {
             run(&clock, HOST).carry.import(
-                NEW_RUN,
+                Some(NEW_RUN),
                 &SessionExport {
                     run: OLD_RUN.to_owned(),
                     origin: ORIGIN.to_owned(),
@@ -2067,12 +2078,12 @@ mod carry_tests {
         for _ in 0..MAX_LIVE_SESSIONS {
             sign_in(&old);
         }
-        let exported = old.carry.export(OLD_RUN);
+        let exported = old.carry.export(Some(OLD_RUN));
         assert_eq!(exported.sessions.len(), MAX_LIVE_SESSIONS);
 
         let new = run(&clock, HOST);
         let issued = [sign_in(&new), sign_in(&new), sign_in(&new)];
-        assert_eq!(new.carry.import(NEW_RUN, &exported), 1);
+        assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 1);
         for exchange in &issued {
             assert!(can_read(&new, exchange, &exchange.csrf));
         }
@@ -2084,7 +2095,7 @@ mod carry_tests {
         let old = run(&clock, HOST);
         let one = sign_in(&old);
         old.carry.sessions().invalidate();
-        assert!(old.carry.export(OLD_RUN).sessions.is_empty());
+        assert!(old.carry.export(Some(OLD_RUN)).sessions.is_empty());
         let new = run(&clock, HOST);
         assert!(
             new.carry
@@ -2092,6 +2103,81 @@ mod carry_tests {
                 .recover(HOST, ORIGIN, &one.cookie)
                 .is_none(),
             "a plain restart signs everyone out"
+        );
+    }
+
+    #[test]
+    fn any_import_that_passes_the_run_check_uses_the_runs_one_chance() {
+        let clock = Arc::new(FakeClock::frozen(1_000));
+        let old = run(&clock, HOST);
+        sign_in(&old);
+        let exported = old.carry.export(Some(OLD_RUN));
+        let new = run(&clock, HOST);
+        let mut wrong = exported.clone();
+        wrong.origin = "http://127.0.0.1:43212".to_owned();
+        assert_eq!(new.carry.import(Some(NEW_RUN), &wrong), 0);
+        assert_eq!(
+            new.carry.import(Some(NEW_RUN), &exported),
+            0,
+            "a refused attempt still used the one import"
+        );
+    }
+
+    #[test]
+    fn a_run_with_no_identity_exports_nothing_and_imports_nothing() {
+        let clock = Arc::new(FakeClock::frozen(1_000));
+        let old = run(&clock, HOST);
+        sign_in(&old);
+        assert!(old.carry.export(None).sessions.is_empty());
+        let exported = old.carry.export(Some(OLD_RUN));
+        assert_eq!(
+            exported.sessions.len(),
+            1,
+            "control: the same run exports with an identity"
+        );
+        let new = run(&clock, HOST);
+        assert_eq!(new.carry.import(None, &exported), 0);
+        assert_eq!(
+            new.carry.import(Some(NEW_RUN), &exported),
+            1,
+            "a refused import without an identity did not use the run's chance"
+        );
+    }
+
+    #[test]
+    fn carried_allowances_refuse_with_their_literal_reason_after_an_import() {
+        use crate::baseline::{Baselines, Limit, SESSION_BASELINES};
+        use crate::floor_ticket::{MOST_ASSIGNS, MOST_CREATES};
+
+        let clock = Arc::new(FakeClock::frozen(1_000));
+        let old = run(&clock, HOST);
+        let one = sign_in(&old);
+        created(&old, &one, 3, 2, 5);
+        let mut exported = old.carry.export(Some(OLD_RUN));
+        exported.sessions[0].ticket_creates = MOST_CREATES;
+        exported.sessions[0].ticket_assigns = MOST_ASSIGNS - 1;
+        exported.sessions[0].check_runs = SESSION_BASELINES;
+
+        let baselines = Baselines::default();
+        let tickets = Arc::new(TicketLimits::new());
+        let sessions = FloorSessions::new(HOST.parse().expect("loopback"), Arc::clone(&clock));
+        let carry = FloorCarry::new(sessions, Some(Arc::clone(&tickets)), baselines.check_runs());
+        let mut baselines = baselines;
+        assert_eq!(carry.import(Some(NEW_RUN), &exported), 1);
+
+        assert_eq!(
+            tickets.begin(key(&one), Some(Counted::Create)).err(),
+            Some("limit_reached"),
+            "the create allowance was spent before the upgrade"
+        );
+        assert!(
+            tickets.begin(key(&one), Some(Counted::Assign)).is_ok(),
+            "control: an assign still has one left"
+        );
+        assert_eq!(
+            baselines.start_browser(None, Hex32::new(key(&one))),
+            Err(Limit::Exhausted),
+            "the check-run cap was reached before the upgrade"
         );
     }
 }

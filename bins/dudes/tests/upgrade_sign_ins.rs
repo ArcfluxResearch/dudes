@@ -275,3 +275,25 @@ fn a_restart_with_no_open_sign_in_says_nothing_about_sign_ins() {
     installed.sign_in();
     assert!(installed.recovers());
 }
+
+#[test]
+fn an_upgrade_that_dies_after_the_export_and_before_the_import_restores_nothing() {
+    use dudes_proto::rpc::CurrentMethod;
+
+    let installed = Installed::start();
+    let credential = dudes::read_operator_credential(installed.env.runtime_dir().expect("runtime"))
+        .expect("the credential reads");
+    let mut client = dudes_rpc::LocalClient::connect(installed.env.socket().expect("socket"))
+        .expect("connect to the daemon");
+    let exported = client
+        .call_current_presenting(CurrentMethod::FloorSessionExport, None, credential)
+        .expect("export is answered")
+        .result
+        .expect("the operator exports");
+    assert_eq!(exported["sessions"].as_array().map(Vec::len), Some(1));
+    installed.plain_restart();
+    assert!(
+        !installed.recovers(),
+        "an export that never reached an import signs nobody back in"
+    );
+}

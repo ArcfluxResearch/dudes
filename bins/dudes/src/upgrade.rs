@@ -530,7 +530,10 @@ fn restart(
 fn sign_in_report(daemon: &dyn Restart, exported: Result<SessionExport, String>) -> Option<String> {
     let again = "Run dudes floor open to sign in again.";
     let Ok(exported) = exported else {
-        return Some(format!("Kept 0 Floor sign-ins. {again}"));
+        return Some(format!(
+            "This upgrade could not keep Floor sign-ins: the version that was running cannot hand them over. If a Floor tab was open, {}",
+            again.to_lowercase()
+        ));
     };
     let held = exported.sessions.len();
     if held == 0 {
