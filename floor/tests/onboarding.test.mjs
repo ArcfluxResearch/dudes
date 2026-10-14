@@ -1196,10 +1196,10 @@ test('a complete Hire clears the catalog and resubscribes through the resync pat
   assert.equal(refreshFloorSnapshot(), false, 'a disposed stream still answers a refresh');
 });
 
-test('a refresh is a no-op while a retry is pending, and once the stream has given up', () => {
+test('a refresh is a no-op while a retry is pending, and once the stream has given up', async () => {
   const net = network();
   const stop = openFloorStream({ csrf: CSRF }, HERE, net.connect, net.timers,
-    { fetchIndex: () => new Promise(() => {}), ownRefs: [] });
+    { fetchIndex: async () => null, ownRefs: [] });
   try {
     net.sockets.at(-1).emit('close');
     assert.equal(refreshFloorSnapshot(), true, 'a stream with a retry pending is still there to ask');
@@ -1208,6 +1208,7 @@ test('a refresh is a no-op while a retry is pending, and once the stream has giv
       net.flush();
       net.sockets.at(-1).emit('close');
     }
+    await new Promise((settle) => setImmediate(settle));
     assert.equal(getFloorState().phase, 'closed');
     assert.equal(getAway().kind, 'watching');
     const before = net.sockets.length;

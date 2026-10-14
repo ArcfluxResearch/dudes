@@ -90,7 +90,7 @@ test('a silent open stream says it is waiting rather than retrying', () => {
   assert.match(rendered, /fresh link.*dudes floor/);
 });
 
-test('the stream notice reports the actual retry schedule and then says the daemon stopped answering', () => {
+test('the stream notice reports the actual retry schedule and then says the daemon stopped answering', async () => {
   streamStore.resetFloorStore();
   awayModule.resetAway();
   const sockets = [];
@@ -105,7 +105,7 @@ test('the stream notice reports the actual retry schedule and then says the daem
     }, { now: () => 0, repeat: () => () => {}, after: (delay, run) => {
       scheduled = run;
       return () => { scheduled = undefined; };
-    } }, { fetchIndex: () => new Promise(() => {}), ownRefs: [] });
+    } }, { fetchIndex: async () => null, ownRefs: [] });
   try {
     sockets[0].emit('close');
     let rendered = html(StreamNotice, streamStore.getFloorState());
@@ -116,6 +116,7 @@ test('the stream notice reports the actual retry schedule and then says the daem
       run();
       sockets.at(-1).emit('close');
     }
+    await new Promise((settle) => setImmediate(settle));
     rendered = html(StreamNotice, streamStore.getFloorState());
     assert.match(rendered, /Dudes stopped answering.*ask you to reload/);
     assert.doesNotMatch(rendered, /fresh link|not retrying/);

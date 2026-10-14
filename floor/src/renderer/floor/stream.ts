@@ -398,7 +398,13 @@ export function openFloorStream(
     if (attempts >= RECONNECT_ATTEMPTS) {
       // The ladder is spent. From here the page sends no cookie, on a request or a socket, until it is
       // reloaded: whatever answers on this address may not be the daemon that issued the session.
-      if (!answeredAtFirstClose) stopAway = beginAway(away, timers);
+      // Only a daemon that answered at the first close and answers again now is up and refusing the
+      // socket. An answer at the first close alone may be an old daemon that was still stopping.
+      const answeredBefore = answeredAtFirstClose;
+      void indexAnswers(away).then((answeredNow) => {
+        if (disposed || (answeredBefore && answeredNow)) return;
+        stopAway = beginAway(away, timers);
+      });
       return;
     }
     if (attempts === 0) {

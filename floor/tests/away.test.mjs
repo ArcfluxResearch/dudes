@@ -120,11 +120,12 @@ test('the reconnect ladder ends in the away watch, and nothing else is opened', 
   assert.equal(opened.length, RECONNECT_ATTEMPTS + 1);
   assert.equal(getAway().kind, 'present', 'the last attempt has not closed yet');
   opened[opened.length - 1].emit('close');
+  await new Promise((settle) => setImmediate(settle));
   assert.equal(getAway().kind, 'watching');
   assert.equal(floorRequestsPaused(), true);
   assert.deepEqual(timers.delays.slice(0, RECONNECT_ATTEMPTS), [250, 500, 1_000, 2_000, 4_000]);
   assert.deepEqual(timers.delays.slice(RECONNECT_ATTEMPTS), [AWAY_POLL_MS], 'the first look is two seconds out');
-  assert.equal(asked.length, 1, 'only the probe at the first close asked; the watch waits for its first tick');
+  assert.equal(asked.length, 2, 'only the probes at the first close and at the ladder end asked; the watch waits for its first tick');
   assert.equal(opened.length, RECONNECT_ATTEMPTS + 1, 'no socket is opened after the ladder');
 });
 
@@ -144,6 +145,7 @@ async function runLadder(timers, ports, opened = []) {
     opened[opened.length - 1].emit('close');
     await timers.step(0).catch(() => {});
   }
+  await new Promise((settle) => setImmediate(settle));
   return stop;
 }
 
@@ -153,6 +155,17 @@ test('a daemon that answers while it refuses the socket is not a daemon that wen
   assert.equal(getAway().kind, 'present', 'a refused socket put the page in the away state');
   assert.equal(floorRequestsPaused(), false);
   assert.equal(getFloorState().phase, 'closed', 'the page still says it stopped trying');
+  stop();
+});
+
+test('an index that answers at the first close and then stops answering is a daemon that went away', async () => {
+  const timers = manualTimers();
+  let asked = 0;
+  const stop = await runLadder(timers, {
+    fetchIndex: async () => ((asked += 1) === 1 ? index('app-aaaaaaaa.js') : null),
+    ownRefs: OWN,
+  });
+  assert.equal(getAway().kind, 'watching', 'an old daemon that was still stopping kept the cookie flowing');
   stop();
 });
 
@@ -297,13 +310,19 @@ test('every other way the page can load something goes through the pause too', a
     [/createElement\(\s*['"](script|link|img|iframe)['"]/, 'a created loading element'],
     [/\.src\s*=|\.href\s*=|location\.(assign|replace)\(|window\.open\(/, 'a navigation or source assignment'],
     [/serviceWorker/, 'a service worker'],
+    [/\bEventSource\b|\bsendBeacon\b|\bXMLHttpRequest\b/, 'EventSource, sendBeacon or XMLHttpRequest'],
   ];
   const walk = async (dir) => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const path = resolve(dir, entry.name);
       if (entry.isDirectory()) await walk(path);
       else if (/\.(ts|tsx)$/.test(entry.name)) {
-        const text = (await readFile(path, 'utf8')).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+        // Comments are removed only where `//` or `/*` starts a line, so a URL inside a string stays.
+        const text = (await readFile(path, 'utf8')).replace(/^\s*\/\/.*$|^\s*\/\*[\s\S]*?\*\/|^\s*\*.*$/gm, '');
+        if (/\bnew WebSocket\b/.test(text)
+          && !(path.endsWith('renderer/floor/stream.ts') && /floorRequestsPaused\(\)\) throw[^;]*;\s*return new WebSocket/.test(text))) {
+          offenders.push(`${path.slice(root.length + 1)}: a WebSocket that does not honour the pause`);
+        }
         for (const [pattern, what] of sites) if (pattern.test(text)) offenders.push(`${path.slice(root.length + 1)}: ${what}`);
       }
     }
@@ -313,6 +332,25 @@ test('every other way the page can load something goes through the pause too', a
   // The control: the scan sees an unguarded one.
   assert.ok(sites[0][0].test("const m = import('./x.ts');"));
   assert.ok(!sites[0][0].test("const m = lazyChunk(() => import('./x.ts'));"));
+});
+
+test('every form prevents the browser submitting it', async () => {
+  const root = resolve(import.meta.dirname, '../src');
+  const offenders = [];
+  const walk = async (dir) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = resolve(dir, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (/\.tsx$/.test(entry.name)) {
+        const text = await readFile(path, 'utf8');
+        const forms = (text.match(/<form\b/g) ?? []).length;
+        const prevented = (text.match(/preventDefault\(\)/g) ?? []).length;
+        if (forms > prevented) offenders.push(path.slice(root.length + 1));
+      }
+    }
+  };
+  await walk(root);
+  assert.deepEqual(offenders, [], 'a form can navigate the page with the cookie');
 });
 
 test('a paused page refuses a lazy chunk without loading it', async () => {

@@ -388,7 +388,7 @@ test('a frame still in flight on the replaced socket cannot mutate the new view'
   assert.equal(after.discarded, 1);
 });
 
-test('the reconnect gives up rather than spinning against a daemon that is gone', () => {
+test('the reconnect gives up rather than spinning against a daemon that is gone', async () => {
   const timers = manualTimers();
   const opened = [];
   // A daemon that never answers the away watch, so the watch schedules nothing more.
@@ -396,7 +396,7 @@ test('the reconnect gives up rather than spinning against a daemon that is gone'
     const socket = fakeSocket();
     opened.push(socket);
     return socket;
-  }, timers, { fetchIndex: () => new Promise(() => {}), ownRefs: [] });
+  }, timers, { fetchIndex: async () => null, ownRefs: [] });
 
   // Every attempt is refused the way an invalidated session refuses one: the
   // socket closes without ever opening.
@@ -404,6 +404,7 @@ test('the reconnect gives up rather than spinning against a daemon that is gone'
     opened[opened.length - 1].emit('close');
     timers.runPending();
   }
+  await new Promise((settle) => setImmediate(settle));
 
   assert.equal(opened.length, RECONNECT_ATTEMPTS + 1, 'the reconnect did not stop at its cap');
   assert.deepEqual(
@@ -477,7 +478,7 @@ test('a floor.resync throws the view away and goes back for a snapshot', () => {
   assert.equal(opened, 2);
 });
 
-test('re-authentication resubscribes with the new session’s CSRF from a live stream, and a stream that gave up takes none', () => {
+test('re-authentication resubscribes with the new session’s CSRF from a live stream, and a stream that gave up takes none', async () => {
   const FRESH = 'Fr3shNonce0Fr3shNonce0Fr3shNonce0Fr3shNonc8';
   const LATER = 'L4terNonce0L4terNonce0L4terNonce0L4terNonc0';
   const timers = manualTimers();
@@ -505,6 +506,7 @@ test('re-authentication resubscribes with the new session’s CSRF from a live s
     opened[opened.length - 1].emit('close');
     timers.runPending();
   }
+  await new Promise((settle) => setImmediate(settle));
   assert.equal(getFloorState().phase, 'closed');
   const before = opened.length;
   assert.equal(reauthenticateFloorStream({ csrf: LATER }), false);
