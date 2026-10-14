@@ -16517,6 +16517,432 @@ fn browser_goal_change_keeps_or_names_a_check() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
+struct HeldInstructionClock {
+    clock: TestClock,
+    state: Mutex<(bool, bool)>,
+    changed: std::sync::Condvar,
+}
+
+impl HeldInstructionClock {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            clock: TestClock::new(),
+            state: Mutex::new((false, false)),
+            changed: std::sync::Condvar::new(),
+        })
+    }
+
+    fn hold(self: &Arc<Self>) -> ReleaseInstructionClock {
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner) = (true, false);
+        ReleaseInstructionClock(Arc::clone(self))
+    }
+
+    fn wait_held(&self) {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, Duration::from_secs(5), |state| !state.1)
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(
+            state.1,
+            "the post-turn instruction sample reached its clock"
+        );
+    }
+}
+
+impl dudes_supervisor::Clock for HeldInstructionClock {
+    fn now(&self) -> dudes_types::Timestamp {
+        if matches!(
+            std::thread::current().name(),
+            Some("dudes-instructions-io" | "dudes-instructions-deadline")
+        ) {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.0 {
+                state.1 = true;
+                self.changed.notify_all();
+                while state.0 {
+                    state = self
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+            }
+        }
+        dudes_supervisor::Clock::now(&self.clock)
+    }
+}
+
+struct ReleaseInstructionClock(Arc<HeldInstructionClock>);
+
+impl Drop for ReleaseInstructionClock {
+    fn drop(&mut self) {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0 = false;
+        self.0.changed.notify_all();
+    }
+}
+
+fn held_instruction_seams(
+    runner: &Arc<BaselineRunner>,
+    clock: &Arc<HeldInstructionClock>,
+) -> Seams<SharedHost, BaselineRunner, HeldInstructionClock, FakeRng> {
+    let parts = seams(
+        SharedHost::new(),
+        Arc::clone(runner),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    Seams {
+        clock: Arc::clone(clock),
+        host: parts.host,
+        pty_host: parts.pty_host,
+        predicates: parts.predicates,
+        rng: parts.rng,
+        resolver: parts.resolver,
+        adapters: parts.adapters,
+        children: parts.children,
+        witness: parts.witness,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PendingCheckRoute {
+    CheckedSet,
+    Replace,
+    Change,
+    Renew,
+}
+
+fn pending_check_request(
+    route: PendingCheckRoute,
+    running: &common::Running,
+    settings: &duded::Settings,
+    session: (SocketAddr, &str, &str),
+    agent: AgentId,
+    goal: GoalId,
+) -> Option<GoalId> {
+    use dudes_proto::rpc::goal::{
+        CompletionCheckDeclaration, GoalReplaceParams, GoalReplaceRefusal, GoalReplaceResult,
+    };
+    match route {
+        PendingCheckRoute::CheckedSet => match running.handle.set_goal(
+            GoalSetParams {
+                may_already_pass: false,
+                ..common::goal_params(agent, &[true_program(), "local"])
+            },
+            &dudes_rpc::HangUp::never(),
+        ) {
+            Ok(set) => Some(set.goal),
+            Err(error) => {
+                assert_eq!(
+                    error.message,
+                    "the agent has a turn or a check running in its directory, so the completion check cannot run there now"
+                );
+                None
+            }
+        },
+        PendingCheckRoute::Replace => {
+            let credential = OperatorCredential::new(
+                std::fs::read_to_string(
+                    settings
+                        .runtime_dir
+                        .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let params = GoalReplaceParams {
+                request_id: Hex32::new([7; 32]),
+                agent,
+                expected_goal: goal,
+                text: NEW_TEXT.into(),
+                predicate: Predicate::Command {
+                    argv: vec![true_program().into(), "local".into()],
+                    timeout_s: 10,
+                },
+                check: CompletionCheckDeclaration {
+                    id: "local".into(),
+                    label: "Local check".into(),
+                },
+                may_already_pass: false,
+            };
+            let reply = Client::connect(settings.socket())
+                .unwrap()
+                .call_as_operator(
+                    Method::GoalReplace,
+                    Some(serde_json::to_value(params).unwrap()),
+                    credential,
+                )
+                .unwrap();
+            assert!(reply.error.is_none(), "{reply:?}");
+            match serde_json::from_value::<GoalReplaceResult>(reply.result.unwrap()).unwrap() {
+                GoalReplaceResult::Changed { goal, .. } => Some(goal),
+                GoalReplaceResult::Refused { reason, .. } => {
+                    assert_eq!(reason, GoalReplaceRefusal::TurnOpen);
+                    None
+                }
+                other @ GoalReplaceResult::Pending { .. } => {
+                    panic!("unexpected replacement reply: {other:?}")
+                }
+            }
+        }
+        PendingCheckRoute::Change | PendingCheckRoute::Renew => {
+            let (addr, cookie, csrf) = session;
+            let renewal = matches!(route, PendingCheckRoute::Renew);
+            let (head, body) = if renewal {
+                post_renew(
+                    addr,
+                    cookie,
+                    csrf,
+                    &renew_body(&request_id(7), agent, goal, ("1", Some("5000000"), None)),
+                )
+            } else {
+                post_goal(
+                    addr,
+                    cookie,
+                    csrf,
+                    &goal_naming(&request_id(7), agent, goal, "contributing"),
+                )
+            };
+            if head.starts_with("HTTP/1.1 409 Conflict") {
+                assert_eq!(refused_reason(&head, &body), "turn_open");
+                None
+            } else if renewal {
+                Some(renewed(&head, &body))
+            } else {
+                Some(changed(&head, &body))
+            }
+        }
+    }
+}
+
+fn pending_instruction_check_blocks(route: PendingCheckRoute) {
+    let fixture = Fixture::new();
+    let mut settings = checks_settings(&fixture);
+    settings.floor_control = FloorControl::On {
+        goal: true,
+        retire: false,
+        renew: true,
+    };
+    if matches!(route, PendingCheckRoute::Renew) {
+        settings.enrollment.profiles[0].hop_cap = 1;
+    }
+    let runner = BaselineRunner::new();
+    let clock = HeldInstructionClock::new();
+    let daemon = boot(&settings, held_instruction_seams(&runner, &clock)).expect("boot");
+    let addr = daemon.floor_addr().expect("Floor address");
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let (head, hired) = post_onboard(
+        addr,
+        &cookie,
+        &csrf,
+        &hire_naming(&attempt(0), "regression"),
+    );
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {hired}");
+    let agent = AgentId::parse(hired["agent"].as_str().unwrap()).unwrap();
+    let goal = fixture.await_record("the initial goal", |record| {
+        record
+            .goal_install()
+            .filter(|(owner, _)| *owner == agent)
+            .map(|(_, goal)| goal.id)
+    });
+    let turn = issued_goal_turn(&fixture, goal);
+    running.handle.ask(Ask::Pause(agent)).expect("local pause");
+    let release = clock.hold();
+    end_turn(&running.handle, turn, None);
+    clock.wait_held();
+    running.handle.doctor().unwrap();
+    let before = fixture.records();
+    assert_eq!(
+        pending_check_request(
+            route,
+            &running,
+            &settings,
+            (addr, &cookie, &csrf),
+            agent,
+            goal
+        ),
+        None
+    );
+    assert!(runner.ran().is_empty(), "admission started no baseline");
+    assert_eq!(fixture.records(), before, "refusal appended nothing");
+    let other = common::hire(&running.handle, fixture.state.path());
+    running
+        .handle
+        .ask(Ask::Pause(other))
+        .expect("independent pause");
+    let independent = pending_check_request(
+        PendingCheckRoute::CheckedSet,
+        &running,
+        &settings,
+        (addr, &cookie, &csrf),
+        other,
+        goal,
+    );
+    assert!(
+        independent.is_some(),
+        "another agent can set a checked goal"
+    );
+    assert_eq!(runner.ran(), ["local"]);
+    drop(release);
+    let judged = await_entry(
+        &fixture,
+        "the old verdict",
+        |_, record| matches!(record, Record::PredicateResult { goal: old, turn: Some(ended), .. } if *old == goal && *ended == turn),
+    );
+    await_entry(
+        &fixture,
+        "the decision after the old verdict",
+        |lsn, record| {
+            lsn > judged
+                && matches!(record, Record::LoopDecided { agent: who, .. } if *who == agent)
+        },
+    );
+    assert_eq!(runner.ran(), ["local", "regression"]);
+    let replacement = pending_check_request(
+        route,
+        &running,
+        &settings,
+        (addr, &cookie, &csrf),
+        agent,
+        goal,
+    );
+    assert!(
+        replacement.is_some(),
+        "the settled check admits replacement"
+    );
+    assert_ne!(replacement, Some(goal));
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn checked_goal_set_waits_for_pending_instruction_check() {
+    pending_instruction_check_blocks(PendingCheckRoute::CheckedSet);
+}
+
+#[test]
+fn local_goal_replace_waits_for_pending_instruction_check() {
+    pending_instruction_check_blocks(PendingCheckRoute::Replace);
+}
+
+#[test]
+fn browser_goal_change_waits_for_pending_instruction_check() {
+    pending_instruction_check_blocks(PendingCheckRoute::Change);
+}
+
+#[test]
+fn browser_goal_renewal_waits_for_pending_instruction_check() {
+    pending_instruction_check_blocks(PendingCheckRoute::Renew);
+}
+
+#[test]
+fn legacy_goal_set_keeps_its_bypass_and_browser_current_goal_check_rules() {
+    let fixture = Fixture::new();
+    let settings = checks_settings(&fixture);
+    let runner = BaselineRunner::new();
+    let clock = HeldInstructionClock::new();
+    let daemon = boot(&settings, held_instruction_seams(&runner, &clock)).expect("boot");
+    let addr = daemon.floor_addr().expect("Floor address");
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let (head, hired) = post_onboard(
+        addr,
+        &cookie,
+        &csrf,
+        &hire_naming(&attempt(0), "regression"),
+    );
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {hired}");
+    let agent = AgentId::parse(hired["agent"].as_str().unwrap()).unwrap();
+    let old_goal = fixture.await_record("the initial goal", |record| {
+        record
+            .goal_install()
+            .filter(|(owner, _)| *owner == agent)
+            .map(|(_, goal)| goal.id)
+    });
+    let turn = issued_goal_turn(&fixture, old_goal);
+    running.handle.ask(Ask::Pause(agent)).expect("local pause");
+    let release = clock.hold();
+    end_turn(&running.handle, turn, None);
+    clock.wait_held();
+    let legacy = common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &[true_program(), "regression"]),
+    );
+    assert_ne!(legacy, old_goal);
+    assert!(
+        runner.ran().is_empty(),
+        "the legacy setter starts no baseline"
+    );
+    let session = (addr, cookie.as_str(), csrf.as_str());
+    let before = fixture.records();
+    assert_eq!(
+        pending_check_request(
+            PendingCheckRoute::Change,
+            &running,
+            &settings,
+            session,
+            agent,
+            legacy
+        ),
+        None
+    );
+    assert_eq!(
+        fixture.records(),
+        before,
+        "the pending old continuation still belongs to this agent"
+    );
+    runner.hold_next();
+    drop(release);
+    runner.wait_runs(1);
+    assert_eq!(runner.ran(), ["regression"]);
+    assert_eq!(
+        pending_check_request(
+            PendingCheckRoute::CheckedSet,
+            &running,
+            &settings,
+            session,
+            agent,
+            legacy
+        ),
+        None
+    );
+    let (head, body) = post_goal(
+        addr,
+        &cookie,
+        &csrf,
+        &goal_naming(&request_id(8), agent, legacy, "regression"),
+    );
+    assert_ne!(
+        changed(&head, &body),
+        legacy,
+        "the browser only guards its current goal's active predicate"
+    );
+    assert_eq!(
+        runner.ran(),
+        ["regression"],
+        "the browser change starts no baseline"
+    );
+    runner.release();
+    let judged = await_entry(
+        &fixture,
+        "the old verdict",
+        |_, record| matches!(record, Record::PredicateResult { goal, turn: Some(ended), .. } if *goal == old_goal && *ended == turn),
+    );
+    await_entry(
+        &fixture,
+        "the decision after the old verdict",
+        |lsn, record| {
+            lsn > judged
+                && matches!(record, Record::LoopDecided { agent: who, .. } if *who == agent)
+        },
+    );
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
 /// One browser run at a time per agent and per Floor session, and 32 per session. A local goal
 /// set is not held behind a browser run, and the browser change it overtakes is refused.
 ///
