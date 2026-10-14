@@ -1266,6 +1266,32 @@ mod tests {
     }
 
     #[test]
+    fn a_declared_gap_never_absorbs_an_observed_gap_that_differs_only_in_origin() {
+        let mut builder = PlanBuilder::new(agent(), None);
+        let context = shared(InstructionSharedInput::Profile);
+        builder.gap_from(
+            InstructionGapKind::ConfigurationUnknown,
+            context,
+            InstructionGapOrigin::Declared,
+        );
+        builder.gap(InstructionGapKind::ConfigurationUnknown, context);
+        let held: Vec<_> = builder
+            .finish()
+            .gaps
+            .into_iter()
+            .filter(|gap| gap.reason == InstructionGapKind::ConfigurationUnknown)
+            .map(|gap| gap.origin)
+            .collect();
+        assert_eq!(
+            held,
+            [
+                InstructionGapOrigin::Declared,
+                InstructionGapOrigin::Observed
+            ]
+        );
+    }
+
+    #[test]
     fn only_inputs_the_engine_reads_outside_the_project_are_declared() {
         use dudes_providers::instructions::{ExplicitFilePurpose, ProfileKind, ResourceKind};
         let observed = [

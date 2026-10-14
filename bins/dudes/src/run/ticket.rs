@@ -420,6 +420,29 @@ mod instruction_tests {
         })).expect("read fixture")
     }
 
+    fn shown(status: &str) -> String {
+        let mut read: TicketReadResult = serde_json::from_value(serde_json::json!({
+            "card": {"id":"01JBQ8XK2M3N4P5Q6R7S8T9VWX", "title":"Ready", "department":"engineering",
+                "status":status, "status_by":{"kind":"system"}, "seq":7},
+            "ticket": {"description":"", "project":"service", "round":1,
+                "done_when":{"id":"default", "label":"passes", "predicate":{"command":{"argv":["true"], "timeout_s":1}}},
+                "coverage": {"provider":"codex", "limits":["configuration_unknown","root_marker_unknown"], "saw_no_change":true}},
+        })).expect("read fixture");
+        read.ticket.summary = Some("done".to_owned());
+        let mut out = Vec::new();
+        render::ticket::show(&mut out, false, &read, &AgentNames::new(), &chrono::Utc)
+            .expect("write");
+        String::from_utf8(out).expect("utf8")
+    }
+
+    #[test]
+    fn a_ready_ticket_names_what_dudes_could_not_see_and_a_held_one_does_not() {
+        assert!(shown("review").contains(
+            "Coverage: Dudes cannot see Codex's settings in its home folder or root markers. It saw no change to the instruction and settings files it can read.\n"
+        ));
+        assert!(!shown("blocked").contains("Coverage:"));
+    }
+
     #[test]
     fn instruction_review_requires_the_sequence_the_operator_named() {
         let mut read = reading();
