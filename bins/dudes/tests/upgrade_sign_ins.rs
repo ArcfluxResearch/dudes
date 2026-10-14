@@ -167,10 +167,10 @@ impl Installed {
         let (address, bearer) = link
             .split_once("/floor/#bootstrap=")
             .expect("a bootstrap link");
-        self.origin = address
+        address
             .strip_prefix("http://")
             .expect("loopback")
-            .to_owned();
+            .clone_into(&mut self.origin);
         let (head, _) = http(
             &self.origin,
             "POST /floor/session",
@@ -178,12 +178,11 @@ impl Installed {
             bearer,
         );
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-        self.cookie = head
-            .lines()
+        head.lines()
             .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
             .and_then(|rest| rest.split(';').next())
             .expect("a session cookie")
-            .to_owned();
+            .clone_into(&mut self.cookie);
     }
 
     fn build(&self) -> String {
