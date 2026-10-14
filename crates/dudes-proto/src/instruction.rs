@@ -1193,10 +1193,9 @@ impl TicketCoverageNote {
                 phrases.push(phrase);
             }
         }
-        let last = phrases.pop();
-        let list = match last {
-            Some(last) if phrases.is_empty() => last.to_owned(),
-            Some(last) => format!("{} or {last}", phrases.join(", ")),
+        let list = match phrases.split_last() {
+            Some((only, [])) => (*only).to_owned(),
+            Some((end, rest)) => format!("{} or {end}", rest.join(", ")),
             None => "some of its own inputs".to_owned(),
         };
         let mut sentence = format!("Dudes cannot see {engine}'s {list}.");
