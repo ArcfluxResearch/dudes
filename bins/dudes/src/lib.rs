@@ -65,8 +65,10 @@ mod mail;
 mod quickstart;
 pub mod render;
 pub mod run;
+mod runner;
 pub mod setup;
 mod uninstall;
+mod upgrade;
 pub mod workspace;
 
 pub use call::call_presenting;

@@ -151,6 +151,17 @@ pub enum Command {
     Config(ConfigCommand),
     /// Remove Dudes, its data and its programs from this machine.
     Uninstall(UninstallOptions),
+    /// Install the latest release over this copy.
+    Upgrade(UpgradeOptions),
+}
+
+/// The flags of `upgrade`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UpgradeOptions {
+    /// Print the current and latest versions and change nothing.
+    pub check: bool,
+    /// Restart a daemon whose agents are busy, with closing time.
+    pub now: bool,
 }
 
 /// The flags of `uninstall`.
@@ -593,6 +604,19 @@ COMMANDS
         cannot do for you: engine history, Codex shell snapshots and the browser's site data for
         the Floor. Not supported on Windows yet.
 
+    upgrade [--check] [--now]
+        Install the latest release over this copy, then restart the daemon. It asks
+        GitHub which release is latest, downloads that release's install.sh, and runs it
+        with --version and this copy's prefix, so the installer's checksum check and
+        restore logic do the work. Both steps use the system curl at /usr/bin/curl over
+        HTTPS only. This is the only time Dudes connects to GitHub, and it never checks
+        for updates on its own. --check prints the current and latest versions and changes
+        nothing. When already on the latest release it says so and changes nothing, and it
+        never installs an older one. It refuses a copy that install.sh did not put there,
+        such as a source build. A running daemon is stopped the way dudes stop does it and
+        started the way dudes start does it; one with an agent mid-turn is refused unless
+        --now, which ends those turns at once. Not supported on Windows yet.
+
     closing ack --announcement-lsn <lsn>
         Acknowledge your own participation using DUDES_TOKEN. The daemon derives
         the agent from that token and the connecting process.
@@ -1030,6 +1054,8 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "config" => Command::Config(config_command(tail)?),
         "uninstall" if json => return Err(ArgError::TextOnly("uninstall")),
         "uninstall" => Command::Uninstall(uninstall(tail)?),
+        "upgrade" if json => return Err(ArgError::TextOnly("upgrade")),
+        "upgrade" => Command::Upgrade(upgrade(tail)?),
         other => return Err(ArgError::UnknownCommand(other.to_owned())),
     };
     Ok(Invocation { json, command })
@@ -1349,6 +1375,23 @@ fn uninstall(tail: &[OsString]) -> Result<UninstallOptions, ArgError> {
             "--help" | "-h" => return Err(ArgError::HelpRequested),
             other => return Err(ArgError::UnknownFlag(other.to_owned())),
         }
+    }
+    Ok(options)
+}
+
+fn upgrade(tail: &[OsString]) -> Result<UpgradeOptions, ArgError> {
+    let mut flags = Flags::new(tail);
+    let mut options = UpgradeOptions::default();
+    while let Some(arg) = flags.next() {
+        match arg.to_string_lossy().as_ref() {
+            "--check" => options.check = true,
+            "--now" => options.now = true,
+            "--help" | "-h" => return Err(ArgError::HelpRequested),
+            other => return Err(ArgError::UnknownFlag(other.to_owned())),
+        }
+    }
+    if options.check && options.now {
+        return Err(ArgError::Conflicting("--check", "--now"));
     }
     Ok(options)
 }
@@ -3842,6 +3885,40 @@ mod closing_tests {
             Command::Start
         );
         assert!(parse_line(&["start", "--hire", "ada"]).is_err());
+    }
+
+    #[test]
+    fn upgrade_takes_check_and_now_but_not_both() {
+        assert_eq!(
+            parse_line(&["upgrade"]).unwrap().command,
+            Command::Upgrade(UpgradeOptions::default())
+        );
+        assert_eq!(
+            parse_line(&["upgrade", "--check"]).unwrap().command,
+            Command::Upgrade(UpgradeOptions {
+                check: true,
+                now: false
+            })
+        );
+        assert_eq!(
+            parse_line(&["upgrade", "--now"]).unwrap().command,
+            Command::Upgrade(UpgradeOptions {
+                check: false,
+                now: true
+            })
+        );
+        assert_eq!(
+            parse_line(&["upgrade", "--check", "--now"]),
+            Err(ArgError::Conflicting("--check", "--now"))
+        );
+        assert_eq!(
+            parse_line(&["upgrade", "--force"]),
+            Err(ArgError::UnknownFlag("--force".to_owned()))
+        );
+        assert_eq!(
+            parse_line(&["--json", "upgrade"]),
+            Err(ArgError::TextOnly("upgrade"))
+        );
     }
 
     #[test]

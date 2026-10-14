@@ -104,7 +104,28 @@ pub struct Environment {
     home: Option<PathBuf>,
     declared: Declared,
     billed: Vec<Provider>,
+    upgrade_env: Vec<EnvVar>,
 }
+
+/// The variables `dudes upgrade` hands to the programs it runs: where to find the tools the
+/// installer uses, where to write, and how to reach GitHub through a proxy or a private CA.
+/// `DUDES_INSTALL_BASE_URL` is deliberately absent, so the environment cannot redirect an upgrade.
+const UPGRADE_ENV: [&str; 14] = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "CURL_CA_BUNDLE",
+];
 
 /// The variables the operator file's `[mcp.servers]` declares, as this process holds them.
 ///
@@ -337,6 +358,10 @@ impl Environment {
             home,
             declared: Declared::default(),
             billed,
+            upgrade_env: UPGRADE_ENV
+                .iter()
+                .filter_map(|name| Some(EnvVar::new(*name, lookup(name)?)))
+                .collect(),
         }
     }
 
@@ -420,9 +445,19 @@ impl Environment {
         &self.daemon_env
     }
 
+    /// The daemon `DUDES_DAEMON` names, when it is set.
+    pub(crate) fn daemon_override(&self) -> Option<&Path> {
+        self.daemon.as_deref()
+    }
+
     /// The MCP variables the operator file declares, as this process holds them.
     pub(crate) fn declared(&self) -> &Declared {
         &self.declared
+    }
+
+    /// The variables `dudes upgrade` passes to `curl` and the installer.
+    pub(crate) fn upgrade_env(&self) -> &[EnvVar] {
+        &self.upgrade_env
     }
 
     /// The engines for which this process holds a credential that bills each token, by the lists
@@ -542,6 +577,26 @@ mod tests {
 
     fn token_text() -> String {
         "t".repeat(HOOK_TOKEN_LEN)
+    }
+
+    /// The programs `dudes upgrade` runs get a short allowlist, and not `DUDES_INSTALL_BASE_URL`,
+    /// so the environment cannot point an upgrade at another source.
+    #[test]
+    fn upgrade_children_get_the_allowlist_and_never_the_install_source() {
+        let resolved = env(&[
+            ("PATH", "/usr/bin:/bin"),
+            ("DUDES_INSTALL_BASE_URL", "http://127.0.0.1:1"),
+            ("HTTPS_PROXY", "http://proxy.example:3128"),
+            ("DUDES_TOKEN", "secret"),
+            ("OPENAI_API_KEY", "secret"),
+        ]);
+        assert_eq!(
+            resolved.upgrade_env(),
+            [
+                EnvVar::new("PATH", "/usr/bin:/bin"),
+                EnvVar::new("HTTPS_PROXY", "http://proxy.example:3128"),
+            ]
+        );
     }
 
     /// `DUDES_SOCK` wins over the runtime directory, and the runtime directory is still resolved —

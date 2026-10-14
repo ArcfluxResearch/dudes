@@ -144,6 +144,7 @@ pub fn run(
         }
         Command::Login(provider) => login(*provider, terminal.is_some(), env, out),
         Command::Uninstall(options) => uninstall_command(*options, terminal, env, out, err),
+        Command::Upgrade(options) => upgrade_command(*options, env, out, err),
         Command::Mail(command) => crate::mail::run(command, env, out)
             .map(|()| exit::SUCCESS)
             .map_err(local),
@@ -207,6 +208,63 @@ fn uninstall_command(
         out,
         err,
     ))
+}
+
+/// `dudes upgrade`: the only command that reaches GitHub, through the system curl.
+fn upgrade_command(
+    options: args::UpgradeOptions,
+    env: &Environment,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<u8, Failure> {
+    if env.agent_token().is_some() {
+        render::local_error(
+            err,
+            "upgrade is for the operator and refuses to run with an agent's DUDES_TOKEN set",
+        )
+        .map_err(local)?;
+        return Ok(exit::REFUSED);
+    }
+    let inputs = crate::upgrade::Inputs {
+        windows: cfg!(windows),
+        current: env!("CARGO_PKG_VERSION").to_owned(),
+        executable: std::env::current_exe().map_err(local)?,
+        temp_dir: std::env::temp_dir(),
+        child_env: env.upgrade_env().to_vec(),
+        state_dir: env.state_dir().map_err(local)?.to_path_buf(),
+        lock_wait: Duration::from_secs(5),
+        daemon_override: env.daemon_override().map(Path::to_path_buf),
+    };
+    Ok(crate::upgrade::run(
+        &inputs,
+        options,
+        &SystemRunner,
+        &Lifecycle(env),
+        out,
+        err,
+    ))
+}
+
+struct SystemRunner;
+
+impl crate::upgrade::Runner for SystemRunner {
+    fn run(
+        &self,
+        program: &Path,
+        args: &[OsString],
+        env: &[dudes_providers::launch::EnvVar],
+        limit: Duration,
+    ) -> std::io::Result<crate::runner::Output> {
+        crate::runner::run(program, args, env, limit)
+    }
+}
+
+impl crate::upgrade::Restart for Lifecycle<'_> {
+    fn start(&self, err: &mut dyn Write) -> Result<String, String> {
+        start(self.0, err)
+            .map(|answer| answer.version)
+            .map_err(|failure| failure.message().to_owned())
+    }
 }
 
 /// The daemon `uninstall` and `upgrade` ask, through the same calls `dudes stop` and
@@ -1948,6 +2006,7 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         | Command::Worktree(_)
         | Command::Config(_)
         | Command::Uninstall(_)
+        | Command::Upgrade(_)
         | Command::Ticket(_)
         | Command::Mail(_) => {
             return Err(Failure::Other(Message::Local(

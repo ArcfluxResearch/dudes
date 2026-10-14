@@ -1,8 +1,8 @@
 //! Invariant 7's other half: the CLI names no interpreter route and composes no shell string, and
 //! the scan that says so fires.
 //!
-//! The CLI's three process items start quickstart's daemon, an engine's login, or the
-//! operator's selected editor. Those programs may themselves be scripts. This file confines
+//! The CLI's four process items start quickstart's daemon, an engine's login, the
+//! operator's selected editor, or `dudes upgrade`'s system `curl` and release installer. Those programs may themselves be scripts. This file confines
 //! what Dudes composes: typed argv, an absolute program, and no shell string. Only the editor
 //! resolves a launch program on the operator's `PATH`.
 //!
@@ -110,7 +110,13 @@ const QUOTED_ROUTES: &[&str] = &["\"sh\"", "\"bash\"", "\"/bin/sh\"", "\"-c\""];
 const MIN_FILES: usize = 6;
 
 /// The files that may name a command type, each with one spawn item.
-const ROUTE_FILES: [&str; 3] = ["quickstart.rs", "login.rs", "editor.rs"];
+const ROUTE_FILES: [&str; 4] = ["quickstart.rs", "login.rs", "editor.rs", "runner.rs"];
+
+/// The one interpreter `dudes upgrade` runs: the release's `install.sh`, as `/bin/sh <file> ...`.
+/// `src/upgrade.rs` names it exactly once, and its test module may repeat the path to assert the
+/// argument vector. Every other file naming an interpreter is still refused.
+const INSTALLER_INTERPRETER: &str = "\"/bin/sh\"";
+const INSTALLER_FILES: [&str; 2] = ["upgrade.rs", "upgrade/tests.rs"];
 
 /// The lints whose `allow` or `expect` silences the command-type ban: the two lints it is made of,
 /// the clippy groups that hold them, and every warning at once.
@@ -125,10 +131,11 @@ const BAN_LINTS: [&str; 5] = [
 /// The files of this package that may carry one `#[expect(clippy::disallowed_types)]`, and nothing
 /// else from [`BAN_LINTS`]: the three route items, and the two test helpers that start a real
 /// process (`bins/dudes/clippy.toml` item 3).
-const ADMITTED_EXPECTATIONS: [&str; 5] = [
+const ADMITTED_EXPECTATIONS: [&str; 6] = [
     "src/quickstart.rs",
     "src/login.rs",
     "src/editor.rs",
+    "src/runner.rs",
     "tests/common/mod.rs",
     "tests/windows_pipe_owner.rs",
 ];
@@ -355,6 +362,13 @@ fn route_violations(package: &Path) -> Vec<String> {
     let name = |path: &Path| format!("src/{}", path.strip_prefix(&src).unwrap_or(path).display());
     let mut violations = Vec::new();
     for hit in &found {
+        if hit.route == INSTALLER_INTERPRETER
+            && INSTALLER_FILES
+                .iter()
+                .any(|file| hit.path == src.join(file))
+        {
+            continue;
+        }
         if !COMMAND_ROUTES.contains(&hit.route) {
             violations.push(format!(
                 "(a) {}:{} {}",
@@ -375,6 +389,7 @@ fn route_violations(package: &Path) -> Vec<String> {
         ("quickstart.rs", &COMMAND_ROUTES[..]),
         ("login.rs", &COMMAND_ROUTES[..1]),
         ("editor.rs", &COMMAND_ROUTES[..1]),
+        ("runner.rs", &COMMAND_ROUTES[..1]),
     ] {
         for route in routes {
             if !found
@@ -384,6 +399,15 @@ fn route_violations(package: &Path) -> Vec<String> {
                 violations.push(format!("(b') src/{file} carries no {route}"));
             }
         }
+    }
+    let installer = found
+        .iter()
+        .filter(|hit| hit.route == INSTALLER_INTERPRETER && hit.path == src.join("upgrade.rs"))
+        .count();
+    if installer != 1 {
+        violations.push(format!(
+            "(e) src/upgrade.rs names {INSTALLER_INTERPRETER} {installer} times, not once"
+        ));
     }
     violations.extend(attribute_violations(package));
     violations.sort();
@@ -528,6 +552,47 @@ fn the_route_mutants_fail_as_designed() {
                 + 1
         )],
         "an interpreter inside a route file still fails (a)"
+    );
+}
+
+/// `dudes upgrade` may name its installer's interpreter once, and nothing else may spawn or interpret.
+#[test]
+fn the_upgrade_interpreter_is_confined_to_one_spelling() {
+    let twice = mutated_package(|package| {
+        append_to(
+            &package.join("src/upgrade.rs"),
+            "const AGAIN: &str = \"/bin/sh\";",
+        );
+    });
+    assert_eq!(
+        route_violations(twice.path()),
+        vec!["(e) src/upgrade.rs names \"/bin/sh\" 2 times, not once"],
+        "a second interpreter spelling in the upgrade file fails (e)"
+    );
+
+    let bash = mutated_package(|package| {
+        append_to(
+            &package.join("src/upgrade.rs"),
+            "const OTHER: &str = \"bash\";",
+        );
+    });
+    assert_eq!(
+        route_violations(bash.path()).len(),
+        1,
+        "any other interpreter in the upgrade file fails (a)"
+    );
+
+    let spawn = mutated_package(|package| {
+        append_to(
+            &package.join("src/upgrade.rs"),
+            "fn go() {\n    let _ = std::process::Command::new(\"/usr/bin/true\");\n}",
+        );
+    });
+    assert!(
+        route_violations(spawn.path())
+            .iter()
+            .any(|line| line.starts_with("(b) src/upgrade.rs:")),
+        "a command in the upgrade file fails (b): only runner.rs may spawn"
     );
 }
 
@@ -3358,4 +3423,198 @@ mod route_items {
             assert_eq!(found, expected, "{name}");
         }
     }
+}
+
+/// `src/runner.rs` is the one place `dudes upgrade` creates a process, and it makes only the calls
+/// that run an absolute program with a cleared environment, typed arguments and no standard input.
+mod runner_item {
+    use std::path::Path;
+
+    use syn::visit::{self, Visit};
+    use syn::{Expr, ExprCall, ExprMethodCall};
+
+    #[derive(Default)]
+    struct Calls {
+        methods: Vec<String>,
+        paths: Vec<String>,
+        programs: Vec<String>,
+    }
+
+    impl<'ast> Visit<'ast> for Calls {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            self.methods.push(call.method.to_string());
+            visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+            if let Expr::Path(path) = &*call.func {
+                let name = path
+                    .path
+                    .segments
+                    .iter()
+                    .map(|segment| segment.ident.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                if name.ends_with("Command::new") {
+                    self.programs.push(
+                        call.args
+                            .iter()
+                            .map(|arg| match arg {
+                                Expr::Path(path) => path
+                                    .path
+                                    .get_ident()
+                                    .map_or_else(|| "?".to_owned(), ToString::to_string),
+                                _ => "?".to_owned(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    );
+                }
+                self.paths.push(name);
+            }
+            visit::visit_expr_call(self, call);
+        }
+    }
+
+    fn violations(text: &str) -> Vec<String> {
+        let file = syn::parse_file(text).expect("the runner parses");
+        let mut calls = Calls::default();
+        calls.visit_file(&file);
+        calls.methods.sort();
+        calls.paths.sort();
+        let mut found = Vec::new();
+        let methods = [
+            "and_then",
+            "args",
+            "env",
+            "env_clear",
+            "expose_value",
+            "id",
+            "join",
+            "join",
+            "kill",
+            "map",
+            "map",
+            "name",
+            "ok",
+            "process_group",
+            "read_to_end",
+            "spawn",
+            "stderr",
+            "stdin",
+            "stdout",
+            "success",
+            "take",
+            "take",
+            "try_wait",
+            "unwrap_or_default",
+            "unwrap_or_default",
+            "wait",
+        ];
+        if calls.methods != methods {
+            found.push(format!("methods: {:?}", calls.methods));
+        }
+        let paths = [
+            "Box::new",
+            "Box::new",
+            "Duration::from_millis",
+            "Duration::from_millis",
+            "Duration::from_secs",
+            "Err",
+            "Instant::now",
+            "Instant::now",
+            "Instant::now",
+            "Instant::now",
+            "Ok",
+            "Stdio::null",
+            "Stdio::piped",
+            "Stdio::piped",
+            "Vec::new",
+            "drain",
+            "drain",
+            "i32::try_from",
+            "io::Error::new",
+            "kill_process_group",
+            "kill_process_group",
+            "std::process::Command::new",
+            "std::thread::sleep",
+            "std::thread::sleep",
+            "std::thread::spawn",
+            "stop_group",
+        ];
+        if calls.paths != paths {
+            found.push(format!("calls: {:?}", calls.paths));
+        }
+        if calls.programs != ["program"] {
+            found.push(format!("program: {:?}", calls.programs));
+        }
+        found
+    }
+
+    fn source() -> String {
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runner.rs"))
+            .expect("the runner source")
+    }
+
+    #[test]
+    fn the_runner_makes_only_its_admitted_calls() {
+        assert_eq!(violations(&source()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn runner_mutants_are_rejected() {
+        let text = source();
+        for (name, from, to) in [
+            (
+                "a second spawn",
+                "let mut child = command.spawn()?;",
+                "let _first = command.spawn()?;\n    let mut child = command.spawn()?;",
+            ),
+            ("inherited environment", "    command.env_clear();\n", ""),
+            (
+                "a composed program",
+                "Command::new(program)",
+                "Command::new(\"/usr/bin/true\")",
+            ),
+            (
+                "an inherited stdin",
+                "    command.stdin(Stdio::null());\n",
+                "",
+            ),
+            (
+                "a process group of its own",
+                "    command.process_group(0);\n",
+                "",
+            ),
+        ] {
+            assert_eq!(
+                text.matches(from).count(),
+                1,
+                "{name}: the mutation target drifted"
+            );
+            assert!(
+                !violations(&text.replacen(from, to, 1)).is_empty(),
+                "surviving {name}"
+            );
+        }
+    }
+}
+
+/// Only the upgrade command and the one `SystemRunner` in `run.rs` may reach the process runner.
+#[test]
+fn only_upgrade_and_its_system_runner_reference_the_runner() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut users = Vec::new();
+    walk(&src, &mut |path| {
+        if path.extension().is_none_or(|ext| ext != "rs") || path.ends_with("runner.rs") {
+            return;
+        }
+        let text = std::fs::read_to_string(path).expect("a source file");
+        let (_, code) = masked(&text);
+        if code.contains("runner::") {
+            users.push(path.strip_prefix(&src).unwrap().display().to_string());
+        }
+    });
+    users.sort();
+    assert_eq!(users, ["run.rs", "upgrade.rs"]);
 }

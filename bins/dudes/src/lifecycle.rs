@@ -118,6 +118,8 @@ pub(crate) mod fake {
         pub(crate) listed: Vec<PathBuf>,
         pub(crate) list_fails: bool,
         pub(crate) gone_after_stop: bool,
+        pub(crate) start_fails: bool,
+        pub(crate) started_as: Option<&'static str>,
         pub(crate) plant_on_stop: Option<PathBuf>,
         pub(crate) events: RefCell<Vec<String>>,
     }

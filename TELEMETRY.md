@@ -1,7 +1,8 @@
 # What Dudes and its engines send
 
 This guide describes the current source. The `duded`, `dudes`, and `dudes-hook`
-binaries built from this source use local connections.
+binaries built from this source use local connections. Dudes connects to GitHub only
+when you run `dudes upgrade`, to download a release. It never checks for updates on its own.
 Usage and error information can pass through those local connections.
 Separate programs launched by Dudes can make their own network connections.
 
@@ -39,6 +40,13 @@ See [what agents can do on your machine](docs/what-agents-can-do.md).
 
 The installer is separate from the installed binaries. It uses `curl` to download
 release archives and `SHA256SUMS` from GitHub. See [release verification](SECURITY.md).
+`dudes upgrade` runs that installer for you. It makes no connection itself: it starts the
+system `curl` at `/usr/bin/curl` twice, once to read which release is latest and once to
+download that release's `install.sh`. Both requests use HTTPS only. It then runs the script
+with `/bin/sh`. The script downloads the release archive and `SHA256SUMS` from GitHub release
+URLs over HTTPS. Its `DUDES_INSTALL_BASE_URL` override, which can name another HTTPS location
+or a loopback HTTP one for testing, is not passed on by `dudes upgrade`.
+`dudes upgrade --check` makes only the first request.
 
 ## Engine traffic and controls
 
@@ -110,6 +118,9 @@ The source is available for inspection. CI's `cargo xtask layering --strict`
 checks dependency layering, rejects known HTTP and TLS client dependencies for
 the shipped binaries, and scans their reachable Rust source for known outbound
 socket and DNS APIs. It permits IPC. The client separately validates custom
-Windows pipe paths before connecting. These static checks do not isolate engines or other child programs.
+Windows pipe paths before connecting. The `dudes` source test `no_interpreter`
+confines process creation to a few named files and permits the one interpreter
+that `dudes upgrade` runs, so the upgrade's `curl` and installer are the only
+connections `dudes upgrade` starts. These static checks do not isolate engines or other child programs.
 They are not a runtime traffic recording or proof against every possible
 implementation.

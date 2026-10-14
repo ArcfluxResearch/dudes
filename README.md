@@ -35,8 +35,12 @@ build that runs on any distribution. `~/.local/bin/dudes --version` checks the i
 a specific version, run the script with `sh -s -- --version <version>`. You also need at least one of the `claude`,
 `codex` or `pi` CLIs, signed in.
 
-To upgrade, run the same install command again, then `dudes stop` and `dudes start`. There is
-no separate upgrade command, and a running daemon keeps using the old binary until it stops.
+To upgrade, run `dudes upgrade`. It asks GitHub for the latest release, installs it with that release's
+`install.sh` (which checks the download against the release's `SHA256SUMS`), then stops the running daemon and
+starts the new one. It refuses while an agent is running a turn, waiting for an answer or attached to your session, unless you add `--now`, which restarts with closing time (up to 6 minutes for agents to save), and it never installs an older
+release. `dudes upgrade --check` prints the current and latest versions and changes nothing. It only works for a
+copy that `install.sh` installed. Running the install command again, then `dudes stop` and `dudes start`, does the
+same by hand. Dudes connects to GitHub only when you run `dudes upgrade`, and never checks for updates on its own.
 
 To build from source, or on Windows, see [Build Dudes from source](docs/building-from-source.md).
 If the daemon later refuses to start because a Floor directory is writable by its group, run the

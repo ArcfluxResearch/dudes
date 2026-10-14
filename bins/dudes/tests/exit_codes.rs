@@ -312,3 +312,20 @@ fn uninstall_refused_for_an_agents_token_exits_three() {
         .run();
     assert_eq!(run.code(), 3, "{}", run.output());
 }
+
+/// A deliberate refusal by `upgrade` is exit 3, as a literal: a copy `install.sh` did not put
+/// there is one, and it is refused before any network request.
+#[cfg(unix)]
+#[test]
+fn upgrade_refused_for_a_build_that_install_sh_did_not_make_exits_three() {
+    let run = Cli::bare()
+        .env("DUDES_STATE_DIR", "/nonexistent/state")
+        .args(["upgrade", "--check"])
+        .run();
+    assert_eq!(run.code(), 3, "{}", run.output());
+    assert!(
+        run.stderr.starts_with("dudes: this copy of dudes ("),
+        "{}",
+        run.stderr
+    );
+}
