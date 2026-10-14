@@ -33,6 +33,7 @@ mod blake3_pure;
 mod dist;
 mod env_pairs;
 mod gate;
+mod gate_instructions;
 mod layering;
 mod lints;
 mod metadata;
@@ -103,6 +104,19 @@ fn run() -> Result<()> {
         "gate" => {
             let workspace = announce()?;
             gate::run(&workspace)
+        }
+        "gate-instructions" => {
+            let crash_journal = required_path(&rest, "--crash-journal")?;
+            let crash_export = required_path(&rest, "--crash-export")?;
+            let control_journal = required_path(&rest, "--control-journal")?;
+            let control_export = required_path(&rest, "--control-export")?;
+            announce_on_stderr()?;
+            gate_instructions::run(
+                &crash_journal,
+                &crash_export,
+                &control_journal,
+                &control_export,
+            )
         }
         "blake3-pure" => {
             // Arguments first: a usage error should not depend on finding a workspace.
@@ -184,6 +198,9 @@ fn print_usage() {
          export --state <dir> [--from-journal]\n                     \
          print the projection export of <dir>, from its store or from a replay\n  \
          gate               run the end-to-end gate transcript: arm 1, arm 2 and the control\n  \
+         gate-instructions --crash-journal <file> --crash-export <file>\n                     \
+         --control-journal <file> --control-export <file>\n                     \
+         validate the exact instruction histories retained by the gate\n  \
          blake3-pure [--target <triple>]\n                     \
          check that blake3's `pure` feature is not enabled in the resolved graph\n  \
          dist [--target <triple>]\n                     \

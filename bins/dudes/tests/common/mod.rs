@@ -41,6 +41,8 @@
 //! statement from the daemon's own side.
 #![allow(dead_code)]
 
+mod managed_native;
+
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -66,7 +68,8 @@ use dudes_providers::launch::{EnvVar, LaunchSpec};
 use dudes_providers::registry::Adapters;
 use dudes_rpc::auth::{PeerIdentity, PeerProvenance, PeerResolution, PeerResolver};
 use dudes_supervisor::host::{
-    AdoptionKey, Clock, HostBoot, KillOutcome, Liveness, ProcessHost, SpawnResult,
+    AdoptionKey, Clock, HostBoot, KillOutcome, Liveness, NativeBoundaryAcknowledgement,
+    NativeBoundaryReceipt, OwnedTargets, ProcessHost, SpawnResult,
 };
 use dudes_supervisor::testing::{FakeHost, FakeRng};
 use dudes_types::{Lsn, Timestamp, Tokens, Usd};
@@ -106,6 +109,7 @@ pub(crate) struct SharedHost(
     Arc<Mutex<FakeHost>>,
     Option<ShutdownHold>,
     Option<fn() -> io::Error>,
+    Option<Arc<Mutex<managed_native::ManagedNativeState>>>,
 );
 
 impl SharedHost {
@@ -114,12 +118,13 @@ impl SharedHost {
             Arc::new(Mutex::new(FakeHost::wall_clock_anchored())),
             None,
             None,
+            None,
         )
     }
 
     /// A host whose `shutdown` waits at `hold`, so a test can act while the daemon is mid-exit.
     pub(crate) fn holding_shutdown(hold: ShutdownHold) -> Self {
-        Self(Self::new().0, Some(hold), None)
+        Self(Self::new().0, Some(hold), None, None)
     }
 
     pub(crate) fn failing_shutdown() -> Self {
@@ -127,6 +132,7 @@ impl SharedHost {
             Self::new().0,
             None,
             Some(|| io::Error::other("injected unresolved managed child ownership")),
+            None,
         )
     }
 
@@ -137,6 +143,7 @@ impl SharedHost {
             Self::new().0,
             None,
             Some(|| io::Error::other(dudes_supervisor::host::ContainmentUnproven)),
+            None,
         )
     }
 
@@ -152,10 +159,7 @@ impl SharedHost {
 
 impl ProcessHost for SharedHost {
     fn spawn(&mut self, spec: &LaunchSpec, install: &ManagedInstall) -> SpawnResult {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .spawn(spec, install)
+        self.spawn_with_native(spec, install)
     }
 
     fn kill(&mut self, key: &AdoptionKey) -> KillOutcome {
@@ -177,6 +181,18 @@ impl ProcessHost for SharedHost {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .boot_identity()
+    }
+
+    fn owned_targets(&self, limit: usize) -> OwnedTargets {
+        self.native_owned_targets(limit)
+    }
+
+    fn acknowledge_native_boundary_absence(
+        &mut self,
+        key: &AdoptionKey,
+        receipt: &NativeBoundaryReceipt,
+    ) -> NativeBoundaryAcknowledgement {
+        self.acknowledge_native(key, receipt)
     }
 
     fn shutdown(&mut self) -> io::Result<()> {
@@ -427,6 +443,8 @@ pub(crate) fn seams_with(
     runner: Arc<OpenRunner>,
     resolver: Arc<dyn PeerResolver>,
 ) -> Seams<SharedHost, OpenRunner, TestClock, FakeRng> {
+    let children = duded::ChildEnds::new();
+    host.bind_child_ends(Arc::clone(&children));
     Seams {
         host,
         pty_host: Box::new(duded::ports::ClosedPtyHost),
@@ -439,10 +457,7 @@ pub(crate) fn seams_with(
         adapters: Adapters::new([
             Box::new(ClaudeAdapter::new(ClaudeConfig::default())) as Box<dyn Adapter>
         ]),
-        // A fake host opens no pipe, so nothing ever reaches this sink here; it is supplied
-        // because the daemon's executor registers every spawned child against one. The test that
-        // drives a real child through it is `bins/duded/tests/managed_turn.rs`.
-        children: duded::ChildEnds::new(),
+        children,
         witness: Witness::default(),
     }
 }

@@ -120,6 +120,51 @@ fn fail_predicate(harness: &mut Harness, agent: AgentId) {
     });
 }
 
+fn restart_and_judge_unchecked_end(harness: &mut Harness, agent: AgentId) {
+    let goal = harness.supervisor.world().agents[&agent]
+        .goal
+        .expect("current goal");
+    let turn = harness.supervisor.world().goals[&goal]
+        .last_turn
+        .expect("actual ended turn");
+    assert!(
+        harness
+            .supervisor
+            .world()
+            .instructions
+            .has_attempt_for_turn(turn)
+    );
+    let end = harness
+        .journal
+        .iter()
+        .rposition(
+            |entry| matches!(entry.record, Record::TurnEnded { turn: ended, .. } if ended == turn),
+        )
+        .expect("the last turn really ended");
+    assert!(!harness.journal[end + 1..].iter().any(|entry|
+        matches!(entry.record, Record::PredicateResult { turn: Some(judged), .. } if judged == turn)),
+        "only an end without a recorded result owes this recovery check");
+    let before = harness.trace.len();
+    harness.restart();
+    let checks: Vec<_> = harness.trace[before..]
+        .iter()
+        .filter_map(|seen| match seen {
+            Seen::RunPredicate { goal } => Some(*goal),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(checks, vec![goal], "restart must emit the exact owed check");
+    fail_predicate(harness, agent);
+    assert!(
+        harness.journal[end + 1..].iter().any(
+            |entry| matches!(entry.record, Record::PredicateResult {
+            goal: judged_goal, turn: Some(judged), provenance: dudes_types::Provenance::Observed, ..
+        } if judged_goal == goal && judged == turn)
+        ),
+        "the actual recovery result is persisted before another issue"
+    );
+}
+
 /// `journal` as a build that predates `TurnIssued.answers` wrote it: no `TurnIssued` has the key,
 /// and each entry is decoded from JSON, as a replay decodes it. Also returns how many records lost
 /// a list, so a caller can show the conversion had something to remove.
@@ -569,7 +614,7 @@ fn a_turn_issued_before_answers_were_recorded_retires_older_pending_answers() {
     harness.journal = old;
     // The restart decides at once. Holding its launch keeps anything it carried visible as pending.
     harness.launch = false;
-    harness.restart();
+    restart_and_judge_unchecked_end(&mut harness, agent);
     let turns = issued(&harness);
     assert_eq!(turns.len(), 3, "{turns:?}");
     assert!(turns[2].2.is_empty(), "the first turn after it lists none");
@@ -590,7 +635,7 @@ fn a_turn_issued_before_answers_were_recorded_retires_older_pending_answers() {
     let second = unasked.open_turn(quiet).expect("the predicate failed");
     exit(&mut unasked, second);
     unasked.launch = false;
-    unasked.restart();
+    restart_and_judge_unchecked_end(&mut unasked, quiet);
     let digest = last_digest(&harness);
     assert_eq!(digest.len(), 64, "a digest, not the sentinel");
     assert_eq!(digest, last_digest(&unasked));
@@ -613,7 +658,7 @@ fn a_turn_issued_before_answers_were_recorded_retires_older_pending_answers() {
     assert_eq!(stripped, 1);
     harness.journal = old;
     harness.launch = false;
-    harness.restart();
+    restart_and_judge_unchecked_end(&mut harness, agent);
     assert_eq!(pending(&harness, agent), vec![late]);
     let turns = issued(&harness);
     assert_eq!(turns.len(), 3, "{turns:?}");
@@ -662,7 +707,7 @@ fn a_deferred_answer_survives_a_turn_that_carried_the_older_ones() {
 
     exit(&mut harness, turns[1].0);
     harness.launch = false;
-    harness.restart();
+    restart_and_judge_unchecked_end(&mut harness, agent);
     assert_eq!(
         pending(&harness, agent),
         vec![deferred],

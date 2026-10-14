@@ -144,6 +144,7 @@ fn provider_sources_perform_no_io_and_read_no_environment() {
             "codex/startup.rs",
             "codex/stream.rs",
             "codex/version.rs",
+            "instructions.rs",
             "launch.rs",
             "lib.rs",
             "mcp.rs",

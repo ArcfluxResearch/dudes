@@ -74,14 +74,19 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::Arc;
+use std::sync::{
+    Arc, Mutex, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::Duration;
 
 use dudes_providers::adapter::{HookInstall, ManagedInstall};
 use dudes_providers::launch::LaunchSpec;
 use dudes_supervisor::host::{
-    AdoptionKey, HostBoot, KillOutcome, Liveness, ProbeAnswer, ProcessHost, SpawnResult, liveness,
+    AdoptionKey, HostBoot, KillOutcome, Liveness, MAX_OWNED_TARGET_QUERY_ROWS,
+    NativeBoundaryAcknowledgement, NativeBoundaryReceipt, OwnedTargetEvidence, OwnedTargetState,
+    OwnedTargets, OwnedTargetsStatus, ProbeAnswer, ProcessHost, SpawnResult, liveness,
 };
 
 use crate::stream::ExitSlot;
@@ -125,6 +130,11 @@ use macos as plat;
 mod windows;
 #[cfg(windows)]
 use windows as plat;
+
+#[cfg(windows)]
+use plat::native_boundary_state;
+#[cfg(not(windows))]
+use plat::target_state as native_boundary_state;
 
 pub mod oneshot;
 mod protocol;
@@ -257,7 +267,17 @@ struct Owned {
     /// individual kill can select this child. Shutdown signals it while the watcher still holds
     /// the reservation; after reap, the per-signal authority check withholds any later numeric signal rather than guessing.
     key: Option<AdoptionKey>,
+    cwd: PathBuf,
+    reap_confirmed: Arc<AtomicBool>,
+    native_receipt: NativeBoundaryReceipt,
     protocol: Option<ProtocolWriter>,
+}
+
+struct CurrentNativeTarget {
+    key: Option<AdoptionKey>,
+    cwd: PathBuf,
+    receipt: NativeBoundaryReceipt,
+    absence_observed: bool,
 }
 
 impl Drop for Owned {
@@ -285,6 +305,7 @@ impl Drop for Owned {
 pub struct RealHost {
     boot: BootIdentity,
     children: BTreeMap<u32, Owned>,
+    current_native_targets: Mutex<BTreeMap<u32, CurrentNativeTarget>>,
     /// The process relation this host maintains for its children, shared with the local door.
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     peers: PeerProcesses,
@@ -587,6 +608,7 @@ impl RealHost {
         Self {
             boot,
             children: BTreeMap::new(),
+            current_native_targets: Mutex::new(BTreeMap::new()),
             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
             peers,
             grace,
@@ -686,7 +708,10 @@ mod spawn_failure_tests {
 
     use dudes_providers::adapter::ManagedInstall;
     use dudes_providers::launch::{EnvVar, LaunchSpec};
-    use dudes_supervisor::host::{ProcessHost, SpawnResult};
+    use dudes_supervisor::host::{
+        Liveness, NativeBoundaryAcknowledgement, NativeBoundaryReceipt, OwnedTargetState,
+        OwnedTargetsStatus, ProcessHost, SpawnResult,
+    };
 
     use super::kill::TestCleanupEvidence;
     use super::{RealHost, SetupFault};
@@ -720,6 +745,17 @@ mod spawn_failure_tests {
                 #[allow(clippy::zombie_processes)]
                 let _child = command.spawn().expect("spawn escaped descendant");
                 heartbeat(mark);
+            }
+            #[cfg(unix)]
+            Some(role @ ("exit-with-escaped-descendant" | "exit-with-retained-descendant")) => {
+                let mark = mark.as_deref().expect("escaped descendant mark");
+                let mut command = helper_command("park", mark);
+                if role == "exit-with-escaped-descendant" {
+                    super::unix::prepare(&mut command);
+                }
+                #[allow(clippy::zombie_processes)]
+                let _child = command.spawn().expect("spawn query test descendant");
+                await_beating(mark);
             }
             Some(other) => panic!("unknown helper role {other}"),
         }
@@ -1104,6 +1140,586 @@ mod spawn_failure_tests {
     }
 
     #[test]
+    fn owned_target_queries_preserve_full_keys_and_bound_the_inventory() {
+        let root = tempfile::tempdir().expect("owned target inventory");
+        let mut host = RealHost::with_grace(Duration::from_millis(100));
+        let first_mark = root.path().join("first.pid");
+        let mut launch = spec_with_mark("park", None, Some(&first_mark));
+        launch.cwd = root.path().to_path_buf();
+        let first = match host.spawn(&launch, &ManagedInstall::default()) {
+            SpawnResult::Spawned(key) => key,
+            other => panic!("first target did not spawn: {other:?}"),
+        };
+        let second_mark = root.path().join("second.pid");
+        launch = spec_with_mark("park", None, Some(&second_mark));
+        launch.cwd = root.path().to_path_buf();
+        let second = match host.spawn(&launch, &ManagedInstall::default()) {
+            SpawnResult::Spawned(key) => key,
+            other => panic!("second target did not spawn: {other:?}"),
+        };
+        await_beating(&first_mark);
+        await_beating(&second_mark);
+        let omitted = host.owned_targets(0);
+        assert_eq!(omitted.status, OwnedTargetsStatus::Truncated { omitted: 2 });
+        assert!(omitted.targets.is_empty());
+        let bounded = host.owned_targets(1);
+        assert_eq!(bounded.status, OwnedTargetsStatus::Truncated { omitted: 1 });
+        assert_eq!(bounded.targets.len(), 1);
+        let all = host.owned_targets(usize::MAX);
+        assert_eq!(all.status, OwnedTargetsStatus::Complete);
+        assert_eq!(all.targets.len(), 2);
+        for key in [&first, &second] {
+            let target = all
+                .targets
+                .iter()
+                .find(|target| target.key.as_ref().is_some_and(|seen| seen.pid == key.pid))
+                .expect("each owned key is present");
+            let seen = target.key.as_ref().expect("the target retains its key");
+            assert_eq!(seen.start_time, key.start_time);
+            assert_eq!(seen.boot, key.boot);
+            assert_eq!(target.cwd, root.path());
+            assert_eq!(target.state, OwnedTargetState::Present);
+        }
+        let recycled = dudes_supervisor::host::AdoptionKey {
+            start_time: first.start_time.wrapping_add(1),
+            ..first.clone()
+        };
+        assert_eq!(host.alive(&first), Liveness::Alive);
+        assert_eq!(host.alive(&recycled), Liveness::Gone);
+        host.children
+            .get_mut(&first.pid)
+            .expect("the retained first row")
+            .key = Some(recycled);
+        let recycled_row = host
+            .owned_targets(2)
+            .targets
+            .into_iter()
+            .find(|target| {
+                target
+                    .key
+                    .as_ref()
+                    .is_some_and(|seen| seen.pid == first.pid)
+            })
+            .expect("the recycled row is still retained");
+        assert_eq!(recycled_row.state, OwnedTargetState::UnknownIdentity);
+        host.children
+            .get_mut(&first.pid)
+            .expect("the retained first row")
+            .key = Some(first.clone());
+        assert_eq!(host.owned(), 2, "read-only queries retain both rows");
+        let first_receipt = host.children[&first.pid].native_receipt.clone();
+        assert!(matches!(
+            host.kill(&first),
+            dudes_supervisor::host::KillOutcome::Signalled
+        ));
+        let missing = host
+            .owned_targets(2)
+            .targets
+            .into_iter()
+            .find(|target| super::same_recorded_keys(target.key.as_ref(), Some(&first)))
+            .unwrap();
+        assert_eq!(missing.state, OwnedTargetState::UnknownMissingCapability);
+        assert!(missing.native_absence_receipt.is_none());
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&first, &first_receipt),
+            NativeBoundaryAcknowledgement::UnknownMissingCapability
+        );
+        expect_unresolved_shutdown(&mut host, "the native targets have incomplete coverage");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_boundary_absence_does_not_cover_an_escaped_descendant() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        struct EndedStream(Arc<AtomicBool>);
+        impl crate::ChildStreams for EndedStream {
+            fn watch(
+                &self,
+                _key: Option<&dudes_supervisor::host::AdoptionKey>,
+            ) -> Box<dyn crate::ChildStream> {
+                Box::new(Self(Arc::clone(&self.0)))
+            }
+        }
+        impl crate::ChildStream for EndedStream {
+            fn line(&mut self, _text: &str) {}
+
+            fn ended(self: Box<Self>, _exit: crate::ChildExit) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let root = tempfile::tempdir().expect("retained descendant query");
+        let mark = root.path().join("descendant.pid");
+        let ended = Arc::new(AtomicBool::new(false));
+        let mut host = RealHost::watching_with_grace(
+            Arc::new(EndedStream(Arc::clone(&ended))),
+            Duration::from_millis(100),
+        );
+        let mut launch = spec_with_mark("exit-with-escaped-descendant", None, Some(&mark));
+        launch.cwd = root.path().to_path_buf();
+        let key = match host.spawn(&launch, &ManagedInstall::default()) {
+            SpawnResult::Spawned(key) => key,
+            other => panic!("retained descendant leader did not spawn: {other:?}"),
+        };
+        let descendant_pid = await_number(&mark);
+        let mut descendant = QueryDescendant::track(descendant_pid);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !ended.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "the leader stream did not end");
+            sleep(Duration::from_millis(5));
+        }
+        await_beating(&mark);
+        assert_eq!(host.alive(&key), Liveness::Gone);
+        let answer = host.owned_targets(1);
+        assert_eq!(answer.status, OwnedTargetsStatus::Complete);
+        assert_eq!(answer.targets.len(), 1);
+        assert_eq!(answer.targets[0].cwd, root.path());
+        assert_eq!(
+            answer.targets[0].state,
+            OwnedTargetState::NativeBoundaryAbsent
+        );
+        assert_eq!(host.owned(), 1);
+        let stopped = descendant.host.kill(&descendant.key);
+        assert!(matches!(
+            stopped,
+            dudes_supervisor::host::KillOutcome::Signalled
+        ));
+        await_stopped(descendant_pid, &mark, "the test descendant did not stop");
+        assert_eq!(
+            host.owned_targets(1).targets[0].state,
+            OwnedTargetState::NativeBoundaryAbsent,
+            "scoped absence says nothing about the escaped descendant"
+        );
+        expect_unresolved_shutdown(&mut host, "shutdown containment remains unproven");
+    }
+
+    #[cfg(unix)]
+    struct QueryDescendant {
+        host: RealHost,
+        key: dudes_supervisor::host::AdoptionKey,
+    }
+
+    #[cfg(unix)]
+    impl QueryDescendant {
+        fn track(pid: u32) -> Self {
+            let host = RealHost::with_grace(Duration::from_millis(100));
+            let key = host
+                .read_key(pid, &super::plat::grip_adopted(pid))
+                .expect("the test descendant has a full adoption key");
+            Self { host, key }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for QueryDescendant {
+        fn drop(&mut self) {
+            let _ = self.host.kill(&self.key);
+        }
+    }
+
+    fn completed_query_target(host: &mut RealHost) -> dudes_supervisor::host::AdoptionKey {
+        let key = match host.spawn(&spec("exit", None), &ManagedInstall::default()) {
+            SpawnResult::Spawned(key) => key,
+            other => panic!("the completed query target did not spawn: {other:?}"),
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !host.children[&key.pid]
+            .reap_confirmed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the completed target's successful reap was not published"
+            );
+            sleep(Duration::from_millis(5));
+        }
+        key
+    }
+
+    fn observed_absence(
+        host: &RealHost,
+        key: &dudes_supervisor::host::AdoptionKey,
+    ) -> dudes_supervisor::host::OwnedTargetEvidence {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let target = host
+                .owned_targets(512)
+                .targets
+                .into_iter()
+                .find(|target| super::same_recorded_keys(target.key.as_ref(), Some(key)))
+                .expect("the current query contains the exact keyed attempt");
+            if target.state == OwnedTargetState::NativeBoundaryAbsent {
+                return target;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the native target did not become absent"
+            );
+            sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn withheld_acknowledgement_and_rebound_identity_preserve_exact_absence_receipts() {
+        let mut host = RealHost::with_grace(Duration::from_millis(100));
+        let key = completed_query_target(&mut host);
+        let first = observed_absence(&host, &key);
+        let first_receipt = first.native_absence_receipt.unwrap();
+        let retry = observed_absence(&host, &key);
+        assert_eq!(retry.native_absence_receipt, Some(first_receipt.clone()));
+        assert_eq!(host.owned(), 1, "withheld settlement retains ownership");
+
+        host.children.get_mut(&key.pid).unwrap().native_receipt = NativeBoundaryReceipt::fresh();
+        host.index_native_target(key.pid);
+        let rebound_receipt = host.children[&key.pid].native_receipt.clone();
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &rebound_receipt),
+            NativeBoundaryAcknowledgement::RefusedUnobserved
+        );
+        let rebound = observed_absence(&host, &key);
+        assert_eq!(
+            rebound.native_absence_receipt,
+            Some(rebound_receipt.clone())
+        );
+        assert_ne!(first_receipt, rebound_receipt);
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &first_receipt),
+            NativeBoundaryAcknowledgement::UnknownIdentity,
+            "an equal pid, start value and boot cannot reuse an earlier attempt's receipt"
+        );
+        let stale_key = dudes_supervisor::host::AdoptionKey {
+            start_time: key.start_time.wrapping_add(1),
+            ..key.clone()
+        };
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&stale_key, &rebound_receipt),
+            NativeBoundaryAcknowledgement::UnknownIdentity
+        );
+        let foreign_boot = dudes_supervisor::host::AdoptionKey {
+            boot: if key.boot.is_some() {
+                None
+            } else {
+                Some("another-boot".into())
+            },
+            ..key.clone()
+        };
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&foreign_boot, &rebound_receipt),
+            NativeBoundaryAcknowledgement::UnknownIdentity
+        );
+        assert_eq!(
+            observed_absence(&host, &key).native_absence_receipt,
+            Some(rebound_receipt.clone())
+        );
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &rebound_receipt),
+            NativeBoundaryAcknowledgement::Acknowledged
+        );
+        let acknowledged = host.owned_targets(1);
+        assert_eq!(acknowledged.status, OwnedTargetsStatus::Complete);
+        assert!(acknowledged.targets.is_empty());
+        assert_eq!(
+            host.owned(),
+            1,
+            "acknowledgement keeps shutdown capabilities"
+        );
+        expect_unresolved_shutdown(&mut host, "acknowledgement did not prove full containment");
+    }
+
+    #[test]
+    fn acknowledged_history_does_not_fill_the_current_native_target_query_bound() {
+        use super::{
+            CurrentNativeTarget, acknowledge_current_native_target, query_current_native_targets,
+        };
+        use std::collections::BTreeMap;
+
+        let owned: BTreeMap<_, _> = (1..=514)
+            .map(|pid| {
+                let key = dudes_supervisor::host::AdoptionKey {
+                    pid,
+                    start_time: u64::from(pid),
+                    boot: None,
+                };
+                (pid, (key, NativeBoundaryReceipt::fresh()))
+            })
+            .collect();
+        let mut current: BTreeMap<_, _> = owned
+            .iter()
+            .map(|(pid, (key, receipt))| {
+                (
+                    *pid,
+                    CurrentNativeTarget {
+                        key: Some(key.clone()),
+                        cwd: "/fixture".into(),
+                        receipt: receipt.clone(),
+                        absence_observed: false,
+                    },
+                )
+            })
+            .collect();
+        let inspect = |pid: u32, _: &CurrentNativeTarget| {
+            if pid == 514 {
+                OwnedTargetState::Present
+            } else {
+                OwnedTargetState::NativeBoundaryAbsent
+            }
+        };
+        let first = query_current_native_targets(&mut current, usize::MAX, inspect);
+        assert_eq!(first.status, OwnedTargetsStatus::Truncated { omitted: 2 });
+        assert_eq!(first.targets.len(), 512);
+        assert!(
+            first
+                .targets
+                .iter()
+                .all(|target| target.key.as_ref().unwrap().pid != 514)
+        );
+        let withheld = query_current_native_targets(&mut current, 512, inspect);
+        assert_eq!(
+            withheld.status,
+            OwnedTargetsStatus::Truncated { omitted: 2 }
+        );
+        for (observed, retry) in first.targets.iter().zip(&withheld.targets) {
+            assert_eq!(observed.state, OwnedTargetState::NativeBoundaryAbsent);
+            assert_eq!(retry.state, OwnedTargetState::NativeBoundaryAbsent);
+            assert_eq!(
+                observed.native_absence_receipt,
+                retry.native_absence_receipt
+            );
+            let key = observed.key.as_ref().unwrap();
+            let (owned_key, owned_receipt) = &owned[&key.pid];
+            assert_eq!(
+                acknowledge_current_native_target(
+                    &mut current,
+                    key,
+                    observed.native_absence_receipt.as_ref().unwrap(),
+                    Some((Some(owned_key), owned_receipt)),
+                ),
+                NativeBoundaryAcknowledgement::Acknowledged
+            );
+        }
+        let remaining = query_current_native_targets(&mut current, 512, inspect);
+        assert_eq!(remaining.status, OwnedTargetsStatus::Complete);
+        assert_eq!(remaining.targets.len(), 2);
+        let active = remaining
+            .targets
+            .iter()
+            .find(|target| target.key.as_ref().unwrap().pid == 514)
+            .unwrap();
+        assert_eq!(active.state, OwnedTargetState::Present);
+        assert!(active.native_absence_receipt.is_none());
+        assert_eq!(
+            owned.len(),
+            514,
+            "query acknowledgement preserves immutable ownership evidence"
+        );
+        assert_eq!(current.len(), 2);
+    }
+
+    #[test]
+    fn an_ordinary_completed_target_can_be_absent_with_shutdown_ownership_retained() {
+        let mut host = RealHost::with_grace(Duration::from_millis(100));
+        let key = match host.spawn(&spec("exit", None), &ManagedInstall::default()) {
+            SpawnResult::Spawned(key) => key,
+            other => panic!("the completed target did not spawn: {other:?}"),
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let answer = host.owned_targets(1);
+            assert_eq!(answer.status, OwnedTargetsStatus::Complete);
+            assert_eq!(answer.targets.len(), 1);
+            let seen = answer.targets[0]
+                .key
+                .as_ref()
+                .expect("the retained exact key");
+            assert_eq!(seen.pid, key.pid);
+            assert_eq!(seen.start_time, key.start_time);
+            assert_eq!(seen.boot, key.boot);
+            if answer.targets[0].state == OwnedTargetState::NativeBoundaryAbsent {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the native target did not become absent"
+            );
+            sleep(Duration::from_millis(5));
+        }
+        assert_eq!(host.owned(), 1);
+        expect_unresolved_shutdown(
+            &mut host,
+            "scoped absence does not discharge shutdown ownership",
+        );
+        assert_eq!(
+            host.owned_targets(1).targets[0].state,
+            OwnedTargetState::NativeBoundaryAbsent
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_same_group_descendant_prevents_native_boundary_absence_after_leader_reap() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let root = tempfile::tempdir().expect("native group descendant query");
+        let mark = root.path().join("descendant.pid");
+        let mut host = RealHost::with_grace(Duration::from_millis(100));
+        let mut command = helper_command("exit-with-retained-descendant", &mark);
+        command.current_dir(root.path());
+        let prep = super::plat::prepare(&mut command).expect("prepare native process group");
+        let child = command.spawn().expect("spawn native group leader");
+        let pid = child.id();
+        let spawned = super::plat::grip_spawned(prep, &child);
+        let key = host
+            .read_key(pid, &spawned.grip)
+            .expect("the exact owned leader key");
+        let reap_confirmed = Arc::new(AtomicBool::new(false));
+        let confirmed = Arc::clone(&reap_confirmed);
+        let leader_only_exit = super::stream::watch(
+            child,
+            None,
+            None,
+            move || confirmed.store(true, Ordering::Release),
+            Instant::now(),
+            None,
+            None,
+        );
+        host.children.insert(
+            pid,
+            super::Owned {
+                pid,
+                exit: leader_only_exit,
+                grip: spawned.grip,
+                boundary: spawned.boundary,
+                key: Some(key.clone()),
+                cwd: root.path().to_path_buf(),
+                reap_confirmed: Arc::clone(&reap_confirmed),
+                native_receipt: NativeBoundaryReceipt::fresh(),
+                protocol: None,
+            },
+        );
+        host.index_native_target(pid);
+        let descendant_pid = await_number(&mark);
+        let mut descendant = QueryDescendant::track(descendant_pid);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !reap_confirmed.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "the leader's successful reap was not published"
+            );
+            sleep(Duration::from_millis(5));
+        }
+        assert_eq!(host.alive(&key), Liveness::Gone);
+        await_beating(&mark);
+        let retained = host
+            .children
+            .get(&pid)
+            .expect("the native group remains retained");
+        assert_eq!(
+            super::native_boundary_state(&retained.grip, pid).unwrap(),
+            super::kill::TargetState::Present
+        );
+        assert_eq!(
+            host.owned_targets(1).targets[0].state,
+            OwnedTargetState::UnknownIdentity
+        );
+        let stopped = descendant.host.kill(&descendant.key);
+        assert!(matches!(
+            stopped,
+            dudes_supervisor::host::KillOutcome::Signalled
+        ));
+        await_stopped(
+            descendant_pid,
+            &mark,
+            "the same-group test descendant did not stop",
+        );
+        assert_eq!(
+            host.owned_targets(1).targets[0].state,
+            OwnedTargetState::NativeBoundaryAbsent
+        );
+        expect_unresolved_shutdown(&mut host, "shutdown still requires complete containment");
+    }
+
+    #[test]
+    fn native_boundary_absence_requires_scope_reap_and_fresh_query_evidence() {
+        use super::kill::{Boundary, TargetState};
+        use super::owned_target_state;
+        #[cfg(unix)]
+        let native = Boundary::ProcessGroup;
+        #[cfg(windows)]
+        let native = Boundary::Job;
+
+        assert_eq!(
+            owned_target_state(
+                native,
+                Some(Liveness::Alive),
+                false,
+                &Ok(TargetState::Present)
+            ),
+            OwnedTargetState::Present
+        );
+        assert_eq!(
+            owned_target_state(
+                native,
+                Some(Liveness::Gone),
+                true,
+                &Ok(TargetState::WholeAbsent)
+            ),
+            OwnedTargetState::NativeBoundaryAbsent
+        );
+        assert_eq!(
+            owned_target_state(
+                Boundary::LeaderOnly,
+                Some(Liveness::Gone),
+                true,
+                &Ok(TargetState::WholeAbsent)
+            ),
+            OwnedTargetState::UnknownIncompleteCoverage
+        );
+        assert_eq!(
+            owned_target_state(
+                native,
+                Some(Liveness::Gone),
+                true,
+                &Ok(TargetState::LeaderAbsent)
+            ),
+            OwnedTargetState::UnknownIncompleteCoverage
+        );
+        assert_eq!(
+            owned_target_state(
+                native,
+                Some(Liveness::Gone),
+                true,
+                &Err(std::io::Error::other("target query failed"))
+            ),
+            OwnedTargetState::UnknownQueryFailed
+        );
+        assert_eq!(
+            owned_target_state(
+                native,
+                Some(Liveness::Unknown),
+                true,
+                &Ok(TargetState::WholeAbsent)
+            ),
+            OwnedTargetState::NativeBoundaryAbsent
+        );
+        assert_eq!(
+            owned_target_state(
+                native,
+                Some(Liveness::Gone),
+                false,
+                &Ok(TargetState::WholeAbsent)
+            ),
+            OwnedTargetState::UnknownReapUnconfirmed
+        );
+    }
+
+    #[test]
     fn a_protocol_key_read_failure_never_admits_its_input_consumer() {
         use dudes_providers::adapter::{Adapter as _, TurnSession};
         use dudes_providers::codex::{managed::CodexAdapter, startup::CodexStartup};
@@ -1192,6 +1808,31 @@ mod spawn_failure_tests {
             host.owned(),
             1,
             "an unconfirmed cleanup released the owned row"
+        );
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !host
+            .children
+            .values()
+            .next()
+            .unwrap()
+            .reap_confirmed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the keyless child's successful reap was not published"
+            );
+            sleep(Duration::from_millis(5));
+        }
+        let retained = host.owned_targets(1);
+        assert_eq!(retained.status, OwnedTargetsStatus::Complete);
+        assert_eq!(retained.targets.len(), 1);
+        assert!(retained.targets[0].key.is_none());
+        assert!(retained.targets[0].native_absence_receipt.is_none());
+        assert_eq!(retained.targets[0].cwd, std::env::current_dir().unwrap());
+        assert_eq!(
+            retained.targets[0].state,
+            OwnedTargetState::NativeBoundaryAbsent
         );
         expect_unresolved_shutdown(&mut host, "reaped-first key read");
     }
@@ -1877,20 +2518,29 @@ impl ProcessHost for RealHost {
                     })
                 })
             };
-            // Linux and macOS only. A Windows tracked job stays until kill or shutdown, because
-            // its `finish_spawn` may still terminate that job for a peer left pending.
+            let reap_confirmed = Arc::new(AtomicBool::new(false));
+            let confirm_successful_reap = {
+                let confirmed = Arc::clone(&reap_confirmed);
+                move || confirmed.store(true, Ordering::Release)
+            };
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            let on_reap = {
+            let confirm_reap_and_release_unix_peer = {
                 let peers = self.peers.clone();
-                move || peers.exited(pid, peer_slot)
+                move || {
+                    confirm_successful_reap();
+                    peers.exited(pid, peer_slot);
+                }
             };
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            let on_reap = || {};
+            let confirm_reap_and_retain_peer_job = confirm_successful_reap;
             let exit = stream::watch(
                 child,
                 consumer,
                 protocol.clone(),
-                on_reap,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                confirm_reap_and_release_unix_peer,
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                confirm_reap_and_retain_peer_job,
                 launched_at,
                 #[cfg(any(target_os = "macos", target_os = "linux"))]
                 plat::exit_group(&grip),
@@ -1912,9 +2562,13 @@ impl ProcessHost for RealHost {
                     grip,
                     boundary,
                     key: read_key.as_ref().ok().cloned(),
+                    cwd: spec.cwd.clone(),
+                    reap_confirmed,
+                    native_receipt: NativeBoundaryReceipt::fresh(),
                     protocol: protocol.clone(),
                 },
             );
+            self.index_native_target(pid);
 
             if let Some(protocol) = protocol {
                 if writer_error.is_none() {
@@ -2044,6 +2698,46 @@ impl ProcessHost for RealHost {
         liveness(key, self.boot.as_host_boot(), self.probe(key.pid))
     }
 
+    fn owned_targets(&self, limit: usize) -> OwnedTargets {
+        let mut current = self
+            .current_native_targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        query_current_native_targets(&mut current, limit, |pid, entry| {
+            match self.children.get(&pid) {
+                None => OwnedTargetState::UnknownMissingCapability,
+                Some(owned)
+                    if owned.native_receipt != entry.receipt
+                        || !same_recorded_keys(owned.key.as_ref(), entry.key.as_ref()) =>
+                {
+                    OwnedTargetState::UnknownIdentity
+                }
+                Some(owned) => owned_target_state(
+                    owned.boundary,
+                    owned.key.as_ref().map(|key| self.alive(key)),
+                    owned.reap_confirmed.load(Ordering::Acquire),
+                    &native_boundary_state(&owned.grip, owned.pid),
+                ),
+            }
+        })
+    }
+
+    fn acknowledge_native_boundary_absence(
+        &mut self,
+        key: &AdoptionKey,
+        receipt: &NativeBoundaryReceipt,
+    ) -> NativeBoundaryAcknowledgement {
+        let current = self
+            .current_native_targets
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        let owned = self
+            .children
+            .get(&key.pid)
+            .map(|owned| (owned.key.as_ref(), &owned.native_receipt));
+        acknowledge_current_native_target(current, key, receipt, owned)
+    }
+
     /// The read taken once at construction, reported rather than repeated.
     ///
     /// The mapping to the seam's type is [`HostBoot::from`], and it is where the `io::Error` this
@@ -2088,7 +2782,120 @@ impl ProcessHost for RealHost {
     }
 }
 
+fn query_current_native_targets(
+    current: &mut BTreeMap<u32, CurrentNativeTarget>,
+    limit: usize,
+    mut inspect: impl FnMut(u32, &CurrentNativeTarget) -> OwnedTargetState,
+) -> OwnedTargets {
+    let limit = limit.min(MAX_OWNED_TARGET_QUERY_ROWS);
+    let targets = current
+        .iter_mut()
+        .take(limit)
+        .map(|(pid, entry)| {
+            let state = inspect(*pid, entry);
+            let receipt = if state == OwnedTargetState::NativeBoundaryAbsent && entry.key.is_some()
+            {
+                entry.absence_observed = true;
+                Some(entry.receipt.clone())
+            } else {
+                None
+            };
+            OwnedTargetEvidence {
+                key: entry.key.clone(),
+                cwd: entry.cwd.clone(),
+                state,
+                native_absence_receipt: receipt,
+            }
+        })
+        .collect();
+    let omitted = current.len().saturating_sub(limit);
+    OwnedTargets {
+        targets,
+        status: if omitted == 0 {
+            OwnedTargetsStatus::Complete
+        } else {
+            OwnedTargetsStatus::Truncated { omitted }
+        },
+    }
+}
+
+fn acknowledge_current_native_target(
+    current: &mut BTreeMap<u32, CurrentNativeTarget>,
+    key: &AdoptionKey,
+    receipt: &NativeBoundaryReceipt,
+    owned: Option<(Option<&AdoptionKey>, &NativeBoundaryReceipt)>,
+) -> NativeBoundaryAcknowledgement {
+    let Some(entry) = current.get(&key.pid) else {
+        return NativeBoundaryAcknowledgement::RefusedUnobserved;
+    };
+    if entry.receipt != *receipt || !same_recorded_keys(entry.key.as_ref(), Some(key)) {
+        return NativeBoundaryAcknowledgement::UnknownIdentity;
+    }
+    let Some((owned_key, owned_receipt)) = owned else {
+        return NativeBoundaryAcknowledgement::UnknownMissingCapability;
+    };
+    if owned_receipt != receipt || !same_recorded_keys(owned_key, Some(key)) {
+        return NativeBoundaryAcknowledgement::UnknownIdentity;
+    }
+    if !entry.absence_observed {
+        return NativeBoundaryAcknowledgement::RefusedUnobserved;
+    }
+    current.remove(&key.pid);
+    NativeBoundaryAcknowledgement::Acknowledged
+}
+
+fn owned_target_state(
+    boundary: kill::Boundary,
+    leader: Option<Liveness>,
+    reap_confirmed: bool,
+    target: &io::Result<kill::TargetState>,
+) -> OwnedTargetState {
+    match target {
+        Err(_) => OwnedTargetState::UnknownQueryFailed,
+        Ok(kill::TargetState::LeaderAbsent) => OwnedTargetState::UnknownIncompleteCoverage,
+        Ok(kill::TargetState::WholeAbsent) if boundary == kill::Boundary::LeaderOnly => {
+            OwnedTargetState::UnknownIncompleteCoverage
+        }
+        Ok(kill::TargetState::WholeAbsent) if !reap_confirmed => {
+            OwnedTargetState::UnknownReapUnconfirmed
+        }
+        Ok(kill::TargetState::WholeAbsent) => OwnedTargetState::NativeBoundaryAbsent,
+        Ok(kill::TargetState::Present) if leader == Some(Liveness::Alive) => {
+            OwnedTargetState::Present
+        }
+        Ok(kill::TargetState::Present) => OwnedTargetState::UnknownIdentity,
+    }
+}
+
+fn same_recorded_keys(left: Option<&AdoptionKey>, right: Option<&AdoptionKey>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            left.pid == right.pid && left.start_time == right.start_time && left.boot == right.boot
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 impl RealHost {
+    fn index_native_target(&mut self, pid: u32) {
+        let owned = self
+            .children
+            .get(&pid)
+            .expect("the exact child is owned before indexing");
+        self.current_native_targets
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                pid,
+                CurrentNativeTarget {
+                    key: owned.key.clone(),
+                    cwd: owned.cwd.clone(),
+                    receipt: owned.native_receipt.clone(),
+                    absence_observed: false,
+                },
+            );
+    }
     /// The process table's answer for `pid`, through the strongest reference this host holds for
     /// it. Holds no classification: [`liveness`] decides.
     fn probe(&self, pid: u32) -> ProbeAnswer {

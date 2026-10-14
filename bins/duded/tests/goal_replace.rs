@@ -11,7 +11,7 @@ use dudes_proto::rpc::goal::{CompletionCheckDeclaration, GoalReplaceParams, Goal
 use dudes_proto::rpc::{ErrorCode, Method, Request, RequestId, Response};
 use dudes_proto::{Predicate, Record};
 use dudes_rpc::Client;
-use dudes_types::{AgentId, GoalId};
+use dudes_types::{AgentId, GoalId, TurnId};
 use serde_json::{Value, json};
 
 mod common;
@@ -56,6 +56,41 @@ fn replay_seams(
         dudes_supervisor::Rng::ulid(&mut seams.rng);
     }
     seams
+}
+
+fn native_goal_seams<P: duded::predicate::PredicateRunner>(
+    fixture: &Fixture,
+    runner: Arc<P>,
+) -> (
+    duded::settings::Seams<SharedHost, P, TestClock, dudes_supervisor::testing::FakeRng>,
+    SharedHost,
+) {
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let parts = common::seams(
+        host.clone(),
+        runner,
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&parts.children));
+    (parts, host)
+}
+
+fn issued_goal(fixture: &Fixture, goal: GoalId) -> TurnId {
+    fixture.await_record("the exact goal's issue", |record| match record {
+        Record::TurnIssued {
+            goal: issued, turn, ..
+        } if *issued == goal => Some(*turn),
+        _ => None,
+    })
+}
+
+fn spawned_goal(fixture: &Fixture, goal: GoalId) -> TurnId {
+    let turn = issued_goal(fixture, goal);
+    fixture.await_record("the exact goal's native spawn", |record| {
+        matches!(record, Record::TurnSpawned { turn: seen, .. } if *seen == turn).then_some(())
+    });
+    turn
 }
 
 fn paused_goal(
@@ -310,6 +345,8 @@ fn refusal_order_preserves_other_agents_and_open_turns() {
         &running.handle,
         common::goal_params(other, &["/usr/bin/false"]),
     );
+    spawned_goal(&fixture, other_goal);
+    running.handle.doctor().unwrap();
     let absent = replace(&settings, &request(AgentId::NIL, old, 1));
     assert!(matches!(
         absent,
@@ -1024,10 +1061,12 @@ fn uncertain_journal_never_allows_a_hook_or_delivers_new_context() {
     let mut running = common::start(daemon);
     let (agent, goal) = paused_goal(&fixture, &settings, &running);
     let worker = common::hire(&running.handle, fixture.state.path());
-    common::set_goal(
+    let worker_goal = common::set_goal(
         &running.handle,
         common::goal_params(worker, &["/usr/bin/false"]),
     );
+    spawned_goal(&fixture, worker_goal);
+    running.handle.doctor().unwrap();
     let hash = fixture.await_record("worker token", |record| match record {
         Record::HookTokenMinted { agent, token_hash } if *agent == worker => {
             Some(token_hash.clone())
@@ -1277,29 +1316,27 @@ fn replacement_during_closing_preserves_the_frozen_participants_and_issue_fence(
     use dudes_proto::rpc::closing::{ClosingParams, ClosingStarted, ClosingStatus};
     let fixture = Fixture::new();
     let settings = fixture.settings();
-    let daemon = boot(
-        &settings,
-        common::seams(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::scripted([common::passes()])),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .unwrap();
+    let (parts, host) = native_goal_seams(
+        &fixture,
+        Arc::new(ScriptedRunner::scripted([common::passes()])),
+    );
+    let daemon = boot(&settings, parts).unwrap();
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     let old = common::set_goal(
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    common::end_turn(&running.handle, fixture.await_turn());
+    let turn = spawned_goal(&fixture, old);
+    common::end_turn_with_native(&fixture, &running.handle, &host, turn);
     fixture.await_record("completed nonparticipant",|record|matches!(record,Record::LoopDecided {agent:who,decision:dudes_proto::LoopDecision::Done,..} if *who==agent).then_some(()));
     let participant = common::hire(&running.handle, fixture.state.path());
-    common::set_goal(
+    let participant_goal = common::set_goal(
         &running.handle,
         common::goal_params(participant, &["/usr/bin/true"]),
     );
+    spawned_goal(&fixture, participant_goal);
+    running.handle.doctor().unwrap();
     let started: ClosingStarted = serde_json::from_value(
         call(
             &settings,
@@ -1534,8 +1571,8 @@ fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_go
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
+    let issued = issued_goal(&fixture, goal);
     call(&settings, Method::LoopPause, json!({"agent":agent}));
-    let issued = fixture.await_turn();
     let before = fixture.records();
     assert_eq!(host.children(), 0);
     assert!(matches!(
@@ -1559,6 +1596,7 @@ fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_go
     )
     .unwrap();
     let mut restarted = common::start(daemon);
+    restarted.handle.doctor().unwrap();
     assert_eq!(reissue.children(), 0);
     let before = fixture.records();
     assert!(matches!(
@@ -1598,16 +1636,8 @@ fn queued_old_check_completion_is_settled_by_the_writer_before_admission() {
             end,
             ..HeldCheck::default()
         });
-        let daemon = boot(
-            &settings,
-            common::seams(
-                SharedHost::new(),
-                Arc::clone(&runner),
-                Arc::new(TestClock::new()),
-                Witness::default(),
-            ),
-        )
-        .unwrap();
+        let (parts, host) = native_goal_seams(&fixture, Arc::clone(&runner));
+        let daemon = boot(&settings, parts).unwrap();
         let pause = daemon.onboarding_pause();
         let mut running = common::start(daemon);
         let agent = common::hire(&running.handle, fixture.state.path());
@@ -1615,8 +1645,9 @@ fn queued_old_check_completion_is_settled_by_the_writer_before_admission() {
             &running.handle,
             common::goal_params(agent, &["/usr/bin/true"]),
         );
+        let turn = spawned_goal(&fixture, old);
         call(&settings, Method::LoopPause, json!({"agent":agent}));
-        common::end_turn(&running.handle, fixture.await_turn());
+        common::end_turn_with_native(&fixture, &running.handle, &host, turn);
         runner.await_started();
         let current = common::set_goal(
             &running.handle,

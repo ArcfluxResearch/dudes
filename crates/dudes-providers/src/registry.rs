@@ -33,6 +33,7 @@
 //! substrings in comments too, which is why this paragraph names no token literally.)
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use dudes_types::Provider;
 
@@ -76,7 +77,7 @@ pub struct ProvidersConfig {
 /// two readers could see differently depending on when they asked.
 #[derive(Default)]
 pub struct Adapters {
-    by_provider: BTreeMap<Provider, Box<dyn Adapter>>,
+    by_provider: BTreeMap<Provider, Arc<dyn Adapter>>,
 }
 
 impl Adapters {
@@ -90,7 +91,7 @@ impl Adapters {
         Self {
             by_provider: adapters
                 .into_iter()
-                .map(|adapter| (adapter.provider(), adapter))
+                .map(|adapter| (adapter.provider(), Arc::from(adapter)))
                 .collect(),
         }
     }
@@ -136,6 +137,12 @@ impl Adapters {
     #[must_use]
     pub fn get(&self, provider: Provider) -> Option<&dyn Adapter> {
         self.by_provider.get(&provider).map(AsRef::as_ref)
+    }
+
+    /// Share the same immutable configured adapter with a bounded observation worker.
+    #[must_use]
+    pub fn shared(&self, provider: Provider) -> Option<Arc<dyn Adapter>> {
+        self.by_provider.get(&provider).map(Arc::clone)
     }
 }
 

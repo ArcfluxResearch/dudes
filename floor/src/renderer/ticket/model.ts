@@ -90,8 +90,14 @@ export const ACTION_LABEL: Readonly<Record<TicketAction, string>> = Object.freez
   try_again: 'Try again', stop: 'Stop',
 });
 
+export function requiresInstructionReview(card: CardRow): boolean {
+  return card.ticket?.instruction_review !== undefined
+    || card.ticket?.reason === 'shared_instructions_changed' || card.ticket?.reason === 'shared_instructions_unknown';
+}
+
 /** Every state has an action, so none is a dead end. */
 export function actionsOf(card: CardRow): readonly TicketAction[] {
+  if (requiresInstructionReview(card)) return ['accept', 'changes', 'stop'];
   switch (card.status) {
     case 'todo':
     case 'claimed': return ['give', 'edit', 'remove'];

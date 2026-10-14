@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { decodeInstructionSummary } from './ticket/instructions.ts';
+import type { InstructionReviewSummary } from './ticket/instructions.ts';
+
 const CARD_ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 export type CardStatus = 'todo' | 'claimed' | 'doing' | 'review' | 'blocked' | 'done';
 export type CardActor = { readonly kind: 'peer'; readonly pid: number }
@@ -10,11 +13,12 @@ export type CardActor = { readonly kind: 'peer'; readonly pid: number }
 /** Why the daemon moved a ticket into Needs you. */
 export type TicketReason = 'project_unavailable' | 'check_cannot_run' | 'ceiling_required' | 'reserve_missing'
   | 'goal_changed' | 'limit_goal' | 'slowed' | 'no_turns' | 'held_launch' | 'held_failing' | 'held_unsure'
-  | 'worktree_missing';
+  | 'worktree_missing' | 'shared_instructions_changed' | 'shared_instructions_unknown';
 
 export const TICKET_REASONS: readonly TicketReason[] = Object.freeze([
   'project_unavailable', 'check_cannot_run', 'ceiling_required', 'reserve_missing', 'goal_changed', 'limit_goal',
   'slowed', 'no_turns', 'held_launch', 'held_failing', 'held_unsure', 'worktree_missing',
+  'shared_instructions_changed', 'shared_instructions_unknown',
 ]);
 
 /**
@@ -28,6 +32,7 @@ export interface CardTicketRow {
   readonly reason: TicketReason | null;
   /** The ticket was stopped and its agent is still finishing its current step. */
   readonly stopping: boolean;
+  readonly instruction_review?: InstructionReviewSummary;
 }
 
 export interface CardRow {
@@ -88,7 +93,11 @@ function ticketOf(value: unknown): CardTicketRow | null | undefined {
   if (why !== null && !(typeof why === 'string' && (TICKET_REASONS as readonly string[]).includes(why))) return undefined;
   const stop = stopping ?? false;
   if (typeof stop !== 'boolean') return undefined;
-  return Object.freeze({ position: place, round: rounds, reason: why as TicketReason | null, stopping: stop });
+  const review = ticket.instruction_review === undefined || ticket.instruction_review === null
+    ? null : decodeInstructionSummary(ticket.instruction_review);
+  if (ticket.instruction_review != null && review === null) return undefined;
+  return Object.freeze({ position: place, round: rounds, reason: why as TicketReason | null, stopping: stop,
+    ...(review === null ? {} : { instruction_review: review }) });
 }
 
 function cardOf(value: unknown): CardRow | null {
@@ -96,7 +105,7 @@ function cardOf(value: unknown): CardRow | null {
   if (row === null || typeof row.id !== 'string' || !CARD_ID.test(row.id)
     || typeof row.title !== 'string' || typeof row.department !== 'string'
     || typeof row.status !== 'string' || !['todo', 'claimed', 'doing', 'review', 'blocked', 'done'].includes(row.status)
-    || typeof row.seq !== 'number' || !Number.isInteger(row.seq) || row.seq < 0) return null;
+    || typeof row.seq !== 'number' || !Number.isSafeInteger(row.seq) || row.seq < 0) return null;
   const by = actorOf(row.status_by);
   if (by === null) return null;
   const claimed = row.claimed_by ?? null;

@@ -53,7 +53,26 @@ fn hire_open(daemon: &mut TestDaemon, fixture: &common::Fixture) -> HireResult {
             &["/usr/bin/true"],
         ))))
         .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !daemon.sup.world().agents[&hired.agent]
+        .open_turn
+        .is_some_and(|turn| daemon.sup.world().turns[&turn].is_open_child())
+    {
+        pump_fixture_job(daemon, deadline);
+    }
     hired
+}
+
+fn pump_fixture_job(daemon: &mut TestDaemon, deadline: std::time::Instant) {
+    match daemon
+        .jobs
+        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        .expect("the actual fixture worker must finish within its deadline")
+    {
+        Job::Input(input) => daemon.pump(*input).unwrap(),
+        Job::PredicateEnded { goal, verdict } => daemon.predicate_ended(goal, verdict).unwrap(),
+        _ => panic!("unexpected fixture job"),
+    }
 }
 
 fn observed_end(turn: TurnId) -> Input {
@@ -463,14 +482,17 @@ fn saving_memory_behind_a_policy_cut_drains_in_durable_order() {
 #[test]
 fn attached_writes_during_closing_publish_both_audit_cuts_without_replaying_bytes() {
     let fixture = common::Fixture::new();
-    let ptys = common::SharedPtyHost::new(fixture.journal_dir());
+    let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
+    let ptys = common::SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut seams = common::seams(
-        common::SharedHost::new(),
+        host.clone(),
         Arc::new(common::ScriptedRunner::default()),
         Arc::new(common::TestClock::new()),
         Witness::default(),
     );
     seams.pty_host = Box::new(ptys.clone());
+    seams.resolver = common::native_resolver(&ptys);
+    host.bind_child_ends(Arc::clone(&seams.children));
     let mut daemon = crate::boot(&settings(&fixture), seams).unwrap();
     let hired = hire_open(&mut daemon, &fixture);
     let turn = daemon.sup.world().agents[&hired.agent].open_turn.unwrap();
@@ -484,7 +506,20 @@ fn attached_writes_during_closing_publish_both_audit_cuts_without_replaying_byte
             browser: None,
         }))
         .unwrap();
-    daemon.pump(observed_end(turn)).unwrap();
+    let key = host.peek(|host| host.key_for(daemon.sup.world().turns[&turn].pid.unwrap()));
+    host.mark_native_reaped(&key);
+    host.finish_owned_child(&key, observed_end(turn));
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !host.native_acknowledged(&key)
+        || !fixture.records().iter().any(|record| {
+            matches!(record,
+            Record::InstructionObservationFinished {
+                owner: dudes_proto::InstructionObservationOwner::Managed { turn: ended, .. }, ..
+            } if *ended == turn)
+        })
+    {
+        pump_fixture_job(&mut daemon, deadline);
+    }
     let actor = Actor::Peer {
         pid: 4242,
         uid: Some(0),
@@ -496,22 +531,9 @@ fn attached_writes_during_closing_publish_both_audit_cuts_without_replaying_byte
     else {
         panic!("attach");
     };
-    daemon
-        .pump(Input::PtySpawned {
-            agent: hired.agent,
-            pty,
-            key: dudes_supervisor::AdoptionKey {
-                pid: 42000,
-                start_time: 1_787_394_600,
-                boot: daemon
-                    .ctx
-                    .host
-                    .boot_identity()
-                    .as_host_boot()
-                    .map(str::to_owned),
-            },
-        })
-        .unwrap();
+    assert!(fixture.records().iter().any(|record| matches!(record,
+        Record::PtySpawned { agent, pty: spawned, .. }
+            if *agent == hired.agent && *spawned == pty)));
     daemon
         .closing_request(crate::closing::Request::Announce)
         .unwrap();
@@ -570,19 +592,14 @@ fn seed_closing(fixture: &common::Fixture, complete: bool) -> common::SharedHost
         },
     )
     .unwrap();
-    let mut decision = Lsn::ZERO;
+    let mut positions = BTreeMap::new();
     for mut entry in std::mem::take(&mut source.journal) {
-        match &mut entry.record {
-            Record::AgentHired { cwd, .. } => *cwd = fixture.state.path().to_path_buf(),
-            Record::TurnIssued {
-                lsn_of_decision, ..
-            } => *lsn_of_decision = decision,
-            _ => {}
+        if let Record::AgentHired { cwd, .. } = &mut entry.record {
+            *cwd = fixture.state.path().to_path_buf();
         }
+        remap_seed_references(&mut entry.record, &positions);
         let lsn = writer.append(&entry).unwrap();
-        if matches!(entry.record, Record::LoopDecided { .. }) {
-            decision = lsn;
-        }
+        positions.insert(Lsn(positions.len() as u64 + 1), lsn);
     }
     for phase in [
         dudes_proto::ClosingPhase::Announced,
@@ -617,8 +634,10 @@ fn seed_closing(fixture: &common::Fixture, complete: bool) -> common::SharedHost
                 last_message: None,
             });
         }
-        for entry in &source.journal {
-            writer.append(entry).unwrap();
+        for mut entry in source.journal.clone() {
+            remap_seed_references(&mut entry.record, &positions);
+            let lsn = writer.append(&entry).unwrap();
+            positions.insert(Lsn(positions.len() as u64 + 1), lsn);
         }
         writer
             .append(&Entry {
@@ -631,6 +650,43 @@ fn seed_closing(fixture: &common::Fixture, complete: bool) -> common::SharedHost
     }
     drop(writer);
     common::SharedHost::with(source.host)
+}
+
+fn remap_seed_references(record: &mut Record, positions: &BTreeMap<Lsn, Lsn>) {
+    let remap = |position: &mut Lsn| {
+        *position = *positions.get(position).expect("an earlier fixture record");
+    };
+    match record {
+        Record::TurnIssued {
+            lsn_of_decision, ..
+        } => remap(lsn_of_decision),
+        Record::InstructionObservationFinished {
+            baseline,
+            settlement,
+            ..
+        } => {
+            let dudes_proto::InstructionBaselineRef::Started { lsn } = baseline else {
+                panic!("the fixture ends only its sampled managed attempts");
+            };
+            remap(lsn);
+            let end = match settlement {
+                dudes_proto::InstructionSettlement::Compared { end, .. } => Some(end),
+                dudes_proto::InstructionSettlement::Unknown { end, .. } => end.as_mut(),
+                dudes_proto::InstructionSettlement::NoProcess { proof_lsn, .. } => {
+                    remap(proof_lsn);
+                    None
+                }
+                dudes_proto::InstructionSettlement::NoIssuedTurn => None,
+            };
+            if let Some(end) = end {
+                let dudes_proto::InstructionEndBoundary::ManagedTurn { end_lsn, .. } = end else {
+                    panic!("the fixture ends only its managed children");
+                };
+                remap(end_lsn);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[test]

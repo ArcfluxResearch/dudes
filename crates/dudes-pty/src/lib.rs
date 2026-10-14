@@ -8,5 +8,6 @@ mod host;
 mod tree;
 
 pub use host::{
-    CloseOutcome, MAX_READ_BYTES, OpenError, OpenedPty, PtyHost, PtyRead, PtyReader, PtySize,
+    CloseOutcome, CloseReceiptError, MAX_CLOSE_RECEIPTS, MAX_READ_BYTES, OpenError, OpenedPty,
+    PtyCloseIdentity, PtyCloseReceipt, PtyHost, PtyRead, PtyReader, PtySize,
 };

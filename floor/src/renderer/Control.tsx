@@ -294,7 +294,7 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
         </header>
         {viewConfirmed(floor) ? null : <p className="stream-state" role="alert">View unconfirmed — waiting for the stream</p>}
         {overlay?.kind === 'new' ? <div className="ticket-composer"><h3>New ticket</h3>
-          <p>Tell an agent what you want to happen.</p><TicketNotice />
+          <p>Tell an agent what you want to happen.</p><TicketNotice card={null} />
           {floor.ticket ? null : <TicketOffHint floor={floor} />}
           <NewTicketForm floor={floor} onHire={onHire} onCancel={closeOverlay}
             onCreated={(id) => { opener.current = null; seenCard.current = null; setOverlay({ kind: 'card', id }); }} />

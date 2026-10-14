@@ -549,6 +549,7 @@ struct Baselined {
     fixture: Fixture,
     tree: tempfile::TempDir,
     runner: Arc<CountingRunner>,
+    host: SharedHost,
     running: common::Running,
     agent: dudes_types::AgentId,
     append_failure: duded::runtime::AppendFailure,
@@ -584,16 +585,15 @@ fn baselined_with(edit: impl FnOnce(&mut duded::Settings), seeded: Vec<Record>) 
     edit(&mut settings);
     let tree = tempfile::tempdir().expect("agent tree");
     let runner = CountingRunner::new();
-    let daemon = boot(
-        &settings,
-        seams(
-            SharedHost::new(),
-            Arc::clone(&runner),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot");
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let seams = seams(
+        host.clone(),
+        Arc::clone(&runner),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&seams.children));
+    let daemon = boot(&settings, seams).expect("boot");
     let append_failure = daemon.append_failure();
     let pause = daemon.onboarding_pause();
     let running = common::start(daemon);
@@ -602,6 +602,7 @@ fn baselined_with(edit: impl FnOnce(&mut duded::Settings), seeded: Vec<Record>) 
         fixture,
         tree,
         runner,
+        host,
         running,
         agent,
         append_failure,
@@ -733,7 +734,7 @@ fn goal_set_admits_a_failing_check_and_records_its_baseline() {
         "# Contributing\n",
     )
     .unwrap();
-    common::end_turn(&daemon.running.handle, turn);
+    common::end_turn_with_native(&daemon.fixture, &daemon.running.handle, &daemon.host, turn);
     let note = daemon
         .fixture
         .await_record("the Done decision", |record| match record {
@@ -760,7 +761,7 @@ fn goal_set_admits_a_failing_check_and_records_its_baseline() {
             _ => None,
         });
         ended.push(turn);
-        common::end_turn(&idle.running.handle, turn);
+        common::end_turn_with_native(&idle.fixture, &idle.running.handle, &idle.host, turn);
         idle.fixture.await_record("its result", |record| {
             matches!(record, Record::PredicateResult { turn: Some(t), .. } if *t == turn)
                 .then_some(())
@@ -867,7 +868,7 @@ fn goal_set_may_already_pass_skips_the_run() {
         )
     );
     let turn = daemon.fixture.await_turn();
-    common::end_turn(&daemon.running.handle, turn);
+    common::end_turn_with_native(&daemon.fixture, &daemon.running.handle, &daemon.host, turn);
     let note = daemon.fixture.await_record("Done", |record| match record {
         Record::LoopDecided {
             decision: LoopDecision::Done,
@@ -1053,7 +1054,7 @@ fn goal_set_refuses_a_baseline_beside_live_work() {
     );
     assert_eq!(daemon.runner.runs(), 0, "no check child started");
 
-    common::end_turn(&daemon.running.handle, turn);
+    common::end_turn_with_native(&daemon.fixture, &daemon.running.handle, &daemon.host, turn);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while daemon.runner.runs() == 0 {
         assert!(

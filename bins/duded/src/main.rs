@@ -66,7 +66,14 @@ use dudes_types::{Escaped, Timestamp};
 struct MainPtyHost {
     host: dudes_pty::PtyHost,
     drains: BTreeMap<PtyId, Drain>,
+    native_closes: BTreeMap<PtyId, NativePtyClose>,
     observed: Option<Arc<Mutex<BTreeSet<PtyId>>>>,
+}
+
+struct NativePtyClose {
+    token: dudes_supervisor::host::NativeBoundaryReceipt,
+    identity: dudes_pty::PtyCloseIdentity,
+    receipt: Option<dudes_pty::PtyCloseReceipt>,
 }
 
 /// Reads continuously, because a PTY nobody reads blocks its child's writes.
@@ -101,6 +108,7 @@ impl MainPtyHost {
         Self {
             host: dudes_pty::PtyHost::new(),
             drains: BTreeMap::new(),
+            native_closes: BTreeMap::new(),
             observed: None,
         }
     }
@@ -110,6 +118,7 @@ impl MainPtyHost {
         Self {
             host: dudes_pty::PtyHost::new(),
             drains: BTreeMap::new(),
+            native_closes: BTreeMap::new(),
             observed: Some(observed),
         }
     }
@@ -216,6 +225,71 @@ impl duded::ports::PtyHostPort for MainPtyHost {
             }
             Err(error) => duded::ports::PtyCloseOutcome::Failed(error),
         }
+    }
+
+    fn track_native_close(
+        &mut self,
+        pty: PtyId,
+    ) -> Result<dudes_supervisor::host::NativeBoundaryReceipt, duded::ports::PtyNativeBoundaryUnknown>
+    {
+        use duded::ports::PtyNativeBoundaryUnknown as Unknown;
+        if self.native_closes.len() == dudes_pty::MAX_CLOSE_RECEIPTS
+            && !self.native_closes.contains_key(&pty)
+        {
+            return Err(Unknown::Limit);
+        }
+        let identity = self.host.track_close(pty).map_err(|_| Unknown::Identity)?;
+        let entry = self
+            .native_closes
+            .entry(pty)
+            .or_insert_with(|| NativePtyClose {
+                token: dudes_supervisor::host::NativeBoundaryReceipt::fresh(),
+                identity,
+                receipt: None,
+            });
+        if entry.identity != identity {
+            return Err(Unknown::Identity);
+        }
+        Ok(entry.token.clone())
+    }
+
+    fn native_close_absence(
+        &mut self,
+        pty: PtyId,
+        identity: &dudes_supervisor::host::NativeBoundaryReceipt,
+    ) -> Result<(), duded::ports::PtyNativeBoundaryUnknown> {
+        use duded::ports::PtyNativeBoundaryUnknown as Unknown;
+        let entry = self.native_closes.get_mut(&pty).ok_or(Unknown::Identity)?;
+        if &entry.token != identity {
+            return Err(Unknown::Identity);
+        }
+        entry.receipt = Some(
+            self.host
+                .close_receipt(entry.identity)
+                .map_err(|_| Unknown::Unconfirmed)?,
+        );
+        Ok(())
+    }
+
+    fn acknowledge_native_close(
+        &mut self,
+        pty: PtyId,
+        identity: &dudes_supervisor::host::NativeBoundaryReceipt,
+    ) -> bool {
+        let Some(entry) = self.native_closes.get(&pty) else {
+            return false;
+        };
+        if &entry.token != identity {
+            return false;
+        }
+        let Some(receipt) = entry.receipt else {
+            return false;
+        };
+        if !self.host.acknowledge_close_receipt(receipt) {
+            return false;
+        }
+        self.native_closes.remove(&pty);
+        true
     }
 
     fn shutdown(&mut self) -> io::Result<()> {

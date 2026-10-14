@@ -170,7 +170,7 @@ test('Edit waits for the ticket to be read', async () => {
   };
   assert.match(render(), /<button[^>]*data-action="edit"[^>]*disabled=""|<button[^>]*disabled=""[^>]*data-action="edit"/);
   assert.ok(!/data-action="give"[^>]*disabled/.test(render()), 'Give does not wait');
-  const { deps } = daemon(() => json(200, { state: 'ok', card: { id: NEW }, ticket: { note: 'n', project: 'service', check: { id: 'default', label: 'c' }, round: 0 } }));
+  const { deps } = daemon(() => json(200, { state: 'ok', card: { id: NEW, seq: 3 }, ticket: { note: 'n', project: 'service', check: { id: 'default', label: 'c' }, round: 0 } }));
   await detail.loadDetail(store.getFloorState().cards[0], deps);
   assert.ok(!/data-action="edit"[^>]*disabled/.test(render()));
 });

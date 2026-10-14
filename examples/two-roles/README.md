@@ -190,7 +190,7 @@ out identical. That would be the wrong demand, and a system that satisfied it wo
 - every identifier in a run is minted fresh, so two runs share no agent, no goal, no turn and no
   timestamp anyway.
 
-So the control compares the two runs' state by **shape**: the same tables, the same number of rows
+So the control compares the two runs' state by **shape**: the same tables, the same number of ordinary rows
 in each, and the same goal status. Every part of that is a positive statement about something
 named, which is what makes it safe as the system grows — a field added to a row cannot turn it red
 for a reason that is not a defect, and anything it does not mention is visibly unasserted rather
@@ -198,11 +198,18 @@ than quietly uncompared. Beside it the script prints the measurement the paragra
 including which turn rows carry the re-issue mark in each run, so a reader can check the reasoning
 instead of taking it.
 
-One table's row count differs on purpose. A re-issued turn launches on a freshly minted session
+Two tables' row counts differ on purpose. A re-issued turn launches on a freshly minted session
 rather than resuming the one its agent had, and `session_totals` keeps one row per confirmed
 session. So the crashed run holds exactly one `session_totals` row more than the control, and the
 control asserts that row by its key: it is the session the re-issued spawn announced. A re-issue
 that resumed the old session would leave the counts equal, and the control would fail.
+
+The `instructions` table also retains the earlier attempt's baseline, explicit recovery Unknown
+and unresolved boundary alongside the completed retry. A typed checker derives the complete cell
+map from each run's recorded boundaries, then checks the earlier unspawned attempt and its exact
+same-turn retry independently. It accounts for those four extra cells without discarding the old
+uncertainty or accepting unrelated rows, missing cells, duplicate keys or incorrect issue and
+native receipt links. The store export must still equal replay from its own journal in each run.
 
 ## Windows
 

@@ -14,6 +14,9 @@ import { problemText, readTicket } from './ticket.ts';
 import { WAITS, readable } from './words.ts';
 import type { Wait } from './words.ts';
 
+import { decodeInstructionReview, sameInstructionWatermark } from './instructions.ts';
+import type { InstructionReview, InstructionWatermark } from './instructions.ts';
+
 const UTF8 = new TextEncoder();
 const MAX_NOTE_BYTES = 8_192;
 const MAX_SUMMARY_BYTES = 4_096;
@@ -25,7 +28,12 @@ export interface CheckResult {
   readonly at: number;
 }
 
+const TRUNCATED_FIELDS = Object.freeze(['note', 'title', 'check_label', 'waiting_note', 'summary', 'instruction_evidence'] as const);
+export type TruncatedTicketField = (typeof TRUNCATED_FIELDS)[number];
+
 export interface TicketDetail {
+  readonly instruction_review: InstructionReview | null;
+  readonly truncated: readonly TruncatedTicketField[];
   readonly note: string;
   readonly project: string;
   readonly check: { readonly id: string; readonly label: string };
@@ -77,8 +85,13 @@ export function decodeDetail(body: Record<string, unknown>, card: string): Ticke
       || !(WAITS as readonly string[]).includes(waiting.wait.kind) || !text(waiting.note, 600)) return null;
     wait = Object.freeze({ wait: waiting.wait.kind as Wait, note: waiting.note as string });
   }
+  const truncated = ticket.truncated ?? [];
+  if (!Array.isArray(truncated) || !truncated.every((field) => (TRUNCATED_FIELDS as readonly unknown[]).includes(field))
+    || new Set(truncated).size !== truncated.length) return null;
+  const review = ticket.instruction_review == null ? null : decodeInstructionReview(ticket.instruction_review);
+  if (ticket.instruction_review != null && review === null) return null;
   return Object.freeze({
-    note: readable(note), project, check: Object.freeze({ id: check.id, label: check.label }), round, reason: why as TicketReason | null,
+    instruction_review: review, truncated: Object.freeze([...truncated]) as readonly TruncatedTicketField[], note: readable(note), project, check: Object.freeze({ id: check.id, label: check.label }), round, reason: why as TicketReason | null,
     summary: words === null ? null : readable(words), result: outcome, position: place, waiting: wait,
   });
 }
@@ -127,6 +140,19 @@ export function needsDetail(current: DetailState, card: CardRow): boolean {
   return current.card !== card.id || current.seq !== card.seq;
 }
 
+export function editableDetail(current: DetailState, card: CardRow): TicketDetail | null {
+  return current.phase === 'ready' && current.card === card.id && current.seq === card.seq
+    && current.detail !== null && !current.detail.truncated.includes('note') ? current.detail : null;
+}
+
+export function reviewedWatermark(current: DetailState, card: CardRow): InstructionWatermark | null {
+  const snapshot = card.ticket?.instruction_review;
+  const review = current.detail?.instruction_review;
+  return current.phase === 'ready' && current.card === card.id && current.seq === card.seq
+    && snapshot !== undefined && review != null && !snapshot.pending_comparison && !review.pending_comparison
+    && sameInstructionWatermark(snapshot.watermark, review.watermark) ? review.watermark : null;
+}
+
 /** Read `card`'s detail. The last reading of the same ticket stays on screen while the next is read. */
 export async function loadDetail(card: CardRow, deps: ControlDeps = browserControlDeps): Promise<void> {
   const same = state.card === card.id;
@@ -136,7 +162,8 @@ export async function loadDetail(card: CardRow, deps: ControlDeps = browserContr
   if (ticket !== latest) return;
   if (outcome.kind === 'done') {
     const detail = decodeDetail(outcome.body, card.id);
-    if (detail !== null) {
+    if (detail !== null && typeof outcome.body.card === 'object' && outcome.body.card !== null
+      && (outcome.body.card as Record<string, unknown>).seq === card.seq) {
       commit({ card: card.id, seq: card.seq, phase: 'ready', detail, problem: null });
       return;
     }

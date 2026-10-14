@@ -14,7 +14,7 @@ mod platform;
 #[path = "tree/windows.rs"]
 mod platform;
 
-pub(crate) use platform::Session;
+pub(crate) use platform::{CloseQuery, Session};
 
 pub(crate) struct Spawned {
     pub(crate) session: Session,
@@ -54,4 +54,9 @@ pub(crate) fn first_heartbeat_for_test(path: &std::path::Path) -> Option<u64> {
 #[cfg(all(test, unix))]
 pub(crate) fn force_status_error_once_for_test() {
     platform::force_status_error_once_for_test();
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn force_absence_query_once_for_test(result: io::Result<bool>) {
+    platform::force_absence_query_once_for_test(result);
 }

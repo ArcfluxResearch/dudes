@@ -186,10 +186,16 @@ mod tests {
     use crate::{Command, Input};
     use dudes_proto::record::Hex32;
     use dudes_proto::{
-        AutomaticHold, Evidence, ExitStatus, Gate, GateStep, LoopDecision, MailWakeAdmission,
-        MailWakeDecision, MailWakeDigest, MailWakeDigestDomain, MailWakeIssue, MailWakePlan,
-        MailWakePurpose, MailWakeTarget, MailWakeTask, TurnOutcome,
+        AutomaticHold, Evidence, ExitStatus, Gate, GateStep, InstructionBaselineRef,
+        InstructionComparison, InstructionCoverageGap, InstructionGapKind,
+        InstructionObservationOwner, InstructionPathContext, InstructionSampleUsage,
+        InstructionSettlement, InstructionSnapshot, InstructionSnapshotSource,
+        InstructionUnknownReason, LoopDecision, MailWakeAdmission, MailWakeDecision,
+        MailWakeDigest, MailWakeDigestDomain, MailWakeIssue, MailWakePlan, MailWakePurpose,
+        MailWakeTarget, MailWakeTask, TurnOutcome,
     };
+    use dudes_providers::claude::ClaudeAdapter;
+    use dudes_providers::claude::config::ClaudeConfig;
     use dudes_providers::stream::ScopedUsage;
     use dudes_types::{
         AgentStatus, MailState, Mode, ModelSelection, Provenance, SessionId, Timestamp, Tokens,
@@ -272,6 +278,12 @@ mod tests {
 
     impl Prefix {
         fn new(session: Option<SessionId>) -> Self {
+            let mut prefix = Self::completed(session);
+            prefix.wake(1, wake_at());
+            prefix
+        }
+
+        fn completed(session: Option<SessionId>) -> Self {
             let (entries, agent, ordinary) = journal_with_issued_turn(session.clone(), "closed");
             let Record::GoalSet { goal, .. } = &entries[1].record else {
                 unreachable!()
@@ -319,7 +331,6 @@ mod tests {
                 },
                 Timestamp::UNIX_EPOCH,
             );
-            prefix.wake(1, Timestamp::from_unix_millis(86_400_001));
             prefix
         }
 
@@ -485,6 +496,396 @@ mod tests {
         })
     }
 
+    fn sample(h: &mut Harness, seen: Seen) -> Vec<Seen> {
+        let Seen::SampleInstructions {
+            request,
+            owner,
+            goal,
+            baseline,
+        } = seen
+        else {
+            panic!("expected an explicit instruction sample")
+        };
+        let InstructionObservationOwner::Managed { agent, turn, .. } = owner else {
+            panic!("mail wakes have a managed instruction owner")
+        };
+        assert!(
+            goal.and_then(|goal| h
+                .supervisor
+                .world()
+                .instructions
+                .association_for_goal(goal, dudes_types::Seq::ZERO))
+                .is_none()
+        );
+        if let Some(baseline) = &baseline {
+            let (_, attempt) = h
+                .supervisor
+                .world()
+                .instructions
+                .current_for_turn(turn)
+                .unwrap();
+            assert_eq!(attempt.owner, owner);
+            assert_eq!(attempt.snapshot.as_ref(), Some(baseline.as_ref()));
+            assert!(
+                h.supervisor
+                    .world()
+                    .instructions
+                    .managed_end_lsn(agent, turn)
+                    .is_some()
+            );
+        }
+        let gap = InstructionCoverageGap {
+            reason: InstructionGapKind::DeclarationMissing,
+            context: InstructionPathContext::Unresolved,
+            agent: Some(agent),
+            path: None,
+        };
+        let snapshot = InstructionSnapshot {
+            sampled_at: wake_at(),
+            source: InstructionSnapshotSource::Fresh,
+            execution_folder: None,
+            participants: Vec::new(),
+            inputs: Vec::new(),
+            inventoried: Vec::new(),
+            gaps: vec![
+                InstructionCoverageGap {
+                    reason: InstructionGapKind::PathUnresolved,
+                    ..gap.clone()
+                },
+                gap.clone(),
+            ],
+            usage: InstructionSampleUsage::default(),
+            boot: None,
+        };
+        assert!(snapshot.validate().is_ok());
+        h.step(Input::InstructionSampled {
+            request,
+            snapshot: Box::new(snapshot),
+            ticket: None,
+            comparison: baseline.map(|_| {
+                Box::new(InstructionComparison {
+                    changes: Vec::new(),
+                    gaps: vec![gap],
+                    usage: InstructionSampleUsage::default(),
+                })
+            }),
+        })
+    }
+
+    fn assert_observation(h: &Harness, record: &Record) {
+        match record {
+            Record::InstructionObservationStarted {
+                owner,
+                snapshot,
+                ticket,
+            } => {
+                assert_eq!(*ticket, None);
+                assert!(!snapshot.gaps.is_empty());
+                assert!(snapshot.validate().is_ok());
+                let InstructionObservationOwner::Managed { agent, turn, issue } = owner else {
+                    panic!("expected a managed mail observation")
+                };
+                assert!(h.supervisor.world().agents.contains_key(agent));
+                match issue {
+                    dudes_proto::InstructionIssueAssociation::Prospective => {
+                        assert_eq!(h.supervisor.world().instructions.issue_lsn(*turn), None);
+                    }
+                    dudes_proto::InstructionIssueAssociation::Issued { issue_lsn } => {
+                        assert_eq!(
+                            h.supervisor.world().instructions.issue_lsn(*turn),
+                            Some(*issue_lsn)
+                        );
+                    }
+                }
+            }
+            Record::InstructionObservationFinished {
+                owner,
+                baseline,
+                ticket,
+                settlement,
+            } => {
+                assert_eq!(*ticket, None);
+                let InstructionObservationOwner::Managed { agent, turn, .. } = owner else {
+                    panic!("expected a managed mail observation")
+                };
+                match baseline {
+                    InstructionBaselineRef::Started { lsn } => {
+                        assert_eq!(
+                            h.supervisor
+                                .world()
+                                .instructions
+                                .attempt(*lsn)
+                                .unwrap()
+                                .owner,
+                            *owner
+                        );
+                    }
+                    InstructionBaselineRef::MissingIssueBoundary {
+                        turn: issued,
+                        issue_lsn,
+                    } => {
+                        assert_eq!(issued, turn);
+                        assert_eq!(
+                            h.supervisor.world().instructions.issue_lsn(*turn),
+                            Some(*issue_lsn)
+                        );
+                    }
+                    InstructionBaselineRef::MissingTurnBoundary { .. } => {
+                        panic!("unexpected mail-wake baseline")
+                    }
+                }
+                match settlement {
+                    InstructionSettlement::Unknown {
+                        reason,
+                        recovery,
+                        comparison,
+                        ..
+                    } => {
+                        assert_eq!(*reason, InstructionUnknownReason::UnrecordedLaunchBoundary);
+                        assert!(*recovery);
+                        assert!(
+                            comparison
+                                .gaps
+                                .iter()
+                                .any(|gap| gap.reason
+                                    == InstructionGapKind::UnrecordedLaunchBoundary)
+                        );
+                    }
+                    InstructionSettlement::Compared {
+                        end, comparison, ..
+                    } => {
+                        assert!(
+                            matches!(end, dudes_proto::InstructionEndBoundary::ManagedTurn {
+                            turn: ended, end_lsn,
+                        } if ended == turn && h.supervisor.world().instructions.managed_end_lsn(*agent, *turn) == Some(*end_lsn))
+                        );
+                        assert!(!comparison.gaps.is_empty());
+                    }
+                    _ => panic!("these mail fixtures never manufacture no-process proof"),
+                }
+            }
+            _ => panic!("expected a named instruction persistence"),
+        }
+    }
+
+    fn instruction_work(h: &mut Harness, mut effects: Vec<Seen>) -> Vec<Seen> {
+        for _ in 0..16 {
+            let [effect] = effects.as_slice() else {
+                return effects;
+            };
+            match effect {
+                Seen::SampleInstructions { .. } => {
+                    effects = sample(h, one(effects));
+                }
+                Seen::Persist { entry, .. } => {
+                    if !matches!(
+                        entry.record,
+                        Record::InstructionObservationStarted { .. }
+                            | Record::InstructionObservationFinished { .. }
+                    ) {
+                        return effects;
+                    }
+                    assert_observation(h, &entry.record);
+                    effects = acknowledge(h, one(effects));
+                }
+                _ => return effects,
+            }
+        }
+        panic!("bounded explicit instruction acknowledgements did not finish")
+    }
+
+    fn acknowledge_observations(h: &mut Harness, seen: Seen) -> Vec<Seen> {
+        let effects = acknowledge(h, seen);
+        instruction_work(h, effects)
+    }
+
+    fn wake_at() -> Timestamp {
+        Timestamp::from_unix_millis(86_400_001)
+    }
+
+    fn mail_record(prefix: &Prefix, state: &MailState) -> Record {
+        serde_json::from_value(serde_json::json!({
+            "t":"mail", "id":prefix.mail, "from":{"kind":"human"},
+            "to":{"kind":"agent","agent":prefix.agent}, "act":"message",
+            "subject":"private subject", "body":"private body", "body_len":12, "state":state
+        }))
+        .unwrap()
+    }
+
+    fn mail_journaled(h: &mut Harness, record: Record) -> Vec<Seen> {
+        let entry = Entry {
+            at: wake_at(),
+            record,
+        };
+        h.journal.push(entry.clone());
+        h.step(Input::Journaled {
+            lsn: Lsn(u64::try_from(h.journal.len()).unwrap()),
+            entry,
+        })
+    }
+
+    fn refresh(h: &mut Harness, seen: &Seen) -> Vec<Seen> {
+        let Seen::MailWakeRefresh { agent, request, .. } = seen else {
+            panic!("expected the exact current mailbox refresh")
+        };
+        h.step(Input::MailWakeReady {
+            agent: *agent,
+            request: *request,
+            result: Ok((wake_at(), crate::input::SpendView::default(), Lsn::ZERO)),
+        })
+    }
+
+    fn live_wake(prefix: &mut Prefix, h: &mut Harness, index: u64) -> Seen {
+        let calls = h.host.spawned.len();
+        prefix.mail = MailId::from_parts(2, u128::from(index));
+        let arrival = one(mail_journaled(h, mail_record(prefix, &MailState::Durable)));
+        let root = one(refresh(h, &arrival));
+        assert!(
+            matches!(root.record(), Some(Record::MailWakeTurnDecided(value))
+            if matches!(value.purpose, MailWakePurpose::FreshPreparation { .. }))
+        );
+        let ready = one(acknowledge(h, root));
+        let notification = one(refresh(h, &ready));
+        let Seen::MailWakeNotify { target, .. } = notification else {
+            panic!("expected the canonical mailbox target")
+        };
+        assert_eq!(target.mail.id, prefix.mail);
+        assert_eq!((target.original_count, target.target_count), (0, 1));
+        let notified = one(mail_journaled(
+            h,
+            Record::MailState {
+                id: prefix.mail,
+                state: MailState::Notified { n: 1 },
+            },
+        ));
+        let decision = one(refresh(h, &notified));
+        assert!(
+            matches!(decision.record(), Some(Record::MailWakeTurnDecided(value))
+            if matches!(value.purpose, MailWakePurpose::ExistingPreparation { .. }))
+        );
+        let checking = one(acknowledge(h, decision));
+        let sampled = refresh(h, &checking);
+        assert!(matches!(
+            sampled.as_slice(),
+            [Seen::SampleInstructions { baseline: None, .. }]
+        ));
+        let issue = one(instruction_work(h, sampled));
+        let Some(Record::MailWakeOnlyTurnIssued(carrier)) = issue.record() else {
+            panic!("expected the actual post-baseline mail issue")
+        };
+        assert_eq!(carrier.goal, prefix.goal);
+        assert_eq!(carrier.completion_lsn, prefix.completion);
+        assert_eq!(carrier.task, MailWakeTask::new(1).unwrap());
+        prefix.turn = carrier.turn;
+        let armed = one(acknowledge(h, issue));
+        assert!(
+            matches!(armed, Seen::Spawn { .. })
+                || matches!(armed.record(), Some(Record::HookTokenMinted { .. }))
+        );
+        assert_eq!(h.host.spawned.len(), calls);
+        prefix.entries = h.journal.clone();
+        armed
+    }
+
+    fn live(prefix: &mut Prefix) -> (Harness, Seen) {
+        use crate::testing::{FakeClock, FakeHost};
+        let harness = Harness::with_adapter(
+            FakeClock::frozen(86_400_001),
+            FakeHost::wall_clock_anchored(),
+            || {
+                Box::new(ClaudeAdapter::new(ClaudeConfig {
+                    model: Some("claude-haiku-4-5".into()),
+                    ..ClaudeConfig::default()
+                }))
+            },
+        );
+        let mut h = replay_into(harness, &prefix.entries);
+        assert!(h.step(Input::Started).is_empty());
+        let mint = live_wake(prefix, &mut h, 1);
+        (h, mint)
+    }
+
+    fn canonical_control(h: &mut Harness, record: Record) {
+        let entry = Entry {
+            at: wake_at(),
+            record,
+        };
+        h.journal.push(entry.clone());
+        assert!(
+            h.step(Input::Replayed {
+                lsn: Lsn(u64::try_from(h.journal.len()).unwrap()),
+                entry,
+            })
+            .is_empty()
+        );
+    }
+
+    fn ready_spawn(h: &mut Harness, armed: Seen) -> Seen {
+        if matches!(armed.record(), Some(Record::HookTokenMinted { .. })) {
+            one(acknowledge_observations(h, armed))
+        } else {
+            assert!(matches!(armed, Seen::Spawn { .. }));
+            armed
+        }
+    }
+
+    fn assert_unknown(h: &Harness, prefix: &Prefix, baseline: InstructionBaselineRef) {
+        let boundary = match baseline {
+            InstructionBaselineRef::Started { lsn } => lsn,
+            InstructionBaselineRef::MissingIssueBoundary { issue_lsn, .. } => issue_lsn,
+            InstructionBaselineRef::MissingTurnBoundary { .. } => {
+                panic!("expected the exact unconfirmed issue interval")
+            }
+        };
+        let attempt = h.supervisor.world().instructions.attempt(boundary).unwrap();
+        assert_eq!(attempt.baseline, baseline);
+        assert!(matches!(attempt.owner,
+            InstructionObservationOwner::Managed { agent, turn, .. }
+                if agent == prefix.agent && turn == prefix.turn));
+        assert!(matches!(
+            attempt.finished.as_ref().map(|finish| &finish.settlement),
+            Some(InstructionSettlement::Unknown {
+                reason: InstructionUnknownReason::UnrecordedLaunchBoundary,
+                recovery: true,
+                ..
+            })
+        ));
+        assert!(attempt.boundary_settled.is_none());
+        assert!(
+            h.supervisor
+                .world()
+                .instructions
+                .unresolved_launch_attempts(prefix.agent)
+                .any(|(_, unresolved)| unresolved.baseline == baseline)
+        );
+        assert!(!h.journal.iter().any(|entry| matches!(
+            entry.record,
+            Record::InstructionObservationFinished {
+                settlement: InstructionSettlement::NoProcess { .. },
+                ..
+            }
+        )));
+        assert!(h.host.spawned.is_empty());
+        assert_eq!(h.open_turn(prefix.agent), Some(prefix.turn));
+        assert_eq!(
+            h.supervisor.world().turns[&prefix.turn].task,
+            MailWakeTask::new(1).unwrap().as_str()
+        );
+        assert_eq!(
+            h.supervisor.world().turns[&prefix.turn].model_selection,
+            Some(ModelSelection::named("claude-haiku-4-5"))
+        );
+        assert_eq!(
+            h.journal
+                .iter()
+                .filter(|entry| matches!(&entry.record,
+            Record::MailWakeOnlyTurnIssued(issue) if issue.turn == prefix.turn))
+                .count(),
+            1
+        );
+        assert_completed(h, prefix);
+    }
+
     fn one(mut effects: Vec<Seen>) -> Seen {
         assert_eq!(effects.len(), 1, "{effects:?}");
         effects.pop().unwrap()
@@ -510,12 +911,13 @@ mod tests {
     }
 
     fn start(h: &mut Harness) -> Seen {
-        let mint = one(h.step(Input::Started));
+        let effects = h.step(Input::Started);
+        let mint = one(instruction_work(h, effects));
         assert!(matches!(
             mint.record(),
             Some(Record::HookTokenMinted { .. })
         ));
-        one(acknowledge(h, mint))
+        one(acknowledge_observations(h, mint))
     }
 
     fn launch(h: &mut Harness, spawn: Seen) {
@@ -539,7 +941,10 @@ mod tests {
         }));
         assert!(matches!(
             spawned.record(),
-            Some(Record::TurnSpawned { reissued: true, .. })
+            Some(Record::TurnSpawned {
+                reissued: false,
+                ..
+            })
         ));
         assert!(acknowledge(h, spawned).is_empty());
     }
@@ -639,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn mail_wake_replay_preserves_task_model_and_normal_session_recovery() {
+    fn mail_wake_replay_preserves_task_model_and_session_selection_without_host_authority() {
         for session in [None, Some(SessionId::new("recorded-session"))] {
             let prefix = Prefix::new(session.clone());
             let mut h = prefix.harness();
@@ -666,19 +1071,25 @@ mod tests {
             assert!(spec.argv.iter().any(|part| part == "--session-id"));
             assert!(!spec.argv.iter().any(|part| part == "--resume"));
             assert!(h.supervisor.world().browser_issue(prefix.turn).is_none());
-            launch(&mut h, spawn);
-            assert_eq!(h.host.spawned.len(), 1);
+            let baseline = InstructionBaselineRef::MissingIssueBoundary {
+                turn: prefix.turn,
+                issue_lsn: h
+                    .supervisor
+                    .world()
+                    .instructions
+                    .issue_lsn(prefix.turn)
+                    .unwrap(),
+            };
             assert_eq!(h.spawns_of(prefix.turn).len(), 1);
-            assert_completed(&h, &prefix);
+            assert_unknown(&h, &prefix, baseline);
             let mut restarted = replay(&h.journal);
-            assert!(
-                matches!(one(restarted.step(Input::Started)), Seen::Probe { turn } if turn == prefix.turn)
-            );
+            let candidate = start(&mut restarted);
+            assert!(matches!(candidate, Seen::Spawn { turn, .. } if turn == prefix.turn));
             assert_eq!(
                 restarted.supervisor.world().turns[&prefix.turn].task,
                 MailWakeTask::new(1).unwrap().as_str()
             );
-            assert_completed(&restarted, &prefix);
+            assert_unknown(&restarted, &prefix, baseline);
         }
     }
 
@@ -697,50 +1108,101 @@ mod tests {
                 },
             },
         ] {
-            let mut prefix = Prefix::new(None);
-            prefix.append(control, Timestamp::UNIX_EPOCH);
-            let mut h = prefix.harness();
-            assert!(h.step(Input::Started).is_empty());
+            let mut prefix = Prefix::completed(None);
+            let (mut h, mint) = live(&mut prefix);
+            canonical_control(&mut h, control);
+            assert!(h.host.spawned.is_empty());
             assert_eq!(h.open_turn(prefix.agent), Some(prefix.turn));
             let resumed = one(h.step(Input::Command(Command::Resume {
                 agent: prefix.agent,
                 browser: None,
             })));
-            let mint = one(acknowledge(&mut h, resumed));
-            assert!(matches!(
-                mint.record(),
-                Some(Record::HookTokenMinted { .. })
-            ));
+            assert!(acknowledge_observations(&mut h, resumed).is_empty());
             let repeated_resume = one(h.step(Input::Command(Command::Resume {
                 agent: prefix.agent,
                 browser: None,
             })));
             assert!(acknowledge(&mut h, repeated_resume).is_empty());
-            let spawn = one(acknowledge(&mut h, mint));
+            let spawn = ready_spawn(&mut h, mint);
             launch(&mut h, spawn);
             assert_eq!(h.spawns_of(prefix.turn).len(), 1);
             assert_completed(&h, &prefix);
         }
-        let mut prefix = Prefix::new(None);
-        prefix.append(
+        let mut prefix = Prefix::completed(None);
+        let (mut paused, mint) = live(&mut prefix);
+        canonical_control(
+            &mut paused,
             Record::Pause {
                 agent: prefix.agent,
                 browser: None,
             },
-            Timestamp::UNIX_EPOCH,
         );
-        let mut paused = prefix.harness();
-        let spawn = start(&mut paused);
+        let spawn = ready_spawn(&mut paused, mint);
         launch(&mut paused, spawn);
         assert_eq!(paused.host.spawned.len(), 1);
         assert!(paused.supervisor.world().agents[&prefix.agent].paused);
     }
 
     #[test]
+    fn mail_wake_resume_cannot_erase_a_replayed_unconfirmed_issue_boundary() {
+        for held in [false, true] {
+            let mut prefix = Prefix::new(None);
+            prefix.append(
+                if held {
+                    Record::AgentHeld {
+                        agent: prefix.agent,
+                        provenance: Provenance::Observed,
+                        cause: AutomaticHold::LaunchFailed {
+                            reason: "owned failure".into(),
+                        },
+                    }
+                } else {
+                    Record::Halt {
+                        agent: prefix.agent,
+                        text: None,
+                    }
+                },
+                wake_at(),
+            );
+            let mut h = prefix.harness();
+            let baseline = InstructionBaselineRef::MissingIssueBoundary {
+                turn: prefix.turn,
+                issue_lsn: h
+                    .supervisor
+                    .world()
+                    .instructions
+                    .issue_lsn(prefix.turn)
+                    .unwrap(),
+            };
+            let started = h.step(Input::Started);
+            assert!(instruction_work(&mut h, started).is_empty());
+            assert_unknown(&h, &prefix, baseline);
+            let resumed = one(h.step(Input::Command(Command::Resume {
+                agent: prefix.agent,
+                browser: None,
+            })));
+            let mint = one(acknowledge_observations(&mut h, resumed));
+            assert!(matches!(
+                mint.record(),
+                Some(Record::HookTokenMinted { .. })
+            ));
+            let repeated = one(h.step(Input::Command(Command::Resume {
+                agent: prefix.agent,
+                browser: None,
+            })));
+            assert!(acknowledge(&mut h, repeated).is_empty());
+            let candidate = ready_spawn(&mut h, mint);
+            assert!(matches!(candidate, Seen::Spawn { turn, .. } if turn == prefix.turn));
+            assert_eq!(h.spawns_of(prefix.turn).len(), 1);
+            assert_unknown(&h, &prefix, baseline);
+        }
+    }
+
+    #[test]
     fn mail_wake_end_preserves_completion_and_usage_without_judging_again() {
-        let prefix = Prefix::new(None);
-        let mut h = prefix.harness();
-        let spawn = start(&mut h);
+        let mut prefix = Prefix::completed(None);
+        let (mut h, mint) = live(&mut prefix);
+        let spawn = ready_spawn(&mut h, mint);
         launch(&mut h, spawn);
         let usage = Usage {
             input: Tokens::new(17),
@@ -751,7 +1213,7 @@ mod tests {
         assert!(
             matches!(ended.record(), Some(Record::TurnEnded { turn, provenance: Provenance::Observed, usage: Some(observed), .. }) if *turn == prefix.turn && *observed == usage)
         );
-        assert!(acknowledge(&mut h, ended).is_empty());
+        assert!(acknowledge_observations(&mut h, ended).is_empty());
         assert_eq!(h.supervisor.status_of(prefix.agent), AgentStatus::Done);
         assert_eq!(h.open_turn(prefix.agent), None);
         assert_completed(&h, &prefix);
@@ -770,15 +1232,15 @@ mod tests {
         let turn = ordinary.open_turn(agent).unwrap();
         let ended = one(ordinary.step(exit(turn, 0, Usage::ZERO)));
         assert!(
-            matches!(one(acknowledge(&mut ordinary, ended)), Seen::RunPredicate { goal: judged } if judged == goal)
+            matches!(one(acknowledge_observations(&mut ordinary, ended)), Seen::RunPredicate { goal: judged } if judged == goal)
         );
     }
 
     #[test]
     fn mail_wake_end_before_spawn_ack_and_late_observations_cannot_reopen_it() {
-        let prefix = Prefix::new(None);
-        let mut h = prefix.harness();
-        let spawn = start(&mut h);
+        let mut prefix = Prefix::completed(None);
+        let (mut h, mint) = live(&mut prefix);
+        let spawn = ready_spawn(&mut h, mint);
         let Seen::Spawn { spec, install, .. } = spawn else {
             panic!("expected launch")
         };
@@ -801,7 +1263,7 @@ mod tests {
             })
             .is_empty()
         );
-        assert!(acknowledge(&mut h, ended).is_empty());
+        assert!(acknowledge_observations(&mut h, ended).is_empty());
         assert!(
             h.step(Input::Spawned {
                 turn: prefix.turn,
@@ -841,8 +1303,22 @@ mod tests {
                 Timestamp::UNIX_EPOCH,
             );
             let mut h = prefix.harness();
+            let effects = h.step(Input::Started);
             assert!(
-                matches!(one(h.step(Input::Started)), Seen::Probe { turn } if turn == prefix.turn)
+                matches!(one(instruction_work(&mut h, effects)), Seen::Probe { turn } if turn == prefix.turn)
+            );
+            assert_unknown(
+                &h,
+                &prefix,
+                InstructionBaselineRef::MissingIssueBoundary {
+                    turn: prefix.turn,
+                    issue_lsn: h
+                        .supervisor
+                        .world()
+                        .instructions
+                        .issue_lsn(prefix.turn)
+                        .unwrap(),
+                },
             );
             let answer = match liveness {
                 Liveness::Unknown => ProbeAnswer::CouldNotAnswer,
@@ -866,7 +1342,7 @@ mod tests {
                         ..
                     })
                 ));
-                assert!(acknowledge(&mut h, ended).is_empty());
+                assert!(acknowledge_observations(&mut h, ended).is_empty());
                 assert_eq!(h.supervisor.status_of(prefix.agent), AgentStatus::Done);
             } else {
                 assert!(result.is_empty());
@@ -883,9 +1359,9 @@ mod tests {
 
     #[test]
     fn mail_wake_confirmed_spawn_failure_keeps_charge_and_observed_hold() {
-        let prefix = Prefix::new(None);
-        let mut h = prefix.harness();
-        let spawn = start(&mut h);
+        let mut prefix = Prefix::completed(None);
+        let (mut h, mint) = live(&mut prefix);
+        let spawn = ready_spawn(&mut h, mint);
         let Seen::Spawn {
             turn,
             spec,
@@ -904,7 +1380,7 @@ mod tests {
             turn: prefix.turn,
             reason: reason.to_string(),
         }));
-        let held = one(acknowledge(&mut h, ended));
+        let held = one(acknowledge_observations(&mut h, ended));
         assert!(matches!(
             held.record(),
             Some(Record::AgentHeld {
@@ -925,69 +1401,80 @@ mod tests {
     }
 
     #[test]
-    fn mail_wake_mint_and_spawn_crash_cuts_keep_the_same_unspawned_issue() {
-        let prefix = Prefix::new(None);
-        let mut unarmed = prefix.harness();
-        let mint = one(unarmed.step(Input::Started));
-        assert!(matches!(
-            mint.record(),
-            Some(Record::HookTokenMinted { .. })
-        ));
-        assert_eq!(unarmed.spawns_of(prefix.turn).len(), 0);
-        assert_eq!(unarmed.open_turn(prefix.agent), Some(prefix.turn));
-        let mut restarted = replay(&unarmed.journal);
-        let spawn = start(&mut restarted);
-        assert!(matches!(spawn, Seen::Spawn { turn, .. } if turn == prefix.turn));
-        assert_eq!(restarted.spawns_of(prefix.turn).len(), 1);
-        assert_eq!(
-            restarted
+    fn mail_wake_mint_and_spawn_crash_cuts_keep_the_same_issue_and_launch_uncertainty() {
+        for mint_durable in [false, true] {
+            let mut prefix = Prefix::completed(None);
+            let (mut current, mint) = live(&mut prefix);
+            let baseline = current
                 .supervisor
                 .world()
-                .issued_not_spawned()
-                .map(|(turn, _)| turn)
-                .collect::<Vec<_>>(),
-            vec![prefix.turn]
-        );
-        let mut before_spawn_ack = replay(&restarted.journal);
-        let reissued = start(&mut before_spawn_ack);
-        launch(&mut before_spawn_ack, reissued);
-        assert_eq!(before_spawn_ack.spawns_of(prefix.turn).len(), 1);
-        assert_completed(&before_spawn_ack, &prefix);
+                .instructions
+                .current_for_turn(prefix.turn)
+                .unwrap()
+                .1
+                .baseline;
+            assert_eq!(current.spawns_of(prefix.turn).len(), 0);
+            assert_eq!(current.open_turn(prefix.agent), Some(prefix.turn));
+            if mint_durable {
+                let candidate = ready_spawn(&mut current, mint);
+                assert!(matches!(candidate, Seen::Spawn { turn, .. } if turn == prefix.turn));
+            }
+            assert!(current.host.spawned.is_empty());
+            let mut restarted = replay(&current.journal);
+            let candidate = start(&mut restarted);
+            assert!(matches!(candidate, Seen::Spawn { turn, .. } if turn == prefix.turn));
+            assert_eq!(restarted.spawns_of(prefix.turn).len(), 1);
+            assert_eq!(
+                restarted
+                    .supervisor
+                    .world()
+                    .issued_not_spawned()
+                    .map(|(turn, _)| turn)
+                    .collect::<Vec<_>>(),
+                vec![prefix.turn]
+            );
+            assert_unknown(&restarted, &prefix, baseline);
+            let mut before_spawn_ack = replay(&restarted.journal);
+            let candidate = start(&mut before_spawn_ack);
+            assert!(matches!(candidate, Seen::Spawn { turn, .. } if turn == prefix.turn));
+            assert_eq!(before_spawn_ack.spawns_of(prefix.turn).len(), 1);
+            assert_unknown(&before_spawn_ack, &prefix, baseline);
+        }
     }
 
     #[test]
     fn mail_wake_browser_cancellation_and_intent_cannot_change_its_origin() {
-        let mut prefix = Prefix::new(None);
+        let mut prefix = Prefix::completed(None);
+        let (mut h, mint) = live(&mut prefix);
         let browser = dudes_proto::BrowserNoteAttribution {
             request_id_digest: Hex32::new([1; 32]),
             request_digest: Hex32::new([2; 32]),
             session_digest: Hex32::new([3; 32]),
         };
-        prefix.append(
+        canonical_control(
+            &mut h,
             Record::BrowserNoteIssuedCancelled {
                 agent: prefix.agent,
                 note_lsn: Lsn(1),
                 turn: prefix.turn,
                 browser,
             },
-            Timestamp::UNIX_EPOCH,
         );
-        prefix.append(
+        canonical_control(
+            &mut h,
             Record::BrowserNoteDispatchIntent {
                 agent: prefix.agent,
                 note_lsn: Lsn(1),
                 turn: prefix.turn,
             },
-            Timestamp::UNIX_EPOCH,
         );
-        let mut h = prefix.harness();
         assert!(h.supervisor.world().mail_wake_origin(prefix.turn));
         assert!(h.supervisor.world().browser_issue(prefix.turn).is_none());
         assert!(!h.supervisor.world().browser_issue_cancelled(prefix.turn));
-        let spawn = start(&mut h);
+        let spawn = ready_spawn(&mut h, mint);
         launch(&mut h, spawn);
         let ended = one(h.step(exit(prefix.turn, 0, Usage::ZERO)));
-        assert!(acknowledge(&mut h, ended).is_empty());
+        assert!(acknowledge_observations(&mut h, ended).is_empty());
         assert_eq!(h.supervisor.status_of(prefix.agent), AgentStatus::Done);
         assert_completed(&h, &prefix);
     }
@@ -1048,19 +1535,19 @@ mod tests {
 
     #[test]
     fn mail_wake_origin_survives_goal_clearing_before_its_end() {
-        let mut prefix = Prefix::new(None);
-        prefix.append(
+        let mut prefix = Prefix::completed(None);
+        let (mut h, mint) = live(&mut prefix);
+        canonical_control(
+            &mut h,
             Record::GoalCleared {
                 agent: prefix.agent,
                 goal: prefix.goal,
             },
-            Timestamp::UNIX_EPOCH,
         );
-        let mut h = prefix.harness();
-        let spawn = start(&mut h);
+        let spawn = ready_spawn(&mut h, mint);
         launch(&mut h, spawn);
         let ended = one(h.step(exit(prefix.turn, 0, Usage::ZERO)));
-        assert!(acknowledge(&mut h, ended).is_empty());
+        assert!(acknowledge_observations(&mut h, ended).is_empty());
         assert_eq!(
             h.supervisor.world().completed_goal_lsn(prefix.goal),
             Some(prefix.completion)
@@ -1088,8 +1575,7 @@ mod tests {
     #[test]
     fn mail_wake_adapter_refusal_ends_once_with_an_observed_hold() {
         use crate::testing::{FakeClock, FakeHost};
-        use dudes_providers::claude::ClaudeAdapter;
-        use dudes_providers::claude::config::{ClaudeConfig, SettingSource};
+        use dudes_providers::claude::config::SettingSource;
 
         let prefix = Prefix::new(None);
         let harness = Harness::with_adapter(
@@ -1103,11 +1589,12 @@ mod tests {
             },
         );
         let mut h = replay_into(harness, &prefix.entries);
-        let ended = one(h.step(Input::Started));
+        let effects = h.step(Input::Started);
+        let ended = one(instruction_work(&mut h, effects));
         assert!(
             matches!(ended.record(), Some(Record::TurnEnded { turn, outcome: Some(TurnOutcome::LaunchRefused { .. }), provenance: Provenance::Observed, .. }) if *turn == prefix.turn)
         );
-        let held = one(acknowledge(&mut h, ended));
+        let held = one(acknowledge_observations(&mut h, ended));
         assert!(matches!(
             held.record(),
             Some(Record::AgentHeld {
@@ -1120,18 +1607,39 @@ mod tests {
         assert_eq!(h.supervisor.status_of(prefix.agent), AgentStatus::Done);
         assert!(h.supervisor.world().turns[&prefix.turn].has_ended());
         assert_eq!(h.spawns_of(prefix.turn).len(), 0);
+        assert!(h.host.spawned.is_empty());
+        assert!(
+            h.supervisor
+                .world()
+                .instructions
+                .unresolved_launch_attempts(prefix.agent)
+                .any(|(_, attempt)| matches!(
+                    attempt.finished.as_ref().map(|finish| &finish.settlement),
+                    Some(InstructionSettlement::Unknown {
+                        reason: InstructionUnknownReason::UnrecordedLaunchBoundary,
+                        ..
+                    })
+                ))
+        );
+        assert!(!h.records().any(|record| matches!(
+            record,
+            Record::InstructionObservationFinished {
+                settlement: InstructionSettlement::NoProcess { .. },
+                ..
+            }
+        )));
         assert_completed(&h, &prefix);
     }
 
     #[test]
     fn mail_wake_two_rapid_failures_protect_before_any_work_on_live_end_and_restart() {
-        let mut prefix = Prefix::new(None);
-        let mut h = prefix.harness();
+        let mut prefix = Prefix::completed(None);
+        let (mut h, mint) = live(&mut prefix);
         let first = prefix.turn;
-        let spawn = start(&mut h);
+        let spawn = ready_spawn(&mut h, mint);
         launch(&mut h, spawn);
         let end = one(h.step(exit(first, 1, Usage::ZERO)));
-        assert!(acknowledge(&mut h, end).is_empty());
+        assert!(acknowledge_observations(&mut h, end).is_empty());
         assert_eq!(
             h.supervisor.world().agents[&prefix.agent].fast_failures,
             Some((first, first))
@@ -1143,19 +1651,22 @@ mod tests {
             .find(|entry| matches!(entry.record, Record::MailWakeOnlyTurnIssued(_)))
             .unwrap()
             .at;
-        prefix.append(
-            Record::MailState {
-                id: prefix.mail,
-                state: MailState::Acked,
-            },
-            at,
+        assert!(
+            mail_journaled(
+                &mut h,
+                Record::MailState {
+                    id: prefix.mail,
+                    state: MailState::Acked,
+                },
+            )
+            .is_empty()
         );
-        prefix.wake(2, at);
-        h = prefix.harness();
-        let spawn = start(&mut h);
+        assert_eq!(at, wake_at());
+        let armed = live_wake(&mut prefix, &mut h, 2);
+        let spawn = ready_spawn(&mut h, armed);
         launch(&mut h, spawn);
         let end = one(h.step(exit(prefix.turn, 1, Usage::ZERO)));
-        let beat = one(acknowledge(&mut h, end));
+        let beat = one(acknowledge_observations(&mut h, end));
         assert!(
             matches!(beat.record(), Some(Record::BreakerBeat { signals, .. }) if signals == &[dudes_types::BreakerSignal::RapidFailure])
         );
@@ -1199,7 +1710,7 @@ mod tests {
 
     #[test]
     fn mail_wake_completed_board_goal_stays_out_of_predicate_enumeration() {
-        let mut prefix = Prefix::new(None);
+        let mut prefix = Prefix::completed(None);
         let card = dudes_types::CardId::from_parts(3, 1);
         let Record::GoalSet { goal, .. } = &mut prefix.entries[1].record else {
             unreachable!()
@@ -1217,12 +1728,12 @@ mod tests {
                 };
             }
         }
-        let mut h = prefix.harness();
-        let spawn = start(&mut h);
+        let (mut h, mint) = live(&mut prefix);
+        let spawn = ready_spawn(&mut h, mint);
         launch(&mut h, spawn);
         assert!(board_changed(&mut h, card).is_empty());
         let end = one(h.step(exit(prefix.turn, 0, Usage::ZERO)));
-        assert!(acknowledge(&mut h, end).is_empty());
+        assert!(acknowledge_observations(&mut h, end).is_empty());
         assert!(board_changed(&mut h, card).is_empty());
         assert_completed(&h, &prefix);
         let mut restart = replay(&h.journal);

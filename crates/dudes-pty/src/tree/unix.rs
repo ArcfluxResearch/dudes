@@ -28,6 +28,7 @@ use crate::tree::{CloseReport, Spawned};
 thread_local! {
     static FORCE_GROUP_ISSUE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
     static FORCE_STATUS_ERROR: Cell<bool> = const { Cell::new(false) };
+    static ABSENCE_QUERY_RESULT: RefCell<Option<io::Result<bool>>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -39,6 +40,7 @@ const FIRST_HEARTBEAT_WAIT: Duration = Duration::from_secs(2);
 
 pub(crate) struct Session {
     child: Child,
+    original_group: Option<Pid>,
     cleanup: CleanupState,
     control: File,
     writer: File,
@@ -145,6 +147,7 @@ pub(crate) fn spawn(spec: LaunchSpec, size: PtySize) -> io::Result<Spawned> {
     Ok(Spawned {
         session: Session {
             child,
+            original_group: group,
             cleanup: CleanupState {
                 group: group.map_or(GroupCleanup::Unknown, GroupCleanup::SignalOpen),
                 direct: DirectCleanup::NeedsSignal,
@@ -373,6 +376,15 @@ fn close_owned(state: &mut CleanupState, ops: &mut impl UnixTeardownOps) -> Clos
 }
 
 impl Session {
+    pub(crate) fn close_query(&self) -> io::Result<CloseQuery> {
+        if self.cleanup.direct != DirectCleanup::Reaped {
+            return Err(io::Error::other("PTY direct child is not reaped"));
+        }
+        self.original_group
+            .map(|group| CloseQuery { group })
+            .ok_or_else(|| io::Error::other("PTY original group is unknown"))
+    }
+
     pub(crate) fn pid(&self) -> u32 {
         self.child.id()
     }
@@ -393,6 +405,26 @@ impl Session {
             },
         )
     }
+}
+
+pub(crate) struct CloseQuery {
+    group: Pid,
+}
+
+impl CloseQuery {
+    pub(crate) fn is_absent(&self) -> io::Result<bool> {
+        #[cfg(test)]
+        if let Some(result) = ABSENCE_QUERY_RESULT.with(|forced| forced.borrow_mut().take()) {
+            return result;
+        }
+        probe_group(rustix::process::test_kill_process_group(self.group))
+            .map(|state| state == GroupState::Absent)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn force_absence_query_once_for_test(result: io::Result<bool>) {
+    ABSENCE_QUERY_RESULT.with(|forced| *forced.borrow_mut() = Some(result));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

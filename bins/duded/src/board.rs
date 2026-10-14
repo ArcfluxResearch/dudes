@@ -111,6 +111,16 @@ pub(crate) fn largest_ticket() -> CardTicket {
         round: u32::from(u16::MAX),
         reason: Some(TicketReason::ProjectUnavailable),
         stopping: true,
+        instruction_review: Some(dudes_proto::InstructionReviewSummary {
+            watermark: dudes_proto::InstructionReviewWatermark {
+                through_lsn: Lsn(u64::MAX),
+                set_digest: dudes_proto::record::Hex32::new([255; 32]),
+            },
+            pending_comparison: true,
+            intervals: u32::MAX,
+            changed_paths: u32::MAX,
+            gaps: u32::MAX,
+        }),
     }
 }
 

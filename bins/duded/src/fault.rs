@@ -59,7 +59,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use dudes_providers::adapter::{HookInstall, ManagedInstall};
 use dudes_providers::launch::LaunchSpec;
 use dudes_supervisor::host::{
-    AdoptionKey, HostBoot, KillOutcome, Liveness, ProcessHost, SpawnResult,
+    AdoptionKey, HostBoot, KillOutcome, Liveness, NativeBoundaryAcknowledgement,
+    NativeBoundaryReceipt, OwnedTargets, ProcessHost, SpawnResult,
 };
 
 /// Announce the window and never leave it.
@@ -125,6 +126,18 @@ impl<H: ProcessHost> ProcessHost for StallBeforeSpawn<H> {
 
     fn alive(&self, key: &AdoptionKey) -> Liveness {
         self.inner.alive(key)
+    }
+
+    fn owned_targets(&self, limit: usize) -> OwnedTargets {
+        self.inner.owned_targets(limit)
+    }
+
+    fn acknowledge_native_boundary_absence(
+        &mut self,
+        key: &AdoptionKey,
+        receipt: &NativeBoundaryReceipt,
+    ) -> NativeBoundaryAcknowledgement {
+        self.inner.acknowledge_native_boundary_absence(key, receipt)
     }
 
     fn boot_identity(&self) -> HostBoot {
@@ -205,6 +218,18 @@ impl<H: ProcessHost> ProcessHost for StallAfterSpawn<H> {
 
     fn alive(&self, key: &AdoptionKey) -> Liveness {
         self.inner.alive(key)
+    }
+
+    fn owned_targets(&self, limit: usize) -> OwnedTargets {
+        self.inner.owned_targets(limit)
+    }
+
+    fn acknowledge_native_boundary_absence(
+        &mut self,
+        key: &AdoptionKey,
+        receipt: &NativeBoundaryReceipt,
+    ) -> NativeBoundaryAcknowledgement {
+        self.inner.acknowledge_native_boundary_absence(key, receipt)
     }
 
     fn boot_identity(&self) -> HostBoot {

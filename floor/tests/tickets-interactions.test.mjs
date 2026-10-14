@@ -11,14 +11,14 @@ import ts from 'typescript';
 
 import { restoreFocusAfterDialog } from '../src/renderer/focus.ts';
 import { fakePage, press } from './helpers/fake-page.mjs';
-import { ADA, agent, cardId, subscribe, ticketCard, TWO_PROJECTS } from './helpers/tickets.mjs';
+import { ADA, agent, cardId, subscribe, ticketCard, TWO_PROJECTS, instructionReview, instructionSummary, INSTRUCTION_WATERMARK } from './helpers/tickets.mjs';
 
 let server, store, ticket, detail, git, Control, browserControlDeps;
 const seen = [];
 let reply;
 
 before(async () => {
-  server = await createServer({ root: resolve(import.meta.dirname, '..'),
+  server = await createServer({ root: resolve(import.meta.dirname, '..'), configFile: false,
     server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
   store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   ticket = await server.ssrLoadModule('/src/renderer/ticket/ticket.ts');
@@ -40,7 +40,7 @@ beforeEach(() => {
   store.resetFloorStore(); ticket.resetTicket(); detail.resetDetail(); git.resetGit();
   seen.length = 0;
   reply = (url, body) => ({ status: 200, text: async () => JSON.stringify(url.endsWith('/read') ? {
-    state: 'ok', card: { id: body.card }, ticket: {
+    state: 'ok', card: { id: body.card, seq: store.getFloorState().cards.find((row) => row.id === body.card)?.seq }, ticket: {
       note: 'Keep the change small.', project: 'service', check: { id: 'default', label: 'default passes' },
       round: 1, reason: null, summary: '<b>Agent text</b>', check_result: null, position: null, waiting: null,
     },
@@ -225,6 +225,7 @@ for (const replacement of ['closed', 'another card', 'new draft']) {
         assert.equal(dialog.getAttribute('open'), null);
       } else if (replacement === 'another card') {
         assert.equal(dialog.querySelector('.ticket-panel').getAttribute('data-selected-card-id'), cardId(1));
+        assert.ok(dialog.querySelector('.ticket-notice') === null, 'create feedback stays outside another card');
       } else {
         assert.equal(dialog.getAttribute('data-composer'), 'true');
         assert.equal(dialog.querySelector('[name="title"]').value, 'A newer unsent draft');
@@ -244,6 +245,36 @@ test('a live composer opens its saved card under StrictMode', async () => {
     const dialog = app.page.host.querySelector('.ticket-dialog');
     assert.notEqual(dialog.getAttribute('open'), null);
     assert.equal(dialog.querySelector('.ticket-panel').getAttribute('data-selected-card-id'), cardId(2));
+    const notice = dialog.querySelector('.ticket-notice');
+    assert.ok(notice !== null, 'the saved card keeps its creation result');
+    assert.ok(textOf(notice).includes('Ticket created. Choose Give to agent when it is ready.'));
+  } finally { await app.close(); }
+});
+
+test('a refused optional assignment stays visible on the auto-opened created card', async () => {
+  const app = await mount([], { strict: true });
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    await act(async () => propsOf(app.page.host.querySelector('[name="title"]')).onChange({ target: { value: 'Keep the saved ticket' } }));
+    await act(async () => propsOf(app.page.host.querySelector('[name="agent"]')).onChange({ target: { value: ADA } }));
+    const ordinaryReply = reply;
+    reply = (url, body) => url === '/floor/ticket'
+      ? { status: 200, text: async () => JSON.stringify({ state: 'created', card: cardId(2), seq: 0, lsn: '4097' }) }
+      : url.endsWith('/assign')
+        ? { status: 409, text: async () => JSON.stringify({ state: 'refused', reason: 'agent_unavailable' }) }
+        : ordinaryReply(url, body);
+    await act(async () => propsOf(app.page.host.querySelector('.ticket-composer').querySelector('form')).onSubmit({ preventDefault() {} }));
+    await app.render({ ...app.floor, cards: [{ ...ticketCard(2, 'todo'), seq: 0 }] });
+    const panel = app.page.host.querySelector('.ticket-panel');
+    assert.equal(panel.getAttribute('data-selected-card-id'), cardId(2));
+    const notice = panel.querySelector('.ticket-notice');
+    assert.ok(notice !== null, 'a refused assignment does not hide the created ticket or its result');
+    assert.equal(notice.getAttribute('data-tone'), 'problem');
+    assert.ok(textOf(notice).includes('Ticket created, but it was not given to Ada. That agent is not available for this project.'));
+    assert.deepEqual(seen.filter(([url]) => url === '/floor/ticket' || url.endsWith('/assign')), [
+      ['/floor/ticket', { title: 'Keep the saved ticket', project: 'service', done_when: 'default', done_when_revision: 'a'.repeat(64) }],
+      ['/floor/ticket/assign', { card: cardId(2), agent: ADA, expected_seq: 0 }],
+    ]);
   } finally { await app.close(); }
 });
 
@@ -509,4 +540,197 @@ test('Give, Edit and changes retain unsent fields while authority is unavailable
       } finally { await app.close(); }
     }
   }
+});
+
+test('the instruction drawer accepts continuing work and sends reviewed rework atomically', async () => {
+  for (const action of ['accept', 'changes']) {
+    reply = (url, body) => ({ status: 200, text: async () => JSON.stringify(url.endsWith('/read') ? {
+      state: 'ok', card: { id: body.card, seq: 3 }, ticket: {
+        note: 'Read the instructions.', project: 'service', check: { id: 'default', label: 'passes' }, round: 1,
+        reason: 'shared_instructions_unknown', instruction_review: instructionReview(),
+      },
+    } : url.endsWith('/accept') ? { state: 'accepted', card: body.card, seq: 4, lsn: '14', outcome: 'instructions_acknowledged' }
+      : { state: 'assigned', card: body.card, seq: 4, lsn: '14', start: { state: 'started' } }) });
+    const app = await mount([ticketCard(1, 'blocked', { claimed_by: ADA }, {
+      reason: 'shared_instructions_unknown', instruction_review: instructionSummary(),
+    })]);
+    try {
+      await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
+      assert.equal(app.page.host.querySelector('[data-action="accept"]').disabled, false);
+      assert.ok(textOf(app.page.host).includes('Known changed paths'));
+      assert.ok(textOf(app.page.host).includes('read failed'));
+      seen.length = 0;
+      await act(async () => press(app.page.host.querySelector(`[data-action="${action}"]`)));
+      if (action === 'changes') {
+        const form = app.page.host.querySelector('.ticket-mode').querySelector('form');
+        await act(async () => propsOf(form.querySelector('textarea')).onChange({ target: { value: 'Revise the shared instructions.' } }));
+        await act(async () => propsOf(form).onSubmit({ preventDefault() {} }));
+      }
+      assert.deepEqual(seen, [[action === 'accept' ? '/floor/ticket/accept' : '/floor/ticket/assign', {
+        card: cardId(1), expected_seq: 3, review_watermark: INSTRUCTION_WATERMARK,
+        ...(action === 'changes' ? { agent: ADA, message: 'Revise the shared instructions.' } : {}),
+      }]]);
+      assert.ok(textOf(app.page.host).includes(action === 'accept'
+        ? 'Instruction review acknowledged. The ticket remains open.' : 'Ada is working on it.'));
+    } finally { await app.close(); }
+  }
+});
+
+for (const timing of ['before selection', 'after selection']) {
+  test(`instruction acknowledgement belongs to its card when it arrives ${timing}`, async () => {
+    let finish;
+    reply = (url, body) => url.endsWith('/read') ? { status: 200, text: async () => JSON.stringify({
+      state: 'ok', card: { id: body.card, seq: 3 }, ticket: {
+        note: 'Read the instructions.', project: 'service', check: { id: 'default', label: 'passes' }, round: 1,
+        reason: 'shared_instructions_unknown', instruction_review: instructionReview(),
+      },
+    }) } : new Promise((resolve) => { finish = resolve; });
+    const app = await mount([1, 2].map((id) => ticketCard(id, 'blocked', { claimed_by: ADA }, {
+      reason: 'shared_instructions_unknown', instruction_review: instructionSummary(),
+    })), { strict: true });
+    try {
+      await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
+      await act(async () => press(app.page.host.querySelector('[data-action="accept"]')));
+      const acknowledge = () => finish({ status: 200, text: async () => JSON.stringify({
+        state: 'accepted', card: cardId(1), seq: 4, lsn: '14', outcome: 'instructions_acknowledged',
+      }) });
+      if (timing === 'before selection') {
+        await act(async () => acknowledge());
+        assert.ok(textOf(app.page.host.querySelector('.ticket-notice')).includes('Instruction review acknowledged. The ticket remains open.'));
+      }
+      await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
+      await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(2)}"]`)));
+      if (timing === 'after selection') await act(async () => acknowledge());
+      const panel = app.page.host.querySelector('.ticket-panel');
+      assert.equal(panel.getAttribute('data-selected-card-id'), cardId(2));
+      assert.ok(panel.querySelector('.ticket-notice') === null, 'the acknowledgement is not evidence about this card');
+      assert.ok(textOf(panel).includes('Instruction review'));
+      assert.equal(panel.querySelector('[data-action="accept"]').disabled, false, 'the second card still needs its own review');
+      await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
+      await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
+      assert.ok(textOf(app.page.host.querySelector('.ticket-notice')).includes('Instruction review acknowledged. The ticket remains open.'));
+      await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
+      await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+      assert.ok(app.page.host.querySelector('.ticket-composer').querySelector('.ticket-notice') === null, 'card feedback stays outside the composer');
+    } finally { await app.close(); }
+  });
+}
+
+test('another card\'s feedback survives an obsolete timer and dismiss handler', async () => {
+  const timeout = globalThis.setTimeout;
+  const notices = [];
+  globalThis.setTimeout = (run, delay, ...args) => {
+    if (delay === 8000) notices.push(run);
+    return timeout(run, delay, ...args);
+  };
+  reply = (url, body) => ({ status: 200, text: async () => JSON.stringify(url.endsWith('/read') ? {
+    state: 'ok', card: { id: body.card, seq: 3 }, ticket: {
+      note: 'Keep this note.', project: 'service', check: { id: 'default', label: 'passes' }, round: 1,
+    },
+  } : { state: 'accepted', card: body.card, seq: 4, lsn: '14' }) });
+  let app;
+  try {
+    app = await mount([1, 2].map((id) => ticketCard(id, 'review', { claimed_by: ADA })), { strict: true });
+    await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
+    await act(async () => press(app.page.host.querySelector('[data-action="accept"]')));
+    const expire = notices.at(-1);
+    const dismiss = propsOf(app.page.host.querySelector('.ticket-dismiss')).onClick;
+    assert.equal(typeof expire, 'function');
+    await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
+    await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(2)}"]`)));
+    await act(async () => press(app.page.host.querySelector('[data-action="accept"]')));
+    const newer = ticket.getTicketState().notice;
+    await act(async () => { expire(); dismiss(); });
+    assert.equal(ticket.getTicketState().notice, newer);
+    assert.ok(app.page.host.querySelector('.ticket-panel').querySelector('.ticket-notice') !== null);
+    await act(async () => press(app.page.host.querySelector('.ticket-dismiss')));
+    assert.ok(app.page.host.querySelector('.ticket-notice') === null, 'the current dismiss still works');
+  } finally {
+    if (app !== undefined) await app.close();
+    globalThis.setTimeout = timeout;
+  }
+});
+
+test('an old form completion cannot close another ticket\'s form', async () => {
+  const app = await mount([1, 2].map((id) => ticketCard(id, 'review', { claimed_by: ADA })), { strict: true });
+  try {
+    await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
+    await act(async () => press(app.page.host.querySelector('[data-action="changes"]')));
+    const firstForm = app.page.host.querySelector('.ticket-mode').querySelector('form');
+    const complete = propsOf(firstForm.querySelectorAll('button').find((node) => textOf(node) === 'Cancel')).onClick;
+    await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
+    await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(2)}"]`)));
+    await act(async () => press(app.page.host.querySelector('[data-action="changes"]')));
+    const secondForm = app.page.host.querySelector('.ticket-mode').querySelector('form');
+    await act(async () => propsOf(secondForm.querySelector('textarea')).onChange({ target: { value: 'Keep this newer draft.' } }));
+    await act(async () => complete());
+    assert.ok(app.page.host.querySelector('.ticket-mode').querySelector('form') === secondForm);
+    assert.equal(secondForm.querySelector('textarea').value, 'Keep this newer draft.');
+  } finally { await app.close(); }
+});
+
+test('reviewed rework cannot edit a retained shortened note during a loading or failed refresh', async () => {
+  const fullNote = 'The complete original note\nKeep every byte after the review.';
+  const readReply = (seq, note, fields = {}) => ({ status: 200, text: async () => JSON.stringify({
+    state: 'ok', card: { id: cardId(1), seq }, ticket: {
+      note, project: 'service', check: { id: 'default', label: 'passes' }, round: 1, ...fields,
+    },
+  }) });
+  reply = (url) => url.endsWith('/read') ? readReply(3, 'The complete original', {
+    instruction_review: instructionReview(), truncated: ['note'],
+  }) : { status: 200, text: async () => JSON.stringify({
+    state: 'assigned', card: cardId(1), seq: 4, lsn: '14', start: { state: 'queued', position: 1, wait: 'agent_paused' },
+  }) };
+  const app = await mount([ticketCard(1, 'blocked', { claimed_by: ADA }, {
+    reason: 'shared_instructions_unknown', instruction_review: instructionSummary(),
+  })]);
+  try {
+    await act(async () => press(app.page.host.querySelector(`[data-card-id="${cardId(1)}"]`)));
+    await act(async () => press(app.page.host.querySelector('[data-action="changes"]')));
+    const rework = app.page.host.querySelector('.ticket-mode').querySelector('form');
+    await act(async () => propsOf(rework.querySelector('textarea')).onChange({ target: { value: 'Review the instructions.' } }));
+    await act(async () => propsOf(rework).onSubmit({ preventDefault() {} }));
+    assert.deepEqual(seen.find(([url]) => url.endsWith('/assign'))[1], {
+      card: cardId(1), expected_seq: 3, agent: ADA, message: 'Review the instructions.', review_watermark: INSTRUCTION_WATERMARK,
+    });
+    let finish;
+    reply = () => new Promise((resolve) => { finish = resolve; });
+    subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'claimed', { claimed_by: ADA, seq: 4 }, { position: 1 })], checks: TWO_PROJECTS });
+    await app.render(store.getFloorState());
+    assert.equal(detail.getDetailState().phase, 'loading');
+    assert.deepEqual(detail.getDetailState().detail.truncated, ['note']);
+    const edit = app.page.host.querySelector('[data-action="edit"]');
+    assert.equal(edit.disabled, true);
+    await act(async () => propsOf(edit).onClick());
+    assert.equal(app.page.host.querySelector('.ticket-mode').querySelector('form'), null);
+    const unsafeChange = { verb: 'edit', title: 'Ticket 1', note: 'The complete original', check: null };
+    await act(async () => { assert.equal(await ticket.changeTicket(store.getFloorState().cards[0], unsafeChange), false); });
+    await act(async () => finish({ status: 503, text: async () => '' }));
+    assert.equal(detail.getDetailState().phase, 'failed');
+    assert.equal(app.page.host.querySelector('[data-action="edit"]').disabled, true);
+    await act(async () => { assert.equal(await ticket.changeTicket(store.getFloorState().cards[0], unsafeChange), false); });
+    assert.deepEqual(seen.filter(([url]) => url.endsWith('/edit')), []);
+    const reread = app.page.host.querySelectorAll('button').find((node) => textOf(node) === 'Read again');
+    assert.ok(reread);
+    reply = () => readReply(4, 'The complete original', { truncated: ['note'] });
+    await act(async () => press(reread));
+    assert.equal(detail.getDetailState().phase, 'ready');
+    assert.equal(detail.getDetailState().seq, 4);
+    assert.equal(app.page.host.querySelector('[data-action="edit"]').disabled, true);
+    await act(async () => { assert.equal(await ticket.changeTicket(store.getFloorState().cards[0], unsafeChange), false); });
+    reply = (url) => url.endsWith('/read') ? readReply(4, fullNote)
+      : { status: 200, text: async () => JSON.stringify({ state: 'edited', card: cardId(1), seq: 5, lsn: '15' }) };
+    const freshRead = app.page.host.querySelectorAll('button').find((node) => textOf(node) === 'Read again');
+    await act(async () => press(freshRead));
+    assert.equal(detail.getDetailState().phase, 'ready');
+    assert.equal(app.page.host.querySelector('[data-action="edit"]').disabled, false);
+    await act(async () => press(app.page.host.querySelector('[data-action="edit"]')));
+    const form = app.page.host.querySelector('.ticket-mode').querySelector('form');
+    assert.equal(propsOf(form.querySelector('textarea')).value, fullNote);
+    await act(async () => propsOf(form).onSubmit({ preventDefault() {} }));
+    const edits = seen.filter(([url]) => url.endsWith('/edit'));
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0][1].expected_seq, 4);
+    assert.equal(edits[0][1].description, fullNote);
+  } finally { await app.close(); }
 });

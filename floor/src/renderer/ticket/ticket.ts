@@ -16,10 +16,12 @@ import { TICKET_REASONS } from '../board.ts';
 import type { TicketReason } from '../board.ts';
 import type { ControlDeps } from '../control/control.ts';
 import { browserControlDeps } from '../control/control.ts';
-import { agentName, holdingTicket } from './model.ts';
+import { agentName, holdingTicket, requiresInstructionReview } from './model.ts';
 import { getFloorState } from '../floor/store.ts';
 import { COULD_NOT_CONFIRM, REFUSAL_CODES, WAITS, placeInLine, reasonSentence, refusalSentence, waitSentence } from './words.ts';
 import type { RefusalCode, Wait } from './words.ts';
+import { editableDetail, getDetailState, reviewedWatermark } from './detail.ts';
+import type { InstructionWatermark } from './instructions.ts';
 
 export const ROUTES = Object.freeze({
   create: '/floor/ticket',
@@ -92,6 +94,7 @@ export function decodeResponse(verb: Verb, status: number, text: string): Outcom
         || !/^(?:0|[1-9][0-9]{0,19})$/.test(body.lsn)) return UNKNOWN;
       const seq = body.seq;
       if (seq !== undefined && !(typeof seq === 'number' && Number.isSafeInteger(seq) && seq >= 0)) return UNKNOWN;
+      if (body.outcome !== undefined && (verb !== 'accept' || body.outcome !== 'instructions_acknowledged')) return UNKNOWN;
       const start = verb === 'assign' ? startOf(body.start) : null;
       if (verb === 'assign' && start === null) return UNKNOWN;
       return Object.freeze({ kind: 'done', card: body.card, seq: seq ?? null, start, body });
@@ -137,6 +140,7 @@ export async function postTicket(verb: Verb, payload: object, csrf: string, fetc
 // ---- what the operator is told ---------------------------------------------------------------
 
 export interface Notice {
+  readonly card: string | null;
   readonly tone: 'done' | 'problem';
   readonly text: string;
 }
@@ -170,6 +174,7 @@ export interface TicketState {
 
 const INITIAL: TicketState = Object.freeze({ sending: false, notice: null });
 let state: TicketState = INITIAL;
+let latestRequest = 0;
 const listeners = new Set<() => void>();
 
 export function getTicketState(): TicketState {
@@ -185,6 +190,7 @@ export function subscribeToTicket(listener: () => void): () => void {
 
 /** What a reload does: forget everything. For tests; the page gets a fresh module per load. */
 export function resetTicket(): void {
+  latestRequest += 1;
   state = INITIAL;
   listeners.clear();
 }
@@ -194,8 +200,12 @@ function commit(next: TicketState): void {
   for (const listener of [...listeners]) listener();
 }
 
-export function dismissNotice(): void {
-  if (state.notice !== null && !state.sending) commit({ ...state, notice: null });
+export function dismissNotice(notice: Notice): void {
+  if (state.notice === notice && !state.sending) commit({ ...state, notice: null });
+}
+
+function finishRequest(request: number, notice: Notice): void {
+  if (request === latestRequest) commit({ sending: false, notice });
 }
 
 /**
@@ -263,14 +273,15 @@ export interface Created {
  */
 export async function createTicket(form: NewTicket, deps: ControlDeps = browserControlDeps): Promise<Created> {
   if (state.sending || form.title.trim() === '') return { card: null, saved: false };
+  const request = ++latestRequest;
   commit({ sending: true, notice: null });
   const made = await send('create', createPayload(form), deps);
   if (made.kind !== 'done' || made.card === null) {
-    commit({ sending: false, notice: { tone: 'problem', text: made.kind === 'done' ? COULD_NOT_CONFIRM : problemText(made, 'todo') } });
+    finishRequest(request, { card: null, tone: 'problem', text: made.kind === 'done' ? COULD_NOT_CONFIRM : problemText(made, 'todo') });
     return { card: null, saved: false };
   }
   if (form.agent === null) {
-    commit({ sending: false, notice: { tone: 'done', text: 'Ticket created. Choose Give to agent when it is ready.' } });
+    finishRequest(request, { card: made.card, tone: 'done', text: 'Ticket created. Choose Give to agent when it is ready.' });
     return { card: made.card, saved: true };
   }
   const floor = getFloorState();
@@ -285,7 +296,7 @@ export async function createTicket(form: NewTicket, deps: ControlDeps = browserC
     : `Ticket created, but it was not given to ${name}. ${given.kind === 'done' ? COULD_NOT_CONFIRM : problemText(given, 'todo')}`;
   // A ticket that needs you stays said until it is dismissed, like any other problem.
   const well = started !== null && started.state !== 'needs_you';
-  commit({ sending: false, notice: { tone: well ? 'done' : 'problem', text } });
+  finishRequest(request, { card: made.card, tone: well ? 'done' : 'problem', text });
   return { card: made.card, saved: true };
 }
 
@@ -297,8 +308,9 @@ export type Change =
   | { readonly verb: 'remove' };
 
 /** The members of a request that acts on one ticket, and no others. */
-export function changePayload(card: CardRow, change: Change): Record<string, unknown> {
-  const base = { card: card.id, expected_seq: card.seq };
+export function changePayload(card: CardRow, change: Change, watermark: InstructionWatermark | null = null): Record<string, unknown> {
+  const base = { card: card.id, expected_seq: card.seq,
+    ...(watermark === null ? {} : { review_watermark: watermark }) };
   switch (change.verb) {
     case 'edit': {
       const payload: Record<string, unknown> = { ...base, title: change.title.trim(), description: change.note };
@@ -319,23 +331,41 @@ export function changePayload(card: CardRow, change: Change): Record<string, unk
 }
 
 const DONE_TEXT: Readonly<Record<Exclude<Change['verb'], 'assign'>, string>> = Object.freeze({
-  edit: 'Saved.', accept: 'Accepted. The ticket is Done.', stop: 'Stopped. The ticket is back in To do.',
+  edit: 'Saved.', accept: 'Accepted. The ticket is Done.', stop: 'Stopped. The agent finishes its current step.',
   remove: 'Removed.',
 });
 
 /** Act on one ticket. Resolves to whether the daemon did it. */
 export async function changeTicket(card: CardRow, change: Change, deps: ControlDeps = browserControlDeps): Promise<boolean> {
   if (state.sending) return false;
-  commit({ sending: true, notice: null });
-  const outcome = await send(change.verb, changePayload(card, change), deps);
-  if (outcome.kind !== 'done') {
-    commit({ sending: false, notice: { tone: 'problem', text: problemText(outcome, card.status) } });
+  const request = ++latestRequest;
+  const current = getFloorState().cards.find((row) => row.id === card.id);
+  if (change.verb === 'edit' && (current === undefined || current.seq !== card.seq
+    || editableDetail(getDetailState(), current) === null)) {
+    finishRequest(request, { card: card.id, tone: 'problem', text: 'Read the complete current note before editing this ticket.' });
     return false;
   }
-  const text = change.verb === 'assign' && outcome.start !== null
+  const reviewAction = (change.verb === 'accept' || change.verb === 'assign')
+    && (requiresInstructionReview(card) || (current !== undefined && requiresInstructionReview(current)));
+  const watermark = reviewAction && current?.seq === card.seq ? reviewedWatermark(getDetailState(), current) : null;
+  if (reviewAction && watermark === null) {
+    finishRequest(request, { card: card.id, tone: 'problem', text: 'Read the current instruction evidence before reviewing this ticket.' });
+    return false;
+  }
+  commit({ sending: true, notice: null });
+  const outcome = await send(change.verb, changePayload(card, change, watermark), deps);
+  if (outcome.kind !== 'done') {
+    finishRequest(request, { card: card.id, tone: 'problem', text: problemText(outcome, card.status) });
+    return false;
+  }
+  const text = change.verb === 'accept' && outcome.body.outcome === 'instructions_acknowledged'
+    ? 'Instruction review acknowledged. The ticket remains open.'
+    : change.verb === 'stop' && requiresInstructionReview(card)
+      ? 'Stopped. Instruction review still needs you.'
+    : change.verb === 'assign' && outcome.start !== null
     ? startText(outcome.start, agentName(getFloorState(), change.agent), holdingTicket(getFloorState(), change.agent)?.title)
     : change.verb === 'assign' ? COULD_NOT_CONFIRM : DONE_TEXT[change.verb];
   const needs = change.verb === 'assign' && outcome.start?.state === 'needs_you';
-  commit({ sending: false, notice: { tone: needs ? 'problem' : 'done', text } });
+  finishRequest(request, { card: card.id, tone: needs ? 'problem' : 'done', text });
   return true;
 }

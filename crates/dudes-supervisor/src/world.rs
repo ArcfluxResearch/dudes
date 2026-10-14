@@ -18,6 +18,8 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 
+#[cfg(test)]
+mod attached_turn_end_tests;
 mod mail_wakes;
 mod mcp;
 mod worktrees;
@@ -27,6 +29,10 @@ pub use worktrees::{WorktreeRow, WorktreeState};
 
 use dudes_policy::{
     AgentInput, AnswerInput, Control, FloorInput, GoalInput, LoopInput, PredicateInput, WorkInput,
+};
+use dudes_proto::instruction::{
+    InstructionBaselineRef, InstructionBoundaryAbsenceProof, InstructionNativeBoundaryReceipt,
+    InstructionObservationOwner, InstructionTicketAssociation,
 };
 use dudes_proto::{
     AgentBudget, BrowserNoteDestination, Entry, GateStep, Goal, LoopDecision, NoteAdmission,
@@ -206,6 +212,12 @@ pub struct GoalRow {
     pub cleared: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ObservedPredicateResult {
+    turn: TurnId,
+    lsn: Lsn,
+}
+
 /// One turn, as the confirmed entries describe it.
 #[derive(Clone, Debug)]
 pub struct TurnRow {
@@ -252,6 +264,59 @@ pub struct TurnRow {
     pub spawn_lsn: Option<Lsn>,
     /// Immutable grant paired with the latest physical spawn receipt.
     pub mcp_grant: Option<Lsn>,
+}
+
+/// A managed native spawn bound to one authoritative instruction-attempt start.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct ManagedNativeSpawnReceipt {
+    /// Exact managed owner captured by the starting record.
+    pub owner: InstructionObservationOwner,
+    /// Complete process identity recorded by this physical spawn.
+    pub key: AdoptionKey,
+    /// Actual position of this attempt's first physical spawn receipt.
+    pub spawn_lsn: Lsn,
+}
+
+/// An attached native spawn bound to one exact attachment and instruction-attempt start.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct AttachedNativeSpawnReceipt {
+    /// Exact attached-process owner, including its actual attachment record position.
+    pub owner: InstructionObservationOwner,
+    /// Run-local PTY handle recorded by this physical spawn.
+    pub pty: dudes_proto::rpc::pty::PtyId,
+    /// Complete process identity recorded by this physical spawn.
+    pub key: AdoptionKey,
+    /// Actual position of this attempt's first physical spawn receipt.
+    pub spawn_lsn: Lsn,
+}
+
+/// One actual observed Attached turn end awaiting its missing-start observation.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct AttachedTurnEndReceipt {
+    /// Exact hook-ended owner; its attachment identity is unrecorded and remains `None`.
+    pub owner: InstructionObservationOwner,
+    /// Canonical position of this turn's first observed end.
+    pub end_lsn: Lsn,
+    /// Actual current goal captured before the end was folded.
+    pub goal: Option<GoalId>,
+    /// Original current ticket-start association, independent of later card eligibility.
+    pub ticket: Option<InstructionTicketAssociation>,
+}
+
+/// Whether a bounded query inspected all current unmatched Attached ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AttachedTurnEndQueryStatus {
+    /// Every retained end fit; no instruction baseline, card eligibility or process absence is proved.
+    Complete,
+    /// Further current identities were retained but not inspected.
+    Truncated {
+        /// Number of current unmatched ends beyond the query bound.
+        omitted: usize,
+    },
 }
 
 impl TurnRow {
@@ -351,12 +416,20 @@ fn qualifying_unconfirmed_resume_end(outcome: Option<&TurnOutcome>) -> bool {
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct World {
+    /// Durable instruction attempts and independently consumed review evidence.
+    pub instructions: dudes_proto::instruction_state::InstructionState,
     /// Latest journal-derived closure; a completed session remains historical.
     pub closing: Option<crate::closing::ClosingSession>,
     /// Agents by id.
     pub agents: BTreeMap<AgentId, AgentRow>,
+    active_folder_users: BTreeSet<AgentId>,
+    open_turn_owners: BTreeSet<AgentId>,
+    managed_native_spawns: BTreeMap<Lsn, ManagedNativeSpawnReceipt>,
+    attached_native_spawns: BTreeMap<Lsn, AttachedNativeSpawnReceipt>,
+    unmatched_attached_turn_ends: BTreeMap<Lsn, AttachedTurnEndReceipt>,
     /// Goals by id.
     pub goals: BTreeMap<GoalId, GoalRow>,
+    observed_predicates: BTreeMap<GoalId, ObservedPredicateResult>,
     /// Turns by id.
     pub turns: BTreeMap<TurnId, TurnRow>,
     mcp_grants: BTreeMap<Lsn, McpGrant>,
@@ -545,6 +618,76 @@ pub struct NoteDecisionRow {
 }
 
 impl World {
+    /// Validate record authority held only by the committed World without changing it.
+    ///
+    /// Record shape, instruction history and current card admission still require their own checks.
+    ///
+    /// # Errors
+    /// Rejects invalid final-reply authority, a mismatched native spawn receipt, or an unmatched
+    /// Attached finish that changes its captured owner, end identity or supplied ticket association.
+    pub fn validate_record_authority(&self, entry: &Entry) -> Result<(), &'static str> {
+        if let Record::TurnEnded {
+            final_reply: Some(reply),
+            last_message,
+            mode,
+            provenance,
+            ..
+        } = &entry.record
+            && (last_message.is_some()
+                || reply.text.len() > dudes_proto::MAX_CHAT_REPLY_BYTES
+                || *mode != dudes_types::Mode::Managed
+                || *provenance != Provenance::Observed)
+        {
+            return Err("turn final reply lacks observed managed authority");
+        }
+        if let Record::InstructionAttemptBoundarySettled {
+            owner,
+            started_lsn,
+            proof: InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent { receipt },
+        } = &entry.record
+            && let Some((indexed_owner, indexed_spawn)) = self
+                .managed_native_spawns
+                .get(started_lsn)
+                .map(|indexed| (indexed.owner, indexed.spawn_lsn))
+                .or_else(|| {
+                    self.attached_native_spawns
+                        .get(started_lsn)
+                        .map(|indexed| (indexed.owner, indexed.spawn_lsn))
+                })
+            && (*owner != indexed_owner
+                || !matches!(receipt, InstructionNativeBoundaryReceipt::Spawned { lsn } if *lsn == indexed_spawn))
+        {
+            return Err("native boundary settlement does not match the first indexed spawn");
+        }
+        if let Record::InstructionObservationFinished {
+            owner,
+            ticket,
+            baseline: InstructionBaselineRef::MissingTurnBoundary { turn, end_lsn },
+            ..
+        } = &entry.record
+            && let Some(captured) = self.unmatched_attached_turn_ends.get(end_lsn)
+            && matches!(
+                captured.owner,
+                InstructionObservationOwner::AttachedTurn {
+                    attachment_lsn: None,
+                    ..
+                }
+            )
+        {
+            if *owner != captured.owner
+                || !matches!(captured.owner, InstructionObservationOwner::AttachedTurn { turn: actual, .. } if actual == *turn)
+            {
+                return Err("attached turn finish does not match the captured end owner");
+            }
+            if ticket.is_some() && *ticket != captured.ticket {
+                return Err(
+                    "attached turn finish ticket does not match the captured end association",
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Fold one confirmed entry, appended at `lsn`.
     ///
     /// The `match` is exhaustive on `Record`, so a new variant fails to compile here rather than
@@ -561,19 +704,30 @@ impl World {
     /// position of every entry, which is what lets a record be named by where it sits.
     #[allow(clippy::too_many_lines, clippy::match_same_arms)]
     pub fn apply(&mut self, lsn: Lsn, entry: &Entry) {
-        if let Record::TurnEnded {
-            final_reply: Some(reply),
-            last_message,
-            mode,
-            provenance,
-            ..
-        } = &entry.record
-            && (last_message.is_some()
-                || reply.text.len() > dudes_proto::MAX_CHAT_REPLY_BYTES
-                || *mode != dudes_types::Mode::Managed
-                || *provenance != Provenance::Observed)
-        {
+        if self.validate_record_authority(entry).is_err() {
             return;
+        }
+        let attached_end = self.capture_attached_turn_end(lsn, entry);
+        let Ok(instruction_fold) = self.instructions.apply_validated(lsn, entry, |bytes| {
+            dudes_proto::record::Hex32::new(*blake3::hash(bytes).as_bytes())
+        }) else {
+            return;
+        };
+        if let Some(captured) = attached_end
+            && matches!(captured.owner, InstructionObservationOwner::AttachedTurn { turn, .. }
+                if self.instructions.end_lsn(turn) == Some(captured.end_lsn))
+        {
+            self.unmatched_attached_turn_ends
+                .entry(captured.end_lsn)
+                .or_insert(captured);
+        }
+        self.retire_attached_turn_end(lsn, entry);
+        if let Record::InstructionAttemptBoundarySettled { started_lsn, .. } = &entry.record {
+            self.managed_native_spawns.remove(started_lsn);
+            self.attached_native_spawns.remove(started_lsn);
+        }
+        if let Some(clear) = instruction_fold.cleared_goal {
+            self.clear_goal(clear.agent, clear.goal, lsn);
         }
         let mut wakes = std::mem::take(&mut self.mail_wakes);
         wakes.apply(self, lsn, entry);
@@ -981,10 +1135,11 @@ impl World {
                     if let Some(note) = self.browser_notes.get_mut(note_lsn) {
                         note.state = BrowserNoteState::Cancelled;
                     }
-                    if let Some(agent) = self.agents.get_mut(agent)
-                        && agent.open_turn == Some(*turn)
+                    if let Some(row) = self.agents.get_mut(agent)
+                        && row.open_turn == Some(*turn)
                     {
-                        agent.open_turn = None;
+                        row.open_turn = None;
+                        self.open_turn_owners.remove(agent);
                     }
                 }
             }
@@ -1130,6 +1285,7 @@ impl World {
                         exhausted: None,
                     },
                 );
+                self.active_folder_users.insert(*id);
                 if let Some(worktree) = worktree {
                     self.assign_worktree(*worktree, *id);
                 }
@@ -1138,6 +1294,7 @@ impl World {
                 self.fold_worktree(&entry.record);
             }
             Record::AgentRetired { id, .. } => {
+                self.active_folder_users.remove(id);
                 if let Some(row) = self.agents.get_mut(id) {
                     row.retired = true;
                     row.goal = None;
@@ -1152,18 +1309,7 @@ impl World {
                     }
                 }
             }
-            Record::GoalCleared { agent, goal } => {
-                if let Some(row) = self.goals.get_mut(goal) {
-                    row.cleared = true;
-                }
-                if let Some(row) = self.agents.get_mut(agent)
-                    && row.goal == Some(*goal)
-                {
-                    row.goal = None;
-                    row.context_lsn = lsn;
-                    row.exhausted = None;
-                }
-            }
+            Record::GoalCleared { agent, goal } => self.clear_goal(*agent, *goal, lsn),
             Record::GoalReassigned { goal, from, to, .. } => {
                 if let Some(row) = self.goals.get_mut(goal) {
                     row.agent = *to;
@@ -1271,6 +1417,23 @@ impl World {
                     .is_some_and(|issue| issue.agent != *agent || issue.dispatch_intents.is_empty())
                 {
                     return;
+                }
+                if let Some((started_lsn, attempt)) = self.instructions.current_for_turn(*turn)
+                    && matches!(attempt.owner, InstructionObservationOwner::Managed { agent: owner, turn: owned_turn, .. } if owner == *agent && owned_turn == *turn)
+                    && attempt.spawn_lsn == Some(lsn)
+                    && attempt.boundary_settled.is_none()
+                {
+                    self.managed_native_spawns
+                        .entry(started_lsn)
+                        .or_insert_with(|| ManagedNativeSpawnReceipt {
+                            owner: attempt.owner,
+                            key: AdoptionKey {
+                                pid: *pid,
+                                start_time: *start_time,
+                                boot: boot.clone(),
+                            },
+                            spawn_lsn: lsn,
+                        });
                 }
                 if let Some(issue) = self.browser_issues.get_mut(turn)
                     && issue.agent == *agent
@@ -1465,6 +1628,7 @@ impl World {
                     row.last_turn_end = Some(*provenance);
                     if row.open_turn == Some(*turn) {
                         row.open_turn = None;
+                        self.open_turn_owners.remove(agent);
                     }
                     if invalidates_resume
                         || matches!(
@@ -1492,6 +1656,7 @@ impl World {
             // after a restart.
             Record::PredicateResult {
                 goal,
+                turn,
                 provenance,
                 pass,
                 evidence,
@@ -1504,6 +1669,14 @@ impl World {
                         provenance: *provenance,
                         not_run: evidence.not_run(*pass),
                     });
+                    if !row.cleared
+                        && provenance.is_observed()
+                        && let Some(turn) = turn
+                        && row.last_turn == Some(*turn)
+                    {
+                        self.observed_predicates
+                            .insert(*goal, ObservedPredicateResult { turn: *turn, lsn });
+                    }
                 }
             }
             Record::BreakerBeat {
@@ -1558,11 +1731,35 @@ impl World {
             }
             Record::PtySpawned {
                 agent,
-                pty: _,
+                pty,
                 pid,
                 start_time,
                 boot,
             } => {
+                if let Some(attachment_lsn) = self.instructions.attachment_lsn(*agent)
+                    && let Some((started_lsn, attempt)) =
+                        self.instructions.current_for_attachment(attachment_lsn)
+                    && attempt.owner
+                        == (InstructionObservationOwner::AttachedProcess {
+                            agent: *agent,
+                            attachment_lsn,
+                        })
+                    && attempt.spawn_lsn == Some(lsn)
+                    && attempt.boundary_settled.is_none()
+                {
+                    self.attached_native_spawns
+                        .entry(started_lsn)
+                        .or_insert_with(|| AttachedNativeSpawnReceipt {
+                            owner: attempt.owner,
+                            pty: *pty,
+                            key: AdoptionKey {
+                                pid: *pid,
+                                start_time: *start_time,
+                                boot: boot.clone(),
+                            },
+                            spawn_lsn: lsn,
+                        });
+                }
                 if self.agents.get(agent).is_some_and(|row| row.attached) {
                     self.attached_children.insert(
                         *agent,
@@ -1684,6 +1881,10 @@ impl World {
             Record::GoalSet { .. } => {}
             // An edit changes words, not a card's status, so no board result it could hold moves.
             Record::TicketEdited { .. } => {}
+            Record::InstructionObservationStarted { .. }
+            | Record::InstructionObservationFinished { .. }
+            | Record::InstructionAttemptBoundarySettled { .. }
+            | Record::TicketInstructionReviewed { .. } => {}
             Record::CardCreated { card, .. }
             | Record::CardTransition { card, .. }
             | Record::Claim { card, .. }
@@ -1736,10 +1937,94 @@ impl World {
         self.completed_goal_lsn(goal).map(|lsn| (goal, lsn))
     }
 
+    fn capture_attached_turn_end(&self, lsn: Lsn, entry: &Entry) -> Option<AttachedTurnEndReceipt> {
+        let Record::TurnEnded {
+            agent,
+            turn,
+            mode: dudes_types::Mode::Attached,
+            provenance: Provenance::Observed,
+            ..
+        } = &entry.record
+        else {
+            return None;
+        };
+        if lsn == Lsn::ZERO || self.instructions.end_lsn(*turn).is_some() {
+            return None;
+        }
+        let goal = self.agents.get(agent).and_then(|row| row.goal);
+        let ticket = goal
+            .and_then(|goal| self.instructions.recorded_association_for_goal(goal))
+            .filter(|recorded| {
+                self.instructions
+                    .association_for_goal(recorded.goal, recorded.seq_at_start)
+                    == Some(*recorded)
+            });
+        Some(AttachedTurnEndReceipt {
+            owner: InstructionObservationOwner::AttachedTurn {
+                agent: *agent,
+                turn: *turn,
+                attachment_lsn: None,
+            },
+            end_lsn: lsn,
+            goal,
+            ticket,
+        })
+    }
+
+    fn retire_attached_turn_end(&mut self, lsn: Lsn, entry: &Entry) {
+        let Record::InstructionObservationFinished {
+            owner,
+            baseline: InstructionBaselineRef::MissingTurnBoundary { turn, end_lsn },
+            ..
+        } = &entry.record
+        else {
+            return;
+        };
+        let matched = self.unmatched_attached_turn_ends.get(end_lsn).is_some_and(|captured| {
+            captured.owner == *owner
+                && matches!(captured.owner, InstructionObservationOwner::AttachedTurn { turn: actual, .. } if actual == *turn)
+        });
+        let folded = self.instructions.attempt(*end_lsn).is_some_and(|attempt| {
+            attempt.owner == *owner
+                && attempt
+                    .finished
+                    .as_ref()
+                    .is_some_and(|finished| finished.lsn == lsn)
+        });
+        if matched && folded {
+            self.unmatched_attached_turn_ends.remove(end_lsn);
+        }
+    }
+
+    fn clear_goal(&mut self, agent: AgentId, goal: GoalId, lsn: Lsn) {
+        self.observed_predicates.remove(&goal);
+        if let Some(row) = self.goals.get_mut(&goal) {
+            row.cleared = true;
+        }
+        if let Some(row) = self.agents.get_mut(&agent)
+            && row.goal == Some(goal)
+        {
+            row.goal = None;
+            row.context_lsn = lsn;
+            row.exhausted = None;
+        }
+    }
+
     /// The first durable ordinary Done for this goal.
     #[must_use]
     pub fn completed_goal_lsn(&self, goal: GoalId) -> Option<Lsn> {
         self.completed_goals.get(&goal).copied()
+    }
+
+    pub(crate) fn observed_predicate_after(
+        &self,
+        goal: GoalId,
+        turn: TurnId,
+        end_lsn: Lsn,
+    ) -> bool {
+        self.observed_predicates
+            .get(&goal)
+            .is_some_and(|result| result.turn == turn && result.lsn > end_lsn)
     }
 
     /// A browser note by its original queue identity.
@@ -2022,12 +2307,16 @@ impl World {
         let agent = issued.agent;
         let goal = issued.goal;
         self.turns.insert(turn, issued);
+        if let Some(goal) = goal {
+            self.observed_predicates.remove(&goal);
+        }
         if let Some(row) = goal.and_then(|goal| self.goals.get_mut(&goal)) {
             row.turns_on_goal = row.turns_on_goal.saturating_add(1);
             row.last_turn = Some(turn);
         }
         if let Some(row) = self.agents.get_mut(&agent) {
             row.open_turn = Some(turn);
+            self.open_turn_owners.insert(agent);
         }
     }
 
@@ -2129,7 +2418,14 @@ impl World {
                 automatic_hold: row
                     .automatic_hold
                     .as_ref()
-                    .map(dudes_proto::AutomaticHold::hold_reason),
+                    .map(dudes_proto::AutomaticHold::hold_reason)
+                    .or_else(|| {
+                        (self.instructions.pending_for_goal(goal_id)
+                            && !goal.predicate.is_some_and(|predicate| {
+                                predicate.pass && predicate.provenance == Provenance::Observed
+                            }))
+                        .then_some(dudes_proto::HoldReason::SharedInstructionsReview)
+                    }),
             },
             last_turn_end: row.last_turn_end,
             open_question: row.open_question.clone(),
@@ -2326,6 +2622,94 @@ impl World {
             .copied()
             .unwrap_or_default()
     }
+
+    /// Nonretired recorded folder users, including idle, paused and halted agents.
+    pub fn active_folder_user_ids(&self) -> impl ExactSizeIterator<Item = &AgentId> {
+        self.active_folder_users.iter()
+    }
+
+    /// One unmatched first observed Attached end, retaining its original goal and ticket context.
+    #[must_use]
+    pub fn unmatched_attached_turn_end(&self, end_lsn: Lsn) -> Option<&AttachedTurnEndReceipt> {
+        self.unmatched_attached_turn_ends.get(&end_lsn)
+    }
+
+    /// Current unmatched count without visiting historical turns or finished observations.
+    #[must_use]
+    pub fn unmatched_attached_turn_end_count(&self) -> usize {
+        self.unmatched_attached_turn_ends.len()
+    }
+
+    /// Inspect at most `limit` current ends, capped at 512, and explicitly report omitted rows.
+    ///
+    /// All unmatched identities remain stored until their exact finishing observation is folded.
+    /// Truncation cannot establish complete coverage or admit work requiring a complete census.
+    pub fn unmatched_attached_turn_ends(
+        &self,
+        limit: usize,
+    ) -> (
+        impl ExactSizeIterator<Item = (&Lsn, &AttachedTurnEndReceipt)>,
+        AttachedTurnEndQueryStatus,
+    ) {
+        let count = self.unmatched_attached_turn_ends.len();
+        let inspected = limit
+            .min(crate::host::MAX_OWNED_TARGET_QUERY_ROWS)
+            .min(count);
+        let status = if inspected == count {
+            AttachedTurnEndQueryStatus::Complete
+        } else {
+            AttachedTurnEndQueryStatus::Truncated {
+                omitted: count - inspected,
+            }
+        };
+        (
+            self.unmatched_attached_turn_ends.iter().take(inspected),
+            status,
+        )
+    }
+
+    /// Current issued or spawned turn owners, including retired recorded agents.
+    pub fn open_turn_owner_ids(&self) -> impl ExactSizeIterator<Item = &AgentId> {
+        self.open_turn_owners.iter()
+    }
+
+    /// Current native spawn metadata with authoritative instruction-attempt starts.
+    ///
+    /// Ended or reviewed attempts remain until exact validated boundary settlement. This index
+    /// does not establish coverage of legacy spawns or attempts without a recorded start.
+    pub fn managed_native_spawn_receipts(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&Lsn, &ManagedNativeSpawnReceipt)> {
+        self.managed_native_spawns.iter()
+    }
+
+    /// One unsettled managed spawn bound to its exact starting record.
+    #[must_use]
+    pub fn managed_native_spawn_receipt(
+        &self,
+        started_lsn: Lsn,
+    ) -> Option<&ManagedNativeSpawnReceipt> {
+        self.managed_native_spawns.get(&started_lsn)
+    }
+
+    /// Current attached native metadata with authoritative attachment and attempt identities.
+    ///
+    /// Closing, detaching or finishing an observation retains these receipts until exact validated
+    /// boundary settlement. Legacy spawns without a recorded attempt are outside this index.
+    pub fn attached_native_spawn_receipts(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&Lsn, &AttachedNativeSpawnReceipt)> {
+        self.attached_native_spawns.iter()
+    }
+
+    /// One unsettled attached spawn bound to its exact starting record.
+    #[must_use]
+    pub fn attached_native_spawn_receipt(
+        &self,
+        started_lsn: Lsn,
+    ) -> Option<&AttachedNativeSpawnReceipt> {
+        self.attached_native_spawns.get(&started_lsn)
+    }
 }
 
 /// Which of the classification table's token rows a journaled agent-token hash reaches, and for which
@@ -2355,5 +2739,883 @@ fn launch_failed_reason(reason: &str) -> String {
         reason.to_owned()
     } else {
         "managed process could not launch (unknown error)".to_owned()
+    }
+}
+
+#[cfg(test)]
+mod current_census_tests {
+    use dudes_proto::instruction::{
+        InstructionBaselineRef, InstructionBoundaryAbsenceProof, InstructionComparison,
+        InstructionCoverageGap, InstructionGapKind, InstructionIssueAssociation,
+        InstructionNativeBoundaryReceipt, InstructionPathContext, InstructionSettlement,
+        InstructionSnapshot, InstructionSnapshotSource, InstructionUnknownReason,
+        NativeInstructionPath,
+    };
+    use dudes_proto::record::RecordKind;
+    use dudes_types::{Mode, Timestamp};
+
+    use super::*;
+
+    fn fold(world: &mut World, lsn: u64, record: Record) {
+        world.apply(
+            Lsn(lsn),
+            &Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record,
+            },
+        );
+    }
+
+    fn hired(agent: AgentId) -> Record {
+        Record::AgentHired {
+            id: agent,
+            name: "worker".into(),
+            character: None,
+            accent: None,
+            role: "builder".into(),
+            department: "engineering".into(),
+            provider: Provider::Claude,
+            cwd: "/work/repo".into(),
+            workspace: None,
+            budget: AgentBudget {
+                usd_per_day: None,
+                tokens_per_day: None,
+            },
+            sandbox: None,
+            isolation: None,
+            max_turns: None,
+            max_budget: None,
+            trusted: true,
+            worktree: None,
+            mcp_servers: Vec::new(),
+            browser_onboarding: None,
+        }
+    }
+
+    fn turn_record(kind: RecordKind, turn_id: TurnId) -> Record {
+        match kind {
+            RecordKind::TurnIssued => Record::TurnIssued {
+                agent: agent(),
+                turn: turn_id,
+                goal: GoalId::from_parts(1, 1),
+                task: "run the tests".into(),
+                session: None,
+                mode: Mode::Managed,
+                model_selection: None,
+                lsn_of_decision: Lsn(2),
+                answers: Vec::new(),
+            },
+            RecordKind::TurnSpawned => Record::TurnSpawned {
+                agent: agent(),
+                turn: turn_id,
+                pid: 4242,
+                start_time: 1_787_394_600,
+                boot: Some("f81d4fae-7dec-11d0-a765-00a0c91e6bf6".into()),
+                session: None,
+                reissued: true,
+                mcp_grant: None,
+            },
+            RecordKind::TurnEnded => Record::TurnEnded {
+                agent: agent(),
+                turn: turn_id,
+                mode: Mode::Managed,
+                provenance: Provenance::Observed,
+                elapsed_ms: None,
+                exit: dudes_proto::record::ExitStatus {
+                    code: Some(0),
+                    signal: None,
+                },
+                usage: None,
+                session_usage: None,
+                model_usage: BTreeMap::new(),
+                last_message: None,
+                final_reply: None,
+                session: None,
+                outcome: Some(TurnOutcome::Completed),
+            },
+            _ => panic!("the fixture needs a managed turn carrier"),
+        }
+    }
+
+    fn agent() -> AgentId {
+        AgentId::from_parts(1, 1)
+    }
+
+    fn owner(turn: TurnId, issue: InstructionIssueAssociation) -> InstructionObservationOwner {
+        InstructionObservationOwner::Managed {
+            agent: agent(),
+            turn,
+            issue,
+        }
+    }
+
+    fn started(turn: TurnId, issue: InstructionIssueAssociation) -> Record {
+        Record::InstructionObservationStarted {
+            owner: owner(turn, issue),
+            ticket: None,
+            snapshot: InstructionSnapshot {
+                sampled_at: Timestamp::UNIX_EPOCH,
+                source: InstructionSnapshotSource::Fresh,
+                boot: None,
+                execution_folder: Some(NativeInstructionPath::Utf8 {
+                    value: "/work/repo".into(),
+                }),
+                participants: Vec::new(),
+                inputs: Vec::new(),
+                inventoried: Vec::new(),
+                gaps: vec![InstructionCoverageGap {
+                    reason: InstructionGapKind::DeclarationMissing,
+                    context: InstructionPathContext::Unresolved,
+                    agent: Some(agent()),
+                    path: None,
+                }],
+                usage: dudes_proto::instruction::InstructionSampleUsage::default(),
+            },
+        }
+    }
+
+    fn finished(turn: TurnId, issue: InstructionIssueAssociation, started_lsn: Lsn) -> Record {
+        Record::InstructionObservationFinished {
+            owner: owner(turn, issue),
+            ticket: None,
+            baseline: InstructionBaselineRef::Started { lsn: started_lsn },
+            settlement: InstructionSettlement::Unknown {
+                reason: InstructionUnknownReason::UnrecordedLaunchBoundary,
+                end: None,
+                sampled_at: None,
+                recovery: true,
+                comparison: InstructionComparison {
+                    gaps: vec![InstructionCoverageGap {
+                        reason: InstructionGapKind::UnrecordedLaunchBoundary,
+                        context: InstructionPathContext::SharedProject,
+                        agent: Some(agent()),
+                        path: None,
+                    }],
+                    ..InstructionComparison::default()
+                },
+            },
+        }
+    }
+
+    fn settled(
+        turn: TurnId,
+        issue: InstructionIssueAssociation,
+        started_lsn: Lsn,
+        spawn_lsn: Lsn,
+    ) -> Record {
+        Record::InstructionAttemptBoundarySettled {
+            owner: owner(turn, issue),
+            started_lsn,
+            proof: InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
+                receipt: InstructionNativeBoundaryReceipt::Spawned { lsn: spawn_lsn },
+            },
+        }
+    }
+
+    fn seeded() -> World {
+        let mut world = World::default();
+        fold(&mut world, 1, hired(agent()));
+        fold(
+            &mut world,
+            2,
+            Record::GoalSet {
+                agent: agent(),
+                goal: Goal {
+                    id: GoalId::from_parts(1, 1),
+                    text: "complete the work".into(),
+                    predicate: Predicate::Command {
+                        argv: vec!["true".into()],
+                        timeout_s: 1,
+                    },
+                    completion_check: None,
+                    baseline: None,
+                    budget: dudes_proto::budget::GoalBudget {
+                        usd: None,
+                        tokens: None,
+                    },
+                    hop_cap: 1000,
+                },
+                browser_onboarding: None,
+                browser_goal: None,
+                goal_replacement: None,
+            },
+        );
+        world
+    }
+
+    fn predicate_result(turn: Option<TurnId>, provenance: Provenance) -> Record {
+        Record::PredicateResult {
+            goal: GoalId::from_parts(1, 1),
+            turn,
+            provenance,
+            pass: false,
+            evidence: dudes_proto::Evidence::Command {
+                argv: vec!["true".into()],
+                program: Some("true".into()),
+                exit: Some(1),
+                output_tail: String::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn predicate_receipts_require_an_exact_current_observed_result_after_the_end() {
+        let mut world = seeded();
+        let goal = GoalId::from_parts(1, 1);
+        let turn = TurnId::from_parts(1, 1);
+        fold(&mut world, 3, turn_record(RecordKind::TurnIssued, turn));
+        fold(&mut world, 4, turn_record(RecordKind::TurnSpawned, turn));
+        fold(&mut world, 5, turn_record(RecordKind::TurnEnded, turn));
+        fold(
+            &mut world,
+            6,
+            predicate_result(Some(turn), Provenance::Inferred),
+        );
+        assert!(!world.observed_predicate_after(goal, turn, Lsn(5)));
+        fold(&mut world, 7, predicate_result(None, Provenance::Observed));
+        assert!(!world.observed_predicate_after(goal, turn, Lsn(5)));
+        fold(
+            &mut world,
+            8,
+            predicate_result(Some(turn), Provenance::Observed),
+        );
+        assert!(world.observed_predicate_after(goal, turn, Lsn(5)));
+        assert!(!world.observed_predicate_after(goal, turn, Lsn(8)));
+        assert!(!world.observed_predicate_after(GoalId::from_parts(1, 2), turn, Lsn(5)));
+        fold(
+            &mut world,
+            9,
+            Record::GoalCleared {
+                agent: agent(),
+                goal,
+            },
+        );
+        assert!(!world.observed_predicate_after(goal, turn, Lsn(5)));
+        fold(
+            &mut world,
+            10,
+            predicate_result(Some(turn), Provenance::Observed),
+        );
+        assert!(!world.observed_predicate_after(goal, turn, Lsn(5)));
+    }
+
+    #[test]
+    fn a_late_older_result_cannot_replace_the_current_predicate_receipt() {
+        let mut world = seeded();
+        let goal = GoalId::from_parts(1, 1);
+        let older = TurnId::from_parts(1, 1);
+        fold(&mut world, 3, turn_record(RecordKind::TurnIssued, older));
+        fold(&mut world, 4, turn_record(RecordKind::TurnSpawned, older));
+        fold(&mut world, 5, turn_record(RecordKind::TurnEnded, older));
+        fold(
+            &mut world,
+            6,
+            predicate_result(Some(older), Provenance::Observed),
+        );
+        assert!(world.observed_predicate_after(goal, older, Lsn(5)));
+        let current = TurnId::from_parts(1, 2);
+        fold(&mut world, 7, turn_record(RecordKind::TurnIssued, current));
+        fold(&mut world, 8, turn_record(RecordKind::TurnSpawned, current));
+        fold(&mut world, 9, turn_record(RecordKind::TurnEnded, current));
+        assert!(!world.observed_predicate_after(goal, older, Lsn(5)));
+        fold(
+            &mut world,
+            10,
+            predicate_result(Some(older), Provenance::Observed),
+        );
+        assert!(!world.observed_predicate_after(goal, current, Lsn(9)));
+        fold(
+            &mut world,
+            11,
+            predicate_result(Some(current), Provenance::Observed),
+        );
+        fold(
+            &mut world,
+            12,
+            predicate_result(Some(older), Provenance::Observed),
+        );
+        assert!(world.observed_predicate_after(goal, current, Lsn(9)));
+        assert!(!world.observed_predicate_after(goal, older, Lsn(9)));
+    }
+
+    #[test]
+    fn active_folder_users_include_idle_paused_and_halted_but_exclude_retired() {
+        let mut world = World::default();
+        let idle = AgentId::from_parts(1, 1);
+        let paused = AgentId::from_parts(1, 2);
+        let halted = AgentId::from_parts(1, 3);
+        for (lsn, agent) in [(1, idle), (2, paused), (3, halted)] {
+            fold(&mut world, lsn, hired(agent));
+        }
+        fold(
+            &mut world,
+            4,
+            Record::Pause {
+                agent: paused,
+                browser: None,
+            },
+        );
+        fold(
+            &mut world,
+            5,
+            Record::Halt {
+                agent: halted,
+                text: None,
+            },
+        );
+        assert_eq!(
+            world.active_folder_user_ids().copied().collect::<Vec<_>>(),
+            [idle, paused, halted]
+        );
+        fold(
+            &mut world,
+            6,
+            Record::AgentRetired {
+                id: paused,
+                reason: "finished".into(),
+                browser_retire: None,
+            },
+        );
+        assert_eq!(
+            world.active_folder_user_ids().copied().collect::<Vec<_>>(),
+            [idle, halted]
+        );
+        assert_eq!(world.agents.len(), 3);
+        assert!(world.agents[&paused].retired);
+    }
+
+    fn attached_owner(attachment: u64) -> InstructionObservationOwner {
+        InstructionObservationOwner::AttachedProcess {
+            agent: agent(),
+            attachment_lsn: Lsn(attachment),
+        }
+    }
+
+    fn attached() -> Record {
+        Record::Attached {
+            agent: agent(),
+            by: dudes_proto::record::Actor::System,
+            hook_port: None,
+            provenance: None,
+        }
+    }
+
+    fn attached_start(attachment: u64) -> Record {
+        let mut record = started(
+            TurnId::from_parts(1, 1),
+            InstructionIssueAssociation::Prospective,
+        );
+        if let Record::InstructionObservationStarted { owner, .. } = &mut record {
+            *owner = attached_owner(attachment);
+        }
+        record
+    }
+
+    fn pty_spawn(pty: u64, pid: u32) -> Record {
+        Record::PtySpawned {
+            agent: agent(),
+            pty: dudes_proto::rpc::pty::PtyId(pty),
+            pid,
+            start_time: u64::from(pid) + 100,
+            boot: Some("f81d4fae-7dec-11d0-a765-00a0c91e6bf6".into()),
+        }
+    }
+
+    fn attached_finish(attachment: u64, start: u64) -> Record {
+        let mut record = finished(
+            TurnId::from_parts(1, 1),
+            InstructionIssueAssociation::Prospective,
+            Lsn(start),
+        );
+        if let Record::InstructionObservationFinished { owner, .. } = &mut record {
+            *owner = attached_owner(attachment);
+        }
+        record
+    }
+
+    fn attached_settled(attachment: u64, start: u64, spawn: u64) -> Record {
+        Record::InstructionAttemptBoundarySettled {
+            owner: attached_owner(attachment),
+            started_lsn: Lsn(start),
+            proof: InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
+                receipt: InstructionNativeBoundaryReceipt::Spawned { lsn: Lsn(spawn) },
+            },
+        }
+    }
+
+    fn pty_close_request(pty: u64) -> Record {
+        Record::PtyCloseRequested {
+            pty: dudes_proto::rpc::pty::PtyId(pty),
+            actor: dudes_proto::record::Actor::System,
+            provenance: None,
+            reason: "finished".into(),
+        }
+    }
+
+    #[test]
+    fn retired_current_turn_owners_remain_until_the_exact_turn_ends() {
+        let mut world = seeded();
+        let first = TurnId::from_parts(1, 1);
+        let second = TurnId::from_parts(1, 2);
+        fold(&mut world, 3, turn_record(RecordKind::TurnIssued, first));
+        fold(
+            &mut world,
+            4,
+            Record::AgentRetired {
+                id: agent(),
+                reason: "finished".into(),
+                browser_retire: None,
+            },
+        );
+        assert_eq!(
+            world.open_turn_owner_ids().copied().collect::<Vec<_>>(),
+            [agent()]
+        );
+        assert_eq!(world.active_folder_user_ids().len(), 0);
+        fold(&mut world, 5, turn_record(RecordKind::TurnIssued, second));
+        fold(&mut world, 6, turn_record(RecordKind::TurnEnded, first));
+        assert_eq!(world.agents[&agent()].open_turn, Some(second));
+        assert_eq!(
+            world.open_turn_owner_ids().copied().collect::<Vec<_>>(),
+            [agent()]
+        );
+        fold(&mut world, 7, turn_record(RecordKind::TurnEnded, second));
+        assert_eq!(world.open_turn_owner_ids().len(), 0);
+    }
+
+    #[test]
+    fn attached_native_receipts_preserve_the_first_spawn_and_reject_duplicate_proofs() {
+        let mut world = seeded();
+        fold(&mut world, 3, attached());
+        fold(&mut world, 4, attached_start(3));
+        fold(&mut world, 5, pty_spawn(1, 4242));
+        fold(&mut world, 6, pty_spawn(2, 4243));
+        let receipt = world.attached_native_spawn_receipt(Lsn(4)).unwrap();
+        assert_eq!(receipt.owner, attached_owner(3));
+        assert_eq!(receipt.pty, dudes_proto::rpc::pty::PtyId(1));
+        assert_eq!(receipt.key.pid, 4242);
+        assert_eq!(receipt.key.start_time, 4342);
+        assert_eq!(
+            receipt.key.boot.as_deref(),
+            Some("f81d4fae-7dec-11d0-a765-00a0c91e6bf6")
+        );
+        assert_eq!(receipt.spawn_lsn, Lsn(5));
+        fold(&mut world, 7, attached_settled(3, 4, 6));
+        assert_eq!(
+            world
+                .attached_native_spawn_receipt(Lsn(4))
+                .unwrap()
+                .spawn_lsn,
+            Lsn(5)
+        );
+        assert!(
+            world
+                .instructions
+                .attempt(Lsn(4))
+                .unwrap()
+                .boundary_settled
+                .is_none()
+        );
+        fold(&mut world, 8, attached_settled(7, 4, 5));
+        assert_eq!(world.attached_native_spawn_receipts().len(), 1);
+        fold(&mut world, 9, attached_settled(3, 4, 5));
+        assert_eq!(world.attached_native_spawn_receipts().len(), 0);
+        assert!(
+            world
+                .instructions
+                .attempt(Lsn(4))
+                .unwrap()
+                .boundary_settled
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn delayed_pty_close_and_finish_retain_independent_attachment_receipts() {
+        let mut world = seeded();
+        fold(&mut world, 3, attached());
+        fold(&mut world, 4, attached_start(3));
+        fold(&mut world, 5, pty_spawn(1, 4242));
+        fold(&mut world, 6, pty_close_request(1));
+        fold(&mut world, 7, attached());
+        fold(&mut world, 8, attached_start(7));
+        fold(&mut world, 9, pty_spawn(2, 4243));
+        fold(
+            &mut world,
+            10,
+            Record::PtyCloseCompleted {
+                request_lsn: Lsn(6),
+                outcome: dudes_proto::record::PtyCloseOutcome::Closed,
+            },
+        );
+        assert_eq!(world.instructions.attachment_end_lsn(Lsn(3)), Some(Lsn(10)));
+        assert_eq!(world.instructions.attachment_end_lsn(Lsn(7)), None);
+        fold(&mut world, 11, attached_finish(3, 4));
+        assert_eq!(
+            world.instructions.current_for_attachment(Lsn(7)).unwrap().0,
+            Lsn(8)
+        );
+        fold(
+            &mut world,
+            12,
+            Record::Detached {
+                agent: agent(),
+                by: dudes_proto::record::Actor::System,
+                provenance: None,
+            },
+        );
+        assert_eq!(world.attached_native_spawn_receipts().len(), 2);
+        fold(&mut world, 13, attached_settled(3, 4, 5));
+        assert!(world.attached_native_spawn_receipt(Lsn(4)).is_none());
+        assert_eq!(
+            world.attached_native_spawn_receipt(Lsn(8)).unwrap().owner,
+            attached_owner(7)
+        );
+        fold(&mut world, 14, pty_close_request(2));
+        fold(
+            &mut world,
+            15,
+            Record::PtyCloseCompleted {
+                request_lsn: Lsn(14),
+                outcome: dudes_proto::record::PtyCloseOutcome::Closed,
+            },
+        );
+        fold(&mut world, 16, attached_finish(7, 8));
+        assert_eq!(world.attached_native_spawn_receipts().len(), 1);
+        fold(&mut world, 17, attached_settled(7, 8, 9));
+        assert_eq!(world.attached_native_spawn_receipts().len(), 0);
+    }
+
+    #[test]
+    fn attached_prior_boot_settlement_can_retire_its_exact_receipt() {
+        let mut world = seeded();
+        fold(&mut world, 3, attached());
+        let previous = dudes_proto::instruction::InstructionBootIdentity::LinuxKernelBootId {
+            value: "f81d4fae-7dec-11d0-a765-00a0c91e6bf6".into(),
+        };
+        let mut start = attached_start(3);
+        if let Record::InstructionObservationStarted { snapshot, .. } = &mut start {
+            snapshot.boot = Some(previous.clone());
+        }
+        fold(&mut world, 4, start);
+        fold(&mut world, 5, pty_spawn(1, 4242));
+        assert_eq!(world.attached_native_spawn_receipts().len(), 1);
+        fold(
+            &mut world,
+            6,
+            Record::InstructionAttemptBoundarySettled {
+                owner: attached_owner(3),
+                started_lsn: Lsn(4),
+                proof: InstructionBoundaryAbsenceProof::PriorBootAbsent {
+                    previous,
+                    current: dudes_proto::instruction::InstructionBootIdentity::LinuxKernelBootId {
+                        value: "another-boot".into(),
+                    },
+                },
+            },
+        );
+        assert_eq!(world.attached_native_spawn_receipts().len(), 0);
+        assert!(
+            world
+                .instructions
+                .attempt(Lsn(4))
+                .unwrap()
+                .boundary_settled
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn ended_attempts_keep_exact_spawn_metadata_and_later_attempts_do_not_replace_it() {
+        let mut world = seeded();
+        let turn = TurnId::from_parts(1, 1);
+        let initial = InstructionIssueAssociation::Prospective;
+        fold(&mut world, 3, started(turn, initial));
+        fold(&mut world, 4, turn_record(RecordKind::TurnIssued, turn));
+        fold(&mut world, 5, turn_record(RecordKind::TurnSpawned, turn));
+        fold(&mut world, 6, turn_record(RecordKind::TurnEnded, turn));
+        let first = world.managed_native_spawn_receipt(Lsn(3)).unwrap();
+        assert_eq!(first.owner, owner(turn, initial));
+        assert_eq!(first.spawn_lsn, Lsn(5));
+        assert_eq!(first.key.pid, 4242);
+        assert_eq!(first.key.start_time, 1_787_394_600);
+        assert_eq!(
+            first.key.boot.as_deref(),
+            Some("f81d4fae-7dec-11d0-a765-00a0c91e6bf6")
+        );
+        fold(&mut world, 7, finished(turn, initial, Lsn(3)));
+        let retry = InstructionIssueAssociation::Issued { issue_lsn: Lsn(4) };
+        fold(&mut world, 8, started(turn, retry));
+        assert!(world.instructions.attempt(Lsn(8)).is_none());
+        assert_eq!(world.last_applied_lsn, Some(Lsn(7)));
+        assert_eq!(world.managed_native_spawn_receipts().len(), 1);
+        let later_turn = TurnId::from_parts(1, 2);
+        fold(&mut world, 9, started(later_turn, initial));
+        fold(
+            &mut world,
+            10,
+            turn_record(RecordKind::TurnIssued, later_turn),
+        );
+        let mut spawn = turn_record(RecordKind::TurnSpawned, later_turn);
+        let Record::TurnSpawned {
+            pid,
+            start_time,
+            boot,
+            ..
+        } = &mut spawn
+        else {
+            unreachable!()
+        };
+        *pid = 4243;
+        *start_time = 7;
+        *boot = None;
+        fold(&mut world, 11, spawn);
+        assert_eq!(world.managed_native_spawn_receipts().len(), 2);
+        let first = world.managed_native_spawn_receipt(Lsn(3)).unwrap();
+        assert_eq!(first.spawn_lsn, Lsn(5));
+        assert_eq!(first.key.pid, 4242);
+        let second = world.managed_native_spawn_receipt(Lsn(9)).unwrap();
+        assert_eq!(second.owner, owner(later_turn, initial));
+        assert_eq!(second.spawn_lsn, Lsn(11));
+        assert_eq!(second.key.pid, 4243);
+        assert_eq!(second.key.start_time, 7);
+        assert_eq!(second.key.boot, None);
+        fold(&mut world, 12, settled(turn, initial, Lsn(3), Lsn(11)));
+        assert_eq!(world.managed_native_spawn_receipts().len(), 2);
+        assert!(
+            world
+                .instructions
+                .attempt(Lsn(3))
+                .unwrap()
+                .boundary_settled
+                .is_none()
+        );
+        fold(&mut world, 13, settled(turn, initial, Lsn(3), Lsn(5)));
+        assert!(world.managed_native_spawn_receipt(Lsn(3)).is_none());
+        assert_eq!(
+            world
+                .managed_native_spawn_receipt(Lsn(9))
+                .unwrap()
+                .spawn_lsn,
+            Lsn(11)
+        );
+        fold(
+            &mut world,
+            14,
+            settled(later_turn, initial, Lsn(9), Lsn(11)),
+        );
+        assert_eq!(world.managed_native_spawn_receipts().len(), 0);
+        assert_eq!(world.instructions.attempts().count(), 2);
+    }
+
+    #[test]
+    fn a_duplicate_spawn_cannot_retire_the_first_attempt_with_its_later_receipt() {
+        let mut world = seeded();
+        let turn = TurnId::from_parts(1, 1);
+        let issue = InstructionIssueAssociation::Prospective;
+        fold(&mut world, 3, started(turn, issue));
+        fold(&mut world, 4, turn_record(RecordKind::TurnIssued, turn));
+        fold(&mut world, 5, turn_record(RecordKind::TurnSpawned, turn));
+        let mut duplicate = turn_record(RecordKind::TurnSpawned, turn);
+        let Record::TurnSpawned {
+            pid,
+            start_time,
+            boot,
+            ..
+        } = &mut duplicate
+        else {
+            unreachable!()
+        };
+        *pid = 4243;
+        *start_time = 7;
+        *boot = None;
+        fold(&mut world, 6, duplicate);
+        let first = world.managed_native_spawn_receipt(Lsn(3)).unwrap();
+        assert_eq!(first.spawn_lsn, Lsn(5));
+        assert_eq!(first.key.pid, 4242);
+        assert_eq!(first.key.start_time, 1_787_394_600);
+        assert_eq!(
+            first.key.boot.as_deref(),
+            Some("f81d4fae-7dec-11d0-a765-00a0c91e6bf6")
+        );
+        assert_eq!(world.turns[&turn].pid, Some(4243));
+        fold(&mut world, 7, settled(turn, issue, Lsn(3), Lsn(6)));
+        assert_eq!(
+            world
+                .managed_native_spawn_receipt(Lsn(3))
+                .unwrap()
+                .spawn_lsn,
+            Lsn(5)
+        );
+        assert!(
+            world
+                .instructions
+                .attempt(Lsn(3))
+                .unwrap()
+                .boundary_settled
+                .is_none()
+        );
+        fold(&mut world, 8, settled(turn, issue, Lsn(3), Lsn(5)));
+        assert!(world.managed_native_spawn_receipt(Lsn(3)).is_none());
+        assert!(
+            world
+                .instructions
+                .attempt(Lsn(3))
+                .unwrap()
+                .boundary_settled
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_launch_failure_receipt_cannot_retire_an_indexed_spawn() {
+        let mut world = seeded();
+        let turn = TurnId::from_parts(1, 1);
+        let issue = InstructionIssueAssociation::Prospective;
+        fold(&mut world, 3, started(turn, issue));
+        fold(&mut world, 4, turn_record(RecordKind::TurnIssued, turn));
+        fold(&mut world, 5, turn_record(RecordKind::TurnSpawned, turn));
+        let mut ended = turn_record(RecordKind::TurnEnded, turn);
+        let Record::TurnEnded { outcome, .. } = &mut ended else {
+            unreachable!()
+        };
+        *outcome = Some(TurnOutcome::NotLaunched {
+            reason: "managed process could not launch (Other)".into(),
+        });
+        fold(&mut world, 6, ended);
+        fold(
+            &mut world,
+            7,
+            Record::InstructionAttemptBoundarySettled {
+                owner: owner(turn, issue),
+                started_lsn: Lsn(3),
+                proof: InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
+                    receipt: InstructionNativeBoundaryReceipt::LaunchFailureEnded { lsn: Lsn(6) },
+                },
+            },
+        );
+        assert_eq!(
+            world
+                .managed_native_spawn_receipt(Lsn(3))
+                .unwrap()
+                .spawn_lsn,
+            Lsn(5)
+        );
+        assert!(
+            world
+                .instructions
+                .attempt(Lsn(3))
+                .unwrap()
+                .boundary_settled
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn validated_prior_boot_absence_still_retires_the_exact_indexed_attempt() {
+        use dudes_proto::instruction::InstructionBootIdentity;
+        let mut world = seeded();
+        let turn = TurnId::from_parts(1, 1);
+        let issue = InstructionIssueAssociation::Prospective;
+        let previous = InstructionBootIdentity::LinuxKernelBootId {
+            value: "f81d4fae-7dec-11d0-a765-00a0c91e6bf6".into(),
+        };
+        let mut baseline = started(turn, issue);
+        let Record::InstructionObservationStarted { snapshot, .. } = &mut baseline else {
+            unreachable!()
+        };
+        snapshot.boot = Some(previous.clone());
+        fold(&mut world, 3, baseline);
+        fold(&mut world, 4, turn_record(RecordKind::TurnIssued, turn));
+        fold(&mut world, 5, turn_record(RecordKind::TurnSpawned, turn));
+        assert_eq!(world.managed_native_spawn_receipts().len(), 1);
+        fold(
+            &mut world,
+            6,
+            Record::InstructionAttemptBoundarySettled {
+                owner: owner(turn, issue),
+                started_lsn: Lsn(3),
+                proof: InstructionBoundaryAbsenceProof::PriorBootAbsent {
+                    previous,
+                    current: InstructionBootIdentity::LinuxKernelBootId {
+                        value: "another-boot".into(),
+                    },
+                },
+            },
+        );
+        assert!(world.managed_native_spawn_receipt(Lsn(3)).is_none());
+        assert!(
+            world
+                .instructions
+                .attempt(Lsn(3))
+                .unwrap()
+                .boundary_settled
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn many_completed_settled_attempts_do_not_fill_the_current_census() {
+        let mut world = seeded();
+        for ordinal in 0..520_u64 {
+            let turn = TurnId::from_parts(2, u128::from(ordinal) + 1);
+            let lsn = 3 + ordinal * 6;
+            let issue = InstructionIssueAssociation::Prospective;
+            fold(&mut world, lsn, started(turn, issue));
+            fold(
+                &mut world,
+                lsn + 1,
+                turn_record(RecordKind::TurnIssued, turn),
+            );
+            fold(
+                &mut world,
+                lsn + 2,
+                turn_record(RecordKind::TurnSpawned, turn),
+            );
+            fold(
+                &mut world,
+                lsn + 3,
+                turn_record(RecordKind::TurnEnded, turn),
+            );
+            fold(&mut world, lsn + 4, finished(turn, issue, Lsn(lsn)));
+            fold(
+                &mut world,
+                lsn + 5,
+                settled(turn, issue, Lsn(lsn), Lsn(lsn + 2)),
+            );
+            assert_eq!(world.managed_native_spawn_receipts().len(), 0);
+        }
+        let turn = TurnId::from_parts(2, 521);
+        fold(
+            &mut world,
+            3123,
+            started(turn, InstructionIssueAssociation::Prospective),
+        );
+        fold(&mut world, 3124, turn_record(RecordKind::TurnIssued, turn));
+        fold(&mut world, 3125, turn_record(RecordKind::TurnSpawned, turn));
+        assert_eq!(
+            world
+                .managed_native_spawn_receipts()
+                .take(2)
+                .map(|(lsn, receipt)| (*lsn, receipt.spawn_lsn))
+                .collect::<Vec<_>>(),
+            [(Lsn(3123), Lsn(3125))]
+        );
+        assert_eq!(world.turns.len(), 521);
+        assert_eq!(world.instructions.attempts().count(), 521);
+        assert_eq!(world.active_folder_user_ids().len(), 1);
+    }
+
+    #[test]
+    fn a_legacy_spawn_without_a_start_does_not_invent_attempt_metadata() {
+        let mut world = seeded();
+        let turn = TurnId::from_parts(1, 1);
+        fold(&mut world, 3, turn_record(RecordKind::TurnIssued, turn));
+        fold(&mut world, 4, turn_record(RecordKind::TurnSpawned, turn));
+        assert_eq!(world.managed_native_spawn_receipts().len(), 0);
+        assert!(world.instructions.current_for_turn(turn).is_none());
+        assert_eq!(world.turns[&turn].spawn_lsn, Some(Lsn(4)));
+        assert_eq!(world.turns[&turn].adoption_key().unwrap().pid, 4242);
+        assert!(world.turns[&turn].is_open_child());
     }
 }

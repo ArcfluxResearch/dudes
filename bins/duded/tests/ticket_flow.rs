@@ -35,7 +35,8 @@ use dudes_rpc::Client;
 use dudes_rpc::auth::PeerProvenance;
 use dudes_supervisor::Input;
 use dudes_supervisor::host::{
-    AdoptionKey, HostBoot, KillOutcome, Liveness, ProcessHost, SpawnResult,
+    AdoptionKey, HostBoot, KillOutcome, Liveness, NativeBoundaryAcknowledgement,
+    NativeBoundaryReceipt, OwnedTargets, ProcessHost, SpawnResult,
 };
 use dudes_types::{
     AgentId, AgentStatus, CardId, CardStatus, GoalId, IsolationMode, Seq, Timestamp, TurnId, Usage,
@@ -52,6 +53,8 @@ struct WatchHost {
     journal: PathBuf,
     durable_at_spawn: Arc<Mutex<Vec<usize>>>,
     gate: Option<Arc<Gate>>,
+    fail_spawn: bool,
+    retained_native: Option<SharedHost>,
 }
 
 /// A launch that parks right after it was recorded, so a test can look at the journal while a
@@ -103,10 +106,15 @@ struct Options {
     gate: Option<Arc<Gate>>,
     /// The engine refuses its first launch outright.
     fail_spawn: bool,
+    retained_native: Option<SharedHost>,
 }
 
 impl ProcessHost for WatchHost {
     fn spawn(&mut self, spec: &LaunchSpec, install: &ManagedInstall) -> SpawnResult {
+        assert!(
+            self.retained_native.is_none(),
+            "retained-capability recovery must not dispatch new work"
+        );
         let durable = dudes_journal::Reader::new(&self.journal)
             .iter_from(dudes_types::Lsn::ZERO)
             .expect("the journal reads")
@@ -120,6 +128,12 @@ impl ProcessHost for WatchHost {
         if let Some(gate) = &self.gate {
             gate.arrive();
         }
+        if self.fail_spawn {
+            self.fail_spawn = false;
+            return SpawnResult::NotLaunched {
+                reason: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            };
+        }
         self.inner.spawn(spec, install)
     }
 
@@ -128,7 +142,28 @@ impl ProcessHost for WatchHost {
     }
 
     fn alive(&self, key: &AdoptionKey) -> Liveness {
-        self.inner.alive(key)
+        self.retained_native
+            .as_ref()
+            .unwrap_or(&self.inner)
+            .alive(key)
+    }
+
+    fn owned_targets(&self, limit: usize) -> OwnedTargets {
+        self.retained_native
+            .as_ref()
+            .unwrap_or(&self.inner)
+            .owned_targets(limit)
+    }
+
+    fn acknowledge_native_boundary_absence(
+        &mut self,
+        key: &AdoptionKey,
+        receipt: &NativeBoundaryReceipt,
+    ) -> NativeBoundaryAcknowledgement {
+        self.retained_native
+            .as_mut()
+            .unwrap_or(&mut self.inner)
+            .acknowledge_native_boundary_absence(key, receipt)
     }
 
     fn boot_identity(&self) -> HostBoot {
@@ -241,14 +276,7 @@ impl Flow {
         options: Options,
     ) -> Self {
         let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
-        let host = if options.fail_spawn {
-            SharedHost::with(dudes_supervisor::testing::FakeHost {
-                fail_spawn: Some(std::io::ErrorKind::PermissionDenied),
-                ..dudes_supervisor::testing::FakeHost::wall_clock_anchored()
-            })
-        } else {
-            SharedHost::new()
-        };
+        let host = SharedHost::with_native_evidence(fixture.journal_dir());
         let runner = Arc::new(ScriptedRunner::scripted(answers));
         let durable_at_spawn = Arc::new(Mutex::new(Vec::new()));
         let mut seams = common::seams_with(
@@ -257,12 +285,15 @@ impl Flow {
                 journal: fixture.journal_dir(),
                 durable_at_spawn: Arc::clone(&durable_at_spawn),
                 gate: options.gate,
+                fail_spawn: options.fail_spawn,
+                retained_native: options.retained_native,
             },
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
             Witness::default(),
             Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
         );
+        host.bind_child_ends(Arc::clone(&seams.children));
         for _ in 0..fixture.records().len() * 8 + 64 {
             dudes_supervisor::Rng::ulid(&mut seams.rng);
         }
@@ -353,16 +384,40 @@ impl Flow {
         self.ok(dudes_proto::rpc::Method::TicketRead, json!({"card": card}))
     }
 
+    fn current_review_detail(&mut self, card: CardId) -> TicketReadResult {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let detail = self.read(card);
+            if detail
+                .ticket
+                .instruction_review
+                .as_ref()
+                .is_none_or(|review| !review.pending_comparison)
+            {
+                return detail;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the exact ticket comparison remains pending"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     fn give(
         &mut self,
         card: CardId,
         agent: AgentId,
         message: Option<&str>,
     ) -> dudes_proto::rpc::Response {
-        let seq = self.card(card).seq;
+        let detail = self.current_review_detail(card);
+        let watermark = detail
+            .ticket
+            .instruction_review
+            .map(|review| review.watermark);
         self.call(
             dudes_proto::rpc::Method::TicketAssign,
-            json!({"card": card, "agent": agent, "message": message, "expected_seq": seq}),
+            json!({"card": card, "agent": agent, "message": message, "expected_seq": detail.card.seq, "review_watermark":watermark}),
         )
     }
 
@@ -380,10 +435,14 @@ impl Flow {
     }
 
     fn accept(&mut self, card: CardId) -> dudes_proto::rpc::Response {
-        let seq = self.card(card).seq;
+        let detail = self.current_review_detail(card);
+        let watermark = detail
+            .ticket
+            .instruction_review
+            .map(|review| review.watermark);
         self.call(
             dudes_proto::rpc::Method::TicketAccept,
-            json!({"card": card, "expected_seq": seq}),
+            json!({"card": card, "expected_seq": detail.card.seq, "review_watermark":watermark}),
         )
     }
 
@@ -439,30 +498,164 @@ impl Flow {
     }
 
     /// The agent's engine finishes `turn` and says `message`.
-    fn end_turn(&self, turn: TurnId, message: Option<&str>) {
-        self.end_turn_charging(turn, message, None);
+    fn end_turn(&mut self, fixture: &Fixture, turn: TurnId, message: Option<&str>) {
+        self.end_turn_charging(fixture, turn, message, None);
     }
 
     /// As [`Flow::end_turn`], with what the turn cost.
-    fn end_turn_charging(&self, turn: TurnId, message: Option<&str>, cost: Option<Usd>) {
-        self.running.handle.input(Input::ChildExited {
-            final_reply: None,
-            elapsed_ms: Some(5),
-            turn,
-            exit: ExitStatus {
-                code: Some(0),
-                signal: None,
-            },
-            usage: cost.map(|usd| {
-                ScopedUsage::Turn(Usage {
-                    usd: Some(usd),
-                    ..Usage::ZERO
+    fn end_turn_charging(
+        &mut self,
+        fixture: &Fixture,
+        turn: TurnId,
+        message: Option<&str>,
+        cost: Option<Usd>,
+    ) {
+        let (_, agent, goal, _) = Self::turns(fixture)
+            .into_iter()
+            .find(|(owned, ..)| *owned == turn)
+            .expect("the exact issued turn");
+        let current_goal = self.agent(agent).goal.map(|current| current.id);
+        common::end_turn_with_native_payload(
+            fixture,
+            &self.host,
+            ticket_child_exit(turn, message, cost),
+        );
+        if current_goal == Some(goal) {
+            let pass =
+                fixture.await_record("exact ticket predicate after native completion", |record| {
+                    match record {
+                        Record::PredicateResult {
+                            goal: judged,
+                            turn: Some(ended),
+                            pass,
+                            ..
+                        } if *judged == goal && *ended == turn => Some(*pass),
+                        _ => None,
+                    }
+                });
+            let current = self.agent(agent);
+            if (!pass || current.paused || current.halted)
+                && let Some(card) = fixture.records().iter().find_map(|record| match record {
+                    Record::TicketStarted {
+                        card,
+                        goal: started,
+                        ..
+                    } if started.id == goal => Some(*card),
+                    _ => None,
                 })
-            }),
-            model_usage: BTreeMap::new(),
-            outcome: TurnOutcome::Completed,
-            last_message: message.map(str::to_owned),
+            {
+                self.acknowledge_unfinished_review(card, agent, goal);
+            }
+        }
+    }
+
+    fn end_turn_without_review(&mut self, fixture: &Fixture, turn: TurnId) {
+        common::end_turn_with_native_payload(
+            fixture,
+            &self.host,
+            ticket_child_exit(turn, None, None),
+        );
+        fixture.await_record("unreviewed ended ticket's check", |record| {
+            matches!(record, Record::PredicateResult { turn: Some(owned), .. } if *owned == turn).then_some(())
         });
+    }
+
+    fn acknowledge_unfinished_review(&mut self, card: CardId, agent: AgentId, goal: GoalId) {
+        let detail = self.current_review_detail(card);
+        if detail.ticket.instruction_review.is_none() {
+            return;
+        }
+        let before = self.agent(agent);
+        let original = before.goal.as_ref().expect("review retains the owned goal");
+        assert_eq!(original.id, goal);
+        let response = self.accept(card);
+        assert!(
+            response.error.is_none(),
+            "unfinished exact review: {:?}",
+            response.error
+        );
+        let accepted: dudes_proto::rpc::ticket::TicketAcceptResult =
+            serde_json::from_value(response.result.unwrap()).unwrap();
+        assert_eq!(
+            accepted.outcome,
+            Some(dudes_proto::rpc::ticket::TicketAcceptOutcome::InstructionsAcknowledged)
+        );
+        let after = self.agent(agent);
+        let retained = after
+            .goal
+            .as_ref()
+            .expect("acknowledgment leaves the goal open");
+        assert_eq!(
+            (retained.id, retained.budget),
+            (original.id, original.budget)
+        );
+        assert_eq!((after.paused, after.halted), (before.paused, before.halted));
+        assert_ne!(self.card(card).status, CardStatus::Done);
+    }
+
+    fn acknowledge_cleared_review(&mut self, card: CardId, agent: AgentId) {
+        let detail = self.current_review_detail(card);
+        assert!(detail.ticket.instruction_review.is_some());
+        assert!(self.agent(agent).goal.is_none());
+        let acknowledged = self.accept(card);
+        assert!(acknowledged.error.is_none());
+        let result: dudes_proto::rpc::ticket::TicketAcceptResult =
+            serde_json::from_value(acknowledged.result.unwrap()).unwrap();
+        assert_eq!(
+            result.outcome,
+            Some(dudes_proto::rpc::ticket::TicketAcceptOutcome::InstructionsAcknowledged)
+        );
+        assert!(
+            self.agent(agent).goal.is_none(),
+            "review does not recreate the cleared goal"
+        );
+    }
+
+    fn await_completed_review(&mut self, card: CardId) -> CardView {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let detail = self.current_review_detail(card);
+            let agent = detail
+                .card
+                .claimed_by
+                .expect("the ticket retains its owner");
+            let goal = detail
+                .ticket
+                .goal
+                .expect("the ticket retains its completed goal");
+            let current = self
+                .agent(agent)
+                .goal
+                .expect("the same goal remains visible");
+            assert_eq!(current.id, goal);
+            let completed = current.last_result.filter(|result| result.pass
+                && result.provenance == dudes_types::Provenance::Observed)
+                .is_some_and(|result| {
+                    dudes_journal::Reader::new(&self.settings.state_dir.join(duded::boot::JOURNAL_DIR))
+                        .iter_from(result.lsn).expect("completed ticket journal")
+                        .map(|entry| entry.expect("valid completed ticket entry"))
+                        .any(|(lsn, entry)| lsn > result.lsn && matches!(entry.record,
+                            Record::LoopDecided { agent: owner, decision: LoopDecision::Done, .. } if owner == agent))
+                });
+            if completed && detail.card.status == CardStatus::Blocked {
+                let review = detail
+                    .ticket
+                    .instruction_review
+                    .as_ref()
+                    .expect("genuine pending instruction review");
+                assert!(!review.pending_comparison);
+                assert!(
+                    !review.gaps.is_empty(),
+                    "Claude effective coverage remains honestly incomplete"
+                );
+                return detail.card;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "ticket did not retain both qualified completion and genuine pending review"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     /// Wait until `card` has `status`, and answer it.
@@ -485,6 +678,27 @@ impl Flow {
     fn stop(mut self) {
         drop(self.operator);
         self.running.stop(duded::ExitCause::ShutdownRpc);
+    }
+}
+
+fn ticket_child_exit(turn: TurnId, message: Option<&str>, cost: Option<Usd>) -> Input {
+    Input::ChildExited {
+        final_reply: None,
+        elapsed_ms: Some(5),
+        turn,
+        exit: ExitStatus {
+            code: Some(0),
+            signal: None,
+        },
+        usage: cost.map(|usd| {
+            ScopedUsage::Turn(Usage {
+                usd: Some(usd),
+                ..Usage::ZERO
+            })
+        }),
+        model_usage: BTreeMap::new(),
+        outcome: TurnOutcome::Completed,
+        last_message: message.map(str::to_owned),
     }
 }
 
@@ -619,6 +833,9 @@ fn giving_a_ticket_to_an_idle_agent_starts_it_at_once() {
     );
 
     assert_eq!(flow.runner.runs(), 0, "no check runs before the first turn");
+    fixture.await_record("idle ticket's exact TurnSpawned", |record| {
+        matches!(record, Record::TurnSpawned { turn: owned, .. } if *owned == turn).then_some(())
+    });
     assert_eq!(
         *flow.durable_at_spawn.lock().unwrap(),
         [1],
@@ -648,7 +865,7 @@ fn the_agents_word_moves_nothing_and_the_daemons_pass_does() {
     flow.give_ok(card, agent, None);
 
     let (first, ..) = Flow::await_turn_number(&fixture, 1);
-    flow.end_turn(first, Some("All done. The check passes now."));
+    flow.end_turn(&fixture, first, Some("All done. The check passes now."));
     let (second, ..) = Flow::await_turn_number(&fixture, 2);
     assert_eq!(
         flow.card(card).status,
@@ -657,15 +874,20 @@ fn the_agents_word_moves_nothing_and_the_daemons_pass_does() {
     );
     assert!(transitions(&fixture.records(), card).is_empty());
 
-    flow.end_turn(second, Some("Fixed."));
-    let view = flow.await_status(card, CardStatus::Review);
+    flow.end_turn(&fixture, second, Some("Fixed."));
+    let view = flow.await_completed_review(card);
     assert_eq!(view.status_by, Actor::System);
     let records = fixture.records();
     let moves = transitions(&records, card);
-    assert_eq!(
-        moves,
-        [(CardStatus::Doing, CardStatus::Review, Actor::System)]
+    assert!(
+        moves.is_empty(),
+        "genuine pending review does not invent automatic Ready"
     );
+    let accepted = flow.accept(card);
+    assert!(accepted.error.is_none());
+    assert_eq!(accepted.result, Some(json!({})));
+    assert_eq!(flow.card(card).status, CardStatus::Done);
+    let records = fixture.records();
     let pass = position_of(&records, |r| {
         matches!(r, Record::PredicateResult { pass: true, .. })
     });
@@ -678,10 +900,16 @@ fn the_agents_word_moves_nothing_and_the_daemons_pass_does() {
             }
         )
     });
-    let ready = position_of(&records, |r| matches!(r, Record::CardTransition { .. }));
+    let ready = position_of(&records, |r| {
+        matches!(r, Record::TicketInstructionReviewed {
+        card: reviewed, action: dudes_proto::InstructionReviewAction::Accept {
+            completion: dudes_proto::InstructionAcceptCompletion::Completed { .. }
+        }, ..
+    } if *reviewed == card)
+    });
     assert!(
         pass < done && done < ready,
-        "Ready for you follows the loop's Done: {:?}",
+        "final acceptance follows the qualified loop completion: {:?}",
         kinds(&fixture)
     );
     flow.stop();
@@ -701,7 +929,7 @@ fn a_passing_check_on_a_paused_agent_moves_nothing_until_the_loop_says_done() {
     let (turn, ..) = Flow::await_turn_number(&fixture, 1);
 
     flow.control(dudes_proto::rpc::Method::LoopPause, agent);
-    flow.end_turn(turn, None);
+    flow.end_turn(&fixture, turn, None);
     fixture.await_record("PredicateResult", |r| {
         matches!(r, Record::PredicateResult { pass: true, .. }).then_some(())
     });
@@ -747,8 +975,8 @@ fn a_check_that_already_passes_still_needs_a_turn_in_every_round() {
     assert_eq!(flow.runner.runs(), 0);
     assert_eq!(flow.card(card).status, CardStatus::Doing);
     let (turn, ..) = Flow::await_turn_number(&fixture, 1);
-    flow.end_turn(turn, Some("Nothing needed changing."));
-    flow.await_status(card, CardStatus::Review);
+    flow.end_turn(&fixture, turn, Some("Nothing needed changing."));
+    flow.await_completed_review(card);
     assert_eq!(flow.runner.runs(), 1);
 
     let outcome = flow.give_ok(card, agent, Some("Please add a test."));
@@ -778,11 +1006,26 @@ fn a_check_that_already_passes_still_needs_a_turn_in_every_round() {
         "the message is spent by the start"
     );
 
-    flow.end_turn(turn, None);
-    flow.await_status(card, CardStatus::Review);
+    flow.end_turn(&fixture, turn, None);
+    flow.await_completed_review(card);
     assert_eq!(flow.runner.runs(), 2);
     let moves = transitions(&fixture.records(), card);
-    assert_eq!(moves.len(), 2);
+    assert!(
+        moves.is_empty(),
+        "each qualified round retains genuine pending review"
+    );
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record,
+        Record::InstructionObservationFinished {
+            owner: dudes_proto::InstructionObservationOwner::Managed { agent: owner, .. }, ..
+        } if *owner == agent))
+            .count(),
+        2,
+        "both actual rounds have ended observations"
+    );
     flow.stop();
 }
 
@@ -815,8 +1058,8 @@ fn a_project_runs_one_ticket_and_accept_starts_the_next() {
     assert_eq!(flow.read(second).waiting.unwrap().wait, wait);
 
     let (turn, ..) = Flow::await_turn_number(&fixture, 1);
-    flow.end_turn(turn, Some("Done."));
-    flow.await_status(first, CardStatus::Review);
+    flow.end_turn(&fixture, turn, Some("Done."));
+    flow.await_completed_review(first);
     assert_eq!(
         flow.card(second).status,
         CardStatus::Claimed,
@@ -859,10 +1102,12 @@ fn a_project_runs_one_ticket_and_accept_starts_the_next() {
     let accepted_at = position_of(&records, |r| {
         matches!(
             r,
-            Record::CardTransition {
-                to: CardStatus::Done,
-                ..
-            }
+            Record::TicketInstructionReviewed {
+                card: reviewed,
+                action: dudes_proto::InstructionReviewAction::Accept {
+                    completion: dudes_proto::InstructionAcceptCompletion::Completed { .. }
+                }, ..
+            } if *reviewed == first
         )
     });
     let started_at = records
@@ -893,8 +1138,8 @@ fn a_busy_agent_queues_in_order_and_sent_back_work_goes_first() {
     assert_eq!(queued(&waiting_three).0, 2);
 
     let (turn, ..) = Flow::await_turn_number(&fixture, 1);
-    flow.end_turn(turn, None);
-    flow.await_status(one, CardStatus::Review);
+    flow.end_turn(&fixture, turn, None);
+    flow.await_completed_review(one);
     assert_eq!(flow.card(two).status, CardStatus::Claimed);
     assert_eq!(
         flow.read(two).waiting.unwrap().wait,
@@ -910,8 +1155,8 @@ fn a_busy_agent_queues_in_order_and_sent_back_work_goes_first() {
     assert_eq!(flow.card(three).status, CardStatus::Claimed);
 
     let (turn, ..) = Flow::await_turn_number(&fixture, 2);
-    flow.end_turn(turn, None);
-    flow.await_status(two, CardStatus::Review);
+    flow.end_turn(&fixture, turn, None);
+    flow.await_completed_review(two);
     let outcome = flow.give_ok(two, cody, Some("Rename it."));
     assert_eq!(outcome, TicketAssignOutcome::Started);
     assert_eq!(
@@ -942,8 +1187,8 @@ fn an_edit_to_a_queued_ticket_is_used_when_it_starts() {
         json!({"card": two, "title": "Two, renamed", "description": "With the new note.", "expected_seq": seq}),
     );
     let (turn, ..) = Flow::await_turn_number(&fixture, 1);
-    flow.end_turn(turn, None);
-    flow.await_status(one, CardStatus::Review);
+    flow.end_turn(&fixture, turn, None);
+    flow.await_completed_review(one);
     flow.accept(one);
     assert_eq!(flow.card(two).status, CardStatus::Doing);
     let (.., task) = Flow::await_turn_number(&fixture, 2);
@@ -992,7 +1237,7 @@ fn a_held_agent_starts_nothing_and_a_goal_of_its_own_is_kept() {
         "the operator's goal is not replaced"
     );
     let (turn, ..) = Flow::await_turn_number(&fixture, 1);
-    flow.end_turn(turn, None);
+    flow.end_turn(&fixture, turn, None);
     flow.await_status(card, CardStatus::Doing);
     assert_eq!(
         started_goals(&fixture.records()).len(),
@@ -1018,7 +1263,7 @@ fn an_agent_whose_own_goal_ran_out_is_not_given_a_second_goal() {
         },
     );
     let (turn, ..) = Flow::await_turn_number(&fixture, 1);
-    flow.end_turn(turn, None);
+    flow.end_turn(&fixture, turn, None);
     fixture.await_record("an Exhausted decision", |record| {
         matches!(
             record,
@@ -1196,6 +1441,9 @@ fn a_restart_does_not_start_a_working_ticket_again() {
     let cody = flow.hire("Cody");
     let card = flow.create("Fix the parser");
     assert_eq!(flow.give_ok(card, cody, None), TicketAssignOutcome::Started);
+    fixture.await_record("working ticket's first TurnSpawned", |record| {
+        matches!(record, Record::TurnSpawned { agent, .. } if *agent == cody).then_some(())
+    });
     flow.stop();
 
     for _ in 0..2 {
@@ -1307,6 +1555,33 @@ fn a_ticket_that_cannot_start_at_boot_goes_to_needs_you_with_its_reason() {
     flow.stop();
 }
 
+fn assert_replayed_ticket_evidence(
+    flow: &mut Flow,
+    board: &[CardView],
+    card: CardId,
+    agent: AgentId,
+    turn: TurnId,
+) {
+    let detail = flow.read(card);
+    assert_eq!(
+        detail.card.seq, board[0].seq,
+        "current ticket sequence is observed separately"
+    );
+    let review = detail
+        .ticket
+        .instruction_review
+        .expect("ticket starting evidence");
+    assert!(review.pending_comparison);
+    assert!(
+                review
+                    .intervals
+                    .iter()
+                    .any(|interval| matches!(interval.owner,
+                dudes_proto::InstructionObservationOwner::Managed { agent: captured_agent, turn: captured_turn, .. }
+                if captured_agent == agent && captured_turn == turn))
+            );
+}
+
 /// The journal a daemon wrote when it started a ticket, and the journal of a goal set on the
 /// same agent with the same goal, replay to the same agent, the same goal and the same first task.
 #[test]
@@ -1371,14 +1646,37 @@ fn a_ticket_start_and_a_goal_set_replay_to_the_same_world() {
         };
         seed(&fixture, records);
         let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
-        let (_, who, goal_id, task) = Flow::await_turn_number(&fixture, 1);
+        let (turn, who, goal_id, task) = Flow::await_turn_number(&fixture, 1);
+        fixture.await_record("replayed exact TurnSpawned", |record| {
+            matches!(record, Record::TurnSpawned { turn: owned, .. } if *owned == turn)
+                .then_some(())
+        });
         let board = flow.board();
-        worlds.push((flow.agent(agent), who, goal_id, task, board));
+        if ticket {
+            assert_replayed_ticket_evidence(&mut flow, &board, card, agent, turn);
+        } else {
+            assert!(board[0].ticket.is_none(), "the control is a plain card");
+        }
+        let common_board: Vec<_> = board
+            .iter()
+            .map(|view| {
+                (
+                    view.id,
+                    view.title.clone(),
+                    view.department.clone(),
+                    view.status,
+                    view.status_by,
+                    view.claimed_by,
+                    view.deps.clone(),
+                )
+            })
+            .collect();
+        worlds.push((flow.agent(agent), who, goal_id, task, common_board));
         flow.stop();
     }
     assert_eq!(worlds[0], worlds[1]);
     assert_eq!(worlds[0].2, goal.id);
-    assert_eq!(worlds[0].4[0].status, CardStatus::Doing);
+    assert_eq!(worlds[0].4[0].3, CardStatus::Doing);
 }
 
 /// How many appends after position `from` the journal needs to reach the first record `target`
@@ -1490,73 +1788,82 @@ fn a_crash_between_the_start_and_the_turn_issues_one_turn() {
     );
 }
 
-/// Crash after the loop latched Done and before the move to Ready for you is appended: the
-/// restart owes the move, makes it once, and issues no turn.
+/// A qualified completed goal keeps genuine coverage uncertainty until its exact review is accepted.
 #[test]
-fn a_crash_after_a_passing_check_and_before_ready_for_you_moves_the_ticket_once() {
-    let moved = |r: &Record| matches!(r, Record::CardTransition { .. });
-    let drive = |fixture: &Fixture, flow: &mut Flow| {
-        let cody = flow.hire("Cody");
-        let card = flow.create("Fix the parser");
-        flow.give_ok(card, cody, None);
-        let (turn, ..) = Flow::await_turn_number(fixture, 1);
-        (card, turn)
+fn a_crash_before_completed_instruction_review_accepts_the_same_goal_once() {
+    let accepted = |record: &Record| {
+        matches!(
+            record,
+            Record::TicketInstructionReviewed {
+                action: dudes_proto::InstructionReviewAction::Accept {
+                    completion: dudes_proto::InstructionAcceptCompletion::Completed { .. }
+                },
+                ..
+            }
+        )
     };
-
+    let drive = |fixture: &Fixture, flow: &mut Flow| {
+        let agent = flow.hire("Cody");
+        let card = flow.create("Fix the parser");
+        flow.give_ok(card, agent, None);
+        let (turn, _, goal, _) = Flow::await_turn_number(fixture, 1);
+        flow.end_turn(fixture, turn, Some("Done."));
+        flow.await_completed_review(card);
+        (card, goal)
+    };
     let reference = Fixture::new();
     let (settings, repo) = enrolled(&reference);
     let mut flow = Flow::boot(&reference, settings, repo, [common::passes()]);
-    let (card, turn) = drive(&reference, &mut flow);
+    let (card, _) = drive(&reference, &mut flow);
     let before = reference.records().len();
-    flow.end_turn(turn, Some("Done."));
-    flow.await_status(card, CardStatus::Review);
-    let nth = appends_between(&reference.records(), before, moved);
+    let result = flow.accept(card);
+    assert!(result.error.is_none());
+    assert_eq!(result.result, Some(json!({})));
+    assert_eq!(flow.card(card).status, CardStatus::Done);
+    let nth = appends_between(&reference.records(), before, accepted);
     flow.stop();
 
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
     let mut flow = Flow::boot(&fixture, settings.clone(), repo.clone(), [common::passes()]);
-    let (card, turn) = drive(&fixture, &mut flow);
+    let (card, goal) = drive(&fixture, &mut flow);
+    let pending = flow.read(card).ticket.instruction_review.unwrap().watermark;
     let before = fixture.records().len();
     flow.append_failure.short_write_after(nth - 1, 5);
-    flow.end_turn(turn, Some("Done."));
+    let failed = flow.accept(card);
+    assert!(
+        failed.error.is_some(),
+        "the exact atomic review append failed"
+    );
     let crashed = settled(&fixture, before + nth - 1);
     assert_eq!(crashed.len(), before + nth - 1);
-    assert!(
-        crashed[before..].iter().any(|r| matches!(
-            r,
-            Record::LoopDecided {
-                decision: LoopDecision::Done,
-                ..
-            }
-        )),
-        "Done is latched and the move is not: {:?}",
-        crashed[before..]
-            .iter()
-            .map(Record::kind)
-            .collect::<Vec<_>>()
-    );
-    assert!(!crashed[before..].iter().any(&moved));
+    assert!(!crashed[before..].iter().any(accepted));
     flow.stop();
 
     let mut flow = Flow::boot(&fixture, settings, repo, [common::passes()]);
-    let view = flow.await_status(card, CardStatus::Review);
-    assert_eq!(view.status_by, Actor::System);
-    let records = settled(&fixture, crashed.len() + 1);
-    flow.stop();
-    assert_eq!(
-        transitions(&records, card),
-        [(CardStatus::Doing, CardStatus::Review, Actor::System)],
-        "one move to Ready for you"
+    flow.await_completed_review(card);
+    let detail = flow.read(card);
+    assert_eq!(detail.ticket.goal, Some(goal));
+    assert_eq!(detail.ticket.instruction_review.unwrap().watermark, pending);
+    assert!(
+        flow.host.spawned().is_empty(),
+        "qualified completion does not launch again"
     );
+    let final_accept = flow.accept(card);
+    assert!(final_accept.error.is_none());
+    assert_eq!(final_accept.result, Some(json!({})));
+    assert_eq!(flow.card(card).status, CardStatus::Done);
+    flow.stop();
+    let records = fixture.records();
+    assert_eq!(records.iter().filter(|record| accepted(record)).count(), 1);
     assert_eq!(
         records
             .iter()
-            .filter(|r| matches!(r, Record::TurnIssued { .. }))
+            .filter(|record| matches!(record, Record::TurnIssued { .. }))
             .count(),
-        1,
-        "no turn follows a latched Done"
+        1
     );
+    assert_eq!(started_goals(&records).len(), 1);
 }
 
 /// A ticket given back from Ready for you is not sent to Ready for you again on the previous
@@ -1737,13 +2044,10 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-/// The window persist-before-spawn exists for: the turn is durable and its process has not been
-/// launched. The stand-in host parks the launch right after noting what was durable, the journal
-/// as it stands is copied (which is what a kill at that instant leaves), and a second daemon
-/// boots on the copy. It finds one start, launches the one durable turn once, and starts nothing
-/// else. The stand-in host has no process group to check.
+/// The host call is entered before the gate parks, so its copied prefix cannot prove nonlaunch.
+/// Restart preserves the owed work and records uncertainty without borrowing absence from a new host.
 #[test]
-fn a_crash_with_the_turn_durable_and_not_launched_launches_it_once() {
+fn a_crash_inside_launch_keeps_owed_work_uncertain_without_relaunch() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
     let gate = Arc::new(Gate::default());
@@ -1792,29 +2096,50 @@ fn a_crash_with_the_turn_durable_and_not_launched_launches_it_once() {
     copy_dir(&fixture.journal_dir(), &second.journal_dir());
     let mut settings = second.settings();
     settings.enrollment = flow.settings.enrollment.clone();
-    let mut revived = Flow::boot(&second, settings, repo, [common::fails()]);
-    let spawned = second.await_record("TurnSpawned", |record| match record {
-        Record::TurnSpawned { turn, .. } => Some(*turn),
-        _ => None,
-    });
-    assert_eq!(spawned, issued, "the durable turn is the one launched");
-    let records = settled(&second, second.records().len());
-    assert_eq!(started_goals(&records).len(), 1, "one start");
-    assert_eq!(
-        records
-            .iter()
-            .filter(|r| matches!(r, Record::TurnIssued { .. }))
-            .count(),
-        1,
-        "no second turn"
-    );
-    assert_eq!(
-        revived.host.spawned().len(),
-        1,
-        "one launch after the restart"
-    );
-    assert_eq!(revived.card(card).status, CardStatus::Doing);
-    revived.stop();
+    let owed = Flow::turns(&fixture)[0].clone();
+    for restart in 0..2 {
+        let mut revived = Flow::boot(&second, settings.clone(), repo.clone(), [common::fails()]);
+        second.await_record("exact interrupted launch uncertainty", |record| {
+            matches!(record, Record::InstructionObservationFinished {
+                owner: dudes_proto::InstructionObservationOwner::Managed { turn, .. },
+                settlement: dudes_proto::InstructionSettlement::Unknown {
+                    reason: dudes_proto::InstructionUnknownReason::UnrecordedLaunchBoundary,
+                    end: None, sampled_at: None, recovery: true, ..
+                }, ..
+            } if *turn == issued)
+            .then_some(())
+        });
+        assert_eq!(
+            revived.await_status(card, CardStatus::Blocked).status,
+            CardStatus::Blocked
+        );
+        assert_eq!(revived.read(card).ticket.goal, Some(owed.2));
+        assert!(revived.host.spawned().is_empty(), "no restart host call");
+        revived.stop();
+        let records = second.records();
+        assert_eq!(
+            started_goals(&records).len(),
+            1,
+            "one immutable ticket start"
+        );
+        assert_eq!(
+            Flow::turns(&second),
+            vec![owed.clone()],
+            "same owed turn, agent, goal and task on restart {restart}"
+        );
+        assert!(
+            !records
+                .iter()
+                .any(|record| matches!(record, Record::TurnSpawned { .. })),
+            "a new host's empty inventory cannot authorize a fresh launch"
+        );
+        assert!(
+            !records
+                .iter()
+                .any(|record| matches!(record, Record::InstructionAttemptBoundarySettled { .. })),
+            "this interrupted host entry has no native absence receipt"
+        );
+    }
 
     gate.release();
     let _ = giver.join();
@@ -1845,6 +2170,9 @@ fn stop_returns_the_ticket_to_to_do_and_the_project_waits_for_the_running_turn()
     let waiting = flow.give_ok(two, dana, None);
     assert_eq!(queued(&waiting).1, TicketWait::Ticket { card: one });
     let (turn, _, goal, _) = Flow::await_turn_number(&fixture, 1);
+    fixture.await_record("stopped ticket's exact TurnSpawned", |record| {
+        matches!(record, Record::TurnSpawned { turn: owned, .. } if *owned == turn).then_some(())
+    });
     let before = fixture.records().len();
 
     let params = stop_params(&mut flow, one);
@@ -1883,7 +2211,17 @@ fn stop_returns_the_ticket_to_to_do_and_the_project_waits_for_the_running_turn()
     );
     assert_eq!(Flow::turns(&fixture).len(), 1, "no turn follows a stop");
 
-    flow.end_turn(turn, Some("late words"));
+    flow.end_turn(&fixture, turn, Some("late words"));
+    flow.await_status(one, CardStatus::Blocked);
+    let detail = flow.current_review_detail(one);
+    assert_eq!(
+        detail.ticket.goal,
+        Some(goal),
+        "the stopped interval keeps its historical association"
+    );
+    assert!(detail.ticket.instruction_review.is_some());
+    assert!(flow.agent(cody).goal.is_none());
+    flow.acknowledge_cleared_review(one, cody);
     flow.await_status(two, CardStatus::Doing);
     assert!(
         !fixture
@@ -1896,67 +2234,326 @@ fn stop_returns_the_ticket_to_to_do_and_the_project_waits_for_the_running_turn()
     flow.stop();
 }
 
-/// A crash between Stop's two records leaves a Working ticket with a cleared goal. The restart
-/// finds it owing Needs you, and a second Stop finishes the job without clearing anything twice.
-#[test]
-fn a_crash_between_stops_two_appends_leaves_a_ticket_a_second_stop_finishes() {
-    let moved = |r: &Record| matches!(r, Record::CardTransition { .. });
-    let drive = |fixture: &Fixture, flow: &mut Flow| {
-        let cody = flow.hire("Cody");
-        let card = flow.create("One");
-        flow.give_ok(card, cody, None);
-        Flow::await_turn_number(fixture, 1);
-        card
-    };
+struct StopCut {
+    card: CardId,
+    agent: AgentId,
+    turn: TurnId,
+    goal: GoalId,
+    owner: dudes_proto::InstructionObservationOwner,
+    started_lsn: dudes_types::Lsn,
+    spawn_lsn: dudes_types::Lsn,
+    key: AdoptionKey,
+    retained: SharedHost,
+}
 
+fn start_stop_control(fixture: &Fixture, flow: &mut Flow) -> (CardId, AgentId, TurnId, GoalId) {
+    let agent = flow.hire("Cody");
+    let card = flow.create("One");
+    flow.give_ok(card, agent, None);
+    let (turn, _, goal, _) = Flow::await_turn_number(fixture, 1);
+    fixture.await_record("Stop control's exact TurnSpawned", |record| {
+        matches!(record, Record::TurnSpawned { turn: owned, .. } if *owned == turn).then_some(())
+    });
+    (card, agent, turn, goal)
+}
+
+fn cut_stop_after_goal_clear(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    repo: &Path,
+) -> StopCut {
     let reference = Fixture::new();
-    let (settings, repo) = enrolled(&reference);
-    let mut flow = Flow::boot(&reference, settings, repo, [common::fails()]);
-    let card = drive(&reference, &mut flow);
+    let (reference_settings, reference_repo) = enrolled(&reference);
+    let mut control = Flow::boot(
+        &reference,
+        reference_settings,
+        reference_repo,
+        [common::fails()],
+    );
+    let (card, ..) = start_stop_control(&reference, &mut control);
     let before = reference.records().len();
-    let params = stop_params(&mut flow, card);
-    flow.ok::<Value>(dudes_proto::rpc::Method::TicketStop, params);
-    let nth = appends_between(&reference.records(), before, moved);
-    flow.stop();
+    let params = stop_params(&mut control, card);
+    control.ok::<Value>(dudes_proto::rpc::Method::TicketStop, params);
+    let nth = appends_between(&reference.records(), before, |record| {
+        matches!(record, Record::CardTransition { .. })
+    });
+    control.stop();
 
-    let fixture = Fixture::new();
-    let (settings, repo) = enrolled(&fixture);
-    let mut flow = Flow::boot(&fixture, settings.clone(), repo.clone(), [common::fails()]);
-    let card = drive(&fixture, &mut flow);
+    let mut flow = Flow::boot(
+        fixture,
+        settings.clone(),
+        repo.to_owned(),
+        [common::fails()],
+    );
+    let (card, agent, turn, goal) = start_stop_control(fixture, &mut flow);
+    let entries = fixture.entries();
+    let (started_lsn, owner) = entries.iter().find_map(|(lsn, entry)| match entry.record {
+        Record::InstructionObservationStarted { owner, .. }
+            if matches!(owner, dudes_proto::InstructionObservationOwner::Managed { turn: recorded_turn, .. } if recorded_turn == turn) => Some((*lsn, owner)),
+        _ => None,
+    }).expect("the actual frozen starting owner");
+    let (spawn_lsn, key) = entries
+        .iter()
+        .find_map(|(lsn, entry)| match &entry.record {
+            Record::TurnSpawned {
+                turn: recorded_turn,
+                pid,
+                start_time,
+                boot,
+                ..
+            } if *recorded_turn == turn => Some((
+                *lsn,
+                AdoptionKey {
+                    pid: *pid,
+                    start_time: *start_time,
+                    boot: boot.clone(),
+                },
+            )),
+            _ => None,
+        })
+        .expect("the exact original full spawn key");
+    let retained = flow.host.clone();
     let before = fixture.records().len();
     flow.append_failure.short_write_after(nth - 1, 5);
     let params = stop_params(&mut flow, card);
-    let _ = flow.call(dudes_proto::rpc::Method::TicketStop, params);
-    let crashed = settled(&fixture, before + nth - 1);
     assert!(
-        crashed[before..]
+        flow.call(dudes_proto::rpc::Method::TicketStop, params)
+            .error
+            .is_some()
+    );
+    let crashed = settled(fixture, before + nth - 1);
+    assert!(crashed[before..].iter().any(
+        |record| matches!(record, Record::GoalCleared { goal: cleared, .. } if *cleared == goal)
+    ));
+    assert!(
+        !crashed[before..]
             .iter()
-            .any(|r| matches!(r, Record::GoalCleared { .. }))
-    );
-    assert!(
-        !crashed[before..].iter().any(moved),
-        "the card did not move"
+            .any(|record| matches!(record, Record::CardTransition { .. }))
     );
     flow.stop();
+    StopCut {
+        card,
+        agent,
+        turn,
+        goal,
+        owner,
+        started_lsn,
+        spawn_lsn,
+        key,
+        retained,
+    }
+}
 
-    let mut flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
-    flow.await_status(card, CardStatus::Blocked);
-    let detail = flow.read(card);
-    assert_eq!(detail.ticket.reason, Some(TicketReason::GoalChanged));
-    let params = stop_params(&mut flow, card);
+fn fresh_host_keeps_stop_interval_unknown(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    repo: &Path,
+    cut: &StopCut,
+) {
+    let fresh = Fixture::new();
+    copy_dir(&fixture.journal_dir(), &fresh.journal_dir());
+    let mut fresh_settings = fresh.settings();
+    fresh_settings.enrollment = settings.enrollment.clone();
+    let original_work = Flow::turns(&fresh);
+    for _ in 0..2 {
+        let mut flow = Flow::boot(
+            &fresh,
+            fresh_settings.clone(),
+            repo.to_owned(),
+            [common::fails()],
+        );
+        flow.await_status(cut.card, CardStatus::Blocked);
+        let detail = flow.read(cut.card);
+        assert_eq!(detail.ticket.goal, Some(cut.goal));
+        assert!(flow.agent(cut.agent).goal.is_none());
+        let review = detail
+            .ticket
+            .instruction_review
+            .expect("the actual interval remains pending");
+        assert!(review.pending_comparison);
+        assert!(
+            review
+                .intervals
+                .iter()
+                .any(|interval| interval.owner == cut.owner
+                    && interval.baseline
+                        == dudes_proto::InstructionBaselineRef::Started {
+                            lsn: cut.started_lsn
+                        }
+                    && interval.finished_lsn.is_none()
+                    && interval.end.is_none())
+        );
+        let before = fresh.records();
+        let refused = flow.call(dudes_proto::rpc::Method::TicketAccept,
+            json!({"card":cut.card,"expected_seq":detail.card.seq,"review_watermark":review.watermark}));
+        assert_eq!(
+            refusal_reason(&refused),
+            TicketRefusal::InstructionComparisonPending.code()
+        );
+        assert_eq!(
+            fresh.records(),
+            before,
+            "refused review invents no end or absence"
+        );
+        assert!(flow.host.spawned().is_empty());
+        flow.stop();
+        assert_eq!(
+            Flow::turns(&fresh),
+            original_work,
+            "the same owed work survives each fresh-host restart"
+        );
+        assert!(!fresh.records().iter().any(|record| matches!(record,
+            Record::TurnEnded { turn: owned, .. } if *owned == cut.turn)));
+        assert!(!fresh.records().iter().any(|record| matches!(record,
+            Record::InstructionAttemptBoundarySettled { started_lsn, .. } if *started_lsn == cut.started_lsn)));
+    }
+}
+
+fn assert_retained_stop_settlement(
+    fixture: &Fixture,
+    cut: &StopCut,
+    flow: &Flow,
+    receipt: &NativeBoundaryReceipt,
+) {
+    fixture.await_record("actual old-key reaper end", |record| {
+        matches!(record, Record::TurnEnded { turn, provenance: dudes_types::Provenance::Observed,
+            outcome: Some(TurnOutcome::Vanished), .. } if *turn == cut.turn)
+        .then_some(())
+    });
+    fixture.await_record("exact old native-boundary settlement", |record| {
+        matches!(record, Record::InstructionAttemptBoundarySettled { owner, started_lsn,
+            proof: dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
+                receipt: dudes_proto::InstructionNativeBoundaryReceipt::Spawned { lsn }
+            }
+        } if *owner == cut.owner && *started_lsn == cut.started_lsn && *lsn == cut.spawn_lsn)
+        .then_some(())
+    });
+    cut.retained.await_native_acknowledged(&cut.key);
+    assert_eq!(
+        flow.host.owned_targets(1).targets.len(),
+        0,
+        "the fresh host never acquired the old target"
+    );
+    assert!(flow.host.spawned().is_empty());
+    assert!(flow.durable_at_spawn.lock().unwrap().is_empty());
+    assert!(
+        matches!(
+            cut.retained
+                .clone()
+                .acknowledge_native_boundary_absence(&cut.key, receipt),
+            NativeBoundaryAcknowledgement::UnknownIdentity
+        ),
+        "the exact retained capability retired only after durable settlement"
+    );
+    let entries = fixture.entries();
+    let end_lsn = entries
+        .iter()
+        .find_map(|(lsn, entry)| {
+            matches!(entry.record,
+        Record::TurnEnded { turn, provenance: dudes_types::Provenance::Observed, .. }
+        if turn == cut.turn)
+            .then_some(*lsn)
+        })
+        .expect("actual observed old-key end position");
+    fixture.await_record("actual endpoint comparison stays independent from native absence", |record| {
+        matches!(record, Record::InstructionObservationFinished {
+            owner, baseline: dudes_proto::InstructionBaselineRef::Started { lsn },
+            settlement: dudes_proto::InstructionSettlement::Compared {
+                end: dudes_proto::InstructionEndBoundary::ManagedTurn { turn, end_lsn: ended },
+                comparison, ..
+            }, ..
+        } if *owner == cut.owner && *lsn == cut.started_lsn && *turn == cut.turn && *ended == end_lsn && !comparison.gaps.is_empty() && !comparison.is_unchanged()).then_some(())
+    });
+    assert!(
+        !fixture.records().iter().any(|record| matches!(record,
+        Record::PredicateResult { goal, .. } if *goal == cut.goal)),
+        "the stopped goal is not judged"
+    );
+}
+
+#[test]
+fn a_crash_between_stops_two_appends_leaves_a_ticket_a_second_stop_finishes() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let cut = cut_stop_after_goal_clear(&fixture, &settings, &repo);
+    fresh_host_keeps_stop_interval_unknown(&fixture, &settings, &repo, &cut);
+    assert!(!cut.retained.native_acknowledged(&cut.key));
+    cut.retained.mark_native_reaped(&cut.key);
+    let targets = cut.retained.owned_targets(1);
+    assert!(matches!(
+        targets.status,
+        dudes_supervisor::host::OwnedTargetsStatus::Complete
+    ));
+    let [target] = targets.targets.as_slice() else {
+        panic!("one exact retained acquired target");
+    };
+    let key = target.key.as_ref().expect("retained full native identity");
+    assert_eq!(
+        (key.pid, key.start_time, &key.boot),
+        (cut.key.pid, cut.key.start_time, &cut.key.boot)
+    );
+    assert_eq!(
+        target.state,
+        dudes_supervisor::host::OwnedTargetState::NativeBoundaryAbsent
+    );
+    let receipt = target
+        .native_absence_receipt
+        .clone()
+        .expect("independently scripted scoped reap receipt");
+    let mut flow = Flow::boot_with(
+        &fixture,
+        settings,
+        repo,
+        [common::fails()],
+        Options {
+            retained_native: Some(cut.retained.clone()),
+            ..Options::default()
+        },
+    );
+    assert_retained_stop_settlement(&fixture, &cut, &flow, &receipt);
+    let detail = flow.current_review_detail(cut.card);
+    assert!(
+        !detail
+            .ticket
+            .instruction_review
+            .as_ref()
+            .unwrap()
+            .pending_comparison
+    );
+    assert_eq!(
+        detail.ticket.reason,
+        Some(TicketReason::SharedInstructionsUnknown)
+    );
+    assert!(flow.agent(cut.agent).goal.is_none());
+    flow.acknowledge_cleared_review(cut.card, cut.agent);
+    flow.await_status(cut.card, CardStatus::Blocked);
+    assert_eq!(
+        flow.read(cut.card).ticket.reason,
+        Some(TicketReason::GoalChanged)
+    );
+    let params = stop_params(&mut flow, cut.card);
     flow.ok::<Value>(dudes_proto::rpc::Method::TicketStop, params);
-    let view = flow.card(card);
+    let view = flow.card(cut.card);
     assert_eq!((view.status, view.claimed_by), (CardStatus::Todo, None));
-    let records = settled(&fixture, crashed.len() + 1);
     flow.stop();
+    let records = fixture.records();
     assert_eq!(
         records
             .iter()
-            .filter(|r| matches!(r, Record::GoalCleared { .. }))
+            .filter(
+                |record| matches!(record, Record::GoalCleared { goal, .. } if *goal == cut.goal)
+            )
             .count(),
-        1,
-        "the goal was cleared once"
+        1
     );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::TurnIssued { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(started_goals(&records).len(), 1);
 }
 
 /// A goal that ran out of turns moves the ticket to Needs you with the reason. The ticket holds
@@ -1974,7 +2571,7 @@ fn an_exhausted_ticket_holds_its_agent_and_project_until_the_operator_settles_it
     let (one, two, three) = (flow.create("One"), flow.create("Two"), flow.create("Three"));
     assert_eq!(flow.give_ok(one, cody, None), TicketAssignOutcome::Started);
     let (turn, _, old_goal, _) = Flow::await_turn_number(&fixture, 1);
-    flow.end_turn(turn, Some("I tried."));
+    flow.end_turn(&fixture, turn, Some("I tried."));
     flow.await_status(one, CardStatus::Blocked);
     let detail = flow.read(one);
     assert_eq!(detail.ticket.reason, Some(TicketReason::NoTurns));
@@ -2044,8 +2641,27 @@ fn remove_clears_an_unfinished_goal_first_and_refuses_a_working_ticket() {
     flow.give_ok(one, cody, None);
     flow.give_ok(two, cody, None);
     let (turn, _, goal, _) = Flow::await_turn_number(&fixture, 1);
-    flow.end_turn(turn, None);
+    flow.end_turn_without_review(&fixture, turn);
     flow.await_status(one, CardStatus::Blocked);
+
+    let pending = flow.current_review_detail(one);
+    assert!(pending.ticket.instruction_review.is_some());
+    let before_review = fixture.records();
+    let refused_review = flow.call(
+        dudes_proto::rpc::Method::TicketRemove,
+        json!({"card":one,"expected_seq":pending.card.seq}),
+    );
+    assert_eq!(
+        refusal_reason(&refused_review),
+        TicketRefusal::InstructionReviewRequired.code()
+    );
+    assert_eq!(
+        fixture.records(),
+        before_review,
+        "Remove cannot consume unresolved review"
+    );
+    assert_eq!(flow.agent(cody).goal.unwrap().id, goal);
+    flow.acknowledge_unfinished_review(one, cody, goal);
 
     let before = fixture.records().len();
     let seq = flow.card(one).seq;
@@ -2098,6 +2714,39 @@ fn a_hold_moves_the_working_ticket_to_needs_you_and_keeps_the_project() {
         },
     );
     flow.await_status(card, CardStatus::Blocked);
+    fixture.await_record("the actual port launch-failure hold", |record| {
+        matches!(record, Record::AgentHeld {
+            agent, cause: dudes_proto::AutomaticHold::LaunchFailed { .. }, ..
+        } if *agent == sample_agent())
+        .then_some(())
+    });
+    let detail = flow.current_review_detail(card);
+    assert_eq!(
+        detail.ticket.reason,
+        Some(TicketReason::SharedInstructionsUnknown)
+    );
+    let goal = detail.ticket.goal.expect("same held goal");
+    let issued_before_review = Flow::turns(&fixture);
+    let resumes_before_review = fixture
+        .records()
+        .iter()
+        .filter(|record| matches!(record, Record::Resume { .. }))
+        .count();
+    flow.acknowledge_unfinished_review(card, sample_agent(), goal);
+    assert_eq!(
+        Flow::turns(&fixture),
+        issued_before_review,
+        "review preserves the held owed turn"
+    );
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record, Record::Resume { .. }))
+            .count(),
+        resumes_before_review,
+        "review does not Resume the held agent"
+    );
     let ticket = flow.read(card).ticket;
     assert_eq!(ticket.reason, Some(TicketReason::HeldLaunch));
     assert_eq!(
@@ -2133,7 +2782,7 @@ fn a_daily_limit_and_an_open_question_move_no_card() {
     let card = flow.create("One");
     flow.give_ok(card, cody, None);
     let (turn, ..) = Flow::await_turn_number(&fixture, 1);
-    flow.end_turn_charging(turn, None, Some(Usd::from_dollars(2)));
+    flow.end_turn_charging(&fixture, turn, None, Some(Usd::from_dollars(2)));
     fixture.await_record("an Exhausted decision", |record| {
         matches!(
             record,
@@ -2170,8 +2819,22 @@ fn a_daily_limit_and_an_open_question_move_no_card() {
         _ => None,
     });
     let token = common::token_of(&hash);
+    fixture.await_record("question owner's actual TurnSpawned", |record| {
+        matches!(record, Record::TurnSpawned { agent, .. } if *agent == dana).then_some(())
+    });
     flow.column.set(PeerProvenance::Agent(dana));
     let mut as_agent = Client::connect(flow.settings.socket()).unwrap();
+    let published = as_agent
+        .call(
+            dudes_proto::rpc::Method::SystemPing,
+            Some(json!({"token": token.expose()})),
+        )
+        .unwrap();
+    assert!(
+        published.error.is_none(),
+        "spawned owner's token is published: {:?}",
+        published.error
+    );
     let asked = as_agent
         .call(
             dudes_proto::rpc::Method::AgentAsk,
@@ -2213,7 +2876,7 @@ fn the_summary_and_the_check_result_follow_the_ticket() {
     assert_eq!(flow.read(card).ticket.summary, None);
 
     let (first, ..) = Flow::await_turn_number(&fixture, 1);
-    flow.end_turn(first, Some("first words"));
+    flow.end_turn(&fixture, first, Some("first words"));
     let (second, ..) = Flow::await_turn_number(&fixture, 2);
     let failed = flow.read(card).ticket;
     assert_eq!(failed.summary.as_deref(), Some("first words"));
@@ -2221,8 +2884,8 @@ fn the_summary_and_the_check_result_follow_the_ticket() {
     assert_eq!((result.pass, result.exit), (false, Some(1)));
 
     let long = format!("{}\u{7}{}", "x".repeat(3_000), "y".repeat(3_000));
-    flow.end_turn(second, Some(&long));
-    flow.await_status(card, CardStatus::Review);
+    flow.end_turn(&fixture, second, Some(&long));
+    flow.await_completed_review(card);
     let ready = flow.read(card).ticket;
     let summary = ready.summary.expect("a summary");
     assert_eq!(summary.len(), 4_096);

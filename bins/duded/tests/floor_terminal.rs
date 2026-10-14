@@ -48,6 +48,7 @@ struct Floor {
     running: common::Running,
     settings: duded::Settings,
     addr: SocketAddr,
+    host: SharedHost,
     ptys: SharedPtyHost,
     clock: Arc<TestClock>,
     skew: TerminalSkew,
@@ -70,15 +71,18 @@ fn floor_with(fixture: &Fixture, terminal: bool, control: FloorControl) -> Floor
     });
     settings.floor_terminal_enabled = terminal;
     settings.floor_control = control;
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let clock = Arc::new(TestClock::new());
     let mut seams = common::seams(
-        SharedHost::new(),
+        host.clone(),
         Arc::new(ScriptedRunner::scripted([common::passes()])),
         Arc::clone(&clock),
         Witness::default(),
     );
     seams.pty_host = Box::new(ptys.clone());
+    seams.resolver = common::native_resolver(&ptys);
+    host.bind_child_ends(Arc::clone(&seams.children));
     let daemon = duded::boot(&settings, seams).expect("boot");
     let addr = daemon.floor_addr().expect("the Floor listener");
     let skew = daemon.terminal_skew();
@@ -93,6 +97,7 @@ fn floor_with(fixture: &Fixture, terminal: bool, control: FloorControl) -> Floor
         running: common::start(daemon),
         settings,
         addr,
+        host,
         ptys,
         clock,
         skew,
@@ -181,7 +186,10 @@ fn session(floor: &Floor) -> (String, String) {
 /// Hire an agent and confirm its vendor session, which attach requires.
 fn attachable(floor: &Floor, fixture: &Fixture) -> AgentId {
     let handle = &floor.running.handle;
-    let agent = common::hire(handle, fixture.state.path());
+    let cwd = tempfile::tempdir_in(fixture.state.path())
+        .expect("agent working directory")
+        .keep();
+    let agent = common::hire(handle, &cwd);
     common::set_goal(handle, common::goal_params(agent, &["/usr/bin/true"]));
     let (turn, session) = fixture.await_record("TurnIssued", |record| match record {
         Record::TurnIssued {
@@ -197,19 +205,23 @@ fn attachable(floor: &Floor, fixture: &Fixture) -> AgentId {
         Record::SessionLearned { turn: seen, .. } if *seen == turn => Some(()),
         _ => None,
     });
-    handle.input(Input::ChildExited {
-        final_reply: None,
-        elapsed_ms: None,
-        turn,
-        exit: ExitStatus {
-            code: Some(0),
-            signal: None,
+    common::end_turn_with_native_payload(
+        fixture,
+        &floor.host,
+        Input::ChildExited {
+            final_reply: None,
+            elapsed_ms: None,
+            turn,
+            exit: ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: None,
+            model_usage: std::collections::BTreeMap::new(),
+            outcome: TurnOutcome::Completed,
+            last_message: None,
         },
-        usage: None,
-        model_usage: std::collections::BTreeMap::new(),
-        outcome: TurnOutcome::Completed,
-        last_message: None,
-    });
+    );
     fixture.await_record("PredicateResult", |record| match record {
         Record::PredicateResult {
             turn: Some(seen), ..
@@ -539,14 +551,14 @@ fn assert_each_tuple_field_is_compared() {
 
     let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
     let handle = terminal.attach(agent);
+    let pty = newest_pty(&floor.ptys);
     terminal.write(&handle, b"control");
     await_write(&floor.ptys, b"control");
-    floor
-        .ptys
-        .produce_output(newest_pty(&floor.ptys), b"visible");
+    floor.ptys.produce_output(pty, b"visible");
     assert_eq!(terminal.data(), b"visible");
     terminal.close();
     await_system_detach(&fixture, agent, 1);
+    floor.ptys.await_native_acknowledged(pty);
 
     let fields = [
         SkewField::Session,
@@ -558,11 +570,13 @@ fn assert_each_tuple_field_is_compared() {
     for (round, field) in fields.into_iter().enumerate() {
         let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
         let handle = terminal.attach(agent);
+        let pty = newest_pty(&floor.ptys);
         let before = host_bytes(&floor.ptys);
         floor.skew.arm(field);
         terminal.write(&handle, format!("skewed {field:?}").as_bytes());
         terminal.expect_terminal_closed();
         await_system_detach(&fixture, agent, round + 2);
+        floor.ptys.await_native_acknowledged(pty);
         assert_eq!(
             host_bytes(&floor.ptys),
             before,
@@ -684,8 +698,10 @@ fn assert_browser_close_and_pty_exit_revoke_and_close() {
 
     let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
     let handle = terminal.attach(agent);
+    let pty = newest_pty(&floor.ptys);
     terminal.close();
     await_system_detach(&fixture, agent, 1);
+    floor.ptys.await_native_acknowledged(pty);
     let mut after = Socket::terminal(&floor, &cookie, &csrf);
     after.write(&handle, b"after the browser closed");
     after.expect_policy_close();
@@ -1213,6 +1229,7 @@ fn browser_resize_reaches_only_its_pty_and_a_bad_size_is_a_policy_close() {
         "the host's error reached the browser"
     );
     await_system_detach(&fixture, agent, 1);
+    floor.ptys.await_native_acknowledged(pty);
 
     let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
     let handle = terminal.attach(agent);
@@ -1253,6 +1270,7 @@ fn detach_purges_old_output_before_the_boundary_and_a_new_grant_sees_only_its_pt
         terminal.next_within(QUIET).is_none(),
         "no frame follows terminal.detached until the next attach"
     );
+    floor.ptys.await_native_acknowledged(old);
 
     let second = terminal.attach(agent);
     assert_ne!(first, second, "a new attach mints a new handle");

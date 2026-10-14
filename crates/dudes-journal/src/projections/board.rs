@@ -222,6 +222,7 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
                 reason: None,
                 summary: None,
                 check: None,
+                instruction_review: None,
             };
             let row = BoardRow {
                 view,
@@ -259,6 +260,117 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
         }),
         Record::TicketRemoved { card, .. } => remove_ticket(table, lsn, *card),
         _ => Ok(()),
+    }
+}
+
+pub(super) fn apply_instruction(
+    table: &mut RowTable<'_>,
+    lsn: Lsn,
+    entry: &Entry,
+    state: &dudes_proto::instruction_state::InstructionState,
+    folded: &dudes_proto::instruction_state::InstructionFold,
+) -> Result<()> {
+    let mut cards = folded.evidence_cards.clone();
+    if let Some((card, _)) = &folded.reviewed
+        && !cards.contains(card)
+    {
+        cards.push(*card);
+    }
+    match &entry.record {
+        Record::CardTransition { card, .. }
+        | Record::TicketAssigned { card, .. }
+        | Record::TicketStarted { card, .. }
+        | Record::TicketEdited { card, .. } => {
+            if !cards.contains(card) {
+                cards.push(*card);
+            }
+        }
+        Record::AgentRetired { .. } => {
+            for card in state.pending_cards() {
+                if !cards.contains(&card) {
+                    cards.push(card);
+                }
+            }
+        }
+        _ => {}
+    }
+    for card in cards {
+        let Some(mut row) = get_row::<BoardRow>(table, &card.to_bytes())? else {
+            continue;
+        };
+        if row.ticket.is_none() {
+            continue;
+        }
+        if let Some((reviewed, action)) = &folded.reviewed
+            && *reviewed == card
+        {
+            let Record::TicketInstructionReviewed {
+                by, expected_seq, ..
+            } = &entry.record
+            else {
+                continue;
+            };
+            review_ticket(&mut row, lsn, *by, *expected_seq, action);
+        }
+        if folded.evidence_cards.contains(&card) {
+            row.view.seq = row.view.seq.next();
+        }
+        let review = state
+            .review(card, super::instructions::hash)
+            .map_err(|reason| crate::Error::Instruction { lsn, reason })?;
+        let reason = state.ticket_reason(card);
+        if let Some(ticket) = &mut row.ticket {
+            ticket.instruction_review = review;
+            if let Some(reason) = reason {
+                ticket.reason = Some(reason);
+                row.view.status = CardStatus::Blocked;
+                row.view.status_by = Actor::System;
+            }
+            row.view.ticket = Some(dudes_proto::CardTicket {
+                position: None,
+                round: ticket.round,
+                reason: ticket.reason,
+                stopping: false,
+                instruction_review: ticket
+                    .instruction_review
+                    .as_ref()
+                    .map(dudes_proto::InstructionPendingReview::summary),
+            });
+        }
+        put_row(table, &card.to_bytes(), &row)?;
+    }
+    Ok(())
+}
+
+fn review_ticket(
+    row: &mut BoardRow,
+    lsn: Lsn,
+    by: Actor,
+    expected_seq: Seq,
+    action: &dudes_proto::InstructionReviewAction,
+) {
+    match action {
+        dudes_proto::InstructionReviewAction::ChangesRequested { agent, message, .. } => {
+            queue_ticket(row, lsn, (*agent, by), message.as_deref(), expected_seq);
+        }
+        dudes_proto::InstructionReviewAction::Accept { completion } => {
+            row.view.seq = expected_seq.next();
+            row.view.status_by = by;
+            let ticket = row.ticket.as_mut().expect("ticket was checked");
+            ticket.reason = None;
+            row.view.status = match completion {
+                dudes_proto::InstructionAcceptCompletion::Completed { .. } => CardStatus::Done,
+                dudes_proto::InstructionAcceptCompletion::Continue => {
+                    if ticket.queue.is_some() {
+                        CardStatus::Claimed
+                    } else if ticket.goal.is_some() && row.view.claimed_by.is_some() {
+                        CardStatus::Doing
+                    } else {
+                        CardStatus::Todo
+                    }
+                }
+            };
+        }
     }
 }
 

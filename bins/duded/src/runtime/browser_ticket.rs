@@ -96,6 +96,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     Some(start_of(&assigned.outcome)),
                 ))
             }
+            Answered::TicketAccepted(result) => {
+                let Some(card) = asked else {
+                    return TicketReply::Unavailable;
+                };
+                let mut body = done_body(state, card, seq_of(card), lsn, None);
+                if let Some(outcome) = result.outcome {
+                    body["outcome"] = json!(outcome);
+                }
+                TicketReply::Done(body)
+            }
             Answered::TicketRead(read) => TicketReply::Done(read_body(&read)),
             Answered::Done => match asked {
                 Some(card) => TicketReply::Done(done_body(state, card, seq_of(card), lsn, None)),

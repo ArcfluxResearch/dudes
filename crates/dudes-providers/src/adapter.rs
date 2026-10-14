@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use dudes_types::{AgentId, IsolationMode, Mode, ModelSelection, Provider, SessionId, Tier, Usd};
 
+use crate::instructions::InstructionDeclaration;
 use crate::launch::{EnvVar, LaunchError, LaunchSpec};
 use crate::mcp::{McpLaunch, McpSupport};
 use crate::stream::TurnReader;
@@ -247,6 +248,16 @@ pub trait Adapter: Send + Sync {
     /// The actual context composition, independent of the recorded hire selector.
     fn context_mode(&self, _mode: Mode) -> ContextMode {
         ContextMode::Other
+    }
+    /// Pure candidate discovery for the actual composition. Filesystem expansion and sampling
+    /// belong to the daemon. An undeclared adapter supplies explicit unknown coverage.
+    fn instruction_manifest(
+        &self,
+        _ctx: &AgentCtx<'_>,
+        mode: Mode,
+        _selection: &ModelSelection,
+    ) -> InstructionDeclaration {
+        InstructionDeclaration::missing(self.provider(), mode)
     }
     /// How this provider's session id comes into existence. Pure and constant.
     fn session_acquisition(&self) -> SessionAcquisition;

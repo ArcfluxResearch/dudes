@@ -64,19 +64,19 @@ export function agentsFor(floor: FloorState, project: string): {
   };
 }
 
-export function TicketNotice() {
+export function TicketNotice({ card }: { readonly card?: string | null }) {
   const ticket = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState);
-  const notice = ticket.notice;
+  const notice = card === undefined || ticket.notice?.card === card ? ticket.notice : null;
   // What went well is said for a few seconds. What went wrong stays until it is dismissed.
   useEffect(() => {
     if (notice === null || notice.tone !== 'done') return undefined;
-    const timer = setTimeout(dismissNotice, NOTICE_SECONDS * 1000);
+    const timer = setTimeout(() => dismissNotice(notice), NOTICE_SECONDS * 1000);
     return () => clearTimeout(timer);
   }, [notice]);
   if (notice === null) return null;
   return <p className="ticket-notice" data-tone={notice.tone} role="status">
     {notice.text}{' '}
-    <button type="button" className="ticket-dismiss" onClick={dismissNotice}>Dismiss</button>
+    <button type="button" className="ticket-dismiss" onClick={() => dismissNotice(notice)}>Dismiss</button>
   </p>;
 }
 

@@ -40,7 +40,7 @@ use std::io;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use duded::predicate::{PredicateOutcome, PredicateRunner};
@@ -60,8 +60,11 @@ use dudes_providers::claude::ClaudeAdapter;
 use dudes_providers::claude::config::ClaudeConfig;
 use dudes_providers::launch::{EnvVar, LaunchSpec};
 use dudes_providers::registry::Adapters;
+use dudes_providers::stream::{FinalReply, FinalReplyCompleteness, LineRead, TurnEnd, TurnReader};
 use dudes_supervisor::host::{
-    AdoptionKey, Clock, HostBoot, KillOutcome, Liveness, ProcessHost, SpawnResult,
+    AdoptionKey, Clock, HostBoot, KillOutcome, Liveness, MAX_OWNED_TARGET_QUERY_ROWS,
+    NativeBoundaryAcknowledgement, NativeBoundaryReceipt, OwnedTargetEvidence, OwnedTargetState,
+    OwnedTargets, OwnedTargetsStatus, ProcessHost, SpawnResult,
 };
 use dudes_supervisor::testing::{FakeHost, FakeRng};
 use dudes_types::{AgentId, GoalId, Lsn, Provider, Timestamp, Tokens, TurnId, Usd};
@@ -102,17 +105,286 @@ impl Clock for TestClock {
 
 /// `FakeHost` behind a lock, so the test keeps a handle on it after `run` has taken the daemon.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct SharedHost(Arc<Mutex<FakeHost>>);
+pub(crate) struct SharedHost(Arc<Mutex<FakeHost>>, Arc<Mutex<Option<ManagedNativeState>>>);
+
+#[derive(Debug)]
+struct ManagedNativeState {
+    journal: PathBuf,
+    next: u64,
+    targets: BTreeMap<u64, ManagedNativeTarget>,
+    acknowledged: Vec<(AdoptionKey, NativeAttemptBirth)>,
+    children: Option<Arc<duded::ChildEnds>>,
+    watches: BTreeMap<u64, ManagedChildWatch>,
+}
+
+struct ManagedChildWatch {
+    key: AdoptionKey,
+    watcher: duded::ChildTurn,
+    result: Arc<Mutex<Option<TurnEnd>>>,
+}
+
+impl std::fmt::Debug for ManagedChildWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManagedChildWatch")
+            .field("key", &self.key)
+            .finish_non_exhaustive()
+    }
+}
+
+struct MockTurnReader(Arc<Mutex<Option<TurnEnd>>>);
+
+impl std::fmt::Debug for MockTurnReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MockTurnReader").finish_non_exhaustive()
+    }
+}
+
+impl TurnReader for MockTurnReader {
+    fn line(&mut self, _text: &str) -> LineRead {
+        LineRead::default()
+    }
+
+    fn end(self: Box<Self>, _exit: dudes_proto::ExitStatus) -> TurnEnd {
+        let mut result = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        result
+            .take()
+            .expect("the exact mock completion was scripted before EOF")
+    }
+}
+
+#[derive(Debug)]
+struct ManagedNativeTarget {
+    key: AdoptionKey,
+    cwd: PathBuf,
+    birth: Option<NativeAttemptBirth>,
+    receipt: NativeBoundaryReceipt,
+    reaped: bool,
+    observed: bool,
+}
+
+fn same_native_key(left: &AdoptionKey, right: &AdoptionKey) -> bool {
+    left.pid == right.pid && left.start_time == right.start_time && left.boot == right.boot
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NativeAttemptBirth {
+    tail: Lsn,
+    agent: AgentId,
+}
+
+fn native_journal_entries(journal: &Path) -> Option<Vec<(Lsn, dudes_proto::Entry)>> {
+    Reader::new(journal)
+        .iter_from(Lsn::ZERO)
+        .ok()?
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+}
+
+fn native_attempt_birth(journal: &Path, spec: &LaunchSpec) -> Option<NativeAttemptBirth> {
+    let entries = native_journal_entries(journal)?;
+    let tail = entries.last()?.0;
+    let mut mailboxes = spec.env.iter().filter(|var| var.name() == "DUDES_MAILBOX");
+    let mailbox = Path::new(mailboxes.next()?.expose_value());
+    if mailboxes.next().is_some() || mailbox.parent()?.file_name()? != "agents" {
+        return None;
+    }
+    let agent = AgentId::parse(mailbox.file_name()?.to_str()?).ok()?;
+    Some(NativeAttemptBirth { tail, agent })
+}
+
+fn native_boundary_written(
+    journal: &Path,
+    key: &AdoptionKey,
+    pty: Option<PtyId>,
+    birth: Option<NativeAttemptBirth>,
+) -> bool {
+    let Some(birth) = birth else {
+        return false;
+    };
+    let Some(entries) = native_journal_entries(journal) else {
+        return false;
+    };
+    entries.iter().any(|(settled_lsn, settled)| {
+        let Record::InstructionAttemptBoundarySettled { owner, started_lsn, proof:
+            dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
+                receipt: dudes_proto::InstructionNativeBoundaryReceipt::Spawned { lsn: spawn_lsn },
+            },
+        } = &settled.record else { return false; };
+        let agent = match owner {
+            dudes_proto::InstructionObservationOwner::Managed { agent, .. }
+                | dudes_proto::InstructionObservationOwner::AttachedProcess { agent, .. } => *agent,
+            dudes_proto::InstructionObservationOwner::AttachedTurn { .. } => return false,
+        };
+        if agent != birth.agent || *started_lsn > birth.tail || *spawn_lsn <= birth.tail
+            || *settled_lsn <= *spawn_lsn {
+            return false;
+        }
+        let start_matches = entries.iter().any(|(lsn, entry)| *lsn == *started_lsn
+            && matches!(entry.record, Record::InstructionObservationStarted { owner: seen, .. } if seen == *owner));
+        start_matches && entries.iter().any(|(lsn, entry)| *lsn == *spawn_lsn && match (&entry.record, owner, pty) {
+            (Record::TurnSpawned { agent, turn, pid, start_time, boot, .. },
+                dudes_proto::InstructionObservationOwner::Managed { agent: owned, turn: owned_turn, .. }, None) => {
+                agent == owned && turn == owned_turn && *pid == key.pid
+                    && *start_time == key.start_time && *boot == key.boot
+            }
+            (Record::PtySpawned { agent, pty: spawned, pid, start_time, boot, .. },
+                dudes_proto::InstructionObservationOwner::AttachedProcess { agent: owned, .. }, Some(pty)) => {
+                agent == owned && *spawned == pty && *pid == key.pid
+                    && *start_time == key.start_time && *boot == key.boot
+            }
+            _ => false,
+        })
+    })
+}
 
 impl SharedHost {
     /// Wrap one deliberately shaped fake host.
     pub(crate) fn with(host: FakeHost) -> Self {
-        Self(Arc::new(Mutex::new(host)))
+        Self(Arc::new(Mutex::new(host)), Arc::new(Mutex::new(None)))
     }
 
     /// A wall-clock-anchored host, pids from 1000.
     pub(crate) fn new() -> Self {
         Self::with(FakeHost::wall_clock_anchored())
+    }
+
+    pub(crate) fn with_native_evidence(journal: PathBuf) -> Self {
+        Self(
+            Arc::new(Mutex::new(FakeHost::wall_clock_anchored())),
+            Arc::new(Mutex::new(Some(ManagedNativeState {
+                journal,
+                next: 0,
+                targets: BTreeMap::new(),
+                acknowledged: Vec::new(),
+                children: None,
+                watches: BTreeMap::new(),
+            }))),
+        )
+    }
+
+    pub(crate) fn bind_child_ends(&self, children: Arc<duded::ChildEnds>) {
+        let mut native = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+        let native = native
+            .as_mut()
+            .expect("owned child binding requires native opt-in");
+        assert!(
+            native.targets.is_empty() && native.children.is_none(),
+            "bind one child owner before any spawn"
+        );
+        native.children = Some(children);
+    }
+
+    pub(crate) fn finish_owned_child(&self, key: &AdoptionKey, input: dudes_supervisor::Input) {
+        let dudes_supervisor::Input::ChildExited {
+            exit,
+            elapsed_ms,
+            usage,
+            model_usage,
+            outcome,
+            last_message,
+            final_reply,
+            ..
+        } = input
+        else {
+            panic!("expected an exact mock child completion payload");
+        };
+        let watch = {
+            let mut native = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+            let native = native
+                .as_mut()
+                .expect("owned completion requires native opt-in");
+            let mut matches = native
+                .watches
+                .iter()
+                .filter(|(_, watch)| same_native_key(&watch.key, key));
+            let (&ordinal, _) = matches.next().expect("exact retained owned ChildTurn");
+            assert!(
+                matches.next().is_none(),
+                "owned completion key must be unambiguous"
+            );
+            native.watches.remove(&ordinal).unwrap()
+        };
+        *watch.result.lock().unwrap_or_else(PoisonError::into_inner) = Some(TurnEnd {
+            final_observation: None,
+            outcome,
+            usage,
+            model_usage,
+            last_message,
+            final_reply: final_reply.map(|reply| FinalReply {
+                text: reply.text,
+                completeness: match reply.completeness {
+                    dudes_proto::ChatReplyCompleteness::Complete => {
+                        FinalReplyCompleteness::Complete
+                    }
+                    dudes_proto::ChatReplyCompleteness::Truncated => {
+                        FinalReplyCompleteness::Truncated
+                    }
+                },
+            }),
+            usage_refused: None,
+            session: None,
+            attribution_refused: 0,
+            unreadable: 0,
+        });
+        watch.watcher.ended_with_elapsed(exit, elapsed_ms);
+    }
+
+    pub(crate) fn mark_native_reaped(&self, key: &AdoptionKey) {
+        let mut host = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut native = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = native.as_mut().expect("native evidence must be opted in");
+        let mut matching = state
+            .targets
+            .values_mut()
+            .filter(|target| same_native_key(&target.key, key));
+        let target = matching.next().expect("exact retained mock spawn");
+        assert!(
+            matching.next().is_none(),
+            "a full key cannot select two retained attempts"
+        );
+        target.reaped = true;
+        host.answer(key.pid, dudes_supervisor::host::ProbeAnswer::NoSuchPid);
+    }
+
+    pub(crate) fn native_acknowledged(&self, key: &AdoptionKey) -> bool {
+        self.1
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|native| {
+                !native
+                    .targets
+                    .values()
+                    .any(|target| same_native_key(&target.key, key))
+                    && native
+                        .acknowledged
+                        .iter()
+                        .any(|(ack, _)| same_native_key(ack, key))
+            })
+    }
+
+    fn native_settlement_written(&self, key: &AdoptionKey) -> bool {
+        let native = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(native) = native.as_ref() else {
+            return false;
+        };
+        native
+            .acknowledged
+            .iter()
+            .rev()
+            .find_map(|(ack, birth)| same_native_key(ack, key).then_some(*birth))
+            .is_some_and(|birth| native_boundary_written(&native.journal, key, None, Some(birth)))
+    }
+
+    pub(crate) fn await_native_acknowledged(&self, key: &AdoptionKey) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self.native_acknowledged(key) {
+            assert!(
+                Instant::now() < deadline,
+                "exact native absence was not acknowledged"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// Read the fake.
@@ -150,10 +422,52 @@ impl SharedHost {
 
 impl ProcessHost for SharedHost {
     fn spawn(&mut self, spec: &LaunchSpec, install: &ManagedInstall) -> SpawnResult {
-        self.0
+        let birth = self
+            .1
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .spawn(spec, install)
+            .as_ref()
+            .and_then(|native| native_attempt_birth(&native.journal, spec));
+        let result = self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .spawn(spec, install);
+        if let SpawnResult::Spawned(key) = &result
+            && let Some(native) = self
+                .1
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_mut()
+        {
+            native.next += 1;
+            let ordinal = native.next;
+            if let Some(children) = &native.children {
+                let result = Arc::new(Mutex::new(None));
+                children.read_next_with(Some(Box::new(MockTurnReader(Arc::clone(&result)))));
+                let watcher = children.watch(Some(key));
+                native.watches.insert(
+                    ordinal,
+                    ManagedChildWatch {
+                        key: key.clone(),
+                        watcher,
+                        result,
+                    },
+                );
+            }
+            native.targets.insert(
+                ordinal,
+                ManagedNativeTarget {
+                    key: key.clone(),
+                    cwd: spec.cwd.clone(),
+                    birth,
+                    receipt: NativeBoundaryReceipt::fresh(),
+                    reaped: false,
+                    observed: false,
+                },
+            );
+        }
+        result
     }
 
     fn kill(&mut self, key: &AdoptionKey) -> KillOutcome {
@@ -168,6 +482,76 @@ impl ProcessHost for SharedHost {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .alive(key)
+    }
+
+    fn owned_targets(&self, limit: usize) -> OwnedTargets {
+        let host = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut native = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(native) = native.as_mut() else {
+            return OwnedTargets {
+                targets: Vec::new(),
+                status: OwnedTargetsStatus::UnknownUnsupported,
+            };
+        };
+        let targets: Vec<_> = native
+            .targets
+            .values_mut()
+            .take(limit.min(MAX_OWNED_TARGET_QUERY_ROWS))
+            .map(|target| {
+                target.observed |= target.reaped;
+                OwnedTargetEvidence {
+                    key: Some(target.key.clone()),
+                    cwd: target.cwd.clone(),
+                    state: if target.reaped {
+                        OwnedTargetState::NativeBoundaryAbsent
+                    } else if host.alive(&target.key) == Liveness::Alive {
+                        OwnedTargetState::Present
+                    } else {
+                        OwnedTargetState::UnknownReapUnconfirmed
+                    },
+                    native_absence_receipt: target.reaped.then(|| target.receipt.clone()),
+                }
+            })
+            .collect();
+        let status = if targets.len() == native.targets.len() {
+            OwnedTargetsStatus::Complete
+        } else {
+            OwnedTargetsStatus::Truncated {
+                omitted: native.targets.len() - targets.len(),
+            }
+        };
+        OwnedTargets { targets, status }
+    }
+
+    fn acknowledge_native_boundary_absence(
+        &mut self,
+        key: &AdoptionKey,
+        receipt: &NativeBoundaryReceipt,
+    ) -> NativeBoundaryAcknowledgement {
+        let mut native = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(native) = native.as_mut() else {
+            return NativeBoundaryAcknowledgement::UnknownUnsupported;
+        };
+        let mut matches = native
+            .targets
+            .iter()
+            .filter(|(_, target)| same_native_key(&target.key, key));
+        let Some((&ordinal, target)) = matches.next() else {
+            return NativeBoundaryAcknowledgement::UnknownIdentity;
+        };
+        if matches.next().is_some() || target.receipt != *receipt {
+            return NativeBoundaryAcknowledgement::UnknownIdentity;
+        }
+        if !target.reaped
+            || !target.observed
+            || !native_boundary_written(&native.journal, key, None, target.birth)
+        {
+            return NativeBoundaryAcknowledgement::RefusedUnobserved;
+        }
+        let birth = target.birth.expect("validated current mock attempt birth");
+        native.targets.remove(&ordinal);
+        native.acknowledged.push((key.clone(), birth));
+        NativeBoundaryAcknowledgement::Acknowledged
     }
 
     fn boot_identity(&self) -> HostBoot {
@@ -215,6 +599,17 @@ struct FakePtyHost {
     resizes: Vec<(PtyId, u16, u16)>,
     fail_next_resize: bool,
     outputs: BTreeMap<PtyId, (Arc<OutputSink>, PtyOutput)>,
+    native: Option<BTreeMap<PtyId, PtyNativeTarget>>,
+    native_acknowledged: Vec<PtyId>,
+}
+
+#[derive(Debug)]
+struct PtyNativeTarget {
+    key: Option<AdoptionKey>,
+    birth: Option<NativeAttemptBirth>,
+    receipt: NativeBoundaryReceipt,
+    reaped: bool,
+    observed: bool,
 }
 
 #[derive(Debug)]
@@ -258,7 +653,61 @@ impl SharedPtyHost {
             resizes: Vec::new(),
             fail_next_resize: false,
             outputs: BTreeMap::new(),
+            native: None,
+            native_acknowledged: Vec::new(),
         })))
+    }
+
+    pub(crate) fn with_native_evidence(journal: PathBuf) -> Self {
+        let host = Self::new(journal);
+        host.0.lock().unwrap_or_else(PoisonError::into_inner).native = Some(BTreeMap::new());
+        host
+    }
+
+    pub(crate) fn native_key(&self, pty: PtyId) -> Option<AdoptionKey> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .native
+            .as_ref()?
+            .get(&pty)?
+            .key
+            .clone()
+    }
+
+    pub(crate) fn native_key_for_child(&self, pid: u32) -> Option<AdoptionKey> {
+        let state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut keys = state
+            .native
+            .as_ref()?
+            .values()
+            .filter_map(|target| target.key.as_ref())
+            .filter(|key| key.pid == pid);
+        let key = keys.next()?;
+        if keys.next().is_some() {
+            return None;
+        }
+        Some(key.clone())
+    }
+
+    pub(crate) fn native_acknowledged(&self, pty: PtyId) -> bool {
+        let state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        !state
+            .native
+            .as_ref()
+            .is_some_and(|targets| targets.contains_key(&pty))
+            && state.native_acknowledged.contains(&pty)
+    }
+
+    pub(crate) fn await_native_acknowledged(&self, pty: PtyId) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self.native_acknowledged(pty) {
+            assert!(
+                Instant::now() < deadline,
+                "exact PTY native absence was not acknowledged"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     pub(crate) fn block_host_calls(&self) -> std::sync::MutexGuard<'_, impl std::fmt::Debug> {
@@ -348,11 +797,18 @@ impl SharedPtyHost {
     }
 
     pub(crate) fn mark_already_closed(&self, pty: PtyId) {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .live
-            .remove(&pty);
+        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        state.live.remove(&pty);
+        if state.native.is_some() {
+            state.outputs.remove(&pty);
+        }
+        if let Some(target) = state
+            .native
+            .as_mut()
+            .and_then(|targets| targets.get_mut(&pty))
+        {
+            target.reaped = true;
+        }
     }
 
     /// Make the next host write take only `bytes` of what it is given.
@@ -447,6 +903,10 @@ impl duded::ports::PtyHostPort for SharedPtyHost {
         rows: u16,
     ) -> Result<duded::ports::OpenedPty, duded::ports::PtyOpenFailure> {
         let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let birth = state
+            .native
+            .as_ref()
+            .and_then(|_| native_attempt_birth(&state.journal, &spec));
         state.attached_before_open = Reader::new(&state.journal)
             .iter_from(Lsn::ZERO)
             .ok()
@@ -465,6 +925,18 @@ impl duded::ports::PtyHostPort for SharedPtyHost {
             }
             Some(FakePtyOpen::CleanupUnconfirmed) => {
                 state.live.insert(id);
+                if let Some(native) = &mut state.native {
+                    native.insert(
+                        id,
+                        PtyNativeTarget {
+                            key: None,
+                            birth,
+                            receipt: NativeBoundaryReceipt::fresh(),
+                            reaped: false,
+                            observed: false,
+                        },
+                    );
+                }
                 return Err(duded::ports::PtyOpenFailure::CleanupUnconfirmed {
                     pty: id,
                     cause: io::Error::other("injected PTY open failure"),
@@ -474,12 +946,33 @@ impl duded::ports::PtyHostPort for SharedPtyHost {
             None => {}
         }
         state.live.insert(id);
+        let pid = if let Some(native) = &mut state.native {
+            let key = AdoptionKey {
+                pid: 70_000 + u32::try_from(id.0).expect("bounded mock PTY id"),
+                start_time: 900 + id.0,
+                boot: None,
+            };
+            let pid = key.pid;
+            native.insert(
+                id,
+                PtyNativeTarget {
+                    key: Some(key),
+                    birth,
+                    receipt: NativeBoundaryReceipt::fresh(),
+                    reaped: false,
+                    observed: false,
+                },
+            );
+            pid
+        } else {
+            0
+        };
         let (sink, output) = duded::pty_output::channel();
         state.outputs.insert(id, (Arc::new(sink), output));
         Ok(duded::ports::OpenedPty {
             pty: id,
             child: duded::ports::PtyChild {
-                pid: 0,
+                pid,
                 #[cfg(windows)]
                 job: None,
             },
@@ -558,10 +1051,80 @@ impl duded::ports::PtyHostPort for SharedPtyHost {
         }
         state.outputs.remove(&pty);
         if state.live.remove(&pty) {
+            if let Some(target) = state
+                .native
+                .as_mut()
+                .and_then(|targets| targets.get_mut(&pty))
+            {
+                target.reaped = true;
+            }
             duded::ports::PtyCloseOutcome::Closed
         } else {
             duded::ports::PtyCloseOutcome::AlreadyClosed
         }
+    }
+
+    fn track_native_close(
+        &mut self,
+        pty: PtyId,
+    ) -> Result<NativeBoundaryReceipt, duded::ports::PtyNativeBoundaryUnknown> {
+        let state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let targets = state
+            .native
+            .as_ref()
+            .ok_or(duded::ports::PtyNativeBoundaryUnknown::Unsupported)?;
+        let target = targets
+            .get(&pty)
+            .filter(|target| target.key.is_some())
+            .ok_or(duded::ports::PtyNativeBoundaryUnknown::Identity)?;
+        Ok(target.receipt.clone())
+    }
+
+    fn native_close_absence(
+        &mut self,
+        pty: PtyId,
+        identity: &NativeBoundaryReceipt,
+    ) -> Result<(), duded::ports::PtyNativeBoundaryUnknown> {
+        let mut state = match self.0.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => {
+                return Err(duded::ports::PtyNativeBoundaryUnknown::Unconfirmed);
+            }
+            Err(TryLockError::Poisoned(error)) => error.into_inner(),
+        };
+        let targets = state
+            .native
+            .as_mut()
+            .ok_or(duded::ports::PtyNativeBoundaryUnknown::Unsupported)?;
+        let target = targets
+            .get_mut(&pty)
+            .filter(|target| target.key.is_some() && target.receipt == *identity)
+            .ok_or(duded::ports::PtyNativeBoundaryUnknown::Identity)?;
+        if !target.reaped {
+            return Err(duded::ports::PtyNativeBoundaryUnknown::Unconfirmed);
+        }
+        target.observed = true;
+        Ok(())
+    }
+
+    fn acknowledge_native_close(&mut self, pty: PtyId, identity: &NativeBoundaryReceipt) -> bool {
+        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(target) = state.native.as_ref().and_then(|targets| targets.get(&pty)) else {
+            return false;
+        };
+        let Some(key) = &target.key else {
+            return false;
+        };
+        if target.receipt != *identity
+            || !target.reaped
+            || !target.observed
+            || !native_boundary_written(&state.journal, key, Some(pty), target.birth)
+        {
+            return false;
+        }
+        state.native.as_mut().unwrap().remove(&pty);
+        state.native_acknowledged.push(pty);
+        true
     }
 
     fn shutdown(&mut self) -> io::Result<()> {
@@ -590,7 +1153,110 @@ impl duded::ports::PtyHostPort for SharedPtyHost {
         }
         state.live.clear();
         state.outputs.clear();
+        if let Some(native) = &mut state.native {
+            for target in native.values_mut() {
+                target.reaped = true;
+            }
+        }
         Ok(())
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[derive(Debug)]
+struct NativeRelation {
+    ptys: SharedPtyHost,
+    slots: Mutex<NativeRelationState>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[derive(Debug, Default)]
+struct NativeRelationState {
+    next: u64,
+    pending: BTreeMap<u64, Option<AdoptionKey>>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+impl duded::classify::ProcessRelation for NativeRelation {
+    fn begin_spawn(&self) -> u64 {
+        let mut state = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        state.next += 1;
+        let slot = state.next;
+        state.pending.insert(slot, None);
+        slot
+    }
+
+    fn finish_spawn(&self, slot: u64, key: Option<&AdoptionKey>) -> bool {
+        let mut state = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(current) = state.pending.get_mut(&slot) else {
+            return false;
+        };
+        if let Some(key) = key {
+            *current = Some(key.clone());
+        } else {
+            state.pending.remove(&slot);
+        }
+        true
+    }
+
+    fn published(&self, children: &[AdoptionKey]) -> Vec<(u64, usize)> {
+        let mut state = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        let published: Vec<_> = state
+            .pending
+            .iter()
+            .filter_map(|(slot, key)| {
+                let key = key.as_ref()?;
+                children
+                    .iter()
+                    .position(|child| same_native_key(child, key))
+                    .map(|index| (*slot, index))
+            })
+            .collect();
+        for (slot, _) in &published {
+            state.pending.remove(slot);
+        }
+        published
+    }
+
+    fn resolve(
+        &self,
+        _peer: u32,
+        _pidversion: Option<u32>,
+        _children: &[AdoptionKey],
+    ) -> duded::classify::Relation {
+        duded::classify::Relation::NoMatch
+    }
+
+    fn track_external(&self, _slot: u64) -> Box<dyn duded::classify::ExternalChild> {
+        Box::new(NativeExternal(self.ptys.clone()))
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[derive(Debug)]
+struct NativeExternal(SharedPtyHost);
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+impl duded::classify::ExternalChild for NativeExternal {
+    fn register(&mut self, child: duded::ports::PtyChild) -> io::Result<AdoptionKey> {
+        self.0
+            .native_key_for_child(child.pid)
+            .ok_or_else(|| io::Error::other("mock PTY child has no exact native key"))
+    }
+}
+
+pub(crate) fn native_resolver(ptys: &SharedPtyHost) -> duded::classify::Resolver {
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    {
+        duded::classify::Resolver::processes(Arc::new(NativeRelation {
+            ptys: ptys.clone(),
+            slots: Mutex::new(NativeRelationState::default()),
+        }))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = ptys;
+        duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk))
     }
 }
 
@@ -734,6 +1400,13 @@ impl UnconfirmedHost {
         }
     }
 
+    pub(crate) fn with_native_evidence(unconfirmed_first: bool, journal: PathBuf) -> Self {
+        Self {
+            inner: SharedHost::with_native_evidence(journal),
+            refuse_next: Arc::new(std::sync::atomic::AtomicBool::new(unconfirmed_first)),
+        }
+    }
+
     /// The fake underneath, for the counters.
     pub(crate) fn shared(&self) -> SharedHost {
         self.inner.clone()
@@ -761,6 +1434,18 @@ impl ProcessHost for UnconfirmedHost {
 
     fn alive(&self, key: &AdoptionKey) -> Liveness {
         self.inner.alive(key)
+    }
+
+    fn owned_targets(&self, limit: usize) -> OwnedTargets {
+        self.inner.owned_targets(limit)
+    }
+
+    fn acknowledge_native_boundary_absence(
+        &mut self,
+        key: &AdoptionKey,
+        receipt: &NativeBoundaryReceipt,
+    ) -> NativeBoundaryAcknowledgement {
+        self.inner.acknowledge_native_boundary_absence(key, receipt)
     }
 
     fn boot_identity(&self) -> HostBoot {
@@ -1489,6 +2174,66 @@ pub(crate) fn end_turn(handle: &duded::Handle, turn: TurnId) {
         outcome: dudes_proto::TurnOutcome::Completed,
         last_message: None,
     });
+}
+
+pub(crate) fn end_turn_with_native(
+    fixture: &Fixture,
+    _handle: &duded::Handle,
+    host: &SharedHost,
+    turn: TurnId,
+) {
+    end_turn_with_native_payload(
+        fixture,
+        host,
+        dudes_supervisor::Input::ChildExited {
+            final_reply: None,
+            elapsed_ms: None,
+            turn,
+            exit: dudes_proto::ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: None,
+            model_usage: BTreeMap::new(),
+            outcome: dudes_proto::TurnOutcome::Completed,
+            last_message: None,
+        },
+    );
+}
+
+pub(crate) fn end_turn_with_native_payload(
+    fixture: &Fixture,
+    host: &SharedHost,
+    input: dudes_supervisor::Input,
+) {
+    let dudes_supervisor::Input::ChildExited { turn, .. } = &input else {
+        panic!("expected an exact mock child completion payload")
+    };
+    let turn = *turn;
+    let key = fixture.await_record(
+        "exact managed spawn before mock reap",
+        |record| match record {
+            Record::TurnSpawned {
+                turn: owned,
+                pid,
+                start_time,
+                boot,
+                ..
+            } if *owned == turn => Some(AdoptionKey {
+                pid: *pid,
+                start_time: *start_time,
+                boot: boot.clone(),
+            }),
+            _ => None,
+        },
+    );
+    host.mark_native_reaped(&key);
+    host.finish_owned_child(&key, input);
+    fixture.await_record("exact managed end after mock reap", |record| {
+        matches!(record, Record::TurnEnded { turn: owned, .. } if *owned == turn).then_some(())
+    });
+    host.await_native_acknowledged(&key);
+    assert!(host.native_settlement_written(&key));
 }
 
 /// Block until `path` holds a parsable number, and return it.

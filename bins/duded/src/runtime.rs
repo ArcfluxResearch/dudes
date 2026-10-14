@@ -98,12 +98,28 @@ mod ticket_start_tests;
 mod tickets;
 pub(crate) use agent_mcp::PiAdmission;
 use agent_mcp::pi_retry;
+#[cfg(all(test, unix))]
+mod attached_boundary_tests;
+mod attached_observations;
 mod browser_chat;
 #[cfg(test)]
 mod chat_tests;
+#[cfg(all(test, unix))]
+mod instruction_authority_tests;
+mod instruction_plan;
+pub(crate) mod instruction_sampling;
+mod native_boundaries;
+#[cfg(all(test, unix))]
+mod native_boundaries_tests;
+#[cfg(all(test, unix))]
+mod predicate_recovery_tests;
+#[cfg(all(test, unix))]
+mod prehost_boundary_tests;
 mod shared_folder;
 #[cfg(all(test, unix))]
 mod shared_folder_tests;
+#[cfg(all(test, unix))]
+mod shutdown_ownership_tests;
 use crate::predicate::{self, PredicateRunner};
 use crate::startup::{TeardownStep, Witness};
 
@@ -424,7 +440,10 @@ pub enum OnboardingFailurePoint {
 /// One-shot failure after a journal fsync, leaving replay to establish the truth.
 #[doc(hidden)]
 #[derive(Clone, Debug, Default)]
-pub struct OnboardingFailure(Arc<Mutex<Option<OnboardingFailurePoint>>>);
+pub struct OnboardingFailure(
+    Arc<Mutex<Option<OnboardingFailurePoint>>>,
+    #[cfg(test)] Arc<AtomicBool>,
+);
 
 /// A test-only controller for the durable-condense-before-revalidation cut.
 #[doc(hidden)]
@@ -492,6 +511,16 @@ impl MemoryCondensePause {
 }
 
 impl OnboardingFailure {
+    #[cfg(all(test, unix))]
+    fn fail_next_pump_spend_refresh(&self) {
+        self.1.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn take_pump_spend_refresh(&self) -> bool {
+        self.1.swap(false, Ordering::AcqRel)
+    }
+
     #[cfg(any(test, feature = "testing"))]
     fn take_spend_refresh(&self) -> bool {
         let mut armed = self.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -939,14 +968,21 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// Where a managed child's standard output ends up. Held here so the executor can register
     /// which turn each spawned child serves; the watcher threads hold the other share.
     pub(crate) children: Arc<crate::children::ChildEnds>,
+    pub(crate) instruction_sampler: instruction_sampling::InstructionSampler,
+    pub(crate) confirmed_launch_failures: BTreeMap<Lsn, dudes_proto::InstructionObservationOwner>,
+    pub(crate) pending_attached_calls: BTreeMap<Lsn, dudes_proto::InstructionObservationOwner>,
+    pub(crate) attached_instruction_boundaries:
+        BTreeMap<Lsn, attached_observations::AttachedBoundary>,
+    pub(super) pending_native_launches: BTreeMap<Lsn, native_boundaries::PendingNativeLaunch>,
+    pub(super) native_acknowledgements:
+        BTreeMap<Lsn, native_boundaries::PendingNativeAcknowledgement>,
     /// Reply senders owned by the loop from `Job::Hook` until the matching `Effect::Reply`.
     pub(crate) pending_hook_replies: BTreeMap<HookId, Sender<Result<HookAnswer, RpcError>>>,
 }
 
 pub(crate) struct CleanupPty {
     agent: AgentId,
-    /// A durable completion already confirmed closure; only `Detached` remains to append.
-    close_confirmed: bool,
+    pty_close_recorded: bool,
 }
 
 enum PumpReport {
@@ -1733,9 +1769,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if !expired && (self.closing.responses != 0 || !session.ready(self.sup.world())) {
             return Ok(false);
         }
-        self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, move |sup| {
-            sup.closing_finish(expired).map(|_| ())
-        })?;
+        if let Err(error) =
+            self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, move |sup| {
+                sup.closing_finish(expired).map(|_| ())
+            })
+        {
+            if error.downcast_ref::<dudes_supervisor::closing::ClosingError>()
+                == Some(&dudes_supervisor::closing::ClosingError::LaunchPending)
+            {
+                return Ok(false);
+            }
+            return Err(error);
+        }
         if !self.closing.report_written {
             self.closing.report_written = true;
             if let Err(failure) = self.write_closing_report() {
@@ -3704,7 +3749,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 pass,
                 evidence,
             }),
-            None => Ok(()),
+            None => self.pump(Input::PredicateEndedWithoutVerdict { goal }),
         }
     }
 
@@ -3722,6 +3767,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 
     fn pump_with_report(&mut self, input: Input, report: &mut PumpReport) -> Result<()> {
+        if let Input::PredicateEndedWithoutVerdict { goal } = &input
+            && (self.exited || !self.sup.awaiting_recovered_predicate(*goal))
+        {
+            return Ok(());
+        }
         self.pump_started(report, PumpOrigin::Ordinary, move |sup| {
             let _ = sup.handle(input);
             Ok(())
@@ -3746,9 +3796,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         bool,
         std::collections::BTreeSet<dudes_supervisor::input::MailWakeRequest>,
     )> {
-        let mail_acknowledgments = queue
-            .iter()
-            .any(|input| matches!(input, Input::Journaled { .. }));
+        let mail_acknowledgments = queue.iter().any(|input| {
+            matches!(
+                input,
+                Input::Journaled { .. } | Input::InstructionJournaled { .. }
+            )
+        });
         let initial = (|| -> Result<()> {
             self.ctx.ensure_memory_ready()?;
             self.ctx.ensure_journal_ready()?;
@@ -3758,6 +3811,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             anyhow::ensure!(
                 self.ctx.closing_failed_after.is_none(),
                 "closing durability is unresolved; restart to replay"
+            );
+            #[cfg(test)]
+            anyhow::ensure!(
+                !self.ctx.onboarding_failure.take_pump_spend_refresh(),
+                "injected pre-fold spend refresh failure"
             );
             self.refresh_spend(queue)
         })();
@@ -3805,6 +3863,89 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         })
     }
 
+    fn execute_pump_effects(
+        &mut self,
+        queue: &mut VecDeque<Input>,
+        report: &mut PumpReport,
+        folds_journal_record: bool,
+        mail_acknowledgments: &mut bool,
+        mail_requests: &mut BTreeSet<dudes_supervisor::input::MailWakeRequest>,
+    ) -> Result<()> {
+        let Self {
+            sup, ctx, closing, ..
+        } = self;
+        // Read the post-fold owner map only when this folded input emitted a Spawn. A
+        // startup re-issue can spawn without a fold in this pump, but startup publishes
+        // its replayed token owners before the door opens; eagerly rebuilding that
+        // unchanged map would lose the constant-copy property the dirty guard provides.
+        let mut owners_before_spawn = (folds_journal_record
+            && sup
+                .effects()
+                .iter()
+                .any(|effect| matches!(effect, Effect::Spawn { .. })))
+        .then(|| sup.world().token_hash_owners());
+        let effects = sup.take_effects();
+        mail_requests.extend(effects.iter().filter_map(|effect| match effect {
+            Effect::MailWakeRefresh { request, .. } => Some(*request),
+            _ => None,
+        }));
+        for effect in &effects {
+            // A token-bearing child can connect as soon as `spawn` returns. Publish every
+            // completed dirty fold before that effect crosses into the host, or the
+            // acknowledged `HookTokenMinted` which armed this launch remains invisible to
+            // the classifier until the later pump-exit publication and the child is
+            // refused as unminted. The dirty guard makes that exit publication reuse the
+            // same immutable snapshot, preserving one copied token map per completed fold.
+            if let Effect::Spawn { .. } = effect
+                && let Some(owners) = owners_before_spawn.take()
+            {
+                ctx.tokens.publish_completed_folds(|| owners);
+            }
+            let executed = if matches!(effect, Effect::Persist { entry, .. }
+                if matches!(entry.record, Record::BrowserNoteDispatchIntent { .. }))
+            {
+                ctx.dispatch_browser_intent(effect, queue, sup, closing)
+            } else {
+                ctx.execute(effect, queue, report, sup, closing)
+            };
+            // The first error stops later effects and abandons queued inputs.
+            // Their durable acknowledgements remain unfolded; this pump does not drain
+            // them or claim that its failed call reached quiescence.
+            executed?;
+            *mail_acknowledgments |= mail_acknowledged_by_effect(effect);
+            if let Some(lsn) = ctx.writer.poisoned() {
+                return Err(dudes_journal::Error::Poisoned { lsn }.into());
+            }
+        }
+        Ok(())
+    }
+
+    fn fence_failed_pump(
+        &mut self,
+        origin: PumpOrigin,
+        outcome: &Result<()>,
+        mail_acknowledgments: bool,
+        queue: &VecDeque<Input>,
+        mail_requests: BTreeSet<dudes_supervisor::input::MailWakeRequest>,
+    ) {
+        if outcome.is_err() {
+            if mail_acknowledgments
+                || queue.iter().any(|input| {
+                    matches!(
+                        input,
+                        Input::Journaled { .. } | Input::InstructionJournaled { .. }
+                    )
+                })
+            {
+                self.ctx.fence_journal();
+            }
+            self.abandon_mail_refreshes(mail_requests);
+        }
+        if let Err(error) = &outcome {
+            self.fence_closing_pump_failure(origin, error);
+        }
+    }
+
     fn pump_inputs_with_work_refresh(
         &mut self,
         report: &mut PumpReport,
@@ -3816,11 +3957,40 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         mut refresh_work: impl FnMut(&mut Self, &VecDeque<Input>) -> Result<()>,
     ) -> Result<()> {
         let (mut mail_acknowledgments, mut mail_requests) = self.prepare_pump_inputs(&mut queue)?;
+        self.ctx.retry_attached_acknowledgements(self.sup.world());
         let mut start = Some(start);
+        let mut native_settlements = 0;
+        let mut attached_queries = BTreeSet::new();
         let outcome = 'work: {
             loop {
+                if let Some(Input::PredicateEndedWithoutVerdict { goal }) = queue.front()
+                    && (self.exited || !self.sup.awaiting_recovered_predicate(*goal))
+                {
+                    queue.pop_front();
+                    continue;
+                }
                 if queue.is_empty() && start.is_none() {
-                    break;
+                    if native_settlements < dudes_supervisor::host::MAX_OWNED_TARGET_QUERY_ROWS {
+                        match self.ctx.settle_one_attached_boundary(
+                            &mut self.sup,
+                            &mut attached_queries,
+                            &mut self.closing,
+                        ) {
+                            Ok(true) => {
+                                native_settlements += 1;
+                                continue;
+                            }
+                            Ok(false) => {}
+                            Err(error) => break 'work Err(error),
+                        }
+                        match self.ctx.settle_one_native_boundary(&self.sup, &mut queue) {
+                            Ok(true) => native_settlements += 1,
+                            Ok(false) => break,
+                            Err(error) => break 'work Err(error),
+                        }
+                    } else {
+                        break;
+                    }
                 }
                 if !matches!(
                     queue.front(),
@@ -3833,13 +4003,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     sup, ctx, closing, ..
                 } = self;
                 let folds_journal_record = if let Some(input) = queue.pop_front() {
-                    let folds = matches!(
-                        &input,
-                        Input::Replayed { .. }
-                            | Input::Journaled { .. }
-                            | Input::Persisted { .. }
-                            | Input::BoardChanged { .. }
-                    );
+                    let folds = folds_journal_record(&input);
                     let input = ctx.current_mail_response(input, sup);
                     let _ = sup.handle(input);
                     folds
@@ -3854,72 +4018,31 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 // Persistent and before the fallible executor: once `handle` has folded, the pump
                 // exit must publish that completed fold even if an effect below fails.
                 if folds_journal_record {
+                    ctx.retire_recorded_native_launches(sup.world());
                     ctx.tokens.mark_folded();
                 }
                 if let Err(error) = ctx.publish_folded_floor(sup.world(), closing) {
                     break 'work Err(error);
                 }
-                // Read the post-fold owner map only when this folded input emitted a Spawn. A
-                // startup re-issue can spawn without a fold in this pump, but startup publishes
-                // its replayed token owners before the door opens; eagerly rebuilding that
-                // unchanged map would lose the constant-copy property the dirty guard provides.
-                let mut owners_before_spawn = (folds_journal_record
-                    && sup
-                        .effects()
-                        .iter()
-                        .any(|effect| matches!(effect, Effect::Spawn { .. })))
-                .then(|| sup.world().token_hash_owners());
-                let effects = sup.take_effects();
-                mail_requests.extend(effects.iter().filter_map(|effect| match effect {
-                    Effect::MailWakeRefresh { request, .. } => Some(*request),
-                    _ => None,
-                }));
-                for effect in &effects {
-                    // A token-bearing child can connect as soon as `spawn` returns. Publish every
-                    // completed dirty fold before that effect crosses into the host, or the
-                    // acknowledged `HookTokenMinted` which armed this launch remains invisible to
-                    // the classifier until the later pump-exit publication and the child is
-                    // refused as unminted. The dirty guard makes that exit publication reuse the
-                    // same immutable snapshot, preserving one copied token map per completed fold.
-                    if let Effect::Spawn { .. } = effect
-                        && let Some(owners) = owners_before_spawn.take()
-                    {
-                        ctx.tokens.publish_completed_folds(|| owners);
-                    }
-                    let executed = if matches!(effect, Effect::Persist { entry, .. }
-                        if matches!(entry.record, Record::BrowserNoteDispatchIntent { .. }))
-                    {
-                        ctx.dispatch_browser_intent(effect, &mut queue, sup, closing)
-                    } else {
-                        ctx.execute(effect, &mut queue, report, sup)
-                    };
-                    if let Err(error) = executed {
-                        // The first error stops later effects and abandons queued inputs.
-                        // Their durable acknowledgements remain unfolded; this pump does not drain
-                        // them or claim that its failed call reached quiescence.
-                        break 'work Err(error);
-                    }
-                    mail_acknowledgments |= mail_acknowledged_by_effect(effect);
-                    if let Some(lsn) = ctx.writer.poisoned() {
-                        break 'work Err(dudes_journal::Error::Poisoned { lsn }.into());
-                    }
+                if let Err(error) = self.execute_pump_effects(
+                    &mut queue,
+                    report,
+                    folds_journal_record,
+                    &mut mail_acknowledgments,
+                    &mut mail_requests,
+                ) {
+                    break 'work Err(error);
                 }
             }
             Ok(())
         };
-        if outcome.is_err() {
-            if mail_acknowledgments
-                || queue
-                    .iter()
-                    .any(|input| matches!(input, Input::Journaled { .. }))
-            {
-                self.ctx.fence_journal();
-            }
-            self.abandon_mail_refreshes(mail_requests);
-        }
-        if let Err(error) = &outcome {
-            self.fence_closing_pump_failure(origin, error);
-        }
+        self.fence_failed_pump(
+            origin,
+            &outcome,
+            mail_acknowledgments,
+            &queue,
+            mail_requests,
+        );
 
         // **Here, and not inside `append`.** On success the queue is quiescent, so the snapshot is
         // complete for the call. On error it contains only folds completed before the first failed
@@ -5026,6 +5149,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if self.ctx.holds_pty(agent) {
             return Err(refused("that agent already has an attached PTY"));
         }
+        if self
+            .sup
+            .world()
+            .agents
+            .get(&agent)
+            .and_then(|row| row.goal)
+            .is_some_and(|goal| self.sup.world().instructions.pending_for_goal(goal))
+        {
+            return Err(refused(
+                "The ticket needs instruction review before another owned process.",
+            ));
+        }
         let mut report = PumpReport::attach(agent);
         self.pump_with_report(
             Input::Command(Command::Attach {
@@ -5317,20 +5452,29 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     }
 
     fn append_pty_entry(&mut self, record: Record, action: &str) -> Result<Lsn, RpcError> {
-        self.ctx
-            .append_projection_only(
-                self.sup.world(),
-                &Entry {
-                    at: self.ctx.clock.now(),
-                    record,
-                },
+        let is_close = matches!(
+            record,
+            Record::PtyCloseRequested { .. } | Record::PtyCloseCompleted { .. }
+        );
+        let entry = Entry {
+            at: self.ctx.clock.now(),
+            record,
+        };
+        let lsn = if is_close {
+            self.ctx.append(self.sup.world(), &entry)
+        } else {
+            self.ctx.append_projection_only(self.sup.world(), &entry)
+        }
+        .map_err(|failure| {
+            error(
+                ErrorCode::InternalError,
+                format!("the daemon could not {action}: {failure}"),
             )
-            .map_err(|failure| {
-                error(
-                    ErrorCode::InternalError,
-                    format!("the daemon could not {action}: {failure}"),
-                )
-            })
+        })?;
+        if is_close {
+            self.fold_durable_pty_entry(lsn, entry)?;
+        }
+        Ok(lsn)
     }
 
     fn attachment_lost(&mut self, agent: AgentId, pty: PtyId, reason: &'static str) {
@@ -5341,7 +5485,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .ctx
             .cleanup_ptys
             .get(&pty)
-            .is_some_and(|cleanup| cleanup.close_confirmed)
+            .is_some_and(|cleanup| cleanup.pty_close_recorded)
         {
             if let Err(error) =
                 self.finish_confirmed_close(agent, pty, dudes_proto::Actor::System, None)
@@ -5350,7 +5494,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     ?agent,
                     ?pty,
                     ?error,
-                    "confirmed PTY close still needs Detached"
+                    "confirmed PTY close still needs instruction and lifecycle finalization"
                 );
             }
             return;
@@ -5384,16 +5528,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if self.ctx.live_ptys.get(&agent).copied() != Some(pty) {
             return Err(refused("that agent has no matching live PTY"));
         }
-        let outcome = self.pty_close_attempt(pty, by, provenance, reason)?;
+        let outcome = self.pty_close_attempt(agent, pty, by, provenance, reason)?;
         match &outcome {
             dudes_proto::PtyCloseOutcome::Closed | dudes_proto::PtyCloseOutcome::AlreadyClosed => {
-                self.ctx.cleanup_ptys.insert(
-                    pty,
-                    CleanupPty {
-                        agent,
-                        close_confirmed: true,
-                    },
-                );
                 self.finish_confirmed_close(agent, pty, by, provenance)?;
             }
             dudes_proto::PtyCloseOutcome::Failed { error } => {
@@ -5402,7 +5539,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     pty,
                     CleanupPty {
                         agent,
-                        close_confirmed: false,
+                        pty_close_recorded: false,
                     },
                 );
             }
@@ -5417,6 +5554,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         by: dudes_proto::Actor,
         provenance: Option<dudes_proto::PeerProvenance>,
     ) -> Result<(), RpcError> {
+        self.ctx
+            .finish_attached_boundary(&mut self.sup, agent, pty, &mut self.closing)
+            .map_err(|failure| {
+                error(
+                    ErrorCode::InternalError,
+                    format!("attached instruction comparison could not settle: {failure}"),
+                )
+            })?;
         self.pump_or_refuse(Input::Command(Command::Detach {
             agent,
             by,
@@ -5452,21 +5597,60 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     fn close_completion(
         &mut self,
+        agent: AgentId,
+        pty: PtyId,
         request_lsn: Lsn,
         outcome: dudes_proto::PtyCloseOutcome,
     ) -> Result<(), RpcError> {
-        self.append_pty_entry(
-            Record::PtyCloseCompleted {
+        let confirmed = matches!(
+            outcome,
+            dudes_proto::PtyCloseOutcome::Closed | dudes_proto::PtyCloseOutcome::AlreadyClosed
+        );
+        let entry = Entry {
+            at: self.ctx.clock.now(),
+            record: Record::PtyCloseCompleted {
                 request_lsn,
                 outcome,
             },
-            "record a PTY close outcome",
-        )?;
-        Ok(())
+        };
+        let lsn = self
+            .ctx
+            .append(self.sup.world(), &entry)
+            .map_err(|failure| {
+                error(
+                    ErrorCode::InternalError,
+                    format!("the daemon could not record a PTY close outcome: {failure}"),
+                )
+            })?;
+        if confirmed {
+            self.ctx.cleanup_ptys.insert(
+                pty,
+                CleanupPty {
+                    agent,
+                    pty_close_recorded: true,
+                },
+            );
+        }
+        self.fold_durable_pty_entry(lsn, entry)
+    }
+
+    fn fold_durable_pty_entry(&mut self, lsn: Lsn, entry: Entry) -> Result<(), RpcError> {
+        let result = self.pump_or_refuse(Input::InstructionJournaled { lsn, entry });
+        if result.is_err()
+            && self
+                .sup
+                .world()
+                .last_applied_lsn
+                .is_none_or(|folded| folded < lsn)
+        {
+            self.ctx.fence_journal();
+        }
+        result
     }
 
     fn pty_close_attempt(
         &mut self,
+        agent: AgentId,
         pty: PtyId,
         by: dudes_proto::Actor,
         provenance: Option<dudes_proto::PeerProvenance>,
@@ -5480,7 +5664,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 error: error.to_string(),
             },
         };
-        self.close_completion(request_lsn, outcome.clone())?;
+        self.close_completion(agent, pty, request_lsn, outcome.clone())?;
         Ok(outcome)
     }
 
@@ -6299,6 +6483,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     /// A confirmed exit close is journaled without a new managed decision: the daemon is stopping.
     fn detach_during_shutdown(&mut self, agent: AgentId, pty: PtyId) -> bool {
+        if let Err(error) =
+            self.ctx
+                .finish_attached_boundary(&mut self.sup, agent, pty, &mut self.closing)
+        {
+            tracing::error!(%error, ?agent, ?pty, "confirmed shutdown close still needs instruction finalization");
+            return false;
+        }
         match self.ctx.append_projection_only(
             self.sup.world(),
             &Entry {
@@ -6315,6 +6506,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 tracing::error!(%error, ?agent, ?pty, "confirmed shutdown close could not be journaled");
                 false
             }
+        }
+    }
+
+    fn finalize_confirmed_shutdown_pty(&mut self, agent: AgentId, pty: PtyId) {
+        if self.detach_during_shutdown(agent, pty) {
+            self.ctx.live_ptys.retain(|_, handle| *handle != pty);
+            self.ctx.cleanup_ptys.remove(&pty);
         }
     }
 
@@ -6336,23 +6534,23 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 .ctx
                 .cleanup_ptys
                 .get(&pty)
-                .is_some_and(|cleanup| cleanup.close_confirmed)
+                .is_some_and(|cleanup| cleanup.pty_close_recorded)
             {
-                if self.detach_during_shutdown(agent, pty) {
-                    self.ctx.live_ptys.retain(|_, handle| *handle != pty);
-                    self.ctx.cleanup_ptys.remove(&pty);
-                }
+                self.finalize_confirmed_shutdown_pty(agent, pty);
                 continue;
             }
-            match self.pty_close_attempt(pty, dudes_proto::Actor::System, None, DAEMON_SHUTDOWN) {
+            match self.pty_close_attempt(
+                agent,
+                pty,
+                dudes_proto::Actor::System,
+                None,
+                DAEMON_SHUTDOWN,
+            ) {
                 Ok(
                     dudes_proto::PtyCloseOutcome::Closed
                     | dudes_proto::PtyCloseOutcome::AlreadyClosed,
                 ) => {
-                    if self.detach_during_shutdown(agent, pty) {
-                        self.ctx.live_ptys.retain(|_, handle| *handle != pty);
-                        self.ctx.cleanup_ptys.remove(&pty);
-                    }
+                    self.finalize_confirmed_shutdown_pty(agent, pty);
                 }
                 Ok(dudes_proto::PtyCloseOutcome::Failed { .. }) => pending.push((pty, agent)),
                 Err(error) => {
@@ -6362,7 +6560,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         ?error,
                         "shutdown PTY close could not be journaled"
                     );
-                    pending.push((pty, agent));
+                    if self
+                        .ctx
+                        .cleanup_ptys
+                        .get(&pty)
+                        .is_some_and(|cleanup| cleanup.pty_close_recorded)
+                    {
+                        self.finalize_confirmed_shutdown_pty(agent, pty);
+                    } else {
+                        pending.push((pty, agent));
+                    }
                 }
             }
         }
@@ -6390,7 +6597,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     error: error.to_string(),
                 },
             };
-            if let Err(error) = self.close_completion(request_lsn, outcome) {
+            if let Err(error) = self.close_completion(agent, pty, request_lsn, outcome) {
                 tracing::error!(
                     ?agent,
                     ?pty,
@@ -6399,9 +6606,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 );
                 continue;
             }
-            if shutdown.is_ok() && self.detach_during_shutdown(agent, pty) {
-                self.ctx.live_ptys.retain(|_, handle| *handle != pty);
-                self.ctx.cleanup_ptys.remove(&pty);
+            if shutdown.is_ok() {
+                self.finalize_confirmed_shutdown_pty(agent, pty);
             }
         }
         if let Err(error) = &shutdown {
@@ -6532,6 +6738,17 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     fn socket_standing(&self) -> Option<crate::socket::Standing> {
         None
     }
+}
+
+fn folds_journal_record(input: &Input) -> bool {
+    matches!(
+        input,
+        Input::Replayed { .. }
+            | Input::Journaled { .. }
+            | Input::InstructionJournaled { .. }
+            | Input::Persisted { .. }
+            | Input::BoardChanged { .. }
+    )
 }
 
 fn mail_acknowledged_by_effect(effect: &Effect) -> bool {
@@ -7119,6 +7336,42 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         Ok(())
     }
 
+    fn persist_effect<R: Rng>(
+        &mut self,
+        token: dudes_supervisor::input::PersistToken,
+        entry: &Entry,
+        queue: &mut VecDeque<Input>,
+        sup: &Supervisor<Shared<C>, R>,
+    ) -> Result<()> {
+        let lsn = self.append(sup.world(), entry)?;
+        // Spend moves only on a `TurnEnded`, and the decision that reads it runs on this
+        // very acknowledgement — so the refresh goes in front of it rather than at the top
+        // of the next pump, which would be a decide too late. A browser goal change's own
+        // decision must read the new goal's spend, not the replaced goal's against the new
+        // ceiling.
+        let refreshed = match &entry.record {
+            Record::TurnEnded { agent, .. } => self.push_spend(*agent, queue),
+            Record::ConversationDispatchUncertain { .. } => sup
+                .world()
+                .agents
+                .keys()
+                .try_for_each(|agent| self.push_spend(*agent, queue)),
+            record => match goal_to_price(record) {
+                Some((agent, goal)) => self.push_goal_spend(agent, goal, queue),
+                None => Ok(()),
+            },
+        };
+        #[cfg(any(test, feature = "testing"))]
+        let refreshed = if self.onboarding_failure.take_spend_refresh() {
+            Err(anyhow::anyhow!("injected durable spend refresh failure"))
+        } else {
+            refreshed
+        };
+        refreshed.inspect_err(|_| self.fence_journal())?;
+        queue.push_back(Input::Persisted { token, lsn });
+        Ok(())
+    }
+
     /// Execute one effect, pushing whatever it produces onto `queue`.
     ///
     /// # Errors
@@ -7131,8 +7384,33 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         queue: &mut VecDeque<Input>,
         report: &mut PumpReport,
         sup: &mut Supervisor<Shared<C>, R>,
+        waiting: &mut crate::closing::Waiting,
     ) -> Result<()> {
         match effect {
+            Effect::ResolveInstructionRecoveryTicket {
+                request,
+                association,
+            } => {
+                let ticket = self
+                    .projections
+                    .ticket(association.card)?
+                    .filter(|(card, ticket)| {
+                        card.status != CardStatus::Done && ticket.goal == Some(association.goal)
+                    })
+                    .and_then(|_| {
+                        sup.world()
+                            .instructions
+                            .association_for_goal(association.goal, association.seq_at_start)
+                    })
+                    .filter(|current| current == association);
+                queue.push_back(Input::InstructionRecoveryTicketResolved {
+                    request: *request,
+                    ticket,
+                });
+            }
+            Effect::SampleInstructions { .. } => {
+                self.sample_instructions(effect, queue, sup)?;
+            }
             Effect::MailWakeRefresh { .. } | Effect::MailWakeNotify { .. } => {
                 self.execute_mail_wake(effect, queue, sup)?;
             }
@@ -7155,32 +7433,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 }
             }
             Effect::Persist { token, entry } => {
-                let lsn = self.append(sup.world(), entry)?;
-                // Spend moves only on a `TurnEnded`, and the decision that reads it runs on this
-                // very acknowledgement — so the refresh goes in front of it rather than at the top
-                // of the next pump, which would be a decide too late. A browser goal change's own
-                // decision must read the new goal's spend, not the replaced goal's against the new
-                // ceiling.
-                let refreshed = match &entry.record {
-                    Record::TurnEnded { agent, .. } => self.push_spend(*agent, queue),
-                    Record::ConversationDispatchUncertain { .. } => sup
-                        .world()
-                        .agents
-                        .keys()
-                        .try_for_each(|agent| self.push_spend(*agent, queue)),
-                    record => match goal_to_price(record) {
-                        Some((agent, goal)) => self.push_goal_spend(agent, goal, queue),
-                        None => Ok(()),
-                    },
-                };
-                #[cfg(any(test, feature = "testing"))]
-                let refreshed = if self.onboarding_failure.take_spend_refresh() {
-                    Err(anyhow::anyhow!("injected durable spend refresh failure"))
-                } else {
-                    refreshed
-                };
-                refreshed.inspect_err(|_| self.fence_journal())?;
-                queue.push_back(Input::Persisted { token: *token, lsn });
+                self.persist_effect(*token, entry, queue, sup)?;
             }
             Effect::Spawn {
                 turn,
@@ -7217,21 +7470,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     "no subscriber fan-out yet: floor.subscribe is the floor's"
                 );
             }
-            Effect::OpenPty {
-                agent,
-                spec,
-                install,
-                cols,
-                rows,
-            } => self.open_pty(
-                *agent,
-                spec.clone(),
-                install,
-                (*cols, *rows),
-                queue,
-                report,
-                sup,
-            )?,
+            Effect::OpenPty { .. } => self.open_pty(effect, queue, report, sup, waiting)?,
             Effect::ClosePty { agent } => self.close_pty(*agent),
         }
         Ok(())
@@ -7249,27 +7488,40 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
 
     fn open_pty<R: Rng>(
         &mut self,
-        agent: AgentId,
-        spec: dudes_providers::launch::LaunchSpec,
-        install: &dudes_providers::adapter::HookInstall,
-        (cols, rows): (u16, u16),
+        effect: &Effect,
         queue: &mut VecDeque<Input>,
         report: &mut PumpReport,
         sup: &mut Supervisor<Shared<C>, R>,
+        waiting: &mut crate::closing::Waiting,
     ) -> Result<()> {
+        let Effect::OpenPty {
+            agent,
+            spec,
+            install,
+            cols,
+            rows,
+        } = effect
+        else {
+            anyhow::bail!("only a PTY opening effect uses this executor");
+        };
+        let agent = *agent;
+        let spec = spec.clone();
+        let (cols, rows) = (*cols, *rows);
         let row = sup
             .world()
             .agents
             .get(&agent)
             .ok_or_else(|| anyhow::anyhow!("attached launch owner is unavailable"))?;
-        if let Err(refusal) = self.admit_shared_folder(
-            sup,
-            Some(agent),
-            row.provider,
-            row.mcp.isolation,
-            dudes_types::Mode::Attached,
-            &spec.cwd,
-        ) {
+        if let Err(refusal) = self.admit_prior_attempt(sup, agent, None).and_then(|()| {
+            self.admit_shared_folder(
+                sup,
+                Some(agent),
+                row.provider,
+                row.mcp.isolation,
+                dudes_types::Mode::Attached,
+                &spec.cwd,
+            )
+        }) {
             let message = refusal.to_string();
             queue.push_back(Input::LaunchAdmissionRefused {
                 agent,
@@ -7281,20 +7533,40 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             report.record_open(agent, Err(message))?;
             return Ok(());
         }
-        // The hook settings the launch names exist before the child can read them.
-        let opened = self
+        let prepared = self
             .host
             .write_hooks(install)
             .map_err(|error| {
-                PtyOpenFailure::Failed(io::Error::new(
+                io::Error::new(
                     error.kind(),
                     format!("the hook settings could not be written: {error}"),
-                ))
+                )
             })
-            .and_then(|()| crate::program::resolve_launch(spec).map_err(PtyOpenFailure::Failed))
-            .and_then(|spec| self.pty_host.open(spec, cols, rows));
-        match opened {
+            .and_then(|()| crate::program::resolve_launch(spec));
+        let spec = match prepared {
+            Ok(spec) => spec,
+            Err(error) => {
+                queue.push_back(Input::PtyExited { agent });
+                report.record_open(
+                    agent,
+                    Err(format!("the PTY could not be prepared: {error}")),
+                )?;
+                return Ok(());
+            }
+        };
+        let (instruction_owner, instruction_started) =
+            self.start_attached_boundary(sup, agent, &spec.cwd, queue, waiting)?;
+        self.pending_attached_calls
+            .insert(instruction_started, instruction_owner);
+        match self.pty_host.open(spec, cols, rows) {
             Ok((pty, key)) => {
+                self.remember_attached_boundary(
+                    pty,
+                    instruction_owner,
+                    instruction_started,
+                    key.clone(),
+                );
+                self.pending_attached_calls.remove(&instruction_started);
                 if self.live_ptys.insert(agent, pty).is_some() {
                     let _ = self.pty_host.close(pty);
                     return Err(anyhow::anyhow!(
@@ -7306,21 +7578,44 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 }
                 report.record_open(agent, Ok(pty))
             }
-            Err(PtyOpenFailure::Failed(error)) => {
+            Err(failure) => {
+                self.record_failed_pty_open(agent, instruction_started, failure, queue, report)
+            }
+        }
+    }
+
+    fn record_failed_pty_open(
+        &mut self,
+        agent: AgentId,
+        instruction_started: Lsn,
+        failure: PtyOpenFailure,
+        queue: &mut VecDeque<Input>,
+        report: &mut PumpReport,
+    ) -> Result<()> {
+        match failure {
+            PtyOpenFailure::Failed(error) => {
+                queue.push_back(Input::InstructionAttachedOpenFailed {
+                    started_lsn: instruction_started,
+                    cleanup_unconfirmed: false,
+                });
                 queue.push_back(Input::PtyExited { agent });
                 report.record_open(agent, Err(format!("the PTY could not be opened: {error}")))
             }
-            Err(PtyOpenFailure::CleanupUnconfirmed {
+            PtyOpenFailure::CleanupUnconfirmed {
                 pty,
                 cause,
                 cleanup,
-            }) => {
+            } => {
+                queue.push_back(Input::InstructionAttachedOpenFailed {
+                    started_lsn: instruction_started,
+                    cleanup_unconfirmed: true,
+                });
                 let first_error = format!("{cause}; cleanup is unconfirmed: {cleanup}");
                 self.cleanup_ptys.insert(
                     pty,
                     CleanupPty {
                         agent,
-                        close_confirmed: false,
+                        pty_close_recorded: false,
                     },
                 );
                 match self.pty_host.close(pty) {
@@ -7391,9 +7686,21 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         {
             anyhow::bail!("mail id has already been recorded");
         }
+        world
+            .validate_record_authority(entry)
+            .map_err(anyhow::Error::msg)?;
         if let Err(error) = self.goal_index.validate(world, &entry.record) {
             self.fence_journal();
             return Err(error.context("invalid live goal replacement"));
+        }
+        if matches!(
+            entry.record,
+            Record::InstructionObservationStarted { .. }
+                | Record::InstructionObservationFinished { .. }
+                | Record::TicketInstructionReviewed { .. }
+                | Record::InstructionAttemptBoundarySettled { .. }
+        ) {
+            self.projections.validate_next_instruction(entry)?;
         }
         let (lsn, crc) = self.write_frame(entry)?;
         let output = self.children.output();
@@ -7814,6 +8121,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             tracing::error!(%error, ?goal, "could not start a thread for the predicate");
             // No thread exists to own a `RunEnd`, so this thread clears the mark it just set.
             self.predicate_run_ended(goal);
+            queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
         }
     }
 
@@ -8462,6 +8770,7 @@ mod mail_wake_fence_tests {
                     &mut queue,
                     &mut PumpReport::Discard,
                     &mut self.daemon.sup,
+                    &mut self.daemon.closing,
                 )
                 .expect("owned effect execution");
             assert_eq!(queue.len(), 1, "one real acknowledgment or refresh");
@@ -8627,7 +8936,8 @@ mod mail_wake_fence_tests {
                         &notify,
                         &mut queue,
                         &mut PumpReport::Discard,
-                        &mut self.daemon.sup
+                        &mut self.daemon.sup,
+                        &mut self.daemon.closing
                     )
                     .is_err()
             );
@@ -8685,10 +8995,20 @@ mod mail_wake_fence_tests {
                     _ => None,
                 })
         };
-        for _ in 0..16 {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
             owned.daemon.mailbox_pass();
             if issued(&owned).is_some() {
                 break;
+            }
+            match owned.daemon.jobs.recv_timeout(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(10)),
+            ) {
+                Ok(Job::Input(input)) => owned.daemon.pump(*input).unwrap(),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                _ => panic!("unexpected mailbox fixture worker result"),
             }
         }
         let issue = issued(&owned).expect("a mail wake issue from the live mailbox pass");
@@ -8789,7 +9109,8 @@ mod mail_wake_fence_tests {
                     &notify,
                     &mut queue,
                     &mut PumpReport::Discard,
-                    &mut owned.daemon.sup
+                    &mut owned.daemon.sup,
+                    &mut owned.daemon.closing
                 )
                 .is_err()
         );
@@ -8807,7 +9128,8 @@ mod mail_wake_fence_tests {
                     &notify,
                     &mut queue,
                     &mut PumpReport::Discard,
-                    &mut owned.daemon.sup
+                    &mut owned.daemon.sup,
+                    &mut owned.daemon.closing
                 )
                 .is_err()
         );
@@ -8921,19 +9243,15 @@ mod mail_wake_fence_tests {
                             .then_some(lsn)
                         })
                         .unwrap();
+                    let mailbox = owned.daemon.ctx.mailbox.as_mut().unwrap();
                     assert!(
-                        owned
-                            .daemon
-                            .ctx
-                            .mailbox
-                            .as_mut()
-                            .unwrap()
+                        mailbox
                             .notify_prepared(owned.agent, root, &target, |_, _| Err(
                                 anyhow::anyhow!("owned uncertain callback")
                             ))
                             .is_err()
                     );
-                    assert!(owned.daemon.ctx.mailbox.as_ref().unwrap().is_fenced());
+                    assert!(mailbox.is_fenced());
                 }
                 let before = owned.fixture.records().len();
                 let mut queue = VecDeque::new();
@@ -8942,6 +9260,7 @@ mod mail_wake_fence_tests {
                     &mut queue,
                     &mut PumpReport::Discard,
                     &mut owned.daemon.sup,
+                    &mut owned.daemon.closing,
                 );
                 if fence == 0 {
                     assert!(result.is_ok());
@@ -8953,6 +9272,7 @@ mod mail_wake_fence_tests {
                                 input,
                                 Input::MailWakeReady { result: Ok(_), .. }
                                     | Input::Journaled { .. }
+                                    | Input::InstructionJournaled { .. }
                                     | Input::Persisted { .. }
                             )
                         }),
@@ -8988,6 +9308,7 @@ mod mail_wake_fence_tests {
                         &mut queue,
                         &mut PumpReport::Discard,
                         &mut owned.daemon.sup,
+                        &mut owned.daemon.closing,
                     )
                     .unwrap();
             }
@@ -9085,11 +9406,10 @@ mod mail_wake_fence_tests {
         let refresh = one(std::mem::take(&mut owned.pending));
         let ready = owned.execute(&refresh);
         let queue = VecDeque::from([ready]);
-        assert!(
-            !queue
-                .iter()
-                .any(|input| matches!(input, Input::Journaled { .. }))
-        );
+        assert!(!queue.iter().any(|input| matches!(
+            input,
+            Input::Journaled { .. } | Input::InstructionJournaled { .. }
+        )));
         let (root_lsn, target) = owned
             .fixture
             .entries()
@@ -9174,11 +9494,10 @@ mod mail_wake_fence_tests {
         let refresh = one(std::mem::take(&mut owned.pending));
         let ready = owned.execute(&refresh);
         let queue = VecDeque::from([ready]);
-        assert!(
-            !queue
-                .iter()
-                .any(|input| matches!(input, Input::Journaled { .. } | Input::Persisted { .. }))
-        );
+        assert!(!queue.iter().any(|input| matches!(
+            input,
+            Input::Journaled { .. } | Input::InstructionJournaled { .. } | Input::Persisted { .. }
+        )));
         let (root_lsn, target) = owned
             .fixture
             .entries()

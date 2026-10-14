@@ -1357,7 +1357,7 @@ proptest! {
     /// `Projections::export`: this test stays green.
     ///
     /// So the second control is the one that covers that: the document's line count equals the
-    /// rows the projection holds, counted through the typed accessors. The same mutant reddens it
+    /// rows the projection holds. The same mutant reddens it
     /// — and reddens `the_export_names_every_table_the_store_holds`,
     /// `the_export_is_a_cursor_a_witness_and_one_line_per_row` and
     /// `the_export_changes_when_a_row_changes` beside it, though a claim carried only by other
@@ -1390,6 +1390,33 @@ proptest! {
         replay(&Reader::new(&shorter_journal), &mut shorter).unwrap();
         prop_assert_ne!(live.export().unwrap(), shorter.export().unwrap());
 
+        let mut instruction_issues = BTreeSet::new();
+        let mut instruction_ends = BTreeSet::new();
+        let mut attached_agents = BTreeSet::new();
+        let mut instruction_attachments = 0;
+        for entry in &entries {
+            match &entry.record {
+                Record::TurnIssued {
+                    turn,
+                    mode: Mode::Managed,
+                    ..
+                } => {
+                    instruction_issues.insert(*turn);
+                }
+                Record::TurnEnded {
+                    turn,
+                    provenance: Provenance::Observed,
+                    ..
+                } => {
+                    instruction_ends.insert(*turn);
+                }
+                Record::Attached { agent, .. } => {
+                    attached_agents.insert(*agent);
+                    instruction_attachments += 1;
+                }
+                _ => {}
+            }
+        }
         let rows = live.agents().unwrap().len()
             + live.turns().unwrap().len()
             + live.goals().unwrap().len()
@@ -1400,7 +1427,11 @@ proptest! {
             + usize::from(!live.retired_agents().unwrap().is_empty())
             + usize::from(!live.question_history().unwrap().is_empty())
             + usize::from(!live.traces().unwrap().is_empty())
-            + usize::from(!live.messages().unwrap().is_empty());
+            + usize::from(!live.messages().unwrap().is_empty())
+            + instruction_issues.len()
+            + instruction_ends.len()
+            + instruction_attachments
+            + attached_agents.len();
         let export = live.export().unwrap();
         prop_assert_eq!(
             export.lines().filter(|line| !line.starts_with("chat_")).count(),

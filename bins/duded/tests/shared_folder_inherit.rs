@@ -131,21 +131,19 @@ fn configured_inherit_refuses_a_canonical_alias_of_a_live_owned_peers_folder() {
     running.stop(ExitCause::ShutdownRpc);
 }
 
-#[test]
-fn launch_refusal_keeps_the_issued_task_until_the_full_peer_key_is_gone() {
-    let fixture = Fixture::new();
-    let host = common::SharedHost::new();
-    let daemon = boot(
-        &fixture.settings(),
-        seams(
-            host.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot");
-    let mut running = common::start(daemon);
+fn launch_refusal_peers(
+    fixture: &Fixture,
+    host: &common::SharedHost,
+) -> (common::Running, dudes_types::AgentId, dudes_types::AgentId) {
+    let seams = seams(
+        host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&seams.children));
+    let daemon = boot(&fixture.settings(), seams).expect("boot");
+    let running = common::start(daemon);
     let peer = common::hire(&running.handle, fixture.state.path());
     let candidate = match running
         .handle
@@ -160,19 +158,29 @@ fn launch_refusal_keeps_the_issued_task_until_the_full_peer_key_is_gone() {
         Answered::Hired(result) => result.agent,
         other => panic!("unexpected hire {other:?}"),
     };
+    (running, peer, candidate)
+}
+
+#[test]
+fn launch_refusal_keeps_the_issued_task_until_the_exact_peer_boundary_is_absent() {
+    let fixture = Fixture::new();
+    let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
+    let (mut running, peer, candidate) = launch_refusal_peers(&fixture, &host);
     common::set_goal(
         &running.handle,
         common::goal_params(peer, &["/usr/bin/true"]),
     );
-    let (pid, start) = fixture.await_record("peer child", |record| match record {
+    let (peer_turn, pid, start) = fixture.await_record("peer child", |record| match record {
         Record::TurnSpawned {
             agent,
+            turn,
             pid,
             start_time,
             ..
-        } if *agent == peer => Some((*pid, *start_time)),
+        } if *agent == peer => Some((*turn, *pid, *start_time)),
         _ => None,
     });
+    running.handle.ask(Ask::Pause(peer)).unwrap();
     common::set_goal(
         &running.handle,
         common::goal_params(candidate, &["/usr/bin/true"]),
@@ -200,22 +208,53 @@ fn launch_refusal_keeps_the_issued_task_until_the_full_peer_key_is_gone() {
     assert_eq!(host.spawned().len(), 1);
     assert!(fixture.records().iter().all(|record| !matches!(record,
         Record::TurnEnded { turn: ended, .. } if *ended == turn)));
+    fixture.await_record(
+        "the refused attempt's explicit no-host-call proof",
+        |record| {
+            matches!(record, Record::InstructionObservationFinished {
+            owner: dudes_proto::InstructionObservationOwner::Managed { agent, turn: refused, .. },
+            settlement: dudes_proto::InstructionSettlement::NoProcess {
+                proof: dudes_proto::InstructionNoProcessProof::NoHostCall, ..
+            }, ..
+        } if *agent == candidate && *refused == turn)
+            .then_some(())
+        },
+    );
 
     host.answer(pid, dudes_supervisor::ProbeAnswer::CouldNotAnswer);
+    let before = fixture.entries().last().unwrap().0;
     running
         .handle
         .ask(Ask::Resume(candidate))
         .expect("resume answers with a durable uncertainty hold");
-    assert!(fixture.records().iter().any(|record| matches!(record,
-        Record::AgentHeld { agent, cause: dudes_proto::AutomaticHold::LaunchRefused { reason }, .. }
-            if *agent == candidate && reason.contains("unresolved liveness") && !reason.contains("is live"))));
+    let reason = next_refusal(&fixture, candidate, before);
+    assert!(reason.contains("unresolved liveness") && !reason.contains("is live"));
     assert_eq!(host.spawned().len(), 1);
 
     host.answer(pid, dudes_supervisor::ProbeAnswer::StartValue(start + 1));
+    let before = fixture.entries().last().unwrap().0;
     running
         .handle
         .ask(Ask::Resume(candidate))
-        .expect("a recycled pid is not the owned peer");
+        .expect("a recycled leader alone does not prove native boundary absence");
+    let reason = next_refusal(&fixture, candidate, before);
+    assert!(reason.contains("unresolved liveness") && !reason.contains("is live"));
+    assert_eq!(host.spawned().len(), 1);
+    common::end_turn_with_native(&fixture, &running.handle, &host, peer_turn);
+    let key = host.peek(|host| host.key_for(pid));
+    assert!(host.native_acknowledged(&key));
+    running.handle.ask(Ask::Resume(candidate)).unwrap();
+    assert_immutable_retry(&fixture, &host, candidate, turn, &task);
+    running.stop(ExitCause::ShutdownRpc);
+}
+
+fn assert_immutable_retry(
+    fixture: &Fixture,
+    host: &common::SharedHost,
+    candidate: dudes_types::AgentId,
+    turn: dudes_types::TurnId,
+    task: &str,
+) {
     fixture.await_record("the same issued turn launches", |record| match record {
         Record::TurnSpawned {
             agent,
@@ -228,7 +267,7 @@ fn launch_refusal_keeps_the_issued_task_until_the_full_peer_key_is_gone() {
     assert_eq!(spawns.len(), 2);
     assert_eq!(
         spawns[1].argv.last().and_then(|part| part.to_str()),
-        Some(task.as_str())
+        Some(task)
     );
     assert!(
         spawns[1]
@@ -246,5 +285,34 @@ fn launch_refusal_keeps_the_issued_task_until_the_full_peer_key_is_gone() {
             .count(),
         1
     );
-    running.stop(ExitCause::ShutdownRpc);
+}
+
+fn next_refusal(
+    fixture: &Fixture,
+    candidate: dudes_types::AgentId,
+    after: dudes_types::Lsn,
+) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(reason) =
+            fixture
+                .entries()
+                .iter()
+                .find_map(|(lsn, entry)| match &entry.record {
+                    Record::AgentHeld {
+                        agent,
+                        cause: dudes_proto::AutomaticHold::LaunchRefused { reason },
+                        ..
+                    } if *lsn > after && *agent == candidate => Some(reason.clone()),
+                    _ => None,
+                })
+        {
+            return reason;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the sampled retry must reach its actual hold"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }

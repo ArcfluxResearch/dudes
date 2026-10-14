@@ -444,6 +444,141 @@ fn cleanup_unconfirmed_is_run_local_across_any_daemon_exit() {
     abrupt_exit_arm();
 }
 
+fn finish_owned_retry(fixture: &Fixture, host: &common::SharedHost, turn: dudes_types::TurnId) {
+    common::end_turn_with_native_payload(
+        fixture,
+        host,
+        dudes_supervisor::Input::ChildExited {
+            final_reply: None,
+            elapsed_ms: None,
+            turn,
+            exit: dudes_proto::ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: Some(dudes_providers::stream::ScopedUsage::Turn(
+                dudes_types::Usage::ZERO,
+            )),
+            model_usage: std::collections::BTreeMap::new(),
+            outcome: dudes_proto::TurnOutcome::Completed,
+            last_message: None,
+        },
+    );
+    fixture.await_record("the actual retry comparison completed", |record| {
+        matches!(record, Record::InstructionObservationFinished {
+            owner: dudes_proto::InstructionObservationOwner::Managed { turn: owned, .. },
+            settlement: dudes_proto::InstructionSettlement::Compared { .. }, ..
+        } if *owned == turn)
+        .then_some(())
+    });
+    fixture.await_record(
+        "the exact retry's observed command check completed",
+        |record| {
+            matches!(record, Record::PredicateResult { turn: Some(owned),
+            provenance: dudes_types::Provenance::Observed, .. } if *owned == turn)
+            .then_some(())
+        },
+    );
+}
+
+#[test]
+fn a_completed_owed_retry_keeps_unknown_history_without_blocking_next_work() {
+    let fixture = Fixture::new();
+    one_run(&fixture, UnconfirmedHost::new(true), 1_787_394_600_000);
+    let (agent, turn, task) =
+        fixture.await_record("immutable issued work", |record| match record {
+            Record::TurnIssued {
+                agent, turn, task, ..
+            } => Some((*agent, *turn, task.clone())),
+            _ => None,
+        });
+    let (old_started, old_unknown) = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(_, entry)| {
+            let Record::InstructionObservationFinished {
+                owner: dudes_proto::InstructionObservationOwner::Managed { turn: owned, .. },
+                baseline: dudes_proto::InstructionBaselineRef::Started { lsn },
+                settlement: dudes_proto::InstructionSettlement::Unknown { .. },
+                ..
+            } = &entry.record
+            else {
+                return None;
+            };
+            (*owned == turn).then_some((*lsn, entry.record))
+        })
+        .expect("the failed attempt retains truthful uncertainty");
+    let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
+    let seams = seams(
+        host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::ticking(1_787_394_700_000, 1)),
+        Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&seams.children));
+    let mut running = common::start(boot(&fixture.settings(), seams).unwrap());
+    fixture.await_record("the exact owed retry actually spawned", |record| {
+        matches!(record, Record::TurnSpawned { turn: owned, reissued: true, .. }
+            if *owned == turn)
+        .then_some(())
+    });
+    running.handle.ask(duded::ports::Ask::Pause(agent)).unwrap();
+    finish_owned_retry(&fixture, &host, turn);
+    let next_goal = common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &[common::true_program()]),
+    );
+    running
+        .handle
+        .ask(duded::ports::Ask::Resume(agent))
+        .unwrap();
+    let next_issue =
+        fixture.await_record(
+            "the admitted fresh goal's immutable issue",
+            |record| match record {
+                Record::TurnIssued {
+                    agent: owner,
+                    goal,
+                    turn: next,
+                    ..
+                } if *owner == agent && *goal == next_goal && *next != turn => Some(*next),
+                _ => None,
+            },
+        );
+    let next = fixture.await_record(
+        "ordinary next work actually spawned",
+        |record| match record {
+            Record::TurnSpawned {
+                agent: owner,
+                turn: next,
+                reissued: false,
+                ..
+            } if *owner == agent && *next == next_issue => Some(*next),
+            _ => None,
+        },
+    );
+    assert_ne!(next, turn);
+    assert_eq!(host.spawned().len(), 2);
+    let records = fixture.records();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record,
+        Record::TurnIssued { turn: owned, task: payload, .. }
+            if *owned == turn && *payload == task))
+            .count(),
+        1
+    );
+    assert!(records.contains(&old_unknown));
+    assert!(
+        !records.iter().any(|record| matches!(record,
+        Record::InstructionAttemptBoundarySettled { started_lsn, .. }
+            if *started_lsn == old_started)),
+        "the later retry's absence is never assigned to the old unknown attempt"
+    );
+    running.stop(ExitCause::Ended);
+}
+
 /// The control: the same fixture *without* the refusal also yields exactly one.
 ///
 /// Without this arm a daemon that launched nothing at all would satisfy the test above.

@@ -13,6 +13,31 @@ use crate::frame::FrameError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// A keyed instruction projection cell is malformed or missing its referenced attempt.
+    #[error("projection instructions: {0}")]
+    InstructionCache(#[from] dudes_proto::instruction_state::cache::InstructionCacheError),
+    /// An instruction payload or its canonical prefix relationships are invalid.
+    #[error("journal instruction record at {lsn}: {reason}")]
+    Instruction {
+        /// Offending position, or zero during position-independent staging.
+        lsn: Lsn,
+        /// Fixed contract or history failure.
+        reason: dudes_proto::instruction_state::InstructionStateError,
+    },
+    /// An instruction payload is not carried by its exact required-v2 header.
+    #[error(
+        "journal instruction header at {lsn} has kind {kind} version {version}, expected kind {expected_kind} version 2"
+    )]
+    InstructionFrame {
+        /// Offending intact frame.
+        lsn: Lsn,
+        /// Actual header kind.
+        kind: u16,
+        /// Actual header version.
+        version: u16,
+        /// Exact typed payload kind.
+        expected_kind: u16,
+    },
     /// A file or directory operation failed.
     #[error("journal i/o: {0}")]
     Io(#[from] io::Error),

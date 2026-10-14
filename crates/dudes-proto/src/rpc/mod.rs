@@ -682,8 +682,8 @@ names! {
     "ticket.remove" => TicketRemove / ticket_remove : ticket::TicketRemoveParams => Empty;
     /// One ticket with its note, check and queue place. Operator-only.
     "ticket.read" => TicketRead / ticket_read : ticket::TicketReadParams => ticket::TicketReadResult;
-    /// Accept a ticket that is Ready for you as done. Operator-only.
-    "ticket.accept" => TicketAccept / ticket_accept : ticket::TicketAcceptParams => Empty;
+    /// Accept completed work or acknowledge the exact instruction review and continue. Operator-only.
+    "ticket.accept" => TicketAccept / ticket_accept : ticket::TicketAcceptParams => ticket::TicketAcceptResult;
     /// Stop work on a ticket and return it to To do. The running turn finishes by itself. Operator-only.
     "ticket.stop" => TicketStop / ticket_stop : ticket::TicketStopParams => Empty;
 }

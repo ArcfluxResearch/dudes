@@ -643,10 +643,22 @@ where
             accept_panic: AcceptPanic::default(),
             handle: handle.clone(),
             local_days: crate::local_day::LocalDays::system(Arc::clone(&clock)),
-            clock,
+            clock: Arc::clone(&clock),
             predicate_env: settings.predicate_env.clone(),
             predicate_path: settings.predicate_path.clone(),
             children,
+            confirmed_launch_failures: BTreeMap::new(),
+            pending_attached_calls: BTreeMap::new(),
+            attached_instruction_boundaries: BTreeMap::new(),
+            pending_native_launches: BTreeMap::new(),
+            native_acknowledgements: BTreeMap::new(),
+            instruction_sampler: {
+                let sample_clock = Arc::clone(&clock);
+                crate::runtime::instruction_sampling::InstructionSampler::new(
+                    handle.clone(),
+                    Arc::new(move || sample_clock.now()),
+                )?
+            },
             pending_hook_replies: BTreeMap::new(),
         },
         jobs: jobs_rx,

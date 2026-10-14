@@ -35,6 +35,37 @@ fn credential_of(settings: &duded::Settings) -> OperatorCredential {
     OperatorCredential::new(text).expect("the credential is well formed")
 }
 
+fn token_after_mint_pump(
+    fixture: &Fixture,
+    handle: &duded::Handle,
+    agent: dudes_types::AgentId,
+) -> dudes_proto::rpc::hook::HookToken {
+    let hash = fixture.await_record("the exact agent's mint", |record| match record {
+        Record::HookTokenMinted {
+            agent: owner,
+            token_hash,
+        } if *owner == agent => Some(token_hash.clone()),
+        _ => None,
+    });
+    let minted = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| match entry.record {
+            Record::HookTokenMinted {
+                agent: owner,
+                token_hash,
+            } if owner == agent && token_hash == hash => Some(lsn),
+            _ => None,
+        })
+        .expect("the exact durable mint position");
+    let token = common::token_of(&hash);
+    let completed = handle
+        .doctor()
+        .expect("read after the mint's existing pump");
+    assert!(completed.lsn >= minted);
+    token
+}
+
 /// Start in the pre-agent column, retain the accepted connection's authority across the
 /// first production hire, and return the hired agent.
 fn hire_on_authorized_connection(
@@ -165,11 +196,7 @@ fn operator_answer_applies_after_fsync_and_clears_waiting() {
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    let token_hash = fixture.await_record("HookTokenMinted", |record| match record {
-        Record::HookTokenMinted { token_hash, .. } => Some(token_hash.clone()),
-        _ => None,
-    });
-    let token = common::token_of(&token_hash);
+    let token = token_after_mint_pump(&fixture, &running.handle, agent);
     column.set(PeerProvenance::Agent(agent));
     let mut asker = Client::connect(settings.socket()).expect("agent connection");
     let ask = |client: &mut Client<_, _>, text: &str| {
@@ -219,11 +246,7 @@ fn answer_provenance_rejection_is_durable_and_preserves_waiting() {
         &ready.running.handle,
         common::goal_params(ready.agent, &["/usr/bin/true"]),
     );
-    let token_hash = fixture.await_record("HookTokenMinted", |record| match record {
-        Record::HookTokenMinted { token_hash, .. } => Some(token_hash.clone()),
-        _ => None,
-    });
-    let token = common::token_of(&token_hash);
+    let token = token_after_mint_pump(&fixture, &ready.running.handle, ready.agent);
     ready.column.set(PeerProvenance::Agent(ready.agent));
     let mut asker = Client::connect(ready.settings.socket()).expect("agent connection");
     let first = asker
@@ -312,11 +335,7 @@ fn local_answer_without_an_open_question_is_refused_before_append() {
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    let token_hash = fixture.await_record("HookTokenMinted", |record| match record {
-        Record::HookTokenMinted { token_hash, .. } => Some(token_hash.clone()),
-        _ => None,
-    });
-    let token = common::token_of(&token_hash);
+    let token = token_after_mint_pump(&fixture, &running.handle, agent);
     column.set(PeerProvenance::Agent(agent));
     let mut asker = Client::connect(settings.socket()).expect("agent connection");
     let question = asker

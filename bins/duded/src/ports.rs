@@ -88,8 +88,54 @@ pub trait PtyHostPort: Send {
     fn subscribe(&mut self, pty: PtyId) -> Option<OutputSubscription>;
     /// Close one exact handle.
     fn close(&mut self, pty: PtyId) -> PtyCloseOutcome;
+    /// Bind a scoped close query to this exact currently owned PTY session.
+    ///
+    /// # Errors
+    /// The port cannot retain an exact session query identity.
+    fn track_native_close(
+        &mut self,
+        pty: PtyId,
+    ) -> Result<dudes_supervisor::host::NativeBoundaryReceipt, PtyNativeBoundaryUnknown> {
+        let _ = pty;
+        Err(PtyNativeBoundaryUnknown::Unsupported)
+    }
+    /// Read retained exact-session reap/absence evidence, or establish it with a fresh query.
+    ///
+    /// # Errors
+    /// The exact session's native absence is not established.
+    fn native_close_absence(
+        &mut self,
+        pty: PtyId,
+        identity: &dudes_supervisor::host::NativeBoundaryReceipt,
+    ) -> Result<(), PtyNativeBoundaryUnknown> {
+        let _ = (pty, identity);
+        Err(PtyNativeBoundaryUnknown::Unsupported)
+    }
+    /// Retire only the exact cached close query after its matching journal receipt is durable.
+    fn acknowledge_native_close(
+        &mut self,
+        pty: PtyId,
+        identity: &dudes_supervisor::host::NativeBoundaryReceipt,
+    ) -> bool {
+        let _ = (pty, identity);
+        false
+    }
     /// Attempt every session still retained by the host.
     fn shutdown(&mut self) -> io::Result<()>;
+}
+
+/// Why a neutral PTY port cannot prove scoped native absence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PtyNativeBoundaryUnknown {
+    /// This port does not provide native close evidence.
+    Unsupported,
+    /// The handle/token does not bind an exact retained session.
+    Identity,
+    /// The bounded query index has no room; existing sessions remain retained.
+    Limit,
+    /// Reap, native query, or absence remains unconfirmed.
+    Unconfirmed,
 }
 
 /// One attached launch the host opened and owns.
@@ -558,6 +604,8 @@ pub enum Answered {
     TicketCreated(dudes_proto::rpc::ticket::TicketCreateResult),
     /// Where an assigned ticket stands.
     TicketAssigned(dudes_proto::rpc::ticket::TicketAssignResult),
+    /// Completed acceptance or acknowledgment of continuing instruction review.
+    TicketAccepted(dudes_proto::rpc::ticket::TicketAcceptResult),
     /// One ticket in full.
     TicketRead(Box<dudes_proto::rpc::ticket::TicketReadResult>),
     /// The ticket claimant's recorded local checkout.

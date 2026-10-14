@@ -199,6 +199,9 @@ fn a_poisoned_writer_during_an_active_closure_admits_no_further_mutation() {
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
+    fixture.await_record("the exact closing participant actually spawned", |record| {
+        matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent).then_some(())
+    });
     let mut client = Client::connect(settings.socket()).expect("connect");
     let announced = client
         .call_as_operator(
@@ -282,42 +285,91 @@ use dudes_supervisor::{Input, World, testing::Harness};
 use dudes_types::{AgentId, Lsn, Timestamp, TurnId};
 use std::collections::BTreeMap;
 
-fn saving_source() -> (AgentId, Vec<Entry>, Entry, Entry) {
-    let mut source = Harness::new();
-    let agent = source.hire();
-    source.set_goal(agent, &["/usr/bin/true"]);
-    let old_turn = source.supervisor.world().agents[&agent].open_turn.unwrap();
-    let template = source
-        .journal
+type SeedRecords = Vec<(Lsn, Entry)>;
+
+fn saving_source(fixture: &Fixture) -> (AgentId, SeedRecords, SeedRecords, Entry) {
+    let source = Fixture::new();
+    let host = SharedHost::with_native_evidence(source.journal_dir());
+    let seams = seams(
+        host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        duded::startup::Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&seams.children));
+    let mut running = common::start(boot(&source.settings(), seams).unwrap());
+    let agent = common::hire(&running.handle, fixture.state.path());
+    common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &["/usr/bin/true"]),
+    );
+    let (old_turn, spawn_lsn) = loop {
+        let found = source
+            .entries()
+            .into_iter()
+            .find_map(|(lsn, entry)| match entry.record {
+                Record::TurnSpawned {
+                    agent: owner, turn, ..
+                } if owner == agent => Some((turn, lsn)),
+                _ => None,
+            });
+        if let Some(found) = found {
+            break found;
+        }
+        source.await_record("the preceding owned turn actually spawned", |record| {
+            matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent)
+                .then_some(())
+        });
+    };
+    let base: Vec<_> = source
+        .entries()
+        .into_iter()
+        .filter(|(lsn, _)| *lsn <= spawn_lsn)
+        .collect();
+    let template = base
         .iter()
-        .find(|entry| matches!(entry.record, Record::TurnIssued { .. }))
-        .unwrap()
-        .clone();
-    let base = source.journal.clone();
-    source.drive(Input::ChildExited {
-        final_reply: None,
-        elapsed_ms: None,
-        turn: old_turn,
-        exit: ExitStatus {
-            code: Some(0),
-            signal: None,
-        },
-        usage: None,
-        model_usage: BTreeMap::new(),
-        outcome: TurnOutcome::Completed,
-        last_message: None,
+        .find_map(|(_, entry)| {
+            matches!(entry.record,
+        Record::TurnIssued { turn, .. } if turn == old_turn)
+            .then_some(entry.clone())
+        })
+        .unwrap();
+    running.handle.ask(duded::ports::Ask::Pause(agent)).unwrap();
+    common::end_turn_with_native(&source, &running.handle, &host, old_turn);
+    source.await_record("the preceding owned comparison completed", |record| {
+        matches!(record, Record::InstructionObservationFinished {
+            owner: dudes_proto::InstructionObservationOwner::Managed { turn, .. }, ..
+        } if *turn == old_turn)
+        .then_some(())
     });
     let ended = source
-        .journal
-        .iter()
-        .find(|entry| matches!(entry.record, Record::TurnEnded { turn, .. } if turn == old_turn))
-        .unwrap()
-        .clone();
+        .entries()
+        .into_iter()
+        .filter(|(_, entry)| match entry.record {
+            Record::TurnEnded { turn, .. }
+            | Record::InstructionObservationFinished {
+                owner: dudes_proto::InstructionObservationOwner::Managed { turn, .. },
+                ..
+            }
+            | Record::InstructionAttemptBoundarySettled {
+                owner: dudes_proto::InstructionObservationOwner::Managed { turn, .. },
+                ..
+            } => turn == old_turn,
+            _ => false,
+        })
+        .collect::<Vec<_>>();
+    assert!(base.iter().any(|(_, entry)| matches!(entry.record,
+        Record::InstructionObservationStarted { owner: dudes_proto::InstructionObservationOwner::Managed { turn, .. }, .. }
+            if turn == old_turn)));
+    assert!(ended.iter().any(|(_, entry)| matches!(entry.record,
+        Record::InstructionAttemptBoundarySettled { owner: dudes_proto::InstructionObservationOwner::Managed { turn, .. }, .. }
+            if turn == old_turn)));
+    running.stop(ExitCause::Ended);
     (agent, base, ended, template)
 }
 
 fn seed_saving_prefix(fixture: &Fixture) -> (Lsn, TurnId, String) {
-    let (agent, base, ended, template) = saving_source();
+    let (agent, base, ended, template) = saving_source(fixture);
     let (mut writer, _) = dudes_journal::open(
         &fixture.journal_dir(),
         JournalOptions {
@@ -328,19 +380,12 @@ fn seed_saving_prefix(fixture: &Fixture) -> (Lsn, TurnId, String) {
     )
     .unwrap();
     let mut world = World::default();
-    let mut previous_decision = dudes_types::Lsn::ZERO;
-    for mut entry in base {
-        if let Record::TurnIssued {
-            lsn_of_decision, ..
-        } = &mut entry.record
-        {
-            *lsn_of_decision = previous_decision;
-        }
+    let mut positions = BTreeMap::new();
+    for (old_lsn, mut entry) in base {
+        remap_seed_references(&mut entry.record, &positions);
         let lsn = writer.append(&entry).unwrap();
         world.apply(lsn, &entry);
-        if matches!(entry.record, Record::LoopDecided { .. }) {
-            previous_decision = lsn;
-        }
+        positions.insert(old_lsn, lsn);
     }
     let announced = Entry {
         at: Timestamp::from_unix_millis(17),
@@ -350,8 +395,12 @@ fn seed_saving_prefix(fixture: &Fixture) -> (Lsn, TurnId, String) {
     };
     let announcement = writer.append(&announced).unwrap();
     world.apply(announcement, &announced);
-    let ended_lsn = writer.append(&ended).unwrap();
-    world.apply(ended_lsn, &ended);
+    for (old_lsn, mut entry) in ended {
+        remap_seed_references(&mut entry.record, &positions);
+        let lsn = writer.append(&entry).unwrap();
+        world.apply(lsn, &entry);
+        positions.insert(old_lsn, lsn);
+    }
     let goal = world.agents[&agent].goal.unwrap();
     let ordinary = world
         .loop_input(
@@ -399,6 +448,66 @@ fn seed_saving_prefix(fixture: &Fixture) -> (Lsn, TurnId, String) {
     writer.append(&issued).unwrap();
     drop(writer);
     (announcement, saving, task)
+}
+
+fn remap_seed_references(record: &mut Record, positions: &BTreeMap<Lsn, Lsn>) {
+    let remap = |position: &mut Lsn| {
+        *position = *positions
+            .get(position)
+            .expect("the earlier owned source record");
+    };
+    match record {
+        Record::TurnIssued {
+            lsn_of_decision, ..
+        } => remap(lsn_of_decision),
+        Record::InstructionObservationFinished {
+            baseline,
+            settlement,
+            ..
+        } => {
+            let dudes_proto::InstructionBaselineRef::Started { lsn } = baseline else {
+                panic!("this seed compares sampled managed attempts");
+            };
+            remap(lsn);
+            let end = match settlement {
+                dudes_proto::InstructionSettlement::Compared { end, .. } => Some(end),
+                dudes_proto::InstructionSettlement::Unknown { end, .. } => end.as_mut(),
+                dudes_proto::InstructionSettlement::NoProcess { proof_lsn, .. } => {
+                    remap(proof_lsn);
+                    None
+                }
+                dudes_proto::InstructionSettlement::NoIssuedTurn => None,
+            };
+            if let Some(end) = end {
+                let dudes_proto::InstructionEndBoundary::ManagedTurn { end_lsn, .. } = end else {
+                    panic!("this seed ends managed children");
+                };
+                remap(end_lsn);
+            }
+        }
+        Record::InstructionAttemptBoundarySettled {
+            started_lsn, proof, ..
+        } => {
+            remap(started_lsn);
+            match proof {
+                dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
+                    receipt,
+                } => {
+                    let lsn = match receipt {
+                        dudes_proto::InstructionNativeBoundaryReceipt::Spawned { lsn }
+                        | dudes_proto::InstructionNativeBoundaryReceipt::LaunchFailureEnded {
+                            lsn,
+                        } => lsn,
+                    };
+                    remap(lsn);
+                }
+                dudes_proto::InstructionBoundaryAbsenceProof::PriorBootAbsent { .. } => {
+                    panic!("this seed proves its retained native boundary directly");
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 #[test]
@@ -480,15 +589,23 @@ fn seed_done_during_closing(fixture: &Fixture) -> AgentId {
             output_tail: String::new(),
         },
     });
-    let mut journal = source.journal.clone();
+    let mut journal: Vec<_> = source
+        .journal
+        .into_iter()
+        .zip(1u64..)
+        .map(|(entry, lsn)| (Some(Lsn(lsn)), entry))
+        .collect();
     journal.insert(
         announced_at,
-        Entry {
-            at: Timestamp::from_unix_millis(17),
-            record: Record::ClosingTime {
-                phase: ClosingPhase::Announced,
+        (
+            None,
+            Entry {
+                at: Timestamp::from_unix_millis(17),
+                record: Record::ClosingTime {
+                    phase: ClosingPhase::Announced,
+                },
             },
-        },
+        ),
     );
     let (mut writer, _) = dudes_journal::open(
         &fixture.journal_dir(),
@@ -499,17 +616,12 @@ fn seed_done_during_closing(fixture: &Fixture) -> AgentId {
         },
     )
     .unwrap();
-    let mut previous_decision = Lsn::ZERO;
-    for mut entry in journal {
-        if let Record::TurnIssued {
-            lsn_of_decision, ..
-        } = &mut entry.record
-        {
-            *lsn_of_decision = previous_decision;
-        }
+    let mut positions = BTreeMap::new();
+    for (old_lsn, mut entry) in journal {
+        remap_seed_references(&mut entry.record, &positions);
         let lsn = writer.append(&entry).unwrap();
-        if matches!(entry.record, Record::LoopDecided { .. }) {
-            previous_decision = lsn;
+        if let Some(old_lsn) = old_lsn {
+            positions.insert(old_lsn, lsn);
         }
     }
     agent
@@ -607,6 +719,9 @@ fn a_completed_closure_is_historical_on_a_later_normal_boot() {
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
+    fixture.await_record("the exact closing participant actually spawned", |record| {
+        matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent).then_some(())
+    });
     assert!(fixture.entries().iter().any(|(lsn, entry)| {
         *lsn > complete
             && matches!(entry.record, Record::TurnSpawned { agent: owner, .. } if owner == agent)
@@ -642,6 +757,9 @@ fn final_report_loss_does_not_rewrite_durable_completion_or_the_hard_receipt() {
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
+    fixture.await_record("the exact closing participant actually spawned", |record| {
+        matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent).then_some(())
+    });
     let mut client = Client::connect(settings.socket()).unwrap();
     let reply = client
         .call_as_operator(
@@ -695,6 +813,9 @@ fn announce_retries_keep_the_snapshot_and_original_clock_bound() {
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
+    fixture.await_record("the exact closing participant actually spawned", |record| {
+        matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent).then_some(())
+    });
     let mut client = Client::connect(settings.socket()).unwrap();
     let mut announce = || {
         let reply = client

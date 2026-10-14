@@ -90,8 +90,8 @@ fn unknown_required_kinds_refuse_before_reader_or_writer_mutation() {
 
 /// a reader that does not know a required kind must refuse
 /// the journal before it repairs, rotates or touches a cache, so rolling back to an older release
-/// cannot misread records it never understood. Tag 76 stands for the next required kind after the
-/// wake, note, worktree and ticket kinds, which an older reader meets in exactly this shape.
+/// cannot misread records it never understood. Tag 80 stands for the next required kind after the
+/// wake, note, worktree, ticket and instruction kinds, which an older reader meets in this shape.
 #[test]
 fn a_future_required_kind_after_understood_history_refuses_both_opens_and_changes_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -109,7 +109,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     drop(writer);
     let path = segment_path(dir.path(), 1);
     let mut bytes = fs::read(&path).unwrap();
-    bytes.extend_from_slice(&raw_frame(2, 76, b"{\"t\":\"future\"}"));
+    bytes.extend_from_slice(&raw_frame(2, 80, b"{\"t\":\"future\"}"));
     fs::write(&path, &bytes).unwrap();
     let cache = dir.path().join("state.redb");
     fs::write(&cache, b"cache witness").unwrap();
@@ -123,7 +123,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     };
     let before = files();
 
-    let expected = "journal required record kind 76 at 1:";
+    let expected = "journal required record kind 80 at 1:";
     let reader_error = Reader::open(dir.path()).unwrap_err().to_string();
     assert!(reader_error.starts_with(expected), "{reader_error}");
     let writer_error = open(dir.path(), JournalOptions::default())
@@ -136,7 +136,7 @@ fn a_future_required_kind_after_understood_history_refuses_both_opens_and_change
     let cache_before = advanced.export().unwrap();
     assert!(matches!(
         replay(&Reader::new(dir.path()), &mut advanced),
-        Err(Error::RequiredKind { kind: 76, .. })
+        Err(Error::RequiredKind { kind: 80, .. })
     ));
     assert_eq!(advanced.export().unwrap(), cache_before);
 

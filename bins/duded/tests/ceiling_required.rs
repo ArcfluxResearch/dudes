@@ -381,6 +381,7 @@ fn a_ceiling_on_the_call_itself_is_admitted_under_a_visible_key() {
         1
     );
 
+    let _ = daemon.fixture.await_turn();
     let (_fixture, records) = daemon.stop();
     assert!(
         records
@@ -406,6 +407,7 @@ fn no_ceiling_with_the_key_unset_is_admitted() {
         .set_goal(goal_without_a_ceiling(agent))
         .expect("no key, no ceiling required on the goal either");
 
+    let _ = daemon.fixture.await_turn();
     let (_fixture, records) = daemon.stop();
     assert_eq!(
         records

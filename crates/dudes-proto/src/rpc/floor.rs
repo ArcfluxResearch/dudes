@@ -405,18 +405,18 @@ pub enum FloorFinishedToday {
 /// A `local_date` is four digits, a hyphen, two digits, a hyphen and two digits.
 pub const FINISHED_TODAY_DATE_PATTERN: &str = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$";
 
-mod decimal_u64 {
+pub(crate) mod decimal_u64 {
     use serde::{Deserialize, Deserializer, Serializer};
 
     #[expect(
         clippy::trivially_copy_pass_by_ref,
         reason = "serde's `with` hands the field over by reference"
     )]
-    pub(super) fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+    pub(crate) fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(value)
     }
 
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
         let text = String::deserialize(deserializer)?;
         text.parse::<u64>()
             .ok()

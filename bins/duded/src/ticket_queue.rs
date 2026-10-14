@@ -96,11 +96,27 @@ impl Facts<'_> {
         if row.attached {
             return Some(TicketWait::AgentAttached);
         }
-        (self.working.contains(&agent)
+        if self.working.contains(&agent)
             || row.open_turn.is_some()
             || row.open_question.is_some()
-            || self.has_unfinished_goal(row))
-        .then_some(TicketWait::AgentBusy)
+            || self.has_unfinished_goal(row)
+        {
+            return Some(TicketWait::AgentBusy);
+        }
+        row.goal
+            .filter(|goal| self.world.instructions.pending_for_goal(*goal))
+            .map(|goal| {
+                self.tickets
+                    .iter()
+                    .find(|(view, ticket)| {
+                        ticket.project == project
+                            && ticket.goal == Some(goal)
+                            && view.claimed_by == Some(agent)
+                    })
+                    .map_or(TicketWait::AgentBusy, |(view, _)| TicketWait::Ticket {
+                        card: view.id,
+                    })
+            })
     }
 
     /// Why the project cannot start another ticket now, or `None` when it is free.
@@ -111,7 +127,12 @@ impl Facts<'_> {
             .filter(|(_, ticket)| ticket.project == project)
             .find(|(view, ticket)| match view.status {
                 CardStatus::Doing | CardStatus::Review => true,
-                CardStatus::Blocked => self.holds_unfinished_goal(view, ticket),
+                CardStatus::Blocked => {
+                    self.holds_unfinished_goal(view, ticket)
+                        || ticket
+                            .goal
+                            .is_some_and(|goal| self.world.instructions.pending_for_goal(goal))
+                }
                 _ => false,
             });
         if let Some((view, _)) = holder {
@@ -239,6 +260,9 @@ impl Facts<'_> {
             .iter()
             .filter_map(|(view, ticket)| {
                 let goal = ticket.goal?;
+                if self.world.instructions.pending_for_goal(goal) {
+                    return None;
+                }
                 let (to, reason) = if matches!(view.status, CardStatus::Doing | CardStatus::Blocked)
                     && self.world.completed_goal_lsn(goal).is_some()
                 {
@@ -293,10 +317,15 @@ impl Facts<'_> {
                 Some(TicketReason::HeldUnsure)
             }
             HoldReason::WorktreeMissing => Some(TicketReason::WorktreeMissing),
+            HoldReason::SharedInstructionsReview => self.world.instructions.ticket_reason(view.id),
             HoldReason::Halted | HoldReason::Paused | HoldReason::Attached => None,
         }
     }
 }
+
+#[cfg(test)]
+#[path = "ticket_queue_review_tests.rs"]
+mod review_tests;
 
 #[cfg(test)]
 mod tests {
@@ -381,6 +410,7 @@ mod tests {
                 ticket: None,
             },
             TicketRow {
+                instruction_review: None,
                 description: String::new(),
                 project: PROJECT.into(),
                 done_when: TicketCheck {

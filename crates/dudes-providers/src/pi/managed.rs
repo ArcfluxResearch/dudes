@@ -155,6 +155,18 @@ impl Adapter for PiAdapter {
         Isolation::Flags(ISOLATION)
     }
 
+    fn instruction_manifest(
+        &self,
+        ctx: &AgentCtx<'_>,
+        mode: dudes_types::Mode,
+        _selection: &ModelSelection,
+    ) -> crate::instructions::InstructionDeclaration {
+        if mode == dudes_types::Mode::Attached {
+            return crate::instructions::InstructionDeclaration::missing(Provider::Pi, mode);
+        }
+        crate::instructions::pi_manifest(ctx)
+    }
+
     fn session_acquisition(&self) -> SessionAcquisition {
         SESSION_ACQUISITION
     }

@@ -232,6 +232,7 @@ const BOUND: Duration = Duration::from_secs(10);
 /// sweep reaches the runner after it.
 struct LateRunner {
     real: RealRunner,
+    entered: mpsc::Sender<()>,
     swept: mpsc::Sender<()>,
     released: Mutex<mpsc::Receiver<()>>,
     ran: mpsc::Sender<Result<PredicateOutcome, String>>,
@@ -239,6 +240,7 @@ struct LateRunner {
 
 impl PredicateRunner for LateRunner {
     fn run(&self, spec: &LaunchSpec, timeout: Duration) -> io::Result<PredicateOutcome> {
+        let _ = self.entered.send(());
         self.released
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -289,23 +291,24 @@ fn a_predicate_that_reaches_the_runner_after_the_sweep_starts_no_child() {
     let pidfile = fixture.runtime.path().join("late.pid");
     let _cleanup = KillGroupAt(pidfile.clone());
     let (swept, released) = mpsc::channel();
+    let (entered_sender, entered) = mpsc::channel();
     let (ran_sender, ran) = mpsc::channel();
     let runner = Arc::new(LateRunner {
         real: RealRunner(OneShot::with_grace(Duration::from_millis(200))),
+        entered: entered_sender,
         swept,
         released: Mutex::new(released),
         ran: ran_sender,
     });
-    let daemon = boot(
-        &fixture.settings(),
-        seams(
-            SharedHost::new(),
-            Arc::clone(&runner),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot");
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let runtime_seams = seams(
+        host.clone(),
+        Arc::clone(&runner),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&runtime_seams.children));
+    let daemon = boot(&fixture.settings(), runtime_seams).expect("boot");
     let mut running = common::start(daemon);
 
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -321,7 +324,10 @@ fn a_predicate_that_reaches_the_runner_after_the_sweep_starts_no_child() {
         },
     );
     let first_turn = fixture.await_turn();
-    common::end_turn(&running.handle, first_turn);
+    common::end_turn_with_native(&fixture, &running.handle, &host, first_turn);
+    entered
+        .recv_timeout(BOUND)
+        .expect("the dispatched predicate reached its pre-sweep gate");
     running.stop(ExitCause::ShutdownRpc);
 
     let deadline = Instant::now() + BOUND;
@@ -362,12 +368,10 @@ fn a_predicate_that_reaches_the_runner_after_the_sweep_starts_no_child() {
     assert_eq!(
         checks_after_a_restart(&fixture, goal, first_turn),
         1,
-        "the swept goal stayed un-judged, so its check ran after the restart's new turn ended"
+        "the swept goal is checked once after restart against its original turn end"
     );
 }
 
-/// Boot again over `fixture`, end the turn the restart issues for `goal`, and count the checks
-/// that ran.
 fn checks_after_a_restart(fixture: &Fixture, goal: GoalId, first_turn: TurnId) -> usize {
     // `FakeRng` counts from zero again in a new daemon, so it would reissue the first run's ids.
     let mut rng = FakeRng::new();
@@ -375,32 +379,42 @@ fn checks_after_a_restart(fixture: &Fixture, goal: GoalId, first_turn: TurnId) -
         let _ = rng.ulid();
     }
     let scripted = Arc::new(ScriptedRunner::scripted([common::passes()]));
-    let daemon = boot(
-        &fixture.settings(),
-        Seams {
-            rng,
-            ..seams(
-                SharedHost::new(),
-                Arc::clone(&scripted),
-                Arc::new(TestClock::ticking(1_787_394_700_000, 1)),
-                Witness::default(),
-            )
-        },
-    )
-    .expect("the same state directory boots again");
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let runtime_seams = Seams {
+        rng,
+        ..seams(
+            host.clone(),
+            Arc::clone(&scripted),
+            Arc::new(TestClock::ticking(1_787_394_700_000, 1)),
+            Witness::default(),
+        )
+    };
+    host.bind_child_ends(Arc::clone(&runtime_seams.children));
+    let daemon =
+        boot(&fixture.settings(), runtime_seams).expect("the same state directory boots again");
     let mut running = common::start(daemon);
-    let next_turn = fixture.await_record("the restart's TurnIssued", |record| match record {
-        Record::TurnIssued {
-            turn, goal: issued, ..
-        } if *turn != first_turn && *issued == goal => Some(*turn),
-        _ => None,
-    });
-    common::end_turn(&running.handle, next_turn);
     fixture.await_record("the restart's PredicateResult", |record| {
-        matches!(record, Record::PredicateResult { goal: judged, .. } if *judged == goal)
-            .then_some(())
+        matches!(record, Record::PredicateResult {
+            goal: judged, turn: Some(checked), provenance: dudes_types::Provenance::Observed, ..
+        } if *judged == goal && *checked == first_turn)
+        .then_some(())
     });
     running.stop(ExitCause::Ended);
+    let issued: Vec<_> = fixture
+        .records()
+        .iter()
+        .filter_map(|record| match record {
+            Record::TurnIssued {
+                goal: issued, turn, ..
+            } if *issued == goal => Some(*turn),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        issued,
+        [first_turn],
+        "restart checks the existing end without issuing more work"
+    );
     scripted.runs()
 }
 

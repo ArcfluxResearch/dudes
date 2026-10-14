@@ -7,11 +7,13 @@
 import type { CardRow, TicketReason } from '../board.ts';
 
 export type RefusalCode = 'stale_card' | 'not_a_ticket' | 'ticket_card' | 'wrong_state' | 'project_unavailable'
-  | 'done_when_changed' | 'agent_unavailable' | 'agent_no_project' | 'queue_full' | 'limit_reached' | 'busy';
+  | 'done_when_changed' | 'agent_unavailable' | 'agent_no_project' | 'queue_full' | 'limit_reached' | 'busy'
+  | 'instruction_comparison_pending' | 'instruction_review_required';
 
 export const REFUSAL_CODES: readonly RefusalCode[] = Object.freeze([
   'stale_card', 'not_a_ticket', 'ticket_card', 'wrong_state', 'project_unavailable', 'done_when_changed',
   'agent_unavailable', 'agent_no_project', 'queue_full', 'limit_reached', 'busy',
+  'instruction_comparison_pending', 'instruction_review_required',
 ]);
 
 const REFUSALS: Readonly<Record<Exclude<RefusalCode, 'wrong_state'>, string>> = Object.freeze({
@@ -25,6 +27,8 @@ const REFUSALS: Readonly<Record<Exclude<RefusalCode, 'wrong_state'>, string>> = 
   queue_full: "That agent already has 8 tickets waiting.",
   limit_reached: "Too many tickets for now. Remove some, or wait.",
   busy: "Another ticket request is still running. Try again in a moment.",
+  instruction_comparison_pending: "Instruction comparison is still pending. Read the ticket again when it finishes.",
+  instruction_review_required: "Read the current instruction review before acknowledging it.",
 });
 
 /** Text with the characters that reorder what is shown taken out, for anything a person or an agent wrote. */
@@ -61,6 +65,8 @@ const REASONS: Readonly<Record<TicketReason, string>> = Object.freeze({
   held_launch: "The agent's engine would not start. Fix the cause, then resume the agent in the Floor or with `dudes resume`.",
   held_failing: "The agent's turns kept failing at once. Fix the cause, then resume the agent in the Floor or with `dudes resume`.",
   held_unsure: "Dudes could not confirm how the agent's last turn ended. Resume the agent, or Stop.",
+  shared_instructions_changed: "Shared project instructions changed during this work. Review the change, then Accept or Ask for changes.",
+  shared_instructions_unknown: "Dudes could not determine whether shared project instructions changed during this work. Review the work, then Accept or Ask for changes.",
   worktree_missing: "The agent's worktree is missing. Restore it and resume the agent, or Stop and give the ticket to another agent.",
 });
 

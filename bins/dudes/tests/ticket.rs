@@ -14,14 +14,19 @@ use dudes_proto::rpc::board::CardCreateResult;
 use dudes_proto::rpc::ticket::{
     TicketAssignOutcome, TicketAssignResult, TicketCreateResult, TicketReadResult,
 };
-use dudes_proto::{AgentBudget, ExitStatus, GoalBudget, Predicate, Record, TurnOutcome};
+use dudes_proto::{
+    AgentBudget, ExitStatus, GoalBudget, InstructionEndBoundary, InstructionGapKind,
+    InstructionObservationOwner, Predicate, Record, TicketReason, TurnOutcome,
+};
 use dudes_supervisor::Input;
+use dudes_supervisor::host::AdoptionKey;
 use dudes_types::{AgentId, CardStatus, IsolationMode, TurnId, Usd};
 
 struct World {
     fixture: Fixture,
     running: Running,
     runner: Arc<OpenRunner>,
+    host: SharedHost,
     cli: Cli,
     repo: PathBuf,
 }
@@ -66,12 +71,15 @@ fn world() -> World {
         profiles: vec![profile("service", &repo)],
     };
     let runner = Arc::new(OpenRunner::default());
-    let running = start(&settings, SharedHost::new(), Arc::clone(&runner));
+    let host =
+        SharedHost::with_native_evidence(fixture.state.path().join(duded::boot::JOURNAL_DIR));
+    let running = start(&settings, host.clone(), Arc::clone(&runner));
     let cli = Cli::new(&settings.socket(), &settings.runtime_dir);
     World {
         fixture,
         running,
         runner,
+        host,
         cli,
         repo,
     }
@@ -167,20 +175,110 @@ impl World {
 
     /// The agent's engine finishes `turn` saying `message`, and the daemon's check now passes.
     fn finish(&self, turn: TurnId, message: &str) {
+        let agent = self
+            .fixture
+            .await_record("owner of the issued turn", |record| match record {
+                Record::TurnIssued {
+                    agent,
+                    turn: issued,
+                    ..
+                } if *issued == turn => Some(*agent),
+                _ => None,
+            });
+        let key =
+            self.fixture
+                .await_record("exact managed spawn before reap", |record| match record {
+                    Record::TurnSpawned {
+                        agent: owner,
+                        turn: spawned,
+                        pid,
+                        start_time,
+                        boot,
+                        ..
+                    } if *owner == agent && *spawned == turn => Some(AdoptionKey {
+                        pid: *pid,
+                        start_time: *start_time,
+                        boot: boot.clone(),
+                    }),
+                    _ => None,
+                });
         self.runner.pass();
-        self.running.handle.input(Input::ChildExited {
-            final_reply: None,
-            elapsed_ms: Some(5),
-            turn,
-            exit: ExitStatus {
-                code: Some(0),
-                signal: None,
+        self.host.mark_native_reaped(&key);
+        self.host.finish_owned_child(
+            &key,
+            Input::ChildExited {
+                final_reply: None,
+                elapsed_ms: Some(5),
+                turn,
+                exit: ExitStatus {
+                    code: Some(0),
+                    signal: None,
+                },
+                usage: None,
+                model_usage: std::collections::BTreeMap::new(),
+                outcome: TurnOutcome::Completed,
+                last_message: Some(message.to_owned()),
             },
-            usage: None,
-            model_usage: std::collections::BTreeMap::new(),
-            outcome: TurnOutcome::Completed,
-            last_message: Some(message.to_owned()),
-        });
+        );
+        self.fixture
+            .await_record("exact managed end after reap", |record| {
+                matches!(record, Record::TurnEnded { agent: owner, turn: ended, .. }
+                if *owner == agent && *ended == turn)
+                .then_some(())
+            });
+        self.host.await_native_acknowledged(&key);
+    }
+
+    fn settled_review(&self, card: &str, turn: TurnId) -> TicketReadResult {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let shown = self.dudes(["--json", "ticket", "show", card]);
+            assert_eq!(shown.code(), 0, "{}", shown.output());
+            let read = shown.json::<TicketReadResult>();
+            if let Some(review) = &read.ticket.instruction_review
+                && !review.pending_comparison
+                && (read.card.claimed_by.is_none()
+                    || read.ticket.check.is_some_and(|check| check.pass))
+            {
+                assert_eq!(read.card.status, CardStatus::Blocked);
+                assert_eq!(
+                    read.ticket.reason,
+                    Some(TicketReason::SharedInstructionsUnknown)
+                );
+                assert_eq!(review.intervals.len(), 1);
+                let interval = &review.intervals[0];
+                assert!(matches!(interval.owner,
+                    InstructionObservationOwner::Managed { turn: owned, .. } if owned == turn));
+                assert!(matches!(interval.end,
+                    Some(InstructionEndBoundary::ManagedTurn { turn: ended, .. }) if ended == turn));
+                assert!(interval.finished_lsn.is_some());
+                for reason in [
+                    InstructionGapKind::ConfigurationUnknown,
+                    InstructionGapKind::PluginUnknown,
+                    InstructionGapKind::PolicyUnknown,
+                ] {
+                    assert!(
+                        review.gaps.iter().any(|gap| gap.reason == reason),
+                        "{read:?}"
+                    );
+                }
+                return read;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "instruction review did not settle: {read:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    fn assert_review_required<const N: usize>(&self, args: [&str; N]) {
+        let refused = self.cli.clone().arg("--json").args(args).run();
+        assert_eq!(refused.code(), dudes::exit::REFUSED, "{}", refused.output());
+        assert_eq!(
+            refused.json_error().data.unwrap()["reason"],
+            "instruction_review_required"
+        );
     }
 
     /// Show `card` until it is in `state`, and answer the text.
@@ -537,7 +635,9 @@ fn the_loop_gives_by_name_reviews_accepts_asks_for_changes_stops_and_removes() {
 
     let (turn, _) = world.turn(1);
     world.finish(turn, "I fixed the blank password case.");
-    let shown = world.show_until(&first, "Ready for you");
+    let read = world.settled_review(&first, turn);
+    let sequence = read.card.seq.0.to_string();
+    let shown = world.show_until(&first, "Needs you");
     for line in [
         "The agent says:",
         "  I fixed the blank password case.",
@@ -547,7 +647,8 @@ fn the_loop_gives_by_name_reviews_accepts_asks_for_changes_stops_and_removes() {
         assert!(shown.contains(line), "{line}: {shown}");
     }
 
-    let accepted = world.dudes(["ticket", "accept", &first]);
+    world.assert_review_required(["ticket", "accept", &first]);
+    let accepted = world.dudes(["ticket", "accept", &first, "--expected-seq", &sequence]);
     assert_eq!(accepted.code(), 0, "{}", accepted.output());
     assert_eq!(accepted.stdout, "Ticket accepted.\n");
     let shown = world.dudes(["ticket", "show", &first]);
@@ -558,7 +659,17 @@ fn the_loop_gives_by_name_reviews_accepts_asks_for_changes_stops_and_removes() {
     assert_eq!(given.stdout, "Cody is working on it.\n");
     let (turn, _) = world.turn(2);
     world.finish(turn, "Done.");
-    world.show_until(&second, "Ready for you");
+    let read = world.settled_review(&second, turn);
+    let sequence = read.card.seq.0.to_string();
+    world.show_until(&second, "Needs you");
+
+    world.assert_review_required([
+        "ticket",
+        "changes",
+        &second,
+        "--message",
+        "Also cover the empty form.",
+    ]);
 
     let changes = world.dudes([
         "ticket",
@@ -566,19 +677,31 @@ fn the_loop_gives_by_name_reviews_accepts_asks_for_changes_stops_and_removes() {
         &second,
         "--message",
         "Also cover the empty form.",
+        "--expected-seq",
+        &sequence,
     ]);
     assert_eq!(changes.code(), 0, "{}", changes.output());
     assert_eq!(changes.stdout, "Cody is working on it.\n");
-    let (_, task) = world.turn(3);
+    let (turn, task) = world.turn(3);
     assert!(task.contains("Also cover the empty form."), "{task}");
     let shown = world.dudes(["ticket", "show", &second]);
     assert!(shown.stdout.contains("Round: 2"), "{}", shown.stdout);
 
     let stopped = world.dudes(["ticket", "stop", &second]);
     assert_eq!(stopped.code(), 0, "{}", stopped.output());
-    assert_eq!(stopped.stdout, "Ticket stopped. It is back in To do.\n");
+    assert_eq!(stopped.stdout, "Ticket stopped.\n");
     let shown = world.dudes(["ticket", "show", &second]);
     assert!(shown.stdout.contains("State: To do"), "{}", shown.stdout);
+
+    world.finish(turn, "Stopped after the empty-form change.");
+    let read = world.settled_review(&second, turn);
+    let sequence = read.card.seq.0.to_string();
+    let acknowledged = world.dudes(["ticket", "accept", &second, "--expected-seq", &sequence]);
+    assert_eq!(acknowledged.code(), 0, "{}", acknowledged.output());
+    assert_eq!(
+        acknowledged.stdout,
+        "Instruction review acknowledged. The ticket remains open.\n"
+    );
 
     let removed = world.dudes(["ticket", "remove", &second]);
     assert_eq!(removed.code(), 0, "{}", removed.output());

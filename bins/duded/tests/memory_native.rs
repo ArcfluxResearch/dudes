@@ -23,7 +23,8 @@ use dudes_providers::adapter::{
 use dudes_providers::launch::{EnvVar, LaunchSpec};
 use dudes_providers::stream::TurnReader;
 use dudes_supervisor::host::{
-    AdoptionKey, HostBoot, KillOutcome, Liveness, ProcessHost, SpawnResult,
+    AdoptionKey, HostBoot, KillOutcome, Liveness, NativeBoundaryAcknowledgement,
+    NativeBoundaryReceipt, OwnedTargets, ProcessHost, SpawnResult,
 };
 use dudes_supervisor::testing::FakeRng;
 use dudes_types::{AgentId, Lsn, ModelSelection, Provider, Tier};
@@ -108,6 +109,16 @@ impl ProcessHost for RetainedHost {
     }
     fn alive(&self, key: &AdoptionKey) -> Liveness {
         self.0.alive(key)
+    }
+    fn owned_targets(&self, limit: usize) -> OwnedTargets {
+        self.0.owned_targets(limit)
+    }
+    fn acknowledge_native_boundary_absence(
+        &mut self,
+        key: &AdoptionKey,
+        receipt: &NativeBoundaryReceipt,
+    ) -> NativeBoundaryAcknowledgement {
+        self.0.acknowledge_native_boundary_absence(key, receipt)
     }
     fn boot_identity(&self) -> HostBoot {
         self.0.boot_identity()

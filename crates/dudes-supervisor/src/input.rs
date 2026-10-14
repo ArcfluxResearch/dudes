@@ -39,6 +39,10 @@ pub struct PersistToken(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MailWakeRequest(pub u64);
 
+/// Volatile correlation for one bounded instruction sample, never durable authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InstructionRequest(pub u64);
+
 /// A refresh could not provide current admission facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MailWakeRefreshFailure {
@@ -179,6 +183,13 @@ pub enum Input {
         /// The acknowledged mailbox entry.
         entry: Entry,
     },
+    /// A runtime-owned instruction or PTY boundary append is durable and projected in LSN order.
+    InstructionJournaled {
+        /// Exact caller frame position, without a supervisor persist token.
+        lsn: Lsn,
+        /// The acknowledged instruction or existing PTY close boundary entry.
+        entry: Entry,
+    },
     /// Current facts for exactly one still-owned mail refresh.
     MailWakeReady {
         /// Recipient.
@@ -198,6 +209,36 @@ pub enum Input {
     /// run, after the last [`Input::Replayed`] and **before the first append** — `Reader::locate`
     /// catches a re-created current segment only while no append has happened since.
     Started,
+    /// Reconsider only the same current work after its durable instruction review acknowledgment.
+    InstructionReviewAcknowledged {
+        /// Current goal owner.
+        agent: AgentId,
+        /// The same ticket goal; a changed or cleared goal is not resumed.
+        goal: GoalId,
+    },
+    /// Current canonical card eligibility for an exact pending recovery lookup.
+    InstructionRecoveryTicketResolved {
+        /// Original volatile lookup identity.
+        request: InstructionRequest,
+        /// Original historical association if still eligible, otherwise none.
+        ticket: Option<dudes_proto::InstructionTicketAssociation>,
+    },
+    /// The actual host retained this physical attempt after an unconfirmed launch cleanup.
+    InstructionLaunchCleanupUnconfirmed {
+        /// Immutable issued turn whose current starting boundary owned the host call.
+        turn: TurnId,
+    },
+    /// Bounded filesystem evidence for the exact requested observation boundary.
+    InstructionSampled {
+        /// Exact volatile request.
+        request: InstructionRequest,
+        /// Actual sampled endpoint, including named uncertainty.
+        snapshot: Box<dudes_proto::InstructionSnapshot>,
+        /// Current ticket interval captured by the writer at the starting request.
+        ticket: Option<dudes_proto::InstructionTicketAssociation>,
+        /// Ending comparison against the supplied durable baseline; absent for starting samples.
+        comparison: Option<Box<dudes_proto::InstructionComparison>>,
+    },
     /// One entry from the journal, in `lsn` order. Feeds the *same* fold as [`Input::Persisted`],
     /// which is what makes a replayed decision equal to the live one (invariant 1).
     Replayed {
@@ -254,6 +295,15 @@ pub enum Input {
         /// The host error that prevented launch, rendered by the runtime.
         reason: String,
     },
+    /// Fallible preparation failed before any process-host call for this exact attempt.
+    LaunchPreparationFailed {
+        /// Immutable issued work.
+        turn: TurnId,
+        /// Captured physical starting observation.
+        started_lsn: Lsn,
+        /// Bounded runtime failure copy.
+        reason: String,
+    },
     /// Admission refused before the host was called; an issued task remains owed.
     LaunchAdmissionRefused {
         /// Owning agent.
@@ -264,6 +314,13 @@ pub enum Input {
         refusal: crate::SharedFolderRefusal,
         /// The not-appended browser dispatch intent being refused, when applicable.
         dispatch_token: Option<PersistToken>,
+    },
+    /// The exact Attached port call failed after its starting observation was durable.
+    InstructionAttachedOpenFailed {
+        /// Captured physical starting observation, unaffected by a successor attachment.
+        started_lsn: Lsn,
+        /// The host retained cleanup whose absence was not confirmed.
+        cleanup_unconfirmed: bool,
     },
     /// Earlier durable acknowledgments have folded; retry the same unappended browser intent.
     BrowserDispatchAdmissionReady {
@@ -417,6 +474,11 @@ pub enum Input {
         generation: u64,
         /// A resolved absolute launch or a confirmed preparation refusal.
         prepared: Result<Box<LaunchSpec>, String>,
+    },
+    /// A predicate run ended without an observed verdict.
+    PredicateEndedWithoutVerdict {
+        /// The goal whose run ended.
+        goal: GoalId,
     },
 }
 

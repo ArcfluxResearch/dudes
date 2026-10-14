@@ -3,17 +3,20 @@
 
 use super::{Answered, Clock, Daemon, PredicateRunner, ProcessHost, Rng, TicketAsk, error};
 use dudes_proto::rpc::ticket::{
-    TicketAcceptParams, TicketAssignOutcome, TicketAssignParams, TicketAssignResult,
-    TicketCheckoutLease, TicketCheckoutParams, TicketCheckoutResult, TicketCreateParams,
-    TicketCreateResult, TicketEditParams, TicketReadParams, TicketReadResult, TicketRemoveParams,
-    TicketStopParams,
+    TicketAcceptOutcome, TicketAcceptParams, TicketAcceptResult, TicketAssignOutcome,
+    TicketAssignParams, TicketAssignResult, TicketCheckoutLease, TicketCheckoutParams,
+    TicketCheckoutResult, TicketCreateParams, TicketCreateResult, TicketEditParams,
+    TicketReadParams, TicketReadResult, TicketRemoveParams, TicketStopParams,
 };
 use dudes_proto::rpc::{ErrorCode, RpcError};
 use dudes_proto::ticket::{
     MAX_MESSAGE_BYTES, MAX_NOTE_BYTES, MAX_OPEN_TICKETS, MAX_QUEUE, MAX_TITLE_BYTES, clean_text,
     clean_title, trim,
 };
-use dudes_proto::{Actor, CardView, Record, TicketCheck, TicketRefusal, TicketRow, TicketWait};
+use dudes_proto::{
+    Actor, CardView, InstructionAcceptCompletion, InstructionReviewAction,
+    InstructionReviewWatermark, Record, TicketCheck, TicketRefusal, TicketRow, TicketWait,
+};
 use dudes_types::{AgentId, CardId, CardStatus, Seq};
 
 use crate::floor_actions::Profile;
@@ -272,14 +275,31 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if waiting.iter().filter(|(card, _)| *card != view.id).count() >= MAX_QUEUE {
             return Err(refusal(TicketRefusal::QueueFull, view.status));
         }
-        self.settle_goal(&view, &ticket)?;
-        self.board_append(Record::TicketAssigned {
-            card: view.id,
-            agent: request.agent,
-            by,
-            message,
-            expected_seq: request.expected_seq,
-        })?;
+        if let Some(watermark) = self.review_action(&view, &ticket, request.review_watermark)? {
+            let clear_goal = self
+                .with_ticket_facts(|facts| facts.goal_to_settle(&view, &ticket))?
+                .map(|(agent, goal)| dudes_proto::InstructionGoalClear { agent, goal });
+            self.board_append(Record::TicketInstructionReviewed {
+                card: view.id,
+                by,
+                expected_seq: request.expected_seq,
+                watermark,
+                action: InstructionReviewAction::ChangesRequested {
+                    agent: request.agent,
+                    message,
+                    clear_goal,
+                },
+            })?;
+        } else {
+            self.settle_goal(&view, &ticket)?;
+            self.board_append(Record::TicketAssigned {
+                card: view.id,
+                agent: request.agent,
+                by,
+                message,
+                expected_seq: request.expected_seq,
+            })?;
+        }
         if let Err(failure) = self.ticket_reactions() {
             tracing::error!(
                 failure = %failure.message,
@@ -319,17 +339,87 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         Ok(Answered::TicketAssigned(TicketAssignResult { outcome }))
     }
 
-    /// The operator's verdict that a ticket that is Ready for you is done. It frees the project,
-    /// and the reactions that follow start the next queued ticket.
+    fn review_action(
+        &self,
+        view: &CardView,
+        ticket: &TicketRow,
+        seen: Option<InstructionReviewWatermark>,
+    ) -> Result<Option<InstructionReviewWatermark>, RpcError> {
+        let pending = self.sup.world().instructions.observation_pending(view.id);
+        let Some(review) = &ticket.instruction_review else {
+            if pending {
+                return Err(refusal(
+                    TicketRefusal::InstructionComparisonPending,
+                    view.status,
+                ));
+            }
+            if seen.is_some() {
+                return Err(stale(view));
+            }
+            return Ok(None);
+        };
+        if pending || review.pending_comparison {
+            return Err(refusal(
+                TicketRefusal::InstructionComparisonPending,
+                view.status,
+            ));
+        }
+        let Some(seen) = seen else {
+            return Err(refusal(
+                TicketRefusal::InstructionReviewRequired,
+                view.status,
+            ));
+        };
+        if seen != review.watermark {
+            return Err(stale(view));
+        }
+        Ok(Some(seen))
+    }
+
     fn ticket_accept(
         &mut self,
         request: &TicketAcceptParams,
         by: Actor,
     ) -> Result<Answered, RpcError> {
         operator(by)?;
-        let (view, _) = self.ticket_row(request.card)?;
+        let (view, ticket) = self.ticket_row(request.card)?;
         if view.seq != request.expected_seq {
             return Err(stale(&view));
+        }
+        if let Some(watermark) = self.review_action(&view, &ticket, request.review_watermark)? {
+            let goal = ticket
+                .goal
+                .map(|goal| self.ctx.projections.goal(goal))
+                .transpose()
+                .map_err(|failure| unreadable(&failure))?
+                .flatten();
+            let done = goal.as_ref().and_then(|goal| goal.first_done);
+            let completion = done.map_or(InstructionAcceptCompletion::Continue, |done| {
+                InstructionAcceptCompletion::Completed {
+                    completion_lsn: done.lsn,
+                }
+            });
+            self.board_append(Record::TicketInstructionReviewed {
+                card: view.id,
+                by,
+                expected_seq: request.expected_seq,
+                watermark,
+                action: InstructionReviewAction::Accept { completion },
+            })?;
+            if done.is_none()
+                && let Some(goal) = goal
+                && !self.ctx.predicate_runs.contains_key(&goal.id)
+            {
+                self.pump_or_refuse(dudes_supervisor::Input::InstructionReviewAcknowledged {
+                    agent: goal.agent,
+                    goal: goal.id,
+                })?;
+            }
+            return Ok(Answered::TicketAccepted(TicketAcceptResult {
+                outcome: done
+                    .is_none()
+                    .then_some(TicketAcceptOutcome::InstructionsAcknowledged),
+            }));
         }
         if view.status != CardStatus::Review {
             return Err(refusal(TicketRefusal::WrongState, view.status));
@@ -342,7 +432,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             expected_seq: request.expected_seq,
             reason: None,
         })?;
-        Ok(Answered::Done)
+        Ok(Answered::TicketAccepted(TicketAcceptResult::default()))
     }
 
     /// The agent must be live and hired into the ticket's project.
@@ -405,6 +495,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let (view, ticket) = self.ticket_row(request.card)?;
         if view.seq != request.expected_seq {
             return Err(stale(&view));
+        }
+        if self.sup.world().instructions.observation_pending(view.id) {
+            return Err(refusal(
+                TicketRefusal::InstructionComparisonPending,
+                view.status,
+            ));
+        }
+        if ticket.instruction_review.is_some() {
+            return Err(refusal(
+                TicketRefusal::InstructionReviewRequired,
+                view.status,
+            ));
         }
         if view.status == CardStatus::Doing {
             return Err(refusal(TicketRefusal::WrongState, view.status));

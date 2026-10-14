@@ -15,7 +15,10 @@ use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::journal::JournalAppendedParams;
 use dudes_proto::rpc::memory::MemoryAppendResult;
 use dudes_proto::rpc::{ErrorCode, Method, NotificationKind, RefusalGate, RefusedData};
-use dudes_proto::{ExitStatus, LoopDecision, PayloadDigest, PeerProvenance, Record, TurnOutcome};
+use dudes_proto::{
+    ExitStatus, InstructionObservationOwner, LoopDecision, PayloadDigest, PeerProvenance, Record,
+    TurnOutcome,
+};
 use dudes_rpc::conditioned::MAX_MEMORY_APPEND_TEXT_BYTES;
 use dudes_rpc::{Client, Inbound};
 use dudes_supervisor::Input;
@@ -67,6 +70,49 @@ fn append(client: &mut SocketClient, token: &str, text: &str) -> dudes_proto::rp
             Some(json!({ "token": token, "text": text })),
         )
         .expect("memory.append response")
+}
+
+fn token_after_mint_pump(
+    fixture: &Fixture,
+    handle: &duded::Handle,
+    agent: AgentId,
+) -> dudes_proto::rpc::hook::HookToken {
+    let hash = fixture.await_record("the exact agent's mint", |record| match record {
+        Record::HookTokenMinted {
+            agent: owner,
+            token_hash,
+        } if *owner == agent => Some(token_hash.clone()),
+        _ => None,
+    });
+    let minted = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| match entry.record {
+            Record::HookTokenMinted {
+                agent: owner,
+                token_hash,
+            } if owner == agent && token_hash == hash => Some(lsn),
+            _ => None,
+        })
+        .expect("the exact durable mint position");
+    let token = common::token_of(&hash);
+    let completed = handle.doctor().expect("read after the setup mint's pump");
+    assert!(completed.lsn >= minted);
+    token
+}
+
+fn end_turn(fixture: &Fixture, host: &SharedHost, input: Input) {
+    let Input::ChildExited { turn, .. } = &input else {
+        panic!("expected the original child completion payload")
+    };
+    let turn = *turn;
+    common::end_turn_with_native_payload(fixture, host, input);
+    fixture.await_record("exact managed end comparison", |record| {
+        matches!(record, Record::InstructionObservationFinished {
+            owner: InstructionObservationOwner::Managed { turn: ended, .. }, ..
+        } if *ended == turn)
+        .then_some(())
+    });
 }
 
 fn wait_for_entries(fixture: &Fixture, predicate: impl Fn(&[(Lsn, dudes_proto::Entry)]) -> bool) {
@@ -276,19 +322,26 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
     let fixture = Fixture::new();
     let settings = fixture.settings();
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
-    let host = SharedHost::new();
-    let daemon = boot(
-        &settings,
-        common::seams_with(
-            host.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>,
-        ),
-    )
-    .expect("boot");
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let runtime_seams = common::seams_with(
+        host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>,
+    );
+    host.bind_child_ends(Arc::clone(&runtime_seams.children));
+    let daemon = boot(&settings, runtime_seams).expect("boot");
     let mut running = common::start(daemon);
+
+    let mut operator = client_with_timeout(&settings.socket());
+    let agent = hire(&mut operator, &settings, fixture.state.path());
+    common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &["/usr/bin/false"]),
+    );
+    let first_turn = fixture.await_turn();
+    let token = token_after_mint_pump(&fixture, &running.handle, agent);
 
     let mut tail = client_with_timeout(&settings.socket());
     tail.send_presenting(
@@ -301,19 +354,6 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
         tail.recv().expect("tail acknowledgement"),
         Inbound::Response(response) if response.error.is_none()
     ));
-
-    let mut operator = client_with_timeout(&settings.socket());
-    let agent = hire(&mut operator, &settings, fixture.state.path());
-    common::set_goal(
-        &running.handle,
-        common::goal_params(agent, &["/usr/bin/false"]),
-    );
-    let first_turn = fixture.await_turn();
-    let token_hash = fixture.await_record("HookTokenMinted", |record| match record {
-        Record::HookTokenMinted { token_hash, .. } => Some(token_hash.clone()),
-        _ => None,
-    });
-    let token = common::token_of(&token_hash);
 
     column.set(PeerProvenance::Agent(agent));
     let mut owner = client_with_timeout(&settings.socket());
@@ -372,6 +412,7 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
     );
 
     let tailed = memory_tail(&mut tail, 2);
+    drop(tail);
     let journal_json = serde_json::to_string(&fixture.entries()).expect("journal JSON");
     let tail_json = serde_json::to_string(&tailed).expect("tail JSON");
     let projection = replay_memory(&fixture);
@@ -388,7 +429,7 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
         );
     }
 
-    running.handle.input(Input::ChildExited {
+    let ended = Input::ChildExited {
         final_reply: None,
         elapsed_ms: None,
         turn: first_turn,
@@ -400,7 +441,8 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
         model_usage: BTreeMap::new(),
         outcome: TurnOutcome::Completed,
         last_message: None,
-    });
+    };
+    end_turn(&fixture, &host, ended);
     wait_for_entries(&fixture, |entries| {
         entries
             .iter()
@@ -450,7 +492,7 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
         .handle
         .ask(duded::ports::Ask::Pause(agent))
         .expect("pause");
-    running.handle.input(Input::ChildExited {
+    let ended = Input::ChildExited {
         final_reply: None,
         elapsed_ms: None,
         turn: second_turn,
@@ -462,7 +504,8 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
         model_usage: BTreeMap::new(),
         outcome: TurnOutcome::Completed,
         last_message: None,
-    });
+    };
+    end_turn(&fixture, &host, ended);
     wait_for_entries(&fixture, |entries| {
         entries
             .iter()
@@ -472,17 +515,15 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
     });
     running.stop(ExitCause::Ended);
 
-    let restart_host = SharedHost::new();
-    let restarted = boot(
-        &settings,
-        common::seams(
-            restart_host.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("restart replays memory");
+    let restart_host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let runtime_seams = common::seams(
+        restart_host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    restart_host.bind_child_ends(Arc::clone(&runtime_seams.children));
+    let restarted = boot(&settings, runtime_seams).expect("restart replays memory");
     let mut restarted = common::start(restarted);
     restarted
         .handle
@@ -523,19 +564,25 @@ fn daemon_writes_all_presence_cases_and_quarantines_cap_plus_one() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
-    let first_host = SharedHost::new();
-    let daemon = boot(
-        &settings,
-        common::seams_with(
-            first_host,
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>,
-        ),
-    )
-    .expect("boot");
+    let first_host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let runtime_seams = common::seams_with(
+        first_host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>,
+    );
+    first_host.bind_child_ends(Arc::clone(&runtime_seams.children));
+    let daemon = boot(&settings, runtime_seams).expect("boot");
     let mut running = common::start(daemon);
+    let mut operator = client_with_timeout(&settings.socket());
+    let agent = hire(&mut operator, &settings, fixture.state.path());
+    let goal = common::goal_params(agent, &["/usr/bin/false"]);
+    let goal_text = goal.text.clone();
+    common::set_goal(&running.handle, goal);
+    let token = token_after_mint_pump(&fixture, &running.handle, agent);
+    let first_turn = fixture.await_turn();
+
     let mut tail = client_with_timeout(&settings.socket());
     tail.send_presenting(
         Method::JournalTail,
@@ -547,17 +594,7 @@ fn daemon_writes_all_presence_cases_and_quarantines_cap_plus_one() {
         tail.recv().expect("tail acknowledgement"),
         Inbound::Response(response) if response.error.is_none()
     ));
-    let mut operator = client_with_timeout(&settings.socket());
-    let agent = hire(&mut operator, &settings, fixture.state.path());
-    let goal = common::goal_params(agent, &["/usr/bin/false"]);
-    let goal_text = goal.text.clone();
-    common::set_goal(&running.handle, goal);
-    let token_hash = fixture.await_record("HookTokenMinted", |record| match record {
-        Record::HookTokenMinted { token_hash, .. } => Some(token_hash.clone()),
-        _ => None,
-    });
-    let token = common::token_of(&token_hash);
-    let first_turn = fixture.await_turn();
+
     column.set(PeerProvenance::Agent(agent));
     let mut owner = client_with_timeout(&settings.socket());
 
@@ -626,6 +663,7 @@ fn daemon_writes_all_presence_cases_and_quarantines_cap_plus_one() {
         dudes_supervisor::blake3_hex(over_text.as_bytes())
     );
     let tailed = memory_tail(&mut tail, 3);
+    drop(tail);
     assert!(
         tailed.iter().any(|params| {
             params.lsn == exact_result.lsn
@@ -653,7 +691,7 @@ fn daemon_writes_all_presence_cases_and_quarantines_cap_plus_one() {
         .handle
         .ask(duded::ports::Ask::Pause(agent))
         .expect("pause before restart");
-    running.handle.input(Input::ChildExited {
+    let ended = Input::ChildExited {
         final_reply: None,
         elapsed_ms: None,
         turn: first_turn,
@@ -665,7 +703,8 @@ fn daemon_writes_all_presence_cases_and_quarantines_cap_plus_one() {
         model_usage: BTreeMap::new(),
         outcome: TurnOutcome::Completed,
         last_message: None,
-    });
+    };
+    end_turn(&fixture, &first_host, ended);
     wait_for_entries(&fixture, |entries| {
         entries
             .iter()
@@ -673,17 +712,15 @@ fn daemon_writes_all_presence_cases_and_quarantines_cap_plus_one() {
     });
     running.stop(ExitCause::Ended);
 
-    let restart_host = SharedHost::new();
-    let restarted = boot(
-        &settings,
-        common::seams(
-            restart_host.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("restart replays all presence cases");
+    let restart_host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let runtime_seams = common::seams(
+        restart_host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    restart_host.bind_child_ends(Arc::clone(&runtime_seams.children));
+    let restarted = boot(&settings, runtime_seams).expect("restart replays all presence cases");
     let mut restarted = common::start(restarted);
     restarted
         .handle
@@ -730,18 +767,16 @@ fn own_connection(
 ) {
     let settings = fixture.settings();
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
-    let host = SharedHost::new();
-    let daemon = boot(
-        &settings,
-        common::seams_with(
-            host.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>,
-        ),
-    )
-    .expect("boot");
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let runtime_seams = common::seams_with(
+        host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>,
+    );
+    host.bind_child_ends(Arc::clone(&runtime_seams.children));
+    let daemon = boot(&settings, runtime_seams).expect("boot");
     let running = common::start(daemon);
     let mut operator = client_with_timeout(&settings.socket());
     let agent = hire(&mut operator, &settings, fixture.state.path());
@@ -755,13 +790,10 @@ fn own_connection(
         } if *who == agent => Some(*turn),
         _ => None,
     });
-    let token_hash = fixture.await_record("HookTokenMinted", |record| match record {
-        Record::HookTokenMinted { token_hash, .. } => Some(token_hash.clone()),
-        _ => None,
-    });
+    let token = token_after_mint_pump(fixture, &running.handle, agent);
     column.set(PeerProvenance::Agent(agent));
     let owner = client_with_timeout(&settings.socket());
-    let token = common::token_of(&token_hash).expose().to_owned();
+    let token = token.expose().to_owned();
     (running, host, owner, token, agent, turn)
 }
 
@@ -835,7 +867,7 @@ fn a_refused_nul_memory_append_leaves_the_next_turn_issued() {
         ErrorCode::InvalidParams.code()
     );
 
-    running.handle.input(Input::ChildExited {
+    let ended = Input::ChildExited {
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -847,7 +879,8 @@ fn a_refused_nul_memory_append_leaves_the_next_turn_issued() {
         model_usage: BTreeMap::new(),
         outcome: TurnOutcome::Completed,
         last_message: None,
-    });
+    };
+    end_turn(&fixture, &host, ended);
     wait_for_spawns(&host, 2);
     let records = fixture.records();
     assert_eq!(memory_texts(&records, agent), [ADMITTED]);

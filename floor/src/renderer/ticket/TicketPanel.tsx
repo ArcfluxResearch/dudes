@@ -5,6 +5,7 @@ import type { FormEvent } from 'react';
 
 import type { CardRow } from '../board.ts';
 import { browserControlDeps } from '../control/control.ts';
+import { getFloorState } from '../floor/store.ts';
 import type { FloorState } from '../floor/store.ts';
 import { handFocusOnLeave } from '../focus.ts';
 import { recordedTime } from '../format.ts';
@@ -12,14 +13,22 @@ import { getGitState, loadGit, needsRead, refusalText, subscribeToGit } from '..
 import type { GitChangeKind } from '../git/git.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
-import { getDetailState, loadDetail, needsDetail, subscribeToDetail } from './detail.ts';
-import type { TicketDetail } from './detail.ts';
-import { ACTION_LABEL, actionsOf, agentChoiceSentence, cardWords, noProjects, projectOf } from './model.ts';
+import { editableDetail, getDetailState, loadDetail, needsDetail, reviewedWatermark, subscribeToDetail } from './detail.ts';
+import type { TicketDetail, TruncatedTicketField } from './detail.ts';
+import { ACTION_LABEL, actionsOf, agentChoiceSentence, agentRow, cardWords, noProjects, projectOf, requiresInstructionReview } from './model.ts';
 import type { TicketAction } from './model.ts';
 import { agentsFor, ticketActionsOpen, TicketNotice } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
 import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, reasonSentence, stateName } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
+
+import { instructionContextText } from './instructions.ts';
+import type { InstructionReview } from './instructions.ts';
+
+const TRUNCATED_LABEL: Readonly<Record<TruncatedTicketField, string>> = Object.freeze({
+  note: 'note', title: 'title', check_label: 'completion check label', waiting_note: 'waiting note',
+  summary: "the agent's summary", instruction_evidence: 'instruction evidence',
+});
 
 const KIND_LABEL: Readonly<Record<GitChangeKind, string>> = Object.freeze({
   added: 'Added', modified: 'Modified', deleted: 'Deleted', renamed: 'Renamed',
@@ -66,6 +75,58 @@ function ChangedFiles({ floor, card }: { readonly floor: FloorState; readonly ca
   </section>;
 }
 
+function InstructionEvidence({ floor, review }: {
+  readonly floor: FloorState;
+  readonly review: InstructionReview;
+}) {
+  return <section aria-label="Instruction review"><h4>Instruction review</h4>
+    <h5>Known changed paths</h5>
+    {review.changed_paths.length === 0 ? <p>No known changed paths were retained.</p>
+      : <ul className="ticket-files">{review.changed_paths.map((row, at) => <li key={at}>
+        <span className="git-path data">{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>{' '}({instructionContextText(row.context)})
+      </li>)}</ul>}
+    <h5>Coverage gaps</h5>
+    {review.gaps.length === 0 ? <p>No coverage gaps were recorded.</p>
+      : <ul>{review.gaps.map((row, at) => {
+        const participant = agentRow(floor, row.agent);
+        return <li key={at}>
+          {row.reason === 'ending_boundary_missing'
+            ? 'The provider process ending boundary was not observed after restart' : row.reason.replaceAll('_', ' ')}. {instructionContextText(row.context)}.
+          {row.agent === null ? null : <> {typeof participant?.name === 'string' && participant.name !== ''
+            ? `Participant ${participant.name}` : 'Recorded participant'}.</>}
+          {row.display === null ? null : <> <span className="git-path data">{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>.</>}
+        </li>;
+      })}</ul>}
+    <p>These observations compare sampled endpoints. They do not identify an exclusive writer or prove that instructions were unchanged between samples.</p>
+    {review.pending_comparison ? <p role="status">The instruction comparison is still pending. Review actions are unavailable.</p> : null}
+    <details><summary>Observation details</summary>
+      <p>Review through record {review.watermark.through_lsn}.</p>
+      <p>Review digest <code>{review.watermark.set_digest}</code>.</p>
+      {review.gaps.some((row) => row.agent !== null) ? <>
+        <h5>Gap participants</h5>
+        <ul>{review.gaps.map((row, at) => row.agent === null ? null : <li key={at}>
+          Coverage gap {at + 1}. Participant <code>{row.agent}</code>.
+        </li>)}</ul>
+      </> : null}
+      <h5>Observed intervals</h5>
+      <ul>{review.intervals.map((row, at) => <li key={at}>
+        {row.kind.replaceAll('_', ' ')} for agent <code>{row.agent}</code>
+        {row.turn === null ? null : <> and turn <code>{row.turn}</code></>}.
+        {' '}Goal <code>{row.goal}</code>. Assignment record {row.assignment_lsn}, recorded ticket sequence {row.seq_at_start}.
+        {row.attachment_lsn === null ? null : <> Attachment record {row.attachment_lsn}.</>}
+        {row.issue_lsn === null ? null : <> Actual issue record {row.issue_lsn}.</>}
+        {row.missing_start ? (row.kind === 'managed'
+          ? ' The pre-launch instruction baseline is missing. Provider launch is uncertain.'
+          : ' The starting boundary is missing.') : <> Baseline record {row.baseline_lsn}.</>}
+        {row.end_lsn === null ? ' No recorded end boundary.' : <> End record {row.end_lsn}.</>}
+        {row.finished_lsn === null ? ' Comparison is outstanding.' : <> Settlement record {row.finished_lsn}.</>}
+        {row.sampled_at === null ? ' No ending sample.' : <> Sampled at {recordedTime(row.sampled_at)}.</>}
+        {row.recovery ? (row.sampled_at === null ? ' Settled during recovery.' : ' Sampled during recovery.') : null}
+      </li>)}</ul>
+    </details>
+  </section>;
+}
+
 function Facts({ floor, card }: { readonly floor: FloorState; readonly card: CardRow }) {
   const detail = useSyncExternalStore(subscribeToDetail, getDetailState, getDetailState);
   const mine = detail.card === card.id ? detail : null;
@@ -86,12 +147,17 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
     {mine === null || (mine.phase === 'loading' && loaded === null) ? <p role="status">Reading the ticket…</p> : null}
     {mine?.problem == null ? null : <p className="ticket-hint" role="status">{mine.problem}</p>}
     {loaded === null ? null : <>
+      {loaded.truncated.length === 0 ? null : <p className="ticket-hint" role="note">
+        Some details are shortened in this view: {loaded.truncated.map((field) => TRUNCATED_LABEL[field]).join(', ')}.
+      </p>}
       <section aria-label="Note"><h4>Note</h4>
-        {loaded.note === '' ? <p>No note.</p> : <p className="ticket-text">{loaded.note}</p>}
+        {loaded.note === '' ? <p>{loaded.truncated.includes('note')
+          ? 'The note was omitted from this view.' : 'No note.'}</p> : <p className="ticket-text">{loaded.note}</p>}
       </section>
       {card.status === 'todo' || card.status === 'claimed' ? null : <section aria-label="The agent's summary">
         <h4>{AGENT_SAYS}</h4>
-        {loaded.summary === null || loaded.summary === '' ? <p>{NO_SUMMARY}.</p>
+        {loaded.summary === null || loaded.summary === '' ? <p>{loaded.truncated.includes('summary')
+          ? "The agent's summary was omitted from this view." : `${NO_SUMMARY}.`}</p>
           : <p className="ticket-summary ticket-text">{loaded.summary}</p>}
       </section>}
     </>}
@@ -114,6 +180,8 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
   const [agent, setAgent] = useState(() => usable.find((row) => row.id === card.claimed_by)?.id ?? usable[0]?.id ?? '');
   const [message, setMessage] = useState('');
   const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
+  const evidence = useSyncExternalStore(subscribeToDetail, getDetailState, getDetailState);
+  const reviewReady = !requiresInstructionReview(card) || reviewedWatermark(evidence, card) !== null;
   const chosen = usable.find((row) => row.id === agent)?.id ?? usable[0]?.id ?? null;
   if (noProjects(floor)) return <NoTicketProjectHint />;
   if (project === null) return <p className="ticket-hint" role="status">{pending ?? 'Reading the ticket…'}</p>;
@@ -128,7 +196,7 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
     const allowed = actionsOf(card);
-    if (chosen === null || sending || !ticketActionsOpen(floor)
+    if (chosen === null || sending || !reviewReady || !ticketActionsOpen(floor)
       || (mode === 'changes' ? !allowed.includes('changes') : !allowed.includes('give') && !allowed.includes('try_again'))) return;
     if (await changeTicket(card, { verb: 'assign', agent: chosen, message: mode === 'changes' ? message : '' })) onDone();
   }
@@ -147,7 +215,7 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
       <textarea id={`${ids}-message`} rows={3} maxLength={2048} value={message}
         onChange={(event) => setMessage(event.target.value)} />
     </div> : null}
-    <button type="submit" disabled={sending || chosen === null || !ticketActionsOpen(floor)}>
+    <button type="submit" disabled={sending || chosen === null || !reviewReady || !ticketActionsOpen(floor)}>
       {mode === 'changes' ? 'Send back' : 'Give to agent'}</button>
     <button type="button" onClick={onDone}>Cancel</button>
   </form>;
@@ -169,7 +237,8 @@ function EditForm({ floor, card, detail, onDone }: {
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
-    if (sending || title.trim() === '' || !ticketActionsOpen(floor) || !actionsOf(card).includes('edit')) return;
+    if (sending || title.trim() === '' || !ticketActionsOpen(floor) || !actionsOf(card).includes('edit')
+      || editableDetail(getDetailState(), card) === null) return;
     const saved = await changeTicket(card, {
       verb: 'edit', title, note: text, check: check === null ? null : { id: check.id, revision: check.revision },
     });
@@ -191,7 +260,8 @@ function EditForm({ floor, card, detail, onDone }: {
         {checks.map((entry) => <option key={entry.id} value={entry.id}>{choiceLabel(entry)}</option>)}
       </select>
     </div> : null}
-    <button type="submit" disabled={sending || title.trim() === '' || !ticketActionsOpen(floor)}>Save</button>
+    <button type="submit" disabled={sending || title.trim() === '' || !ticketActionsOpen(floor)
+      || editableDetail(getDetailState(), card) === null}>Save</button>
     <button type="button" onClick={onDone}>Cancel</button>
   </form>;
 }
@@ -209,26 +279,35 @@ export function TicketPanel({ floor, card, onHire }: {
     if (floor.ticket && needsDetail(getDetailState(), card)) void loadDetail(card);
   }, [floor.ticket, card.id, card.seq]);
   // The ticket moved, so the form that was open for its old state no longer fits it.
-  useEffect(() => { setMode('none'); }, [card.id, card.status]);
+  useEffect(() => { setMode('none'); }, [card.id, card.status, card.seq]);
   const actions = open ? actionsOf(card) : [];
   const loaded = detail.card === card.id ? detail.detail : null;
+  const editable = editableDetail(detail, card);
   const ordinary = actions.filter((action) => action !== 'remove' && action !== 'stop');
   const destructive = actions.filter((action) => action === 'remove' || action === 'stop');
   const modeAllowed = mode === 'none' || (mode === 'give'
     ? actions.includes('give') || actions.includes('try_again') : actions.includes(mode));
 
+  const reviewReady = !requiresInstructionReview(card) || reviewedWatermark(detail, card) !== null;
+
   const actionButton = (action: TicketAction) => <button key={action} type="button" className="ticket-action" data-action={action}
-    disabled={sending || (action === 'edit' && loaded === null)}
+    disabled={sending || (action === 'edit' && editable === null)
+      || ((action === 'accept' || action === 'changes') && !reviewReady)}
     onClick={() => press(action)}>{ACTION_LABEL[action]}</button>;
 
   function press(action: TicketAction): void {
     switch (action) {
       case 'give':
       case 'try_again': setMode('give'); break;
-      case 'changes': setMode('changes'); break;
-      case 'edit': setMode('edit'); break;
+      case 'changes': if (!reviewReady) return; setMode('changes'); break;
+      case 'edit': {
+        const current = getFloorState().cards.find((row) => row.id === card.id);
+        if (current?.seq !== card.seq || editableDetail(getDetailState(), current) === null) return;
+        setMode('edit');
+        break;
+      }
       case 'remove': setMode('remove'); break;
-      case 'accept': void changeTicket(card, { verb: 'accept' }); break;
+      case 'accept': if (!reviewReady) return; void changeTicket(card, { verb: 'accept' }); break;
       case 'stop': setMode('stop'); break;
     }
   }
@@ -237,8 +316,17 @@ export function TicketPanel({ floor, card, onHire }: {
     data-ticket-status={card.status}>
     <h3 id="card-detail-title" ref={focusHeading} tabIndex={-1}
       data-focus-on-leave="view-board">{card.title}</h3>
-    <TicketNotice />
+    <TicketNotice card={card.id} />
     <Facts floor={floor} card={card} />
+    {loaded?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={loaded.instruction_review} />}
+    {(requiresInstructionReview(card) && !reviewReady) || (detail.card === card.id && detail.phase === 'failed')
+      || (actions.includes('edit') && detail.phase === 'ready' && editable === null) ? <div>
+      <p className="ticket-hint" role="status">{requiresInstructionReview(card)
+        ? 'Read the current instruction evidence before reviewing this ticket.'
+        : 'Read the complete current note before editing this ticket.'}</p>
+      <button type="button" className="ticket-look" disabled={detail.phase === 'loading'}
+        onClick={() => { void loadDetail(card); }}>Read again</button>
+    </div> : null}
     {card.status === 'review' ? <ChangedFiles floor={floor} card={card} /> : null}
     {loaded?.result == null ? null : <section aria-label="Check result"><h4>Check result</h4>
       <p>{loaded.result.pass ? 'The check passed' : 'The check failed'}
@@ -255,7 +343,8 @@ export function TicketPanel({ floor, card, onHire }: {
     {mode === 'give' || mode === 'changes'
       ? <GiveForm floor={floor} card={card} project={loaded?.project ?? projectOf(floor, card)}
         pending={detail.card === card.id ? detail.problem : null} mode={mode} onDone={() => setMode('none')} onHire={onHire} /> : null}
-    {mode === 'edit' && loaded !== null ? <EditForm floor={floor} card={card} detail={loaded} onDone={() => setMode('none')} /> : null}
+    {mode === 'edit' && editable !== null ? <EditForm key={`${card.id}:${card.seq}`} floor={floor} card={card}
+      detail={editable} onDone={() => setMode('none')} /> : null}
     {mode === 'remove' || mode === 'stop' ? <div className="ticket-confirm" role="group" aria-label={mode === 'remove' ? 'Remove ticket' : 'Stop ticket'}>
       <p>{mode === 'remove' ? 'Remove this ticket? It leaves the board. Its record stays in the journal.'
         : 'Stop this ticket? The agent finishes its current step before stopping.'}</p>

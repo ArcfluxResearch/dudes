@@ -86,6 +86,7 @@ pub mod floor_ticket;
 mod floor_websocket;
 pub mod git_read;
 pub mod hooks;
+mod instruction_sample;
 pub mod local_day;
 pub mod lock;
 mod mailbox;

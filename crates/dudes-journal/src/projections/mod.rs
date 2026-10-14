@@ -21,6 +21,7 @@ mod board;
 pub mod budget;
 mod chat;
 pub mod goals;
+mod instructions;
 mod mail;
 mod mail_wakes;
 mod question_history;
@@ -56,6 +57,9 @@ use crate::writer::Fsync;
 /// The projection schema this build writes. Bump when a row's meaning changes, **when a table
 /// is added**, or **when what a fold computes changes**; the store is then rebuilt from the
 /// journal.
+///
+/// `47`: shared instruction attempt, review and scoped-boundary facts are folded with ticket
+/// evidence sequences. Older caches must rebuild rather than silently omit those obligations.
 ///
 /// `46`: a ticket's board row keeps its ticket fields under `ticket_row`, because a card now has
 /// a `ticket` object of its own on the wire and the row flattens the card. A v45 store carried
@@ -234,7 +238,7 @@ use crate::writer::Fsync;
 /// `2` was the previous bump: the rows became at-derived and `turns.status` gained
 /// a *reachable* `Killed`, so a v1 row saying `Ended` for a killed turn was wrong. Half-right is
 /// worse than rebuilt.
-pub const PROJECTION_VERSION: u64 = 46;
+pub const PROJECTION_VERSION: u64 = 47;
 /// Entries applied per write transaction during replay.
 pub const BATCH: usize = 1000;
 
@@ -243,6 +247,7 @@ const AGENTS: TableDefinition<'_, &[u8; 16], &[u8]> = TableDefinition::new("agen
 const TURNS: TableDefinition<'_, &[u8; 16], &[u8]> = TableDefinition::new("turns");
 const GOALS: TableDefinition<'_, &[u8; 16], &[u8]> = TableDefinition::new("goals");
 const BOARD: TableDefinition<'_, &[u8; 16], &[u8]> = TableDefinition::new("board");
+const INSTRUCTIONS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("instructions");
 const ACTIVITY: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("activity");
 const QUESTION_HISTORY: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("question_history");
 const TRACES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("traces");
@@ -395,6 +400,7 @@ impl Projections {
         txn.open_table(GOALS)?;
         txn.open_table(GOAL_FIRST_DONE)?;
         txn.open_table(BOARD)?;
+        txn.open_table(INSTRUCTIONS)?;
         txn.open_table(WORKTREES)?;
         txn.open_table(MAIL)?;
         txn.open_table(MAIL_PENDING)?;
@@ -491,6 +497,7 @@ impl Projections {
             let mut first_done = txn.open_table(GOAL_FIRST_DONE)?;
             let mut meta = txn.open_table(META)?;
             let mut board = txn.open_table(BOARD)?;
+            let mut instruction_rows = txn.open_table(INSTRUCTIONS)?;
             let mut mail = txn.open_table(MAIL)?;
             let mut pending = txn.open_table(MAIL_PENDING)?;
             let mut wakes = mail_wakes::Tables {
@@ -553,7 +560,34 @@ impl Projections {
                 question_history::capture(&mut history, &agents, lsn, entry)?;
                 agents::apply(&mut agents, &turns, &goals, lsn, carrier)?;
                 goals::apply(&mut goals, &mut first_done, &agents, lsn, carrier)?;
+                let (instruction_state, instruction_fold) = instructions::apply(
+                    &mut instruction_rows,
+                    &agents,
+                    &board,
+                    &goals,
+                    last,
+                    lsn,
+                    entry,
+                )?;
+                if let Some(clear) = instruction_fold.cleared_goal {
+                    let cleared = Entry {
+                        at: entry.at,
+                        record: dudes_proto::Record::GoalCleared {
+                            agent: clear.agent,
+                            goal: clear.goal,
+                        },
+                    };
+                    agents::apply(&mut agents, &turns, &goals, lsn, &cleared)?;
+                    goals::apply(&mut goals, &mut first_done, &agents, lsn, &cleared)?;
+                }
                 board::apply(&mut board, &turns, lsn, entry)?;
+                board::apply_instruction(
+                    &mut board,
+                    lsn,
+                    entry,
+                    instruction_state.state(),
+                    &instruction_fold,
+                )?;
                 worktrees::apply(&mut leases, entry)?;
                 let ended = turns::apply(&mut turns, lsn, carrier)?;
                 traces::capture(&mut traces, &agents, &turns, entry, ended.is_some())?;
@@ -646,6 +680,66 @@ impl Projections {
     pub fn cards(&self) -> Result<Vec<CardView>> {
         let txn = self.db.begin_read()?;
         all_rows(&txn.open_table(BOARD)?)
+    }
+
+    /// Cold reconstruction of all instruction history at the durable projection cut.
+    pub fn instruction_state(&self) -> Result<dudes_proto::instruction_state::InstructionState> {
+        let txn = self.db.begin_read()?;
+        instructions::read(&txn.open_table(INSTRUCTIONS)?, self.last_applied)
+    }
+
+    /// Validate instruction admission against committed card/goal facts without inventing the
+    /// next physical journal position. The caller holds serialized append authority until fsync.
+    pub fn validate_next_instruction(&self, entry: &Entry) -> Result<()> {
+        let txn = self.db.begin_read()?;
+        let agents = txn.open_table(AGENTS)?;
+        let board = txn.open_table(BOARD)?;
+        let goals = txn.open_table(GOALS)?;
+        let cache = instructions::load(
+            &txn.open_table(INSTRUCTIONS)?,
+            self.last_applied,
+            entry,
+            &[],
+        )?;
+        cache
+            .state()
+            .validate_next(
+                entry,
+                instructions::facts(&agents, &board, &goals, entry)?,
+                instructions::hash,
+            )
+            .map_err(|reason| Error::Instruction {
+                lsn: self.last_applied,
+                reason,
+            })
+    }
+
+    /// Pure instruction preflight against this projection's actual current card and goal facts.
+    /// Call on the serialized append boundary; a successful check changes no cache row.
+    pub fn preflight_instruction(
+        &self,
+        lsn: Lsn,
+        entry: &Entry,
+    ) -> Result<dudes_proto::instruction_state::InstructionFold> {
+        let txn = self.db.begin_read()?;
+        let agents = txn.open_table(AGENTS)?;
+        let board = txn.open_table(BOARD)?;
+        let goals = txn.open_table(GOALS)?;
+        let mut cache = instructions::load(
+            &txn.open_table(INSTRUCTIONS)?,
+            self.last_applied,
+            entry,
+            &[],
+        )?;
+        cache
+            .state_mut()
+            .apply(
+                lsn,
+                entry,
+                instructions::facts(&agents, &board, &goals, entry)?,
+                instructions::hash,
+            )
+            .map_err(|reason| Error::Instruction { lsn, reason })
     }
 
     /// What the board keeps of one card beyond a plain card's fields; `None` for a card that is
@@ -980,6 +1074,13 @@ impl Projections {
             &txn.open_table(GOAL_FIRST_DONE)?,
         )?;
         export_rows::<16, CardView>(&mut lines, "board", &txn.open_table(BOARD)?)?;
+        for entry in txn.open_table(INSTRUCTIONS)?.iter()? {
+            let (key, value) = entry?;
+            let cell: serde_json::Value =
+                serde_json::from_slice(value.value()).map_err(|source| Error::Row { source })?;
+            let json = serde_json::to_string(&cell).map_err(|source| Error::Row { source })?;
+            lines.push(format!("instructions {} {json}", hex(key.value())));
+        }
         export_rows::<16, WorktreeRow>(&mut lines, "worktrees", &txn.open_table(WORKTREES)?)?;
         export_rows::<16, budget::BudgetRow>(
             &mut lines,
@@ -1082,6 +1183,7 @@ pub const EXPORTED_TABLES: &[&str] = &[
     "goals",
     "goal_first_done",
     "board",
+    "instructions",
     "worktrees",
     "budget_by_goal",
     "budget_by_day",
@@ -2041,7 +2143,7 @@ pub(crate) mod tests {
     /// cannot tell whether the constant was bumped when the rows changed meaning. This can.
     #[test]
     fn a_version_17_store_rebuilds_the_activity_window() {
-        assert_eq!(PROJECTION_VERSION, 46);
+        assert_eq!(PROJECTION_VERSION, 47);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let records = [
@@ -2075,7 +2177,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_24_store_rebuilds_the_current_live_kind() {
-        assert_eq!(PROJECTION_VERSION, 46);
+        assert_eq!(PROJECTION_VERSION, 47);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let entries = [
@@ -2113,7 +2215,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_25_store_rebuilds_retired_appearance() {
-        assert_eq!(PROJECTION_VERSION, 46);
+        assert_eq!(PROJECTION_VERSION, 47);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let mut hire = hired();
@@ -2225,7 +2327,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_8_store_is_rebuilt_for_per_turn_confirmation() {
         const LATCHED: u64 = 8;
-        assert_eq!(PROJECTION_VERSION, 46);
+        assert_eq!(PROJECTION_VERSION, 47);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2262,7 +2364,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_7_store_is_rebuilt_for_launch_refused_session_clear() {
         const LATCHED: u64 = 7;
-        assert_eq!(PROJECTION_VERSION, 46);
+        assert_eq!(PROJECTION_VERSION, 47);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2332,7 +2434,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 4;
         assert_eq!(
-            PROJECTION_VERSION, 46,
+            PROJECTION_VERSION, 47,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -3196,7 +3298,7 @@ pub(crate) mod tests {
     fn unread_mail_is_rebuilt_from_latest_mail_state() {
         const LATCHED: u64 = 10;
         assert_eq!(
-            PROJECTION_VERSION, 46,
+            PROJECTION_VERSION, 47,
             "this new table owns the 10 -> 11 bump; re-derive the latched store if the current \
              version moves"
         );
@@ -3663,7 +3765,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_11_budget_store_is_rebuilt_for_unknown_ends() {
-        assert_eq!(PROJECTION_VERSION, 46);
+        assert_eq!(PROJECTION_VERSION, 47);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let day = day_of(MIDNIGHT_MS);
@@ -3815,7 +3917,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 5;
         assert_eq!(
-            PROJECTION_VERSION, 46,
+            PROJECTION_VERSION, 47,
             "if this moves, re-derive LATCHED above it — a merge past another bump must move \
              both, or this test passes with this repair's own bump dropped"
         );
@@ -4906,7 +5008,7 @@ pub(crate) mod tests {
     fn a_version_13_store_is_rebuilt_for_question_identity() {
         const LATCHED: u64 = 13;
         assert_eq!(
-            PROJECTION_VERSION, 46,
+            PROJECTION_VERSION, 47,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5008,7 +5110,7 @@ pub(crate) mod tests {
     fn a_version_14_store_is_rebuilt_for_control_identity() {
         const LATCHED: u64 = 14;
         assert_eq!(
-            PROJECTION_VERSION, 46,
+            PROJECTION_VERSION, 47,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5115,7 +5217,7 @@ pub(crate) mod tests {
     fn a_version_15_store_counts_the_reset_unknown_end() {
         const LATCHED: u64 = 15;
         assert_eq!(
-            PROJECTION_VERSION, 46,
+            PROJECTION_VERSION, 47,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -5388,7 +5490,7 @@ pub(crate) mod tests {
 
         #[test]
         fn a_version_38_store_rebuilds_the_first_completion_facts() {
-            assert_eq!(PROJECTION_VERSION, 46);
+            assert_eq!(PROJECTION_VERSION, 47);
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("state.redb");
             let history = [

@@ -454,6 +454,24 @@ pub enum Seen {
         /// Typed launch parts.
         spec: LaunchSpec,
     },
+    /// Read current canonical ticket eligibility for one pending instruction recovery.
+    ResolveInstructionRecoveryTicket {
+        /// Volatile lookup identity.
+        request: crate::input::InstructionRequest,
+        /// Original historical ticket association.
+        association: dudes_proto::InstructionTicketAssociation,
+    },
+    /// A bounded observation request; the pure harness has no filesystem sampler.
+    SampleInstructions {
+        /// Run-local correlation.
+        request: crate::input::InstructionRequest,
+        /// Recorded physical owner.
+        owner: dudes_proto::InstructionObservationOwner,
+        /// Associated goal.
+        goal: Option<GoalId>,
+        /// Frozen ending baseline.
+        baseline: Option<Box<dudes_proto::InstructionSnapshot>>,
+    },
 }
 
 impl Seen {
@@ -461,6 +479,25 @@ impl Seen {
     #[must_use]
     pub fn of(effect: &Effect) -> Self {
         match effect {
+            Effect::ResolveInstructionRecoveryTicket {
+                request,
+                association,
+            } => Self::ResolveInstructionRecoveryTicket {
+                request: *request,
+                association: *association,
+            },
+            Effect::SampleInstructions {
+                request,
+                owner,
+                goal,
+                baseline,
+                ..
+            } => Self::SampleInstructions {
+                request: *request,
+                owner: *owner,
+                goal: *goal,
+                baseline: baseline.clone(),
+            },
             Effect::MailWakeRefresh {
                 agent,
                 goal,
@@ -541,6 +578,8 @@ impl Seen {
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
+            Self::ResolveInstructionRecoveryTicket { .. } => "ResolveInstructionRecoveryTicket",
+            Self::SampleInstructions { .. } => "SampleInstructions",
             Self::MailWakeRefresh { .. } => "MailWakeRefresh",
             Self::MailWakeNotify { .. } => "MailWakeNotify",
             Self::PrepareBrowserLaunch { .. } => "PrepareBrowserLaunch",
@@ -713,6 +752,7 @@ impl Harness {
     /// state.
     pub fn restart(&mut self) {
         let entries = self.journal.clone();
+        self.next_lsn = u64::try_from(entries.len()).expect("the harness prefix fits an LSN");
         self.supervisor = Self::machine(
             self.config.clone(),
             FakeClock::ticking(1_787_394_700_000, 1),
@@ -735,6 +775,7 @@ impl Harness {
     /// `Input::Started`.
     pub fn restart_with_missing_worktrees(&mut self, missing: Vec<AgentId>) {
         let entries = self.journal.clone();
+        self.next_lsn = u64::try_from(entries.len()).expect("the harness prefix fits an LSN");
         self.supervisor = Self::machine(
             self.config.clone(),
             FakeClock::ticking(1_787_394_700_000, 1),
@@ -774,6 +815,19 @@ impl Harness {
 
     fn follow_up(&mut self, seen: Seen) -> Option<Input> {
         match seen {
+            Seen::ResolveInstructionRecoveryTicket {
+                request,
+                association,
+            } => Some(Input::InstructionRecoveryTicketResolved {
+                request,
+                ticket: Some(association),
+            }),
+            Seen::SampleInstructions {
+                request,
+                owner: _,
+                goal,
+                baseline,
+            } => Some(self.mock_instruction_sample(request, goal, baseline)),
             Seen::PrepareBrowserLaunch {
                 turn,
                 generation,
@@ -841,6 +895,55 @@ impl Harness {
                 })
             }
             _ => None,
+        }
+    }
+
+    fn mock_instruction_sample(
+        &self,
+        request: crate::input::InstructionRequest,
+        goal: Option<GoalId>,
+        baseline: Option<Box<dudes_proto::InstructionSnapshot>>,
+    ) -> Input {
+        let gap = dudes_proto::InstructionCoverageGap {
+            reason: dudes_proto::InstructionGapKind::DeclarationMissing,
+            context: dudes_proto::InstructionPathContext::Unresolved,
+            agent: None,
+            path: None,
+        };
+        let snapshot = dudes_proto::InstructionSnapshot {
+            sampled_at: Timestamp::UNIX_EPOCH,
+            source: dudes_proto::InstructionSnapshotSource::Fresh,
+            execution_folder: None,
+            participants: Vec::new(),
+            inputs: Vec::new(),
+            inventoried: Vec::new(),
+            gaps: vec![
+                dudes_proto::InstructionCoverageGap {
+                    reason: dudes_proto::InstructionGapKind::PathUnresolved,
+                    ..gap.clone()
+                },
+                gap.clone(),
+            ],
+            usage: dudes_proto::InstructionSampleUsage::default(),
+            boot: None,
+        };
+        let ticket = goal.and_then(|goal| {
+            self.supervisor
+                .world()
+                .instructions
+                .association_for_goal(goal, dudes_types::Seq::ZERO)
+        });
+        Input::InstructionSampled {
+            request,
+            snapshot: Box::new(snapshot),
+            ticket,
+            comparison: baseline.map(|_| {
+                Box::new(dudes_proto::InstructionComparison {
+                    changes: Vec::new(),
+                    gaps: vec![gap],
+                    usage: dudes_proto::InstructionSampleUsage::default(),
+                })
+            }),
         }
     }
 
@@ -1131,6 +1234,42 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn first_loaded_prefix_append(missing_worktrees: bool) -> (Lsn, Lsn) {
+        let (entries, _, _) = journal_with_issued_turn(None, "make the tests pass");
+        let tail = Lsn(u64::try_from(entries.len()).unwrap());
+        let mut harness = Harness::new();
+        harness.journal = entries;
+        harness.fsync = false;
+        if missing_worktrees {
+            harness.restart_with_missing_worktrees(Vec::new());
+        } else {
+            harness.restart();
+        }
+        let first = harness
+            .trace
+            .iter()
+            .find(|seen| matches!(seen, Seen::Persist { .. }))
+            .cloned()
+            .expect("recovery requests an exact missing-boundary append");
+        harness.fsync = true;
+        let Some(Input::Persisted { lsn, .. }) = harness.follow_up(first) else {
+            panic!("the mock writer acknowledges its first appended frame");
+        };
+        (tail, lsn)
+    }
+
+    #[test]
+    fn a_loaded_prefix_restart_appends_after_its_replayed_tail() {
+        let (tail, appended) = first_loaded_prefix_append(false);
+        assert_eq!(appended, Lsn(tail.0 + 1));
+    }
+
+    #[test]
+    fn a_loaded_prefix_worktree_restart_appends_after_its_replayed_tail() {
+        let (tail, appended) = first_loaded_prefix_append(true);
+        assert_eq!(appended, Lsn(tail.0 + 1));
+    }
 
     /// The clock is the only source of time, so a frozen one stamps every entry alike and a
     /// ticking one gives each `Persist` its own value.

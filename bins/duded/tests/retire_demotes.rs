@@ -96,9 +96,19 @@ fn an_agent_holding_a_live_token(
         common::goal_params(agent, &["/usr/bin/true"]),
     );
     let hash = fixture.await_record("HookTokenMinted", |record| match record {
-        Record::HookTokenMinted { token_hash, .. } => Some(token_hash.clone()),
+        Record::HookTokenMinted {
+            agent: owner,
+            token_hash,
+        } if *owner == agent => Some(token_hash.clone()),
         _ => None,
     });
+    fixture.await_record("the retirement subject's actual spawn", |record| {
+        matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent).then_some(())
+    });
+    running
+        .handle
+        .doctor()
+        .expect("finish the retirement subject's setup pump");
     (agent, common::token_of(&hash))
 }
 
@@ -161,23 +171,23 @@ fn on_an_injected_column(
     common::Running,
     dudes_types::AgentId,
     HookToken,
+    SharedHost,
 ) {
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
-    let daemon = boot(
-        &fixture.settings(),
-        common::seams_with(
-            SharedHost::new(),
-            Arc::new(runner),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
-        ),
-    )
-    .expect("boot");
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let seams = common::seams_with(
+        host.clone(),
+        Arc::new(runner),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
+    );
+    host.bind_child_ends(Arc::clone(&seams.children));
+    let daemon = boot(&fixture.settings(), seams).expect("boot");
     let running = common::start(daemon);
     let (agent, token) = an_agent_holding_a_live_token(fixture, &running);
     column.set(PeerProvenance::Agent(agent));
-    (column, running, agent, token)
+    (column, running, agent, token, host)
 }
 
 /// **Arm A, and the gate: the production pair alone.**
@@ -194,16 +204,15 @@ fn on_an_injected_column(
 fn retire_demotes_a_live_connection_under_the_production_pair() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
-    let daemon = boot(
-        &settings,
-        common::seams(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot");
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let seams = common::seams(
+        host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&seams.children));
+    let daemon = boot(&settings, seams).expect("boot");
     let mut running = common::start(daemon);
     let (agent, token) = an_agent_holding_a_live_token(&fixture, &running);
 
@@ -223,6 +232,7 @@ fn retire_demotes_a_live_connection_under_the_production_pair() {
     );
 
     retire_and_await_demotion(&fixture, &running, agent, &mut client, &token);
+    common::end_turn_with_native(&fixture, &running.handle, &host, fixture.await_turn());
     running.stop(ExitCause::Ended);
 }
 
@@ -243,9 +253,9 @@ fn retire_demotes_a_live_connection_under_the_production_pair() {
 fn retire_demotes_a_live_connection_through_an_injected_column() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
-    let (column, mut running, agent, token) =
+    let (column, mut running, agent, token, host) =
         on_an_injected_column(&fixture, ScriptedRunner::scripted([common::passes()]));
-    common::end_turn(&running.handle, fixture.await_turn());
+    common::end_turn_with_native(&fixture, &running.handle, &host, fixture.await_turn());
     fixture.await_record("PredicateResult", |record| {
         matches!(record, Record::PredicateResult { pass: true, .. }).then_some(())
     });
@@ -281,7 +291,7 @@ fn retire_demotes_a_live_connection_through_an_injected_column() {
 fn a_retired_agent_with_a_recorded_child_keeps_its_column_until_that_child_ends() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
-    let (column, mut running, agent, token) =
+    let (column, mut running, agent, token, host) =
         on_an_injected_column(&fixture, ScriptedRunner::default());
     let turn = fixture.await_turn();
 
@@ -305,7 +315,7 @@ fn a_retired_agent_with_a_recorded_child_keeps_its_column_until_that_child_ends(
         during.error
     );
 
-    common::end_turn(&running.handle, turn);
+    common::end_turn_with_native(&fixture, &running.handle, &host, turn);
     fixture.await_record("TurnEnded", |record| match record {
         Record::TurnEnded { turn: ended, .. } if *ended == turn => Some(()),
         _ => None,

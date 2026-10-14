@@ -4,9 +4,10 @@
 //! executes them and feeds the results back as [`Input`](crate::Input)s. Two rules hold over the
 //! whole enum:
 //!
-//! - **Every effect is journaled before it is acted on.** With two exceptions the machine emits a
+//! - **Every effect is journaled before it is acted on.** With read-only exceptions the machine emits a
 //!   [`Effect::Persist`] first and the acting effect only on its acknowledgement. The read-only exceptions
-//!   are [`Effect::Probe`] and [`Effect::MailWakeRefresh`].
+//!   are [`Effect::Probe`], [`Effect::MailWakeRefresh`], [`Effect::SampleInstructions`], and
+//!   [`Effect::ResolveInstructionRecoveryTicket`].
 //! - **`Spawn` has one decider and one constructor.** The decider is a private `spawn()` that
 //!   every path routes through — the live one, on the `Persisted` branch for the token that
 //!   carried `TurnIssued`, and every re-issue. It refuses a turn whose launch this run has
@@ -29,7 +30,7 @@ use dudes_providers::launch::LaunchSpec;
 use dudes_types::{AgentId, GoalId, Lsn, TurnId};
 
 use crate::host::AdoptionKey;
-use crate::input::{ClientId, HookId, MailWakeRequest, PersistToken};
+use crate::input::{ClientId, HookId, InstructionRequest, MailWakeRequest, PersistToken};
 
 /// One thing the runtime must do.
 ///
@@ -186,6 +187,26 @@ pub enum Effect {
         /// The already armed typed launch. Preparation starts no child.
         spec: LaunchSpec,
     },
+    /// Resolve current card eligibility for one historical recovery association without writing.
+    ResolveInstructionRecoveryTicket {
+        /// Exact volatile recovery lookup identity.
+        request: InstructionRequest,
+        /// Original recorded goal, card, and assignment relationship.
+        association: dudes_proto::InstructionTicketAssociation,
+    },
+    /// Observe a starting or ending instruction boundary without launching or writing.
+    SampleInstructions {
+        /// Exact volatile sample identity.
+        request: InstructionRequest,
+        /// Actual owned attempt or attachment interval.
+        owner: dudes_proto::InstructionObservationOwner,
+        /// Associated immutable goal, if this work has one.
+        goal: Option<GoalId>,
+        /// Actual admitted model composition.
+        selection: dudes_types::ModelSelection,
+        /// Durable baseline for an ending comparison, absent before launch.
+        baseline: Option<Box<dudes_proto::InstructionSnapshot>>,
+    },
 }
 
 impl fmt::Debug for Effect {
@@ -211,6 +232,19 @@ impl fmt::Debug for Effect {
     /// from the output altogether.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ResolveInstructionRecoveryTicket {
+                request,
+                association,
+            } => f
+                .debug_struct("ResolveInstructionRecoveryTicket")
+                .field("request", request)
+                .field("association", association)
+                .finish(),
+            Self::SampleInstructions { request, owner, .. } => f
+                .debug_struct("SampleInstructions")
+                .field("request", request)
+                .field("owner", owner)
+                .finish_non_exhaustive(),
             Self::MailWakeRefresh { .. } | Self::MailWakeNotify { .. } => self.fmt_mail_wake(f),
             Self::Persist { token, entry } => f
                 .debug_struct("Persist")
@@ -330,6 +364,8 @@ impl Effect {
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
+            Self::ResolveInstructionRecoveryTicket { .. } => "ResolveInstructionRecoveryTicket",
+            Self::SampleInstructions { .. } => "SampleInstructions",
             Self::MailWakeRefresh { .. } => "MailWakeRefresh",
             Self::MailWakeNotify { .. } => "MailWakeNotify",
             Self::PrepareBrowserLaunch { .. } => "PrepareBrowserLaunch",

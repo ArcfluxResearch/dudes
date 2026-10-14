@@ -354,7 +354,27 @@ fn checkout_returns_the_recorded_subdirectory_and_appends_nothing() {
         ],
     );
     let mut daemon = start(&fixture, settings);
-    let seq = daemon.card(card).seq;
+    fixture.await_record("checkout owner's settled starting sample", |record| {
+        matches!(record, Record::InstructionObservationStarted {
+            owner: dudes_proto::InstructionObservationOwner::Managed { agent, .. }, ..
+        } if *agent == sample_agent())
+        .then_some(())
+    });
+    fixture.await_record("checkout owner's actual spawn", |record| {
+        matches!(record, Record::TurnSpawned { agent, .. } if *agent == sample_agent())
+            .then_some(())
+    });
+    let detail = daemon.read(card);
+    let review = detail
+        .ticket
+        .instruction_review
+        .as_ref()
+        .expect("the actual starting evidence is visible");
+    assert!(
+        review.pending_comparison,
+        "the real started turn is still open"
+    );
+    let seq = detail.card.seq;
     let before = fixture.records();
     let result = daemon.checkout(json!({"card": card, "expected_seq": seq}));
     assert!(result.error.is_none(), "{:?}", result.error);
@@ -622,9 +642,20 @@ fn a_working_ticket_can_be_neither_edited_nor_removed() {
         ],
     );
     let mut daemon = start(&fixture, settings);
-    assert_eq!(daemon.card(card).status, CardStatus::Doing);
+    fixture.await_record("working ticket's exact starting spawn", |record| {
+        matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent).then_some(())
+    });
+    let detail = daemon.read(card);
+    assert_eq!(detail.card.status, CardStatus::Doing);
+    assert!(
+        detail
+            .ticket
+            .instruction_review
+            .as_ref()
+            .is_some_and(|review| review.pending_comparison)
+    );
     let before = fixture.records().len();
-    let seq = daemon.card(card).seq;
+    let seq = detail.card.seq;
     for (method, params) in [
         (
             Method::TicketEdit,
@@ -636,11 +667,12 @@ fn a_working_ticket_can_be_neither_edited_nor_removed() {
         ),
     ] {
         let response = daemon.call(method, params);
-        assert_refused(&response, TicketRefusal::WrongState, CardStatus::Doing);
-        assert_eq!(
-            refusal(&response).2,
-            "You can't do that to a ticket that is Working."
-        );
+        let reason = if method == Method::TicketRemove {
+            TicketRefusal::InstructionComparisonPending
+        } else {
+            TicketRefusal::WrongState
+        };
+        assert_refused(&response, reason, CardStatus::Doing);
     }
     assert_eq!(fixture.records().len(), before, "a refusal appends nothing");
     assert_eq!(daemon.read(card).card.title, "In progress");

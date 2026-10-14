@@ -27,6 +27,8 @@ pub mod decision;
 pub mod event;
 pub mod git;
 pub mod goal;
+pub mod instruction;
+pub mod instruction_state;
 pub mod mail_wake;
 pub mod messages;
 pub mod projection;
@@ -57,6 +59,27 @@ pub use git::{
     MAX_GIT_SUBJECT_BYTES, MAX_GIT_VIEW_BYTES,
 };
 pub use goal::{CheckBaseline, CheckBaselineKind, CompletionCheckRef, Evidence, Goal, Predicate};
+pub use instruction::{
+    InstructionAcceptCompletion, InstructionActivation, InstructionAncestorStop,
+    InstructionBaselineRef, InstructionBootIdentity, InstructionBoundaryAbsenceProof,
+    InstructionCandidate, InstructionChangedPath, InstructionComparison, InstructionCondition,
+    InstructionCoverageGap, InstructionDeclarationMode, InstructionDiscoveryEvidence,
+    InstructionDiscoveryEvidenceKind, InstructionDiscoveryPlan, InstructionDiscoveryRule,
+    InstructionEndBoundary, InstructionFingerprint, InstructionGapKind, InstructionGoalClear,
+    InstructionImportPolicy, InstructionInput, InstructionInputSource, InstructionIssueAssociation,
+    InstructionNativeBoundaryReceipt, InstructionNoProcessProof, InstructionObservationOwner,
+    InstructionParticipant, InstructionPathChange, InstructionPathContext,
+    InstructionPendingReview, InstructionReviewAction, InstructionReviewInterval,
+    InstructionReviewSummary, InstructionReviewWatermark, InstructionRoot, InstructionRootKind,
+    InstructionRuleDirectoryScope, InstructionRuleRef, InstructionSampleUsage,
+    InstructionSelection, InstructionSettlement, InstructionSharedInput, InstructionSnapshot,
+    InstructionSnapshotSource, InstructionSourceKind, InstructionTicketAssociation,
+    InstructionUnknownReason, InstructionValidationError, MAX_CLAUDE_IMPORT_DEPTH,
+    MAX_INSTRUCTION_ANCESTORS, MAX_INSTRUCTION_DESCENDANT_DEPTH, MAX_INSTRUCTION_DESCENDANTS,
+    MAX_INSTRUCTION_IMPORT_EDGES, MAX_INSTRUCTION_INPUTS, MAX_INSTRUCTION_METADATA_BYTES,
+    MAX_INSTRUCTION_PARTICIPANTS, MAX_INSTRUCTION_PATH_BYTES, MAX_INSTRUCTION_SOURCE_BYTES,
+    MAX_INSTRUCTION_SYMLINK_HOPS, NativeInstructionPath, validate_instruction_record,
+};
 pub use mail_wake::{
     MailRef, MailWakeAdmission, MailWakeDecision, MailWakeDigest, MailWakeDigestDomain,
     MailWakeIssue, MailWakePlan, MailWakePurpose, MailWakeTarget, MailWakeTask,

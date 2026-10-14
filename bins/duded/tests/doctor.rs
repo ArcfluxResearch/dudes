@@ -183,20 +183,24 @@ fn reported_usage() -> Usage {
     }
 }
 
-fn end(handle: &duded::Handle, turn: TurnId, usage: Option<Usage>) {
-    handle.input(Input::ChildExited {
-        final_reply: None,
-        elapsed_ms: None,
-        turn,
-        exit: ExitStatus {
-            code: Some(0),
-            signal: None,
+fn end(fixture: &Fixture, host: &SharedHost, turn: TurnId, usage: Option<Usage>) {
+    common::end_turn_with_native_payload(
+        fixture,
+        host,
+        Input::ChildExited {
+            final_reply: None,
+            elapsed_ms: None,
+            turn,
+            exit: ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: usage.map(ScopedUsage::Turn),
+            model_usage: BTreeMap::new(),
+            outcome: TurnOutcome::Completed,
+            last_message: Some("not yet".to_owned()),
         },
-        usage: usage.map(ScopedUsage::Turn),
-        model_usage: BTreeMap::new(),
-        outcome: TurnOutcome::Completed,
-        last_message: Some("not yet".to_owned()),
-    });
+    );
 }
 
 fn announced(spec: &LaunchSpec) -> (&'static str, String) {
@@ -635,17 +639,15 @@ fn live_doctor_reports_boot_identity_and_the_uninterpretable_open_turn() {
 fn an_unconfirmed_resume_falls_back_once_to_first() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
-    let host = SharedHost::new();
-    let daemon = boot(
-        &settings,
-        seams(
-            host.clone(),
-            Arc::new(ScriptedRunner::scripted([common::fails()])),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot");
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let seams = seams(
+        host.clone(),
+        Arc::new(ScriptedRunner::scripted([common::fails()])),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&seams.children));
+    let daemon = boot(&settings, seams).expect("boot");
     let mut running = common::start(daemon);
     let agent = hire(&running.handle, fixture.state.path());
     let goal = set_goal(&running.handle, goal_params(agent, &["/usr/bin/false"]));
@@ -659,12 +661,12 @@ fn an_unconfirmed_resume_falls_back_once_to_first() {
     fixture.await_record("the first confirmation", |record| {
         matches!(record, Record::SessionLearned { turn, .. } if *turn == first).then_some(())
     });
-    end(&running.handle, first, None);
+    end(&fixture, &host, first, None);
     let resumed = turn_after(&fixture, agent, first);
     let launches = await_launches(&host, 2);
     assert_eq!(announced(&launches[1]), ("resume", session.to_string()));
 
-    end(&running.handle, resumed, Some(reported_usage()));
+    end(&fixture, &host, resumed, Some(reported_usage()));
     let fallback = turn_after(&fixture, agent, resumed);
     let health = doctor(&settings);
     assert_eq!(agent_row(&health, agent).unconfirmed_resume, Some(resumed));
@@ -716,17 +718,15 @@ fn an_unconfirmed_resume_falls_back_once_to_first() {
 fn a_confirmed_resume_does_not_fall_back() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
-    let host = SharedHost::new();
-    let daemon = boot(
-        &settings,
-        seams(
-            host.clone(),
-            Arc::new(ScriptedRunner::scripted([common::fails()])),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot");
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let seams = seams(
+        host.clone(),
+        Arc::new(ScriptedRunner::scripted([common::fails()])),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&seams.children));
+    let daemon = boot(&settings, seams).expect("boot");
     let mut running = common::start(daemon);
     let agent = hire(&running.handle, fixture.state.path());
     let goal = set_goal(&running.handle, goal_params(agent, &["/usr/bin/false"]));
@@ -737,7 +737,7 @@ fn a_confirmed_resume_does_not_fall_back() {
         turn: first,
         session: session.clone(),
     });
-    end(&running.handle, first, None);
+    end(&fixture, &host, first, None);
     let resumed = turn_after(&fixture, agent, first);
     running.handle.input(Input::SessionLearned {
         turn: resumed,
@@ -746,7 +746,7 @@ fn a_confirmed_resume_does_not_fall_back() {
     fixture.await_record("the resumed confirmation", |record| {
         matches!(record, Record::SessionLearned { turn, .. } if *turn == resumed).then_some(())
     });
-    end(&running.handle, resumed, Some(reported_usage()));
+    end(&fixture, &host, resumed, Some(reported_usage()));
     let next = turn_after(&fixture, agent, resumed);
 
     assert_eq!(
@@ -774,24 +774,25 @@ fn a_confirmed_resume_does_not_fall_back() {
 fn another_agents_session_neither_binds_nor_clears_resume_recovery() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
-    let daemon = boot(
-        &settings,
-        seams(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::scripted([common::fails()])),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot");
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let seams = seams(
+        host.clone(),
+        Arc::new(ScriptedRunner::scripted([common::fails()])),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&seams.children));
+    let daemon = boot(&settings, seams).expect("boot");
     let mut running = common::start(daemon);
 
-    let agent_a = hire(&running.handle, fixture.state.path());
+    let folder_a = tempfile::tempdir_in(fixture.state.path()).expect("agent A working directory");
+    let folder_b = tempfile::tempdir_in(fixture.state.path()).expect("agent B working directory");
+    let agent_a = hire(&running.handle, folder_a.path());
     set_goal(&running.handle, goal_params(agent_a, &["/usr/bin/false"]));
     let a_first = fixture.await_turn();
     let session_a = issued_session(&fixture.records(), a_first);
 
-    let agent_b = hire(&running.handle, fixture.state.path());
+    let agent_b = hire(&running.handle, folder_b.path());
     set_goal(&running.handle, goal_params(agent_b, &["/usr/bin/false"]));
     let b_first = fixture.await_record("agent B's turn", |record| match record {
         Record::TurnIssued { agent, turn, .. } if *agent == agent_b => Some(*turn),
@@ -804,11 +805,11 @@ fn another_agents_session_neither_binds_nor_clears_resume_recovery() {
             .handle
             .input(Input::SessionLearned { turn, session });
     }
-    end(&running.handle, a_first, None);
+    end(&fixture, &host, a_first, None);
     let a_resumed = turn_after(&fixture, agent_a, a_first);
-    end(&running.handle, b_first, None);
+    end(&fixture, &host, b_first, None);
     let b_resumed = turn_after(&fixture, agent_b, b_first);
-    end(&running.handle, a_resumed, None);
+    end(&fixture, &host, a_resumed, None);
     let a_fallback = turn_after(&fixture, agent_a, a_resumed);
     assert_eq!(
         agent_row(&doctor(&settings), agent_a).unconfirmed_resume,

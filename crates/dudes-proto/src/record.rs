@@ -20,6 +20,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::budget::{AgentBudget, Ceiling, Spend};
 use crate::decision::{GateStep, LoopDecision, NoteAdmission};
 use crate::goal::{Evidence, Goal};
+use crate::instruction::{
+    InstructionBaselineRef, InstructionBoundaryAbsenceProof, InstructionObservationOwner,
+    InstructionReviewAction, InstructionReviewWatermark, InstructionSettlement,
+    InstructionSnapshot, InstructionTicketAssociation,
+};
 use crate::projection::LiveActivityKind;
 use crate::ticket::{TicketCheck, TicketReason};
 
@@ -1728,6 +1733,52 @@ pub enum Record {
         /// The card's `seq` the remover decided against.
         expected_seq: Seq,
     },
+    /// Durable starting sample before a new issue or one physical retry of an immutable issue.
+    /// Its own LSN identifies this attempt; it carries no task or instruction contents.
+    InstructionObservationStarted {
+        /// Physical attempt or whole Attached process owner.
+        owner: InstructionObservationOwner,
+        /// Frozen ticket interval association, if observed.
+        ticket: Option<InstructionTicketAssociation>,
+        /// Frozen discovery plan, fingerprints and independent coverage gaps.
+        snapshot: InstructionSnapshot,
+    },
+    /// Terminal evidence for one physical attempt or an actual turn with a missing start.
+    /// A later attempt cannot replace this record's uncertainty or known changes.
+    InstructionObservationFinished {
+        /// Original attempt or Attached process owner.
+        owner: InstructionObservationOwner,
+        /// Original ticket interval association.
+        ticket: Option<InstructionTicketAssociation>,
+        /// Exact starting record, or an explicit actual missing turn boundary.
+        baseline: InstructionBaselineRef,
+        /// Comparison, actual no-process proof or honest uncertainty.
+        settlement: InstructionSettlement,
+    },
+    /// One atomic Operator action consumes exactly the reviewed set and applies acceptance or
+    /// the existing admitted rework assignment, without a separate acknowledgement write.
+    TicketInstructionReviewed {
+        /// Reviewed ticket.
+        card: CardId,
+        /// Router-resolved Operator actor.
+        by: Actor,
+        /// Current card sequence admitted on the serialized append boundary.
+        expected_seq: Seq,
+        /// Exact set consumed, never a newer observation.
+        watermark: InstructionReviewWatermark,
+        /// Acceptance qualification or admitted assignment and bounded message.
+        action: InstructionReviewAction,
+    },
+    /// Monotonic scoped native-boundary absence for one exact physical attempt.
+    /// It neither replaces comparison evidence nor acknowledges ticket review.
+    InstructionAttemptBoundarySettled {
+        /// Original exact attempt owner.
+        owner: InstructionObservationOwner,
+        /// Exact starting record position.
+        started_lsn: Lsn,
+        /// Fresh scoped host evidence or comparable prior-boot evidence.
+        proof: InstructionBoundaryAbsenceProof,
+    },
 }
 
 /// Who removed a worktree.
@@ -1985,6 +2036,14 @@ impl Record {
             Self::TicketAssigned { .. } => RecordKind::TicketAssigned,
             Self::TicketStarted { .. } => RecordKind::TicketStarted,
             Self::TicketRemoved { .. } => RecordKind::TicketRemoved,
+            Self::InstructionObservationStarted { .. } => RecordKind::InstructionObservationStarted,
+            Self::InstructionObservationFinished { .. } => {
+                RecordKind::InstructionObservationFinished
+            }
+            Self::TicketInstructionReviewed { .. } => RecordKind::TicketInstructionReviewed,
+            Self::InstructionAttemptBoundarySettled { .. } => {
+                RecordKind::InstructionAttemptBoundarySettled
+            }
         }
     }
 
@@ -2162,6 +2221,14 @@ pub enum RecordKind {
     TicketStarted = 74,
     /// [`Record::TicketRemoved`].
     TicketRemoved = 75,
+    /// [`Record::InstructionObservationStarted`].
+    InstructionObservationStarted = 76,
+    /// [`Record::InstructionObservationFinished`].
+    InstructionObservationFinished = 77,
+    /// [`Record::TicketInstructionReviewed`].
+    TicketInstructionReviewed = 78,
+    /// [`Record::InstructionAttemptBoundarySettled`].
+    InstructionAttemptBoundarySettled = 79,
 }
 
 impl RecordKind {
@@ -2218,8 +2285,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 75] {
-        let mut kinds = [Self::AgentHired; 75];
+    const fn known_kinds() -> [Self; 79] {
+        let mut kinds = [Self::AgentHired; 79];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2254,6 +2321,10 @@ impl RecordKind {
         kinds[72] = Self::TicketAssigned;
         kinds[73] = Self::TicketStarted;
         kinds[74] = Self::TicketRemoved;
+        kinds[75] = Self::InstructionObservationStarted;
+        kinds[76] = Self::InstructionObservationFinished;
+        kinds[77] = Self::TicketInstructionReviewed;
+        kinds[78] = Self::InstructionAttemptBoundarySettled;
         kinds
     }
 
@@ -2289,6 +2360,10 @@ impl RecordKind {
                 | Self::TicketAssigned
                 | Self::TicketStarted
                 | Self::TicketRemoved
+                | Self::InstructionObservationStarted
+                | Self::InstructionObservationFinished
+                | Self::TicketInstructionReviewed
+                | Self::InstructionAttemptBoundarySettled
         )
     }
 
@@ -2926,6 +3001,84 @@ pub mod samples {
                 },
                 expected_seq: Seq(3),
             },
+            RecordKind::InstructionObservationStarted => Record::InstructionObservationStarted {
+                owner: crate::instruction::InstructionObservationOwner::Managed {
+                    agent: agent(),
+                    turn: turn(),
+                    issue: crate::instruction::InstructionIssueAssociation::Prospective,
+                },
+                ticket: Some(crate::instruction::InstructionTicketAssociation {
+                    card: card(),
+                    goal: goal(),
+                    assignment_lsn: Lsn::from_parts(1, 10).unwrap(),
+                    seq_at_start: Seq(2),
+                }),
+                snapshot: crate::instruction::InstructionSnapshot {
+                    sampled_at: Timestamp::UNIX_EPOCH,
+                    source: crate::instruction::InstructionSnapshotSource::Fresh,
+                    boot: None,
+                    execution_folder: Some(crate::instruction::NativeInstructionPath::Utf8 {
+                        value: "/work/project".into(),
+                    }),
+                    participants: Vec::new(),
+                    inputs: Vec::new(),
+                    inventoried: Vec::new(),
+                    gaps: vec![crate::instruction::InstructionCoverageGap {
+                        reason: crate::instruction::InstructionGapKind::DeclarationMissing,
+                        context: crate::instruction::InstructionPathContext::Unresolved,
+                        agent: Some(agent()),
+                        path: None,
+                    }],
+                    usage: crate::instruction::InstructionSampleUsage::default(),
+                },
+            },
+            RecordKind::InstructionObservationFinished => Record::InstructionObservationFinished {
+                owner: crate::instruction::InstructionObservationOwner::Managed {
+                    agent: agent(),
+                    turn: turn(),
+                    issue: crate::instruction::InstructionIssueAssociation::Prospective,
+                },
+                ticket: Some(crate::instruction::InstructionTicketAssociation {
+                    card: card(),
+                    goal: goal(),
+                    assignment_lsn: Lsn::from_parts(1, 10).unwrap(),
+                    seq_at_start: Seq(2),
+                }),
+                baseline: crate::instruction::InstructionBaselineRef::Started {
+                    lsn: Lsn::from_parts(1, 11).unwrap(),
+                },
+                settlement: crate::instruction::InstructionSettlement::NoIssuedTurn,
+            },
+            RecordKind::TicketInstructionReviewed => Record::TicketInstructionReviewed {
+                card: card(),
+                by: Actor::Peer {
+                    pid: 77,
+                    uid: Some(501),
+                },
+                expected_seq: Seq(3),
+                watermark: crate::instruction::InstructionReviewWatermark {
+                    through_lsn: Lsn::from_parts(1, 12).unwrap(),
+                    set_digest: Hex32::new([0x12; 32]),
+                },
+                action: crate::instruction::InstructionReviewAction::Accept {
+                    completion: crate::instruction::InstructionAcceptCompletion::Continue,
+                },
+            },
+            RecordKind::InstructionAttemptBoundarySettled => {
+                Record::InstructionAttemptBoundarySettled {
+                    owner: crate::instruction::InstructionObservationOwner::Managed {
+                        agent: agent(),
+                        turn: turn(),
+                        issue: crate::instruction::InstructionIssueAssociation::Prospective,
+                    },
+                    started_lsn: Lsn::from_parts(1, 11).unwrap(),
+                    proof: InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
+                        receipt: crate::instruction::InstructionNativeBoundaryReceipt::Spawned {
+                            lsn: Lsn::from_parts(1, 12).unwrap(),
+                        },
+                    },
+                }
+            }
             RecordKind::AgentRenamed => Record::AgentRenamed {
                 id: agent(),
                 name: "Kim renamed".to_owned(),
@@ -3337,7 +3490,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 75);
+        assert_eq!(RecordKind::KNOWN.len(), 79);
         for &kind in &RecordKind::KNOWN[46..66] {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys() {
@@ -3840,7 +3993,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            75,
+            79,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -4838,8 +4991,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 75);
-        assert_eq!(RecordKind::from_tag(76), None);
+        assert_eq!(RecordKind::KNOWN.len(), 79);
+        assert_eq!(RecordKind::from_tag(80), None);
     }
 
     const TICKET_KINDS: [(RecordKind, u16); 5] = [

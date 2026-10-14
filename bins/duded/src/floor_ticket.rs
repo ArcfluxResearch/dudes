@@ -8,12 +8,20 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
+use dudes_proto::instruction::{
+    InstructionBaselineRef, InstructionEndBoundary, InstructionIssueAssociation,
+    InstructionObservationOwner, InstructionPendingReview, InstructionReviewInterval,
+    InstructionReviewWatermark,
+};
+use dudes_proto::record::Hex32;
 use dudes_proto::rpc::ticket::{
     TicketAcceptParams, TicketAssignParams, TicketCreateParams, TicketEditParams, TicketReadParams,
     TicketReadResult, TicketRemoveParams, TicketStopParams,
 };
 use dudes_proto::{TicketRefusal, TicketRow};
+use dudes_types::{AgentId, CardId, Lsn, Seq};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// The most bytes of a ticket request, and of the answer to a read.
@@ -91,7 +99,7 @@ pub enum TicketRequest {
 }
 
 impl TicketRequest {
-    /// Decode one body: a single flat JSON object of the route's members and no others, within the
+    /// Decode one body: a single JSON object of the route's members and no others, within the
     /// byte and depth bounds. An unknown or duplicate member is refused by the typed decoder,
     /// before any effect.
     pub(crate) fn parse(route: TicketRoute, bytes: &[u8]) -> Result<Self> {
@@ -121,8 +129,24 @@ impl TicketRequest {
                 )?;
                 Self::Edit(request)
             }
-            TicketRoute::Assign => Self::Assign(decode(bytes)?),
-            TicketRoute::Accept => Self::Accept(decode(bytes)?),
+            TicketRoute::Assign => {
+                let request: FloorAssign = decode(bytes)?;
+                Self::Assign(TicketAssignParams {
+                    card: request.card,
+                    agent: request.agent,
+                    message: request.message,
+                    expected_seq: request.expected_seq,
+                    review_watermark: request.review_watermark,
+                })
+            }
+            TicketRoute::Accept => {
+                let request: FloorAccept = decode(bytes)?;
+                Self::Accept(TicketAcceptParams {
+                    card: request.card,
+                    expected_seq: request.expected_seq,
+                    review_watermark: request.review_watermark,
+                })
+            }
             TicketRoute::Stop => Self::Stop(decode(bytes)?),
             TicketRoute::Remove => Self::Remove(decode(bytes)?),
             TicketRoute::Read => Self::Read(decode(bytes)?),
@@ -137,6 +161,54 @@ impl TicketRequest {
             _ => None,
         }
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FloorAssign {
+    card: CardId,
+    agent: AgentId,
+    #[serde(default)]
+    message: Option<String>,
+    expected_seq: Seq,
+    #[serde(default, deserialize_with = "http_watermark")]
+    review_watermark: Option<InstructionReviewWatermark>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FloorAccept {
+    card: CardId,
+    expected_seq: Seq,
+    #[serde(default, deserialize_with = "http_watermark")]
+    review_watermark: Option<InstructionReviewWatermark>,
+}
+
+fn http_watermark<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<InstructionReviewWatermark>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Watermark {
+        through_lsn: String,
+        set_digest: Hex32,
+    }
+    let Some(value) = Option::<Watermark>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    let lsn = value
+        .through_lsn
+        .parse::<u64>()
+        .map_err(serde::de::Error::custom)?;
+    if value.through_lsn != lsn.to_string() {
+        return Err(serde::de::Error::custom(
+            "instruction review position is not canonical",
+        ));
+    }
+    Ok(Some(InstructionReviewWatermark {
+        through_lsn: Lsn(lsn),
+        set_digest: value.set_digest,
+    }))
 }
 
 /// A check is chosen by its id and the revision the page saw, both or neither, so that a changed
@@ -210,6 +282,8 @@ pub fn refusal_code(code: &str) -> Option<&'static str> {
         TicketRefusal::QueueFull,
         TicketRefusal::LimitReached,
         TicketRefusal::Busy,
+        TicketRefusal::InstructionComparisonPending,
+        TicketRefusal::InstructionReviewRequired,
     ]
     .into_iter()
     .map(TicketRefusal::code)
@@ -323,8 +397,9 @@ impl Drop for Turn<'_> {
 }
 
 /// The answer to a read: the card, and what the board keeps of the ticket. The agent's summary is
-/// the agent's own words and is sent as a string for the page to show as text. When the answer
-/// would pass its bound, the summary is cut until it fits.
+/// the agent's own words and is sent as a string for the page to show as text. Shortened display
+/// fields and omitted evidence are marked. Any retained native path identity and review watermark
+/// are unchanged.
 #[must_use]
 pub fn read_body(read: &TicketReadResult) -> Value {
     let mut body = read_value(read);
@@ -333,19 +408,129 @@ pub fn read_body(read: &TicketReadResult) -> Value {
         if size <= MAX_TICKET_BODY_BYTES {
             return body;
         }
-        let Some(summary) = body["ticket"]["summary"].as_str().map(str::to_owned) else {
-            return body;
+        if let Some(summary) = body["ticket"]["summary"].as_str().map(str::to_owned) {
+            let mut cut = summary.len() / 2;
+            while !summary.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            body["ticket"]["summary"] = if cut == 0 {
+                Value::Null
+            } else {
+                json!(summary[..cut])
+            };
+            if !summary.is_empty() {
+                mark_truncated(&mut body, TicketReadTruncation::Summary);
+            }
+            continue;
+        }
+        if trim_instruction_evidence(&mut body["ticket"]["instruction_review"]) {
+            mark_truncated(&mut body, TicketReadTruncation::InstructionEvidence);
+            continue;
+        }
+        if !trim_ticket_display_text(&mut body) {
+            return json!({"state":"unavailable", "truncated":[TicketReadTruncation::Ticket]});
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TicketReadTruncation {
+    Note,
+    Title,
+    CheckLabel,
+    WaitingNote,
+    Summary,
+    InstructionEvidence,
+    Ticket,
+}
+
+fn mark_truncated(body: &mut Value, field: TicketReadTruncation) {
+    if body["ticket"]["truncated"].is_null() {
+        body["ticket"]["truncated"] = json!([]);
+    }
+    let fields = body["ticket"]["truncated"]
+        .as_array_mut()
+        .expect("truncation fields");
+    let field = json!(field);
+    if !fields.contains(&field) {
+        fields.push(field);
+    }
+}
+
+fn trim_ticket_display_text(body: &mut Value) -> bool {
+    for (field, pointer) in [
+        (TicketReadTruncation::Note, "/ticket/note"),
+        (TicketReadTruncation::Title, "/card/title"),
+        (TicketReadTruncation::CheckLabel, "/ticket/check/label"),
+        (TicketReadTruncation::WaitingNote, "/ticket/waiting/note"),
+    ] {
+        let Some(text) = body
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+        else {
+            continue;
         };
-        let mut cut = summary.len() / 2;
-        while !summary.is_char_boundary(cut) {
+        let mut cut = text.len() / 2;
+        while !text.is_char_boundary(cut) {
             cut -= 1;
         }
-        body["ticket"]["summary"] = if cut == 0 {
-            Value::Null
-        } else {
-            json!(summary[..cut])
-        };
+        *body.pointer_mut(pointer).expect("existing display field") = json!(text[..cut]);
+        mark_truncated(body, field);
+        return true;
     }
+    false
+}
+
+fn mark_evidence_omitted(review: &mut Value) {
+    let gaps = review["gaps"].as_array_mut().expect("review gaps exist");
+    if !gaps.iter().any(|gap| gap["reason"] == "metadata_limit") {
+        gaps.push(
+            json!({"reason":"metadata_limit", "context":{"kind":"unresolved"},
+            "agent":null, "path":null, "display":null, "display_truncated":false}),
+        );
+    }
+}
+
+fn trim_instruction_evidence(review: &mut Value) -> bool {
+    if review["gaps"].as_array().is_none() {
+        return false;
+    }
+    for name in ["changed_paths", "intervals"] {
+        if let Some(rows) = review[name].as_array_mut()
+            && rows.len() > 1
+        {
+            rows.pop();
+            mark_evidence_omitted(review);
+            return true;
+        }
+    }
+    let gaps = review["gaps"].as_array_mut().expect("review gaps exist");
+    if gaps
+        .iter()
+        .filter(|gap| gap["reason"] != "metadata_limit")
+        .count()
+        > 1
+    {
+        let index = gaps
+            .iter()
+            .rposition(|gap| gap["reason"] != "metadata_limit")
+            .expect("original gap exists");
+        gaps.remove(index);
+        mark_evidence_omitted(review);
+        return true;
+    }
+    if let Some(index) = gaps.iter().position(|gap| !gap["path"].is_null()) {
+        let gap = &mut gaps[index];
+        gap["path"] = Value::Null;
+        gap["display"] = Value::Null;
+        gap["display_truncated"] = json!(false);
+        mark_evidence_omitted(review);
+        return true;
+    }
+    false
 }
 
 fn read_value(read: &TicketReadResult) -> Value {
@@ -363,9 +548,10 @@ fn read_value(read: &TicketReadResult) -> Value {
         reason,
         summary,
         check,
+        instruction_review,
         ..
     } = ticket;
-    json!({
+    let mut body = json!({
         "state": "ok",
         "card": {
             "id": card.id,
@@ -385,6 +571,92 @@ fn read_value(read: &TicketReadResult) -> Value {
             "position": position,
             "waiting": waiting,
         },
+    });
+    if let Some(review) = instruction_review {
+        body["ticket"]["instruction_review"] = instruction_review_value(review);
+    }
+    body
+}
+
+fn instruction_interval_value(interval: &InstructionReviewInterval) -> Value {
+    let (kind, agent, turn, attachment_lsn, issue_lsn) = match interval.owner {
+        InstructionObservationOwner::Managed { agent, turn, issue } => {
+            let issue = match issue {
+                InstructionIssueAssociation::Prospective => None,
+                InstructionIssueAssociation::Issued { issue_lsn } => Some(issue_lsn.0.to_string()),
+            };
+            ("managed", agent, Some(turn), None, issue)
+        }
+        InstructionObservationOwner::AttachedProcess {
+            agent,
+            attachment_lsn,
+        } => (
+            "attached_process",
+            agent,
+            None,
+            Some(attachment_lsn.0.to_string()),
+            None,
+        ),
+        InstructionObservationOwner::AttachedTurn {
+            agent,
+            turn,
+            attachment_lsn,
+        } => (
+            "attached_turn",
+            agent,
+            Some(turn),
+            attachment_lsn.map(|lsn| lsn.0.to_string()),
+            None,
+        ),
+    };
+    let (baseline_lsn, missing_start) = match interval.baseline {
+        InstructionBaselineRef::Started { lsn } => (Some(lsn.0.to_string()), false),
+        InstructionBaselineRef::MissingTurnBoundary { .. }
+        | InstructionBaselineRef::MissingIssueBoundary { .. } => (None, true),
+    };
+    let end_lsn = interval
+        .end
+        .map(|end| match end {
+            InstructionEndBoundary::ManagedTurn { end_lsn, .. }
+            | InstructionEndBoundary::AttachedProcess { end_lsn, .. }
+            | InstructionEndBoundary::AttachedTurn { end_lsn, .. } => end_lsn.0.to_string(),
+        })
+        .or_else(|| match interval.baseline {
+            InstructionBaselineRef::MissingTurnBoundary { end_lsn, .. } => {
+                Some(end_lsn.0.to_string())
+            }
+            InstructionBaselineRef::Started { .. }
+            | InstructionBaselineRef::MissingIssueBoundary { .. } => None,
+        });
+    json!({
+        "kind": kind, "agent": agent, "turn": turn,
+        "attachment_lsn": attachment_lsn, "issue_lsn": issue_lsn,
+        "baseline_lsn": baseline_lsn, "missing_start": missing_start,
+        "card": interval.ticket.card, "goal": interval.ticket.goal,
+        "assignment_lsn": interval.ticket.assignment_lsn.0.to_string(),
+        "seq_at_start": interval.ticket.seq_at_start,
+        "finished_lsn": interval.finished_lsn.map(|lsn| lsn.0.to_string()),
+        "end_lsn": end_lsn, "sampled_at": interval.sampled_at, "recovery": interval.recovery,
+    })
+}
+
+fn instruction_review_value(review: &InstructionPendingReview) -> Value {
+    json!({
+        "watermark": {
+            "through_lsn": review.watermark.through_lsn.0.to_string(),
+            "set_digest": review.watermark.set_digest,
+        },
+        "pending_comparison": review.pending_comparison,
+        "intervals": review.intervals.iter().map(instruction_interval_value).collect::<Vec<_>>(),
+        "changed_paths": review.changed_paths.iter().map(|change| json!({
+            "path": change.path, "display": change.path.display(),
+            "display_truncated": change.path.display_truncated(), "context": change.context,
+        })).collect::<Vec<_>>(),
+        "gaps": review.gaps.iter().map(|gap| json!({
+            "reason": gap.reason, "context": gap.context, "agent": gap.agent,
+            "path": gap.path, "display": gap.path.as_ref().map(dudes_proto::instruction::NativeInstructionPath::display),
+            "display_truncated": gap.path.as_ref().is_some_and(dudes_proto::instruction::NativeInstructionPath::display_truncated),
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -488,5 +760,261 @@ mod tests {
         assert_eq!(refusal_code("stale_card"), Some("stale_card"));
         assert_eq!(refusal_code("limit_reached"), Some("limit_reached"));
         assert_eq!(refusal_code("rm -rf"), None);
+    }
+
+    #[test]
+    fn reviewed_actions_decode_exact_decimal_positions_without_changing_socket_types() {
+        let card = CardId::from_parts(1, 1);
+        let agent = AgentId::from_parts(1, 2);
+        let watermark = json!({"through_lsn":"9007199254740993", "set_digest":"dd".repeat(32)});
+        let accept = json!({"card":card, "expected_seq":7, "review_watermark":watermark});
+        let TicketRequest::Accept(parsed) = TicketRequest::parse(
+            TicketRoute::Accept,
+            &serde_json::to_vec(&accept).expect("json"),
+        )
+        .expect("accept") else {
+            panic!("accept request");
+        };
+        assert_eq!(
+            parsed.review_watermark.expect("watermark").through_lsn,
+            Lsn(9_007_199_254_740_993)
+        );
+        assert_eq!(
+            serde_json::to_value(parsed).expect("socket json")["review_watermark"]["through_lsn"],
+            9_007_199_254_740_993_u64
+        );
+        let assign = json!({"card":card, "agent":agent, "message":"Revisit the change", "expected_seq":7, "review_watermark":watermark});
+        let TicketRequest::Assign(parsed) = TicketRequest::parse(
+            TicketRoute::Assign,
+            &serde_json::to_vec(&assign).expect("json"),
+        )
+        .expect("assign") else {
+            panic!("assign request");
+        };
+        assert_eq!(parsed.message.as_deref(), Some("Revisit the change"));
+        assert_eq!(
+            parsed.review_watermark.expect("watermark").through_lsn,
+            Lsn(9_007_199_254_740_993)
+        );
+        for position in [
+            json!(9_007_199_254_740_992_u64),
+            json!("01"),
+            json!("+1"),
+            json!("18446744073709551616"),
+        ] {
+            let mut bad = accept.clone();
+            bad["review_watermark"]["through_lsn"] = position;
+            assert!(
+                TicketRequest::parse(
+                    TicketRoute::Accept,
+                    &serde_json::to_vec(&bad).expect("json")
+                )
+                .is_err()
+            );
+        }
+        let duplicate = format!(
+            r#"{{"card":"{card}","expected_seq":7,"review_watermark":{{"through_lsn":"1","through_lsn":"2","set_digest":"{}"}}}}"#,
+            "dd".repeat(32)
+        );
+        assert!(TicketRequest::parse(TicketRoute::Accept, duplicate.as_bytes()).is_err());
+    }
+
+    fn instruction_read_fixture() -> TicketReadResult {
+        use dudes_proto::instruction::{
+            InstructionChangedPath, InstructionCoverageGap, InstructionGapKind,
+            InstructionPathContext, InstructionTicketAssociation, NativeInstructionPath,
+        };
+        use dudes_proto::{CardView, Predicate, TicketCheck};
+        use dudes_types::{CardStatus, GoalId, Timestamp, TurnId};
+
+        let card = CardId::from_parts(1, 1);
+        let agent = AgentId::from_parts(1, 2);
+        let turn = TurnId::from_parts(1, 3);
+        let interval = InstructionReviewInterval {
+            owner: InstructionObservationOwner::Managed {
+                agent,
+                turn,
+                issue: InstructionIssueAssociation::Issued { issue_lsn: Lsn(10) },
+            },
+            baseline: InstructionBaselineRef::Started { lsn: Lsn(11) },
+            ticket: InstructionTicketAssociation {
+                card,
+                goal: GoalId::from_parts(1, 4),
+                assignment_lsn: Lsn(9),
+                seq_at_start: Seq(2),
+            },
+            finished_lsn: Some(Lsn(9_007_199_254_740_993)),
+            end: Some(InstructionEndBoundary::ManagedTurn {
+                turn,
+                end_lsn: Lsn(13),
+            }),
+            sampled_at: Some(Timestamp::UNIX_EPOCH),
+            recovery: true,
+        };
+        let path = NativeInstructionPath::Utf8 {
+            value: format!("/project/{}", "a".repeat(3_900)),
+        };
+        let review = InstructionPendingReview {
+            watermark: InstructionReviewWatermark {
+                through_lsn: Lsn(9_007_199_254_740_993),
+                set_digest: Hex32::new([0xdd; 32]),
+            },
+            pending_comparison: false,
+            intervals: vec![interval; 8],
+            changed_paths: vec![
+                InstructionChangedPath {
+                    path: path.clone(),
+                    context: InstructionPathContext::SharedProject
+                };
+                4
+            ],
+            gaps: vec![
+                InstructionCoverageGap {
+                    reason: InstructionGapKind::ReadFailed,
+                    context: InstructionPathContext::SharedProject,
+                    agent: Some(agent),
+                    path: Some(path)
+                };
+                4
+            ],
+        };
+        TicketReadResult {
+            card: CardView {
+                id: card,
+                title: "Review instructions".to_owned(),
+                department: "engineering".to_owned(),
+                status: CardStatus::Blocked,
+                status_by: dudes_proto::record::Actor::System,
+                seq: Seq(3),
+                claimed_by: Some(agent),
+                deps: vec![],
+                ticket: None,
+            },
+            ticket: TicketRow {
+                description: "n".repeat(8_192),
+                project: "service".to_owned(),
+                done_when: TicketCheck {
+                    id: "default".to_owned(),
+                    label: "passes".to_owned(),
+                    predicate: Predicate::Command {
+                        argv: vec!["false".to_owned()],
+                        timeout_s: 1,
+                    },
+                },
+                goal: None,
+                queue: None,
+                message: None,
+                round: 1,
+                reason: None,
+                summary: Some("s".repeat(4_096)),
+                check: None,
+                instruction_review: Some(review),
+            },
+            position: None,
+            waiting: None,
+        }
+    }
+
+    #[test]
+    fn bounded_read_retains_known_change_original_gap_and_exact_review_cut() {
+        let read = instruction_read_fixture();
+        let body = read_body(&read);
+        assert!(serde_json::to_vec(&body).expect("json").len() <= MAX_TICKET_BODY_BYTES);
+        assert_eq!(body["ticket"]["note"], "n".repeat(8_192));
+        let shown = &body["ticket"]["instruction_review"];
+        assert_eq!(shown["watermark"]["through_lsn"], "9007199254740993");
+        assert_eq!(shown["intervals"][0]["finished_lsn"], "9007199254740993");
+        assert_eq!(shown["changed_paths"].as_array().expect("paths").len(), 1);
+        let gaps = shown["gaps"].as_array().expect("gaps");
+        assert!(gaps.iter().any(|gap| gap["reason"] == "read_failed"));
+        assert!(gaps.iter().any(|gap| gap["reason"] == "metadata_limit"));
+    }
+
+    #[test]
+    fn escaping_heavy_valid_ticket_read_stays_within_the_transport_bound() {
+        use dudes_proto::instruction::{InstructionCoverageGap, NativeInstructionPath};
+        use dudes_proto::rpc::goal::CompletionCheckDeclaration;
+        use dudes_proto::ticket::{MAX_NOTE_BYTES, MAX_TITLE_BYTES, clean_text, clean_title};
+        use dudes_proto::{TicketWait, TicketWaiting};
+
+        let mut read = instruction_read_fixture();
+        read.ticket.description = format!("x{}x", "\n".repeat(8_190));
+        read.card.title = "\"".repeat(256);
+        read.ticket.done_when.label = "\\".repeat(128);
+        let waiting = TicketWait::Ticket { card: read.card.id };
+        read.waiting = Some(TicketWaiting {
+            wait: waiting,
+            note: waiting.sentence("", &read.card.title),
+        });
+        read.ticket.summary = None;
+        let path = NativeInstructionPath::Utf8 {
+            value: format!("/project/{}", vec!["\n".repeat(200); 10].join("/")),
+        };
+        assert!(clean_text(&read.ticket.description, MAX_NOTE_BYTES));
+        assert!(clean_title(&read.card.title, MAX_TITLE_BYTES));
+        CompletionCheckDeclaration::new(&read.ticket.done_when.id, &read.ticket.done_when.label)
+            .expect("valid check label");
+        assert!(clean_text(
+            &read.waiting.as_ref().expect("waiting").note,
+            600
+        ));
+        path.validate().expect("valid bounded native path");
+        assert_eq!(serde_json::to_vec(&path).expect("path json").len(), 4_048);
+        assert_eq!(path.display().len(), 4_018);
+        let review = read.ticket.instruction_review.as_mut().expect("review");
+        review.intervals.truncate(1);
+        review.changed_paths.truncate(1);
+        review.changed_paths[0].path = path.clone();
+        review.gaps = vec![InstructionCoverageGap::metadata_limit()];
+        let initial = read_value(&read);
+        assert!(serde_json::to_vec(&initial).expect("json").len() > MAX_TICKET_BODY_BYTES);
+        let body = read_body(&read);
+        assert!(serde_json::to_vec(&body).expect("json").len() <= MAX_TICKET_BODY_BYTES);
+        assert_eq!(body["state"], "ok");
+        assert_eq!(
+            body["ticket"]["instruction_review"]["changed_paths"][0]["path"],
+            serde_json::to_value(path).expect("native identity")
+        );
+        assert_eq!(
+            body["ticket"]["instruction_review"]["watermark"]["through_lsn"],
+            "9007199254740993"
+        );
+        assert!(
+            body["ticket"]["truncated"]
+                .as_array()
+                .expect("omission marker")
+                .contains(&json!("note"))
+        );
+    }
+
+    #[test]
+    fn oversized_identity_data_is_omitted_instead_of_returning_an_oversized_read() {
+        let mut read = instruction_read_fixture();
+        read.ticket.project = "x".repeat(MAX_TICKET_BODY_BYTES);
+        let body = read_body(&read);
+        assert_eq!(body, json!({"state":"unavailable", "truncated":["ticket"]}));
+        assert!(serde_json::to_vec(&body).expect("json").len() <= MAX_TICKET_BODY_BYTES);
+    }
+
+    #[test]
+    fn a_missing_issue_boundary_is_not_serialized_as_a_baseline_or_end() {
+        let read = instruction_read_fixture();
+        let mut interval = read.ticket.instruction_review.expect("review").intervals[0].clone();
+        let turn = dudes_types::TurnId::from_parts(1, 3);
+        interval.baseline = InstructionBaselineRef::MissingIssueBoundary {
+            turn,
+            issue_lsn: Lsn(10),
+        };
+        interval.end = None;
+        interval.sampled_at = None;
+        interval.recovery = true;
+        let shown = instruction_interval_value(&interval);
+        assert_eq!(shown["issue_lsn"], "10");
+        assert_eq!(shown["baseline_lsn"], Value::Null);
+        assert_eq!(shown["end_lsn"], Value::Null);
+        assert_eq!(shown["sampled_at"], Value::Null);
+        assert_eq!(shown["missing_start"], true);
+        assert_eq!(shown["recovery"], true);
+        assert_eq!(shown["seq_at_start"], 2);
     }
 }

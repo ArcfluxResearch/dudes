@@ -2,11 +2,12 @@
 
 use std::io::Write;
 
+use dudes_proto::instruction::InstructionReviewWatermark;
 use dudes_proto::rpc::board::CardListParams;
 use dudes_proto::rpc::ticket::{
-    TicketAcceptParams, TicketAssignParams, TicketAssignResult, TicketCheckoutParams,
-    TicketCheckoutResult, TicketCreateParams, TicketCreateResult, TicketEditParams,
-    TicketReadParams, TicketReadResult, TicketRemoveParams, TicketStopParams,
+    TicketAcceptParams, TicketAcceptResult, TicketAssignParams, TicketAssignResult,
+    TicketCheckoutParams, TicketCheckoutResult, TicketCreateParams, TicketCreateResult,
+    TicketEditParams, TicketReadParams, TicketReadResult, TicketRemoveParams, TicketStopParams,
 };
 use dudes_proto::rpc::{CurrentMethod, Empty, ErrorCode, Method, RpcError};
 use dudes_proto::{AgentView, TicketRefusal};
@@ -169,7 +170,7 @@ impl Session<'_> {
         named: Option<Seq>,
     ) -> Result<(TicketAssignResult, String), Failure> {
         let agent = self.resolve(agent)?;
-        self.assign(card, agent, message, named)
+        self.assign(card, agent, message, named, None)
     }
 
     fn assign(
@@ -178,6 +179,7 @@ impl Session<'_> {
         agent: AgentId,
         message: Option<String>,
         named: Option<Seq>,
+        review_watermark: Option<InstructionReviewWatermark>,
     ) -> Result<(TicketAssignResult, String), Failure> {
         let expected_seq = self.seq(card, named)?;
         let params = encode(&TicketAssignParams {
@@ -185,6 +187,7 @@ impl Session<'_> {
             agent,
             message,
             expected_seq,
+            review_watermark,
         })?;
         let result = typed(self.call(Method::TicketAssign, Some(params))?)?;
         let name = agent_name(&self.names(), agent);
@@ -208,6 +211,7 @@ impl Session<'_> {
                 data: None,
             }));
         }
+        let (expected_seq, review_watermark) = review_parameters(&read, named)?;
         let agent = match (agent, read.card.claimed_by) {
             (Some(named), _) => self.resolve(named)?,
             (None, Some(previous)) => previous,
@@ -221,7 +225,8 @@ impl Session<'_> {
             card,
             agent,
             Some(message),
-            Some(named.unwrap_or(read.card.seq)),
+            Some(expected_seq),
+            review_watermark,
         )
     }
 
@@ -244,6 +249,46 @@ impl Session<'_> {
         }
         Ok(tickets)
     }
+}
+
+fn review_parameters(
+    read: &TicketReadResult,
+    named: Option<Seq>,
+) -> Result<(Seq, Option<InstructionReviewWatermark>), Failure> {
+    let Some(review) = &read.ticket.instruction_review else {
+        return Ok((named.unwrap_or(read.card.seq), None));
+    };
+    let Some(expected_seq) = named else {
+        return Err(Failure::Refused(RpcError {
+            code: ErrorCode::Refused.code(),
+            message: format!(
+                "{} Read `dudes ticket show {}`, then retry with --expected-seq {}.",
+                TicketRefusal::InstructionReviewRequired.sentence(read.card.status),
+                read.card.id,
+                read.card.seq.0
+            ),
+            data: Some(
+                serde_json::json!({"reason":TicketRefusal::InstructionReviewRequired.code()}),
+            ),
+        }));
+    };
+    if expected_seq != read.card.seq {
+        return Err(Failure::Refused(RpcError {
+            code: ErrorCode::Conflict.code(),
+            message: TicketRefusal::StaleCard.sentence(read.card.status),
+            data: Some(serde_json::json!({"current_seq":read.card.seq})),
+        }));
+    }
+    if review.pending_comparison {
+        return Err(Failure::Refused(RpcError {
+            code: ErrorCode::Refused.code(),
+            message: TicketRefusal::InstructionComparisonPending.sentence(read.card.status),
+            data: Some(
+                serde_json::json!({"reason":TicketRefusal::InstructionComparisonPending.code()}),
+            ),
+        }));
+    }
+    Ok((expected_seq, Some(review.watermark)))
 }
 
 fn is_not_a_ticket(error: &dudes_proto::rpc::RpcError) -> bool {
@@ -315,12 +360,16 @@ pub(super) fn command(
             render::ticket::given(out, machine, &name, result).map_err(local)?;
         }
         TicketCommand::Accept { card, expected_seq } => {
+            let read = session.read(*card)?;
+            let (expected_seq, review_watermark) = review_parameters(&read, *expected_seq)?;
             let params = encode(&TicketAcceptParams {
                 card: *card,
-                expected_seq: session.seq(*card, *expected_seq)?,
+                expected_seq,
+                review_watermark,
             })?;
-            let result: Empty = typed(session.call(Method::TicketAccept, Some(params))?)?;
-            render::ticket::changed(out, machine, "Ticket accepted.", result).map_err(local)?;
+            let result: TicketAcceptResult =
+                typed(session.call(Method::TicketAccept, Some(params))?)?;
+            render::ticket::accepted(out, machine, result).map_err(local)?;
         }
         TicketCommand::Stop { card, expected_seq } => {
             let params = encode(&TicketStopParams {
@@ -328,8 +377,7 @@ pub(super) fn command(
                 expected_seq: session.seq(*card, *expected_seq)?,
             })?;
             let result: Empty = typed(session.call(Method::TicketStop, Some(params))?)?;
-            render::ticket::changed(out, machine, "Ticket stopped. It is back in To do.", result)
-                .map_err(local)?;
+            render::ticket::changed(out, machine, "Ticket stopped.", result).map_err(local)?;
         }
         TicketCommand::Remove { card, expected_seq } => {
             let params = encode(&TicketRemoveParams {
@@ -354,4 +402,80 @@ pub(super) fn command(
         }
     }
     Ok(exit::SUCCESS)
+}
+
+#[cfg(test)]
+mod instruction_tests {
+    use super::*;
+    use dudes_proto::instruction::InstructionPendingReview;
+    use dudes_proto::record::Hex32;
+    use dudes_types::Lsn;
+
+    fn reading() -> TicketReadResult {
+        serde_json::from_value(serde_json::json!({
+            "card": {"id":"01JBQ8XK2M3N4P5Q6R7S8T9VWX", "title":"Review instructions", "department":"engineering",
+                "status":"blocked", "status_by":{"kind":"system"}, "seq":7},
+            "ticket": {"description":"Read the evidence", "project":"service", "round":1,
+                "done_when":{"id":"default", "label":"passes", "predicate":{"command":{"argv":["false"], "timeout_s":1}}}},
+        })).expect("read fixture")
+    }
+
+    #[test]
+    fn instruction_review_requires_the_sequence_the_operator_named() {
+        let mut read = reading();
+        let watermark = InstructionReviewWatermark {
+            through_lsn: Lsn(9_007_199_254_740_993),
+            set_digest: Hex32::new([0xdd; 32]),
+        };
+        read.ticket.instruction_review = Some(InstructionPendingReview {
+            watermark,
+            pending_comparison: false,
+            intervals: Vec::new(),
+            changed_paths: Vec::new(),
+            gaps: Vec::new(),
+        });
+        let Failure::Refused(missing) =
+            review_parameters(&read, None).expect_err("explicit sequence required")
+        else {
+            panic!("refusal");
+        };
+        assert_eq!(
+            missing.data.expect("reason")["reason"],
+            "instruction_review_required"
+        );
+        let Failure::Refused(stale) =
+            review_parameters(&read, Some(Seq(6))).expect_err("old sequence")
+        else {
+            panic!("conflict");
+        };
+        assert_eq!(stale.code, ErrorCode::Conflict.code());
+        assert_eq!(stale.data.expect("sequence")["current_seq"], 7);
+        assert_eq!(
+            review_parameters(&read, Some(Seq(7))).expect("exact review"),
+            (Seq(7), Some(watermark))
+        );
+        read.ticket
+            .instruction_review
+            .as_mut()
+            .expect("review")
+            .pending_comparison = true;
+        let Failure::Refused(pending) =
+            review_parameters(&read, Some(Seq(7))).expect_err("pending comparison")
+        else {
+            panic!("refusal");
+        };
+        assert_eq!(
+            pending.data.expect("reason")["reason"],
+            "instruction_comparison_pending"
+        );
+        read.ticket.instruction_review = None;
+        assert_eq!(
+            review_parameters(&read, None).expect("ordinary"),
+            (Seq(7), None)
+        );
+        assert_eq!(
+            review_parameters(&read, Some(Seq(6))).expect("ordinary named"),
+            (Seq(6), None)
+        );
+    }
 }

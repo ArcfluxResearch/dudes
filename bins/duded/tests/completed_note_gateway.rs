@@ -22,7 +22,7 @@ struct Completed {
     completion_lsn: Lsn,
 }
 
-fn start(fixture: &Fixture, host: SharedHost) -> (duded::Settings, common::Running, SocketAddr) {
+fn start(fixture: &Fixture, host: &SharedHost) -> (duded::Settings, common::Running, SocketAddr) {
     let mut settings = fixture.settings();
     settings.floor = Some(FloorSettings {
         assets_dir: PathBuf::from(concat!(
@@ -31,39 +31,41 @@ fn start(fixture: &Fixture, host: SharedHost) -> (duded::Settings, common::Runni
         )),
         port: Some(0),
     });
-    let daemon = duded::boot_with_options(
-        &settings,
-        seams(
-            host,
-            Arc::new(ScriptedRunner::scripted([common::passes()])),
-            Arc::new(TestClock::new()),
-            duded::startup::Witness::default(),
-        ),
-        RunOptions::default(),
-    )
-    .expect("boot the owned gateway fixture");
+    let seams = seams(
+        host.clone(),
+        Arc::new(ScriptedRunner::scripted([common::passes()])),
+        Arc::new(TestClock::new()),
+        duded::startup::Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&seams.children));
+    let daemon = duded::boot_with_options(&settings, seams, RunOptions::default())
+        .expect("boot the owned gateway fixture");
     let addr = daemon.floor_addr().expect("loopback Floor listener");
     assert!(addr.ip().is_loopback());
     (settings, common::start(daemon), addr)
 }
 
-fn end_turn(handle: &duded::Handle, turn: TurnId) {
-    handle.input(Input::ChildExited {
-        final_reply: None,
-        elapsed_ms: Some(6_000),
-        turn,
-        exit: dudes_proto::ExitStatus {
-            code: Some(0),
-            signal: None,
+fn end_turn(fixture: &Fixture, host: &SharedHost, turn: TurnId) {
+    common::end_turn_with_native_payload(
+        fixture,
+        host,
+        Input::ChildExited {
+            final_reply: None,
+            elapsed_ms: Some(6_000),
+            turn,
+            exit: dudes_proto::ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: Some(dudes_providers::stream::ScopedUsage::Turn(Usage::ZERO)),
+            model_usage: BTreeMap::new(),
+            outcome: dudes_proto::TurnOutcome::Completed,
+            last_message: None,
         },
-        usage: Some(dudes_providers::stream::ScopedUsage::Turn(Usage::ZERO)),
-        model_usage: BTreeMap::new(),
-        outcome: dudes_proto::TurnOutcome::Completed,
-        last_message: None,
-    });
+    );
 }
 
-fn complete_goal(fixture: &Fixture, running: &common::Running) -> Completed {
+fn complete_goal(fixture: &Fixture, running: &common::Running, host: &SharedHost) -> Completed {
     let agent = common::hire(&running.handle, fixture.state.path());
     let mut params = common::goal_params(agent, &[common::true_program()]);
     params.hop_cap = 1;
@@ -73,7 +75,7 @@ fn complete_goal(fixture: &Fixture, running: &common::Running) -> Completed {
         matches!(record, Record::TurnSpawned { turn: spawned, .. } if *spawned == turn)
             .then_some(())
     });
-    end_turn(&running.handle, turn);
+    end_turn(fixture, host, turn);
     fixture.await_record("ordinary Done", |record| {
         matches!(record, Record::LoopDecided { agent: owner, decision: LoopDecision::Done, .. } if *owner == agent).then_some(())
     });
@@ -218,9 +220,9 @@ fn assert_completed_history(fixture: &Fixture, completed: &Completed, note_turn:
 #[test]
 fn completed_note_exact_utf8_boundary_is_issued_and_survives_restart() {
     let fixture = Fixture::new();
-    let host = SharedHost::new();
-    let (settings, mut running, addr) = start(&fixture, host.clone());
-    let completed = complete_goal(&fixture, &running);
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let (settings, mut running, addr) = start(&fixture, &host);
+    let completed = complete_goal(&fixture, &running, &host);
     let (cookie, csrf) = floor_session(&settings, addr);
     let note = "é".repeat(2_048);
     assert_eq!(note.len(), 4_096);
@@ -271,15 +273,15 @@ fn completed_note_exact_utf8_boundary_is_issued_and_survives_restart() {
         }),
     );
     assert_eq!(head.split_whitespace().nth(1), Some("400"));
-    end_turn(&running.handle, note_turn);
+    end_turn(&fixture, &host, note_turn);
     fixture.await_record("taught note end", |record| {
         matches!(record, Record::TurnEnded { turn, .. } if *turn == note_turn).then_some(())
     });
     running.stop(duded::ExitCause::Signal);
     assert_completed_history(&fixture, &completed, note_turn);
     assert_eq!(host.spawned().len(), 2);
-    let restart_host = SharedHost::new();
-    let (_, mut restarted, _) = start(&fixture, restart_host.clone());
+    let restart_host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let (_, mut restarted, _) = start(&fixture, &restart_host);
     restarted.stop(duded::ExitCause::Signal);
     assert_completed_history(&fixture, &completed, note_turn);
     assert!(restart_host.spawned().is_empty());

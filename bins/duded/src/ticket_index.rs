@@ -27,7 +27,8 @@ const fn ticket_target(record: &Record) -> Option<&CardId> {
     match record {
         Record::TicketEdited { card, .. }
         | Record::TicketAssigned { card, .. }
-        | Record::TicketRemoved { card, .. } => Some(card),
+        | Record::TicketRemoved { card, .. }
+        | Record::TicketInstructionReviewed { card, .. } => Some(card),
         _ => None,
     }
 }
@@ -127,6 +128,22 @@ impl TicketIndex {
                 self.with(*card, |ticket| {
                     ticket.status = CardStatus::Claimed;
                     ticket.holder = Some(*agent);
+                });
+            }
+            Record::TicketInstructionReviewed { card, action, .. } => {
+                self.with(*card, |ticket| match action {
+                    dudes_proto::InstructionReviewAction::ChangesRequested { agent, .. } => {
+                        ticket.status = CardStatus::Claimed;
+                        ticket.holder = Some(*agent);
+                    }
+                    dudes_proto::InstructionReviewAction::Accept { completion } => {
+                        ticket.status = match completion {
+                            dudes_proto::InstructionAcceptCompletion::Completed { .. } => {
+                                CardStatus::Done
+                            }
+                            dudes_proto::InstructionAcceptCompletion::Continue => CardStatus::Doing,
+                        };
+                    }
                 });
             }
             Record::TicketStarted { card, agent, .. } => self.with(*card, |ticket| {

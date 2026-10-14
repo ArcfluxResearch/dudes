@@ -741,30 +741,57 @@ fn snapshot_precedes_live_deltas() {
     );
 }
 
-#[test]
-fn first_closing_frame_uses_the_durable_participant_cut() {
-    let fixture = Fixture::new();
-    let settings = settings(&fixture, free_port());
-    let column = common::ScriptedColumn::new(dudes_proto::PeerProvenance::NoRecordedAgent);
+fn start_closing_cut(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    column: &Arc<common::ScriptedColumn>,
+) -> (common::Running, SocketAddr) {
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let parts = common::seams_with(
+        host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        column.clone(),
+    );
+    host.bind_child_ends(Arc::clone(&parts.children));
     let daemon = duded::boot::boot_with_floor_faults(
-        &settings,
-        common::seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            column.clone(),
-        ),
+        settings,
+        parts,
         None,
         FloorStreamFault::default().without_heartbeat(),
     )
     .unwrap();
     let addr = daemon.floor_addr().unwrap();
-    let mut running = common::start(daemon);
+    (common::start(daemon), addr)
+}
+
+fn closing_participant_spawned(fixture: &Fixture, goal: dudes_types::GoalId) {
+    let turn = fixture.await_record("the participant's goal issue", |record| match record {
+        dudes_proto::Record::TurnIssued {
+            goal: issued, turn, ..
+        } if *issued == goal => Some(*turn),
+        _ => None,
+    });
+    fixture.await_record("the participant's actual spawn", |record| {
+        matches!(record, dudes_proto::Record::TurnSpawned { turn: seen, .. } if *seen == turn)
+            .then_some(())
+    });
+}
+
+#[test]
+fn first_closing_frame_uses_the_durable_participant_cut() {
+    let fixture = Fixture::new();
+    let settings = settings(&fixture, free_port());
+    let column = common::ScriptedColumn::new(dudes_proto::PeerProvenance::NoRecordedAgent);
+    let (mut running, addr) = start_closing_cut(&fixture, &settings, &column);
     let agent = common::hire(&running.handle, fixture.state.path());
-    common::set_goal(&running.handle, goal_params(agent, &["/usr/bin/true"]));
+    let goal = common::set_goal(&running.handle, goal_params(agent, &["/usr/bin/true"]));
+    closing_participant_spawned(&fixture, goal);
     let unanswered = common::hire(&running.handle, fixture.state.path());
-    common::set_goal(&running.handle, goal_params(unanswered, &["/usr/bin/true"]));
+    let goal = common::set_goal(&running.handle, goal_params(unanswered, &["/usr/bin/true"]));
+    closing_participant_spawned(&fixture, goal);
+    running.handle.doctor().unwrap();
     let issued = issue(&settings);
     let (cookie, csrf) = exchange(addr, &issued.bootstrap);
     let mut browser = WebSocket::connect(addr, &cookie, &csrf);

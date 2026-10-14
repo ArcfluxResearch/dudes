@@ -125,6 +125,10 @@ pub(crate) fn cards(projections: &Projections) -> Result<Vec<CardView>> {
                 None
             },
             stopping: card.status == CardStatus::Todo && finishing(projections, ticket)?,
+            instruction_review: ticket
+                .instruction_review
+                .as_ref()
+                .map(dudes_proto::InstructionPendingReview::summary),
         });
     }
     Ok(cards)

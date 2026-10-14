@@ -51,7 +51,7 @@ enum Walk {
 /// Slots and keys follow the host's contract, so the daemon's barrier and publication run as they
 /// do in production.
 #[derive(Debug)]
-struct ScriptedRelation(Mutex<RelationState>);
+struct ScriptedRelation(Mutex<RelationState>, SharedPtyHost);
 
 #[derive(Debug)]
 struct RelationState {
@@ -61,12 +61,15 @@ struct RelationState {
 }
 
 impl ScriptedRelation {
-    fn new() -> Arc<Self> {
-        Arc::new(Self(Mutex::new(RelationState {
-            next_slot: 0,
-            confirmed: BTreeMap::new(),
-            walk: Walk::Unowned,
-        })))
+    fn new(ptys: SharedPtyHost) -> Arc<Self> {
+        Arc::new(Self(
+            Mutex::new(RelationState {
+                next_slot: 0,
+                confirmed: BTreeMap::new(),
+                walk: Walk::Unowned,
+            }),
+            ptys,
+        ))
     }
 
     fn walk(&self, walk: Walk) {
@@ -122,21 +125,19 @@ impl ProcessRelation for ScriptedRelation {
         }
     }
 
-    fn track_external(&self, slot: u64) -> Box<dyn ExternalChild> {
-        Box::new(AttachedChild(AdoptionKey {
-            pid: 70_000 + u32::try_from(slot).expect("a small slot"),
-            start_time: 900,
-            boot: None,
-        }))
+    fn track_external(&self, _slot: u64) -> Box<dyn ExternalChild> {
+        Box::new(AttachedChild(self.1.clone()))
     }
 }
 
 #[derive(Debug)]
-struct AttachedChild(AdoptionKey);
+struct AttachedChild(SharedPtyHost);
 
 impl ExternalChild for AttachedChild {
-    fn register(&mut self, _child: PtyChild) -> std::io::Result<AdoptionKey> {
-        Ok(self.0.clone())
+    fn register(&mut self, child: PtyChild) -> std::io::Result<AdoptionKey> {
+        self.0
+            .native_key_for_child(child.pid)
+            .ok_or_else(|| std::io::Error::other("owned PTY did not report its exact native key"))
     }
 }
 
@@ -157,7 +158,7 @@ struct Daemon {
 impl Daemon {
     fn start() -> Self {
         let fixture = Fixture::new();
-        let ptys = SharedPtyHost::new(fixture.journal_dir());
+        let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
         Self::start_on(fixture, ptys)
     }
 
@@ -168,7 +169,7 @@ impl Daemon {
 
     fn start_with_two_hook_slots() -> Self {
         let fixture = Fixture::new();
-        let ptys = SharedPtyHost::new(fixture.journal_dir());
+        let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
         let mut settings = fixture.settings();
         settings.max_connections = NonZeroUsize::new(2).unwrap();
         Self::boot(fixture, ptys, settings)
@@ -177,7 +178,7 @@ impl Daemon {
     /// A daemon whose Floor routes browser retirement.
     fn start_with_retire() -> Self {
         let fixture = Fixture::new();
-        let ptys = SharedPtyHost::new(fixture.journal_dir());
+        let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
         let mut settings = fixture.settings();
         settings.floor = Some(duded::settings::FloorSettings {
             assets_dir: std::path::PathBuf::from(concat!(
@@ -195,9 +196,9 @@ impl Daemon {
     }
 
     fn boot(fixture: Fixture, ptys: SharedPtyHost, settings: duded::Settings) -> Self {
-        let relation = ScriptedRelation::new();
+        let relation = ScriptedRelation::new(ptys.clone());
         let resolver = Resolver::processes(Arc::clone(&relation) as Arc<dyn ProcessRelation>);
-        let host = SharedHost::new();
+        let host = SharedHost::with_native_evidence(fixture.journal_dir());
         let seams = duded::Seams {
             host: PeerBarrier::new(host.clone(), resolver.clone()),
             pty_host: Box::new(ptys.clone()),
@@ -215,6 +216,7 @@ impl Daemon {
             children: duded::ChildEnds::new(),
             witness: Witness::default(),
         };
+        host.bind_child_ends(Arc::clone(&seams.children));
         let daemon = duded::boot(&settings, seams).expect("boot");
         let append_failure = daemon.append_failure();
         let post_fsync_failure = daemon.onboarding_failure();
@@ -323,7 +325,7 @@ impl Daemon {
                 Record::SessionLearned { turn: seen, .. } if *seen == turn => Some(()),
                 _ => None,
             });
-        common::end_turn(&self.running.handle, turn);
+        common::end_turn_with_native(&self.fixture, &self.running.handle, &self.host, turn);
         self.fixture
             .await_record("PredicateResult", |record| match record {
                 Record::PredicateResult {
@@ -1221,14 +1223,18 @@ fn roster_refuses_a_caller_retired_after_role_resolution() {
     let mut daemon = Daemon::start();
     let (agent, token, turn) = daemon.working_agent();
     let child = Walk::Inside(turn_key(&daemon, turn));
+    // Disk contains TurnSpawned before its pump publishes child ownership. A connection resolved
+    // in that window retains NoRecordedAgent forever, so finish the pump before freezing this one.
+    daemon.running.handle.doctor().unwrap();
     daemon.relation.walk(child.clone());
     let mut connection = Client::connect(daemon.settings.socket()).unwrap();
+    let initial = connection
+        .call(Method::TeamRoster, Some(json!({"token":token.expose()})))
+        .unwrap();
     assert!(
-        connection
-            .call(Method::TeamRoster, Some(json!({"token":token.expose()})))
-            .unwrap()
-            .error
-            .is_none()
+        initial.error.is_none(),
+        "initial roster error code: {:?}",
+        initial.error.as_ref().map(|error| error.code)
     );
     let before = daemon
         .running
@@ -1407,7 +1413,7 @@ fn a_twice_failed_close_keeps_a_retired_agents_child_halted() {
 #[test]
 fn a_retired_agents_leftover_child_is_halted_until_its_probe_reads_gone() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let restarted_ptys = SharedPtyHost::new(fixture.journal_dir());
     let mut first = Daemon::start_on(fixture, ptys);
     let (agent, token) = first.idle_agent();

@@ -1111,8 +1111,9 @@ pub(crate) fn signal_leader(grip: &Grip, _pid: u32, _sig: Sig) -> io::Result<Del
     }
 }
 
-/// The current backend can query only the direct process handle, never the whole job.
-pub(crate) fn target_state(grip: &Grip, _pid: u32) -> io::Result<TargetState> {
+pub(crate) use leader_target_state as target_state;
+
+pub(crate) fn leader_target_state(grip: &Grip, _pid: u32) -> io::Result<TargetState> {
     grip.process
         .as_ref()
         .map_or(Ok(TargetState::LeaderAbsent), |process| {
@@ -1124,6 +1125,19 @@ pub(crate) fn target_state(grip: &Grip, _pid: u32) -> io::Result<TargetState> {
                 }
             })
         })
+}
+
+/// Query only the retained native job with the dependency's fixed process-list buffer.
+pub(crate) fn native_boundary_state(grip: &Grip, pid: u32) -> io::Result<TargetState> {
+    let Some(job) = grip.job() else {
+        return leader_target_state(grip, pid);
+    };
+    let members = job.query_process_id_list().map_err(io::Error::other)?;
+    Ok(if members.is_empty() {
+        TargetState::WholeAbsent
+    } else {
+        TargetState::Present
+    })
 }
 
 /// Whether the process has stopped running.

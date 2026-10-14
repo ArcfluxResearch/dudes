@@ -934,15 +934,6 @@ compare_with_the_crashed_run() {
 # stay visible in the projection afterwards, so the crashed run's turn row reads `reissued: true`
 # where the control's reads `false`. A gate demanding those match would be demanding the loss of the
 # one thing arm 2 exists to observe. Every identifier is minted per run besides.
-#
-# What is compared instead is the exports' **shape**: the same tables, the same number of rows in
-# each, and the same goal status. Each is a positive statement about a named thing, so a field added
-# to a row cannot turn it red for a reason that is not a defect, and anything it does not mention is
-# visibly unasserted rather than silently uncompared.
-#
-# One table's row count differs on purpose. A re-issue launches on a freshly minted session, and
-# `session_totals` keeps one row per confirmed session, so the crashed run holds the control's rows
-# plus one for the session its re-issue ran on. That row is asserted by its key, not skipped.
 compare_the_two_projections() {
 	theirs="$GATE_OUT/crash.export.store"
 	mine="$GATE_OUT/no-crash.export.store"
@@ -953,15 +944,33 @@ compare_the_two_projections() {
 		return
 	fi
 
-	header "the two runs' exports carry the same tables, with the same row count in each but session_totals"
-	theirs_shape=$(export_shape "$theirs" | grep -v ' session_totals$')
-	mine_shape=$(export_shape "$mine" | grep -v ' session_totals$')
+	header "the two runs' exports carry the same tables"
+	theirs_tables=$(export_shape "$theirs" | awk '{ print $2 }')
+	mine_tables=$(export_shape "$mine" | awk '{ print $2 }')
+	if [ "$theirs_tables" = "$mine_tables" ]; then
+		pass "$(printf '%s' "$mine_tables" | tr '\n' ' ')"
+	else
+		fail "the two exports differ in their table inventory"
+	fi
+
+	header "ordinary tables carry the same row counts"
+	theirs_shape=$(export_shape "$theirs" | grep -Ev ' (session_totals|instructions)$')
+	mine_shape=$(export_shape "$mine" | grep -Ev ' (session_totals|instructions)$')
 	if [ "$theirs_shape" = "$mine_shape" ]; then
 		pass "$(printf '%s' "$mine_shape" | tr -s ' \n' ' ')"
 	else
 		fail "the two exports differ in their tables or in how many rows each holds"
 		note "crashed: $(printf '%s' "$theirs_shape" | tr -s ' \n' ' ')"
 		note "control: $(printf '%s' "$mine_shape" | tr -s ' \n' ' ')"
+	fi
+
+	header "instruction cells match their exact journal boundaries, including the uncertain crash interval"
+	if (cd "$REPO_ROOT" && cargo run --quiet --release -p xtask -- gate-instructions \
+		--crash-journal "$GATE_OUT/crash.journal" --crash-export "$theirs" \
+		--control-journal "$GATE_OUT/no-crash.journal" --control-export "$mine"); then
+		pass "the crash retains its earlier Unknown interval and the same immutable turn's completed retry"
+	else
+		fail "instruction cells or their crash/retry boundaries disagree"
 	fi
 
 	header "the crashed run's session_totals holds one row more: the session its re-issue ran on"

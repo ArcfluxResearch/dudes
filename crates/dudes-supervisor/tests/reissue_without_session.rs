@@ -27,7 +27,8 @@
 use std::collections::BTreeMap;
 
 use dudes_proto::{
-    AutomaticHold, Entry, ExitStatus, HoldReason, LoopDecision, Record, TurnOutcome,
+    AutomaticHold, Entry, ExitStatus, HoldReason, InstructionBaselineRef, LoopDecision, Record,
+    TurnOutcome,
 };
 use dudes_providers::claude::ClaudeAdapter;
 use dudes_providers::claude::config::ClaudeConfig;
@@ -195,6 +196,24 @@ fn replay_reissues_a_turn_that_announced_no_session_exactly_once() {
     );
 }
 
+#[test]
+fn a_manually_loaded_prefix_records_its_missing_issue_boundary_once() {
+    let (entries, _agent, turn) = journal_with_issued_turn(None, "make the tests pass");
+    let harness = replay(entries);
+    assert_eq!(
+        harness
+            .records()
+            .filter(|record| matches!(record,
+                Record::InstructionObservationFinished {
+                    baseline: InstructionBaselineRef::MissingIssueBoundary { turn: found, .. },
+                    ..
+                } if *found == turn))
+            .count(),
+        1,
+        "the replayed prefix leaves one exact missing-boundary obligation"
+    );
+}
+
 /// The control: the same fixture *with* a session re-issues exactly once too.
 ///
 /// Without this arm, a machine that re-issued nothing at all would pass the test above — and that
@@ -261,39 +280,7 @@ fn replay_refusal_ends_without_child_clears_session_and_next_turn_is_first() {
         "typed adapter refusal happens before any host spawn"
     );
 
-    let ends: Vec<&Record> = harness
-        .records()
-        .filter(|record| matches!(record, Record::TurnEnded { turn, .. } if *turn == refused_turn))
-        .collect();
-    assert_eq!(ends.len(), 1, "one refusal writes exactly one end");
-    let Record::TurnEnded {
-        agent: ended_agent,
-        mode,
-        provenance,
-        exit,
-        usage,
-        model_usage,
-        last_message,
-        session,
-        outcome,
-        ..
-    } = ends[0]
-    else {
-        unreachable!()
-    };
-    assert_eq!(*ended_agent, agent);
-    assert_eq!(*mode, Mode::Managed);
-    assert_eq!(*provenance, Provenance::Observed);
-    assert_eq!(*exit, ExitStatus::UNKNOWN);
-    assert_eq!(*usage, None);
-    assert!(model_usage.is_empty());
-    assert_eq!(*last_message, None);
-    assert_eq!(*session, None, "a no-child end copies no turn session");
-    let Some(TurnOutcome::LaunchRefused { reason }) = outcome else {
-        panic!("the end must carry LaunchRefused: {outcome:?}");
-    };
-    assert_eq!(reason, "task contains a NUL byte at byte offset 4");
-    assert!(!reason.contains("ship"), "the reason copies no task bytes");
+    assert_refused_end(&harness, agent, refused_turn);
     assert_eq!(harness.supervisor.world().agents[&agent].session, None);
     assert_eq!(harness.supervisor.world().agents[&agent].open_turn, None);
 
@@ -347,13 +334,53 @@ fn replay_refusal_ends_without_child_clears_session_and_next_turn_is_first() {
         agent,
         browser: None,
     }));
-    let next = harness
-        .open_turn(agent)
-        .expect("explicit Resume admits later clean work");
+    let next = harness.open_turn(agent).unwrap_or_else(|| {
+        panic!(
+            "explicit Resume admits later clean work; hold: {:?}; records: {:?}",
+            harness.supervisor.world().agents[&agent].automatic_hold,
+            harness.records().map(Record::kind).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(spawns(&harness, next), 1);
     assert_eq!(spawns(&harness, refused_turn), 0);
     assert_ne!(next, refused_turn);
     assert_fresh_first_launch(&harness, next, &session_a);
+}
+
+fn assert_refused_end(harness: &Harness, agent: dudes_types::AgentId, refused_turn: TurnId) {
+    let ends: Vec<&Record> = harness
+        .records()
+        .filter(|record| matches!(record, Record::TurnEnded { turn, .. } if *turn == refused_turn))
+        .collect();
+    assert_eq!(ends.len(), 1, "one refusal writes exactly one end");
+    let Record::TurnEnded {
+        agent: ended_agent,
+        mode,
+        provenance,
+        exit,
+        usage,
+        model_usage,
+        last_message,
+        session,
+        outcome,
+        ..
+    } = ends[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(*ended_agent, agent);
+    assert_eq!(*mode, Mode::Managed);
+    assert_eq!(*provenance, Provenance::Observed);
+    assert_eq!(*exit, ExitStatus::UNKNOWN);
+    assert_eq!(*usage, None);
+    assert!(model_usage.is_empty());
+    assert_eq!(*last_message, None);
+    assert_eq!(*session, None, "a no-child end copies no turn session");
+    let Some(TurnOutcome::LaunchRefused { reason }) = outcome else {
+        panic!("the end must carry LaunchRefused: {outcome:?}");
+    };
+    assert_eq!(reason, "task contains a NUL byte at byte offset 4");
+    assert!(!reason.contains("ship"), "the reason copies no task bytes");
 }
 
 /// The otherwise-identical clean replay remains a spawn, proving that the

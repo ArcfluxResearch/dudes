@@ -97,6 +97,7 @@ fn settings(fixture: &Fixture, board: bool) -> (duded::Settings, PathBuf) {
 
 struct Board {
     running: common::Running,
+    host: SharedHost,
     settings: duded::Settings,
     addr: SocketAddr,
     repo: PathBuf,
@@ -114,13 +115,16 @@ impl Board {
         answers: Vec<duded::predicate::PredicateOutcome>,
     ) -> Self {
         let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
+        let host =
+            SharedHost::with_native_evidence(settings.state_dir.join(duded::boot::JOURNAL_DIR));
         let seams = common::seams_with(
-            SharedHost::new(),
+            host.clone(),
             Arc::new(ScriptedRunner::scripted(answers)),
             Arc::new(TestClock::new()),
             Witness::default(),
             column as Arc<dyn dudes_rpc::auth::PeerResolver>,
         );
+        host.bind_child_ends(Arc::clone(&seams.children));
         let daemon = duded::boot(&settings, seams).expect("boot");
         let addr = daemon.floor_addr().expect("the Floor listener");
         let pause = daemon.onboarding_pause();
@@ -130,6 +134,7 @@ impl Board {
         let operator = Client::connect(settings.socket()).unwrap();
         Self {
             running,
+            host,
             settings,
             addr,
             repo,
@@ -198,20 +203,24 @@ impl Board {
     }
 
     /// The agent's engine finishes `turn` and says `message`.
-    fn end_turn(&self, turn: TurnId, message: Option<&str>) {
-        self.running.handle.input(Input::ChildExited {
-            final_reply: None,
-            elapsed_ms: Some(5),
-            turn,
-            exit: ExitStatus {
-                code: Some(0),
-                signal: None,
+    fn end_turn(&self, fixture: &Fixture, turn: TurnId, message: Option<&str>) {
+        common::end_turn_with_native_payload(
+            fixture,
+            &self.host,
+            Input::ChildExited {
+                final_reply: None,
+                elapsed_ms: Some(5),
+                turn,
+                exit: ExitStatus {
+                    code: Some(0),
+                    signal: None,
+                },
+                usage: None,
+                model_usage: std::collections::BTreeMap::new(),
+                outcome: TurnOutcome::Completed,
+                last_message: message.map(str::to_owned),
             },
-            usage: None,
-            model_usage: std::collections::BTreeMap::new(),
-            outcome: TurnOutcome::Completed,
-            last_message: message.map(str::to_owned),
-        });
+        );
     }
 
     fn stop(mut self) {
@@ -337,11 +346,29 @@ impl Page {
         self.read(card)["card"]["seq"].as_u64().expect("a sequence")
     }
 
+    fn completed_detail(&self, card: &str) -> Value {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let detail = self.read(card);
+            if detail["ticket"]["instruction_review"]["pending_comparison"] == false {
+                return detail;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "instruction review is still pending"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn act(&self, verb: &str, card: &str) -> Answer {
-        self.post(
-            &format!("/floor/ticket/{verb}"),
-            &json!({"card": card, "expected_seq": self.seq(card)}),
-        )
+        let detail = self.read(card);
+        let mut body = json!({"card": card, "expected_seq": detail["card"]["seq"]});
+        let review = &detail["ticket"]["instruction_review"];
+        if verb == "accept" && review["pending_comparison"] == false {
+            body["review_watermark"] = review["watermark"].clone();
+        }
+        self.post(&format!("/floor/ticket/{verb}"), &body)
     }
 
     fn give(&self, card: &str, agent: AgentId, message: Option<&str>) -> Answer {
@@ -644,21 +671,17 @@ fn the_summary_and_the_check_result_come_only_from_the_read_route() {
     let given = page.give(&card, agent, None).ok();
     assert_eq!(given["start"], json!({"state": "started"}));
     let turn = fixture.await_turn();
-    board.end_turn(turn, Some("SUMMARY-SENTINEL <b>bold</b>"));
-    fixture.await_record("Ready for you", |record| match record {
-        Record::CardTransition {
-            to: dudes_types::CardStatus::Review,
-            ..
-        } => Some(()),
-        _ => None,
+    board.end_turn(&fixture, turn, Some("SUMMARY-SENTINEL <b>bold</b>"));
+    fixture.await_record("qualified goal completion", |record| {
+        matches!(record, Record::LoopDecided { agent: seen, decision: dudes_proto::LoopDecision::Done, .. } if *seen == agent).then_some(())
     });
-
-    let detail = page.read(&card);
+    let detail = page.completed_detail(&card);
     assert_eq!(detail["ticket"]["note"], "THE-NOTE");
     assert_eq!(detail["ticket"]["summary"], "SUMMARY-SENTINEL <b>bold</b>");
     assert_eq!(detail["ticket"]["check_result"]["pass"], true);
     assert_eq!(detail["ticket"]["round"], 1);
-    assert_eq!(detail["card"]["status"], "review");
+    assert_eq!(detail["card"]["status"], "blocked");
+    assert_eq!(detail["ticket"]["reason"], "shared_instructions_unknown");
     assert!(detail.to_string().len() <= 24_576);
 
     let (view, payload) = page.snapshot();
@@ -677,13 +700,11 @@ fn the_summary_and_the_check_result_come_only_from_the_read_route() {
         !shown.to_string().contains("THE-NOTE"),
         "the card carries no note (the agent's own goal text is its goal's, not the card's)"
     );
-    assert_eq!(shown["status"], "review");
+    assert_eq!(shown["status"], "blocked");
     assert_eq!(shown["ticket"]["round"], 1);
     board.stop();
 }
 
-/// Accept from the Floor is authored by the session and moves Ready for you to Done. The next
-/// ticket in the project starts on that fold.
 ///
 /// Mutant `FLOOR_ACCEPT_AS_PEER`: the daemon records the accept as the operator's socket.
 #[test]
@@ -700,14 +721,11 @@ fn a_floor_accept_is_authored_by_the_session_and_starts_the_next_ticket() {
     assert_eq!(queued["start"]["state"], "queued");
     assert_eq!(queued["start"]["position"], 1);
     let turn = fixture.await_turn();
-    board.end_turn(turn, Some("done"));
-    fixture.await_record("Ready for you", |record| match record {
-        Record::CardTransition {
-            to: dudes_types::CardStatus::Review,
-            ..
-        } => Some(()),
-        _ => None,
+    board.end_turn(&fixture, turn, Some("done"));
+    fixture.await_record("qualified goal completion", |record| {
+        matches!(record, Record::LoopDecided { agent: seen, decision: dudes_proto::LoopDecision::Done, .. } if *seen == agent).then_some(())
     });
+    page.completed_detail(&first);
     let accepted = page.act("accept", &first).ok();
     assert_eq!(accepted["state"], "accepted");
     assert_eq!(accepted["seq"], page.seq(&first));
@@ -719,6 +737,14 @@ fn a_floor_accept_is_authored_by_the_session_and_starts_the_next_ticket() {
             Record::CardTransition {
                 to: dudes_types::CardStatus::Done,
                 by,
+                ..
+            }
+            | Record::TicketInstructionReviewed {
+                by,
+                action:
+                    dudes_proto::InstructionReviewAction::Accept {
+                        completion: dudes_proto::InstructionAcceptCompletion::Completed { .. },
+                    },
                 ..
             } => Some(by),
             _ => None,
@@ -763,8 +789,12 @@ fn a_retry_after_success_is_a_stale_card() {
     page.post("/floor/ticket/stop", &stop).ok();
     page.post("/floor/ticket/stop", &stop).refused("stale_card");
 
+    board.end_turn(&fixture, turn, None);
+    page.completed_detail(&card);
+    let acknowledged = page.act("accept", &card).ok();
+    assert_eq!(acknowledged["outcome"], "instructions_acknowledged");
+    assert_eq!(page.read(&card)["card"]["status"], "todo");
     let remove = json!({"card": card, "expected_seq": page.seq(&card)});
-    board.end_turn(turn, None);
     page.post("/floor/ticket/remove", &remove).ok();
     page.post("/floor/ticket/remove", &remove)
         .refused("stale_card");
@@ -1117,7 +1147,8 @@ fn stop_and_remove_take_a_ticket_off_the_agent_and_the_board() {
     let card = make(&page, "Stop me");
     page.give(&card, agent, None).ok();
     let turn = fixture.await_turn();
-    page.act("remove", &card).refused("wrong_state");
+    page.act("remove", &card)
+        .refused("instruction_comparison_pending");
     let stopped = page.act("stop", &card).ok();
     assert_eq!(stopped["state"], "stopped");
     let detail = page.read(&card);
@@ -1132,7 +1163,11 @@ fn stop_and_remove_take_a_ticket_off_the_agent_and_the_board() {
         .unwrap()
         .clone();
     assert_eq!(shown["ticket"]["stopping"], true, "the turn is still open");
-    board.end_turn(turn, None);
+    board.end_turn(&fixture, turn, None);
+    page.completed_detail(&card);
+    let acknowledged = page.act("accept", &card).ok();
+    assert_eq!(acknowledged["outcome"], "instructions_acknowledged");
+    assert_eq!(page.read(&card)["card"]["status"], "todo");
     let removed = page.act("remove", &card).ok();
     assert_eq!(removed["state"], "removed");
     assert!(removed.get("seq").is_none());

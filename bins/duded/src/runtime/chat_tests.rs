@@ -54,8 +54,16 @@ struct BoundaryHost {
 
 impl BoundaryHost {
     fn new() -> Self {
+        Self::with_host(common::SharedHost::new())
+    }
+
+    fn with_native_evidence(journal: std::path::PathBuf) -> Self {
+        Self::with_host(common::SharedHost::with_native_evidence(journal))
+    }
+
+    fn with_host(inner: common::SharedHost) -> Self {
         Self {
-            inner: common::SharedHost::new(),
+            inner,
             calls: Arc::default(),
             unknown: Arc::default(),
             not_launched: Arc::default(),
@@ -106,6 +114,16 @@ impl dudes_supervisor::ProcessHost for BoundaryHost {
     }
     fn alive(&self, key: &dudes_supervisor::AdoptionKey) -> dudes_supervisor::Liveness {
         self.inner.alive(key)
+    }
+    fn owned_targets(&self, limit: usize) -> dudes_supervisor::host::OwnedTargets {
+        self.inner.owned_targets(limit)
+    }
+    fn acknowledge_native_boundary_absence(
+        &mut self,
+        key: &dudes_supervisor::AdoptionKey,
+        receipt: &dudes_supervisor::host::NativeBoundaryReceipt,
+    ) -> dudes_supervisor::host::NativeBoundaryAcknowledgement {
+        self.inner.acknowledge_native_boundary_absence(key, receipt)
     }
     fn boot_identity(&self) -> dudes_supervisor::HostBoot {
         self.inner.boot_identity()
@@ -205,6 +223,16 @@ fn with_owned_program<H: dudes_supervisor::ProcessHost, P: crate::predicate::Pre
             .into_os_string(),
         ..ClaudeConfig::default()
     })) as Box<dyn Adapter>]);
+    seams
+}
+
+fn with_native_program<H: dudes_supervisor::ProcessHost, P: crate::predicate::PredicateRunner>(
+    host: H,
+    native: &common::SharedHost,
+    predicates: Arc<P>,
+) -> crate::Seams<H, P, common::TestClock, dudes_supervisor::testing::FakeRng> {
+    let seams = with_owned_program(host, predicates);
+    native.bind_child_ends(Arc::clone(&seams.children));
     seams
 }
 
@@ -398,9 +426,27 @@ fn authenticated_hook(
     serde_json::from_value(response.result.unwrap()).unwrap()
 }
 
+fn owned_spawn_key(fixture: &common::Fixture, turn: TurnId) -> dudes_supervisor::AdoptionKey {
+    fixture.await_record("the exact native child", |record| match record {
+        Record::TurnSpawned {
+            turn: seen,
+            pid,
+            start_time,
+            boot,
+            ..
+        } if *seen == turn => Some(dudes_supervisor::AdoptionKey {
+            pid: *pid,
+            start_time: *start_time,
+            boot: boot.clone(),
+        }),
+        _ => None,
+    })
+}
+
 fn attach_managed_agent(
     running: &common::Running,
     fixture: &common::Fixture,
+    host: &common::SharedHost,
     agent: AgentId,
     ordinary: TurnId,
 ) {
@@ -418,7 +464,7 @@ fn attach_managed_agent(
             session: announced,
         });
     running.handle.ask(crate::ports::Ask::Pause(agent)).unwrap();
-    common::end_turn(&running.handle, ordinary);
+    common::end_turn_with_native(fixture, &running.handle, host, ordinary);
     running.handle.doctor().unwrap();
     running
         .handle
@@ -442,9 +488,13 @@ fn attach_managed_agent(
 #[test]
 fn attached_browser_context_uses_authenticated_hook_fifo_without_reply_history() {
     let fixture = common::Fixture::new();
-    let host = common::SharedHost::new();
+    let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
     let resolver = common::ScriptedColumn::new(dudes_proto::PeerProvenance::NoRecordedAgent);
-    let mut seams = with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default()));
+    let mut seams = with_native_program(
+        host.clone(),
+        &host,
+        Arc::new(common::ScriptedRunner::default()),
+    );
     seams.resolver =
         crate::classify::Resolver::fixed(Arc::clone(&resolver) as Arc<dyn dudes_rpc::PeerResolver>);
     seams.pty_host = Box::new(common::SharedPtyHost::new(fixture.journal_dir()));
@@ -457,7 +507,7 @@ fn attached_browser_context_uses_authenticated_hook_fifo_without_reply_history()
         common::goal_params(agent, &[common::false_program()]),
     );
     let ordinary = fixture.await_turn();
-    attach_managed_agent(&running, &fixture, agent, ordinary);
+    attach_managed_agent(&running, &fixture, &host, agent, ordinary);
     resolver.set(dudes_proto::PeerProvenance::Agent(agent));
     let token = common::hook_shim::minted_token(&fixture, agent);
     running
@@ -629,7 +679,7 @@ fn cancellation_completes_while_preparation_is_held_and_late_readiness_is_inert(
 #[test]
 fn ordinary_done_precedes_note_only_and_note_end_never_judges_again() {
     let fixture = common::Fixture::new();
-    let host = common::SharedHost::new();
+    let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
     let predicates = Arc::new(common::ScriptedRunner::scripted([
         crate::predicate::PredicateOutcome::Finished {
             exit: Some(0),
@@ -639,7 +689,7 @@ fn ordinary_done_precedes_note_only_and_note_end_never_judges_again() {
     ]));
     let daemon = boot_with_options(
         &fixture.settings(),
-        with_owned_program(host.clone(), Arc::clone(&predicates)),
+        with_native_program(host.clone(), &host, Arc::clone(&predicates)),
         RunOptions::default(),
     )
     .expect("boot");
@@ -657,7 +707,7 @@ fn ordinary_done_precedes_note_only_and_note_end_never_judges_again() {
         "one completed-goal note",
         0,
     );
-    common::end_turn(&running.handle, ordinary);
+    common::end_turn_with_native(&fixture, &running.handle, &host, ordinary);
     let turn = issued_note(&fixture, note);
     fixture.await_record("note spawn", |record| {
         matches!(record, Record::TurnSpawned { turn: spawned, .. } if *spawned == turn)
@@ -686,7 +736,7 @@ fn ordinary_done_precedes_note_only_and_note_end_never_judges_again() {
                 .as_str()
         )
     );
-    common::end_turn(&running.handle, turn);
+    common::end_turn_with_native(&fixture, &running.handle, &host, turn);
     running.handle.doctor().expect("note end barrier");
     assert_eq!(predicates.runs(), 1, "note-only end skips predicate");
     assert_eq!(
@@ -727,11 +777,11 @@ fn ordinary_done_precedes_note_only_and_note_end_never_judges_again() {
 fn completed_note_preserves_original_budget_question_and_accounts_hops() {
     for gate in ["budget", "hops", "question"] {
         let fixture = common::Fixture::new();
-        let host = common::SharedHost::new();
+        let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
         let predicates = Arc::new(common::ScriptedRunner::scripted([common::passes()]));
         let daemon = boot_with_options(
             &fixture.settings(),
-            with_owned_program(host.clone(), Arc::clone(&predicates)),
+            with_native_program(host.clone(), &host, Arc::clone(&predicates)),
             RunOptions::default(),
         )
         .unwrap();
@@ -744,7 +794,7 @@ fn completed_note_preserves_original_budget_question_and_accounts_hops() {
             params.hop_cap = 1;
         }
         let goal = common::set_goal(&running.handle, params);
-        common::end_turn(&running.handle, fixture.await_turn());
+        common::end_turn_with_native(&fixture, &running.handle, &host, fixture.await_turn());
         fixture.await_record("ordinary Done", |record| matches!(record, Record::LoopDecided { agent: owner, decision: LoopDecision::Done, .. } if *owner == agent).then_some(()));
         if gate == "question" {
             running
@@ -828,10 +878,12 @@ fn completed_note_preserves_original_budget_question_and_accounts_hops() {
 #[test]
 fn completed_note_replay_keeps_the_latest_inferred_end_gate() {
     let fixture = common::Fixture::new();
+    let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
     let daemon = boot_with_options(
         &fixture.settings(),
-        with_owned_program(
-            common::SharedHost::new(),
+        with_native_program(
+            host.clone(),
+            &host,
             Arc::new(common::ScriptedRunner::scripted([common::passes()])),
         ),
         RunOptions::default(),
@@ -843,7 +895,7 @@ fn completed_note_replay_keeps_the_latest_inferred_end_gate() {
         &running.handle,
         common::goal_params(agent, &[common::true_program()]),
     );
-    common::end_turn(&running.handle, fixture.await_turn());
+    common::end_turn_with_native(&fixture, &running.handle, &host, fixture.await_turn());
     fixture.await_record("ordinary Done", |record| matches!(record, Record::LoopDecided { agent: owner, decision: LoopDecision::Done, .. } if *owner == agent).then_some(()));
     let first = send(
         &running.handle,
@@ -917,11 +969,11 @@ fn completed_note_replay_keeps_the_latest_inferred_end_gate() {
 #[test]
 fn failed_note_only_turns_keep_rapid_failure_protection_without_predicates() {
     let fixture = common::Fixture::new();
-    let host = common::SharedHost::new();
+    let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
     let predicates = Arc::new(common::ScriptedRunner::scripted([common::passes()]));
     let daemon = boot_with_options(
         &fixture.settings(),
-        with_owned_program(host.clone(), Arc::clone(&predicates)),
+        with_native_program(host.clone(), &host, Arc::clone(&predicates)),
         RunOptions::default(),
     )
     .unwrap();
@@ -931,7 +983,7 @@ fn failed_note_only_turns_keep_rapid_failure_protection_without_predicates() {
         &running.handle,
         common::goal_params(agent, &[common::true_program()]),
     );
-    common::end_turn(&running.handle, fixture.await_turn());
+    common::end_turn_with_native(&fixture, &running.handle, &host, fixture.await_turn());
     fixture.await_record("ordinary Done", |record| matches!(record, Record::LoopDecided { agent: owner, decision: LoopDecision::Done, .. } if *owner == agent).then_some(()));
     let first = send(&running.handle, &session(), agent, "first failure", 0);
     let second = send(&running.handle, &session(), agent, "second failure", 1);
@@ -942,21 +994,43 @@ fn failed_note_only_turns_keep_rapid_failure_protection_without_predicates() {
             matches!(record, Record::TurnSpawned { turn: spawned, .. } if *spawned == turn)
                 .then_some(())
         });
-        running.handle.input(dudes_supervisor::Input::ChildExited {
-            final_reply: None,
-            turn,
-            elapsed_ms: Some(1),
-            exit: dudes_proto::ExitStatus {
-                code: Some(1),
-                signal: None,
+        let key = owned_spawn_key(&fixture, turn);
+        common::end_turn_with_native_payload(
+            &fixture,
+            &host,
+            dudes_supervisor::Input::ChildExited {
+                final_reply: None,
+                turn,
+                elapsed_ms: Some(1),
+                exit: dudes_proto::ExitStatus {
+                    code: Some(1),
+                    signal: None,
+                },
+                usage: None,
+                model_usage: std::collections::BTreeMap::default(),
+                outcome: dudes_proto::TurnOutcome::Failed {
+                    reason: "owned fast failure".to_owned(),
+                },
+                last_message: None,
             },
-            usage: None,
-            model_usage: std::collections::BTreeMap::default(),
-            outcome: dudes_proto::TurnOutcome::Failed {
-                reason: "owned fast failure".to_owned(),
-            },
-            last_message: None,
+        );
+        fixture.await_record("the original failed note end", |record| {
+            matches!(record, Record::TurnEnded {
+                turn: ended,
+                elapsed_ms: Some(1),
+                outcome: Some(dudes_proto::TurnOutcome::Failed { .. }),
+                ..
+            } if *ended == turn)
+            .then_some(())
         });
+        fixture.await_record("the exact failed note native boundary", |record| {
+            matches!(record, Record::InstructionAttemptBoundarySettled {
+                owner: dudes_proto::InstructionObservationOwner::Managed { turn: ended, .. },
+                proof: dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent { .. },
+                ..
+            } if *ended == turn).then_some(())
+        });
+        host.await_native_acknowledged(&key);
     }
     fixture.await_record("rapid failure Hold", |record| {
         matches!(
@@ -981,11 +1055,12 @@ fn failed_note_only_turns_keep_rapid_failure_protection_without_predicates() {
 #[test]
 fn note_lifecycle_keeps_an_unresolved_ordinary_board_predicate_fence() {
     let fixture = common::Fixture::new();
-    let host = common::SharedHost::new();
+    let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
     let daemon = boot_with_options(
         &fixture.settings(),
-        with_owned_program(
+        with_native_program(
             host.clone(),
+            &host,
             Arc::new(common::ScriptedRunner::scripted([common::passes()])),
         ),
         RunOptions::default(),
@@ -997,7 +1072,7 @@ fn note_lifecycle_keeps_an_unresolved_ordinary_board_predicate_fence() {
         &running.handle,
         common::goal_params(completed, &[common::true_program()]),
     );
-    common::end_turn(&running.handle, fixture.await_turn());
+    common::end_turn_with_native(&fixture, &running.handle, &host, fixture.await_turn());
     fixture.await_record("original completed goal", |record| matches!(record, Record::LoopDecided { agent, decision: LoopDecision::Done, .. } if *agent == completed).then_some(()));
     let waiting = common::hire(&running.handle, fixture.state.path());
     let mut params = common::goal_params(waiting, &[common::false_program()]);
@@ -1014,7 +1089,7 @@ fn note_lifecycle_keeps_an_unresolved_ordinary_board_predicate_fence() {
             },
         )
     });
-    common::end_turn(&running.handle, ordinary);
+    common::end_turn_with_native(&fixture, &running.handle, &host, ordinary);
     running.handle.doctor().unwrap();
     let note = send(
         &running.handle,
@@ -1028,7 +1103,7 @@ fn note_lifecycle_keeps_an_unresolved_ordinary_board_predicate_fence() {
         matches!(record, Record::TurnSpawned { turn: spawned, .. } if *spawned == turn)
             .then_some(())
     });
-    common::end_turn(&running.handle, turn);
+    common::end_turn_with_native(&fixture, &running.handle, &host, turn);
     running.handle.doctor().unwrap();
     running
         .handle
@@ -1059,7 +1134,7 @@ fn note_lifecycle_keeps_an_unresolved_ordinary_board_predicate_fence() {
 )]
 fn completed_question_answer_closes_without_trigger_or_delivery() {
     let fixture = common::Fixture::new();
-    let host = common::SharedHost::new();
+    let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
     let predicates = Arc::new(common::ScriptedRunner::scripted([
         crate::predicate::PredicateOutcome::Finished {
             exit: Some(0),
@@ -1069,7 +1144,7 @@ fn completed_question_answer_closes_without_trigger_or_delivery() {
     ]));
     let daemon = boot_with_options(
         &fixture.settings(),
-        with_owned_program(host.clone(), predicates),
+        with_native_program(host.clone(), &host, predicates),
         RunOptions::default(),
     )
     .expect("boot");
@@ -1079,7 +1154,7 @@ fn completed_question_answer_closes_without_trigger_or_delivery() {
         &running.handle,
         common::goal_params(agent, &[common::true_program()]),
     );
-    common::end_turn(&running.handle, fixture.await_turn());
+    common::end_turn_with_native(&fixture, &running.handle, &host, fixture.await_turn());
     fixture.await_record("ordinary Done", |record| {
         matches!(
             record,
@@ -1104,7 +1179,7 @@ fn completed_question_answer_closes_without_trigger_or_delivery() {
     ));
     running.handle.doctor().unwrap();
     let second = send(&running.handle, &identity, agent, "second note", 1);
-    common::end_turn(&running.handle, first_turn);
+    common::end_turn_with_native(&fixture, &running.handle, &host, first_turn);
     running.handle.doctor().unwrap();
     running.handle.input(dudes_supervisor::Input::Command(
         dudes_supervisor::Command::Answer {
@@ -1147,16 +1222,26 @@ fn completed_question_answer_closes_without_trigger_or_delivery() {
             .map(|answer| answer.text.as_str()),
         Some("saved answer")
     );
-    common::end_turn(&running.handle, second_turn);
+    common::end_turn_with_native(&fixture, &running.handle, &host, second_turn);
     let third_turn = issued_note(&fixture, third);
     fixture.await_record("third note spawn", |record| {
         matches!(record, Record::TurnSpawned { turn, .. } if *turn == third_turn).then_some(())
     });
-    common::end_turn(&running.handle, third_turn);
+    common::end_turn_with_native(&fixture, &running.handle, &host, third_turn);
     running.handle.doctor().unwrap();
     let mut ordinary = common::goal_params(agent, &[common::false_program()]);
     ordinary.text = "future ordinary goal".to_owned();
-    common::set_goal(&running.handle, ordinary);
+    let goal = common::set_goal(&running.handle, ordinary);
+    let ordinary_turn = fixture.await_record("the future ordinary issue", |record| match record {
+        Record::TurnIssued {
+            agent: owner,
+            goal: issued_goal,
+            turn,
+            ..
+        } if *owner == agent && *issued_goal == goal => Some(*turn),
+        _ => None,
+    });
+    let _ = owned_spawn_key(&fixture, ordinary_turn);
     assert!(
         host.spawned()
             .last()
@@ -1185,10 +1270,25 @@ fn expired_writer_session_cannot_read_a_durable_chat_receipt() {
     .expect("boot");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
-    common::set_goal(
+    let goal = common::set_goal(
         &running.handle,
         common::goal_params(agent, &[common::false_program()]),
     );
+    let ordinary =
+        fixture.await_record(
+            "the ordinary issue before session expiry",
+            |record| match record {
+                Record::TurnIssued {
+                    agent: owner,
+                    goal: issued_goal,
+                    turn,
+                    ..
+                } if *owner == agent && *issued_goal == goal => Some(*turn),
+                _ => None,
+            },
+        );
+    let _ = owned_spawn_key(&fixture, ordinary);
+    running.handle.doctor().unwrap();
     let (identity, clock) = session_with_clock();
     let original = request(ChatVerb::Send, agent, "private durable receipt", 0);
     assert!(matches!(
@@ -1262,10 +1362,14 @@ fn refused_append_permit_releases_only_the_uncommitted_cancellation_claim() {
 #[test]
 fn ordinary_note_reserves_multibyte_task_and_consumes_only_carried_answers() {
     let fixture = common::Fixture::new();
-    let host = common::SharedHost::new();
+    let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
     let daemon = boot_with_options(
         &fixture.settings(),
-        with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default())),
+        with_native_program(
+            host.clone(),
+            &host,
+            Arc::new(common::ScriptedRunner::default()),
+        ),
         RunOptions::default(),
     )
     .expect("boot");
@@ -1296,7 +1400,7 @@ fn ordinary_note_reserves_multibyte_task_and_consumes_only_carried_answers() {
     running.handle.doctor().unwrap();
     let note_text = "é".repeat(2_048);
     let note = send(&running.handle, &session(), agent, &note_text, 0);
-    common::end_turn(&running.handle, ordinary);
+    common::end_turn_with_native(&fixture, &running.handle, &host, ordinary);
     let turn = issued_note(&fixture, note);
     fixture.await_record("carrying spawn", |record| {
         matches!(record, Record::TurnSpawned { turn: spawned, .. } if *spawned == turn)
@@ -1329,10 +1433,14 @@ fn ordinary_note_reserves_multibyte_task_and_consumes_only_carried_answers() {
 #[test]
 fn actual_host_entry_wins_before_any_durable_spawn_receipt() {
     let fixture = common::Fixture::new();
-    let host = BoundaryHost::new();
+    let host = BoundaryHost::with_native_evidence(fixture.journal_dir());
     let daemon = boot_with_options(
         &fixture.settings(),
-        with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default())),
+        with_native_program(
+            host.clone(),
+            &host.inner,
+            Arc::new(common::ScriptedRunner::default()),
+        ),
         RunOptions::default(),
     )
     .expect("boot");
@@ -1346,9 +1454,10 @@ fn actual_host_entry_wins_before_any_durable_spawn_receipt() {
     let ordinary = fixture.await_turn();
     let identity = session();
     let note = send(&running.handle, &identity, agent, "actual dispatch wins", 0);
+    let _ = owned_spawn_key(&fixture, ordinary);
     host.unknown.store(true, Ordering::SeqCst);
     host.held.store(true, Ordering::SeqCst);
-    common::end_turn(&running.handle, ordinary);
+    common::end_turn_with_native(&fixture, &running.handle, &host.inner, ordinary);
     assert!(
         host.entry.wait(),
         "the actual ProcessHost::spawn call must enter"
@@ -1390,10 +1499,14 @@ fn actual_host_entry_wins_before_any_durable_spawn_receipt() {
 )]
 fn historical_intent_stays_ambiguous_when_new_preparation_never_dispatches() {
     let fixture = common::Fixture::new();
-    let host = BoundaryHost::new();
+    let host = BoundaryHost::with_native_evidence(fixture.journal_dir());
     let daemon = boot_with_options(
         &fixture.settings(),
-        with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default())),
+        with_native_program(
+            host.clone(),
+            &host.inner,
+            Arc::new(common::ScriptedRunner::default()),
+        ),
         RunOptions::default(),
     )
     .expect("boot");
@@ -1425,8 +1538,9 @@ fn historical_intent_stays_ambiguous_when_new_preparation_never_dispatches() {
         "uncertain old attempt",
         0,
     );
+    let _ = owned_spawn_key(&fixture, ordinary);
     host.unknown.store(true, Ordering::SeqCst);
-    common::end_turn(&running.handle, ordinary);
+    common::end_turn_with_native(&fixture, &running.handle, &host.inner, ordinary);
     let turn = issued_note(&fixture, note);
     fixture.await_record("first dispatch intent", |record| matches!(record, Record::BrowserNoteDispatchIntent { turn: intended, .. } if *intended == turn).then_some(()));
     running.handle.doctor().unwrap();
@@ -1527,10 +1641,14 @@ impl HistoricalReplay {
 
     fn recorded(halted: bool) -> Self {
         let fixture = common::Fixture::new();
-        let host = BoundaryHost::new();
+        let host = BoundaryHost::with_native_evidence(fixture.journal_dir());
         let daemon = boot_with_options(
             &fixture.settings(),
-            with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default())),
+            with_native_program(
+                host.clone(),
+                &host.inner,
+                Arc::new(common::ScriptedRunner::default()),
+            ),
             RunOptions::default(),
         )
         .unwrap();
@@ -1563,8 +1681,9 @@ impl HistoricalReplay {
             "historical unresolved note",
             0,
         );
+        let _ = owned_spawn_key(&fixture, ordinary);
         host.unknown.store(true, Ordering::SeqCst);
-        common::end_turn(&running.handle, ordinary);
+        common::end_turn_with_native(&fixture, &running.handle, &host.inner, ordinary);
         let turn = issued_note(&fixture, note);
         fixture.await_record("historical intent", |record| matches!(record, Record::BrowserNoteDispatchIntent { turn: intended, .. } if *intended == turn).then_some(()));
         running.handle.doctor().unwrap();
@@ -1711,30 +1830,72 @@ fn historical_failed_host_keeps_dispatch_uncertainty() {
     assert_failed_replay_preserves_history("host");
 }
 
-fn actual_preparation(
-    jobs: &std::sync::mpsc::Receiver<crate::ports::Job>,
-) -> dudes_supervisor::Input {
-    loop {
-        if let crate::ports::Job::Input(input) = jobs.recv_timeout(Duration::from_secs(5)).unwrap()
-            && matches!(&*input, dudes_supervisor::Input::BrowserLaunchReady { .. })
+type PreparationDaemon<H = common::SharedHost> =
+    super::Daemon<H, common::ScriptedRunner, common::TestClock, dudes_supervisor::testing::FakeRng>;
+
+fn drive_preparation_pause<H: dudes_supervisor::ProcessHost>(
+    daemon: &mut PreparationDaemon<H>,
+    pause: &crate::BrowserLaunchPause,
+) -> Option<dudes_supervisor::Input> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !pause.wait(Duration::ZERO) {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match daemon
+            .jobs
+            .recv_timeout(remaining.min(Duration::from_millis(10)))
         {
-            return *input;
+            Ok(crate::ports::Job::Input(input)) => {
+                if matches!(&*input, dudes_supervisor::Input::BrowserLaunchReady { .. }) {
+                    return Some(*input);
+                }
+                daemon.pump_runtime_input(*input).unwrap();
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the actual preparation job queue ended")
+            }
+            Ok(_) => panic!("unexpected non-input preparation job"),
+        }
+    }
+    None
+}
+
+fn actual_preparation<H: dudes_supervisor::ProcessHost>(
+    daemon: &mut PreparationDaemon<H>,
+) -> dudes_supervisor::Input {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "the actual preparation did not arrive"
+        );
+        match daemon
+            .jobs
+            .recv_timeout(remaining)
+            .expect("actual preparation job")
+        {
+            crate::ports::Job::Input(input) => {
+                if matches!(&*input, dudes_supervisor::Input::BrowserLaunchReady { .. }) {
+                    return *input;
+                }
+                daemon.pump_runtime_input(*input).unwrap();
+            }
+            _ => panic!("unexpected non-input preparation job"),
         }
     }
 }
 
-fn pump_prepared_attempt(
-    daemon: &mut super::Daemon<
-        common::SharedHost,
-        common::ScriptedRunner,
-        common::TestClock,
-        dudes_supervisor::testing::FakeRng,
-    >,
+fn pump_proposed_dispatch(
+    daemon: &mut PreparationDaemon<BoundaryHost>,
     input: dudes_supervisor::Input,
 ) -> (
     dudes_supervisor::Input,
     dudes_supervisor::input::PersistToken,
-    Lsn,
+    dudes_supervisor::Input,
 ) {
     let dudes_supervisor::Input::BrowserLaunchReady {
         turn,
@@ -1749,45 +1910,164 @@ fn pump_prepared_attempt(
         generation,
         prepared: prepared.clone(),
     };
-    let mut intent_token = None;
     daemon.ctx.resolved_browser_turn = Some((turn, generation));
     daemon
-        .pump_started(
-            &mut super::PumpReport::Discard,
-            super::PumpOrigin::Ordinary,
-            |sup| {
-                let effects = sup.handle(dudes_supervisor::Input::BrowserLaunchReady {
-                    turn,
-                    generation,
-                    prepared,
-                });
-                intent_token = effects.iter().find_map(|effect| match effect {
-                    dudes_supervisor::Effect::Persist { token, entry }
-                        if matches!(entry.record, Record::BrowserNoteDispatchIntent { .. }) =>
-                    {
-                        Some(*token)
-                    }
-                    _ => None,
-                });
-                Ok(())
-            },
-        )
+        .sup
+        .handle(dudes_supervisor::Input::BrowserLaunchReady {
+            turn,
+            generation,
+            prepared,
+        });
+    let effects = daemon.sup.take_effects();
+    let [effect @ dudes_supervisor::Effect::Persist { token, entry }] = effects.as_slice() else {
+        panic!("the actual prepared retry requests its one dispatch intent");
+    };
+    assert!(
+        matches!(entry.record, Record::BrowserNoteDispatchIntent { turn: issued, .. } if issued == turn)
+    );
+    let proposed_token = *token;
+    let mut queue = std::collections::VecDeque::new();
+    daemon
+        .ctx
+        .dispatch_browser_intent(effect, &mut queue, &mut daemon.sup, &mut daemon.closing)
         .unwrap();
     daemon.ctx.resolved_browser_turn = None;
-    let current = *daemon
-        .sup
-        .world()
-        .browser_issue(turn)
-        .unwrap()
-        .dispatch_intents
-        .last()
-        .unwrap();
-    (duplicate, intent_token.unwrap(), current)
+    let held_spawn = queue.pop_front().expect("the actual host reply");
+    let dudes_supervisor::Input::Spawned { turn: spawned, .. } = &held_spawn else {
+        panic!("the actual host reply is withheld before its journal acknowledgement");
+    };
+    assert_eq!(*spawned, turn);
+    assert!(queue.is_empty());
+    assert!(daemon.sup.world().turns[&turn].is_issued_not_spawned());
+    assert_eq!(daemon.ctx.pending_native_launches.len(), 1);
+    (duplicate, proposed_token, held_spawn)
+}
+
+fn assert_uncertain_chat_history(
+    history: &HistoricalReplay,
+    daemon: &PreparationDaemon<BoundaryHost>,
+    host: &BoundaryHost,
+) {
+    let after = daemon.sup.world();
+    let before = &history.before;
+    let issue = after.browser_issue(history.turn).unwrap();
+    let prior_issue = before.browser_issue(history.turn).unwrap();
+    assert_eq!(issue.issue_lsn, prior_issue.issue_lsn);
+    assert_eq!(issue.note_lsn, history.note);
+    assert_eq!(issue.goal, Some(history.goal));
+    assert!(daemon.sup.browser_delivery_uncertain(history.turn));
+    assert_eq!(
+        issue.dispatch_intents, prior_issue.dispatch_intents,
+        "preparation cannot append an intent past the unresolved native boundary"
+    );
+    assert!(issue.spawn_lsn.is_none());
+    assert!(issue.end_lsn.is_none());
+    assert_eq!(
+        after.turns[&history.turn].task,
+        before.turns[&history.turn].task
+    );
+    assert_eq!(
+        after.turns[&history.turn].answers,
+        before.turns[&history.turn].answers
+    );
+    assert_eq!(after.agents[&history.agent].open_turn, Some(history.turn));
+    assert_eq!(
+        after.agents[&history.agent].pending_answers,
+        before.agents[&history.agent].pending_answers
+    );
+    assert_eq!(
+        after.agents[&history.agent].last_turn_end,
+        before.agents[&history.agent].last_turn_end
+    );
+    assert_eq!(
+        after.goals[&history.goal].turns_on_goal,
+        before.goals[&history.goal].turns_on_goal
+    );
+    assert_eq!(
+        after
+            .instructions
+            .unresolved_launch_attempts(history.agent)
+            .collect::<Vec<_>>(),
+        before
+            .instructions
+            .unresolved_launch_attempts(history.agent)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(host.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(host.inner.spawned().len(), 1);
+    assert!(
+        host.not_launched.load(Ordering::SeqCst),
+        "even a refused additional host call would consume this control"
+    );
+    assert_eq!(daemon.ctx.pending_native_launches.len(), 1);
+    assert!(
+        matches!(daemon.ctx.admit_prior_attempt(&daemon.sup, history.agent, Some(history.turn)),
+        Err(dudes_supervisor::SharedFolderRefusal::PriorAttemptUnresolved { agent }) if agent == history.agent)
+    );
+    assert!(
+        !history.fixture.records().iter().any(|record| match record {
+            Record::TurnSpawned { turn, .. } | Record::TurnEnded { turn, .. } => {
+                *turn == history.turn
+            }
+            Record::InstructionAttemptBoundarySettled {
+                owner: dudes_proto::InstructionObservationOwner::Managed { turn, .. },
+                ..
+            } => *turn == history.turn,
+            _ => false,
+        })
+    );
+    let day = dudes_types::Timestamp::from_unix_millis(1_787_394_600_000).utc_day();
+    assert_eq!(
+        format!(
+            "{:?}",
+            daemon
+                .ctx
+                .projections
+                .spend_views(history.agent, history.goal, day)
+                .unwrap()
+        ),
+        history.spend
+    );
+}
+
+fn freeze_pending_chat_prefix(
+    history: &mut HistoricalReplay,
+    daemon: &PreparationDaemon<BoundaryHost>,
+    host: &BoundaryHost,
+    original: &[Record],
+) {
+    assert_eq!(host.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(host.inner.spawned().len(), 1);
+    assert_eq!(
+        daemon.sup.world().turns[&history.turn].task,
+        history.before.turns[&history.turn].task
+    );
+    assert_eq!(
+        daemon
+            .sup
+            .world()
+            .browser_issue(history.turn)
+            .unwrap()
+            .issue_lsn,
+        history
+            .before
+            .browser_issue(history.turn)
+            .unwrap()
+            .issue_lsn
+    );
+    assert!(history.fixture.records().starts_with(original));
+    let mut pending = dudes_supervisor::World::default();
+    for (lsn, entry) in history.fixture.entries() {
+        pending.apply(lsn, &entry);
+    }
+    history.before = pending;
+    host.not_launched.store(true, Ordering::SeqCst);
 }
 
 #[test]
-fn actual_late_preparation_and_ack_keep_replay_refusal_until_resume() {
-    let history = HistoricalReplay::new();
+fn actual_late_preparation_and_proposed_ack_keep_uncertainty_through_resume() {
+    let mut history = HistoricalReplay::new();
+    let original = history.fixture.records();
     let prior = *history
         .before
         .browser_issue(history.turn)
@@ -1795,10 +2075,7 @@ fn actual_late_preparation_and_ack_keep_replay_refusal_until_resume() {
         .dispatch_intents
         .last()
         .unwrap();
-    let host = common::SharedHost::with(dudes_supervisor::testing::FakeHost {
-        fail_spawn: Some(std::io::ErrorKind::NotFound),
-        ..dudes_supervisor::testing::FakeHost::wall_clock_anchored()
-    });
+    let host = BoundaryHost::new();
     let pause = crate::BrowserLaunchPause::default();
     pause.arm();
     let mut daemon = crate::boot::boot_with_preparation_pause(
@@ -1808,25 +2085,26 @@ fn actual_late_preparation_and_ack_keep_replay_refusal_until_resume() {
         pause.clone(),
     )
     .unwrap();
+    let parked = drive_preparation_pause(&mut daemon, &pause);
     assert!(pause.wait(Duration::from_secs(5)));
     pause.release();
     assert!(pause.wait_returned(1, Duration::from_secs(5)));
-    let prepared = actual_preparation(&daemon.jobs);
-    let (duplicate, intent_token, current) = pump_prepared_attempt(&mut daemon, prepared);
-    let dudes_supervisor::Input::BrowserLaunchReady {
-        turn, generation, ..
-    } = &duplicate
-    else {
+    let prepared = parked.unwrap_or_else(|| actual_preparation(&mut daemon));
+    let (duplicate, proposed_token, held_spawn) = pump_proposed_dispatch(&mut daemon, prepared);
+    let dudes_supervisor::Input::BrowserLaunchReady { turn, .. } = &duplicate else {
         unreachable!()
     };
-    let (turn, generation) = (*turn, *generation);
-    assert_ne!(
-        prior, current,
-        "this attempt appended a distinct actual intent"
+    let turn = *turn;
+    assert_eq!(turn, history.turn);
+    assert!(
+        matches!(&held_spawn, dudes_supervisor::Input::Spawned { turn: returned, key, .. }
+        if *returned == turn && host.inner.pids() == [key.pid])
     );
-    let refusal = dudes_supervisor::machine::BrowserNoteCancelDisposition::AmbiguousReissue {
-        turn,
-        dispatch_intent_lsn: prior,
+    freeze_pending_chat_prefix(&mut history, &daemon, &host, &original);
+    let frozen = history.fixture.records();
+    assert_uncertain_chat_history(&history, &daemon, &host);
+    let refusal = dudes_supervisor::machine::BrowserNoteCancelDisposition::Refused {
+        reason: ChatReason::DeliveryStarted,
     };
     assert_eq!(
         daemon
@@ -1835,10 +2113,11 @@ fn actual_late_preparation_and_ack_keep_replay_refusal_until_resume() {
         refusal
     );
     daemon.pump_runtime_input(duplicate).unwrap();
+    assert_uncertain_chat_history(&history, &daemon, &host);
     daemon
         .pump_runtime_input(dudes_supervisor::Input::Persisted {
-            token: intent_token,
-            lsn: current,
+            token: proposed_token,
+            lsn: prior,
         })
         .unwrap();
     assert_eq!(
@@ -1848,11 +2127,7 @@ fn actual_late_preparation_and_ack_keep_replay_refusal_until_resume() {
         refusal,
         "late callback must retain the earlier unresolved intent proof"
     );
-    assert!(host.spawned().is_empty());
-    assert_eq!(
-        daemon.sup.world().agents[&history.agent].open_turn,
-        Some(turn)
-    );
+    assert_uncertain_chat_history(&history, &daemon, &host);
     daemon
         .pump_runtime_input(dudes_supervisor::Input::Command(
             dudes_supervisor::Command::Resume {
@@ -1861,42 +2136,47 @@ fn actual_late_preparation_and_ack_keep_replay_refusal_until_resume() {
             },
         ))
         .unwrap();
-    let next = actual_preparation(&daemon.jobs);
-    assert!(
-        matches!(&next, dudes_supervisor::Input::BrowserLaunchReady { generation: next, .. } if *next > generation)
-    );
-    daemon.pump_runtime_input(next).unwrap();
+    assert_uncertain_chat_history(&history, &daemon, &host);
     assert_eq!(
-        host.spawned().len(),
-        1,
-        "legitimate cause clearing permits one new dispatch"
-    );
-    assert!(
         daemon
             .sup
-            .world()
-            .browser_issue(turn)
-            .unwrap()
-            .spawn_lsn
-            .is_some()
+            .browser_note_cancel_disposition(history.agent, history.note),
+        refusal,
+        "Resume cannot certify the earlier launch's native absence"
     );
     assert_eq!(
-        daemon.sup.world().goals[&history.goal].turns_on_goal,
-        history.before.goals[&history.goal].turns_on_goal
+        history
+            .fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record, Record::BrowserNoteDispatchIntent { .. }))
+            .count(),
+        frozen
+            .iter()
+            .filter(|record| matches!(record, Record::BrowserNoteDispatchIntent { .. }))
+            .count()
     );
+}
+
+fn start_finite_nonlaunch_chat(fixture: &common::Fixture, host: &BoundaryHost) -> common::Running {
+    let daemon = boot_with_options(
+        &fixture.settings(),
+        with_native_program(
+            host.clone(),
+            &host.inner,
+            Arc::new(common::ScriptedRunner::default()),
+        ),
+        RunOptions::default(),
+    )
+    .unwrap();
+    common::start(daemon)
 }
 
 #[test]
 fn finite_nonlaunch_preserves_confirmed_session_and_holds_follow_up() {
     let fixture = common::Fixture::new();
-    let host = BoundaryHost::new();
-    let daemon = boot_with_options(
-        &fixture.settings(),
-        with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default())),
-        RunOptions::default(),
-    )
-    .unwrap();
-    let mut running = common::start(daemon);
+    let host = BoundaryHost::with_native_evidence(fixture.journal_dir());
+    let mut running = start_finite_nonlaunch_chat(&fixture, &host);
     let agent = common::hire(&running.handle, fixture.state.path());
     let browser = session();
     let first = send(&running.handle, &browser, agent, "establish context", 0);
@@ -1918,7 +2198,7 @@ fn finite_nonlaunch_preserves_confirmed_session_and_holds_follow_up() {
             turn: first_turn,
             session: confirmed.clone(),
         });
-    common::end_turn(&running.handle, first_turn);
+    common::end_turn_with_native(&fixture, &running.handle, &host.inner, first_turn);
     running.handle.doctor().unwrap();
     host.not_launched.store(true, Ordering::SeqCst);
     let second = send(&running.handle, &browser, agent, "failed launch", 1);
@@ -1973,7 +2253,7 @@ fn finite_nonlaunch_preserves_confirmed_session_and_holds_follow_up() {
             turn: resumed,
             session: confirmed.clone(),
         });
-    common::end_turn(&running.handle, resumed);
+    common::end_turn_with_native(&fixture, &running.handle, &host.inner, resumed);
     running.stop(ExitCause::Ended);
     let projection =
         dudes_journal::Projections::open(&fixture.state.path().join(crate::boot::PROJECTION_FILE))
@@ -2068,9 +2348,9 @@ fn first_browser_attempt_known_nonlaunch_keeps_existing_failure_accounting() {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let host = BoundaryHost::new();
+        let host = BoundaryHost::with_native_evidence(fixture.journal_dir());
         let predicates = Arc::new(common::ScriptedRunner::scripted([common::passes()]));
-        let mut seams = with_owned_program(host.clone(), Arc::clone(&predicates));
+        let mut seams = with_native_program(host.clone(), &host.inner, Arc::clone(&predicates));
         seams.adapters = Adapters::new([Box::new(ClaudeAdapter::new(ClaudeConfig {
             command: program.clone().into_os_string(),
             ..ClaudeConfig::default()
@@ -2082,7 +2362,7 @@ fn first_browser_attempt_known_nonlaunch_keeps_existing_failure_accounting() {
             &running.handle,
             common::goal_params(agent, &[common::true_program()]),
         );
-        common::end_turn(&running.handle, fixture.await_turn());
+        common::end_turn_with_native(&fixture, &running.handle, &host.inner, fixture.await_turn());
         fixture.await_record("original Done", |record| matches!(record, Record::LoopDecided { agent: owner, decision: LoopDecision::Done, .. } if *owner == agent).then_some(()));
         if failure == "resolution" {
             std::fs::remove_file(program).unwrap();

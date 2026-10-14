@@ -6,7 +6,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -19,6 +19,9 @@ use crate::tree;
 /// Maximum bytes returned by one [`PtyReader::read`].
 pub const MAX_READ_BYTES: usize = 64 * 1024;
 const READ_QUEUE_DEPTH: usize = 8;
+/// Maximum tracked native close identities awaiting acknowledgment.
+pub const MAX_CLOSE_RECEIPTS: usize = 512;
+static NEXT_SESSION_EPOCH: AtomicU64 = AtomicU64::new(1);
 
 /// A pseudoterminal's character-cell dimensions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +48,99 @@ pub enum CloseOutcome {
     Closed,
     /// The host no longer owned that handle.
     AlreadyClosed,
+}
+
+/// Opaque identity of one native PTY session, distinct even when a handle is reused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PtyCloseIdentity {
+    pty: PtyId,
+    epoch: u64,
+}
+
+impl PtyCloseIdentity {
+    /// The run-local PTY handle whose native session this identity names.
+    #[must_use]
+    pub const fn pty(self) -> PtyId {
+        self.pty
+    }
+}
+
+/// Evidence that the direct child was reaped and its native group or Job was observed absent.
+///
+/// This proves absence only within the owned native container, not arbitrary descendants that
+/// escaped it. The host retains this receipt until its exact acknowledgment after durable settlement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PtyCloseReceipt {
+    identity: PtyCloseIdentity,
+}
+
+impl PtyCloseReceipt {
+    /// The exact native session for which absence was observed.
+    #[must_use]
+    pub const fn identity(self) -> PtyCloseIdentity {
+        self.identity
+    }
+}
+
+/// Why the host cannot supply native absence evidence.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum CloseReceiptError {
+    /// The receipt table is full; no existing identity was evicted.
+    Limit,
+    /// No current native session exists to begin tracking.
+    NoSession,
+    /// The exact identity is not tracked or was already acknowledged.
+    NotTracked,
+    /// Native close has not yet proved the direct child reaped.
+    Pending,
+    /// No safe native absence query could be retained at close.
+    QueryUnavailable,
+    /// The fresh native query found processes still present.
+    Present,
+    /// The fresh native query failed; its query remains available for retry.
+    QueryFailed(io::Error),
+}
+
+impl fmt::Display for CloseReceiptError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Limit => formatter.write_str("PTY close receipt limit reached"),
+            Self::NoSession => formatter.write_str("PTY native session is not open"),
+            Self::NotTracked => formatter.write_str("PTY close identity is not tracked"),
+            Self::Pending => formatter.write_str("PTY native close is not confirmed"),
+            Self::QueryUnavailable => {
+                formatter.write_str("PTY native absence query is unavailable")
+            }
+            Self::Present => formatter.write_str("PTY native group or Job is still present"),
+            Self::QueryFailed(error) => {
+                write!(formatter, "PTY native absence query failed: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CloseReceiptError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::QueryFailed(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+enum CloseEvidence {
+    Pending,
+    Query {
+        query: tree::CloseQuery,
+        receipt: Option<PtyCloseReceipt>,
+    },
+    QueryUnavailable,
+}
+
+struct TrackedClose {
+    identity: PtyCloseIdentity,
+    evidence: CloseEvidence,
 }
 
 /// The read half returned by [`PtyHost::open`].
@@ -132,6 +228,7 @@ impl From<io::Error> for OpenError {
 }
 
 struct Session {
+    epoch: u64,
     native: tree::Session,
     reader: Option<JoinHandle<()>>,
     raw_reader: Option<fs::File>,
@@ -153,6 +250,7 @@ struct Session {
 /// process group; the explicit shutdown call is the accepted ownership mechanism.
 pub struct PtyHost {
     sessions: BTreeMap<PtyId, Session>,
+    closes: BTreeMap<u64, TrackedClose>,
     next_id: u64,
     #[cfg(test)]
     fail_reader_start_once: bool,
@@ -165,6 +263,7 @@ impl std::fmt::Debug for PtyHost {
         formatter
             .debug_struct("PtyHost")
             .field("sessions", &self.sessions.len())
+            .field("tracked_closes", &self.closes.len())
             .field("next_id", &self.next_id)
             .finish_non_exhaustive()
     }
@@ -182,6 +281,7 @@ impl PtyHost {
     pub const fn new() -> Self {
         Self {
             sessions: BTreeMap::new(),
+            closes: BTreeMap::new(),
             next_id: 1,
             #[cfg(test)]
             fail_reader_start_once: false,
@@ -202,6 +302,11 @@ impl PtyHost {
             .next_id
             .checked_add(1)
             .ok_or_else(|| io::Error::other("PTY handle space exhausted"))?;
+        let epoch = NEXT_SESSION_EPOCH
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |epoch| {
+                epoch.checked_add(1)
+            })
+            .map_err(|_| io::Error::other("PTY session identity space exhausted"))?;
 
         let tree::Spawned {
             session,
@@ -213,6 +318,7 @@ impl PtyHost {
         self.sessions.insert(
             id,
             Session {
+                epoch,
                 native: session,
                 reader: None,
                 raw_reader: Some(reader),
@@ -311,6 +417,81 @@ impl PtyHost {
         self.active_session_mut(pty)?.native.resize(size)
     }
 
+    /// Reserve bounded close tracking while the exact native session is still owned.
+    ///
+    /// Call before [`Self::close`]. Repeating this call for the same session returns the same
+    /// identity. A missing handle never creates evidence from [`CloseOutcome::AlreadyClosed`].
+    pub fn track_close(&mut self, pty: PtyId) -> Result<PtyCloseIdentity, CloseReceiptError> {
+        let session = self
+            .sessions
+            .get(&pty)
+            .ok_or(CloseReceiptError::NoSession)?;
+        let identity = PtyCloseIdentity {
+            pty,
+            epoch: session.epoch,
+        };
+        if self.closes.contains_key(&identity.epoch) {
+            return Ok(identity);
+        }
+        if self.closes.len() >= MAX_CLOSE_RECEIPTS {
+            return Err(CloseReceiptError::Limit);
+        }
+        self.closes.insert(
+            identity.epoch,
+            TrackedClose {
+                identity,
+                evidence: CloseEvidence::Pending,
+            },
+        );
+        Ok(identity)
+    }
+
+    /// Retrieve retained absence evidence, or query the retained native container afresh.
+    ///
+    /// A failed or present query retains its query for retry. An observed receipt remains
+    /// retrievable if durable settlement fails or its acknowledgment is withheld.
+    pub fn close_receipt(
+        &mut self,
+        identity: PtyCloseIdentity,
+    ) -> Result<PtyCloseReceipt, CloseReceiptError> {
+        let tracked = self
+            .closes
+            .get_mut(&identity.epoch)
+            .filter(|tracked| tracked.identity == identity)
+            .ok_or(CloseReceiptError::NotTracked)?;
+        match &mut tracked.evidence {
+            CloseEvidence::Pending => Err(CloseReceiptError::Pending),
+            CloseEvidence::QueryUnavailable => Err(CloseReceiptError::QueryUnavailable),
+            CloseEvidence::Query {
+                receipt: Some(receipt),
+                ..
+            } => Ok(*receipt),
+            CloseEvidence::Query { query, receipt } => {
+                if !query.is_absent().map_err(CloseReceiptError::QueryFailed)? {
+                    return Err(CloseReceiptError::Present);
+                }
+                let observed = PtyCloseReceipt { identity };
+                *receipt = Some(observed);
+                Ok(observed)
+            }
+        }
+    }
+
+    /// Retire only the exact retained receipt after its settlement has been durably written.
+    ///
+    /// This removes no live session and cannot retire metadata for a successor reusing the PTY
+    /// handle. Returns false for a duplicate, stale, or otherwise unmatched acknowledgment.
+    pub fn acknowledge_close_receipt(&mut self, receipt: PtyCloseReceipt) -> bool {
+        let matches = self.closes.get(&receipt.identity.epoch).is_some_and(|tracked| {
+            tracked.identity == receipt.identity
+                && matches!(tracked.evidence, CloseEvidence::Query { receipt: Some(current), .. } if current == receipt)
+        });
+        if matches {
+            self.closes.remove(&receipt.identity.epoch);
+        }
+        matches
+    }
+
     /// Stop and reap one PTY tree before returning.
     pub fn close(&mut self, pty: PtyId) -> io::Result<CloseOutcome> {
         let Some(session) = self.sessions.get_mut(&pty) else {
@@ -333,6 +514,7 @@ impl PtyHost {
                 .error
                 .unwrap_or_else(|| io::Error::other("PTY cleanup is unconfirmed")));
         }
+        Self::capture_close_query(&mut self.closes, pty, session);
         let reader = session.reader.take();
         self.sessions.remove(&pty);
         let joined = join_reader(reader);
@@ -340,6 +522,33 @@ impl PtyHost {
             (Some(error), _) | (None, Err(error)) => Err(error),
             (None, Ok(())) => Ok(CloseOutcome::Closed),
         }
+    }
+
+    fn capture_close_query(
+        closes: &mut BTreeMap<u64, TrackedClose>,
+        pty: PtyId,
+        session: &Session,
+    ) {
+        let Some(tracked) = closes.get_mut(&session.epoch) else {
+            return;
+        };
+        if tracked.identity.pty != pty
+            || !matches!(
+                tracked.evidence,
+                CloseEvidence::Pending | CloseEvidence::QueryUnavailable
+            )
+        {
+            return;
+        }
+        tracked.evidence = match session.native.close_query() {
+            Ok(query) => {
+                let receipt = matches!(query.is_absent(), Ok(true)).then_some(PtyCloseReceipt {
+                    identity: tracked.identity,
+                });
+                CloseEvidence::Query { query, receipt }
+            }
+            Err(_) => CloseEvidence::QueryUnavailable,
+        };
     }
 
     /// Stop and reap every PTY tree before returning.
@@ -395,6 +604,7 @@ impl PtyHost {
             report
         };
         if report.confirmed {
+            Self::capture_close_query(&mut self.closes, pty, session);
             let reader = session.reader.take();
             self.sessions.remove(&pty);
             let cleanup = report.error.or_else(|| join_reader(reader).err());
@@ -552,6 +762,184 @@ mod tests {
     const EARLY_CHILD: &str = "DUDES_PTY_EARLY_CHILD";
     const EARLY_GRANDCHILD: &str = "DUDES_PTY_EARLY_GRANDCHILD";
     const BEAT: &str = "DUDES_PTY_EARLY_BEAT";
+
+    #[test]
+    fn completed_native_close_receipt_survives_withheld_acknowledgment() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut host = PtyHost::new();
+        let opened = host
+            .open(sleep_spec(temp.path()), PtySize { cols: 80, rows: 24 })
+            .unwrap();
+        let identity = host.track_close(opened.id).unwrap();
+        assert_eq!(host.track_close(opened.id).unwrap(), identity);
+        assert_eq!(identity.pty(), opened.id);
+        assert!(matches!(
+            host.close_receipt(identity),
+            Err(CloseReceiptError::Pending)
+        ));
+        assert_eq!(host.close(opened.id).unwrap(), CloseOutcome::Closed);
+
+        let receipt = host.close_receipt(identity).unwrap();
+        assert_eq!(receipt.identity(), identity);
+        assert_eq!(host.close(opened.id).unwrap(), CloseOutcome::AlreadyClosed);
+        assert_eq!(host.close_receipt(identity).unwrap(), receipt);
+        assert_eq!(host.close_receipt(identity).unwrap(), receipt);
+        assert!(matches!(
+            host.track_close(opened.id),
+            Err(CloseReceiptError::NoSession)
+        ));
+        assert!(host.acknowledge_close_receipt(receipt));
+        assert!(!host.acknowledge_close_receipt(receipt));
+        assert!(matches!(
+            host.close_receipt(identity),
+            Err(CloseReceiptError::NotTracked)
+        ));
+    }
+
+    #[test]
+    fn already_closed_untracked_handle_has_no_native_receipt() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut host = PtyHost::new();
+        let opened = host
+            .open(sleep_spec(temp.path()), PtySize { cols: 80, rows: 24 })
+            .unwrap();
+        let identity = PtyCloseIdentity {
+            pty: opened.id,
+            epoch: host.sessions[&opened.id].epoch,
+        };
+        assert_eq!(host.close(opened.id).unwrap(), CloseOutcome::Closed);
+        assert_eq!(host.close(opened.id).unwrap(), CloseOutcome::AlreadyClosed);
+        assert!(matches!(
+            host.close_receipt(identity),
+            Err(CloseReceiptError::NotTracked)
+        ));
+        assert!(host.closes.is_empty());
+    }
+
+    #[test]
+    fn unavailable_native_query_upgrades_after_confirmed_close_of_the_same_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut host = PtyHost::new();
+        let opened = host
+            .open(sleep_spec(temp.path()), PtySize { cols: 80, rows: 24 })
+            .unwrap();
+        let identity = host.track_close(opened.id).unwrap();
+        PtyHost::capture_close_query(&mut host.closes, opened.id, &host.sessions[&opened.id]);
+        assert!(matches!(
+            host.close_receipt(identity),
+            Err(CloseReceiptError::QueryUnavailable)
+        ));
+        assert!(host.pid(opened.id).is_some());
+
+        assert_eq!(host.close(opened.id).unwrap(), CloseOutcome::Closed);
+        let receipt = host.close_receipt(identity).unwrap();
+        assert_eq!(receipt.identity(), identity);
+        assert!(host.acknowledge_close_receipt(receipt));
+    }
+
+    #[test]
+    fn stale_acknowledgment_cannot_retire_reused_handle_epoch() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut host = PtyHost::new();
+        let first = host
+            .open(sleep_spec(temp.path()), PtySize { cols: 80, rows: 24 })
+            .unwrap();
+        let first_identity = host.track_close(first.id).unwrap();
+        host.close(first.id).unwrap();
+        let first_receipt = host.close_receipt(first_identity).unwrap();
+
+        host.next_id = first.id.0;
+        let next = host
+            .open(sleep_spec(temp.path()), PtySize { cols: 80, rows: 24 })
+            .unwrap();
+        assert_eq!(next.id, first.id);
+        let next_identity = host.track_close(next.id).unwrap();
+        assert_ne!(next_identity, first_identity);
+        assert_eq!(host.closes.len(), 2);
+        assert!(host.acknowledge_close_receipt(first_receipt));
+        assert!(host.pid(next.id).is_some());
+        assert!(matches!(
+            host.close_receipt(next_identity),
+            Err(CloseReceiptError::Pending)
+        ));
+
+        host.close(next.id).unwrap();
+        let next_receipt = host.close_receipt(next_identity).unwrap();
+        assert!(!host.acknowledge_close_receipt(first_receipt));
+        assert_eq!(host.close_receipt(next_identity).unwrap(), next_receipt);
+        assert!(host.acknowledge_close_receipt(next_receipt));
+    }
+
+    #[test]
+    fn cached_cleanup_requires_fresh_absence_and_failed_queries_remain_retryable() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut host = PtyHost::new();
+        let opened = host
+            .open(sleep_spec(temp.path()), PtySize { cols: 80, rows: 24 })
+            .unwrap();
+        let identity = host.track_close(opened.id).unwrap();
+        host.sessions
+            .get_mut(&opened.id)
+            .unwrap()
+            .force_cleanup_uncertainty_once = true;
+        assert!(host.close(opened.id).is_err());
+        assert!(matches!(
+            host.close_receipt(identity),
+            Err(CloseReceiptError::Pending)
+        ));
+
+        tree::force_absence_query_once_for_test(Ok(false));
+        assert_eq!(host.close(opened.id).unwrap(), CloseOutcome::Closed);
+        tree::force_absence_query_once_for_test(Ok(false));
+        assert!(matches!(
+            host.close_receipt(identity),
+            Err(CloseReceiptError::Present)
+        ));
+        tree::force_absence_query_once_for_test(Err(io::Error::other(
+            "injected fresh probe failure",
+        )));
+        assert!(matches!(
+            host.close_receipt(identity),
+            Err(CloseReceiptError::QueryFailed(_))
+        ));
+        let receipt = host.close_receipt(identity).unwrap();
+        assert!(host.acknowledge_close_receipt(receipt));
+    }
+
+    #[test]
+    fn tracking_limit_preserves_unresolved_entries_and_does_not_prevent_close() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut host = PtyHost::new();
+        let opened = host
+            .open(sleep_spec(temp.path()), PtySize { cols: 80, rows: 24 })
+            .unwrap();
+        for offset in 0..MAX_CLOSE_RECEIPTS {
+            let epoch = u64::MAX - u64::try_from(offset).unwrap();
+            host.closes.insert(
+                epoch,
+                TrackedClose {
+                    identity: PtyCloseIdentity {
+                        pty: opened.id,
+                        epoch,
+                    },
+                    evidence: CloseEvidence::Pending,
+                },
+            );
+        }
+        assert!(matches!(
+            host.track_close(opened.id),
+            Err(CloseReceiptError::Limit)
+        ));
+        assert_eq!(host.closes.len(), MAX_CLOSE_RECEIPTS);
+        assert_eq!(host.close(opened.id).unwrap(), CloseOutcome::Closed);
+        assert!(host.sessions.is_empty());
+        assert_eq!(host.closes.len(), MAX_CLOSE_RECEIPTS);
+        assert!(
+            host.closes
+                .values()
+                .all(|tracked| matches!(tracked.evidence, CloseEvidence::Pending))
+        );
+    }
 
     #[test]
     fn reader_start_failure_distinguishes_confirmed_cleanup_from_retained_uncertainty() {

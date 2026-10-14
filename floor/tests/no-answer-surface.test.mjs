@@ -1069,7 +1069,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(3).fill(GOAL_PANEL),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
     ...Array(6).fill(TICKET_BOARD),
-    ...Array(9).fill(TICKET_PANEL),
+    ...Array(10).fill(TICKET_PANEL),
     ...Array(10).fill(HIRE_FORM),
     HIRE_ENTRY,
     ...Array(6).fill(RETIRE_PANEL),
@@ -1143,7 +1143,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.deepEqual(clicksIn(center), ['() => onSelectAgent(row.id)', 'onToggle', '() => onOpen(item.agentId)',
     '() => onOpenTicket?.(item.card)', '() => onToggle(entry.view)', 'onClose', 'closeOverlay']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TICKET_BOARD), 'utf8')), [
-    'dismissNotice', '(event) => onHire(event.currentTarget)', 'onCancel',
+    '() => dismissNotice(notice)', '(event) => onHire(event.currentTarget)', 'onCancel',
     '(event) => onSelect(card.id, event.currentTarget)', '(event) => onNewTicket(event.currentTarget)',
   ]);
   // Opening Setup or Settings takes a fresh snapshot: the same resubscription Recheck starts.

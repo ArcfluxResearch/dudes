@@ -299,14 +299,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return;
         };
         let decided = dudes_policy::admit_mail_wake(&input);
-        if let MailRefreshPhase::CheckIssue { root_lsn, decision_lsn, at, input_digest } = pending.phase
-            && now.utc_day() == at.utc_day() && digest == input_digest
-            && decided.as_ref().is_some_and(|value| matches!(&value.decision, MailWakeAdmission::Issue { task } if task == input.task()))
-            && self.world.mail_wake_state(agent).is_some_and(|state| state.ready()
-                && state.preparation.as_ref().is_some_and(|preparation| preparation.root_lsn == root_lsn)
-                && state.latest.as_ref().is_some_and(|latest| latest.lsn == decision_lsn && latest.at == at
-                    && latest.root_lsn == Some(root_lsn) && latest.input_digest == input_digest
-                    && matches!(latest.decision, MailWakeAdmission::Issue { .. }))) {
+        if self.mail_wake_issue_check(agent, &pending.phase, now, &input, digest, decided.as_ref())
+            && let MailRefreshPhase::CheckIssue {
+                root_lsn,
+                decision_lsn,
+                at,
+                ..
+            } = pending.phase
+        {
             self.issue_mail_wake(agent, root_lsn, decision_lsn, at);
             return;
         }
@@ -315,6 +315,71 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return;
         };
         self.record_mail_admission(&input, purpose, now, digest, decided);
+    }
+
+    fn mail_wake_issue_check(
+        &self,
+        agent: AgentId,
+        phase: &MailRefreshPhase,
+        now: Timestamp,
+        input: &MailWakeInput,
+        digest: MailWakeDigest,
+        decided: Option<&dudes_policy::MailWakeDecided>,
+    ) -> bool {
+        let MailRefreshPhase::CheckIssue {
+            root_lsn,
+            decision_lsn,
+            at,
+            input_digest,
+        } = phase
+        else {
+            return false;
+        };
+        now.utc_day() == at.utc_day() && digest == *input_digest
+            && decided.is_some_and(|value| matches!(&value.decision, MailWakeAdmission::Issue { task } if task == input.task()))
+            && self.world.mail_wake_state(agent).is_some_and(|state| state.ready()
+                && state.preparation.as_ref().is_some_and(|preparation| preparation.root_lsn == *root_lsn)
+                && state.latest.as_ref().is_some_and(|latest| latest.lsn == *decision_lsn && latest.at == *at
+                    && latest.root_lsn == Some(*root_lsn) && latest.input_digest == *input_digest
+                    && matches!(latest.decision, MailWakeAdmission::Issue { .. })))
+    }
+
+    pub(super) fn delayed_mail_wake_admitted(
+        &self,
+        issue: &MailWakeIssue,
+        at: Timestamp,
+        now: Timestamp,
+    ) -> bool {
+        let Some(latest) = self
+            .world
+            .mail_wake_state(issue.agent)
+            .and_then(|state| state.latest.as_ref())
+        else {
+            return false;
+        };
+        let phase = MailRefreshPhase::CheckIssue {
+            root_lsn: issue.root_lsn,
+            decision_lsn: issue.lsn_of_decision,
+            at,
+            input_digest: latest.input_digest,
+        };
+        let spend = self.spend.get(&issue.agent).copied().unwrap_or_default();
+        let Some((input, _)) = self.mail_wake_input_for(issue.agent, now, spend) else {
+            return false;
+        };
+        let Ok(digest) = crate::host::mail_wake_input_digest(&input, now.utc_day()) else {
+            return false;
+        };
+        self.world.completed_goal(issue.agent) == Some((issue.goal, issue.completion_lsn))
+            && input.task() == &issue.task
+            && self.mail_wake_issue_check(
+                issue.agent,
+                &phase,
+                now,
+                &input,
+                digest,
+                dudes_policy::admit_mail_wake(&input).as_ref(),
+            )
     }
 
     fn record_mail_admission(
@@ -469,7 +534,7 @@ mod tests {
     use super::*;
     use crate::Input;
     use crate::host::{ProcessHost as _, SpawnResult};
-    use crate::testing::{Harness, Seen, journal_with_issued_turn};
+    use crate::testing::{FakeClock, Harness, Seen, journal_with_issued_turn};
     use dudes_proto::Evidence;
     use dudes_proto::{ExitStatus, LoopDecision, Spend, TurnOutcome};
     use dudes_types::{BreakerRung, MailId, MailState, Usage, Usd};
@@ -542,6 +607,7 @@ mod tests {
                 },
             });
             let mut h = Harness::default();
+            h.supervisor.clock = FakeClock::frozen(1);
             for (entry, position) in entries.iter().zip(1u64..) {
                 assert!(
                     h.step(Input::Replayed {
@@ -577,6 +643,7 @@ mod tests {
                         .is_empty()
                 );
             }
+            restarted.h.supervisor.clock = FakeClock::frozen(1);
             restarted.h.journal = entries.to_vec();
             restarted
         }
@@ -607,6 +674,15 @@ mod tests {
             else {
                 panic!("expected current mail refresh");
             };
+            self.h.supervisor.clock = FakeClock::frozen(stamp.unix_millis());
+            assert!(
+                self.h
+                    .step(Input::Spend {
+                        agent: *agent,
+                        view: spend
+                    })
+                    .is_empty()
+            );
             self.h.step(Input::MailWakeReady {
                 agent: *agent,
                 request: *request,
@@ -625,6 +701,128 @@ mod tests {
                 token: *token,
                 lsn: Lsn(u64::try_from(self.h.journal.len()).unwrap()),
             })
+        }
+        fn instruction_phases(&mut self, mut effects: Vec<Seen>) -> Vec<Seen> {
+            for _ in 0..32 {
+                if let [
+                    Seen::SampleInstructions {
+                        request,
+                        goal,
+                        baseline,
+                        ..
+                    },
+                ] = effects.as_slice()
+                {
+                    let gap = dudes_proto::InstructionCoverageGap {
+                        reason: dudes_proto::InstructionGapKind::DeclarationMissing,
+                        context: dudes_proto::InstructionPathContext::Unresolved,
+                        agent: None,
+                        path: None,
+                    };
+                    let snapshot = dudes_proto::InstructionSnapshot {
+                        sampled_at: self.h.supervisor.clock.now(),
+                        source: dudes_proto::InstructionSnapshotSource::Fresh,
+                        execution_folder: None,
+                        participants: Vec::new(),
+                        inputs: Vec::new(),
+                        inventoried: Vec::new(),
+                        gaps: vec![
+                            dudes_proto::InstructionCoverageGap {
+                                reason: dudes_proto::InstructionGapKind::PathUnresolved,
+                                ..gap.clone()
+                            },
+                            gap.clone(),
+                        ],
+                        usage: dudes_proto::InstructionSampleUsage::default(),
+                        boot: None,
+                    };
+                    let ticket = goal.and_then(|goal| {
+                        self.h
+                            .supervisor
+                            .world
+                            .instructions
+                            .association_for_goal(goal, dudes_types::Seq::ZERO)
+                    });
+                    effects = self.h.step(Input::InstructionSampled {
+                        request: *request,
+                        snapshot: Box::new(snapshot),
+                        ticket,
+                        comparison: baseline.as_ref().map(|_| {
+                            Box::new(dudes_proto::InstructionComparison {
+                                changes: Vec::new(),
+                                gaps: vec![gap],
+                                usage: dudes_proto::InstructionSampleUsage::default(),
+                            })
+                        }),
+                    });
+                } else if matches!(
+                    effects.as_slice(),
+                    [Seen::Persist {
+                        entry: Entry {
+                            record: Record::InstructionObservationStarted { .. }
+                                | Record::InstructionObservationFinished { .. },
+                            ..
+                        },
+                        ..
+                    }]
+                ) {
+                    effects = self.ack(&effects);
+                } else {
+                    return effects;
+                }
+            }
+            panic!("instruction observation phases must reach their next real effect");
+        }
+        fn end_note_to_mail_refresh(&mut self, turn: TurnId) -> Seen {
+            let mut effects = self.h.step(Input::ChildExited {
+                final_reply: None,
+                elapsed_ms: None,
+                turn,
+                exit: ExitStatus {
+                    code: Some(0),
+                    signal: None,
+                },
+                usage: Some(dudes_providers::stream::ScopedUsage::Turn(Usage::ZERO)),
+                model_usage: BTreeMap::new(),
+                outcome: TurnOutcome::Completed,
+                last_message: None,
+            });
+            effects = self.instruction_phases(effects);
+            let mut refresh = None;
+            for _ in 0..8 {
+                if let Some(found) = effects
+                    .iter()
+                    .find(|effect| matches!(effect, Seen::MailWakeRefresh { .. }))
+                {
+                    refresh = Some(found.clone());
+                    break;
+                }
+                if !effects
+                    .iter()
+                    .any(|effect| matches!(effect, Seen::Persist { .. }))
+                {
+                    break;
+                }
+                let acknowledged = self.ack(&effects);
+                effects = self.instruction_phases(acknowledged);
+            }
+            refresh.expect("the owed mail is reconsidered after the note turn ends")
+        }
+        fn recorded_decision_lsn(&self, decision_entry: &Entry) -> Lsn {
+            let mut recorded_decisions = self
+                .h
+                .journal
+                .iter()
+                .zip(1u64..)
+                .filter_map(|(entry, position)| (entry == decision_entry).then_some(Lsn(position)));
+            let decision_lsn = recorded_decisions
+                .next()
+                .expect("the exact decision was persisted");
+            assert!(
+                recorded_decisions.next().is_none(),
+                "the exact decision is recorded once"
+            );
+            decision_lsn
         }
         fn root(&mut self, count: u8) -> Vec<Seen> {
             let arrival = self.arrival(count);
@@ -677,6 +875,7 @@ mod tests {
         }
         fn spawn(&mut self, effects: Vec<Seen>, issue: &MailWakeIssue) {
             assert!(self.h.host.spawned.is_empty());
+            let effects = self.instruction_phases(effects);
             let launch = if matches!(
                 effects.as_slice(),
                 [Seen::Persist {
@@ -834,6 +1033,7 @@ mod tests {
         let final_decision = f.final_decision();
         let check = f.ack(&final_decision);
         let issue = f.refresh(&check, at(5_000), SpendView::default());
+        let issue = f.instruction_phases(issue);
         let [
             Seen::Persist {
                 entry:
@@ -890,6 +1090,67 @@ mod tests {
                         ..
                     }
                 ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn delayed_mail_issue_preserves_the_exact_admission_stamp_and_folds_once() {
+        let mut f = Flow::completed();
+        let decision = f.final_decision();
+        let check = f.ack(&decision);
+        let sample = f.refresh(&check, at(5_000), SpendView::default());
+        assert!(matches!(
+            sample.as_slice(),
+            [Seen::SampleInstructions { baseline: None, .. }]
+        ));
+        f.h.supervisor.clock.advance(1_000);
+        let issued = f.instruction_phases(sample);
+        let [
+            Seen::Persist {
+                entry:
+                    Entry {
+                        at: stamp,
+                        record: Record::MailWakeOnlyTurnIssued(issue),
+                    },
+                ..
+            },
+        ] = issued.as_slice()
+        else {
+            panic!("the actual delayed mail admission must still issue");
+        };
+        assert_eq!(*stamp, at(1));
+        let issue = issue.clone();
+        let baseline_at =
+            f.h.journal
+                .iter()
+                .find_map(|entry| match entry.record {
+                    Record::InstructionObservationStarted {
+                        owner: dudes_proto::InstructionObservationOwner::Managed { turn, .. },
+                        ..
+                    } if turn == issue.turn => Some(entry.at),
+                    _ => None,
+                })
+                .unwrap();
+        assert_eq!(baseline_at, at(6_000));
+        let launch = f.ack(&issued);
+        assert!(f.h.supervisor.world.mail_wake_history_valid());
+        assert_eq!(
+            f.h.supervisor.world.agents[&f.agent].open_turn,
+            Some(issue.turn)
+        );
+        assert_eq!(
+            f.h.supervisor
+                .world
+                .mail_wake_count(f.agent, at(1).utc_day()),
+            1
+        );
+        f.spawn(launch, &issue);
+        assert_eq!(
+            f.h.journal
+                .iter()
+                .filter(|entry| matches!(entry.record, Record::MailWakeOnlyTurnIssued(_)))
                 .count(),
             1
         );
@@ -965,7 +1226,7 @@ mod tests {
                 },
                 destination: dudes_proto::BrowserNoteDestination::ManagedGoal { goal: f.goal },
             }));
-        let mut seen = queued;
+        let mut seen = f.instruction_phases(queued);
         let mut persisted = 0;
         let mut note_turn = None;
         while let Some(Seen::Persist { entry, .. }) = seen
@@ -989,7 +1250,7 @@ mod tests {
                 "no mail refresh while the note owns the pass"
             );
             f.mail = MailId::from_parts(3, u128::try_from(persisted).unwrap() + 100);
-            seen = next;
+            seen = f.instruction_phases(next);
         }
         assert!(persisted >= 2, "the note decision and its issue");
         let turn = note_turn.expect("exactly one note issue");
@@ -1007,37 +1268,7 @@ mod tests {
                 .count(),
             1
         );
-        let mut effects = f.h.step(Input::ChildExited {
-            final_reply: None,
-            elapsed_ms: None,
-            turn,
-            exit: ExitStatus {
-                code: Some(0),
-                signal: None,
-            },
-            usage: Some(dudes_providers::stream::ScopedUsage::Turn(Usage::ZERO)),
-            model_usage: BTreeMap::new(),
-            outcome: TurnOutcome::Completed,
-            last_message: None,
-        });
-        let mut refresh = None;
-        for _ in 0..8 {
-            if let Some(found) = effects
-                .iter()
-                .find(|effect| matches!(effect, Seen::MailWakeRefresh { .. }))
-            {
-                refresh = Some(found.clone());
-                break;
-            }
-            if !effects
-                .iter()
-                .any(|effect| matches!(effect, Seen::Persist { .. }))
-            {
-                break;
-            }
-            effects = f.ack(&effects);
-        }
-        let refresh = refresh.expect("the owed mail is reconsidered after the note turn ends");
+        let refresh = f.end_note_to_mail_refresh(turn);
         let decision = f.refresh(&[refresh], at(1), SpendView::default());
         assert!(
             decision.iter().any(|effect| matches!(
@@ -1060,6 +1291,7 @@ mod tests {
         let final_decision = f.final_decision();
         let check = f.ack(&final_decision);
         let issued = f.refresh(&check, at(1), SpendView::default());
+        let issued = f.instruction_phases(issued);
         let Some(Seen::Persist {
             entry:
                 Entry {
@@ -1074,10 +1306,11 @@ mod tests {
         let carrier = carrier.clone();
         f.ack(&issued);
         let history = f.h.journal.clone();
-        for cut in 8..=11 {
+        for cut in 8..=history.len() {
             let mut restarted = f.restarted(&history[..cut]);
             let ready = restarted.h.step(Input::Started);
-            if cut == 11 {
+            let ready = restarted.instruction_phases(ready);
+            if cut == history.len() {
                 assert!(
                     !ready
                         .iter()
@@ -1326,8 +1559,19 @@ mod tests {
             )),
             "the decision acknowledgement precedes issue and spawn"
         );
+        let [
+            Seen::Persist {
+                entry: decision_entry,
+                ..
+            },
+        ] = decided.as_slice()
+        else {
+            panic!("one exact mail decision must be acknowledged");
+        };
         let checked = f.ack(&decided);
+        let decision_lsn = f.recorded_decision_lsn(decision_entry);
         let issued = f.refresh(&checked, at(1), SpendView::default());
+        let issued = f.instruction_phases(issued);
         let [
             Seen::Persist {
                 entry:
@@ -1352,10 +1596,7 @@ mod tests {
                 dudes_proto::MAIL_INSTRUCTION
             )
         );
-        assert_eq!(
-            issue.lsn_of_decision,
-            Lsn(u64::try_from(f.h.journal.len()).unwrap())
-        );
+        assert_eq!(issue.lsn_of_decision, decision_lsn);
         assert_eq!(Some((issue.goal, issue.completion_lsn)), completion);
         assert!(issue.answers.is_empty());
         assert!(f.h.supervisor.world.agents[&f.agent].open_turn.is_none());
@@ -1496,6 +1737,7 @@ mod tests {
         assert_fifth_restart_refusals(&f);
         let checked = f.ack(&decided);
         let issued = f.refresh(&checked, at(1), SpendView::default());
+        let issued = f.instruction_phases(issued);
         let [
             Seen::Persist {
                 entry:

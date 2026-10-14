@@ -4,7 +4,6 @@
 
 mod common;
 
-use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -13,7 +12,7 @@ use duded::startup::Witness;
 use dudes_proto::rpc::agent::{AttachParams, AttachResult};
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::{AgentRef, Method};
-use dudes_proto::{Actor, ExitStatus, PeerProvenance, Record, TurnOutcome};
+use dudes_proto::{Actor, PeerProvenance, Record};
 use dudes_rpc::{Client, LocalClient};
 use dudes_supervisor::Input;
 use dudes_supervisor::testing::FakeRng;
@@ -68,6 +67,500 @@ fn detach(
 }
 
 #[test]
+fn unsupported_native_queries_stay_unknown_after_a_pid_is_reported_gone() {
+    use dudes_supervisor::host::{
+        NativeBoundaryAcknowledgement, NativeBoundaryReceipt, OwnedTargetsStatus, ProcessHost,
+    };
+    let mut host = SharedHost::new();
+    let key = dudes_supervisor::host::AdoptionKey {
+        pid: 70001,
+        start_time: 900,
+        boot: None,
+    };
+    host.answer(key.pid, dudes_supervisor::ProbeAnswer::NoSuchPid);
+    assert!(matches!(
+        host.owned_targets(1).status,
+        OwnedTargetsStatus::UnknownUnsupported
+    ));
+    assert_eq!(
+        host.acknowledge_native_boundary_absence(&key, &NativeBoundaryReceipt::fresh()),
+        NativeBoundaryAcknowledgement::UnknownUnsupported
+    );
+    assert_eq!(host.shutdowns(), 0);
+}
+
+#[test]
+fn managed_native_ack_cannot_reuse_a_historical_settlement_for_the_same_full_key() {
+    use dudes_supervisor::host::{NativeBoundaryAcknowledgement, ProcessHost, SpawnResult};
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let Hired {
+        mut running, host, ..
+    } = hired(&fixture, &ptys, fixture.settings());
+    let old_key = fixture.await_record("settled prior managed spawn", |record| match record {
+        Record::TurnSpawned {
+            pid,
+            start_time,
+            boot,
+            ..
+        } => Some(dudes_supervisor::host::AdoptionKey {
+            pid: *pid,
+            start_time: *start_time,
+            boot: boot.clone(),
+        }),
+        _ => None,
+    });
+    assert!(host.native_acknowledged(&old_key));
+    let spec = host.spawned().into_iter().next().unwrap();
+    running.stop(duded::ExitCause::Ended);
+    let historical = fixture.entries();
+    assert!(historical.iter().any(|(_, entry)| matches!(
+        entry.record,
+        Record::InstructionAttemptBoundarySettled { .. }
+    )));
+    let mut fresh = SharedHost::with_native_evidence(fixture.journal_dir());
+    let SpawnResult::Spawned(key) =
+        fresh.spawn(&spec, &dudes_providers::adapter::ManagedInstall::default())
+    else {
+        panic!("a new mock generation must spawn")
+    };
+    assert_eq!(
+        (key.pid, key.start_time, &key.boot),
+        (old_key.pid, old_key.start_time, &old_key.boot)
+    );
+    fresh.mark_native_reaped(&key);
+    let queried = fresh.owned_targets(1);
+    assert_eq!(queried.targets.len(), 1);
+    let receipt = queried.targets[0].native_absence_receipt.as_ref().unwrap();
+    assert_eq!(
+        fixture.entries(),
+        historical,
+        "this generation has no new journal receipts"
+    );
+    assert_eq!(
+        fresh.acknowledge_native_boundary_absence(&key, receipt),
+        NativeBoundaryAcknowledgement::RefusedUnobserved
+    );
+    assert_eq!(
+        fresh.owned_targets(1).targets.len(),
+        1,
+        "the fresh query target remains retained"
+    );
+    assert!(!fresh.native_acknowledged(&key));
+    assert_eq!(fresh.shutdowns(), 0);
+}
+
+#[test]
+fn managed_native_ack_keeps_its_start_when_another_agent_starts_later() {
+    use dudes_supervisor::host::{NativeBoundaryAcknowledgement, ProcessHost};
+    let mut interleaved = ManagedInterleaving::new();
+    interleaved.settle(interleaved.own, interleaved.own_started);
+    assert_eq!(
+        interleaved
+            .host
+            .acknowledge_native_boundary_absence(&interleaved.key, &interleaved.receipt),
+        NativeBoundaryAcknowledgement::Acknowledged,
+        "the later unrelated start cannot replace this launch's exact baseline"
+    );
+    assert!(interleaved.host.native_acknowledged(&interleaved.key));
+    assert!(interleaved.host.owned_targets(1).targets.is_empty());
+}
+
+#[test]
+fn managed_native_ack_refuses_an_unrelated_interleaved_settlement() {
+    use dudes_supervisor::host::{NativeBoundaryAcknowledgement, ProcessHost};
+    let mut interleaved = ManagedInterleaving::new();
+    interleaved.settle(interleaved.unrelated, interleaved.unrelated_started);
+    assert_eq!(
+        interleaved
+            .host
+            .acknowledge_native_boundary_absence(&interleaved.key, &interleaved.receipt),
+        NativeBoundaryAcknowledgement::RefusedUnobserved,
+        "an unrelated owner cannot authorize this launch even with the same full key"
+    );
+    assert!(!interleaved.host.native_acknowledged(&interleaved.key));
+    assert_eq!(interleaved.host.owned_targets(1).targets.len(), 1);
+    interleaved.settle(interleaved.own, interleaved.own_started);
+    assert_eq!(
+        interleaved
+            .host
+            .acknowledge_native_boundary_absence(&interleaved.key, &interleaved.receipt),
+        NativeBoundaryAcknowledgement::Acknowledged,
+        "the same retained receipt can retry against its own durable settlement"
+    );
+}
+
+struct ManagedInterleaving {
+    fixture: Fixture,
+    writer: dudes_journal::Writer,
+    at: dudes_types::Timestamp,
+    host: SharedHost,
+    key: dudes_supervisor::host::AdoptionKey,
+    receipt: dudes_supervisor::host::NativeBoundaryReceipt,
+    own: dudes_proto::InstructionObservationOwner,
+    unrelated: dudes_proto::InstructionObservationOwner,
+    own_started: dudes_types::Lsn,
+    unrelated_started: dudes_types::Lsn,
+}
+
+impl ManagedInterleaving {
+    fn source() -> (
+        AgentId,
+        AgentId,
+        dudes_proto::Entry,
+        dudes_proto::Entry,
+        dudes_providers::launch::LaunchSpec,
+    ) {
+        use dudes_proto::InstructionObservationOwner;
+        let source = Fixture::new();
+        let ptys = SharedPtyHost::with_native_evidence(source.journal_dir());
+        let Hired {
+            mut running,
+            host,
+            agent,
+            ..
+        } = hired(&source, &ptys, source.settings());
+        let other = common::hire(&running.handle, source.state.path());
+        running.stop(duded::ExitCause::Ended);
+        let entries = source.entries();
+        let start = entries
+            .iter()
+            .find_map(|(_, entry)| match &entry.record {
+                Record::InstructionObservationStarted {
+                    owner: InstructionObservationOwner::Managed { agent: seen, .. },
+                    ..
+                } if *seen == agent => Some(entry.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let issue = entries
+            .iter()
+            .find_map(|(_, entry)| match &entry.record {
+                Record::TurnIssued { agent: seen, .. } if *seen == agent => Some(entry.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let spec = host.spawned().into_iter().next().unwrap();
+        (agent, other, start, issue, spec)
+    }
+
+    fn new() -> Self {
+        use dudes_proto::{InstructionIssueAssociation, InstructionObservationOwner};
+        use dudes_supervisor::host::{ProcessHost, SpawnResult};
+        let (agent, other, start, issue, mut spec) = Self::source();
+        let fixture = Fixture::new();
+        spec.cwd = fixture.state.path().to_path_buf();
+        for var in &mut spec.env {
+            if var.name() == "DUDES_MAILBOX" {
+                *var = dudes_providers::launch::EnvVar::new(
+                    "DUDES_MAILBOX",
+                    fixture.state.path().join("agents").join(agent.to_string()),
+                );
+            }
+        }
+        let options = dudes_journal::JournalOptions {
+            fsync: dudes_journal::Fsync::Full,
+            checkpoint_every: 0,
+            ..dudes_journal::JournalOptions::default()
+        };
+        let (mut writer, _) = dudes_journal::open(&fixture.journal_dir(), options).unwrap();
+        let own = InstructionObservationOwner::Managed {
+            agent,
+            turn: dudes_types::TurnId::parse("01ARZ3NDEKTSV4RRFFQ69G5FBD").unwrap(),
+            issue: InstructionIssueAssociation::Prospective,
+        };
+        let unrelated = InstructionObservationOwner::Managed {
+            agent: other,
+            turn: dudes_types::TurnId::parse("01ARZ3NDEKTSV4RRFFQ69G5FBE").unwrap(),
+            issue: InstructionIssueAssociation::Prospective,
+        };
+        let mut append_start = |owner| {
+            let InstructionObservationOwner::Managed { agent, turn, .. } = owner else {
+                unreachable!()
+            };
+            let mut start = start.clone();
+            let Record::InstructionObservationStarted { owner: target, .. } = &mut start.record
+            else {
+                unreachable!()
+            };
+            *target = owner;
+            let started = writer.append_required(&start).unwrap();
+            let mut issue = issue.clone();
+            let Record::TurnIssued {
+                agent: target_agent,
+                turn: target_turn,
+                ..
+            } = &mut issue.record
+            else {
+                unreachable!()
+            };
+            *target_agent = agent;
+            *target_turn = turn;
+            writer.append(&issue).unwrap();
+            started
+        };
+        let own_started = append_start(own);
+        let unrelated_started = append_start(unrelated);
+        assert!(own_started < unrelated_started);
+        assert_eq!(
+            fixture.entries().len(),
+            4,
+            "the complete interleaved prefix is readable"
+        );
+        let mut host = SharedHost::with_native_evidence(fixture.journal_dir());
+        let SpawnResult::Spawned(key) =
+            host.spawn(&spec, &dudes_providers::adapter::ManagedInstall::default())
+        else {
+            panic!("the delayed mock launch must spawn")
+        };
+        host.mark_native_reaped(&key);
+        let queried = host.owned_targets(1);
+        let receipt = queried.targets[0]
+            .native_absence_receipt
+            .as_ref()
+            .unwrap()
+            .clone();
+        Self {
+            fixture,
+            writer,
+            at: start.at,
+            host,
+            key,
+            receipt,
+            own,
+            unrelated,
+            own_started,
+            unrelated_started,
+        }
+    }
+
+    fn settle(
+        &mut self,
+        owner: dudes_proto::InstructionObservationOwner,
+        started_lsn: dudes_types::Lsn,
+    ) {
+        use dudes_supervisor::host::ProcessHost;
+        let dudes_proto::InstructionObservationOwner::Managed { agent, turn, .. } = owner else {
+            unreachable!()
+        };
+        let spawned = self
+            .writer
+            .append(&dudes_proto::Entry {
+                at: self.at,
+                record: Record::TurnSpawned {
+                    agent,
+                    turn,
+                    pid: self.key.pid,
+                    start_time: self.key.start_time,
+                    boot: self.key.boot.clone(),
+                    session: None,
+                    reissued: false,
+                    mcp_grant: None,
+                },
+            })
+            .unwrap();
+        self.writer
+            .append_required(&dudes_proto::Entry {
+                at: self.at,
+                record: Record::InstructionAttemptBoundarySettled {
+                    owner,
+                    started_lsn,
+                    proof:
+                        dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
+                            receipt: dudes_proto::InstructionNativeBoundaryReceipt::Spawned {
+                                lsn: spawned,
+                            },
+                        },
+                },
+            })
+            .unwrap();
+        assert!(started_lsn < spawned);
+        assert!(
+            matches!(self.fixture.records().last(), Some(Record::InstructionAttemptBoundarySettled {
+            owner: seen, started_lsn: seen_start, ..
+        }) if *seen == owner && *seen_start == started_lsn),
+            "the exact complete settlement is readable before ACK"
+        );
+        assert_eq!(self.host.owned_targets(1).targets.len(), 1);
+    }
+}
+
+#[test]
+fn pty_native_ack_cannot_reuse_a_historical_settlement_for_the_same_handle_and_key() {
+    use duded::ports::{PtyCloseOutcome, PtyHostPort};
+    let fixture = Fixture::new();
+    let mut prior = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &prior);
+    let old_key = prior.native_key(session.pty).unwrap();
+    let old_token = prior.track_native_close(session.pty).unwrap();
+    let (spec, cols, rows) = prior.opens().into_iter().next().unwrap();
+    assert!(
+        detach(&mut session.owner, &session.settings, session.agent)
+            .error
+            .is_none()
+    );
+    prior.await_native_acknowledged(session.pty);
+    session.running.stop(duded::ExitCause::Ended);
+    let historical = fixture.entries();
+    let mut fresh = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let opened = fresh.open(spec, cols, rows).unwrap();
+    assert_eq!(opened.pty, session.pty);
+    let key = fresh.native_key(opened.pty).unwrap();
+    assert_eq!(
+        (key.pid, key.start_time, &key.boot),
+        (old_key.pid, old_key.start_time, &old_key.boot)
+    );
+    let token = fresh.track_native_close(opened.pty).unwrap();
+    assert_ne!(token, old_token);
+    assert!(matches!(fresh.close(opened.pty), PtyCloseOutcome::Closed));
+    assert!(fresh.native_close_absence(opened.pty, &token).is_ok());
+    assert!(!fresh.acknowledge_native_close(opened.pty, &old_token));
+    assert_eq!(
+        fixture.entries(),
+        historical,
+        "only the prior generation's settlement is durable"
+    );
+    assert!(!fresh.acknowledge_native_close(opened.pty, &token));
+    assert_eq!(
+        fresh.track_native_close(opened.pty).unwrap(),
+        token,
+        "the exact fresh query survives a refused acknowledgement"
+    );
+    assert!(!fresh.native_acknowledged(opened.pty));
+}
+
+#[test]
+fn a_keyless_confirmed_pty_close_does_not_authorize_a_replacement_attachment() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let fixed =
+        duded::classify::Resolver::fixed(ScriptedColumn::new(PeerProvenance::NoRecordedAgent));
+    let Hired {
+        settings,
+        mut running,
+        agent,
+        mut owner,
+        ..
+    } = hired_with_resolver(&fixture, &ptys, fixture.settings(), fixed);
+    let response = attach(&mut owner, &settings, agent);
+    assert!(response.error.is_none(), "{response:?}");
+    let attached: AttachResult = serde_json::from_value(response.result.unwrap()).unwrap();
+    assert!(!fixture.records().iter().any(|record| matches!(record,
+        Record::PtySpawned { agent: owned, .. } if *owned == agent)));
+    assert!(detach(&mut owner, &settings, agent).error.is_none());
+    assert!(fixture.records().iter().any(|record| matches!(record,
+        Record::InstructionObservationFinished {
+            owner: dudes_proto::InstructionObservationOwner::AttachedProcess { agent: found, .. },
+            settlement: dudes_proto::InstructionSettlement::Unknown {
+                reason: dudes_proto::InstructionUnknownReason::UnrecordedLaunchBoundary,
+                end: None,
+                sampled_at: None,
+                recovery: false,
+                comparison,
+            }, ..
+        } if *found == agent && comparison.changes.is_empty()
+            && comparison.gaps.iter().any(|gap| gap.reason == dudes_proto::InstructionGapKind::UnrecordedLaunchBoundary))));
+    assert!(!ptys.native_acknowledged(attached.pty));
+    assert!(!fixture.records().iter().any(|record| matches!(record,
+        Record::InstructionAttemptBoundarySettled {
+            owner: dudes_proto::InstructionObservationOwner::AttachedProcess { agent: owned, .. }, ..
+        } if *owned == agent)));
+    assert!(attach(&mut owner, &settings, agent).error.is_some());
+    assert_eq!(ptys.opens().len(), 1);
+    running.stop(duded::ExitCause::Ended);
+}
+
+#[test]
+fn attached_claude_inherits_context_and_refuses_a_live_peer_before_pty_open() {
+    let fixture = Fixture::new();
+    let settings = fixture.settings();
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut seams = common::seams_with(
+        host.clone(),
+        Arc::new(ScriptedRunner::scripted([common::passes()])),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        ScriptedColumn::new(PeerProvenance::NoRecordedAgent),
+    );
+    seams.pty_host = Box::new(ptys.clone());
+    seams.resolver = common::native_resolver(&ptys);
+    host.bind_child_ends(Arc::clone(&seams.children));
+    let daemon = duded::boot(&settings, seams).unwrap();
+    let mut running = common::start(daemon);
+    let mut client = Client::connect(settings.socket()).unwrap();
+    let candidate = common::hire(&running.handle, fixture.state.path());
+    common::set_goal(
+        &running.handle,
+        common::goal_params(candidate, &["/usr/bin/true"]),
+    );
+    let (turn, session) = fixture.await_record("candidate issue", |record| match record {
+        Record::TurnIssued {
+            agent,
+            turn,
+            session: Some(session),
+            ..
+        } if *agent == candidate => Some((*turn, session.clone())),
+        _ => None,
+    });
+    running
+        .handle
+        .input(Input::SessionLearned { turn, session });
+    fixture.await_record("candidate confirmed session", |record| match record {
+        Record::SessionLearned { turn: seen, .. } if *seen == turn => Some(()),
+        _ => None,
+    });
+    common::end_turn_with_native(&fixture, &running.handle, &host, turn);
+    fixture.await_record("candidate observed completion", |record| match record {
+        Record::LoopDecided {
+            agent,
+            decision: dudes_proto::LoopDecision::Done,
+            ..
+        } if *agent == candidate => Some(()),
+        _ => None,
+    });
+    let peer = common::hire(&running.handle, fixture.state.path());
+    common::set_goal(
+        &running.handle,
+        common::goal_params(peer, &["/usr/bin/false"]),
+    );
+    let pid = fixture.await_record("live peer child", |record| match record {
+        Record::TurnSpawned { agent, pid, .. } if *agent == peer => Some(*pid),
+        _ => None,
+    });
+    let response = attach(&mut client, &settings, candidate);
+    let refusal = response
+        .error
+        .expect("attached composition refuses live shared context even under managed default");
+    assert!(refusal.message.contains(&peer.to_string()), "{refusal:?}");
+    assert!(refusal.message.contains("worktree"), "{refusal:?}");
+    assert_eq!(ptys.opens().len(), 0);
+    assert!(fixture.records().iter().any(|record| matches!(record,
+        Record::AgentHeld { agent, cause: dudes_proto::AutomaticHold::LaunchRefused { reason }, .. }
+            if *agent == candidate && reason.contains(&peer.to_string()))));
+
+    let peer_turn = fixture.await_record("exact live peer turn", |record| match record {
+        Record::TurnSpawned {
+            agent,
+            turn,
+            pid: spawned,
+            ..
+        } if *agent == peer && *spawned == pid => Some(*turn),
+        _ => None,
+    });
+    common::end_turn_with_native(&fixture, &running.handle, &host, peer_turn);
+    running
+        .handle
+        .ask(duded::ports::Ask::Resume(candidate))
+        .unwrap();
+    let response = attach(&mut client, &settings, candidate);
+    assert!(response.error.is_none(), "{response:?}");
+    assert_eq!(ptys.opens().len(), 1);
+    assert!(detach(&mut client, &settings, candidate).error.is_none());
+    running.stop(duded::ExitCause::ShutdownRpc);
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "the selector holds one connection across session establishment, attach, and cleanup"
@@ -75,17 +568,17 @@ fn detach(
 fn agent_attach_binds_the_durable_attachment_to_one_connection() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
-    let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let children = duded::ChildEnds::new();
+    host.bind_child_ends(Arc::clone(&children));
     let seams = duded::Seams {
-        host: SharedHost::new(),
+        host: host.clone(),
         pty_host: Box::new(ptys.clone()),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
         rng: FakeRng::new(),
-        resolver: duded::classify::Resolver::fixed(
-            Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>
-        ),
+        resolver: common::native_resolver(&ptys),
         adapters: dudes_providers::registry::Adapters::from_config(
             &dudes_providers::registry::ProvidersConfig {
                 claude: Some(dudes_providers::claude::config::ClaudeConfig::default()),
@@ -93,7 +586,7 @@ fn agent_attach_binds_the_durable_attachment_to_one_connection() {
             &[],
         )
         .expect("default Claude adapter"),
-        children: duded::ChildEnds::new(),
+        children,
         witness: Witness::default(),
     };
     let daemon = duded::boot(&settings, seams).expect("boot");
@@ -170,19 +663,7 @@ fn agent_attach_binds_the_durable_attachment_to_one_connection() {
         Record::SessionLearned { turn: seen, .. } if *seen == turn => Some(()),
         _ => None,
     });
-    running.handle.input(Input::ChildExited {
-        final_reply: None,
-        elapsed_ms: None,
-        turn,
-        exit: ExitStatus {
-            code: Some(0),
-            signal: None,
-        },
-        usage: None,
-        model_usage: BTreeMap::new(),
-        outcome: TurnOutcome::Completed,
-        last_message: None,
-    });
+    common::end_turn_with_native(&fixture, &running.handle, &host, turn);
     fixture.await_record("TurnEnded", |record| match record {
         Record::TurnEnded { turn: seen, .. } if *seen == turn => Some(()),
         _ => None,
@@ -276,6 +757,11 @@ fn agent_attach_binds_the_durable_attachment_to_one_connection() {
         _ => None,
     });
     assert_eq!(ptys.closes(), vec![attached.pty]);
+    ptys.await_native_acknowledged(attached.pty);
+    assert!(fixture.records().iter().any(|record| matches!(record,
+        Record::InstructionAttemptBoundarySettled {
+            owner: dudes_proto::InstructionObservationOwner::AttachedProcess { agent, .. }, ..
+        } if *agent == hired.agent)));
 
     let replacement = attach(&mut second, &settings, hired.agent);
     assert!(
@@ -317,7 +803,52 @@ fn agent_attach_binds_the_durable_attachment_to_one_connection() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(ptys.closes(), vec![attached.pty, replacement.pty]);
+    ptys.await_native_acknowledged(replacement.pty);
 
+    {
+        let retained_fixture = Fixture::new();
+        let retained_ptys = SharedPtyHost::with_native_evidence(retained_fixture.journal_dir());
+        let Hired {
+            mut running,
+            settings,
+            agent,
+            mut owner,
+            ..
+        } = self::hired(
+            &retained_fixture,
+            &retained_ptys,
+            retained_fixture.settings(),
+        );
+        retained_ptys.retain_next_failed_open();
+        retained_ptys.fail_next_close();
+        let uncertain = attach(&mut owner, &settings, agent);
+        assert!(
+            uncertain.error.is_some(),
+            "cleanup uncertainty is never returned as attached"
+        );
+        assert_eq!(retained_ptys.opens().len(), 1);
+        assert!(
+            retained_ptys
+                .live()
+                .contains(&dudes_proto::rpc::pty::PtyId(41))
+        );
+        drop(owner);
+        assert_eq!(
+            running.stop(duded::ExitCause::Ended),
+            duded::ExitCause::Ended
+        );
+        assert_eq!(
+            retained_ptys.closes(),
+            vec![
+                dudes_proto::rpc::pty::PtyId(41),
+                dudes_proto::rpc::pty::PtyId(41)
+            ],
+            "uncertain cleanup stays reachable for the exit retry"
+        );
+        assert!(!retained_ptys.native_acknowledged(dudes_proto::rpc::pty::PtyId(41)));
+    }
+
+    let before_failed = fixture.entries().last().unwrap().0;
     ptys.fail_next_open();
     let failed = attach(&mut third, &settings, hired.agent);
     assert!(failed.error.is_some(), "a failed open returns no PTY id");
@@ -335,14 +866,99 @@ fn agent_attach_binds_the_durable_attachment_to_one_connection() {
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-
-    ptys.retain_next_failed_open();
-    ptys.fail_next_close();
-    let uncertain = attach(&mut third, &settings, hired.agent);
-    assert!(
-        uncertain.error.is_some(),
-        "cleanup uncertainty is never returned as attached"
+    let (failed_started, failed_owner) = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| match entry.record {
+            Record::InstructionObservationStarted {
+                owner:
+                    owner @ dudes_proto::InstructionObservationOwner::AttachedProcess { agent, .. },
+                ..
+            } if lsn > before_failed && agent == hired.agent => Some((lsn, owner)),
+            _ => None,
+        })
+        .expect("the failed physical open has its own durable starting boundary");
+    let failed_finished =
+        fixture.await_record("exact failed-open Unknown", |record| match record {
+            Record::InstructionObservationFinished {
+                owner,
+                baseline: dudes_proto::InstructionBaselineRef::Started { lsn },
+                settlement:
+                    dudes_proto::InstructionSettlement::Unknown {
+                        reason: dudes_proto::InstructionUnknownReason::UnrecordedLaunchBoundary,
+                        end: None,
+                        sampled_at: None,
+                        ..
+                    },
+                ..
+            } if *owner == failed_owner && *lsn == failed_started => Some(record.clone()),
+            _ => None,
+        });
+    let assert_failed_unresolved = || {
+        let mut instructions = dudes_proto::instruction_state::InstructionState::default();
+        let entries = fixture.entries();
+        for (lsn, entry) in &entries {
+            instructions
+                .apply_validated(*lsn, entry, |bytes| {
+                    dudes_proto::record::Hex32::new(*blake3::hash(bytes).as_bytes())
+                })
+                .expect("fold the actual validated durable prefix");
+        }
+        let attempt = instructions.attempt(failed_started).unwrap();
+        assert_eq!(attempt.owner, failed_owner);
+        assert!(attempt.spawn_lsn.is_none());
+        assert!(attempt.boundary_settled.is_none());
+        assert!(matches!(
+            &attempt.finished.as_ref().unwrap().settlement,
+            dudes_proto::InstructionSettlement::Unknown {
+                reason: dudes_proto::InstructionUnknownReason::UnrecordedLaunchBoundary,
+                end: None,
+                sampled_at: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            instructions
+                .unresolved_launch_attempts(hired.agent)
+                .map(|(lsn, _)| *lsn)
+                .collect::<Vec<_>>(),
+            vec![failed_started]
+        );
+        let finishes: Vec<_> = entries
+            .iter()
+            .filter_map(|(_, entry)| match &entry.record {
+                Record::InstructionObservationFinished {
+                    baseline: dudes_proto::InstructionBaselineRef::Started { lsn },
+                    ..
+                } if *lsn == failed_started => Some(&entry.record),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            finishes,
+            vec![&failed_finished],
+            "the original failed-open Unknown remains immutable"
+        );
+        assert!(!entries.iter().any(|(_, entry)| matches!(entry.record,
+            Record::InstructionAttemptBoundarySettled { started_lsn, .. } if started_lsn == failed_started)));
+    };
+    assert_failed_unresolved();
+    let open_count = ptys.opens().len();
+    assert_eq!(
+        open_count, 3,
+        "the failed physical open was the third host call"
     );
+    let refused = attach(&mut third, &settings, hired.agent);
+    assert!(
+        refused.error.is_some(),
+        "an unresolved failed physical open refuses another attachment"
+    );
+    assert_eq!(
+        ptys.opens().len(),
+        open_count,
+        "refusal precedes another native open call"
+    );
+    assert_failed_unresolved();
     drop(third);
     assert_eq!(
         running.stop(duded::ExitCause::Ended),
@@ -350,14 +966,16 @@ fn agent_attach_binds_the_durable_attachment_to_one_connection() {
     );
     assert_eq!(
         ptys.closes(),
-        vec![
-            attached.pty,
-            replacement.pty,
-            dudes_proto::rpc::pty::PtyId(44),
-            dudes_proto::rpc::pty::PtyId(44)
-        ],
-        "uncertain cleanup stays reachable for the exit retry"
+        vec![attached.pty, replacement.pty],
+        "the failed open creates no owned PTY handle to close"
     );
+    for _ in 0..2 {
+        let restarted_ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+        assert!(replay_run(&fixture, restarted_ptys.clone()) >= failed_started);
+        assert!(restarted_ptys.opens().is_empty());
+        assert!(restarted_ptys.closes().is_empty());
+        assert_failed_unresolved();
+    }
 }
 
 // ---- pty.write ------------------------------------------------------------------------------
@@ -380,6 +998,7 @@ struct Attached {
     /// *ownership* row rather than the authority row. The method's `Requirement` admits it; the pty-write row does not.
     sibling: LocalClient,
     append_failure: duded::runtime::AppendFailure,
+    host: SharedHost,
 }
 
 /// Boot, hire, confirm a session, and attach — the state every `pty.write` test starts from.
@@ -396,6 +1015,7 @@ fn attach_one(fixture: &Fixture, ptys: &SharedPtyHost) -> Attached {
         mut owner,
         sibling,
         append_failure,
+        host,
     } = hired(fixture, ptys, fixture.settings());
     let response = attach(&mut owner, &settings, agent);
     assert!(response.error.is_none(), "attach was refused: {response:?}");
@@ -409,6 +1029,7 @@ fn attach_one(fixture: &Fixture, ptys: &SharedPtyHost) -> Attached {
         owner,
         sibling,
         append_failure,
+        host,
     }
 }
 
@@ -421,20 +1042,30 @@ struct Hired {
     owner: LocalClient,
     sibling: LocalClient,
     append_failure: duded::runtime::AppendFailure,
+    host: SharedHost,
 }
 
 /// Boot on `settings`, hire and confirm a session: everything an attach needs before it is asked.
 fn hired(fixture: &Fixture, ptys: &SharedPtyHost, settings: duded::Settings) -> Hired {
-    let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
+    hired_with_resolver(fixture, ptys, settings, common::native_resolver(ptys))
+}
+
+fn hired_with_resolver(
+    fixture: &Fixture,
+    ptys: &SharedPtyHost,
+    settings: duded::Settings,
+    resolver: duded::classify::Resolver,
+) -> Hired {
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let children = duded::ChildEnds::new();
+    host.bind_child_ends(Arc::clone(&children));
     let seams = duded::Seams {
-        host: SharedHost::new(),
+        host: host.clone(),
         pty_host: Box::new(ptys.clone()),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
         rng: FakeRng::new(),
-        resolver: duded::classify::Resolver::fixed(
-            Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>
-        ),
+        resolver,
         adapters: dudes_providers::registry::Adapters::from_config(
             &dudes_providers::registry::ProvidersConfig {
                 claude: Some(dudes_providers::claude::config::ClaudeConfig::default()),
@@ -442,7 +1073,7 @@ fn hired(fixture: &Fixture, ptys: &SharedPtyHost, settings: duded::Settings) -> 
             &[],
         )
         .expect("default Claude adapter"),
-        children: duded::ChildEnds::new(),
+        children,
         witness: Witness::default(),
     };
     let daemon = duded::boot(&settings, seams).expect("boot");
@@ -483,7 +1114,7 @@ fn hired(fixture: &Fixture, ptys: &SharedPtyHost, settings: duded::Settings) -> 
         )
         .expect("goal response");
     assert!(goal.error.is_none(), "goal was refused: {goal:?}");
-    confirm_session(fixture, &mut running);
+    confirm_session(fixture, &mut running, &host);
     Hired {
         settings,
         running,
@@ -491,6 +1122,7 @@ fn hired(fixture: &Fixture, ptys: &SharedPtyHost, settings: duded::Settings) -> 
         owner,
         sibling,
         append_failure,
+        host,
     }
 }
 
@@ -499,7 +1131,7 @@ fn hired(fixture: &Fixture, ptys: &SharedPtyHost, settings: duded::Settings) -> 
 /// so a CLI launched with one would run ungoverned.
 fn assert_an_unusable_hook_command_refuses_the_attach(hook_command: std::path::PathBuf) {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let settings = duded::Settings {
         hook_command: Some(hook_command),
         ..fixture.settings()
@@ -562,7 +1194,7 @@ fn a_hook_command_that_is_not_utf8_refuses_the_attach() {
 )]
 fn agent_detach_waits_for_confirmed_close_before_loop_resume() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
 
     let no_owner = session
@@ -739,7 +1371,7 @@ fn agent_detach_waits_for_confirmed_close_before_loop_resume() {
 
 fn assert_failed_close_is_retryable_without_regrant() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
     ptys.fail_next_close();
     let response = detach(&mut session.owner, &session.settings, session.agent);
@@ -833,7 +1465,7 @@ fn assert_failed_close_is_retryable_without_regrant() {
 
 fn assert_pre_requested_append_fault_never_closes_before_system_retry() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
     let before = fixture.entries().len();
     session
@@ -921,7 +1553,7 @@ fn assert_pre_requested_append_fault_never_closes_before_system_retry() {
 
 fn assert_final_detached_append_fault_retains_recovery() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
     let goal = session
         .owner
@@ -939,7 +1571,7 @@ fn assert_final_detached_append_fault_retains_recovery() {
     let before = fixture.entries().len();
     session
         .append_failure
-        .fail_nth(NonZeroUsize::new(3).expect("Detached append"));
+        .fail_nth(NonZeroUsize::new(5).expect("Detached append"));
     let refused = detach(&mut session.owner, &session.settings, session.agent);
     assert!(refused.error.is_some(), "the final lifecycle append failed");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -1009,7 +1641,7 @@ fn assert_final_detached_append_fault_retains_recovery() {
 
 fn assert_failed_final_shutdown_close_never_detaches() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
     ptys.fail_next_closes(3);
     ptys.fail_next_shutdown();
@@ -1056,7 +1688,7 @@ fn assert_failed_final_shutdown_close_never_detaches() {
 
 fn assert_repeated_close_failure_stays_attached_and_revoked() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
     let goal = session
         .owner
@@ -1159,7 +1791,7 @@ fn assert_repeated_close_failure_stays_attached_and_revoked() {
 
 fn assert_already_closed_confirms_detach() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
     ptys.mark_already_closed(session.pty);
     let response = detach(&mut session.owner, &session.settings, session.agent);
@@ -1200,7 +1832,7 @@ fn assert_already_closed_confirms_detach() {
 
 fn assert_connection_loss_close_is_system_attributed() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
     let agent = session.agent;
     let pty = session.pty;
@@ -1265,7 +1897,7 @@ fn resize_and_output_reach_only_the_live_attachment_and_journal_nothing() {
 
     const NOW: std::time::Duration = std::time::Duration::ZERO;
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
     let (agent, pty) = (session.agent, session.pty);
     let stranger = AgentId::from_parts(1, 1);
@@ -1350,7 +1982,7 @@ fn resize_and_output_reach_only_the_live_attachment_and_journal_nothing() {
 fn pty_write_refuses_an_actor_and_provenance_that_do_not_pair() {
     use duded::ports::Ask;
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
     let requested = || {
         count(&fixture, |record| {
@@ -1394,7 +2026,7 @@ fn assert_replay_does_not_act_on_orphan_close_request() {
     let fixture = Fixture::new();
     let orphan = dudes_proto::rpc::pty::PtyId(999);
     seed_orphan_close_request(&fixture, orphan);
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let last = replay_run(&fixture, ptys.clone());
     assert!(
         last > dudes_types::Lsn::ZERO,
@@ -1413,7 +2045,7 @@ fn assert_replay_does_not_act_on_orphan_close_request() {
 
 fn assert_replayed_attachment_stays_held_without_observed_close() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
     let agent = session.agent;
     let goal = session
@@ -1453,7 +2085,7 @@ fn assert_replayed_attachment_stays_held_without_observed_close() {
 }
 
 /// Drive one turn to a vendor-confirmed session, which is attach's precondition.
-fn confirm_session(fixture: &Fixture, running: &mut common::Running) {
+fn confirm_session(fixture: &Fixture, running: &mut common::Running, host: &SharedHost) {
     let (turn, session) = fixture.await_record("TurnIssued", |record| match record {
         Record::TurnIssued {
             turn,
@@ -1469,19 +2101,7 @@ fn confirm_session(fixture: &Fixture, running: &mut common::Running) {
         Record::SessionLearned { turn: seen, .. } if *seen == turn => Some(()),
         _ => None,
     });
-    running.handle.input(Input::ChildExited {
-        final_reply: None,
-        elapsed_ms: None,
-        turn,
-        exit: ExitStatus {
-            code: Some(0),
-            signal: None,
-        },
-        usage: None,
-        model_usage: BTreeMap::new(),
-        outcome: TurnOutcome::Completed,
-        last_message: None,
-    });
+    common::end_turn_with_native(fixture, &running.handle, host, turn);
     fixture.await_record("TurnEnded", |record| match record {
         Record::TurnEnded { turn: seen, .. } if *seen == turn => Some(()),
         _ => None,
@@ -1561,7 +2181,7 @@ fn requests(fixture: &Fixture) -> Vec<(dudes_types::Lsn, Record)> {
 #[test]
 fn pty_write_requirement_refusal_has_no_conditioned_disposition() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
 
     // Control, before the subject: the owning operator's bytes reach the host.
@@ -1631,7 +2251,7 @@ fn pty_write_requirement_refusal_has_no_conditioned_disposition() {
 #[test]
 fn pty_write_conditioned_refusal_suppresses_once_without_sink() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
 
     // Control, before the subjects.
@@ -1739,7 +2359,7 @@ fn pty_write_conditioned_refusal_suppresses_once_without_sink() {
 #[test]
 fn pty_write_requested_uses_router_actor_and_exact_peer_provenance() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
 
     let bytes = b"\x1b[A\x00\xff".to_vec();
@@ -1847,7 +2467,7 @@ fn pty_write_requires_connection_ownership_and_never_replays_bytes() {
     // is covered: mail the daemon replays, rather than mail a test handed it.
     seed_mail(&fixture, PLANTED);
 
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
 
     // ---- arm 1: ownership, and the order --------------------------------------------
@@ -2283,19 +2903,7 @@ fn quiesce_and_attach(fixture: &Fixture, session: &mut Attached) -> AttachResult
                     _ => None,
                 });
             }
-            session.running.handle.input(Input::ChildExited {
-                final_reply: None,
-                elapsed_ms: None,
-                turn,
-                exit: ExitStatus {
-                    code: Some(0),
-                    signal: None,
-                },
-                usage: None,
-                model_usage: BTreeMap::new(),
-                outcome: TurnOutcome::Completed,
-                last_message: None,
-            });
+            common::end_turn_with_native(fixture, &session.running.handle, &session.host, turn);
             fixture.await_record("the open turn ended", |record| match record {
                 Record::TurnEnded { turn: seen, .. } if *seen == turn => Some(()),
                 _ => None,
@@ -2573,7 +3181,7 @@ fn replay_run(fixture: &Fixture, ptys: SharedPtyHost) -> dudes_types::Lsn {
 #[test]
 fn an_attach_hands_the_pty_host_the_program_found_on_path() {
     let fixture = Fixture::new();
-    let ptys = SharedPtyHost::new(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut session = attach_one(&fixture, &ptys);
     let opened: Vec<_> = ptys
         .opens()
@@ -2590,4 +3198,102 @@ fn an_attach_hands_the_pty_host_the_program_found_on_path() {
         session.running.stop(duded::ExitCause::Ended),
         duded::ExitCause::Ended
     );
+}
+
+#[cfg(test)]
+mod native_close_query_tests {
+    use super::{Fixture, SharedPtyHost};
+    use duded::ports::{PtyCloseOutcome, PtyHostPort, PtyNativeBoundaryUnknown};
+    use dudes_providers::launch::LaunchSpec;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    fn open_mock(fixture: &Fixture) -> (SharedPtyHost, dudes_proto::rpc::pty::PtyId) {
+        let mut host = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+        let opened = host
+            .open(
+                LaunchSpec {
+                    argv: vec!["mock-pty".into()],
+                    env: Vec::new(),
+                    cwd: fixture.state.path().to_path_buf(),
+                    stdin: dudes_providers::launch::LaunchInput::Null,
+                },
+                80,
+                24,
+            )
+            .unwrap();
+        (host, opened.pty)
+    }
+
+    #[test]
+    fn a_held_close_barrier_makes_native_query_unknown_without_unblocking_close() {
+        let fixture = Fixture::new();
+        let (mut host, pty) = open_mock(&fixture);
+        let token = host.track_native_close(pty).unwrap();
+        let held = host.block_host_calls();
+        let (queried, query) = mpsc::channel();
+        let mut query_host = host.clone();
+        let query_token = token.clone();
+        let query_thread = std::thread::spawn(move || {
+            queried
+                .send(query_host.native_close_absence(pty, &query_token))
+                .unwrap();
+        });
+        let (started, close_started) = mpsc::channel();
+        let (closed, close) = mpsc::channel();
+        let mut close_host = host.clone();
+        let close_thread = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            closed.send(close_host.close(pty)).unwrap();
+        });
+        let close_entered = close_started.recv_timeout(Duration::from_secs(1));
+        let query_before_release = query.recv_timeout(Duration::from_secs(1));
+        let close_before_release = close.try_recv();
+        let records_before_release = fixture.records();
+        drop(held);
+        query_thread.join().unwrap();
+        close_thread.join().unwrap();
+        assert!(close_entered.is_ok());
+        assert_eq!(
+            query_before_release,
+            Ok(Err(PtyNativeBoundaryUnknown::Unconfirmed))
+        );
+        assert!(matches!(
+            close_before_release,
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(records_before_release.is_empty());
+        assert!(matches!(close.recv().unwrap(), PtyCloseOutcome::Closed));
+        assert_eq!(host.closes(), vec![pty]);
+        assert!(host.native_close_absence(pty, &token).is_ok());
+        assert!(!host.acknowledge_native_close(pty, &token));
+        assert_eq!(host.track_native_close(pty).unwrap(), token);
+        assert!(!host.native_acknowledged(pty));
+        assert!(fixture.records().is_empty());
+    }
+
+    #[test]
+    fn a_poisoned_mock_lock_does_not_supply_native_absence() {
+        let fixture = Fixture::new();
+        let (mut host, pty) = open_mock(&fixture);
+        let token = host.track_native_close(pty).unwrap();
+        let poisoned_host = host.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _held = poisoned_host.block_host_calls();
+                panic!("poison the mock state before any native reap");
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(
+            host.native_close_absence(pty, &token),
+            Err(PtyNativeBoundaryUnknown::Unconfirmed)
+        );
+        assert!(!host.acknowledge_native_close(pty, &token));
+        assert_eq!(host.track_native_close(pty).unwrap(), token);
+        assert!(matches!(host.close(pty), PtyCloseOutcome::Closed));
+        assert!(host.native_close_absence(pty, &token).is_ok());
+        assert!(!host.acknowledge_native_close(pty, &token));
+    }
 }

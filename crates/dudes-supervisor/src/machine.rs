@@ -51,6 +51,8 @@ use crate::world::{AgentRow, MAX_PENDING_STEERS, World};
 
 mod browser_notes;
 mod conversations;
+mod instruction_observations;
+pub use instruction_observations::InstructionSource;
 mod mail_wakes;
 #[cfg(test)]
 mod ticket_start;
@@ -147,6 +149,23 @@ fn prepend_agent_bin(env: &mut [EnvVar], dir: &Path) {
 /// entry is on the disk.
 #[derive(Debug)]
 enum Then {
+    InstructionRecoveryContinue,
+    InstructionBaselineSaved {
+        start: Box<instruction_observations::Starting>,
+    },
+    InstructionTurnEnded {
+        turn: TurnId,
+        then: Box<Then>,
+    },
+    InstructionAttachedHookEnded,
+    InstructionPreHostEnded {
+        attempt: instruction_observations::NoHostAttempt,
+        then: Box<Then>,
+    },
+    InstructionCompared {
+        baseline: dudes_proto::InstructionBaselineRef,
+        then: Box<Then>,
+    },
     ConversationStartupReserved,
     ConversationRetryReserved {
         turn: TurnId,
@@ -255,6 +274,7 @@ enum Then {
     LaunchAdmissionHeld {
         agent: AgentId,
         turn: Option<TurnId>,
+        instruction_attempt: Option<instruction_observations::NoHostAttempt>,
     },
     /// The `HumanQuestion` landed: tell the subscribers, then re-decide (gate 3 answers `Wait`).
     Question {
@@ -632,6 +652,7 @@ pub struct Supervisor<C: Clock, R: Rng> {
     /// a live agent stays valid (set membership, not recency).
     tokens: Mint,
     next_token: u64,
+    instructions: instruction_observations::Observations,
     pending: Vec<Effect>,
 }
 
@@ -690,6 +711,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             clients: BTreeSet::new(),
             tokens: Mint::default(),
             next_token: 0,
+            instructions: instruction_observations::Observations::default(),
             pending: Vec::new(),
         }
     }
@@ -887,7 +909,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     ) -> Result<&[Effect], crate::closing::ClosingError> {
         use crate::closing::ClosingError;
         self.pending.clear();
-        if !self.ledger.is_empty() {
+        if !self.ledger.is_empty()
+            || self
+                .instructions
+                .dispatch_pending(&self.world, &self.spawning)
+        {
             return Err(ClosingError::LaunchPending);
         }
         let session = self
@@ -1042,6 +1068,35 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         match input {
             Input::MissingWorktrees(agents) => self.set_missing_worktrees(agents),
             Input::Started => self.on_started(),
+            Input::InstructionLaunchCleanupUnconfirmed { turn } => {
+                self.instruction_launch_cleanup_unconfirmed(turn);
+            }
+            Input::InstructionJournaled { lsn, entry } => self.instruction_journaled(lsn, &entry),
+            Input::InstructionRecoveryTicketResolved { request, ticket } => {
+                self.instruction_recovery_ticket_resolved(request, ticket);
+            }
+            Input::InstructionReviewAcknowledged { agent, goal } => {
+                if self
+                    .world
+                    .agents
+                    .get(&agent)
+                    .is_some_and(|row| row.goal == Some(goal))
+                    && !self.world.instructions.pending_for_goal(goal)
+                {
+                    self.decide(agent);
+                }
+            }
+            Input::InstructionSampled {
+                request,
+                snapshot,
+                ticket,
+                comparison,
+            } => self.instruction_sampled(
+                request,
+                *snapshot,
+                ticket,
+                comparison.map(|comparison| *comparison),
+            ),
             Input::Journaled { lsn, entry } => self.mail_journaled(lsn, &entry),
             Input::MailWakeReady {
                 agent,
@@ -1058,12 +1113,37 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 mcp_grant,
             } => self.on_spawned(turn, &key, mcp_grant),
             Input::SpawnFailed { turn, reason } => self.on_spawn_failed(turn, reason),
+            Input::LaunchPreparationFailed {
+                turn,
+                started_lsn,
+                reason,
+            } => {
+                let attempt = self
+                    .world
+                    .turns
+                    .get(&turn)
+                    .filter(|row| row.is_issued_not_spawned())
+                    .and_then(|row| self.no_host_attempt(row.agent, Some(turn)))
+                    .filter(|attempt| {
+                        attempt.baseline
+                            == (dudes_proto::InstructionBaselineRef::Started { lsn: started_lsn })
+                    });
+                if let Some(attempt) = attempt {
+                    self.finish_spawn_failure(turn, reason, Some(attempt));
+                }
+            }
             Input::LaunchAdmissionRefused {
                 agent,
                 turn,
                 refusal,
                 dispatch_token,
             } => self.on_launch_admission_refused(agent, turn, &refusal, dispatch_token),
+            Input::InstructionAttachedOpenFailed {
+                started_lsn,
+                cleanup_unconfirmed,
+            } => {
+                self.instruction_attached_open_failed(started_lsn, cleanup_unconfirmed);
+            }
             Input::BrowserDispatchAdmissionReady { token, turn } => {
                 self.retry_browser_dispatch_admission(token, turn);
             }
@@ -1103,6 +1183,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 pass,
                 evidence,
             } => self.on_predicate_done(goal, pass, evidence),
+            Input::PredicateEndedWithoutVerdict { goal } => {
+                self.predicate_ended_without_verdict(goal);
+            }
             Input::PtyExited { agent } => {
                 self.persist(
                     Record::Detached {
@@ -1147,6 +1230,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     | Record::Claim { card, .. }
                     | Record::TicketCreated { card, .. }
                     | Record::TicketAssigned { card, .. }
+                    | Record::TicketInstructionReviewed { card, .. }
                     | Record::TicketStarted { card, .. }
                     | Record::TicketRemoved { card, .. } => *card,
                     _ => return &self.pending,
@@ -1235,6 +1319,35 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     fn persist_at(&mut self, at: Timestamp, record: Record, then: Then) {
+        if let Then::Spawn {
+            agent,
+            turn,
+            launch,
+        } = &then
+        {
+            self.observe_before_issue(
+                *agent,
+                *turn,
+                launch.selection.clone(),
+                Entry { at, record },
+                then,
+            );
+            return;
+        }
+        let then = match &record {
+            Record::TurnEnded { .. } if matches!(then, Then::InstructionPreHostEnded { .. }) => {
+                then
+            }
+            Record::TurnEnded { turn, .. } => Then::InstructionTurnEnded {
+                turn: *turn,
+                then: Box::new(then),
+            },
+            _ => then,
+        };
+        self.persist_unobserved(at, record, then);
+    }
+
+    fn persist_unobserved(&mut self, at: Timestamp, record: Record, then: Then) {
         let entry = Entry { at, record };
         self.next_token += 1;
         let token = PersistToken(self.next_token);
@@ -1470,10 +1583,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         self.status.insert(agent, status);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one exhaustive match resumes every fsynced continuation under its token"
-    )]
     fn on_persisted(&mut self, token: PersistToken, lsn: Lsn) {
         let Some(parked) = self.ledger.remove(&token) else {
             return;
@@ -1497,7 +1606,42 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
         let reconcile = self.mail_event_recipients(&parked.entry.record);
         self.apply_entry(lsn, &parked.entry);
-        match parked.then {
+        self.resume_after(parked.then, lsn);
+        for agent in reconcile {
+            self.request_mail_wake(agent);
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match resumes every fsynced continuation under its token"
+    )]
+    fn resume_after(&mut self, then: Then, lsn: Lsn) {
+        match then {
+            Then::InstructionRecoveryContinue => self.instruction_recovery_continue(),
+            Then::InstructionBaselineSaved { start } => {
+                self.instruction_baseline_saved(*start, lsn);
+            }
+            Then::InstructionTurnEnded { turn, then } => self.observe_after_end(turn, *then, lsn),
+            Then::InstructionAttachedHookEnded => self.attached_hook_ended(lsn, false, Then::Fold),
+            Then::InstructionPreHostEnded { attempt, then } => {
+                self.persist(
+                    Record::InstructionObservationFinished {
+                        owner: attempt.owner,
+                        ticket: attempt.ticket,
+                        baseline: attempt.baseline,
+                        settlement: dudes_proto::InstructionSettlement::NoProcess {
+                            proof_lsn: lsn,
+                            proof: dudes_proto::InstructionNoProcessProof::NoHostCall,
+                        },
+                    },
+                    *then,
+                );
+            }
+            Then::InstructionCompared { baseline, then } => {
+                self.instructions.ending.remove(&baseline);
+                self.resume_after(*then, lsn);
+            }
             Then::ConversationStartupReserved => self.on_started(),
             Then::ConversationRetryReserved { turn, generation } => {
                 self.record_browser_dispatch(turn, generation);
@@ -1588,7 +1732,30 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             }
             Then::Decide { agent } => self.decide(agent),
             Then::ClearedCause { agent } => self.on_cause_cleared(agent),
-            Then::LaunchAdmissionHeld { agent, turn } => {
+            Then::LaunchAdmissionHeld {
+                agent,
+                turn,
+                instruction_attempt,
+            } => {
+                if let Some(attempt) = instruction_attempt {
+                    self.persist(
+                        Record::InstructionObservationFinished {
+                            owner: attempt.owner,
+                            ticket: attempt.ticket,
+                            baseline: attempt.baseline,
+                            settlement: dudes_proto::InstructionSettlement::NoProcess {
+                                proof_lsn: lsn,
+                                proof: dudes_proto::InstructionNoProcessProof::NoHostCall,
+                            },
+                        },
+                        Then::LaunchAdmissionHeld {
+                            agent,
+                            turn,
+                            instruction_attempt: None,
+                        },
+                    );
+                    return;
+                }
                 if let Some(turn) = turn {
                     self.mcp_attempts.remove(&turn);
                     if !self.retain_failed_browser_replay(turn) {
@@ -1645,9 +1812,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             }
             Then::Reply { hook, reply } => self.pending.push(Effect::Reply { hook, reply }),
         }
-        for agent in reconcile {
-            self.request_mail_wake(agent);
-        }
     }
 
     // ---- start ------------------------------------------------------------------------------
@@ -1678,6 +1842,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     /// The three crash rules, in order, then the first decisions of the run.
     fn on_started(&mut self) {
+        if self.recover_instruction_observations() {
+            return;
+        }
         self.hold_missing_worktrees();
         if !self.world.mail_wake_history_valid() {
             return;
@@ -1890,13 +2057,27 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// under it. The window that opens is the one already documented on
     /// [`Self::spawning`]: a mint the disk never confirms leaves its turn claimed for the rest of
     /// the run, and the next start re-issues it once.
-    fn spawn(&mut self, agent: AgentId, turn: TurnId, mut launch: Box<PreparedLaunch>) -> bool {
+    fn spawn(&mut self, agent: AgentId, turn: TurnId, launch: Box<PreparedLaunch>) -> bool {
         if !self.world.mail_wake_history_valid() {
             return false;
         }
         if !self.spawning.insert(turn) {
             return false;
         }
+        self.instructions.pending_agents.remove(&agent);
+        if !self.instructions.ready_turns.remove(&turn) {
+            self.observe_retry(agent, turn, launch);
+            return true;
+        }
+        self.spawn_prepared(agent, turn, launch)
+    }
+
+    fn spawn_prepared(
+        &mut self,
+        agent: AgentId,
+        turn: TurnId,
+        mut launch: Box<PreparedLaunch>,
+    ) -> bool {
         let Some(row) = self.world.agents.get(&agent).cloned() else {
             self.spawning.remove(&turn);
             return false;
@@ -2269,6 +2450,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// Nothing decides while a turn is in flight: the loop is one turn deep per agent, and a
     /// second `Continue` would be a second process on one vendor session.
     fn decide(&mut self, agent: AgentId) {
+        if self.instructions.recovering() || self.instructions.pending_agents.contains(&agent) {
+            return;
+        }
         if !self.world.mail_wake_history_valid() {
             return;
         }
@@ -2761,13 +2945,26 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     reason: refusal.to_string(),
                 },
             },
-            Then::LaunchAdmissionHeld { agent, turn },
+            Then::LaunchAdmissionHeld {
+                agent,
+                turn,
+                instruction_attempt: self.no_host_attempt(agent, turn),
+            },
         );
     }
 
     /// The host confirmed this attempt left no process. Earlier browser dispatch uncertainty
     /// remains open; only a first attempt can take the existing failed-end path.
     fn on_spawn_failed(&mut self, turn: TurnId, reason: String) {
+        self.finish_spawn_failure(turn, reason, None);
+    }
+
+    fn finish_spawn_failure(
+        &mut self,
+        turn: TurnId,
+        reason: String,
+        prehost: Option<instruction_observations::NoHostAttempt>,
+    ) {
         if self.browser_turn_cancelled(turn) {
             return;
         }
@@ -2778,9 +2975,17 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         self.mcp_attempts.remove(&turn);
         self.browser_launches.remove(&turn);
         self.spawning.remove(&turn);
-        self.end_turn(
+        let then = prehost.and_then(|attempt| {
+            let row = self.world.turns.get(&turn)?;
+            Some(Then::InstructionPreHostEnded {
+                attempt,
+                then: Box::new(self.after_turn_end(turn, row.agent, row.goal)),
+            })
+        });
+        self.end_turn_with(
             turn,
             ManagedEnd::absent(TurnOutcome::NotLaunched { reason }),
+            then,
         );
     }
 
@@ -3024,6 +3229,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// Note also that a reaper-written `Killed` carries `exit: UNKNOWN`: nothing waited on the
     /// process, so no reader and no projection may take `Killed` to imply a signal number.
     fn end_turn(&mut self, turn: TurnId, end: ManagedEnd) {
+        self.end_turn_with(turn, end, None);
+    }
+
+    fn end_turn_with(&mut self, turn: TurnId, end: ManagedEnd, then: Option<Then>) {
         if self.world.browser_issue(turn).is_some_and(|issue| {
             matches!(
                 issue.cancellation,
@@ -3113,7 +3322,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 session,
                 outcome: Some(outcome),
             },
-            self.after_turn_end(turn, row.agent, row.goal),
+            then.unwrap_or_else(|| self.after_turn_end(turn, row.agent, row.goal)),
         );
     }
 
@@ -3132,7 +3341,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     fn launch_held(&self, agent: AgentId) -> bool {
-        self.protection_pending(agent)
+        self.instructions.recovering()
+            || self.instructions.pending_agents.contains(&agent)
+            || self
+                .world
+                .agents
+                .get(&agent)
+                .and_then(|row| row.goal)
+                .is_some_and(|goal| self.world.instructions.pending_for_goal(goal))
+            || self.protection_pending(agent)
             || self
                 .world
                 .agents
@@ -3237,6 +3454,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         // Filtered here as well as in the fold, so the journaled verdict and every projection of
         // it say what the loop decided on: an observed failure.
         let pass = pass && crate::predicate_evidence_eligible(&row.goal.predicate, &evidence);
+        let then = if self.instructions.recovering_check(goal) {
+            Then::InstructionRecoveryContinue
+        } else {
+            Then::Decide { agent }
+        };
         self.persist(
             Record::PredicateResult {
                 goal,
@@ -3247,7 +3469,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 pass,
                 evidence,
             },
-            Then::Decide { agent },
+            then,
         );
     }
 
@@ -4502,6 +4724,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             self.observe_activity(event.agent, None, kind);
         }
+        if event.provenance == Provenance::Observed
+            && let EventKind::TurnEnd { last_message } = &event.kind
+        {
+            self.observe_attached_hook_end(event.agent, last_message.as_deref());
+        }
         // a reply that carries a note is parked behind the record that spends it, so
         // a crash between the two re-delivers rather than silently having consumed it. A reply
         // that carries none is unaffected — nothing is persisted and nothing is parked.
@@ -4648,6 +4875,22 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 HookReply {
                     decision: HookDecision::Deny {
                         reason: "the loop is paused".into(),
+                    },
+                    context: None,
+                },
+                None,
+            );
+        }
+        if matches!(kind, EventKind::PromptSubmit | EventKind::PreTool { .. })
+            && row
+                .goal
+                .is_some_and(|goal| self.world.instructions.pending_for_goal(goal))
+        {
+            return (
+                HookReply {
+                    decision: HookDecision::Deny {
+                        reason: "The ticket needs instruction review before another model turn."
+                            .into(),
                     },
                     context: None,
                 },

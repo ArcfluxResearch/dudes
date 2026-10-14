@@ -167,6 +167,28 @@ impl Adapter for CodexAdapter {
         }
     }
 
+    fn instruction_manifest(
+        &self,
+        ctx: &AgentCtx<'_>,
+        mode: dudes_types::Mode,
+        _selection: &ModelSelection,
+    ) -> crate::instructions::InstructionDeclaration {
+        use crate::instructions::{DeclarationMode, InstructionDeclaration, codex_manifest};
+
+        if mode == dudes_types::Mode::Attached {
+            return InstructionDeclaration::missing(Provider::Codex, mode);
+        }
+        codex_manifest(
+            ctx,
+            if self.config.streaming {
+                DeclarationMode::CodexStreaming
+            } else {
+                DeclarationMode::CodexLegacy
+            },
+            self.home.as_deref(),
+        )
+    }
+
     fn session_acquisition(&self) -> SessionAcquisition {
         SESSION_ACQUISITION
     }

@@ -350,11 +350,6 @@ fn real_short_child_eof_before_registration_keeps_durably_bound_ended_text() {
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    assert_eq!(
-        fired.load(Ordering::SeqCst),
-        1,
-        "real watcher EOF preceded Spawn return"
-    );
     let (turn, session) =
         fixture.await_record("short child accepted SessionLearned", |r| match r {
             Record::SessionLearned {
@@ -364,6 +359,11 @@ fn real_short_child_eof_before_registration_keeps_durably_bound_ended_text() {
             } if *found == agent => Some((*turn, session.clone())),
             _ => None,
         });
+    assert_eq!(
+        fired.load(Ordering::SeqCst),
+        1,
+        "real watcher EOF preceded Spawn return"
+    );
     fixture.await_record("short child accepted TurnEnded", |r| matches!(r, Record::TurnEnded { agent: found, turn: seen, .. } if *found == agent && *seen == turn).then_some(()));
     let ended = await_output(
         &output,

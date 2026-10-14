@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{self, Write as _};
 use std::mem::size_of;
 use std::os::windows::io::{
-    AsHandle as _, AsRawHandle as _, FromRawHandle as _, OwnedHandle, RawHandle,
+    AsHandle, AsRawHandle as _, FromRawHandle as _, OwnedHandle, RawHandle,
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -33,6 +33,7 @@ pub(crate) struct Session {
     job: Job,
     console: Option<PseudoConsole>,
     writer: Option<File>,
+    reaped: bool,
 }
 
 pub(crate) fn spawn(spec: LaunchSpec, size: PtySize) -> io::Result<Spawned> {
@@ -55,6 +56,7 @@ pub(crate) fn spawn(spec: LaunchSpec, size: PtySize) -> io::Result<Spawned> {
             job,
             console: Some(console),
             writer: Some(writer),
+            reaped: false,
         },
         reader,
         issue: None,
@@ -62,6 +64,13 @@ pub(crate) fn spawn(spec: LaunchSpec, size: PtySize) -> io::Result<Spawned> {
 }
 
 impl Session {
+    pub(crate) fn close_query(&self) -> io::Result<CloseQuery> {
+        if !self.reaped {
+            return Err(io::Error::other("PTY direct child is not reaped"));
+        }
+        self.job().map(|job| CloseQuery { job })
+    }
+
     pub(crate) fn pid(&self) -> u32 {
         self.child.id()
     }
@@ -127,10 +136,21 @@ impl Session {
                 false
             }
         };
+        self.reaped |= direct_done;
         CloseReport {
             confirmed: direct_done && job_done,
             error: first,
         }
+    }
+}
+
+pub(crate) struct CloseQuery {
+    job: OwnedHandle,
+}
+
+impl CloseQuery {
+    pub(crate) fn is_absent(&self) -> io::Result<bool> {
+        active_processes(&self.job).map(|active| active == 0)
     }
 }
 
@@ -150,9 +170,9 @@ fn wait_job_empty(job: &Job) -> io::Result<()> {
     }
 }
 
-fn active_processes(job: &Job) -> io::Result<u32> {
+fn active_processes(job: &impl AsHandle) -> io::Result<u32> {
     let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-    // SAFETY: the Job's borrowed handle remains live for the call. `info` is correctly sized,
+    // SAFETY: the owned Job handle remains live for the call. `info` is correctly sized,
     // aligned writable storage for JobObjectBasicAccountingInformation; the optional returned
     // length pointer is null, and the call retains neither pointer.
     let ok = unsafe {

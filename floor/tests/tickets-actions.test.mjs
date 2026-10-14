@@ -22,24 +22,27 @@ import test, { after, before, beforeEach } from 'node:test';
 
 import { createServer } from 'vite';
 
-import { ADA, REVISION, agent, cardId, daemon, done, json, refused, subscribe, ticketCard } from './helpers/tickets.mjs';
+import { ADA, REVISION, agent, cardId, daemon, done, json, refused, subscribe, ticketCard, instructionReview, instructionSummary, INSTRUCTION_WATERMARK } from './helpers/tickets.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 
 let server;
 let store;
 let ticket;
+let detail;
 
 before(async () => {
-  server = await createServer({ root, cacheDir: resolve(root, 'node_modules/.vite-tickets-actions'),
+  server = await createServer({ root, configFile: false, cacheDir: resolve(root, 'node_modules/.vite-tickets-actions'),
     server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
   store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   ticket = await server.ssrLoadModule('/src/renderer/ticket/ticket.ts');
+  detail = await server.ssrLoadModule('/src/renderer/ticket/detail.ts');
 });
 after(async () => { await server?.close(); });
 beforeEach(() => {
   store.resetFloorStore();
   ticket.resetTicket();
+  detail.resetDetail();
 });
 
 const NEW = cardId(1);
@@ -48,6 +51,9 @@ const FORM = { title: 'Fix it', note: '', project: null, check: { id: 'default',
 test('each action sends exactly the route\'s members, to its own path', async () => {
   subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'review', { claimed_by: ADA, seq: 7 })] });
   const card = store.getFloorState().cards[0];
+  await detail.loadDetail(card, daemon(() => json(200, { state: 'ok', card: { id: NEW, seq: 7 }, ticket: {
+    note: 'The complete note', project: 'service', check: { id: 'default', label: 'passes' }, round: 1,
+  } })).deps);
   const cases = [
     [{ verb: 'accept' }, '/floor/ticket/accept', { card: NEW, expected_seq: 7 }, 'accepted'],
     [{ verb: 'stop' }, '/floor/ticket/stop', { card: NEW, expected_seq: 7 }, 'stopped'],
@@ -81,12 +87,12 @@ test('the response map: each answer is worded for what it proves', async () => {
   };
   let [ok, notice] = await text(done('accepted', NEW));
   assert.equal(ok, true);
-  assert.deepEqual(notice, { tone: 'done', text: 'Accepted. The ticket is Done.' });
+  assert.deepEqual(notice, { card: NEW, tone: 'done', text: 'Accepted. The ticket is Done.' });
 
   let deps;
   [ok, notice, deps] = await text(refused('stale_card'));
   assert.equal(ok, false);
-  assert.deepEqual(notice, { tone: 'problem', text: 'This ticket changed while you were looking. Showing the latest.' });
+  assert.deepEqual(notice, { card: NEW, tone: 'problem', text: 'This ticket changed while you were looking. Showing the latest.' });
   assert.equal(deps.refreshed, 1, 'a stale card asks for a fresh snapshot');
 
   [, notice] = await text(refused('wrong_state'));
@@ -130,7 +136,7 @@ test('creating then giving is two requests, and a refused give keeps the new tic
   assert.deepEqual(seen[0].body, { title: 'Fix it', done_when: 'default', done_when_revision: REVISION });
   assert.deepEqual(seen[1].body, { card: NEW, agent: ADA, expected_seq: 0 });
   assert.deepEqual(ticket.getTicketState().notice, {
-    tone: 'problem',
+    card: NEW, tone: 'problem',
     text: 'Ticket created, but it was not given to Ada. That agent is not available for this project.',
   });
 });
@@ -155,6 +161,7 @@ test('creating then giving to an idle agent says it started, and a queue says th
   const { seen } = daemon(() => done('created', NEW, { seq: 0 }));
   void seen;
   await ticket.createTicket(FORM, deps);
+  assert.equal(ticket.getTicketState().notice.card, NEW);
   assert.equal(ticket.getTicketState().notice.text, 'Ticket created. Choose Give to agent when it is ready.');
 });
 
@@ -173,7 +180,7 @@ test('a lost answer is never retried, and the form is kept', async () => {
     assert.deepEqual(made, { card: null, saved: false }, 'nothing the person typed is thrown away');
     assert.equal(calls, 1, 'the page never retries by itself');
     assert.deepEqual(ticket.getTicketState().notice, {
-      tone: 'problem', text: 'We could not confirm that saved. Look at the board before you try again.',
+      card: null, tone: 'problem', text: 'We could not confirm that saved. Look at the board before you try again.',
     });
   }
 });
@@ -193,6 +200,35 @@ test('one request at a time, and an empty title sends nothing', async () => {
   assert.equal(seen.length, 1);
   assert.deepEqual(await ticket.createTicket({ ...FORM, title: '   ' }, deps), { card: null, saved: false });
   assert.equal(seen.length, 1);
+});
+
+test('an obsolete reply cannot overwrite newer ticket feedback after a reset', async () => {
+  subscribe(store, { cards: [ticketCard(1, 'review'), ticketCard(2, 'todo')] });
+  const [firstCard, secondCard] = store.getFloorState().cards;
+  let release;
+  const gate = new Promise((resolveGate) => { release = resolveGate; });
+  const { deps } = daemon(async () => { await gate; return done('accepted', firstCard.id); });
+  const first = ticket.changeTicket(firstCard, { verb: 'accept' }, deps);
+  ticket.resetTicket();
+  assert.equal(await ticket.changeTicket(secondCard, { verb: 'edit', title: 'Keep it', note: '', check: null }, deps), false);
+  const newer = ticket.getTicketState();
+  release();
+  assert.equal(await first, true, 'the reply still reports the actual result to its caller');
+  assert.equal(ticket.getTicketState(), newer, 'the obsolete caller has no authority over newer feedback');
+});
+
+test('an old dismiss callback cannot clear another card\'s newer feedback', async () => {
+  subscribe(store, { cards: [ticketCard(1, 'review'), ticketCard(2, 'review')] });
+  const [firstCard, secondCard] = store.getFloorState().cards;
+  const { deps } = daemon((_url, body) => done('accepted', body.card));
+  await ticket.changeTicket(firstCard, { verb: 'accept' }, deps);
+  const previous = ticket.getTicketState().notice;
+  await ticket.changeTicket(secondCard, { verb: 'accept' }, deps);
+  const newer = ticket.getTicketState().notice;
+  ticket.dismissNotice(previous);
+  assert.equal(ticket.getTicketState().notice, newer);
+  ticket.dismissNotice(newer);
+  assert.equal(ticket.getTicketState().notice, null);
 });
 
 test('the page never overlaps its own requests, so a read and an action take turns', async () => {
@@ -219,4 +255,65 @@ test('with no Floor session nothing is sent', async () => {
   assert.deepEqual(await ticket.createTicket(FORM, deps), { card: null, saved: false });
   assert.equal(seen.length, 0);
   assert.equal(ticket.getTicketState().notice.text, 'This page has no Floor session, so nothing was sent.');
+});
+
+async function reviewedCard(review = instructionReview()) {
+  subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'blocked', { claimed_by: ADA, seq: 7 }, {
+    reason: 'shared_instructions_unknown', instruction_review: instructionSummary({ pending_comparison: review.pending_comparison }),
+  })] });
+  const card = store.getFloorState().cards[0];
+  await detail.loadDetail(card, daemon(() => json(200, { state: 'ok', card: { id: NEW, seq: 7 }, ticket: {
+    note: 'Read the change.', project: 'service', check: { id: 'default', label: 'passes' }, round: 1,
+    instruction_review: review,
+  } })).deps);
+  return card;
+}
+
+test('reviewed acceptance sends the exact watermark and acknowledges continuing work', async () => {
+  const card = await reviewedCard();
+  const { deps, seen } = daemon(() => done('accepted', NEW, { outcome: 'instructions_acknowledged' }));
+  assert.equal(await ticket.changeTicket(card, { verb: 'accept' }, deps), true);
+  assert.deepEqual(seen.map(({ url, body }) => [url, body]), [['/floor/ticket/accept', {
+    card: NEW, expected_seq: 7, review_watermark: { through_lsn: '9007199254740993', set_digest: 'd'.repeat(64) },
+  }]]);
+  assert.deepEqual(ticket.getTicketState().notice, { card: NEW, tone: 'done', text: 'Instruction review acknowledged. The ticket remains open.' });
+  assert.equal(ticket.decodeResponse('accept', 200, JSON.stringify({ state: 'accepted', card: NEW, lsn: '15',
+    outcome: 'made_up' })).kind, 'unknown');
+});
+
+test('reviewed changes use the same atomic assignment payload and Stop retains review wording', async () => {
+  const card = await reviewedCard();
+  const { deps, seen } = daemon((url) => url.endsWith('/assign')
+    ? done('assigned', NEW, { start: { state: 'queued', position: 1, wait: 'agent_paused' } }) : done('stopped', NEW));
+  assert.equal(await ticket.changeTicket(card, { verb: 'assign', agent: ADA, message: '  revisit the instructions  ' }, deps), true);
+  assert.deepEqual(seen[0].body, { card: NEW, expected_seq: 7, agent: ADA, message: 'revisit the instructions',
+    review_watermark: INSTRUCTION_WATERMARK });
+  assert.equal(ticket.getTicketState().notice.text, 'Queued for Ada, next in line. Waiting for Ada to be resumed.');
+  assert.equal(await ticket.changeTicket(card, { verb: 'stop' }, deps), true);
+  assert.deepEqual(seen[1].body, { card: NEW, expected_seq: 7 });
+  assert.equal(ticket.getTicketState().notice.text, 'Stopped. Instruction review still needs you.');
+});
+
+test('pending or obsolete instruction evidence cannot submit acceptance or rework', async () => {
+  const { deps, seen } = daemon(() => done('accepted', NEW));
+  let card = await reviewedCard(instructionReview({ pending_comparison: true }));
+  assert.equal(await ticket.changeTicket(card, { verb: 'accept' }, deps), false);
+  card = await reviewedCard();
+  subscribe(store, { cards: [ticketCard(1, 'blocked', { seq: 8 }, {
+    instruction_review: instructionSummary({ watermark: { ...INSTRUCTION_WATERMARK, through_lsn: '9007199254740994' } }),
+  })] });
+  assert.equal(await ticket.changeTicket(card, { verb: 'assign', agent: ADA, message: 'fix it' }, deps), false);
+  assert.deepEqual(seen, []);
+  assert.equal(ticket.getTicketState().notice.text, 'Read the current instruction evidence before reviewing this ticket.');
+});
+
+test('instruction refusal codes retain their specific next steps', () => {
+  for (const [reason, message] of [
+    ['instruction_comparison_pending', 'Instruction comparison is still pending. Read the ticket again when it finishes.'],
+    ['instruction_review_required', 'Read the current instruction review before acknowledging it.'],
+  ]) {
+    const outcome = ticket.decodeResponse('accept', 409, JSON.stringify({ state: 'refused', reason }));
+    assert.deepEqual(outcome, { kind: 'refused', reason });
+    assert.equal(ticket.problemText(outcome, 'blocked'), message);
+  }
 });

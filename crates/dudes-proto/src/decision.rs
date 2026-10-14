@@ -179,6 +179,9 @@ pub enum HoldReason {
     WorktreeMissing,
     /// A hold cause this version does not know.
     UnknownCause,
+    /// Associated instruction comparison or exact Operator review remains outstanding.
+    /// Ordinary Resume cannot acknowledge this journal-derived obligation.
+    SharedInstructionsReview,
 }
 
 /// The seven gates of `decide()`, in the order they are consulted (invariant 5).

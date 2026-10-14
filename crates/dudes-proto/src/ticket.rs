@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::goal::Predicate;
+use crate::instruction::InstructionPendingReview;
 
 /// Most bytes in a ticket title.
 pub const MAX_TITLE_BYTES: usize = 256;
@@ -77,6 +78,9 @@ pub struct TicketRow {
     /// The daemon's newest run of the check on the ticket's goal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check: Option<TicketCheckResult>,
+    /// Bounded instruction evidence and the exact pending review set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_review: Option<InstructionPendingReview>,
 }
 
 /// Which side of the queue a ticket sits on. Given-again work is served before new work.
@@ -131,6 +135,10 @@ pub enum TicketReason {
     HeldUnsure,
     /// The agent's worktree is missing.
     WorktreeMissing,
+    /// Known net changes to declared shared instructions need Operator review.
+    SharedInstructionsChanged,
+    /// Shared instruction coverage is incomplete and needs Operator review.
+    SharedInstructionsUnknown,
 }
 
 impl TicketReason {
@@ -173,6 +181,12 @@ impl TicketReason {
             }
             Self::WorktreeMissing => {
                 "The agent's worktree is missing. Restore it and resume the agent, or Stop and give the ticket to another agent."
+            }
+            Self::SharedInstructionsChanged => {
+                "Shared project instructions changed during this work. Review the change, then Accept or Ask for changes."
+            }
+            Self::SharedInstructionsUnknown => {
+                "Dudes could not determine whether shared project instructions changed during this work. Review the work, then Accept or Ask for changes."
             }
         }
     }
@@ -272,6 +286,10 @@ pub enum TicketRefusal {
     LimitReached,
     /// The session already has a ticket request running.
     Busy,
+    /// A related instruction comparison is unfinished.
+    InstructionComparisonPending,
+    /// The caller supplied no exact current instruction review evidence.
+    InstructionReviewRequired,
 }
 
 impl TicketRefusal {
@@ -290,6 +308,8 @@ impl TicketRefusal {
             Self::QueueFull => "queue_full",
             Self::LimitReached => "limit_reached",
             Self::Busy => "busy",
+            Self::InstructionComparisonPending => "instruction_comparison_pending",
+            Self::InstructionReviewRequired => "instruction_review_required",
         }
     }
 
@@ -317,6 +337,8 @@ impl TicketRefusal {
             Self::QueueFull => "That agent already has 8 tickets waiting.".to_owned(),
             Self::LimitReached => "Too many tickets for now. Remove some, or wait.".to_owned(),
             Self::Busy => "Another ticket request is still running. Try again in a moment.".to_owned(),
+            Self::InstructionComparisonPending => "Instruction comparison is still pending. Read the ticket again when it finishes.".to_owned(),
+            Self::InstructionReviewRequired => "Read the current instruction review before acknowledging it.".to_owned(),
         }
     }
 }
@@ -413,6 +435,14 @@ mod tests {
             (TicketReason::HeldFailing, "held_failing"),
             (TicketReason::HeldUnsure, "held_unsure"),
             (TicketReason::WorktreeMissing, "worktree_missing"),
+            (
+                TicketReason::SharedInstructionsChanged,
+                "shared_instructions_changed",
+            ),
+            (
+                TicketReason::SharedInstructionsUnknown,
+                "shared_instructions_unknown",
+            ),
         ];
         let mut sentences = std::collections::BTreeSet::new();
         for (reason, name) in reasons {

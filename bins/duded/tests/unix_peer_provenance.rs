@@ -1023,7 +1023,10 @@ impl AttachedDaemon {
 
     /// Hire an agent, let its managed turn confirm a session its attach can resume, and pause it.
     fn paused_agent(&self, fixture: &Fixture) -> AgentId {
-        let agent = common::hire(&self.running.handle, fixture.state.path());
+        let cwd = tempfile::tempdir_in(fixture.state.path())
+            .expect("agent working directory")
+            .keep();
+        let agent = common::hire(&self.running.handle, &cwd);
         let goal = common::set_goal(
             &self.running.handle,
             common::goal_params(agent, &["/usr/bin/true"]),

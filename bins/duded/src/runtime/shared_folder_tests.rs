@@ -35,10 +35,28 @@ fn prepared(daemon: &mut TestDaemon, agent: AgentId) -> Effect {
         completion_check: None,
         baseline: None,
     })]);
+    let mut sample_request = None;
     for _ in 0..64 {
+        if queue.is_empty() {
+            let Job::Input(input) = daemon
+                .jobs
+                .recv_timeout(Duration::from_secs(3))
+                .expect("the actual sampler must return its bounded response")
+            else {
+                panic!("launch preparation received an unrelated job");
+            };
+            let Input::InstructionSampled { request, .. } = input.as_ref() else {
+                panic!("launch preparation received an unrelated input");
+            };
+            assert_eq!(Some(*request), sample_request);
+            queue.push_back(*input);
+        }
         let input = queue.pop_front().expect("launch preparation continues");
         daemon.sup.handle(input);
         for effect in daemon.sup.take_effects() {
+            if let Effect::SampleInstructions { request, .. } = &effect {
+                sample_request = Some(*request);
+            }
             if matches!(effect, Effect::Spawn { .. }) {
                 return effect;
             }
@@ -49,6 +67,7 @@ fn prepared(daemon: &mut TestDaemon, agent: AgentId) -> Effect {
                     &mut queue,
                     &mut PumpReport::Discard,
                     &mut daemon.sup,
+                    &mut daemon.closing,
                 )
                 .expect("prepare through the real persistence executor");
         }
@@ -104,6 +123,7 @@ fn a_batch_sees_the_created_child_before_its_spawn_receipt_is_folded() {
                 &mut queue,
                 &mut PumpReport::Discard,
                 &mut daemon.sup,
+                &mut daemon.closing,
             )
             .unwrap();
         assert!(
@@ -119,6 +139,7 @@ fn a_batch_sees_the_created_child_before_its_spawn_receipt_is_folded() {
                 &mut queue,
                 &mut PumpReport::Discard,
                 &mut daemon.sup,
+                &mut daemon.closing,
             )
             .unwrap();
         if shared {

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use dudes_proto::goal::{Evidence, Predicate};
 use dudes_proto::{ExitStatus, GoalBudget, Record, RecordKind, TurnOutcome};
-use dudes_supervisor::testing::{Harness, Seen};
+use dudes_supervisor::testing::{FakeClock, FakeHost, Harness, Seen};
 use dudes_supervisor::{Command, Input, PersistToken};
 use dudes_types::{AgentStatus, Lsn, TurnStatus, Usd};
 
@@ -292,9 +292,7 @@ fn an_unknown_persist_token_does_nothing() {
     assert_eq!(harness.trace.len(), before + seen.len());
 }
 
-/// `entry.at` is the value `Clock::now()` returned **at the moment the `Persist` was
-/// emitted**, so under a clock that ticks one millisecond per read the entries carry consecutive
-/// stamps in emission order — asserted by value, not by tolerance.
+/// A ticking clock preserves emission order even when sampling and admission also read it.
 #[test]
 fn entry_at_is_the_clock_value_at_the_moment_persist_was_emitted() {
     let mut harness = Harness::new();
@@ -312,13 +310,50 @@ fn entry_at_is_the_clock_value_at_the_moment_persist_was_emitted() {
         stamps.len() >= 4,
         "hire, goal, decision, turn at least: {stamps:?}"
     );
-    let first = stamps[0];
-    let expected: Vec<i64> = (0..i64::try_from(stamps.len()).unwrap())
-        .map(|step| first + step)
-        .collect();
+    assert!(
+        stamps.windows(2).all(|pair| pair[0] < pair[1]),
+        "Persist timestamps follow emission order: {stamps:?}"
+    );
+}
+
+#[test]
+fn a_deferred_issue_is_stamped_when_its_persist_is_emitted() {
+    let clock = FakeClock::frozen(10);
+    let mut harness = Harness::with(clock.clone(), FakeHost::wall_clock_anchored());
+    harness
+        .unfsynced
+        .insert(RecordKind::InstructionObservationStarted);
+    harness.hire_with_goal(&["npm", "test"]);
+    let (token, entry) = harness
+        .trace
+        .iter()
+        .find_map(|seen| match seen {
+            Seen::Persist { token, entry }
+                if entry.record.kind() == RecordKind::InstructionObservationStarted =>
+            {
+                Some((*token, entry.clone()))
+            }
+            _ => None,
+        })
+        .expect("the starting observation is awaiting its durable acknowledgement");
+    assert!(turn_ids(&harness).is_empty());
+    clock.advance(1_000);
+    let lsn = Lsn(u64::try_from(harness.journal.len()).unwrap() + 1);
+    harness.journal.push(entry);
+    let effects = harness.step(Input::Persisted { token, lsn });
+    let issue = effects
+        .iter()
+        .find_map(|seen| match seen {
+            Seen::Persist { entry, .. } if matches!(entry.record, Record::TurnIssued { .. }) => {
+                Some(entry)
+            }
+            _ => None,
+        })
+        .expect("the acknowledged baseline releases the intended issue");
     assert_eq!(
-        stamps, expected,
-        "one clock read per Persist, in emission order"
+        issue.at,
+        clock.peek(),
+        "the deferred issue uses emission time"
     );
 }
 
@@ -368,11 +403,15 @@ fn a_managed_turn_walks_the_section_6_sequence() {
         [
             "GoalSet",
             "LoopDecided",
+            "SampleInstructions",
+            "InstructionObservationStarted",
             "TurnIssued",
             "HookTokenMinted",
             "Spawn",
             "TurnSpawned",
             "TurnEnded",
+            "SampleInstructions",
+            "InstructionObservationFinished",
             "RunPredicate",
         ],
         "the crash-recovery sequence, in order"

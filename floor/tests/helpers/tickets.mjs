@@ -100,3 +100,23 @@ export function find(node, matches) {
   if (Array.isArray(node)) return node.flatMap((child) => find(child, matches));
   return [...(matches(node) ? [node] : []), ...find(node.props?.children, matches)];
 }
+
+export const INSTRUCTION_WATERMARK = Object.freeze({ through_lsn: '9007199254740993', set_digest: 'd'.repeat(64) });
+
+export function instructionReview(fields = {}) {
+  return {
+    watermark: INSTRUCTION_WATERMARK, pending_comparison: false,
+    intervals: [{ kind: 'managed', agent: ADA, turn: cardId(40), attachment_lsn: null, issue_lsn: '10',
+      baseline_lsn: '11', missing_start: false, card: cardId(1), goal: cardId(41), assignment_lsn: '9', seq_at_start: 2,
+      finished_lsn: '9007199254740993', end_lsn: '13', sampled_at: 1_787_394_600_000, recovery: true }],
+    changed_paths: [{ path: { encoding: 'utf8', value: '/project/AGENTS\n.md' }, display: '/project/AGENTS\\n.md', display_truncated: false,
+      context: { kind: 'shared_project' } }],
+    gaps: [{ reason: 'read_failed', context: { kind: 'shared_input', source: 'import' }, agent: ADA,
+      path: { encoding: 'unix_bytes', hex: '2fff' }, display: 'unix:2fff', display_truncated: false }],
+    ...fields,
+  };
+}
+
+export function instructionSummary(fields = {}) {
+  return { watermark: INSTRUCTION_WATERMARK, pending_comparison: false, intervals: 1, changed_paths: 1, gaps: 1, ...fields };
+}

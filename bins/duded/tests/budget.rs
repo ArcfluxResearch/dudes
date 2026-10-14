@@ -320,7 +320,11 @@ fn end_turn(
     usage: Option<Usage>,
     outcome: TurnOutcome,
 ) {
-    handle.input(Input::ChildExited {
+    handle.input(end_payload(turn, usage, outcome));
+}
+
+fn end_payload(turn: dudes_types::TurnId, usage: Option<Usage>, outcome: TurnOutcome) -> Input {
+    Input::ChildExited {
         final_reply: None,
         elapsed_ms: None,
         turn,
@@ -332,6 +336,18 @@ fn end_turn(
         model_usage: BTreeMap::new(),
         outcome,
         last_message: None,
+    }
+}
+
+fn await_spawned_turn(fixture: &Fixture) -> dudes_types::TurnId {
+    let turn = fixture.await_turn();
+    await_spawned(fixture, turn);
+    turn
+}
+
+fn await_spawned(fixture: &Fixture, turn: dudes_types::TurnId) {
+    fixture.await_record("the intended TurnSpawned", |record| {
+        matches!(record, Record::TurnSpawned { turn: found, .. } if *found == turn).then_some(())
     });
 }
 
@@ -358,7 +374,7 @@ fn spend_against(ceiling: Usd, spent: Usd) -> Vec<Record> {
         &running.handle,
         common::goal_params_with_budget(agent, &[common::false_program()], ceiling),
     );
-    let turn = fixture.await_turn();
+    let turn = await_spawned_turn(&fixture);
     let issued_before = count(&fixture.records(), |record| {
         matches!(record, Record::TurnIssued { .. })
     });
@@ -384,6 +400,16 @@ fn spend_against(ceiling: Usd, spent: Usd) -> Vec<Record> {
         matches!(record, Record::PredicateResult { .. }).then_some(())
     });
 
+    if spent < ceiling {
+        fixture.await_record("admitted second TurnIssued", |record| {
+            matches!(record, Record::TurnIssued { turn: found, .. } if *found != turn).then_some(())
+        });
+    } else {
+        fixture.await_record("goal budget refusal", |record| {
+            matches!(record, Record::BudgetDecision { allowed: false, .. }).then_some(())
+        });
+    }
+
     running.stop(ExitCause::Ended);
     fixture.records()
 }
@@ -396,19 +422,17 @@ fn spend_against_floor(source: &str, spent: Usd, expect_next_turn: bool) -> (Vec
     let budget = load_budget(&config_path).expect("load the operator budget");
 
     let fixture = Fixture::new();
-    let host = SharedHost::new();
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let mut settings = fixture.settings();
     settings.floor_usd_per_day = budget.floor_usd_per_day;
-    let daemon = boot(
-        &settings,
-        seams(
-            host.clone(),
-            Arc::new(ScriptedRunner::scripted([common::fails()])),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot");
+    let runtime_seams = seams(
+        host.clone(),
+        Arc::new(ScriptedRunner::scripted([common::fails()])),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&runtime_seams.children));
+    let daemon = boot(&settings, runtime_seams).expect("boot");
     let mut running = common::start(daemon);
 
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -417,22 +441,14 @@ fn spend_against_floor(source: &str, spent: Usd, expect_next_turn: bool) -> (Vec
         // Both wider scopes stay above the one-micro-dollar spend, so only Floor can bind.
         common::goal_params_with_budget(agent, &[common::false_program()], Usd::from_dollars(5)),
     );
-    let first = fixture.await_turn();
+    let first = await_spawned_turn(&fixture);
     assert_eq!(host.spawned().len(), 1, "control: the first turn spawned");
 
-    running.handle.input(Input::ChildExited {
-        final_reply: None,
-        elapsed_ms: None,
-        turn: first,
-        exit: ExitStatus {
-            code: Some(0),
-            signal: None,
-        },
-        usage: Some(ScopedUsage::Turn(costing(spent))),
-        model_usage: BTreeMap::new(),
-        outcome: TurnOutcome::Completed,
-        last_message: None,
-    });
+    common::end_turn_with_native_payload(
+        &fixture,
+        &host,
+        end_payload(first, Some(costing(spent)), TurnOutcome::Completed),
+    );
 
     if expect_next_turn {
         fixture.await_record("second TurnIssued", |record| match record {
@@ -1213,7 +1229,7 @@ fn an_absent_floor_ceiling_issues_a_turn_the_old_default_would_have_refused() {
             Usd::from_dollars(1_000),
         ),
     );
-    let first = fixture.await_turn();
+    let first = await_spawned_turn(&fixture);
     assert_eq!(host.spawned().len(), 1, "control: the first turn spawned");
 
     running.handle.input(Input::ChildExited {
@@ -1408,6 +1424,9 @@ fn tokens_refused_before_any_turn(budget: GoalBudget) -> Vec<Record> {
 }
 
 fn tokens_against_inner(budget: GoalBudget, tokens: u64, expect_a_turn: bool) -> Vec<Record> {
+    let expect_next_turn = budget
+        .tokens
+        .is_some_and(|ceiling| Tokens::new(tokens) < ceiling);
     let fixture = Fixture::new();
     let host = SharedHost::new();
     let mut settings = fixture.settings();
@@ -1449,7 +1468,7 @@ fn tokens_against_inner(budget: GoalBudget, tokens: u64, expect_a_turn: bool) ->
         },
     );
     if expect_a_turn {
-        let turn = fixture.await_turn();
+        let turn = await_spawned_turn(&fixture);
         running.handle.input(Input::ChildExited {
             final_reply: None,
             elapsed_ms: None,
@@ -1472,6 +1491,16 @@ fn tokens_against_inner(budget: GoalBudget, tokens: u64, expect_a_turn: bool) ->
         fixture.await_record("PredicateResult", |record| {
             matches!(record, Record::PredicateResult { .. }).then_some(())
         });
+        if expect_next_turn {
+            fixture.await_record("admitted second TurnIssued", |record| {
+                matches!(record, Record::TurnIssued { turn: found, .. } if *found != turn)
+                    .then_some(())
+            });
+        } else {
+            fixture.await_record("goal token refusal", |record| {
+                matches!(record, Record::BudgetDecision { allowed: false, .. }).then_some(())
+            });
+        }
     } else {
         fixture.await_record("BudgetDecision", |record| {
             matches!(record, Record::BudgetDecision { allowed: false, .. }).then_some(())
@@ -1708,35 +1737,41 @@ fn unknown_ends_and_floor_rebuild_from_journal_and_config() {
     let mut settings = fixture.settings();
     settings.floor_usd_per_day = None;
     settings.per_turn_floor = budget.per_turn_floor;
-    let host = SharedHost::new();
-    let daemon = boot(
-        &settings,
-        seams(
-            host,
-            Arc::new(ScriptedRunner::scripted([common::fails(), common::fails()])),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot with configured reserve");
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let runtime_seams = seams(
+        host.clone(),
+        Arc::new(ScriptedRunner::scripted([common::fails(), common::fails()])),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&runtime_seams.children));
+    let daemon = boot(&settings, runtime_seams).expect("boot with configured reserve");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     let goal = common::set_goal(
         &running.handle,
         common::goal_params_with_budget(agent, &[common::false_program()], Usd::from_micros(4)),
     );
-    let first = fixture.await_turn();
-    end_turn(
-        &running.handle,
-        first,
-        Some(costing(Usd::from_micros(1))),
-        TurnOutcome::Completed,
+    let first = await_spawned_turn(&fixture);
+    common::end_turn_with_native_payload(
+        &fixture,
+        &host,
+        end_payload(
+            first,
+            Some(costing(Usd::from_micros(1))),
+            TurnOutcome::Completed,
+        ),
     );
     let second = fixture.await_record("second TurnIssued", |record| match record {
         Record::TurnIssued { turn, .. } if *turn != first => Some(*turn),
         _ => None,
     });
-    end_turn(&running.handle, second, None, TurnOutcome::Vanished);
+    await_spawned(&fixture, second);
+    common::end_turn_with_native_payload(
+        &fixture,
+        &host,
+        end_payload(second, None, TurnOutcome::Vanished),
+    );
     fixture.await_record("reserved budget refusal", |record| match record {
         Record::BudgetDecision {
             spent,
@@ -1855,7 +1890,7 @@ fn an_unset_reserve_prices_an_unobserved_end_at_the_default() {
             tokens: goal_tokens,
         };
         common::set_goal(&running.handle, goal);
-        let first = fixture.await_turn();
+        let first = await_spawned_turn(&fixture);
         end_turn(&running.handle, first, None, TurnOutcome::Vanished);
         let (ceiling, unknown_ends, per_turn_floor) =
             fixture.await_record("a refused BudgetDecision", |record| match record {

@@ -2945,6 +2945,8 @@ fn replayed_partial_finishes_only_its_preminted_goal_and_complete_retry_is_read_
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
         assert_eq!(complete["agent"], original_agent.to_string());
         assert_eq!(complete["goal"], original_goal.to_string());
+        issued_goal_turn(&fixture, original_goal);
+        running.handle.doctor().unwrap();
         let (frame, _) = snapshot(addr, &cookie, &csrf);
         let row = frame["projection"]["agents"]
             .as_array()
@@ -2996,6 +2998,8 @@ fn replayed_partial_finishes_only_its_preminted_goal_and_complete_retry_is_read_
         let addr = daemon.floor_addr().expect("third Floor address");
         let mut running = common::start(daemon);
         let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+        issued_goal_turn(&fixture, original_goal);
+        running.handle.doctor().unwrap();
         let before = fixture.records();
         let (_, replayed) = post_onboard(addr, &cookie, &csrf, &request);
         assert_eq!(replayed, complete);
@@ -3249,6 +3253,76 @@ fn session_revocation_linearizes_with_both_append_permits() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
+fn issued_onboarding_fence(
+    fixture: &Fixture,
+    handle: &duded::Handle,
+    agent: AgentId,
+    goal: GoalId,
+) {
+    nth_turn(fixture, goal, 0);
+    let before = fixture.records();
+    let stopped = handle.ask(Ask::Pause(agent)).unwrap_err();
+    assert_eq!(stopped.code, dudes_proto::rpc::ErrorCode::Refused.code());
+    assert_eq!(
+        stopped.message,
+        "journal state unresolved; restart to replay before new work or writes"
+    );
+    assert_eq!(
+        fixture.records(),
+        before,
+        "the fenced probe appends nothing"
+    );
+    let counts = (
+        before.iter().filter(|record| matches!(record, Record::AgentHired { id, .. } if *id == agent)).count(),
+        before.iter().filter(|record| matches!(record, Record::GoalSet { agent: owner, goal: issued, .. } if *owner == agent && issued.id == goal)).count(),
+        before.iter().filter(|record| matches!(record, Record::TurnIssued { agent: owner, goal: issued, .. } if *owner == agent && *issued == goal)).count(),
+        before.iter().filter(|record| matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent)).count(),
+    );
+    assert_eq!(counts, (1, 1, 1, 0));
+}
+
+fn completed_cut_reply(
+    fixture: &Fixture,
+    request: &Value,
+    head: &str,
+    body: &Value,
+) -> (AgentId, GoalId) {
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    let (agent, goal) = fixture
+        .records()
+        .into_iter()
+        .rev()
+        .find_map(|record| match record {
+            Record::AgentHired {
+                id,
+                browser_onboarding: Some(metadata),
+                ..
+            } => Some((id, metadata.intended_goal.id)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        *body,
+        json!({"attempt_id":request["attempt_id"], "state":"complete", "agent":agent, "goal":goal})
+    );
+    (agent, goal)
+}
+
+fn onboarding_hire_count(records: &[Record]) -> usize {
+    records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record,
+                Record::AgentHired {
+                    browser_onboarding: Some(_),
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -3282,15 +3356,17 @@ fn post_fsync_cuts_replay_one_hire_goal_and_turn() {
             "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
         });
         let (head, body) = post_onboard(addr, &cookie, &csrf, &request);
-        assert!(
-            head.starts_with("HTTP/1.1 503 Service Unavailable"),
-            "{cut:?}: {head}"
-        );
-        assert!(
-            body.is_null(),
-            "{cut:?}: uncertain durability invents no IDs"
-        );
-        let durable = fixture.records();
+        if cut != OnboardingFailurePoint::TurnIssued {
+            assert!(
+                head.starts_with("HTTP/1.1 503 Service Unavailable"),
+                "{cut:?}: {head}"
+            );
+            assert!(
+                body.is_null(),
+                "{cut:?}: uncertain durability invents no IDs"
+            );
+        }
+        let mut durable = fixture.records();
         let (agent, goal) = durable
             .iter()
             .find_map(|record| match record {
@@ -3302,6 +3378,37 @@ fn post_fsync_cuts_replay_one_hire_goal_and_turn() {
                 _ => None,
             })
             .expect("hire fsynced before cut");
+        if cut == OnboardingFailurePoint::TurnIssued {
+            assert!(head.starts_with("HTTP/1.1 200 OK"), "{cut:?}: {head}");
+            assert_eq!(
+                body,
+                json!({"attempt_id":request["attempt_id"], "state":"complete", "agent":agent, "goal":goal})
+            );
+            issued_onboarding_fence(&fixture, &running.handle, agent, goal);
+            durable = fixture.records();
+            let (retry_head, retry) = post_onboard(addr, &cookie, &csrf, &request);
+            assert!(retry_head.starts_with("HTTP/1.1 200 OK"), "{retry_head}");
+            assert_eq!(retry, body);
+            let mut fresh = request.clone();
+            fresh["attempt_id"] = json!(format!("{}E", "A".repeat(42)));
+            let (fresh_head, fresh_body) = post_onboard(addr, &cookie, &csrf, &fresh);
+            assert!(
+                fresh_head.starts_with("HTTP/1.1 503 Service Unavailable"),
+                "{fresh_head}"
+            );
+            assert!(fresh_body.is_null());
+            assert_eq!(
+                fixture.records(),
+                durable,
+                "indexed retry and fresh refusal append nothing"
+            );
+            let shown = snapshot_optional(addr, &cookie, &csrf);
+            assert!(
+                shown
+                    .as_ref()
+                    .is_none_or(|(frame, _)| frame.get("onboarding").is_none())
+            );
+        }
         let counts = |records: &[Record]| {
             (
                 records
@@ -3366,25 +3473,25 @@ fn post_fsync_cuts_replay_one_hire_goal_and_turn() {
         );
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
-        let host = SharedHost::new();
-        let daemon = boot(
-            &settings,
-            seams(
-                host.clone(),
-                Arc::new(ScriptedRunner::default()),
-                Arc::new(TestClock::new()),
-                Witness::default(),
-            ),
-        )
-        .expect("replay durable prefix");
+        let (parts, host) = native_fixture_seams(&fixture, fake_seams());
+        let daemon = boot(&settings, parts).expect("replay durable prefix");
         let addr = daemon.floor_addr().expect("replayed Floor address");
         let mut running = common::start(daemon);
         let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+        if matches!(
+            cut,
+            OnboardingFailurePoint::Goal | OnboardingFailurePoint::TurnIssued
+        ) {
+            issued_goal_turn(&fixture, goal);
+            running.handle.doctor().unwrap();
+        }
         let before_retry = fixture.records();
         let (_, complete) = post_onboard(addr, &cookie, &csrf, &request);
         assert_eq!(complete["state"], "complete", "{cut:?}");
         assert_eq!(complete["agent"], agent.to_string());
         assert_eq!(complete["goal"], goal.to_string());
+        issued_goal_turn(&fixture, goal);
+        running.handle.doctor().unwrap();
         let after_retry = fixture.records();
         assert_eq!(counts(&after_retry).0, 1, "{cut:?}: no rehire");
         assert_eq!(counts(&after_retry).1, 1, "{cut:?}: no second initial goal");
@@ -3404,6 +3511,22 @@ fn post_fsync_cuts_replay_one_hire_goal_and_turn() {
             "{cut:?}: one host spawn after recovery"
         );
         assert_eq!(host.spawned().len(), 1, "{cut:?}: one host launch");
+        if cut == OnboardingFailurePoint::TurnIssued {
+            let turn = nth_turn(&fixture, goal, 0);
+            let task = |records: &[Record]| {
+                records
+                    .iter()
+                    .find_map(|record| match record {
+                        Record::TurnIssued {
+                            turn: seen, task, ..
+                        } if *seen == turn => Some(task.clone()),
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            assert_eq!(task(&after_retry), task(&durable));
+            assert_eq!(managed_turns(&fixture, goal), 1);
+        }
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     }
 }
@@ -3531,8 +3654,10 @@ fn post_fsync_uncertainty_fences_fresh_hires_and_catalog() {
         });
         for last in ["A", "E", "I"] {
             request["attempt_id"] = json!(format!("{}{}", "A".repeat(42), last));
-            let (head, _) = post_onboard(addr, &cookie, &csrf, &request);
+            let (head, complete) = post_onboard(addr, &cookie, &csrf, &request);
             assert!(head.starts_with("HTTP/1.1 200 OK"), "{cut:?}: {head}");
+            let agent = AgentId::parse(complete["agent"].as_str().unwrap()).unwrap();
+            await_continuation_outcome(&fixture, &running.handle, agent);
         }
         let (before, _) = snapshot(addr, &cookie, &csrf);
         assert!(
@@ -3542,33 +3667,29 @@ fn post_fsync_uncertainty_fences_fresh_hires_and_catalog() {
         request["attempt_id"] = json!(format!("{}M", "A".repeat(42)));
         fault.arm(cut);
         let (head, body) = post_onboard(addr, &cookie, &csrf, &request);
-        assert!(
-            head.starts_with("HTTP/1.1 503 Service Unavailable"),
-            "{cut:?}: {head}"
-        );
-        assert!(body.is_null());
-        let count = |records: &[Record]| {
-            records
-                .iter()
-                .filter(|record| {
-                    matches!(
-                        record,
-                        Record::AgentHired {
-                            browser_onboarding: Some(_),
-                            ..
-                        }
-                    )
-                })
-                .count()
-        };
+        if cut == OnboardingFailurePoint::TurnIssued {
+            let (agent, goal) = completed_cut_reply(&fixture, &request, &head, &body);
+            issued_onboarding_fence(&fixture, &running.handle, agent, goal);
+        } else {
+            assert!(
+                head.starts_with("HTTP/1.1 503 Service Unavailable"),
+                "{cut:?}: {head}"
+            );
+            assert!(body.is_null());
+        }
         assert_eq!(
-            count(&fixture.records()),
+            onboarding_hire_count(&fixture.records()),
             4,
             "{cut:?}: the fourth hire is durable"
         );
         let (head, pending) = post_onboard(addr, &cookie, &csrf, &request);
-        assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{cut:?}: {head}");
-        assert_eq!(pending["state"], "pending");
+        if cut == OnboardingFailurePoint::TurnIssued {
+            assert!(head.starts_with("HTTP/1.1 200 OK"), "{cut:?}: {head}");
+            assert_eq!(pending, body);
+        } else {
+            assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{cut:?}: {head}");
+            assert_eq!(pending["state"], "pending");
+        }
         let after = snapshot_optional(addr, &cookie, &csrf);
         assert!(
             after
@@ -3590,7 +3711,7 @@ fn post_fsync_uncertainty_fences_fresh_hires_and_catalog() {
         );
         assert!(again_body.is_null());
         assert_eq!(
-            count(&fixture.records()),
+            onboarding_hire_count(&fixture.records()),
             4,
             "{cut:?}: no fifth durable hire"
         );
@@ -4174,6 +4295,48 @@ fn expected_digest(agent: AgentId, question: Lsn, text: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+fn answer_instruction_lineage(
+    record: &Record,
+    agent: AgentId,
+    turn: TurnId,
+    started: Lsn,
+    spawned: Lsn,
+) {
+    let owner = match record {
+        Record::InstructionObservationStarted { owner, .. } => owner,
+        Record::InstructionObservationFinished {
+            owner, baseline, ..
+        } => {
+            assert_eq!(
+                *baseline,
+                dudes_proto::InstructionBaselineRef::Started { lsn: started }
+            );
+            owner
+        }
+        Record::InstructionAttemptBoundarySettled {
+            owner,
+            started_lsn,
+            proof,
+        } => {
+            assert_eq!(*started_lsn, started);
+            assert_eq!(
+                *proof,
+                dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
+                    receipt: dudes_proto::InstructionNativeBoundaryReceipt::Spawned {
+                        lsn: spawned
+                    },
+                }
+            );
+            owner
+        }
+        _ => return,
+    };
+    assert!(
+        matches!(owner, dudes_proto::InstructionObservationOwner::Managed { agent: seen_agent, turn: seen_turn, .. }
+        if *seen_agent == agent && *seen_turn == turn)
+    );
+}
+
 /// The primary test, stub-backed and read from the replayed journal.
 ///
 /// One attributed `HumanAnswer` — `provenance: None` beside `browser_answer: Some` — then a
@@ -4312,6 +4475,23 @@ fn browser_answer_is_finite_bound_and_observed() {
         &e.record,
         Record::TurnSpawned { turn: t, .. } if *t == turn
     )));
+    let started = after
+        .iter()
+        .find_map(|(lsn, entry)| match &entry.record {
+            Record::InstructionObservationStarted {
+                owner: dudes_proto::InstructionObservationOwner::Managed { turn: seen, .. },
+                ..
+            } if *seen == turn => Some(*lsn),
+            _ => None,
+        })
+        .unwrap();
+    let spawned = after
+        .iter()
+        .find_map(|(lsn, entry)| {
+            matches!(entry.record, Record::TurnSpawned { turn: seen, .. } if seen == turn)
+                .then_some(*lsn)
+        })
+        .unwrap();
 
     let allowed = [
         RecordKind::HumanAnswer,
@@ -4322,6 +4502,9 @@ fn browser_answer_is_finite_bound_and_observed() {
         RecordKind::SessionLearned,
         RecordKind::TurnEnded,
         RecordKind::PredicateResult,
+        RecordKind::InstructionObservationStarted,
+        RecordKind::InstructionObservationFinished,
+        RecordKind::InstructionAttemptBoundarySettled,
     ];
     let goal = records
         .iter()
@@ -4338,11 +4521,17 @@ fn browser_answer_is_finite_bound_and_observed() {
             "{lsn}: {:?} is outside the answer's allowlist",
             entry.record.kind()
         );
+        answer_instruction_lineage(&entry.record, agent, turn, started, spawned);
         let json = serde_json::to_value(&entry.record).expect("record JSON");
-        let named = [&json["agent"], &json["id"], &json["goal"]]
-            .into_iter()
-            .filter_map(Value::as_str)
-            .collect::<Vec<_>>();
+        let named = [
+            &json["agent"],
+            &json["id"],
+            &json["goal"],
+            &json["owner"]["agent"],
+        ]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
         assert!(
             !named.is_empty()
                 && named
@@ -4581,6 +4770,7 @@ fn browser_answer_refuses_wrong_agent_stale_and_locally_answered_questions() {
     let reasked = question_lsn(&fixture, a);
     assert_ne!(reasked, first);
 
+    await_continuation_outcome(&fixture, &running.handle, a);
     let before = fixture.records();
     for (label, body) in [
         (
@@ -4776,6 +4966,7 @@ fn browser_answer_same_key_retry_returns_original_and_changed_payload_conflicts(
     let body = answer_body(&request_id(1), agent, question, "main");
     let (head, original) = post_answer(addr, &cookie, &csrf, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    await_continuation_outcome(&fixture, &running.handle, agent);
     let durable = fixture.records();
 
     let (head, retry) = post_answer(addr, &cookie, &csrf, &body);
@@ -4792,6 +4983,7 @@ fn browser_answer_same_key_retry_returns_original_and_changed_payload_conflicts(
     let daemon = run();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
+    running.handle.doctor().unwrap();
     let settled = fixture.records();
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
     let (head, replayed) = post_answer(addr, &cookie, &csrf, &body);
@@ -5693,6 +5885,81 @@ fn fake_seams() -> Seams<SharedHost, ScriptedRunner, TestClock, FakeRng> {
         Arc::new(TestClock::new()),
         Witness::default(),
     )
+}
+
+fn native_fixture_seams<P: duded::predicate::PredicateRunner, C: dudes_supervisor::Clock>(
+    fixture: &Fixture,
+    mut parts: Seams<SharedHost, P, C, FakeRng>,
+) -> (Seams<SharedHost, P, C, FakeRng>, SharedHost) {
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    host.bind_child_ends(Arc::clone(&parts.children));
+    parts.host = host.clone();
+    (parts, host)
+}
+
+struct NativeTurnFixture<'a> {
+    running: &'a common::Running,
+    fixture: &'a Fixture,
+    host: &'a SharedHost,
+}
+
+impl NativeTurnFixture<'_> {
+    fn complete(&self, turn: TurnId, usage: Option<Usage>) {
+        common::end_turn_with_native_payload(
+            self.fixture,
+            self.host,
+            Input::ChildExited {
+                final_reply: None,
+                elapsed_ms: None,
+                turn,
+                exit: ExitStatus {
+                    code: Some(0),
+                    signal: None,
+                },
+                usage: usage.map(ScopedUsage::Turn),
+                model_usage: std::collections::BTreeMap::new(),
+                outcome: TurnOutcome::Completed,
+                last_message: None,
+            },
+        );
+    }
+}
+
+fn issued_goal_turn(fixture: &Fixture, goal: GoalId) -> TurnId {
+    let turn = nth_turn(fixture, goal, 0);
+    fixture.await_record("the goal's exact native spawn", |record| {
+        matches!(record, Record::TurnSpawned { turn: seen, .. } if *seen == turn).then_some(())
+    });
+    turn
+}
+
+fn await_continuation_outcome(fixture: &Fixture, handle: &duded::Handle, agent: AgentId) -> TurnId {
+    let turn = fixture.await_record(
+        "the prior continuation's actual start",
+        |record| match record {
+            Record::InstructionObservationStarted {
+                owner:
+                    dudes_proto::InstructionObservationOwner::Managed {
+                        agent: owner, turn, ..
+                    },
+                ..
+            } if *owner == agent => Some(*turn),
+            _ => None,
+        },
+    );
+    fixture.await_record(
+        "the prior continuation's actual outcome",
+        |record| match record {
+            Record::TurnSpawned { turn: seen, .. } if *seen == turn => Some(()),
+            Record::InstructionObservationFinished {
+                owner: dudes_proto::InstructionObservationOwner::Managed { turn: seen, .. },
+                ..
+            } if *seen == turn => Some(()),
+            _ => None,
+        },
+    );
+    handle.doctor().unwrap();
+    turn
 }
 
 /// Every record after `lsn`.
@@ -8087,9 +8354,15 @@ fn browser_goal_refuses_absent_halted_stale_and_open_turn() {
 fn browser_goal_chain_never_exceeds_the_first_goal() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let (parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let daemon = boot(&settings, parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
     let agent = common::hire(&running.handle, fixture.state.path());
     running.handle.ask(Ask::Pause(agent)).expect("local pause");
@@ -8114,10 +8387,10 @@ fn browser_goal_chain_never_exceeds_the_first_goal() {
             .handle
             .ask(Ask::Resume(agent))
             .expect("local resume");
+        let turn = issued_goal_turn(&fixture, goal);
         assert_eq!(issued(&fixture), k + 1, "the resume issued one turn");
-        let turn = newest_turn(&fixture, agent);
         running.handle.ask(Ask::Pause(agent)).expect("local pause");
-        end_turn(&running.handle, turn, Some(Usd::from_cents(1)));
+        native.complete(turn, Some(dollars(Usd::from_cents(1))));
         let judged = goal;
         fixture.await_record("the verdict", |record| {
             matches!(record, Record::PredicateResult { goal, .. } if *goal == judged).then_some(())
@@ -8140,6 +8413,31 @@ fn browser_goal_chain_never_exceeds_the_first_goal() {
     assert_eq!(browser_goals(&fixture, agent).len(), 2);
     assert_eq!(issued(&fixture), 3, "the chain issued G1's three turns");
 
+    let (dollars, spent_goal) = spent_dollar_goal(&native);
+    let (head, response) = post_goal(
+        addr,
+        &cookie,
+        &csrf,
+        &goal_body(&request_id(4), dollars, spent_goal, NEW_TEXT),
+    );
+    refused(&head, &response, "goal_exhausted");
+    assert!(browser_goals(&fixture, dollars).is_empty());
+
+    let control_goal = common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &[true_program()]),
+    );
+    running
+        .handle
+        .ask(Ask::Resume(agent))
+        .expect("local resume");
+    issued_goal_turn(&fixture, control_goal);
+    assert_eq!(issued(&fixture), 4, "control: the local goal issued a turn");
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+fn spent_dollar_goal(native: &NativeTurnFixture<'_>) -> (AgentId, GoalId) {
+    let (running, fixture) = (native.running, native.fixture);
     let dollars = common::hire(&running.handle, fixture.state.path());
     running
         .handle
@@ -8153,34 +8451,22 @@ fn browser_goal_chain_never_exceeds_the_first_goal() {
         .handle
         .ask(Ask::Resume(dollars))
         .expect("local resume");
-    let turn = newest_turn(&fixture, dollars);
+    let turn = issued_goal_turn(fixture, spent_goal);
     running
         .handle
         .ask(Ask::Pause(dollars))
         .expect("local pause");
-    end_turn(&running.handle, turn, Some(Usd::from_cents(10)));
+    native.complete(
+        turn,
+        Some(Usage {
+            usd: Some(Usd::from_cents(10)),
+            ..Usage::ZERO
+        }),
+    );
     fixture.await_record("the dollar arm's verdict", |record| {
         matches!(record, Record::PredicateResult { goal, .. } if *goal == spent_goal).then_some(())
     });
-    let (head, response) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
-        &goal_body(&request_id(4), dollars, spent_goal, NEW_TEXT),
-    );
-    refused(&head, &response, "goal_exhausted");
-    assert!(browser_goals(&fixture, dollars).is_empty());
-
-    common::set_goal(
-        &running.handle,
-        common::goal_params(agent, &[true_program()]),
-    );
-    running
-        .handle
-        .ask(Ask::Resume(agent))
-        .expect("local resume");
-    assert_eq!(issued(&fixture), 4, "control: the local goal issued a turn");
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    (dollars, spent_goal)
 }
 
 /// One step of [`GatedRunner`]'s script.
@@ -8306,16 +8592,16 @@ impl VerdictArm {
         let fixture = Fixture::new();
         let settings = goal_settings(&fixture, true);
         let (runner, events) = GatedRunner::new(script);
-        let daemon = boot(
-            &settings,
+        let (parts, native_host) = native_fixture_seams(
+            &fixture,
             seams(
                 SharedHost::new(),
                 Arc::clone(&runner),
                 Arc::new(TestClock::new()),
                 Witness::default(),
             ),
-        )
-        .expect("boot Floor");
+        );
+        let daemon = boot(&settings, parts).expect("boot Floor");
         if spawn_failure {
             daemon.predicate_spawn_failure().arm();
         }
@@ -8327,9 +8613,14 @@ impl VerdictArm {
             &running.handle,
             common::goal_params(agent, &[true_program()]),
         );
-        let turn = newest_turn(&fixture, agent);
+        let turn = issued_goal_turn(&fixture, goal);
         let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        end_turn(&running.handle, turn, Some(Usd::from_cents(1)));
+        NativeTurnFixture {
+            running: &running,
+            fixture: &fixture,
+            host: &native_host,
+        }
+        .complete(turn, Some(dollars(Usd::from_cents(1))));
         fixture.await_record("T1 ended", |record| {
             matches!(record, Record::TurnEnded { turn: ended, .. } if *ended == turn).then_some(())
         });
@@ -8705,24 +8996,28 @@ fn browser_goal_restart_cut_points_replay_one_record() {
     for cut in [Cut::GoalSetFsync, Cut::GoalSetFold, Cut::TurnIssuedFsync] {
         let fixture = Fixture::new();
         let settings = goal_settings(&fixture, true);
-        let host = SharedHost::new();
-        let run = |host: &SharedHost| {
-            boot(
-                &settings,
+        let run = || {
+            let (parts, host) = native_fixture_seams(
+                &fixture,
                 seams(
-                    host.clone(),
+                    SharedHost::new(),
                     Arc::new(ScriptedRunner::scripted([common::passes()])),
                     Arc::new(TestClock::new()),
                     Witness::default(),
                 ),
-            )
-            .expect("boot Floor")
+            );
+            (boot(&settings, parts).expect("boot Floor"), host)
         };
-        let daemon = run(&host);
+        let (daemon, host) = run();
         let failure = daemon.onboarding_failure();
         let append_failure = daemon.append_failure();
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
+        let native = NativeTurnFixture {
+            running: &running,
+            fixture: &fixture,
+            host: &host,
+        };
         let (agent, goal) = if cut == Cut::TurnIssuedFsync {
             // A `Done` agent: the change's own decision issues G2's turn.
             let agent = common::hire(&running.handle, fixture.state.path());
@@ -8730,11 +9025,8 @@ fn browser_goal_restart_cut_points_replay_one_record() {
                 &running.handle,
                 common::goal_params(agent, &[true_program()]),
             );
-            end_turn(
-                &running.handle,
-                newest_turn(&fixture, agent),
-                Some(Usd::from_cents(1)),
-            );
+            let turn = issued_goal_turn(&fixture, goal);
+            native.complete(turn, Some(dollars(Usd::from_cents(1))));
             fixture.await_record("G1 met", |record| {
                 matches!(record, Record::LoopDecided { agent: who, decision: LoopDecision::Done, .. } if *who == agent)
                     .then_some(())
@@ -8767,6 +9059,11 @@ fn browser_goal_restart_cut_points_replay_one_record() {
         } else {
             changed(&head, &response);
         }
+        if cut == Cut::TurnIssuedFsync {
+            let goal = browser_goals(&fixture, agent).last().unwrap().1.id;
+            nth_turn(&fixture, goal, 0);
+            running.handle.doctor().unwrap();
+        }
         assert_eq!(
             host.spawned().len(),
             spawned_before,
@@ -8789,16 +9086,17 @@ fn browser_goal_restart_cut_points_replay_one_record() {
             ),
         }
 
-        let daemon = run(&host);
+        let (daemon, restarted_host) = run();
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
         let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
         if cut == Cut::TurnIssuedFsync {
-            fixture.await_record("G2's re-issued spawn", |record| {
-                matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent)
-                    .then_some(())
-                    .filter(|()| host.spawned().len() > spawned_before)
-            });
+            issued_goal_turn(&fixture, g2_goal.id);
+            assert_eq!(
+                restarted_host.spawned().len(),
+                1,
+                "G2's exact owed turn re-issued once"
+            );
         }
         let (head, response) = post_goal(addr, &cookie, &csrf, &body);
         assert_eq!(changed(&head, &response), g2_goal.id, "{cut:?}");
@@ -8818,7 +9116,7 @@ fn browser_goal_restart_cut_points_replay_one_record() {
         if cut == Cut::TurnIssuedFsync {
             assert_eq!(g2_turns, 1, "{cut:?}: G2's turn re-issued exactly once");
             assert_eq!(
-                host.spawned().len(),
+                host.spawned().len() + restarted_host.spawned().len(),
                 spawned_before + 1,
                 "{cut:?}: one Spawn"
             );
@@ -10213,6 +10511,7 @@ fn enrollment_reload_is_operator_only() {
         _ => None,
     });
     let token = common::token_of(&token_hash);
+    running.handle.doctor().unwrap();
     let sha = rewrite(
         &settings,
         &reload_config(&[("repo_1", &repo_1), ("repo_2", &repo_2)]),
@@ -12988,6 +13287,7 @@ fn rename_is_operator_only_and_refused_local_names_append_nothing() {
         _ => None,
     });
     let token = common::token_of(&hash);
+    running.handle.doctor().unwrap();
     column.set(dudes_proto::PeerProvenance::Agent(agent));
     let before = fixture.records();
     let mut client = Client::connect(settings.socket()).unwrap();
@@ -13440,23 +13740,6 @@ fn expected_renew_digest(agent: AgentId, goal: GoalId, text: &str, shown: Allowa
     hasher.finalize().into()
 }
 
-/// End a fake host's turn as its child would, reporting `usage`.
-fn end_turn_with(handle: &duded::Handle, turn: TurnId, usage: Usage) {
-    handle.input(Input::ChildExited {
-        final_reply: None,
-        elapsed_ms: None,
-        turn,
-        exit: ExitStatus {
-            code: Some(0),
-            signal: None,
-        },
-        usage: Some(ScopedUsage::Turn(usage)),
-        model_usage: std::collections::BTreeMap::new(),
-        outcome: TurnOutcome::Completed,
-        last_message: None,
-    });
-}
-
 fn dollars(usd: Usd) -> Usage {
     Usage {
         usd: Some(usd),
@@ -13480,15 +13763,15 @@ const UNCAPPED: GoalBudget = GoalBudget {
 /// turn that reports `usage`, and wait for that turn's verdict and the decision that follows it. A
 /// pause holds the agent from then on when `paused`.
 fn one_turn(
-    running: &common::Running,
-    fixture: &Fixture,
+    native: &NativeTurnFixture<'_>,
     hire: dudes_proto::rpc::agent::HireParams,
     hop_cap: u32,
     budget: GoalBudget,
     usage: Usage,
     paused: bool,
 ) -> (AgentId, GoalId) {
-    let agent = match running
+    let agent = match native
+        .running
         .handle
         .ask(Ask::Hire(Box::new(hire)))
         .expect("the hire")
@@ -13496,20 +13779,20 @@ fn one_turn(
         Answered::Hired(result) => result.agent,
         other => panic!("agent.hire answered {other:?}"),
     };
-    let goal = run_one_turn(running, fixture, agent, hop_cap, budget, usage, paused);
+    let goal = run_one_turn(native, agent, hop_cap, budget, usage, paused);
     (agent, goal)
 }
 
 /// [`one_turn`] for an agent already on the floor.
 fn run_one_turn(
-    running: &common::Running,
-    fixture: &Fixture,
+    native: &NativeTurnFixture<'_>,
     agent: AgentId,
     hop_cap: u32,
     budget: GoalBudget,
     usage: Usage,
     paused: bool,
 ) -> GoalId {
+    let (running, fixture) = (native.running, native.fixture);
     running.handle.ask(Ask::Pause(agent)).expect("local pause");
     let goal = common::set_goal(
         &running.handle,
@@ -13523,11 +13806,11 @@ fn run_one_turn(
         .handle
         .ask(Ask::Resume(agent))
         .expect("local resume");
-    let turn = newest_turn(fixture, agent);
+    let turn = issued_goal_turn(fixture, goal);
     if paused {
         running.handle.ask(Ask::Pause(agent)).expect("local pause");
     }
-    end_turn_with(&running.handle, turn, usage);
+    native.complete(turn, Some(usage));
     let ended = await_entry(
         fixture,
         "the turn's end",
@@ -13547,15 +13830,13 @@ fn run_one_turn(
 
 /// Hire into `cwd` and spend the one turn of a goal with no ceiling at `usd`: nothing is left.
 fn spent(
-    running: &common::Running,
-    fixture: &Fixture,
+    native: &NativeTurnFixture<'_>,
     cwd: &std::path::Path,
     usd: Usd,
     paused: bool,
 ) -> (AgentId, GoalId) {
     one_turn(
-        running,
-        fixture,
+        native,
         common::hire_params(cwd),
         1,
         UNCAPPED,
@@ -13848,7 +14129,8 @@ fn browser_renew_funds_an_exhausted_goal_from_its_workspace() {
 fn browser_renew_refuses_a_goal_with_anything_left() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let turn_left = common::hire(&running.handle, &repo);
@@ -13868,9 +14150,13 @@ fn browser_renew_refuses_a_goal_with_anything_left() {
         usd: Some(Usd::from_dollars(5)),
         tokens: None,
     };
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
     let (both_left, both_left_goal) = one_turn(
-        &running,
-        &fixture,
+        &native,
         common::hire_params(&repo),
         2,
         five,
@@ -13878,15 +14164,14 @@ fn browser_renew_refuses_a_goal_with_anything_left() {
         true,
     );
     let (spent_turns, spent_turns_goal) = one_turn(
-        &running,
-        &fixture,
+        &native,
         common::hire_params(&repo),
         1,
         five,
         dollars(Usd::from_dollars(1)),
         true,
     );
-    let (control, control_goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+    let (control, control_goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
     for (k, agent, goal) in [
@@ -13941,7 +14226,8 @@ fn browser_renew_with_no_ceilings_is_bounded_by_the_hop_cap() {
         &renew_config(&renew_entry("repo_1", &repo, 3, None, None)),
     );
     settings.floor_usd_per_day = None;
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let uncapped_hire = dudes_proto::rpc::agent::HireParams {
@@ -13951,9 +14237,13 @@ fn browser_renew_with_no_ceilings_is_bounded_by_the_hop_cap() {
         },
         ..common::hire_params(&repo)
     };
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
     let (agent, g1) = one_turn(
-        &running,
-        &fixture,
+        &native,
         uncapped_hire,
         1,
         UNCAPPED,
@@ -13970,7 +14260,7 @@ fn browser_renew_with_no_ceilings_is_bounded_by_the_hop_cap() {
     let g2 = renewed(&head, &response);
     for n in 0..3 {
         let turn = nth_turn(&fixture, g2, n);
-        end_turn_with(&running.handle, turn, dollars(Usd::from_dollars(1)));
+        native.complete(turn, Some(dollars(Usd::from_dollars(1))));
         let ended = await_entry(
             &fixture,
             "the turn's end",
@@ -14002,12 +14292,17 @@ fn browser_renew_goal_token_ceiling_binds_the_renewed_goal() {
         &fixture,
         &renew_config(&renew_entry("repo_1", &repo, 3, None, Some(1_000))),
     );
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
     let (agent, g1) = one_turn(
-        &running,
-        &fixture,
+        &native,
         common::hire_params(&repo),
         1,
         UNCAPPED,
@@ -14034,7 +14329,7 @@ fn browser_renew_goal_token_ceiling_binds_the_renewed_goal() {
         Record::TurnIssued { goal, turn, .. } if *goal == g2 => Some(*turn),
         _ => None,
     });
-    end_turn_with(&running.handle, turn, work_tokens(1_000));
+    native.complete(turn, Some(work_tokens(1_000)));
     let c = renewals(&fixture, agent)[0].0;
     await_entry(&fixture, "G2 exhausted", |lsn, record| {
         lsn > c
@@ -14096,19 +14391,24 @@ fn renewal_waits_for_the_next_day(
     reason: dudes_proto::ExhaustedReason,
 ) {
     let clock = Arc::new(TestClock::new());
-    let daemon = boot(
-        settings,
+    let (native_parts, native_host) = native_fixture_seams(
+        fixture,
         seams(
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
             Witness::default(),
         ),
-    )
-    .expect("boot Floor");
+    );
+    let daemon = boot(settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (agent, g1) = one_turn(&running, fixture, hire, 1, UNCAPPED, spend, false);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture,
+        host: &native_host,
+    };
+    let (agent, g1) = one_turn(&native, hire, 1, UNCAPPED, spend, false);
     assert_eq!(
         decisions_after(fixture, agent, Lsn::ZERO).last(),
         Some(&exhausted(reason)),
@@ -14241,7 +14541,8 @@ fn browser_renew_refuses_under_the_billing_guard() {
         ]),
         ..fake_seams()
     };
-    let mut running = common::start(boot(&settings, codex_seams()).expect("boot without a key"));
+    let (native_parts, native_host) = native_fixture_seams(&fixture, codex_seams());
+    let mut running = common::start(boot(&settings, native_parts).expect("boot without a key"));
     let hire = dudes_proto::rpc::agent::HireParams {
         provider: Provider::Codex,
         budget: AgentBudget {
@@ -14250,9 +14551,13 @@ fn browser_renew_refuses_under_the_billing_guard() {
         },
         ..common::hire_params(&repo)
     };
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
     let (agent, g1) = one_turn(
-        &running,
-        &fixture,
+        &native,
         hire,
         1,
         GoalBudget {
@@ -14373,33 +14678,31 @@ fn browser_renew_refuses_unenrolled_moved_and_changed_workspaces() {
     for _ in 0..64 {
         let _ = dudes_supervisor::Rng::ulid(&mut rng);
     }
-    let daemon = boot(
-        &settings,
+    let (native_parts, native_host) = native_fixture_seams(
+        &fixture,
         Seams {
             rng,
             ..fake_seams()
         },
-    )
-    .expect("boot Floor");
+    );
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
     let leased_goal = run_one_turn(
-        &running,
-        &fixture,
+        &native,
         leased,
         1,
         UNCAPPED,
         dollars(Usd::from_cents(1)),
         true,
     );
-    let (unenrolled, unenrolled_goal) = spent(
-        &running,
-        &fixture,
-        &unenrolled_dir,
-        Usd::from_cents(1),
-        true,
-    );
-    let (agent, goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+    let (unenrolled, unenrolled_goal) = spent(&native, &unenrolled_dir, Usd::from_cents(1), true);
+    let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
     let mut k = 0;
     let mut renew = |agent, goal, shown| {
@@ -14457,8 +14760,8 @@ fn browser_renew_refuses_unenrolled_moved_and_changed_workspaces() {
 fn browser_renew_restarts_a_done_goal_at_its_cap() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let daemon = boot(
-        &settings,
+    let (native_parts, native_host) = native_fixture_seams(
+        &fixture,
         seams(
             SharedHost::new(),
             Arc::new(ScriptedRunner::scripted([
@@ -14468,11 +14771,16 @@ fn browser_renew_restarts_a_done_goal_at_its_cap() {
             Arc::new(TestClock::new()),
             Witness::default(),
         ),
-    )
-    .expect("boot Floor");
+    );
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (agent, g1) = spent(&running, &fixture, &repo, Usd::from_cents(1), false);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
+    let (agent, g1) = spent(&native, &repo, Usd::from_cents(1), false);
     assert_eq!(
         decisions_after(&fixture, agent, Lsn::ZERO).last(),
         Some(&LoopDecision::Done),
@@ -14515,33 +14823,36 @@ fn browser_renew_restart_cut_points_replay_one_record() {
     for cut in [Cut::GoalSetFsync, Cut::GoalSetFold, Cut::TurnIssuedFsync] {
         let fixture = Fixture::new();
         let (settings, repo) = renew_workspace(&fixture);
-        let host = SharedHost::new();
-        let run = |host: &SharedHost| {
-            boot(
-                &settings,
+        let run = || {
+            let (parts, host) = native_fixture_seams(
+                &fixture,
                 seams(
-                    host.clone(),
+                    SharedHost::new(),
                     Arc::new(ScriptedRunner::default()),
                     Arc::new(TestClock::new()),
                     Witness::default(),
                 ),
-            )
-            .expect("boot Floor")
+            );
+            (boot(&settings, parts).expect("boot Floor"), host)
         };
-        let daemon = run(&host);
+        let (daemon, host) = run();
         let failure = daemon.onboarding_failure();
         let append_failure = daemon.append_failure();
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
+        let native = NativeTurnFixture {
+            running: &running,
+            fixture: &fixture,
+            host: &host,
+        };
         // Unpaused, the renewal's own decision issues G2's turn; paused, it is a Hold.
         let (agent, goal) = spent(
-            &running,
-            &fixture,
+            &native,
             &repo,
             Usd::from_cents(1),
             cut != Cut::TurnIssuedFsync,
         );
-        let (other, other_goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+        let (other, other_goal) = spent(&native, &repo, Usd::from_cents(1), true);
         let spawned_before = host.spawned().len();
         let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
         let body = renew_body(&request_id(1), agent, goal, SHOWN);
@@ -14565,6 +14876,11 @@ fn browser_renew_restart_cut_points_replay_one_record() {
         } else {
             renewed(&head, &response);
         }
+        if cut == Cut::TurnIssuedFsync {
+            let goal = renewals(&fixture, agent).last().unwrap().1.id;
+            nth_turn(&fixture, goal, 0);
+            running.handle.doctor().unwrap();
+        }
         assert_eq!(
             host.spawned().len(),
             spawned_before,
@@ -14586,16 +14902,17 @@ fn browser_renew_restart_cut_points_replay_one_record() {
             ),
         }
 
-        let daemon = run(&host);
+        let (daemon, restarted_host) = run();
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
         let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
         if cut == Cut::TurnIssuedFsync {
-            fixture.await_record("G2's re-issued spawn", |record| {
-                matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent)
-                    .then_some(())
-                    .filter(|()| host.spawned().len() > spawned_before)
-            });
+            issued_goal_turn(&fixture, g2_goal.id);
+            assert_eq!(
+                restarted_host.spawned().len(),
+                1,
+                "G2's exact owed turn re-issued once"
+            );
         }
         let (head, response) = post_renew(addr, &cookie, &csrf, &body);
         assert_eq!(renewed(&head, &response), g2_goal.id, "{cut:?}");
@@ -14612,7 +14929,7 @@ fn browser_renew_restart_cut_points_replay_one_record() {
                 "{cut:?}: G2's turn re-issued exactly once"
             );
             assert_eq!(
-                host.spawned().len(),
+                host.spawned().len() + restarted_host.spawned().len(),
                 spawned_before + 1,
                 "{cut:?}: one Spawn"
             );
@@ -14636,19 +14953,24 @@ fn browser_renew_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
     let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
-    let daemon = boot(
-        &settings,
+    let (native_parts, native_host) = native_fixture_seams(
+        &fixture,
         seams(
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
             Witness::default(),
         ),
-    )
-    .expect("boot Floor");
+    );
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (agent, goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
+    let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
     let body = serde_json::to_vec(&renew_body(&request_id(1), agent, goal, SHOWN)).unwrap();
     let host = addr.to_string();
@@ -14731,23 +15053,33 @@ fn browser_renew_refuses_absent_halted_stale_and_open_turn() {
     let program = true_program();
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let host = common::UnconfirmedHost::new(true);
-    let daemon = boot(
-        &settings,
-        seams(
-            host.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot Floor");
+    let host = common::UnconfirmedHost::with_native_evidence(true, fixture.journal_dir());
+    let native_host = host.shared();
+    let native_parts = seams(
+        host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    native_host.bind_child_ends(Arc::clone(&native_parts.children));
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
 
     // The first launch is left unconfirmed, so its turn stays issued and never spawned.
     let issued = common::hire(&running.handle, &repo);
     let issued_goal = common::set_goal(&running.handle, common::goal_params(issued, &[program]));
+    let issued_turn = nth_turn(&fixture, issued_goal, 0);
+    fixture.await_record("the first turn's actual unconfirmed cleanup", |record| {
+        matches!(record, Record::InstructionObservationFinished {
+            owner: dudes_proto::InstructionObservationOwner::Managed { agent, turn, .. },
+            settlement: dudes_proto::InstructionSettlement::Unknown {
+                reason: dudes_proto::InstructionUnknownReason::CleanupUnconfirmed,
+                end: None, sampled_at: None, recovery: false, ..
+            }, ..
+        } if *agent == issued && *turn == issued_turn)
+        .then_some(())
+    });
     let spawned = common::hire(&running.handle, &repo);
     let spawned_goal = common::set_goal(&running.handle, common::goal_params(spawned, &[program]));
     fixture.await_record("the spawned turn", |record| {
@@ -14768,7 +15100,12 @@ fn browser_renew_refuses_absent_halted_stale_and_open_turn() {
     let (stale, older) = paused_with_goal(&running, &fixture);
     let newer = common::set_goal(&running.handle, common::goal_params(stale, &[program]));
     let goalless = common::hire(&running.handle, fixture.state.path());
-    let (control, control_goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
+    let (control, control_goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let unknown = AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("an agent id");
 
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -14822,10 +15159,16 @@ fn browser_renew_refuses_absent_halted_stale_and_open_turn() {
 fn browser_renew_same_key_retry_returns_original_and_other_payloads_conflict() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (agent, goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
+    let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (changing, changing_goal) = paused_with_goal(&running, &fixture);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
     let body = renew_body(&request_id(1), agent, goal, SHOWN);
@@ -14903,12 +15246,18 @@ fn browser_renew_same_key_retry_returns_original_and_other_payloads_conflict() {
 fn browser_renew_concurrent_same_key_is_pending_and_two_keys_yield_one_record() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let pause = daemon.onboarding_pause();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (agent, goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
-    let (second, second_goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
+    let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
+    let (second, second_goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
     let body = renew_body(&request_id(1), agent, goal, SHOWN);
 
@@ -14964,12 +15313,18 @@ fn browser_renew_concurrent_same_key_is_pending_and_two_keys_yield_one_record() 
 fn browser_renew_local_winner_is_never_overwritten() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let append_failure = daemon.append_failure();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (moved, seen) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
-    let (crashed, crashed_goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
+    let (moved, seen) = spent(&native, &repo, Usd::from_cents(1), true);
+    let (crashed, crashed_goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
 
     let local = common::set_goal(
@@ -15011,12 +15366,18 @@ fn browser_renew_local_winner_is_never_overwritten() {
 fn browser_renew_revocation_before_the_permit_is_forbidden() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let pause = daemon.onboarding_pause();
     let authorizer = daemon.floor_session_authorizer().expect("Floor sessions");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (agent, goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
+    let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
     let body = renew_body(&request_id(1), agent, goal, SHOWN);
     let before = fixture.records();
@@ -15099,8 +15460,8 @@ fn browser_renew_expiry_waiting_on_registry_lock_is_forbidden() {
         inner: TestClock::ticking(1_800_000_000_000, 0),
         armed: Mutex::new(None),
     });
-    let daemon = boot(
-        &settings,
+    let (native_parts, native_host) = native_fixture_seams(
+        &fixture,
         Seams {
             host: SharedHost::new(),
             pty_host: Box::new(duded::ports::ClosedPtyHost),
@@ -15114,13 +15475,18 @@ fn browser_renew_expiry_waiting_on_registry_lock_is_forbidden() {
             children: ChildEnds::new(),
             witness: Witness::default(),
         },
-    )
-    .expect("boot Floor");
+    );
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let pause = daemon.onboarding_pause();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (a, a_goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
-    let (b, b_goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
+    let (a, a_goal) = spent(&native, &repo, Usd::from_cents(1), true);
+    let (b, b_goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (a_cookie, a_csrf) = exchange(addr, &issue(&settings).bootstrap);
     let (b_cookie, b_csrf) = exchange(addr, &issue(&settings).bootstrap);
 
@@ -15176,12 +15542,18 @@ fn browser_renew_expiry_waiting_on_registry_lock_is_forbidden() {
 fn browser_renew_uncertain_local_write_fences_fresh_requests_and_serves_durable_retries() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let failure = daemon.onboarding_failure();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (first, first_goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
-    let (second, second_goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
+    let (first, first_goal) = spent(&native, &repo, Usd::from_cents(1), true);
+    let (second, second_goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
     let durable = renew_body(&request_id(1), first, first_goal, SHOWN);
     let (head, original) = post_renew(addr, &cookie, &csrf, &durable);
@@ -15234,10 +15606,16 @@ fn browser_renew_uncertain_local_write_fences_fresh_requests_and_serves_durable_
 fn browser_renew_bounds_and_json_shape_refuse_before_effect() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (agent, goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
+    let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
     let id = request_id(1);
     let alias = agent.to_string().replacen('0', "O", 1);
@@ -15394,8 +15772,14 @@ fn browser_renew_bounds_and_json_shape_refuse_before_effect() {
 fn browser_renew_on_attached_agent_writes_no_pty() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let mut running = common::start(boot(&settings, fake_seams()).expect("boot the setup run"));
-    let (agent, goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let mut running = common::start(boot(&settings, native_parts).expect("boot the setup run"));
+    let native = NativeTurnFixture {
+        running: &running,
+        fixture: &fixture,
+        host: &native_host,
+    };
+    let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     seed(
         &fixture,
@@ -15459,10 +15843,16 @@ fn browser_renew_is_absent_when_not_enabled() {
                 renew: false,
             };
         }
-        let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+        let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+        let daemon = boot(&settings, native_parts).expect("boot Floor");
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
-        let (agent, goal) = spent(&running, &fixture, &repo, Usd::from_cents(1), true);
+        let native = NativeTurnFixture {
+            running: &running,
+            fixture: &fixture,
+            host: &native_host,
+        };
+        let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
         let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
         let (view, _) = snapshot(addr, &cookie, &csrf);
         assert_eq!(
@@ -16506,6 +16896,7 @@ fn browser_onboarded_hires_allow_mcp_read_and_noop_but_refuse_changed_sets() {
             _ => None,
         })
         .expect("the recorded browser origin");
+    await_continuation_outcome(&fixture, &running.handle, agent);
     let before = fixture.records();
     for names in [None, Some(Vec::new())] {
         let Answered::Mcp(result) = running

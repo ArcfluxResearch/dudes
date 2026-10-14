@@ -177,6 +177,13 @@ fn activity_after_one_pre_tool(floor: Option<&std::path::Path>) -> Vec<LiveActiv
         goal_params(agent, &[common::true_program()]),
     );
     let token = minted_token(&fixture, agent);
+    fixture.await_record("the hook subject's actual managed spawn", |record| {
+        matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent).then_some(())
+    });
+    running
+        .handle
+        .doctor()
+        .expect("finish the hook subject's setup pump");
     resolver.set(PeerProvenance::Agent(agent));
     let response = LocalClient::connect(&socket)
         .expect("connect the hook peer")

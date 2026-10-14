@@ -14,6 +14,8 @@
 //! platform with no reboot, no foreign journal and no broken `/proc`.
 
 use std::io;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use dudes_proto::Entry;
 use dudes_proto::rpc::hook::HookToken;
@@ -63,10 +65,9 @@ impl std::error::Error for ContainmentUnproven {}
 ///
 /// A key is also compared against **another key**, which is a different question — are these two
 /// recordings of the same process? — needing no host state, so it is answered field by field.
-/// `dudes-host`'s `names_the_owned_child` is the one such site: it picks which of a host's own
-/// unreaped children a kill meant. The missing derive is what keeps even that from being written
-/// `a == b`, because it too must read presence before value or it reintroduces the same false
-/// `Gone` along the boot axis.
+/// The host's selection sites pick which retained attempt a recorded key names. The missing derive
+/// keeps even that comparison from being written `a == b`: selection must also compare boot
+/// presence before value.
 #[derive(Clone, Debug)]
 pub struct AdoptionKey {
     /// The child's pid.
@@ -224,6 +225,123 @@ pub enum SpawnResult {
     },
 }
 
+/// The maximum number of retained ownership rows a single host query inspects.
+pub const MAX_OWNED_TARGET_QUERY_ROWS: usize = 512;
+
+/// Current process evidence for one retained ownership row.
+///
+/// Leader absence alone never establishes native-boundary absence. These answers describe the
+/// current query, not whether a process ran earlier in the turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OwnedTargetState {
+    /// The native target is present and the retained leader identity still validates.
+    Present,
+    /// The leader was successfully reaped and a fresh query finds the recorded group or job empty.
+    ///
+    /// This covers only the acquired native boundary. Processes that escaped or were created
+    /// outside it remain outside this evidence.
+    NativeBoundaryAbsent,
+    /// The acquired boundary or its query cannot establish group or job absence.
+    UnknownIncompleteCoverage,
+    /// The leader's successful reap has not been established.
+    UnknownReapUnconfirmed,
+    /// A checked target query failed.
+    UnknownQueryFailed,
+    /// A present native target cannot be associated with the retained leader identity.
+    UnknownIdentity,
+    /// The indexed attempt no longer has its original retained host capability.
+    UnknownMissingCapability,
+}
+
+/// An opaque receipt bound to one host-local spawn attempt.
+///
+/// Cloning preserves identity. A fresh receipt has a distinct identity even for an equal adoption
+/// key. It is never serialized or recovered across daemon runs.
+#[derive(Clone)]
+pub struct NativeBoundaryReceipt(Arc<()>);
+
+impl NativeBoundaryReceipt {
+    /// Create a distinct attempt identity for a host implementation.
+    #[must_use]
+    pub fn fresh() -> Self {
+        Self(Arc::new(()))
+    }
+}
+
+impl PartialEq for NativeBoundaryReceipt {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for NativeBoundaryReceipt {}
+
+impl std::fmt::Debug for NativeBoundaryReceipt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NativeBoundaryReceipt { .. }")
+    }
+}
+
+/// Whether exact acknowledged absence could retire current query bookkeeping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NativeBoundaryAcknowledgement {
+    /// The observed receipt retired only its matching current query entry.
+    Acknowledged,
+    /// No scoped absence was observed for this entry.
+    RefusedUnobserved,
+    /// The key or receipt does not select the current retained attempt.
+    UnknownIdentity,
+    /// The matching retained process capability is unavailable.
+    UnknownMissingCapability,
+    /// This host does not support absence acknowledgement.
+    UnknownUnsupported,
+}
+
+/// One retained ownership row and the launch metadata needed to associate it with runtime work.
+#[derive(Clone, Debug)]
+pub struct OwnedTargetEvidence {
+    /// The exact key acquired at spawn, including boot presence, or none after a failed key read.
+    pub key: Option<AdoptionKey>,
+    /// The exact execution folder passed to the host at launch.
+    ///
+    /// A folder shared by multiple attempts cannot identify an exclusive writer or one attempt.
+    pub cwd: PathBuf,
+    /// What this query establishes about the retained target now.
+    pub state: OwnedTargetState,
+    /// An authentic acknowledgement receipt for a keyed scoped absence observed by this query.
+    ///
+    /// None for an unkeyed attempt or when this query did not establish native-boundary absence.
+    pub native_absence_receipt: Option<NativeBoundaryReceipt>,
+}
+
+/// Whether a query enumerated every current, unacknowledged native target entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OwnedTargetsStatus {
+    /// Every current entry was inspected. Individual rows may still have unknown target state.
+    Complete,
+    /// The query stopped at its row bound.
+    Truncated {
+        /// The number of current entries that were not inspected.
+        omitted: usize,
+    },
+    /// This host does not implement retained native-boundary queries.
+    UnknownUnsupported,
+}
+
+/// A bounded snapshot of this host's current native target query entries.
+///
+/// An empty complete snapshot says nothing about children owned by a previous daemon run.
+#[derive(Clone, Debug)]
+pub struct OwnedTargets {
+    /// Inspected entries in the host's stable query order.
+    pub targets: Vec<OwnedTargetEvidence>,
+    /// Whether every current query entry was inspected.
+    pub status: OwnedTargetsStatus,
+}
+
 /// The process side of the runtime, as the supervisor's effects describe it.
 ///
 /// Three of the four methods are executed by the runtime in response to an
@@ -283,6 +401,33 @@ pub trait ProcessHost {
 
     /// Read the process table and apply [`liveness()`] against the host's own boot identity.
     fn alive(&self, key: &AdoptionKey) -> Liveness;
+
+    /// Inspect at most `limit` current native target entries, capped at
+    /// [`MAX_OWNED_TARGET_QUERY_ROWS`], without signalling, waiting, or releasing ownership.
+    ///
+    /// This includes rows whose leader or stream ended and failed spawns without an adoption key.
+    /// The default explicitly reports unsupported evidence. An implementation must not infer
+    /// native-boundary absence from [`Self::alive`] returning [`Liveness::Gone`].
+    fn owned_targets(&self, limit: usize) -> OwnedTargets {
+        let _ = limit;
+        OwnedTargets {
+            targets: Vec::new(),
+            status: OwnedTargetsStatus::UnknownUnsupported,
+        }
+    }
+
+    /// Acknowledge exact scoped absence only after its boundary settlement was durably folded.
+    ///
+    /// This retires current query bookkeeping only. Retained shutdown ownership and capabilities
+    /// remain untouched. The receipt must still name the exact retained attempt and its observed
+    /// native-boundary absence. Unkeyed attempts cannot be cleared by a shared execution folder.
+    fn acknowledge_native_boundary_absence(
+        &mut self,
+        _key: &AdoptionKey,
+        _receipt: &NativeBoundaryReceipt,
+    ) -> NativeBoundaryAcknowledgement {
+        NativeBoundaryAcknowledgement::UnknownUnsupported
+    }
 
     /// The boot identity this run stamps spawns with, or the reason it has none.
     ///
@@ -551,6 +696,55 @@ pub type Persisted = (Entry, dudes_types::Lsn);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_without_owned_target_support_reports_unknown() {
+        struct LeaderOnlyHost;
+
+        impl ProcessHost for LeaderOnlyHost {
+            fn spawn(&mut self, _spec: &LaunchSpec, _install: &ManagedInstall) -> SpawnResult {
+                panic!("this check performs no spawn");
+            }
+
+            fn kill(&mut self, _key: &AdoptionKey) -> KillOutcome {
+                panic!("this check performs no kill");
+            }
+
+            fn alive(&self, _key: &AdoptionKey) -> Liveness {
+                Liveness::Gone
+            }
+
+            fn boot_identity(&self) -> HostBoot {
+                HostBoot::NotApplicable
+            }
+
+            fn shutdown(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut host = LeaderOnlyHost;
+        let key = AdoptionKey {
+            pid: 100,
+            start_time: 200,
+            boot: None,
+        };
+        assert_eq!(host.alive(&key), Liveness::Gone);
+        let answer = host.owned_targets(1);
+        assert_eq!(answer.status, OwnedTargetsStatus::UnknownUnsupported);
+        assert!(answer.targets.is_empty());
+        assert_eq!(
+            host.acknowledge_native_boundary_absence(&key, &NativeBoundaryReceipt::fresh()),
+            NativeBoundaryAcknowledgement::UnknownUnsupported
+        );
+    }
+
+    #[test]
+    fn native_receipts_preserve_clone_identity_and_distinguish_fresh_attempts() {
+        let receipt = NativeBoundaryReceipt::fresh();
+        assert_eq!(receipt, receipt.clone());
+        assert_ne!(receipt, NativeBoundaryReceipt::fresh());
+    }
 
     fn mail_digest(
         input: &dudes_policy::MailWakeInput,

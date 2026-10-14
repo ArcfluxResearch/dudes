@@ -28,7 +28,7 @@ use dudes_providers::launch::LaunchSpec;
 use dudes_providers::registry::Adapters;
 use dudes_rpc::Client;
 use dudes_supervisor::testing::FakeRng;
-use dudes_types::{AgentId, Provider, WorktreeId};
+use dudes_types::{AgentId, IsolationMode, Provider, WorktreeId};
 
 mod common;
 
@@ -291,6 +291,51 @@ fn a_worktree_hire_journals_the_lease_before_the_agent_and_works_in_its_own_tree
         "one\n",
         "nor in the repository"
     );
+}
+
+#[test]
+fn inherit_uses_the_owned_lease_folder_when_a_peer_is_live_in_the_origin() {
+    let fixture = Fixture::new();
+    let git = git(&fixture);
+    let origin = repo(&fixture, &git);
+    let (mut running, settings, host) = daemon(&fixture, claude());
+    let mut client = connect(&settings);
+    let peer = hire(&settings, &mut client, &common::hire_params(&origin))
+        .unwrap()
+        .agent;
+    common::set_goal(
+        &running.handle,
+        common::goal_params(peer, &["/usr/bin/false"]),
+    );
+    fixture.await_record("the live origin peer", |record| match record {
+        Record::TurnSpawned { agent, .. } if *agent == peer => Some(()),
+        _ => None,
+    });
+    let mut request = worktree_params(&origin);
+    request.name = "Worktree candidate".to_owned();
+    request.isolation = Some(IsolationMode::Inherit);
+    let candidate = hire(&settings, &mut client, &request)
+        .expect("inherit in the owned lease is admitted")
+        .agent;
+    let tree = hired(&fixture, candidate);
+    assert_ne!(
+        tree.cwd.canonicalize().unwrap(),
+        origin.canonicalize().unwrap()
+    );
+    assert!(tree.cwd.join(".git").is_file());
+    common::set_goal(
+        &running.handle,
+        common::goal_params(candidate, &["/usr/bin/false"]),
+    );
+    fixture.await_record("candidate child in its lease", |record| match record {
+        Record::TurnSpawned { agent, .. } if *agent == candidate => Some(()),
+        _ => None,
+    });
+    assert_eq!(host.spawned().len(), 2);
+    assert_eq!(host.spawned()[1].cwd, tree.cwd);
+    assert!(fixture.records().iter().all(|record| !matches!(record,
+        Record::AgentHeld { agent, cause: AutomaticHold::LaunchRefused { .. }, .. } if *agent == candidate)));
+    running.stop(ExitCause::ShutdownRpc);
 }
 
 #[test]

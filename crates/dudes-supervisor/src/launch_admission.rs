@@ -1,10 +1,13 @@
-//! Typed refusals before an owned provider process is created.
-
 use dudes_types::AgentId;
 
-/// Why current owned-process evidence cannot admit a shared-folder Claude inherit launch.
+/// Why owned-process evidence cannot admit a provider launch or shared-folder Claude inherit hire.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SharedFolderRefusal {
+    /// This agent still has an earlier physical target or launch uncertainty without durable absence.
+    PriorAttemptUnresolved {
+        /// The agent whose earlier attempt remains unresolved.
+        agent: AgentId,
+    },
     /// A full owned key currently identifies a live peer in the same canonical folder.
     LivePeer {
         /// Owning peer.
@@ -33,6 +36,8 @@ pub enum SharedFolderRefusal {
 impl std::fmt::Display for SharedFolderRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::PriorAttemptUnresolved { agent } => write!(f,
+                "An earlier owned attempt of agent {agent} has unresolved native liveness; wait for confirmed absence or use another agent in a worktree"),
             Self::LivePeer { agent, name } => write!(f,
                 "Claude inherit is refused while {name} ({agent}) is live in the same folder; use a worktree"),
             Self::CandidateFolderUnresolved => f.write_str(

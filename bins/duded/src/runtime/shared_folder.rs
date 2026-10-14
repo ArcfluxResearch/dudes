@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use dudes_supervisor::host::{OwnedTargetState, OwnedTargets, OwnedTargetsStatus};
 use dudes_supervisor::{
     AdoptionKey, Clock, Liveness, ProcessHost, Rng, SharedFolderRefusal, Supervisor,
 };
@@ -76,6 +77,55 @@ impl<H: ProcessHost> Census<'_, H> {
         }
     }
 
+    fn native_child(&mut self, agent: AgentId, cwd: &Path, state: OwnedTargetState) {
+        if Some(agent) == self.candidate || state == OwnedTargetState::NativeBoundaryAbsent {
+            return;
+        }
+        let Some(folder) = canonical_folder(cwd) else {
+            self.unknown
+                .get_or_insert(SharedFolderRefusal::PeerFolderUnresolved { agent });
+            return;
+        };
+        if folder != self.folder {
+            return;
+        }
+        if state != OwnedTargetState::Present {
+            self.unknown
+                .get_or_insert(SharedFolderRefusal::PeerLivenessUnknown { agent });
+            return;
+        }
+        let Some(row) = self.world.agents.get(&agent) else {
+            self.unknown
+                .get_or_insert(SharedFolderRefusal::ChildOwnerUnresolved);
+            return;
+        };
+        if self
+            .conflict
+            .as_ref()
+            .is_none_or(|(other, _)| agent < *other)
+        {
+            let name = dudes_types::DisplayName::parse(&row.name).map_or_else(
+                |_| "agent".to_owned(),
+                dudes_types::DisplayName::into_string,
+            );
+            self.conflict = Some((agent, name));
+        }
+    }
+
+    fn attempt_uncertain(&mut self, agent: AgentId, cwd: Option<&Path>) {
+        match cwd.and_then(canonical_folder) {
+            Some(folder) if folder != self.folder => {}
+            Some(_) => {
+                self.unknown
+                    .get_or_insert(SharedFolderRefusal::PeerLivenessUnknown { agent });
+            }
+            None => {
+                self.unknown
+                    .get_or_insert(SharedFolderRefusal::PeerFolderUnresolved { agent });
+            }
+        }
+    }
+
     fn owner_folder(&self, agent: AgentId) -> Option<&Path> {
         let row = self.world.agents.get(&agent)?;
         match row.worktree {
@@ -97,6 +147,95 @@ impl<H: ProcessHost> Census<'_, H> {
             return;
         };
         self.child(agent, &cwd, key);
+    }
+
+    fn recorded_native_targets(
+        &mut self,
+        targets: &OwnedTargets,
+        keys: &mut Vec<AdoptionKey>,
+        turns: &mut BTreeSet<dudes_types::TurnId>,
+    ) -> Result<(), SharedFolderRefusal> {
+        let world = self.world;
+        for (_, spawn) in world.managed_native_spawn_receipts() {
+            if self.room().is_err() {
+                return Err(SharedFolderRefusal::ChildLimit);
+            }
+            let dudes_proto::InstructionObservationOwner::Managed {
+                agent: owner, turn, ..
+            } = spawn.owner
+            else {
+                continue;
+            };
+            turns.insert(turn);
+            keys.push(spawn.key.clone());
+            let mut matching = targets.targets.iter().filter(|target| {
+                target
+                    .key
+                    .as_ref()
+                    .is_some_and(|key| super::native_boundaries::same_key(key, &spawn.key))
+            });
+            let target = matching.next();
+            let mut state = if matching.next().is_some() {
+                OwnedTargetState::UnknownIdentity
+            } else {
+                target.map_or(OwnedTargetState::UnknownMissingCapability, |target| {
+                    target.state
+                })
+            };
+            if state != OwnedTargetState::NativeBoundaryAbsent
+                && self.host.alive(&spawn.key) == Liveness::Alive
+            {
+                state = OwnedTargetState::Present;
+            }
+            let cwd = target
+                .map(|target| target.cwd.as_path())
+                .or_else(|| self.owner_folder(owner))
+                .map(Path::to_path_buf);
+            match cwd {
+                Some(cwd) => self.native_child(owner, &cwd, state),
+                None => {
+                    self.unknown
+                        .get_or_insert(SharedFolderRefusal::ChildOwnerUnresolved);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn recorded_attempts(
+        &mut self,
+        live_ptys: &std::collections::BTreeMap<AgentId, dudes_proto::rpc::pty::PtyId>,
+    ) -> Result<(), SharedFolderRefusal> {
+        let world = self.world;
+        for owner in world.instructions.unresolved_owners() {
+            for (_, attempt) in world.instructions.unresolved_launch_attempts(owner) {
+                if self.room().is_err() {
+                    return Err(SharedFolderRefusal::ChildLimit);
+                }
+                let current_before_host = Some(owner) == self.candidate
+                    && attempt.finished.is_none()
+                    && attempt.spawn_lsn.is_none()
+                    && match attempt.owner {
+                        dudes_proto::InstructionObservationOwner::Managed { turn, .. } => world
+                            .agents
+                            .get(&owner)
+                            .is_some_and(|row| row.open_turn == Some(turn)),
+                        dudes_proto::InstructionObservationOwner::AttachedProcess { .. } => {
+                            !live_ptys.contains_key(&owner)
+                        }
+                        dudes_proto::InstructionObservationOwner::AttachedTurn { .. } => false,
+                    };
+                if !current_before_host {
+                    let folder = attempt
+                        .snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.execution_folder.as_ref())
+                        .and_then(|path| path.to_path().ok());
+                    self.attempt_uncertain(owner, folder.as_deref());
+                }
+            }
+        }
+        Ok(())
     }
 
     fn result(self) -> Result<(), SharedFolderRefusal> {
@@ -140,11 +279,73 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             conflict: None,
             unknown: None,
         };
-        let mut turns = BTreeSet::new();
+        let targets = self.host.owned_targets(MAX_CHILDREN);
+        if matches!(targets.status, OwnedTargetsStatus::Truncated { .. }) {
+            census
+                .unknown
+                .get_or_insert(SharedFolderRefusal::ChildLimit);
+        }
+        let mut native_keys = Vec::new();
+        let mut native_turns = BTreeSet::new();
+        if census
+            .recorded_native_targets(&targets, &mut native_keys, &mut native_turns)
+            .is_err()
+        {
+            return census.result();
+        }
+        if census.recorded_attempts(&self.live_ptys).is_err() {
+            return census.result();
+        }
+        let mut turns = native_turns;
+
+        if self
+            .admit_runtime_peers(&mut census, &mut turns, &mut native_keys)
+            .is_err()
+        {
+            return census.result();
+        }
+        for target in &targets.targets {
+            if target.state == OwnedTargetState::NativeBoundaryAbsent
+                || target.key.as_ref().is_some_and(|key| {
+                    native_keys
+                        .iter()
+                        .any(|seen| super::native_boundaries::same_key(key, seen))
+                })
+            {
+                continue;
+            }
+            if census.room().is_err() {
+                return census.result();
+            }
+            match canonical_folder(&target.cwd) {
+                Some(folder) if folder != census.folder => {}
+                _ => {
+                    census
+                        .unknown
+                        .get_or_insert(SharedFolderRefusal::ChildOwnerUnresolved);
+                }
+            }
+        }
+        if self.admit_remaining_peers(&mut census, &turns).is_err() {
+            return census.result();
+        }
+        census.result()
+    }
+    fn admit_runtime_peers(
+        &self,
+        census: &mut Census<'_, H>,
+        turns: &mut BTreeSet<dudes_types::TurnId>,
+        native_keys: &mut Vec<AdoptionKey>,
+    ) -> Result<(), SharedFolderRefusal> {
+        let world = census.world;
         let current: Result<(), SharedFolderRefusal> =
             self.children.visit_owned(|turn, key, cwd| {
+                if turns.contains(&turn) {
+                    return Ok(());
+                }
                 census.room()?;
                 turns.insert(turn);
+                native_keys.push(key.clone());
                 if let Some(row) = world.turns.get(&turn) {
                     match cwd {
                         Some(cwd) => census.child(row.agent, cwd, Some(&key)),
@@ -158,7 +359,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 Ok(())
             });
         if current.is_err() {
-            return census.result();
+            return Err(SharedFolderRefusal::ChildLimit);
         }
         let uncertain: Result<bool, SharedFolderRefusal> =
             self.children.visit_uncertain(|turn, cwd| {
@@ -172,19 +373,25 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 }
                 Ok(())
             });
-        match uncertain {
-            Ok(false) => {}
-            Ok(true) | Err(_) => {
-                census
-                    .unknown
-                    .get_or_insert(SharedFolderRefusal::ChildLimit);
-                return census.result();
-            }
+        if !matches!(uncertain, Ok(false)) {
+            census
+                .unknown
+                .get_or_insert(SharedFolderRefusal::ChildLimit);
+            return Err(SharedFolderRefusal::ChildLimit);
         }
+        Ok(())
+    }
+
+    fn admit_remaining_peers(
+        &self,
+        census: &mut Census<'_, H>,
+        turns: &BTreeSet<dudes_types::TurnId>,
+    ) -> Result<(), SharedFolderRefusal> {
+        let world = census.world;
         let mut attachments = BTreeSet::new();
         for (owner, pty) in &self.live_ptys {
             if census.room().is_err() {
-                return census.result();
+                return Err(SharedFolderRefusal::ChildLimit);
             }
             if let Some((key, cwd)) = self.pty_host.receipt(*pty) {
                 census.child(*owner, cwd, Some(key));
@@ -194,7 +401,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         for (turn, row) in world.open_children() {
             if !turns.contains(&turn) {
                 if census.room().is_err() {
-                    return census.result();
+                    return Err(SharedFolderRefusal::ChildLimit);
                 }
                 census.recorded(row.agent, row.adoption_key().as_ref());
             }
@@ -202,7 +409,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         for (owner, key) in world.attached_children() {
             if !attachments.contains(&owner) {
                 if census.room().is_err() {
-                    return census.result();
+                    return Err(SharedFolderRefusal::ChildLimit);
                 }
                 census.recorded(owner, Some(key));
                 attachments.insert(owner);
@@ -216,13 +423,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             census.recorded(*owner, None);
         }
         for cleanup in self.cleanup_ptys.values() {
-            if !cleanup.close_confirmed {
+            if !cleanup.pty_close_recorded {
                 if census.room().is_err() {
-                    return census.result();
+                    return Err(SharedFolderRefusal::ChildLimit);
                 }
                 census.recorded(cleanup.agent, None);
             }
         }
-        census.result()
+        Ok(())
     }
 }

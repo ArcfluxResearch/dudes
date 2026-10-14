@@ -228,6 +228,10 @@ fn completed_contract_payload(header: Header, payload: &[u8]) -> bool {
                 | RecordKind::TaughtNoteOnlyTurnIssued
                 | RecordKind::MailWakeTurnDecided
                 | RecordKind::MailWakeOnlyTurnIssued
+                | RecordKind::InstructionObservationStarted
+                | RecordKind::InstructionObservationFinished
+                | RecordKind::TicketInstructionReviewed
+                | RecordKind::InstructionAttemptBoundarySettled
         )
     ) {
         return true;
@@ -239,6 +243,10 @@ fn completed_contract_payload(header: Header, payload: &[u8]) -> bool {
                 | "taught_note_only_turn_issued"
                 | "mail_wake_turn_decided"
                 | "mail_wake_only_turn_issued"
+                | "instruction_observation_started"
+                | "instruction_observation_finished"
+                | "ticket_instruction_reviewed"
+                | "instruction_attempt_boundary_settled"
         )
     })
 }
@@ -1039,11 +1047,28 @@ impl Witnessed {
                 serde_json::from_slice::<Entry>(&self.buf)
                     .map_err(|source| Error::Decode { lsn, source })
                     .and_then(|entry| {
+                        dudes_proto::validate_instruction_record(&entry.record).map_err(
+                            |reason| Error::Instruction {
+                                lsn,
+                                reason: reason.into(),
+                            },
+                        )?;
                         let contract = completed_contract_payload(header, &self.buf);
                         if contract
                             && (header.ver != frame::REQUIRED_VERSION
                                 || header.kind != entry.record.kind().tag())
                         {
+                            if is_instruction_kind(entry.record.kind())
+                                || RecordKind::from_tag(header.kind)
+                                    .is_some_and(is_instruction_kind)
+                            {
+                                return Err(Error::InstructionFrame {
+                                    lsn,
+                                    kind: header.kind,
+                                    version: header.ver,
+                                    expected_kind: entry.record.kind().tag(),
+                                });
+                            }
                             if matches!(
                                 entry.record,
                                 dudes_proto::Record::TaughtNoteTurnDecided { .. }
@@ -1089,6 +1114,16 @@ impl Iterator for Witnessed {
         }
         item
     }
+}
+
+fn is_instruction_kind(kind: RecordKind) -> bool {
+    matches!(
+        kind,
+        RecordKind::InstructionObservationStarted
+            | RecordKind::InstructionObservationFinished
+            | RecordKind::TicketInstructionReviewed
+            | RecordKind::InstructionAttemptBoundarySettled
+    )
 }
 
 #[cfg(test)]

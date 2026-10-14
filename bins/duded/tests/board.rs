@@ -11,7 +11,7 @@ use dudes_proto::rpc::board::CardCreateResult;
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::goal::GoalSetParams;
 use dudes_proto::rpc::hook::HookToken;
-use dudes_proto::rpc::{ConflictData, ErrorCode, Method, Response};
+use dudes_proto::rpc::{ConflictData, ErrorCode, Method, RefusalGate, RefusedData, Response};
 use dudes_proto::{Actor, CardView, Evidence, LoopDecision, Predicate, Record};
 use dudes_rpc::Client;
 use dudes_rpc::auth::PeerProvenance;
@@ -55,7 +55,12 @@ fn start(
     )
     .unwrap();
     let running = common::start(daemon);
-    let operator = Client::connect(settings.socket()).unwrap();
+    let mut operator = Client::connect(settings.socket()).unwrap();
+    assert!(
+        operator_call(&mut operator, &settings, Method::SystemPing, json!({}))
+            .error
+            .is_none()
+    );
     (settings, running, column, operator)
 }
 
@@ -87,7 +92,12 @@ fn list(client: &mut Socket, settings: &duded::Settings) -> Vec<CardView> {
     serde_json::from_value(response.result.expect("board list")).unwrap()
 }
 
-fn minted(fixture: &Fixture, agent: AgentId) -> HookToken {
+fn minted(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    column: &ScriptedColumn,
+    agent: AgentId,
+) -> HookToken {
     let hash = fixture.await_record("agent token", |record| match record {
         Record::HookTokenMinted {
             agent: owner,
@@ -95,7 +105,28 @@ fn minted(fixture: &Fixture, agent: AgentId) -> HookToken {
         } if *owner == agent => Some(token_hash.clone()),
         _ => None,
     });
-    common::token_of(&hash)
+    let token = common::token_of(&hash);
+    column.set(PeerProvenance::Agent(agent));
+    let mut client = Client::connect(settings.socket()).expect("token publication connection");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let response = client
+            .call(Method::SystemPing, Some(json!({"token": token.expose()})))
+            .expect("token publication observation");
+        if response.error.is_none() {
+            return token;
+        }
+        let error = response.error.unwrap();
+        assert_eq!(error.code, ErrorCode::Refused.code());
+        let data: RefusedData = serde_json::from_value(error.data.expect("token refusal gate"))
+            .expect("typed token refusal");
+        assert_eq!(data.gate, RefusalGate::Token);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "minted token was not published within 10s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 #[test]
@@ -108,7 +139,7 @@ fn agent_calls_cannot_create_list_or_move_another_agents_card() {
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    let token = minted(&fixture, agent);
+    let token = minted(&fixture, &settings, &column, agent);
     let held = create(&mut operator, &settings, "infra");
     let own = create(&mut operator, &settings, "infra");
     assert!(
@@ -598,7 +629,7 @@ fn board_predicate_journals_a_failure_for_the_judged_agents_status() {
     };
     goal.hop_cap = 1;
     let goal = common::set_goal(&running.handle, goal);
-    let token = minted(&fixture, agent);
+    let token = minted(&fixture, &settings, &column, agent);
     column.set(PeerProvenance::Agent(agent));
     let mut client = Client::connect(settings.socket()).unwrap();
     assert!(
@@ -751,8 +782,8 @@ fn agents_moving_each_others_cards_to_done_complete_neither_goal() {
         goals.push((agent, card, goal, issued_to(&fixture, agent)));
     }
     for (mover, card) in [(first, second_card), (second, first_card)] {
-        let token = minted(&fixture, mover);
         column.set(PeerProvenance::Agent(mover));
+        let token = minted(&fixture, &settings, &column, mover);
         let mut client = Client::connect(settings.socket()).unwrap();
         for (method, params) in [
             (
@@ -873,7 +904,7 @@ fn an_agent_cannot_rewrite_done_but_an_operator_can_reapprove_and_reopen_it() {
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    let token = minted(&fixture, agent);
+    let token = minted(&fixture, &settings, &column, agent);
     let card = create(&mut operator, &settings, "infra");
     assert!(
         operator_call(
@@ -1153,6 +1184,9 @@ fn startup_with_an_absent_card_holds_later_wakes_until_an_explicit_new_goal() {
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
+    fixture.await_record("replacement goal TurnIssued", |record| {
+        matches!(record, Record::TurnIssued { agent: who, .. } if *who == agent).then_some(())
+    });
     assert_eq!(
         fixture
             .records()
@@ -1270,7 +1304,7 @@ fn issued_work_uses_live_dependents_peers_and_memory_without_replacing_the_goal(
         common::goal_params(agent, &["/usr/bin/false"]),
     );
     let first = fixture.await_turn();
-    let token = minted(&fixture, agent);
+    let token = minted(&fixture, &settings, &column, agent);
     column.set(PeerProvenance::Agent(agent));
     let mut owner = Client::connect(settings.socket()).unwrap();
     assert!(

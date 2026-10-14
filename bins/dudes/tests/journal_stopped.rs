@@ -4,7 +4,10 @@
 use std::sync::Arc;
 
 use dudes::exit;
+use dudes_proto::Record;
 use dudes_proto::rpc::agent::HireResult;
+use dudes_proto::rpc::goal::GoalSetResult;
+use dudes_types::{AgentId, GoalId};
 use serde_json::Value;
 
 mod common;
@@ -103,7 +106,7 @@ impl Stopped {
         let initiator = initiator(&cli, &fixture, &agent, standing);
         before(&fixture, &cli, &agent);
         if checkpoint {
-            daemon.append_failure.short_write_after(7, 5);
+            daemon.append_failure.short_write_after(1, 5);
         } else {
             daemon.append_failure.short_write_next(5);
         }
@@ -164,6 +167,23 @@ impl Stopped {
             dudes_types::Lsn(self.lsn).offset()
         )
     }
+}
+
+fn await_goal_spawn(fixture: &Fixture, agent: AgentId, goal: GoalId) {
+    let turn = fixture.await_record("issued turn for the repaired goal", |record| match record {
+        Record::TurnIssued {
+            agent: owner,
+            goal: issued_goal,
+            turn,
+            ..
+        } if *owner == agent && *issued_goal == goal => Some(*turn),
+        _ => None,
+    });
+    fixture.await_record("spawn of the repaired goal's exact turn", |record| {
+        matches!(record, Record::TurnSpawned { agent: owner, turn: spawned, .. }
+            if *owner == agent && *spawned == turn)
+        .then_some(())
+    });
 }
 
 #[test]
@@ -233,9 +253,15 @@ fn restart_repairs_torn_tail_and_resumes_writes() {
     let result = stopped
         .cli
         .clone()
+        .arg("--json")
         .args(goal_args(&stopped.agent, "repaired goal"))
         .run();
     assert_eq!(result.code(), exit::SUCCESS, "{}", result.output());
+    await_goal_spawn(
+        &stopped.fixture,
+        stopped.agent.parse().unwrap(),
+        result.json::<GoalSetResult>().goal,
+    );
     assert_eq!(stopped.host.children(), 1);
     assert!(stopped.fixture.records().iter().any(|record| matches!(record, dudes_proto::Record::GoalSet { goal, .. } if goal.text == "repaired goal")));
     restarted.stop();
@@ -377,6 +403,16 @@ fn checkpoint_poison_preserves_durable_frame_and_prevents_spawn() {
         Arc::new(OpenRunner::default()),
     );
     assert!(stopped.fixture.records().iter().any(|record| matches!(record, dudes_proto::Record::GoalSet { goal, .. } if goal.text == "first goal")));
+    let agent = stopped.agent.parse().unwrap();
+    let goal = stopped
+        .fixture
+        .await_record("durable first goal", |record| match record {
+            Record::GoalSet {
+                agent: owner, goal, ..
+            } if *owner == agent && goal.text == "first goal" => Some(goal.id),
+            _ => None,
+        });
+    await_goal_spawn(&stopped.fixture, agent, goal);
     assert_eq!(
         stopped.host.children(),
         1,

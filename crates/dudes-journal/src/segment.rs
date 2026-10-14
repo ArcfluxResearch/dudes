@@ -156,6 +156,84 @@ mod tests {
     )]
     fn lsns_of(record: &Record) -> Vec<Lsn> {
         match record {
+            Record::InstructionObservationStarted { owner, ticket, .. } => {
+                instruction_refs(*owner, *ticket)
+            }
+            Record::InstructionObservationFinished {
+                owner,
+                ticket,
+                baseline,
+                settlement,
+            } => {
+                let mut refs = instruction_refs(*owner, *ticket);
+                refs.push(match baseline {
+                    dudes_proto::InstructionBaselineRef::Started { lsn } => *lsn,
+                    dudes_proto::InstructionBaselineRef::MissingIssueBoundary {
+                        issue_lsn, ..
+                    } => *issue_lsn,
+                    dudes_proto::InstructionBaselineRef::MissingTurnBoundary {
+                        end_lsn, ..
+                    } => *end_lsn,
+                });
+                let end = match settlement {
+                    dudes_proto::InstructionSettlement::Compared { end, .. } => Some(end),
+                    dudes_proto::InstructionSettlement::Unknown { end, .. } => end.as_ref(),
+                    dudes_proto::InstructionSettlement::NoProcess { proof_lsn, .. } => {
+                        refs.push(*proof_lsn);
+                        None
+                    }
+                    dudes_proto::InstructionSettlement::NoIssuedTurn => None,
+                };
+                if let Some(end) = end {
+                    match end {
+                        dudes_proto::InstructionEndBoundary::ManagedTurn { end_lsn, .. }
+                        | dudes_proto::InstructionEndBoundary::AttachedTurn { end_lsn, .. } => {
+                            refs.push(*end_lsn);
+                        }
+                        dudes_proto::InstructionEndBoundary::AttachedProcess {
+                            attachment_lsn,
+                            end_lsn,
+                        } => refs.extend([*attachment_lsn, *end_lsn]),
+                    }
+                }
+                refs
+            }
+            Record::TicketInstructionReviewed {
+                watermark, action, ..
+            } => {
+                let mut refs = vec![watermark.through_lsn];
+                match action {
+                    dudes_proto::InstructionReviewAction::Accept {
+                        completion:
+                            dudes_proto::InstructionAcceptCompletion::Completed { completion_lsn },
+                    } => refs.push(*completion_lsn),
+                    dudes_proto::InstructionReviewAction::Accept {
+                        completion: dudes_proto::InstructionAcceptCompletion::Continue,
+                    }
+                    | dudes_proto::InstructionReviewAction::ChangesRequested { .. } => {}
+                }
+                refs
+            }
+            Record::InstructionAttemptBoundarySettled {
+                owner,
+                started_lsn,
+                proof,
+            } => {
+                let mut refs = instruction_refs(*owner, None);
+                refs.push(*started_lsn);
+                match proof {
+                    dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
+                        receipt,
+                    } => refs.push(match receipt {
+                        dudes_proto::InstructionNativeBoundaryReceipt::Spawned { lsn }
+                        | dudes_proto::InstructionNativeBoundaryReceipt::LaunchFailureEnded {
+                            lsn,
+                        } => *lsn,
+                    }),
+                    dudes_proto::InstructionBoundaryAbsenceProof::PriorBootAbsent { .. } => {}
+                }
+                refs
+            }
             Record::McpLaunchGranted { policy_lsn, .. } => vec![*policy_lsn],
             Record::TurnSpawned { mcp_grant, .. } => mcp_grant.iter().copied().collect(),
             Record::MailWakeTurnDecided(decision) => {
@@ -410,9 +488,33 @@ mod tests {
         }
     }
 
+    fn instruction_refs(
+        owner: dudes_proto::InstructionObservationOwner,
+        ticket: Option<dudes_proto::InstructionTicketAssociation>,
+    ) -> Vec<Lsn> {
+        let mut refs = match owner {
+            dudes_proto::InstructionObservationOwner::Managed {
+                issue: dudes_proto::InstructionIssueAssociation::Issued { issue_lsn },
+                ..
+            } => vec![issue_lsn],
+            dudes_proto::InstructionObservationOwner::Managed {
+                issue: dudes_proto::InstructionIssueAssociation::Prospective,
+                ..
+            } => Vec::new(),
+            dudes_proto::InstructionObservationOwner::AttachedProcess {
+                attachment_lsn, ..
+            } => vec![attachment_lsn],
+            dudes_proto::InstructionObservationOwner::AttachedTurn { attachment_lsn, .. } => {
+                attachment_lsn.into_iter().collect()
+            }
+        };
+        refs.extend(ticket.map(|ticket| ticket.assignment_lsn));
+        refs
+    }
+
     #[test]
     fn no_sample_lsn_is_below_the_first_segment() {
-        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 46;
+        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 52;
 
         let mut swept = 0_usize;
         let mut lsns = 0_usize;

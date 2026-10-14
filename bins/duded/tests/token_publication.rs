@@ -7,6 +7,7 @@
 
 use std::io;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -22,7 +23,10 @@ use dudes_providers::adapter::ManagedInstall;
 use dudes_providers::launch::LaunchSpec;
 use dudes_rpc::Client;
 use dudes_rpc::auth::PeerProvenance;
-use dudes_supervisor::host::{AdoptionKey, HostBoot, KillOutcome, Liveness, ProcessHost};
+use dudes_supervisor::host::{
+    AdoptionKey, HostBoot, KillOutcome, Liveness, NativeBoundaryAcknowledgement,
+    NativeBoundaryReceipt, OwnedTargetState, OwnedTargets, OwnedTargetsStatus, ProcessHost,
+};
 use dudes_supervisor::input::SpendView;
 use dudes_supervisor::{Input, SpawnResult, blake3_hex};
 use dudes_types::{AgentId, Provider, Timestamp, Usd};
@@ -37,7 +41,7 @@ const MANY: usize = 10_000;
 const RETAINED_TOKEN: &str = "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr";
 
 fn retained_agent() -> AgentId {
-    AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("a fixed agent id")
+    AgentId::from_parts(0, 0)
 }
 
 fn entry(record: Record) -> Entry {
@@ -107,9 +111,9 @@ struct GoneOnKillHost {
 }
 
 impl GoneOnKillHost {
-    fn new() -> Self {
+    fn with_native_evidence(journal: PathBuf) -> Self {
         Self {
-            inner: SharedHost::new(),
+            inner: SharedHost::with_native_evidence(journal),
             kills: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -135,6 +139,18 @@ impl ProcessHost for GoneOnKillHost {
         self.inner.alive(key)
     }
 
+    fn owned_targets(&self, limit: usize) -> OwnedTargets {
+        self.inner.owned_targets(limit)
+    }
+
+    fn acknowledge_native_boundary_absence(
+        &mut self,
+        key: &AdoptionKey,
+        receipt: &NativeBoundaryReceipt,
+    ) -> NativeBoundaryAcknowledgement {
+        self.inner.acknowledge_native_boundary_absence(key, receipt)
+    }
+
     fn boot_identity(&self) -> HostBoot {
         self.inner.boot_identity()
     }
@@ -142,6 +158,111 @@ impl ProcessHost for GoneOnKillHost {
     fn shutdown(&mut self) -> io::Result<()> {
         self.inner.shutdown()
     }
+}
+
+fn await_native_spawn(
+    fixture: &Fixture,
+    handle: &duded::Handle,
+    host: &impl ProcessHost,
+    agent: AgentId,
+) -> dudes_types::TurnId {
+    let (turn, key) =
+        fixture.await_record("the exact owned managed spawn", |record| match record {
+            Record::TurnSpawned {
+                agent: owner,
+                turn,
+                pid,
+                start_time,
+                boot,
+                ..
+            } if *owner == agent => Some((
+                *turn,
+                AdoptionKey {
+                    pid: *pid,
+                    start_time: *start_time,
+                    boot: boot.clone(),
+                },
+            )),
+            _ => None,
+        });
+    let spawned = fixture.entries().into_iter().find_map(|(lsn, entry)| {
+        matches!(entry.record, Record::TurnSpawned { agent: owner, turn: issued, .. } if owner == agent && issued == turn).then_some(lsn)
+    }).unwrap();
+    assert!(
+        handle
+            .doctor()
+            .expect("finish the exact spawn's setup pump")
+            .lsn
+            >= spawned
+    );
+    let owned = host.owned_targets(1);
+    assert_eq!(owned.status, OwnedTargetsStatus::Complete);
+    let [target] = owned.targets.as_slice() else {
+        panic!("one exact native target must be retained")
+    };
+    let native = target.key.as_ref().unwrap();
+    assert_eq!(
+        (native.pid, native.start_time, &native.boot),
+        (key.pid, key.start_time, &key.boot)
+    );
+    assert_eq!(target.state, OwnedTargetState::Present);
+    assert!(target.native_absence_receipt.is_none());
+    turn
+}
+
+fn ping_code(client: &mut dudes_rpc::LocalClient, token: &HookToken) -> Option<i32> {
+    client
+        .call(Method::SystemPing, Some(json!({ "token": token.expose() })))
+        .expect("the publication observation is answered")
+        .error
+        .map(|error| error.code)
+}
+
+fn assert_goal_fold(fixture: &Fixture, agent: AgentId, goal: dudes_types::GoalId) {
+    assert!(fixture.records().iter().any(|record| matches!(record,
+        Record::GoalSet { agent: owner, goal: changed, .. } if *owner == agent && changed.id == goal)));
+    let mut world = dudes_supervisor::World::default();
+    for (lsn, entry) in fixture.entries() {
+        world.apply(lsn, &entry);
+    }
+    assert_eq!(world.goal_of(agent).unwrap().goal.id, goal);
+}
+
+fn await_minted_setup(fixture: &Fixture, handle: &duded::Handle, agent: AgentId) -> HookToken {
+    let hash = fixture.await_record("the exact setup mint", |record| match record {
+        Record::HookTokenMinted {
+            agent: owner,
+            token_hash,
+        } if *owner == agent => Some(token_hash.clone()),
+        _ => None,
+    });
+    let entries = fixture.entries();
+    let minted = entries.iter().find_map(|(lsn, entry)| {
+        matches!(&entry.record, Record::HookTokenMinted { agent: owner, token_hash } if *owner == agent && *token_hash == hash).then_some(*lsn)
+    }).unwrap();
+    let (issued, turn) = entries
+        .iter()
+        .find_map(|(lsn, entry)| match entry.record {
+            Record::TurnIssued {
+                agent: owner, turn, ..
+            } if owner == agent => Some((*lsn, turn)),
+            _ => None,
+        })
+        .unwrap();
+    let started = entries.iter().find_map(|(lsn, entry)| {
+        matches!(entry.record, Record::InstructionObservationStarted {
+            owner: dudes_proto::InstructionObservationOwner::Managed { agent: owner, turn: sample_turn, .. }, ..
+        } if owner == agent && sample_turn == turn).then_some(*lsn)
+    }).unwrap();
+    assert!(started < issued && issued < minted);
+    assert!(
+        handle
+            .doctor()
+            .expect("finish the asynchronous mint's setup pump")
+            .lsn
+            >= minted
+    );
+    common::token_of(&hash)
 }
 
 /// Return copied entries for the required initial snapshot and for one later fold-free pump.
@@ -196,51 +317,67 @@ fn token_publication_work_is_constant_in_mint_history() {
     );
 }
 
-/// Mint and retirement changes are visible through the classifier before their calls answer.
-///
-/// The connection sits outside the agent's tree, so each change moves the wire code: row 3 before
-/// the mint, row 2's `-32001` after it, and `-32004` after the retirement, whether or not the
-/// retired agent's turn child is still recorded.
 #[test]
 fn changed_token_projection_is_published_before_answer() {
     let fixture = Fixture::new();
+    seed_live_mint_history(&fixture, ONE);
     let settings = fixture.settings();
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
-    let daemon = boot(
-        &settings,
-        common::seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
-        ),
-    )
-    .expect("boot");
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let seams = common::seams_with(
+        host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
+    );
+    host.bind_child_ends(Arc::clone(&seams.children));
+    let daemon = boot(&settings, seams).expect("boot");
     let mut running = common::start(daemon);
+    let sentinel = HookToken::new(RETAINED_TOKEN).unwrap();
+    let mut client = Client::connect(settings.socket()).expect("connect before the goal subject");
+    assert_eq!(
+        ping_code(&mut client, &sentinel),
+        Some(ErrorCode::Unauthorized.code())
+    );
 
     let agent = common::hire(&running.handle, fixture.state.path());
-    common::set_goal(
+    let before_goal = fixture.entries();
+    let goal = common::set_goal(
         &running.handle,
         common::goal_params(agent, &[common::true_program()]),
     );
-    let hash = fixture.await_record("HookTokenMinted", |record| match record {
-        Record::HookTokenMinted {
-            agent: who,
-            token_hash,
-        } if *who == agent => Some(token_hash.clone()),
-        _ => None,
-    });
-    let token = common::token_of(&hash);
-
-    let mut client = Client::connect(settings.socket()).expect("connect after the goal answer");
-    let minted = client
-        .call(Method::SystemPing, Some(json!({ "token": token.expose() })))
-        .expect("the mint publication observation is answered");
+    let after_goal = fixture.entries();
+    assert!(after_goal.starts_with(&before_goal));
+    assert_goal_fold(&fixture, agent, goal);
     assert_eq!(
-        minted.error.map(|error| error.code),
+        ping_code(&mut client, &sentinel),
         Some(ErrorCode::Unauthorized.code()),
-        "the goal answer arrived before the minted owner was published"
+        "the goal answer publishes its completed owner fold before later setup"
+    );
+    if let Some(hash) = after_goal[before_goal.len()..]
+        .iter()
+        .find_map(|(_, entry)| match &entry.record {
+            Record::HookTokenMinted {
+                agent: owner,
+                token_hash,
+            } if *owner == agent => Some(token_hash.clone()),
+            _ => None,
+        })
+    {
+        assert_eq!(
+            ping_code(&mut client, &common::token_of(&hash)),
+            Some(ErrorCode::Unauthorized.code()),
+            "a mint present in the immediate suffix is already published"
+        );
+    }
+    let token = await_minted_setup(&fixture, &running.handle, agent);
+    let turn = await_native_spawn(&fixture, &running.handle, &host, agent);
+
+    assert_eq!(
+        ping_code(&mut client, &token),
+        Some(ErrorCode::Unauthorized.code()),
+        "the later mint setup publishes the live owner"
     );
 
     let retired = running
@@ -274,6 +411,7 @@ fn changed_token_projection_is_published_before_answer() {
         "the same live connection observes mint and retirement publication"
     );
 
+    common::end_turn_with_native(&fixture, &running.handle, &host, turn);
     running.stop(ExitCause::Ended);
 }
 
@@ -287,18 +425,16 @@ fn failed_retirement_stays_refused_after_the_next_quiet_pump() {
     seed_live_mint_history(&fixture, ONE);
     let settings = fixture.settings();
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
-    let host = GoneOnKillHost::new();
-    let daemon = boot(
-        &settings,
-        common::seams_with(
-            host.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
-        ),
-    )
-    .expect("boot the retained live token");
+    let host = GoneOnKillHost::with_native_evidence(fixture.journal_dir());
+    let seams = common::seams_with(
+        host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
+    );
+    host.inner.bind_child_ends(Arc::clone(&seams.children));
+    let daemon = boot(&settings, seams).expect("boot the retained live token");
     let append_failure = daemon.append_failure();
     let mut running = common::start(daemon);
 
@@ -306,6 +442,7 @@ fn failed_retirement_stays_refused_after_the_next_quiet_pump() {
         &running.handle,
         common::goal_params(retained_agent(), &[common::true_program()]),
     );
+    await_native_spawn(&fixture, &running.handle, &host, retained_agent());
     let token = HookToken::new(RETAINED_TOKEN).expect("the retained token is well formed");
     let mut client = Client::connect(settings.socket()).expect("connect with the retained token");
     let before = client
@@ -341,6 +478,11 @@ fn failed_retirement_stays_refused_after_the_next_quiet_pump() {
             .any(|record| matches!(record, Record::TurnEnded { .. })),
         "the second append fails after the durable retirement fold"
     );
+    assert_eq!(
+        host.owned_targets(1).targets[0].state,
+        OwnedTargetState::Present,
+        "a Gone kill answer alone supplies no native reap evidence"
+    );
 
     running.handle.input(Input::Spend {
         agent: retained_agent(),
@@ -374,18 +516,16 @@ fn failed_retirement_refuses_the_same_connection_before_another_pump() {
     seed_live_mint_history(&fixture, ONE);
     let settings = fixture.settings();
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
-    let host = GoneOnKillHost::new();
-    let daemon = boot(
-        &settings,
-        common::seams_with(
-            host.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
-        ),
-    )
-    .expect("boot the retained live token");
+    let host = GoneOnKillHost::with_native_evidence(fixture.journal_dir());
+    let seams = common::seams_with(
+        host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
+    );
+    host.inner.bind_child_ends(Arc::clone(&seams.children));
+    let daemon = boot(&settings, seams).expect("boot the retained live token");
     let append_failure = daemon.append_failure();
     let mut running = common::start(daemon);
 
@@ -393,6 +533,7 @@ fn failed_retirement_refuses_the_same_connection_before_another_pump() {
         &running.handle,
         common::goal_params(retained_agent(), &[common::true_program()]),
     );
+    await_native_spawn(&fixture, &running.handle, &host, retained_agent());
     let token = HookToken::new(RETAINED_TOKEN).expect("the retained token is well formed");
     let mut client = Client::connect(settings.socket()).expect("connect with the retained token");
     let before = client
@@ -427,6 +568,11 @@ fn failed_retirement_refuses_the_same_connection_before_another_pump() {
             .iter()
             .any(|record| matches!(record, Record::TurnEnded { .. })),
         "the second append fails after the durable retirement fold"
+    );
+    assert_eq!(
+        host.owned_targets(1).targets[0].state,
+        OwnedTargetState::Present,
+        "a Gone kill answer alone supplies no native reap evidence"
     );
 
     let after = client

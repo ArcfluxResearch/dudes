@@ -187,6 +187,9 @@ fn hire_and_set_a_goal(
         .expect("goal.set is answered");
     assert!(goal.error.is_none(), "goal.set: {:?}", goal.error);
     let turn = fixture.await_turn();
+    fixture.await_record("the operator goal's TurnSpawned", |record| {
+        matches!(record, Record::TurnSpawned { turn: found, .. } if *found == turn).then_some(())
+    });
     (agent.agent, turn)
 }
 

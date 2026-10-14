@@ -37,6 +37,7 @@ struct Browser {
     csrf: String,
     clock: Arc<TestClock>,
     failure: duded::runtime::AppendFailure,
+    host: Option<SharedHost>,
 }
 
 fn start(fixture: &Fixture) -> (duded::Settings, common::Running, Browser) {
@@ -72,12 +73,14 @@ fn start_configured(
     resolver: Option<Arc<dyn dudes_rpc::auth::PeerResolver>>,
 ) -> (duded::Settings, common::Running, Browser) {
     let clock = Arc::new(TestClock::new());
+    let host = SharedHost::with_native_evidence(settings.state_dir.join(duded::boot::JOURNAL_DIR));
     let mut seams = seams(
-        SharedHost::new(),
+        host.clone(),
         Arc::new(ScriptedRunner::scripted([])),
         Arc::clone(&clock),
         duded::startup::Witness::default(),
     );
+    host.bind_child_ends(Arc::clone(&seams.children));
     if let Some(adapters) = adapters {
         seams.adapters = adapters;
     }
@@ -86,7 +89,9 @@ fn start_configured(
     }
     let daemon =
         duded::boot_with_options(&settings, seams, options).expect("boot browser-note fixture");
-    connect_browser(settings, daemon, clock)
+    let (settings, running, mut browser) = connect_browser(settings, daemon, clock);
+    browser.host = Some(host);
+    (settings, running, browser)
 }
 
 fn connect_browser<H, P, C, R>(
@@ -144,6 +149,7 @@ where
             csrf,
             clock,
             failure,
+            host: None,
         },
     )
 }
@@ -1159,6 +1165,22 @@ fn conversation_refuses_a_zero_agent_budget_before_issuance() {
     running.stop(duded::ExitCause::Signal);
 }
 
+fn conversation_answer_end(first: dudes_types::TurnId) -> dudes_supervisor::Input {
+    dudes_supervisor::Input::ChildExited {
+        turn: first,
+        elapsed_ms: Some(100),
+        exit: dudes_proto::ExitStatus {
+            code: Some(0),
+            signal: None,
+        },
+        usage: None,
+        model_usage: std::collections::BTreeMap::default(),
+        outcome: dudes_proto::TurnOutcome::Completed,
+        last_message: None,
+        final_reply: None,
+    }
+}
+
 #[test]
 fn conversation_answer_binds_question_and_precedes_unrelated_messages() {
     let fixture = Fixture::new();
@@ -1224,19 +1246,11 @@ fn conversation_answer_binds_question_and_precedes_unrelated_messages() {
         queued.1,
         dudes_proto::conversation_answer_task("Which project?", "This project")
     );
-    running.handle.input(dudes_supervisor::Input::ChildExited {
-        turn: first,
-        elapsed_ms: Some(100),
-        exit: dudes_proto::ExitStatus {
-            code: Some(0),
-            signal: None,
-        },
-        usage: None,
-        model_usage: std::collections::BTreeMap::default(),
-        outcome: dudes_proto::TurnOutcome::Completed,
-        last_message: None,
-        final_reply: None,
-    });
+    common::end_turn_with_native_payload(
+        &fixture,
+        browser.host.as_ref().expect("owned mock child host"),
+        conversation_answer_end(first),
+    );
     fixture.await_record("answer continuation", |record| match record {
         Record::ConversationTurnIssued { turn, task, .. } if *turn != first => Some(task.clone()),
         _ => None,
@@ -1294,27 +1308,31 @@ fn conversation_issued(
 }
 
 fn end_conversation(
-    running: &common::Running,
+    browser: &Browser,
     fixture: &Fixture,
     turn: dudes_types::TurnId,
     outcome: dudes_proto::TurnOutcome,
 ) {
     let code = i32::from(outcome != dudes_proto::TurnOutcome::Completed);
-    running.handle.input(dudes_supervisor::Input::ChildExited {
-        turn,
-        elapsed_ms: Some(6_000),
-        exit: dudes_proto::ExitStatus {
-            code: Some(code),
-            signal: None,
+    common::end_turn_with_native_payload(
+        fixture,
+        browser.host.as_ref().expect("owned mock child host"),
+        dudes_supervisor::Input::ChildExited {
+            turn,
+            elapsed_ms: Some(6_000),
+            exit: dudes_proto::ExitStatus {
+                code: Some(code),
+                signal: None,
+            },
+            usage: Some(dudes_providers::stream::ScopedUsage::Turn(
+                dudes_types::Usage::ZERO,
+            )),
+            model_usage: std::collections::BTreeMap::new(),
+            outcome,
+            last_message: None,
+            final_reply: None,
         },
-        usage: Some(dudes_providers::stream::ScopedUsage::Turn(
-            dudes_types::Usage::ZERO,
-        )),
-        model_usage: std::collections::BTreeMap::new(),
-        outcome,
-        last_message: None,
-        final_reply: None,
-    });
+    );
     fixture.await_record("finite end", |record| {
         matches!(record, Record::TurnEnded { turn: ended, .. } if *ended == turn).then_some(())
     });
@@ -1345,7 +1363,7 @@ fn conversation_context_loss_after(outcome: dudes_proto::TurnOutcome) {
             session: session.clone().unwrap(),
         });
     end_conversation(
-        &running,
+        &browser,
         &fixture,
         first,
         dudes_proto::TurnOutcome::Completed,
@@ -1356,7 +1374,7 @@ fn conversation_context_loss_after(outcome: dudes_proto::TurnOutcome) {
     assert_eq!(resumed, session);
     let old_queue = conversation_request(&browser, agent, 2, "queued before loss");
     assert_eq!(old_queue.0, 200);
-    end_conversation(&running, &fixture, second, outcome);
+    end_conversation(&browser, &fixture, second, outcome);
     assert_eq!(
         conversation_request(&browser, agent, 1, "second"),
         second_receipt
@@ -1405,7 +1423,7 @@ fn conversation_context_loss_after(outcome: dudes_proto::TurnOutcome) {
         3
     );
     end_conversation(
-        &running,
+        &browser,
         &fixture,
         third,
         dudes_proto::TurnOutcome::Completed,
@@ -1535,24 +1553,28 @@ fn conversation_daily_budget_refresh_reconsiders_a_pending_message() {
             turn,
             session: session.unwrap(),
         });
-    running.handle.input(dudes_supervisor::Input::ChildExited {
-        turn,
-        elapsed_ms: Some(6_000),
-        exit: dudes_proto::ExitStatus {
-            code: Some(0),
-            signal: None,
-        },
-        usage: Some(dudes_providers::stream::ScopedUsage::Turn(
-            dudes_types::Usage {
-                usd: Some(dudes_types::Usd::from_dollars(10)),
-                ..dudes_types::Usage::ZERO
+    common::end_turn_with_native_payload(
+        &fixture,
+        browser.host.as_ref().expect("owned mock child host"),
+        dudes_supervisor::Input::ChildExited {
+            turn,
+            elapsed_ms: Some(6_000),
+            exit: dudes_proto::ExitStatus {
+                code: Some(0),
+                signal: None,
             },
-        )),
-        model_usage: std::collections::BTreeMap::new(),
-        outcome: dudes_proto::TurnOutcome::Completed,
-        last_message: None,
-        final_reply: None,
-    });
+            usage: Some(dudes_providers::stream::ScopedUsage::Turn(
+                dudes_types::Usage {
+                    usd: Some(dudes_types::Usd::from_dollars(10)),
+                    ..dudes_types::Usage::ZERO
+                },
+            )),
+            model_usage: std::collections::BTreeMap::new(),
+            outcome: dudes_proto::TurnOutcome::Completed,
+            last_message: None,
+            final_reply: None,
+        },
+    );
     fixture.await_record("daily spend", |record| {
         matches!(record, Record::TurnEnded { turn: ended, .. } if *ended == turn).then_some(())
     });
@@ -1583,21 +1605,25 @@ fn conversation_repeated_fast_failure_keeps_the_existing_hold_guard() {
     for (number, text) in [(0, "first failing turn"), (1, "second failing turn")] {
         assert_eq!(conversation_request(&browser, agent, number, text).0, 200);
         let (turn, _) = conversation_issued(&fixture, text);
-        running.handle.input(dudes_supervisor::Input::ChildExited {
-            turn,
-            elapsed_ms: Some(100),
-            exit: dudes_proto::ExitStatus {
-                code: Some(1),
-                signal: None,
+        common::end_turn_with_native_payload(
+            &fixture,
+            browser.host.as_ref().expect("owned mock child host"),
+            dudes_supervisor::Input::ChildExited {
+                turn,
+                elapsed_ms: Some(100),
+                exit: dudes_proto::ExitStatus {
+                    code: Some(1),
+                    signal: None,
+                },
+                usage: None,
+                model_usage: std::collections::BTreeMap::new(),
+                outcome: dudes_proto::TurnOutcome::Failed {
+                    reason: "owned fixture failure".into(),
+                },
+                last_message: None,
+                final_reply: None,
             },
-            usage: None,
-            model_usage: std::collections::BTreeMap::new(),
-            outcome: dudes_proto::TurnOutcome::Failed {
-                reason: "owned fixture failure".into(),
-            },
-            last_message: None,
-            final_reply: None,
-        });
+        );
         fixture.await_record("failed finite turn", |record| {
             matches!(record, Record::TurnEnded { turn: ended, .. } if *ended == turn).then_some(())
         });
@@ -1653,7 +1679,7 @@ fn waiting_conversation(
             text: "Which branch?".into(),
         })
         .unwrap();
-    end_conversation(running, fixture, turn, dudes_proto::TurnOutcome::Completed);
+    end_conversation(browser, fixture, turn, dudes_proto::TurnOutcome::Completed);
     let question = fixture
         .entries()
         .into_iter()
@@ -1697,6 +1723,37 @@ fn conversation_local_answer_normalizes_spaces_and_refuses_controls_before_appen
         )),
     );
     let (agent, question) = waiting_conversation(&fixture, &running, &browser);
+    let (turn, end_lsn) = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| match entry.record {
+            Record::TurnEnded {
+                agent: ended, turn, ..
+            } if ended == agent => Some((turn, lsn)),
+            _ => None,
+        })
+        .expect("the exact conversation turn ended");
+    fixture.await_record("the exact conversation end comparison", |record| {
+        matches!(record, Record::InstructionObservationFinished {
+            owner: dudes_proto::InstructionObservationOwner::Managed {
+                agent: owner, turn: observed, ..
+            },
+            settlement:
+                dudes_proto::InstructionSettlement::Compared {
+                    end: dudes_proto::InstructionEndBoundary::ManagedTurn {
+                        turn: ended, end_lsn: seen
+                    }, ..
+                }
+                | dudes_proto::InstructionSettlement::Unknown {
+                    end: Some(dudes_proto::InstructionEndBoundary::ManagedTurn {
+                        turn: ended, end_lsn: seen
+                    }), ..
+                },
+            ..
+        } if *owner == agent && *observed == turn && *ended == turn && *seen == end_lsn)
+        .then_some(())
+    });
+    running.handle.doctor().unwrap();
     let before = fixture.records().len();
     let invalid_browser = serde_json::to_vec(&json!({"request_id":request_id(7),"agent":agent,"question_lsn":question,"text":"use\rmain"})).unwrap();
     assert_eq!(browser.post("/floor/answer", &invalid_browser).0, 400);

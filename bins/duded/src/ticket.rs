@@ -99,8 +99,10 @@ pub(crate) fn register(dispatcher: &mut Dispatcher, handle: &Handle) {
         move |call, pid| {
             let request: TicketAcceptParams = params(&call)?;
             let by = actor(call.role, pid)?;
-            accept.ask(Ask::Ticket(TicketAsk::Accept { request, by }))?;
-            encode(Method::TicketAccept, &dudes_proto::rpc::Empty {})
+            match accept.ask(Ask::Ticket(TicketAsk::Accept { request, by }))? {
+                Answered::TicketAccepted(result) => encode(Method::TicketAccept, &result),
+                _ => Err(wrong_answer(Method::TicketAccept)),
+            }
         },
     );
 

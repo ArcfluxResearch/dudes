@@ -371,6 +371,30 @@ fn credential_of(settings: &duded::Settings) -> OperatorCredential {
     OperatorCredential::new(text).expect("it is well formed")
 }
 
+fn token_after_mint_pump(
+    fixture: &Fixture,
+    handle: &duded::Handle,
+    agent: AgentId,
+) -> (Lsn, HookToken) {
+    let hash = fixture.await_record("the exact agent's mint", |record| match record {
+        Record::HookTokenMinted {
+            agent: owner,
+            token_hash,
+        } if *owner == agent => Some(token_hash.clone()),
+        _ => None,
+    });
+    let minted = await_lsn(fixture, "the exact mint position", |record| {
+        matches!(record,
+        Record::HookTokenMinted { agent: owner, token_hash } if *owner == agent && *token_hash == hash)
+    });
+    let token = common::token_of(&hash);
+    let completed = handle
+        .doctor()
+        .expect("read after the mint's existing pump");
+    assert!(completed.lsn >= minted);
+    (minted, token)
+}
+
 /// The error an answer carries, or a panic naming what came back instead.
 fn error_of(response: &Response) -> &dudes_proto::rpc::RpcError {
     response
@@ -733,11 +757,7 @@ fn ready(fixture: &Fixture) -> Ready {
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    let hash = fixture.await_record("HookTokenMinted", |record| match record {
-        Record::HookTokenMinted { token_hash, .. } => Some(token_hash.clone()),
-        _ => None,
-    });
-    let token = common::token_of(&hash);
+    let (_, token) = token_after_mint_pump(fixture, &running.handle, agent);
     Ready {
         settings,
         running,
@@ -1356,13 +1376,7 @@ fn every_ask_variant_preserves_publication_before_reply() {
         &running.handle,
         common::goal_params(sentinel, &["/usr/bin/true"]),
     );
-    let sentinel_hash = fixture.await_record("sentinel HookTokenMinted", |record| match record {
-        Record::HookTokenMinted { agent, token_hash } if *agent == sentinel => {
-            Some(token_hash.clone())
-        }
-        _ => None,
-    });
-    let sentinel_token = common::token_of(&sentinel_hash);
+    let (_, sentinel_token) = token_after_mint_pump(&fixture, &running.handle, sentinel);
     assert_token_owner_is_published(&settings, &column, sentinel, &sentinel_token, true, "setup");
 
     // This match is deliberately inside the named test and has no wildcard. Adding an `Ask`
@@ -1531,27 +1545,51 @@ fn every_ask_variant_preserves_publication_before_reply() {
             .id,
         set.goal
     );
-    let turn = added
+    if let Some(agent_hash) = added.iter().find_map(|(_, entry)| match &entry.record {
+        Record::HookTokenMinted {
+            agent: who,
+            token_hash,
+        } if *who == agent => Some(token_hash.clone()),
+        _ => None,
+    }) {
+        let token = common::token_of(&agent_hash);
+        assert_token_owner_is_published(&settings, &column, agent, &token, true, variant);
+    }
+    let (minted, agent_token) = token_after_mint_pump(&fixture, &running.handle, agent);
+    let entries = fixture.entries();
+    let (issued, turn) = entries
         .iter()
-        .find_map(|(_, entry)| match &entry.record {
+        .find_map(|(lsn, entry)| match entry.record {
             Record::TurnIssued {
-                agent: who, turn, ..
-            } if *who == agent => Some(*turn),
+                agent: owner, turn, ..
+            } if owner == agent => Some((*lsn, turn)),
             _ => None,
         })
-        .expect("SetGoal issues this agent's first turn before answering");
-    let agent_hash = added
+        .expect("the sampled setup issues the later subjects' managed turn");
+    let started = entries
         .iter()
-        .find_map(|(_, entry)| match &entry.record {
-            Record::HookTokenMinted {
-                agent: who,
-                token_hash,
-            } if *who == agent => Some(token_hash.clone()),
+        .find_map(|(lsn, entry)| match entry.record {
+            Record::InstructionObservationStarted {
+                owner:
+                    dudes_proto::InstructionObservationOwner::Managed {
+                        agent: owner,
+                        turn: owned_turn,
+                        ..
+                    },
+                ..
+            } if owner == agent && owned_turn == turn => Some(*lsn),
             _ => None,
         })
-        .expect("SetGoal mints this agent's token before answering");
-    let agent_token = common::token_of(&agent_hash);
-    assert_token_owner_is_published(&settings, &column, agent, &agent_token, true, variant);
+        .expect("the exact starting sample precedes issue");
+    assert!(started < issued && issued < minted);
+    assert_token_owner_is_published(
+        &settings,
+        &column,
+        agent,
+        &agent_token,
+        true,
+        "later subject setup",
+    );
 
     let (variant, answer, added) = run_case(duded::ports::Ask::Pause(agent));
     assert!(

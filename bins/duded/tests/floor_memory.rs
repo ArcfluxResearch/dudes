@@ -319,6 +319,40 @@ fn socket(
     )
 }
 
+fn token_after_mint_pump(
+    fixture: &Fixture,
+    handle: &duded::Handle,
+    agent: AgentId,
+) -> dudes_proto::rpc::hook::HookToken {
+    let token_hash = fixture.await_record("HookTokenMinted", |record| match record {
+        Record::HookTokenMinted {
+            agent: owner,
+            token_hash,
+        } if *owner == agent => Some(token_hash.clone()),
+        _ => None,
+    });
+    let token = common::token_of(&token_hash);
+    let minted = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| match entry.record {
+            Record::HookTokenMinted {
+                agent: owner,
+                token_hash: hash,
+            } if owner == agent && hash == token_hash => Some(lsn),
+            _ => None,
+        })
+        .expect("the exact agent's durable mint");
+    assert!(
+        handle
+            .doctor()
+            .expect("read after the mint's setup pump")
+            .lsn
+            >= minted
+    );
+    token
+}
+
 /// The agent appends through its own token; after the hire the operator's own
 /// `memory.append --agent` and the agent's over-ceiling append are both withheld.
 #[test]
@@ -343,11 +377,7 @@ fn an_operator_reads_an_agents_entry_and_its_withheld_appends() {
         common::goal_params(agent, &["/usr/bin/false"]),
     );
     fixture.await_turn();
-    let token_hash = fixture.await_record("HookTokenMinted", |record| match record {
-        Record::HookTokenMinted { token_hash, .. } => Some(token_hash.clone()),
-        _ => None,
-    });
-    let token = common::token_of(&token_hash);
+    let token = token_after_mint_pump(&fixture, &daemon.running.handle, agent);
 
     column.set(PeerProvenance::Agent(agent));
     let applied = socket(&daemon.settings)

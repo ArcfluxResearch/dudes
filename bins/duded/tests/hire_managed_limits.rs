@@ -144,6 +144,10 @@ fn hire_with(
         .expect("agent.hire is answered")
 }
 
+fn hire_result(response: dudes_proto::rpc::Response) -> dudes_proto::rpc::agent::HireResult {
+    serde_json::from_value(response.result.expect("a result")).expect("a hire result")
+}
+
 /// The `AgentHired` records on the disk, as the pair of recorded limits.
 fn recorded_limits(fixture: &Fixture) -> Vec<(Option<u32>, Option<dudes_types::Usd>)> {
     fixture
@@ -217,19 +221,21 @@ fn explicit_limits_reach_first_and_reissued_launch() {
         "positive limits are admitted: {:?}",
         capped.error
     );
-    let capped: dudes_proto::rpc::agent::HireResult =
-        serde_json::from_value(capped.result.expect("a result")).expect("a hire result");
+    let capped = hire_result(capped);
     common::set_goal(
         &running.handle,
         common::goal_params(capped.agent, &["true"]),
     );
 
     let plain = hire_with(&mut client, &settings, &fixture, &serde_json::json!({}));
-    let plain: dudes_proto::rpc::agent::HireResult =
-        serde_json::from_value(plain.result.expect("a result")).expect("a hire result");
+    let plain = hire_result(plain);
     common::set_goal(&running.handle, common::goal_params(plain.agent, &["true"]));
     fixture.await_record("TurnSpawned", |record| {
         matches!(record, Record::TurnSpawned { .. }).then_some(())
+    });
+    let capped_turn = fixture.await_record("capped TurnIssued", |record| match record {
+        Record::TurnIssued { agent, turn, .. } if *agent == capped.agent => Some(*turn),
+        _ => None,
     });
     running.stop(ExitCause::Ended);
 
@@ -269,8 +275,11 @@ fn explicit_limits_reach_first_and_reissued_launch() {
     seams.adapters = Adapters::new([Box::new(ClaudeAdapter::new(claude)) as Box<dyn Adapter>]);
     let daemon = boot(&settings, seams).expect("the same state directory boots again");
     let mut running = common::start(daemon);
-    fixture.await_record("TurnSpawned", |record| {
-        matches!(record, Record::TurnSpawned { .. }).then_some(())
+    fixture.await_record("reissued capped TurnSpawned", |record| {
+        (matches!(record, Record::TurnSpawned { agent, turn, reissued: true, .. }
+            if *agent == capped.agent && *turn == capped_turn)
+            && !second_host.inner.spawned().is_empty())
+        .then_some(())
     });
     running.stop(ExitCause::Ended);
 

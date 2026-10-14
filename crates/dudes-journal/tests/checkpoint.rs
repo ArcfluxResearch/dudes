@@ -188,6 +188,12 @@ fn placement(kind: RecordKind) -> Placement {
         | RecordKind::TicketRemoved => Placement::Out(
             "a ticket's records need the card they name; tests/tickets.rs replays the lifecycle with and without checkpoints",
         ),
+        RecordKind::InstructionObservationStarted
+        | RecordKind::InstructionObservationFinished
+        | RecordKind::TicketInstructionReviewed
+        | RecordKind::InstructionAttemptBoundarySettled => Placement::Out(
+            "instruction authority needs exact joined issue, spawn, end and review positions; standalone samples do not supply those joins",
+        ),
         RecordKind::AgentMcpServersChanged | RecordKind::McpLaunchGranted => Placement::Out(
             "MCP authority requires its edited policy and physical joins; required frame and cache rebuild tests cover those records separately",
         ),

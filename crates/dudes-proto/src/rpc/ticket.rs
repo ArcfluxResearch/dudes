@@ -7,6 +7,7 @@ use dudes_types::{AgentId, CardId, Seq, WorktreeId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::instruction::InstructionReviewWatermark;
 use crate::projection::CardView;
 use crate::record::Hex32;
 use crate::ticket::{TicketReason, TicketRow, TicketWaiting};
@@ -76,6 +77,9 @@ pub struct TicketAssignParams {
     pub message: Option<String>,
     /// The ticket's `seq` as last seen.
     pub expected_seq: Seq,
+    /// Exact instruction set reviewed by Ask for changes. Absent for ordinary assignment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_watermark: Option<InstructionReviewWatermark>,
 }
 
 /// What became of an assigned ticket.
@@ -179,7 +183,8 @@ pub struct TicketStopParams {
     pub expected_seq: Seq,
 }
 
-/// `ticket.accept` params: the operator's verdict that a ticket that is Ready for you is done.
+/// `ticket.accept` params. Instruction review acknowledges the named set and accepts completed
+/// work only when existing observed goal-completion evidence permits it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TicketAcceptParams {
@@ -187,4 +192,23 @@ pub struct TicketAcceptParams {
     pub card: CardId,
     /// The ticket's `seq` as last seen.
     pub expected_seq: Seq,
+    /// Exact instruction set reviewed. Absent for ordinary completed-ticket acceptance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_watermark: Option<InstructionReviewWatermark>,
+}
+
+/// `ticket.accept` result. Ordinary completed acceptance remains exactly `{}`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TicketAcceptResult {
+    /// Present when the action acknowledged instructions and the work continues.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<TicketAcceptOutcome>,
+}
+
+/// The explicit continuing-work outcome of instruction acceptance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TicketAcceptOutcome {
+    /// The named instruction review was acknowledged; the ticket is still work in progress.
+    InstructionsAcknowledged,
 }

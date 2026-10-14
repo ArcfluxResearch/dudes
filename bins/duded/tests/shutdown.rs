@@ -22,16 +22,15 @@
 //! `FakeHost::shutdown` **models** the sweep: it counts the call and marks every pid it handed out
 //! `NoSuchPid`, so every key it returned reads `Gone` afterwards. A fake that returned `Ok(())` and
 //! changed nothing would let a daemon which never called it pass a test that said it did. Each arm
-//! below therefore asserts the count, the sweep, and — as the anti-vacuity control — that every one
-//! of those keys read `Alive` first.
+//! that creates children therefore asserts the count, the sweep, and — as the anti-vacuity control —
+//! that every one of those keys read `Alive` first.
 //!
 //! # The fourth path, which is not an `ExitCause`
 //!
-//! `Daemon::run` is not the only way a daemon leaves the world. **Startup step 7 re-issues an un-spawned turn,
-//! so `boot` itself can create a real child** — and an append that fails later in that same pump
-//! makes `boot` return `Err` and drop the fully constructed daemon without any exit sequence having
-//! run. [`a_daemon_dropped_before_it_runs_still_sweeps_the_child_boot_spawned`] covers that path, and
-//! `Daemon`'s `Drop` is what sweeps the child.
+//! `Daemon::run` is not the only way a daemon leaves the world. Dropping before `run` still owes
+//! teardown, but a fresh host cannot turn an earlier `CleanupUnconfirmed` into evidence that
+//! reissue is safe. [`drop_before_run_preserves_unconfirmed_cleanup_and_tears_down_once`] records
+//! that actual uncertainty first, then checks that reboot preserves it and `Drop` tears down once.
 //!
 //! # The mutation control is manual, recorded rather than kept
 //!
@@ -48,9 +47,13 @@ use std::sync::{Arc, Mutex};
 
 use duded::startup::{TeardownStep, Witness};
 use duded::{ExitCause, boot};
-use dudes_proto::{ExitStatus, TurnOutcome};
-use dudes_supervisor::Input;
+use dudes_proto::{
+    ExitStatus, InstructionBaselineRef, InstructionGapKind, InstructionObservationOwner,
+    InstructionSettlement, InstructionUnknownReason, Record, TurnOutcome,
+};
 use dudes_supervisor::host::Liveness;
+use dudes_supervisor::{Input, World};
+use dudes_types::TurnId;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record as SpanRecord};
 use tracing::{Event, Metadata, Subscriber};
@@ -120,19 +123,17 @@ impl Subscriber for Capture {
 fn exit_through(cause: ExitCause) {
     let fixture = Fixture::new();
     let settings = fixture.settings();
-    let host = SharedHost::new();
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let runner = Arc::new(ScriptedRunner::default());
     let witness = Witness::default();
-    let daemon = boot(
-        &settings,
-        seams(
-            host.clone(),
-            Arc::clone(&runner),
-            Arc::new(TestClock::new()),
-            witness.clone(),
-        ),
-    )
-    .expect("boot");
+    let injected = seams(
+        host.clone(),
+        Arc::clone(&runner),
+        Arc::new(TestClock::new()),
+        witness.clone(),
+    );
+    host.bind_child_ends(Arc::clone(&injected.children));
+    let daemon = boot(&settings, injected).expect("boot");
     let mut running = common::start(daemon);
 
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -140,7 +141,14 @@ fn exit_through(cause: ExitCause) {
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    fixture.await_turn();
+    let turn = fixture.await_turn();
+    fixture.await_record(
+        "the child the shutdown control will sweep",
+        |record| match record {
+            dudes_proto::Record::TurnSpawned { turn: spawned, .. } if *spawned == turn => Some(()),
+            _ => None,
+        },
+    );
 
     // Control: the child the daemon launched is alive before the exit, so a later `Gone` is this
     // call's doing and not a fake that never knew it.
@@ -303,51 +311,126 @@ fn host_shutdown_error_is_visible_and_later_teardown_runs() {
     assert_eq!(runner.sweeps(), 1, "the predicate sweep was skipped");
 }
 
-/// Invariant 10 on the path `boot` itself opened: a child created during startup step 7 is swept
-/// when the daemon is dropped without ever running.
-///
-/// # What this asserts and what it substitutes for
-///
-/// The real trigger is an append that fails *after* step 7's
-/// spawn, so `boot` returns `Err` and drops the daemon. `Writer`'s fault injector is `#[cfg(test)]`
-/// and unreachable from here, and `Ctx::execute` returns `Err` from nowhere else, so that exact
-/// trigger cannot be driven from a test target. What can be driven is the **property** the trigger
-/// would exercise, on the same path and with the same child: `boot` spawns during step 7, the
-/// daemon is dropped without `run`, and every child is swept. Any `Err` out of `boot` after the
-/// spawn reaches this same drop.
-///
-/// The setup is the restart case: a first run whose launch is refused leaves a durable `TurnIssued` with
-/// no `TurnSpawned`, so the second boot re-issues it — inside `boot`, which the
-/// assertion below establishes rather than assumes.
-#[test]
-fn a_daemon_dropped_before_it_runs_still_sweeps_the_child_boot_spawned() {
-    let fixture = Fixture::new();
-    let settings = fixture.settings();
+fn replay_shutdown_fixture(fixture: &Fixture) -> World {
+    let mut world = World::default();
+    for (lsn, entry) in fixture.entries() {
+        world.apply(lsn, &entry);
+    }
+    world
+}
 
-    // Run one: the turn reaches the disk and the launch does not happen.
+fn recorded_unconfirmed_cleanup(fixture: &Fixture) -> (TurnId, World) {
     let crashed = common::UnconfirmedHost::new(true);
-    let first = boot(
-        &settings,
-        seams(
-            crashed.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
+    let mut first_seams = seams(
+        crashed.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    first_seams.adapters = dudes_providers::registry::Adapters::new([Box::new(
+        dudes_providers::claude::ClaudeAdapter::new(
+            dudes_providers::claude::config::ClaudeConfig {
+                command: std::env::current_exe()
+                    .expect("owned test program")
+                    .into_os_string(),
+                ..dudes_providers::claude::config::ClaudeConfig::default()
+            },
         ),
     )
-    .expect("boot");
+        as Box<dyn dudes_providers::adapter::Adapter>]);
+    let first = boot(&fixture.settings(), first_seams).expect("boot");
     let mut first = common::start(first);
     let agent = common::hire(&first.handle, fixture.state.path());
     common::set_goal(
         &first.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    fixture.await_turn();
+    let turn = fixture.await_turn();
+    let baseline = fixture.await_record("actual unconfirmed cleanup", |record| match record {
+        Record::InstructionObservationFinished {
+            owner:
+                InstructionObservationOwner::Managed {
+                    agent: seen_agent,
+                    turn: seen,
+                    ..
+                },
+            baseline: InstructionBaselineRef::Started { lsn },
+            settlement:
+                InstructionSettlement::Unknown {
+                    reason: InstructionUnknownReason::CleanupUnconfirmed,
+                    end: None,
+                    sampled_at: None,
+                    recovery: false,
+                    comparison,
+                },
+            ..
+        } if *seen_agent == agent
+            && *seen == turn
+            && comparison
+                .gaps
+                .iter()
+                .any(|gap| gap.reason == InstructionGapKind::CleanupUnconfirmed) =>
+        {
+            Some(*lsn)
+        }
+        _ => None,
+    });
     first.stop(ExitCause::Ended);
     assert_eq!(crashed.children(), 0, "control: run one created no child");
+    assert_eq!(crashed.shared().shutdowns(), 1);
+    let before = replay_shutdown_fixture(fixture);
+    let attempt = before.instructions.attempt(baseline).unwrap();
+    assert!(attempt.finished.is_some());
+    assert!(attempt.boundary_settled.is_none());
+    assert!(
+        before
+            .instructions
+            .unresolved_launch_attempts(agent)
+            .any(|(seen, _)| *seen == baseline)
+    );
+    (turn, before)
+}
 
-    // Run two: the replay re-issues during startup step 7, so the child exists before `boot`
-    // has returned.
+fn assert_unconfirmed_cleanup_preserved(
+    fixture: &Fixture,
+    before: &World,
+    after: &World,
+    turn: TurnId,
+) {
+    let agent = before.turns[&turn].agent;
+    assert_eq!(after.agents[&agent].open_turn, Some(turn));
+    assert_eq!(after.turns[&turn].task, before.turns[&turn].task);
+    assert_eq!(
+        after
+            .instructions
+            .unresolved_launch_attempts(agent)
+            .collect::<Vec<_>>(),
+        before
+            .instructions
+            .unresolved_launch_attempts(agent)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !fixture.records().iter().any(|record| match record {
+            Record::TurnSpawned { turn: seen, .. }
+            | Record::TurnEnded { turn: seen, .. }
+            | Record::InstructionAttemptBoundarySettled {
+                owner: InstructionObservationOwner::Managed { turn: seen, .. },
+                ..
+            } => *seen == turn,
+            _ => false,
+        }),
+        "neither a fresh empty host nor teardown proves native absence"
+    );
+}
+
+#[test]
+fn drop_before_run_preserves_unconfirmed_cleanup_and_tears_down_once() {
+    let fixture = Fixture::new();
+    let settings = fixture.settings();
+    let (turn, before) = recorded_unconfirmed_cleanup(&fixture);
+
+    // A fresh empty host has no native ownership evidence for the earlier attempt.
     let restarted = common::UnconfirmedHost::new(false);
     let host = restarted.shared();
     let runner = Arc::new(ScriptedRunner::default());
@@ -363,19 +446,10 @@ fn a_daemon_dropped_before_it_runs_still_sweeps_the_child_boot_spawned() {
     )
     .expect("the same state directory boots again");
 
-    let pids = host.pids();
-    assert_eq!(
-        pids.len(),
-        1,
-        "the premise of this test: startup step 7 spawned a child, before boot returned"
-    );
-    assert_eq!(
-        host.alive_of(pids[0]),
-        Liveness::Alive,
-        "control: pid {} is alive, so a later Gone is the drop's doing",
-        pids[0]
-    );
+    assert!(host.pids().is_empty());
+    assert!(host.spawned().is_empty());
     assert_eq!(host.shutdowns(), 0, "and nothing has swept yet");
+    assert_unconfirmed_cleanup_preserved(&fixture, &before, daemon.world(), turn);
 
     // The path: the daemon is dropped without `run` ever being called, exactly as `boot`'s own `?`
     // would drop it.
@@ -384,12 +458,7 @@ fn a_daemon_dropped_before_it_runs_still_sweeps_the_child_boot_spawned() {
     assert_eq!(
         host.shutdowns(),
         1,
-        "invariant 10 holds on the path boot opened: dropping the daemon swept its host"
-    );
-    assert_eq!(
-        host.alive_of(pids[0]),
-        Liveness::Gone,
-        "and the child boot spawned is gone"
+        "invariant 10 holds: dropping the daemon swept its host once"
     );
     assert_eq!(
         runner.sweeps(),
@@ -400,6 +469,14 @@ fn a_daemon_dropped_before_it_runs_still_sweeps_the_child_boot_spawned() {
         witness.teardown.steps(),
         TeardownStep::ORDER.to_vec(),
         "the whole exit sequence ran, in order"
+    );
+    assert!(host.pids().is_empty());
+    assert!(host.spawned().is_empty());
+    assert_unconfirmed_cleanup_preserved(
+        &fixture,
+        &before,
+        &replay_shutdown_fixture(&fixture),
+        turn,
     );
 }
 

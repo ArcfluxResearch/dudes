@@ -22,7 +22,7 @@ use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_proto::{ExitStatus, Record, TurnOutcome};
 use dudes_rpc::Client;
 use dudes_supervisor::Input;
-use dudes_types::{AgentId, Timestamp, TurnId};
+use dudes_types::{AgentId, GoalId, Timestamp, TurnId};
 use serde_json::Value;
 
 mod common;
@@ -254,6 +254,7 @@ impl Day {
 
 struct Boot {
     running: common::Running,
+    host: SharedHost,
     addr: SocketAddr,
     settings: duded::Settings,
 }
@@ -267,49 +268,53 @@ fn boot_with(
     let settings = settings(fixture, free_port());
     let fault = FloorStreamFault::default().without_heartbeat();
     fault.use_local_days(day.source());
-    let daemon = boot::boot_with_floor_faults(
-        &settings,
-        seams(
-            SharedHost::new(),
-            Arc::clone(runner),
-            Arc::clone(clock),
-            Witness::default(),
-        ),
-        None,
-        fault,
-    )
-    .expect("daemon boot");
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let parts = seams(
+        host.clone(),
+        Arc::clone(runner),
+        Arc::clone(clock),
+        Witness::default(),
+    );
+    host.bind_child_ends(Arc::clone(&parts.children));
+    let daemon = boot::boot_with_floor_faults(&settings, parts, None, fault).expect("daemon boot");
     let addr = daemon.floor_addr().expect("Floor address");
     Boot {
         running: common::start(daemon),
+        host,
         addr,
         settings,
     }
 }
 
-fn end_turn(running: &common::Running, turn: TurnId, final_reply: Option<&str>) {
-    running.handle.input(Input::ChildExited {
-        final_reply: final_reply.map(|text| dudes_proto::ChatReply {
-            text: text.to_owned(),
-            completeness: dudes_proto::ChatReplyCompleteness::Complete,
-        }),
-        elapsed_ms: None,
-        turn,
-        exit: ExitStatus {
-            code: Some(0),
-            signal: None,
+fn end_turn(boot: &Boot, fixture: &Fixture, turn: TurnId, final_reply: Option<&str>) {
+    common::end_turn_with_native_payload(
+        fixture,
+        &boot.host,
+        Input::ChildExited {
+            final_reply: final_reply.map(|text| dudes_proto::ChatReply {
+                text: text.to_owned(),
+                completeness: dudes_proto::ChatReplyCompleteness::Complete,
+            }),
+            elapsed_ms: None,
+            turn,
+            exit: ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: None,
+            model_usage: BTreeMap::new(),
+            outcome: TurnOutcome::Completed,
+            last_message: None,
         },
-        usage: None,
-        model_usage: BTreeMap::new(),
-        outcome: TurnOutcome::Completed,
-        last_message: None,
-    });
+    );
 }
 
 /// The turn the journal issued that is not one of `seen`.
-fn next_turn(fixture: &Fixture, seen: &[TurnId]) -> TurnId {
+fn next_turn(fixture: &Fixture, goal: GoalId, seen: &[TurnId]) -> TurnId {
     fixture.await_record("a new TurnIssued", |record| match record {
-        Record::TurnIssued { turn, .. } if !seen.contains(turn) => Some(*turn),
+        Record::TurnIssued {
+            turn, goal: issued, ..
+        } if *issued == goal && !seen.contains(turn) => Some(*turn),
         _ => None,
     })
 }
@@ -342,13 +347,13 @@ fn await_done(fixture: &Fixture, count: usize) {
 }
 
 fn finish_goal(boot: &Boot, fixture: &Fixture, agent: AgentId, seen: &mut Vec<TurnId>) {
-    common::set_goal(
+    let goal = common::set_goal(
         &boot.running.handle,
         goal_params(agent, &[common::true_program()]),
     );
-    let turn = next_turn(fixture, seen);
+    let turn = next_turn(fixture, goal, seen);
     seen.push(turn);
-    end_turn(&boot.running, turn, Some("the goal is complete"));
+    end_turn(boot, fixture, turn, Some("the goal is complete"));
 }
 
 #[test]
@@ -372,18 +377,19 @@ fn the_count_rests_on_an_observed_pass_and_survives_replacement_and_restart() {
     );
 
     let mut seen = Vec::new();
-    common::set_goal(
+    let goal = common::set_goal(
         &boot.running.handle,
         goal_params(agent, &[common::true_program()]),
     );
-    let first = next_turn(&fixture, &seen);
+    let first = next_turn(&fixture, goal, &seen);
     seen.push(first);
     end_turn(
-        &boot.running,
+        &boot,
+        &fixture,
         first,
         Some("Finished! The goal is complete."),
     );
-    let second = next_turn(&fixture, &seen);
+    let second = next_turn(&fixture, goal, &seen);
     seen.push(second);
     assert_eq!(
         done_count(&fixture),
@@ -400,7 +406,7 @@ fn the_count_rests_on_an_observed_pass_and_survives_replacement_and_restart() {
     );
 
     let before_done = fixture.entries().len();
-    end_turn(&boot.running, second, None);
+    end_turn(&boot, &fixture, second, None);
     await_done(&fixture, 1);
     let done = browser.until("the first completion", |m| total_of(m) == Some("1"));
     assert_eq!(done["finished_today"]["local_date"], "2026-10-07");

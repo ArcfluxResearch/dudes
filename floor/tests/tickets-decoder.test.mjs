@@ -15,7 +15,7 @@ import test, { after, before, beforeEach } from 'node:test';
 
 import { createServer } from 'vite';
 
-import { ADA, agent, cardId, subscribe, ticketCard } from './helpers/tickets.mjs';
+import { ADA, agent, cardId, subscribe, ticketCard, instructionSummary } from './helpers/tickets.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 
@@ -110,4 +110,17 @@ test('the ticket sibling is an empty object, and nothing else', () => {
   store.noteTransport('close');
   assert.equal(store.getFloorState().ticket, false, 'a closed stream takes the sibling with it');
   void agent;
+});
+
+test('instruction reasons and exact decimal watermarks survive the snapshot boundary', () => {
+  for (const reason of ['shared_instructions_changed', 'shared_instructions_unknown']) {
+    const decoded = board.decodeCards([ticketCard(1, 'blocked', {}, { reason, instruction_review: instructionSummary() })]);
+    assert.equal(decoded.rejected, 0);
+    assert.equal(decoded.rows[0].ticket.reason, reason);
+    assert.equal(decoded.rows[0].ticket.instruction_review.watermark.through_lsn, '9007199254740993');
+  }
+  const bad = board.decodeCards([ticketCard(1, 'blocked', {}, { instruction_review: instructionSummary({
+    watermark: { through_lsn: 9007199254740992, set_digest: 'd'.repeat(64) },
+  }) })]);
+  assert.deepEqual([bad.rows.length, bad.rejected], [0, 1]);
 });

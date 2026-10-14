@@ -114,14 +114,14 @@ test('card detail supplies the existing heading focus and hand-back target', asy
   assert.match(detail, /aria-labelledby="card-detail-title"/);
 });
 
-test('a valid large sequence stays counted and its detail does not claim rounded precision', async () => {
+test('an unsafe sequence cannot enter card authority and its detail does not claim rounded precision', async () => {
   resetFloorStore();
   const epoch = beginFloorEpoch();
   const row = JSON.stringify(card(A, 'todo')).replace('"seq":0', '"seq":18446744073709551615');
   applyServerFrame(`{"type":"floor.snapshot","projection":{"lsn":1,"agents":[],"cards":[${row}]}}`, epoch);
   const floor = getFloorState();
-  assert.equal(floor.cards.length, 1);
-  assert.equal(floor.cards[0].id, A);
-  const detail = await renderModule('/src/renderer/BoardPanel.tsx', 'CardDetail', { floor, card: floor.cards[0] });
+  assert.equal(floor.cards.length, 0);
+  assert.equal(floor.rejected, 1);
+  const detail = await renderModule('/src/renderer/BoardPanel.tsx', 'CardDetail', { floor, card: JSON.parse(row) });
   assert.ok(detail.includes('Read sequence with the CLI'));
 });

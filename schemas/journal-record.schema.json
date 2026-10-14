@@ -1314,6 +1314,16 @@
       },
       "type": "object"
     },
+    "ExplicitNullable_InstructionGoalClear": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/InstructionGoalClear"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "ExplicitNullable_MailWakeCarrierText": {
       "anyOf": [
         {
@@ -1602,6 +1612,2106 @@
         {
           "const": "unknown_cause",
           "description": "A hold cause this version does not know.",
+          "type": "string"
+        },
+        {
+          "const": "shared_instructions_review",
+          "description": "Associated instruction comparison or exact Operator review remains outstanding.\nOrdinary Resume cannot acknowledge this journal-derived obligation.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionAcceptCompletion": {
+      "description": "Whether accepting this review also uses an existing observed goal completion.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Accept the completed ticket using existing qualified evidence.",
+          "properties": {
+            "completion_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Existing observed completion record position."
+            },
+            "kind": {
+              "const": "completed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "completion_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Acknowledge instructions and continue the same work through ordinary admission.",
+          "properties": {
+            "kind": {
+              "const": "continue",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionActivation": {
+      "description": "Whether a declared rule or input is admitted to the provider's context.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Admitted by the actual composition.",
+          "properties": {
+            "kind": {
+              "const": "active",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Declared but excluded by the actual composition.",
+          "properties": {
+            "kind": {
+              "const": "inactive",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Depends on a condition whose family must remain observable.",
+          "properties": {
+            "condition": {
+              "$ref": "#/$defs/InstructionCondition",
+              "description": "The condition's typed source."
+            },
+            "kind": {
+              "const": "conditional",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "condition"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionAncestorStop": {
+      "description": "A frozen ancestor stopping rule.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Stop at the filesystem root.",
+          "properties": {
+            "kind": {
+              "const": "file_system_root",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stop at a declared root, by its zero-based plan index.",
+          "properties": {
+            "kind": {
+              "const": "root",
+              "type": "string"
+            },
+            "root": {
+              "description": "Root index.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "root"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stop at the first directory containing any admitted root marker.",
+          "properties": {
+            "kind": {
+              "const": "marker",
+              "type": "string"
+            },
+            "paths": {
+              "description": "Exact relative marker names.",
+              "items": {
+                "$ref": "#/$defs/NativeInstructionPath"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "paths"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionBaselineRef": {
+      "description": "Stable identity of an attempt, or the actual issued or ended turn whose start is missing.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Starting record's own LSN identifies this physical attempt.",
+          "properties": {
+            "kind": {
+              "const": "started",
+              "type": "string"
+            },
+            "lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact starting record position."
+            }
+          },
+          "required": [
+            "kind",
+            "lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Real observed turn without a comparable starting boundary.",
+          "properties": {
+            "end_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Actual observed end position."
+            },
+            "kind": {
+              "const": "missing_turn_boundary",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Actual observed turn identity."
+            }
+          },
+          "required": [
+            "kind",
+            "turn",
+            "end_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "An actual managed issue with neither a recorded start nor an observed end.",
+          "properties": {
+            "issue_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "The actual issue position, reused as this uncertainty's identity on restart."
+            },
+            "kind": {
+              "const": "missing_issue_boundary",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Immutable recorded turn identity."
+            }
+          },
+          "required": [
+            "kind",
+            "turn",
+            "issue_lsn"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionBootIdentity": {
+      "description": "Strong comparable OS boot evidence. Other platforms remain unsupported until sourced.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Exact opaque identity supplied by the Linux kernel for this boot.",
+          "properties": {
+            "kind": {
+              "const": "linux_kernel_boot_id",
+              "type": "string"
+            },
+            "value": {
+              "description": "Bounded content-free kernel value, never a clock or daemon-run identifier.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionBoundaryAbsenceProof": {
+      "description": "Scoped absence of an incumbent native process group or job, separate from comparison/review.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The host confirmed fresh native group/job absence and successfully reaped its leader.\nThis makes no claim about arbitrary descendants outside that native boundary.",
+          "properties": {
+            "kind": {
+              "const": "native_owned_boundary_absent",
+              "type": "string"
+            },
+            "receipt": {
+              "$ref": "#/$defs/InstructionNativeBoundaryReceipt",
+              "description": "Incumbent receipt attributed to this exact physical attempt."
+            }
+          },
+          "required": [
+            "kind",
+            "receipt"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Comparable OS evidence proves that the starting boot has ended.",
+          "properties": {
+            "current": {
+              "$ref": "#/$defs/InstructionBootIdentity",
+              "description": "Independently sampled current boot from the same supported OS source."
+            },
+            "kind": {
+              "const": "prior_boot_absent",
+              "type": "string"
+            },
+            "previous": {
+              "$ref": "#/$defs/InstructionBootIdentity",
+              "description": "Exact comparable boot stored by the starting sample."
+            }
+          },
+          "required": [
+            "kind",
+            "previous",
+            "current"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionCandidate": {
+      "description": "Candidate families retain absent and shadowed members as well as selected files.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Ordered fixed candidates relative to the rule's root.",
+          "properties": {
+            "kind": {
+              "const": "fixed",
+              "type": "string"
+            },
+            "paths": {
+              "description": "Exact ordered relative names.",
+              "items": {
+                "$ref": "#/$defs/NativeInstructionPath"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "paths"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Ordered names at each ancestor, under the fixed ancestor work limit.",
+          "properties": {
+            "kind": {
+              "const": "ancestor",
+              "type": "string"
+            },
+            "paths": {
+              "description": "Exact ordered relative names.",
+              "items": {
+                "$ref": "#/$defs/NativeInstructionPath"
+              },
+              "type": "array"
+            },
+            "stop": {
+              "$ref": "#/$defs/InstructionAncestorStop",
+              "description": "The boundary that stops ascent."
+            }
+          },
+          "required": [
+            "kind",
+            "paths",
+            "stop"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Named files below a declared directory, under the fixed entry and depth limits.",
+          "properties": {
+            "directory": {
+              "$ref": "#/$defs/NativeInstructionPath",
+              "description": "Relative directory to expand."
+            },
+            "kind": {
+              "const": "descendant",
+              "type": "string"
+            },
+            "paths": {
+              "description": "Ordered candidate names.",
+              "items": {
+                "$ref": "#/$defs/NativeInstructionPath"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "directory",
+            "paths"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Markdown rule files, including conditional rules.",
+          "properties": {
+            "directory": {
+              "$ref": "#/$defs/NativeInstructionPath",
+              "description": "Relative rule directory."
+            },
+            "kind": {
+              "const": "markdown_rules",
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/$defs/InstructionRuleDirectoryScope",
+              "description": "Direct, ancestor, or descendant placement of that directory."
+            }
+          },
+          "required": [
+            "kind",
+            "directory",
+            "scope"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One explicitly admitted file, resolved against this rule's root.",
+          "properties": {
+            "kind": {
+              "const": "explicit_file",
+              "type": "string"
+            },
+            "path": {
+              "$ref": "#/$defs/NativeInstructionPath",
+              "description": "Exact file path."
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionComparison": {
+      "description": "End comparison. Empty changes alone never establish complete coverage.",
+      "properties": {
+        "changes": {
+          "description": "Known endpoint changes, including changes found before another input failed.",
+          "items": {
+            "$ref": "#/$defs/InstructionPathChange"
+          },
+          "type": "array"
+        },
+        "gaps": {
+          "description": "Independent coverage gaps, including starting gaps and declaration changes.",
+          "items": {
+            "$ref": "#/$defs/InstructionCoverageGap"
+          },
+          "type": "array"
+        },
+        "usage": {
+          "$ref": "#/$defs/InstructionSampleUsage",
+          "description": "Actual ending sampling work."
+        }
+      },
+      "required": [
+        "changes",
+        "gaps",
+        "usage"
+      ],
+      "type": "object"
+    },
+    "InstructionCondition": {
+      "description": "Discovery condition without raw configuration or prompt text.",
+      "oneOf": [
+        {
+          "const": "configuration",
+          "description": "Effective supported provider configuration.",
+          "type": "string"
+        },
+        {
+          "const": "trust",
+          "description": "Provider trust admission.",
+          "type": "string"
+        },
+        {
+          "const": "file_scope",
+          "description": "Files the work touches.",
+          "type": "string"
+        },
+        {
+          "const": "explicit_option",
+          "description": "Explicit launch option.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Condition could not be resolved.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionCoverageGap": {
+      "description": "Independent uncertainty, scoped separately from any known path changes.",
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The affected participant, when known."
+        },
+        "context": {
+          "$ref": "#/$defs/InstructionPathContext",
+          "description": "The affected path context; lease-local gaps cannot hide shared-input gaps."
+        },
+        "path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeInstructionPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The affected native path, when representable."
+        },
+        "reason": {
+          "$ref": "#/$defs/InstructionGapKind",
+          "description": "Named uncertainty without arbitrary error text."
+        }
+      },
+      "required": [
+        "reason",
+        "context"
+      ],
+      "type": "object"
+    },
+    "InstructionDeclarationMode": {
+      "description": "Actual provider composition used for instruction discovery.",
+      "oneOf": [
+        {
+          "const": "claude_default",
+          "description": "Claude default managed composition.",
+          "type": "string"
+        },
+        {
+          "const": "claude_inherit",
+          "description": "Claude inherit managed composition.",
+          "type": "string"
+        },
+        {
+          "const": "claude_bare",
+          "description": "Claude bare managed composition.",
+          "type": "string"
+        },
+        {
+          "const": "claude_attached",
+          "description": "Claude owned Attached composition.",
+          "type": "string"
+        },
+        {
+          "const": "codex_legacy",
+          "description": "Codex legacy exec composition.",
+          "type": "string"
+        },
+        {
+          "const": "codex_streaming",
+          "description": "Codex streaming composition.",
+          "type": "string"
+        },
+        {
+          "const": "pi",
+          "description": "Pi managed composition.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "A provider without a supported declaration. Must carry a declaration gap.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionDiscoveryEvidence": {
+      "description": "Content-free provenance of a discovery rule.",
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/HexDigest",
+          "description": "Digest of the retained evidence."
+        },
+        "kind": {
+          "$ref": "#/$defs/InstructionDiscoveryEvidenceKind",
+          "description": "Which primary-source boundary established the declaration."
+        }
+      },
+      "required": [
+        "kind",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "InstructionDiscoveryEvidenceKind": {
+      "description": "Primary-source boundary supporting a frozen discovery rule.",
+      "oneOf": [
+        {
+          "const": "request_observation",
+          "description": "Actual bounded provider request observation.",
+          "type": "string"
+        },
+        {
+          "const": "versioned_source",
+          "description": "Exact-version provider source.",
+          "type": "string"
+        },
+        {
+          "const": "vendor_documentation",
+          "description": "Vendor documentation, separate from exact-version observations.",
+          "type": "string"
+        },
+        {
+          "const": "daemon_composition",
+          "description": "Actual daemon-owned provider composition, separate from vendor documentation or source.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionDiscoveryPlan": {
+      "description": "Frozen discovery rules, never a JSON string or an opaque provider document.",
+      "properties": {
+        "configuration_digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HexDigest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Digest of supported discovery-affecting configuration, when known."
+        },
+        "gaps": {
+          "description": "Independently named declaration gaps.",
+          "items": {
+            "$ref": "#/$defs/InstructionCoverageGap"
+          },
+          "type": "array"
+        },
+        "roots": {
+          "description": "Declared roots in stable order.",
+          "items": {
+            "$ref": "#/$defs/InstructionRoot"
+          },
+          "type": "array"
+        },
+        "rules": {
+          "description": "Rules in provider precedence order.",
+          "items": {
+            "$ref": "#/$defs/InstructionDiscoveryRule"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "roots",
+        "rules",
+        "gaps"
+      ],
+      "type": "object"
+    },
+    "InstructionDiscoveryRule": {
+      "description": "A rule frozen before launch and re-expanded at the ending sample.",
+      "properties": {
+        "activation": {
+          "$ref": "#/$defs/InstructionActivation",
+          "description": "Effective activation at the starting boundary."
+        },
+        "candidate": {
+          "$ref": "#/$defs/InstructionCandidate",
+          "description": "Family to re-expand."
+        },
+        "evidence": {
+          "$ref": "#/$defs/InstructionDiscoveryEvidence",
+          "description": "Primary-source boundary and retained evidence digest for this rule."
+        },
+        "imports": {
+          "$ref": "#/$defs/InstructionImportPolicy",
+          "description": "Import semantics specific to this rule's files."
+        },
+        "root": {
+          "description": "Zero-based index into the plan's roots.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "selection": {
+          "$ref": "#/$defs/InstructionSelection",
+          "description": "Ordered candidate selection."
+        }
+      },
+      "required": [
+        "root",
+        "candidate",
+        "selection",
+        "activation",
+        "imports",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "InstructionEndBoundary": {
+      "description": "An independently recorded end, separate from the time of the later filesystem sample.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "First managed turn end.",
+          "properties": {
+            "end_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Observed end record position."
+            },
+            "kind": {
+              "const": "managed_turn",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Actual managed turn."
+            }
+          },
+          "required": [
+            "kind",
+            "turn",
+            "end_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Confirmed close or exit of a whole owned Attached process.",
+          "properties": {
+            "attachment_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Real attachment position."
+            },
+            "end_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Confirmed process end position."
+            },
+            "kind": {
+              "const": "attached_process",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "attachment_lsn",
+            "end_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Actual Attached turn whose starting boundary is missing.",
+          "properties": {
+            "end_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Actual hook-observed end position."
+            },
+            "kind": {
+              "const": "attached_turn",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Actual hook-observed turn."
+            }
+          },
+          "required": [
+            "kind",
+            "turn",
+            "end_lsn"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionFingerprint": {
+      "description": "An endpoint fact. Read errors and unresolved paths are never represented as absence.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Successful candidate and parent inventory proved absence.",
+          "properties": {
+            "kind": {
+              "const": "absent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Successfully sampled regular file bytes.",
+          "properties": {
+            "bytes": {
+              "description": "Complete sampled byte count.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "digest": {
+              "$ref": "#/$defs/HexDigest",
+              "description": "Digest of the complete sampled bytes."
+            },
+            "kind": {
+              "const": "file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "digest",
+            "bytes"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionGapKind": {
+      "description": "Why a declared family or observation could not be covered completely.",
+      "oneOf": [
+        {
+          "const": "configuration_unknown",
+          "description": "Effective configuration is unknown.",
+          "type": "string"
+        },
+        {
+          "const": "plugin_unknown",
+          "description": "Plugin inputs are unknown.",
+          "type": "string"
+        },
+        {
+          "const": "policy_unknown",
+          "description": "Policy inputs are unknown.",
+          "type": "string"
+        },
+        {
+          "const": "root_marker_unknown",
+          "description": "Root marker selection is unknown.",
+          "type": "string"
+        },
+        {
+          "const": "fallback_unknown",
+          "description": "Fallback filename selection is unknown.",
+          "type": "string"
+        },
+        {
+          "const": "profile_unknown",
+          "description": "Actual profile inputs are unknown.",
+          "type": "string"
+        },
+        {
+          "const": "declaration_missing",
+          "description": "No supported provider declaration exists.",
+          "type": "string"
+        },
+        {
+          "const": "path_unresolved",
+          "description": "Native path classification or resolution failed.",
+          "type": "string"
+        },
+        {
+          "const": "read_failed",
+          "description": "A file could not be read.",
+          "type": "string"
+        },
+        {
+          "const": "changed_during_read",
+          "description": "A file changed during its read.",
+          "type": "string"
+        },
+        {
+          "const": "import_unresolved",
+          "description": "An import could not be resolved.",
+          "type": "string"
+        },
+        {
+          "const": "import_cycle",
+          "description": "Import traversal found a cycle.",
+          "type": "string"
+        },
+        {
+          "const": "participant_changed",
+          "description": "Starting and ending participants differ.",
+          "type": "string"
+        },
+        {
+          "const": "declaration_changed",
+          "description": "Starting and ending declarations differ.",
+          "type": "string"
+        },
+        {
+          "const": "uninventoried_member",
+          "description": "A newly found member has no proven absent baseline.",
+          "type": "string"
+        },
+        {
+          "const": "input_limit",
+          "description": "Input count limit reached.",
+          "type": "string"
+        },
+        {
+          "const": "participant_coverage_unknown",
+          "description": "Recorded folder participation could not be fully determined.",
+          "type": "string"
+        },
+        {
+          "const": "participant_limit",
+          "description": "Participant count limit reached.",
+          "type": "string"
+        },
+        {
+          "const": "ancestor_limit",
+          "description": "Ancestor work limit reached.",
+          "type": "string"
+        },
+        {
+          "const": "descendant_limit",
+          "description": "Descendant entry or depth limit reached.",
+          "type": "string"
+        },
+        {
+          "const": "import_limit",
+          "description": "Import edge or depth limit reached.",
+          "type": "string"
+        },
+        {
+          "const": "symlink_limit",
+          "description": "Symlink hop limit reached.",
+          "type": "string"
+        },
+        {
+          "const": "source_bytes_limit",
+          "description": "Aggregate source byte limit reached.",
+          "type": "string"
+        },
+        {
+          "const": "deadline",
+          "description": "Sampling deadline reached.",
+          "type": "string"
+        },
+        {
+          "const": "metadata_limit",
+          "description": "Encoded metadata did not fit; retained evidence is a bounded subset.",
+          "type": "string"
+        },
+        {
+          "const": "missing_baseline",
+          "description": "Crash-era starting fingerprints are missing.",
+          "type": "string"
+        },
+        {
+          "const": "unrecorded_launch_boundary",
+          "description": "Physical launch may have preceded a lost spawn receipt.",
+          "type": "string"
+        },
+        {
+          "const": "cleanup_unconfirmed",
+          "description": "A host cleanup could not confirm absence.",
+          "type": "string"
+        },
+        {
+          "const": "attached_turn_start_missing",
+          "description": "An actual Attached turn has no observed starting boundary.",
+          "type": "string"
+        },
+        {
+          "const": "ending_boundary_missing",
+          "description": "No independently recorded ending boundary is available after recovery.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionGoalClear": {
+      "additionalProperties": false,
+      "description": "Exact goal side effect of an atomic rework action, validated against the committed prefix.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentId",
+          "description": "The previous ticket holder who still holds this unfinished goal."
+        },
+        "goal": {
+          "$ref": "#/$defs/GoalId",
+          "description": "Existing goal; completed or no-longer-held goals are never cleared by rework."
+        }
+      },
+      "required": [
+        "agent",
+        "goal"
+      ],
+      "type": "object"
+    },
+    "InstructionImportPolicy": {
+      "description": "Supported import syntax and traversal semantics.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "This declaration admits no imports.",
+          "type": "string"
+        },
+        {
+          "const": "claude_four_hops",
+          "description": "Claude file imports, with its fixed four-hop limit.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionInput": {
+      "description": "A fingerprint with its frozen discovery provenance and selection status.",
+      "properties": {
+        "activation": {
+          "$ref": "#/$defs/InstructionActivation",
+          "description": "Actual admitted activation."
+        },
+        "context": {
+          "$ref": "#/$defs/InstructionPathContext",
+          "description": "Daemon-established path classification."
+        },
+        "fingerprint": {
+          "$ref": "#/$defs/InstructionFingerprint",
+          "description": "Successfully observed endpoint."
+        },
+        "path": {
+          "$ref": "#/$defs/NativeInstructionPath",
+          "description": "Exact sampled candidate path."
+        },
+        "resolved_path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeInstructionPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Canonical target observed while reading an existing candidate; absent candidates have none."
+        },
+        "shadowed": {
+          "description": "Whether selection preferred an earlier candidate. Shadowed files remain inventoried.",
+          "type": "boolean"
+        },
+        "source": {
+          "$ref": "#/$defs/InstructionInputSource",
+          "description": "Declared root and discovery family."
+        }
+      },
+      "required": [
+        "path",
+        "context",
+        "source",
+        "activation",
+        "shadowed",
+        "fingerprint"
+      ],
+      "type": "object"
+    },
+    "InstructionInputSource": {
+      "description": "Discovery provenance for a sampled input.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentId",
+          "description": "Participant that declares this input."
+        },
+        "kind": {
+          "$ref": "#/$defs/InstructionSourceKind",
+          "description": "Discovery family or import edge."
+        },
+        "root": {
+          "$ref": "#/$defs/NativeInstructionPath",
+          "description": "Exact declared root, retained independently of the path."
+        },
+        "rule": {
+          "description": "Zero-based index of the declaring rule in that participant's frozen plan.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent",
+        "rule",
+        "root",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "InstructionIssueAssociation": {
+      "description": "Whether a managed baseline preceded the issue or belongs to a retry of an immutable issue.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Baseline before a new issue. A crash here may settle as `NoIssuedTurn`.",
+          "properties": {
+            "kind": {
+              "const": "prospective",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Baseline for a physical retry of the existing immutable issue.",
+          "properties": {
+            "issue_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact existing issue position."
+            },
+            "kind": {
+              "const": "issued",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "issue_lsn"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionNativeBoundaryReceipt": {
+      "description": "Exact durable receipt associated with one physical attempt's native boundary.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "This attempt's recorded complete native spawn identity.",
+          "properties": {
+            "kind": {
+              "const": "spawned",
+              "type": "string"
+            },
+            "lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact `TurnSpawned` or owned `PtySpawned` position."
+            }
+          },
+          "required": [
+            "kind",
+            "lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "This attempt's observed host launch failure with confirmed native cleanup.\nBrief execution may have occurred, so this receipt alone never certifies `NoProcess`.",
+          "properties": {
+            "kind": {
+              "const": "launch_failure_ended",
+              "type": "string"
+            },
+            "lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact Observed `TurnEnded` with `NotLaunched`, never a generic failure or disappearance."
+            }
+          },
+          "required": [
+            "kind",
+            "lsn"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionNoProcessProof": {
+      "description": "Durable proof that this attempt started no provider process. No roster state is such proof.",
+      "oneOf": [
+        {
+          "const": "no_host_call",
+          "description": "The live continuation asserts that this exact Managed attempt never called the host.\nAn observed refusal hold or exact observed `NotLaunched` end corroborates the assertion;\nrecovery cannot infer it from either.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionObservationOwner": {
+      "description": "Owner of a physical attempt or whole owned Attached process interval.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Physical attempt under an immutable managed turn.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "Owning agent."
+            },
+            "issue": {
+              "$ref": "#/$defs/InstructionIssueAssociation",
+              "description": "Starting baseline's relation to the issue."
+            },
+            "kind": {
+              "const": "managed",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Immutable issued or prospective turn."
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "turn",
+            "issue"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Whole owned Attached process, never an invented vendor turn.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "Owning agent."
+            },
+            "attachment_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Real attachment record position."
+            },
+            "kind": {
+              "const": "attached_process",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "attachment_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Actual Attached hook-ended turn whose consumption start is missing.\nThis owner can only settle an explicit missing-boundary Unknown.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "Recorded agent identity."
+            },
+            "attachment_lsn": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Lsn"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Unset: current observed hook ends carry no exact attachment receipt."
+            },
+            "kind": {
+              "const": "attached_turn",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Actual hook-observed turn, never a synthetic process-interval identity."
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "turn"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionParticipant": {
+      "description": "One recorded user of the canonical execution folder, including idle or paused users.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentId",
+          "description": "Recorded agent identity."
+        },
+        "declaration_digest": {
+          "$ref": "#/$defs/HexDigest",
+          "description": "Digest identifying the declaration version."
+        },
+        "discovery": {
+          "$ref": "#/$defs/InstructionDiscoveryPlan",
+          "description": "Rules to re-expand even if the participant later leaves."
+        },
+        "mode": {
+          "$ref": "#/$defs/InstructionDeclarationMode",
+          "description": "Actual admitted composition, separate from a requested hire selector."
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider",
+          "description": "Actual provider."
+        }
+      },
+      "required": [
+        "agent",
+        "provider",
+        "mode",
+        "declaration_digest",
+        "discovery"
+      ],
+      "type": "object"
+    },
+    "InstructionPathChange": {
+      "description": "Known net change, retained independently of every coverage gap.",
+      "properties": {
+        "after": {
+          "$ref": "#/$defs/InstructionFingerprint",
+          "description": "Proven ending endpoint."
+        },
+        "before": {
+          "$ref": "#/$defs/InstructionFingerprint",
+          "description": "Proven starting endpoint."
+        },
+        "context": {
+          "$ref": "#/$defs/InstructionPathContext",
+          "description": "Classification backed by daemon evidence."
+        },
+        "path": {
+          "$ref": "#/$defs/NativeInstructionPath",
+          "description": "Exact changed path."
+        },
+        "source": {
+          "$ref": "#/$defs/InstructionInputSource",
+          "description": "Discovery provenance."
+        }
+      },
+      "required": [
+        "path",
+        "context",
+        "source",
+        "before",
+        "after"
+      ],
+      "type": "object"
+    },
+    "InstructionPathContext": {
+      "description": "Daemon-established path context. A path spelling alone proves no lease ownership.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Project file classified from an actual owned worktree lease.",
+          "properties": {
+            "kind": {
+              "const": "owned_worktree",
+              "type": "string"
+            },
+            "lease": {
+              "$ref": "#/$defs/WorktreeId",
+              "description": "The lease that proves this classification."
+            }
+          },
+          "required": [
+            "kind",
+            "lease"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Project file in a shared execution folder.",
+          "properties": {
+            "kind": {
+              "const": "shared_project",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "An input that is shared independently of the execution folder's lease.",
+          "properties": {
+            "kind": {
+              "const": "shared_input",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/InstructionSharedInput",
+              "description": "Where this shared input enters discovery."
+            }
+          },
+          "required": [
+            "kind",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "No supported evidence establishes the classification.",
+          "properties": {
+            "kind": {
+              "const": "unresolved",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Project file with a complete single-user folder census at this sample.",
+          "properties": {
+            "kind": {
+              "const": "unshared_project",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionReviewAction": {
+      "description": "Atomic operator review action, including the existing admitted rework payload.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Acknowledge exactly the reviewed set.",
+          "properties": {
+            "completion": {
+              "$ref": "#/$defs/InstructionAcceptCompletion",
+              "description": "Existing completion evidence or continuing work."
+            },
+            "kind": {
+              "const": "accept",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "completion"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Acknowledge and enqueue existing rework in this same required record.",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentId",
+              "description": "Existing admitted assignment target."
+            },
+            "clear_goal": {
+              "$ref": "#/$defs/ExplicitNullable_InstructionGoalClear",
+              "description": "Unfinished goal still held by the previous ticket holder, or explicit null.\nThe same record clears this goal and queues the new assignment."
+            },
+            "kind": {
+              "const": "changes_requested",
+              "type": "string"
+            },
+            "message": {
+              "description": "Existing bounded, trimmed assignment message.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "clear_goal"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionReviewWatermark": {
+      "additionalProperties": false,
+      "description": "Exact review set. The digest covers the canonical ordered outstanding interval identities\nand their settlement positions through `through_lsn`, rather than only the newest result.",
+      "properties": {
+        "set_digest": {
+          "$ref": "#/$defs/HexDigest",
+          "description": "Digest of that exact set."
+        },
+        "through_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Durable cut of the named set."
+        }
+      },
+      "required": [
+        "through_lsn",
+        "set_digest"
+      ],
+      "type": "object"
+    },
+    "InstructionRoot": {
+      "description": "A frozen root and its daemon-established context.",
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/InstructionPathContext",
+          "description": "Lease-backed or shared classification."
+        },
+        "kind": {
+          "$ref": "#/$defs/InstructionRootKind",
+          "description": "Its discovery meaning."
+        },
+        "path": {
+          "$ref": "#/$defs/NativeInstructionPath",
+          "description": "Exact root path."
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "context"
+      ],
+      "type": "object"
+    },
+    "InstructionRootKind": {
+      "description": "Meaning of a declared discovery root.",
+      "oneOf": [
+        {
+          "const": "execution",
+          "description": "Actual execution folder.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "Established project root.",
+          "type": "string"
+        },
+        {
+          "const": "profile",
+          "description": "Actual selected engine profile.",
+          "type": "string"
+        },
+        {
+          "const": "ancestor",
+          "description": "Admitted ancestor root.",
+          "type": "string"
+        },
+        {
+          "const": "extra",
+          "description": "Explicitly admitted extra root.",
+          "type": "string"
+        },
+        {
+          "const": "daemon_configuration",
+          "description": "Daemon-generated discovery configuration, sampled only through admitted fields.",
+          "type": "string"
+        },
+        {
+          "const": "managed_policy",
+          "description": "Managed policy input root.",
+          "type": "string"
+        },
+        {
+          "const": "explicit_file",
+          "description": "Explicitly admitted file's resolution root.",
+          "type": "string"
+        },
+        {
+          "const": "import_home",
+          "description": "Home used only to resolve imports. It never admits enumeration of arbitrary home files.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionRuleDirectoryScope": {
+      "description": "Placement of a recursively inventoried Markdown rules directory.",
+      "oneOf": [
+        {
+          "const": "root",
+          "description": "Exactly the declared root.",
+          "type": "string"
+        },
+        {
+          "const": "ancestors",
+          "description": "The execution folder and its bounded ancestors.",
+          "type": "string"
+        },
+        {
+          "const": "descendants",
+          "description": "Each bounded descendant directory of the execution folder.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionRuleRef": {
+      "description": "A discovery family in one participant's frozen plan.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentId",
+          "description": "Participant that owns the rule."
+        },
+        "rule": {
+          "description": "Zero-based rule index.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent",
+        "rule"
+      ],
+      "type": "object"
+    },
+    "InstructionSampleUsage": {
+      "description": "Work counters from the sampler, checked against fixed internal limits.",
+      "properties": {
+        "ancestor_steps": {
+          "description": "Ancestor steps examined.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "descendant_depth": {
+          "description": "Deepest descendant traversal.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "descendant_entries": {
+          "description": "Descendant entries examined.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "import_edges": {
+          "description": "Import edges examined.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_bytes": {
+          "description": "Aggregate source bytes read, including import parsing.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "symlink_hops": {
+          "description": "Most symlink hops in one resolution.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ancestor_steps",
+        "descendant_entries",
+        "descendant_depth",
+        "import_edges",
+        "symlink_hops",
+        "source_bytes"
+      ],
+      "type": "object"
+    },
+    "InstructionSelection": {
+      "description": "How a provider selects among ordered candidates.",
+      "oneOf": [
+        {
+          "const": "all",
+          "description": "Include every candidate.",
+          "type": "string"
+        },
+        {
+          "const": "first_nonempty",
+          "description": "Select the first nonempty candidate.",
+          "type": "string"
+        },
+        {
+          "const": "first_regular",
+          "description": "Select the first regular file.",
+          "type": "string"
+        },
+        {
+          "const": "first_readable",
+          "description": "Select the first readable file.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionSettlement": {
+      "description": "One terminal settlement. Later attempts cannot replace this attempt's uncertainty.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Compared sampled endpoints of a recorded interval.",
+          "properties": {
+            "comparison": {
+              "$ref": "#/$defs/InstructionComparison",
+              "description": "Known changes together with independent uncertainty."
+            },
+            "end": {
+              "$ref": "#/$defs/InstructionEndBoundary",
+              "description": "Independently durable end."
+            },
+            "kind": {
+              "const": "compared",
+              "type": "string"
+            },
+            "recovery": {
+              "description": "Ending sample was delayed until recovery.",
+              "type": "boolean"
+            },
+            "sampled_at": {
+              "$ref": "#/$defs/Timestamp",
+              "description": "Actual ending sample time."
+            }
+          },
+          "required": [
+            "kind",
+            "end",
+            "sampled_at",
+            "recovery",
+            "comparison"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A prospective baseline was durable but its turn was never issued.",
+          "properties": {
+            "kind": {
+              "const": "no_issued_turn",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Independent proof that this physical attempt started no provider process.",
+          "properties": {
+            "kind": {
+              "const": "no_process",
+              "type": "string"
+            },
+            "proof": {
+              "$ref": "#/$defs/InstructionNoProcessProof",
+              "description": "Nature of the actual proof."
+            },
+            "proof_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Durable position supporting the proof."
+            }
+          },
+          "required": [
+            "kind",
+            "proof_lsn",
+            "proof"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Honest uncertain settlement that still retains all bounded known changes.",
+          "properties": {
+            "comparison": {
+              "$ref": "#/$defs/InstructionComparison",
+              "description": "Known changes and independent gaps are preserved together."
+            },
+            "end": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/InstructionEndBoundary"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Actual end, when one was recorded."
+            },
+            "kind": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/InstructionUnknownReason",
+              "description": "Principal boundary uncertainty."
+            },
+            "recovery": {
+              "description": "Evidence was settled during recovery.",
+              "type": "boolean"
+            },
+            "sampled_at": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Actual sample time, if any sample was made."
+            }
+          },
+          "required": [
+            "kind",
+            "reason",
+            "recovery",
+            "comparison"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionSharedInput": {
+      "description": "Origin of a shared input outside lease-local project files.",
+      "oneOf": [
+        {
+          "const": "profile",
+          "description": "Engine profile input.",
+          "type": "string"
+        },
+        {
+          "const": "ancestor",
+          "description": "An ancestor input.",
+          "type": "string"
+        },
+        {
+          "const": "import",
+          "description": "An imported input.",
+          "type": "string"
+        },
+        {
+          "const": "explicit_file",
+          "description": "An explicitly admitted file.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionSnapshot": {
+      "description": "A complete bounded starting sample or independently named uncertainty.",
+      "properties": {
+        "boot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstructionBootIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Comparable operating-system boot identity actually sampled by the host, when supported."
+        },
+        "execution_folder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeInstructionPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Actual canonical execution folder, when it was resolved and fits the lossless encoding.\nAbsence requires a named unresolved-path, overflow or missing-baseline gap."
+        },
+        "gaps": {
+          "description": "Independent sample coverage gaps.",
+          "items": {
+            "$ref": "#/$defs/InstructionCoverageGap"
+          },
+          "type": "array"
+        },
+        "inputs": {
+          "description": "Sampled absent, selected and shadowed candidates.",
+          "items": {
+            "$ref": "#/$defs/InstructionInput"
+          },
+          "type": "array"
+        },
+        "inventoried": {
+          "description": "Families completely inventoried at the starting sample, independent of other gaps.\nA failed existing input remains named by a gap path and cannot become a proven creation.",
+          "items": {
+            "$ref": "#/$defs/InstructionRuleRef"
+          },
+          "type": "array"
+        },
+        "participants": {
+          "description": "Frozen recorded folder users and their discovery plans.",
+          "items": {
+            "$ref": "#/$defs/InstructionParticipant"
+          },
+          "type": "array"
+        },
+        "sampled_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Actual sample time, never substituted for a process boundary time."
+        },
+        "source": {
+          "$ref": "#/$defs/InstructionSnapshotSource",
+          "description": "Provenance of the sample."
+        },
+        "usage": {
+          "$ref": "#/$defs/InstructionSampleUsage",
+          "description": "Actual bounded sampling work."
+        }
+      },
+      "required": [
+        "sampled_at",
+        "source",
+        "participants",
+        "inputs",
+        "inventoried",
+        "gaps",
+        "usage"
+      ],
+      "type": "object"
+    },
+    "InstructionSnapshotSource": {
+      "description": "Whether sampling establishes a fresh boundary or supplies recovery-time evidence.",
+      "oneOf": [
+        {
+          "const": "fresh",
+          "description": "Fresh sample before this physical attempt.",
+          "type": "string"
+        },
+        {
+          "const": "recovery",
+          "description": "Actual sample performed during recovery.",
+          "type": "string"
+        },
+        {
+          "const": "missing_baseline",
+          "description": "Current evidence cannot reconstruct a crash-era baseline.",
+          "type": "string"
+        }
+      ]
+    },
+    "InstructionSourceKind": {
+      "description": "Discovery family that produced one input.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Fixed candidate.",
+          "properties": {
+            "kind": {
+              "const": "fixed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Ancestor candidate.",
+          "properties": {
+            "kind": {
+              "const": "ancestor",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Descendant candidate.",
+          "properties": {
+            "kind": {
+              "const": "descendant",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Markdown rule.",
+          "properties": {
+            "kind": {
+              "const": "markdown_rules",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit file.",
+          "properties": {
+            "kind": {
+              "const": "explicit_file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Import edge, without the source's contents.",
+          "properties": {
+            "depth": {
+              "description": "One-based import depth.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "from": {
+              "$ref": "#/$defs/NativeInstructionPath",
+              "description": "Importing file."
+            },
+            "kind": {
+              "const": "import",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "from",
+            "depth"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionTicketAssociation": {
+      "description": "Ticket interval association frozen at the starting boundary.",
+      "properties": {
+        "assignment_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Assignment position whose interval began this work."
+        },
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "Associated card."
+        },
+        "goal": {
+          "$ref": "#/$defs/GoalId",
+          "description": "Associated goal."
+        },
+        "seq_at_start": {
+          "$ref": "#/$defs/Seq",
+          "description": "Ticket sequence captured at the starting boundary."
+        }
+      },
+      "required": [
+        "card",
+        "goal",
+        "assignment_lsn",
+        "seq_at_start"
+      ],
+      "type": "object"
+    },
+    "InstructionUnknownReason": {
+      "description": "A named reason a physical attempt cannot be certified by endpoint comparison.",
+      "oneOf": [
+        {
+          "const": "missing_baseline",
+          "description": "Missing durable crash-era baseline.",
+          "type": "string"
+        },
+        {
+          "const": "unrecorded_launch_boundary",
+          "description": "Host launch may have happened before its durable receipt.",
+          "type": "string"
+        },
+        {
+          "const": "cleanup_unconfirmed",
+          "description": "Host cleanup did not confirm absence.",
+          "type": "string"
+        },
+        {
+          "const": "attached_turn_start_missing",
+          "description": "Actual Attached turn lacks a proven starting boundary.",
+          "type": "string"
+        },
+        {
+          "const": "incomplete_coverage",
+          "description": "Ending sampling could not establish complete coverage.",
           "type": "string"
         }
       ]
@@ -2365,6 +4475,74 @@
       },
       "type": "object"
     },
+    "NativeInstructionPath": {
+      "description": "Lossless native path bytes. Its escaped display is derived, never an identity.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A path with a UTF-8 spelling.",
+          "properties": {
+            "encoding": {
+              "const": "utf8",
+              "type": "string"
+            },
+            "value": {
+              "description": "Exact UTF-8 bytes, including characters that must be escaped for display.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "encoding",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Non-UTF-8 Unix path bytes.",
+          "properties": {
+            "encoding": {
+              "const": "unix_bytes",
+              "type": "string"
+            },
+            "hex": {
+              "description": "Exact bytes as lowercase hexadecimal pairs.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "encoding",
+            "hex"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Non-UTF-8 Windows path units.",
+          "properties": {
+            "encoding": {
+              "const": "windows_wide",
+              "type": "string"
+            },
+            "units": {
+              "description": "Exact UTF-16 units, including unpaired surrogates.",
+              "items": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "encoding",
+            "units"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "NonMailLoopDecision": {
       "allOf": [
         {
@@ -3084,6 +5262,16 @@
         {
           "const": "worktree_missing",
           "description": "The agent's worktree is missing.",
+          "type": "string"
+        },
+        {
+          "const": "shared_instructions_changed",
+          "description": "Known net changes to declared shared instructions need Operator review.",
+          "type": "string"
+        },
+        {
+          "const": "shared_instructions_unknown",
+          "description": "Shared instruction coverage is incomplete and needs Operator review.",
           "type": "string"
         }
       ]
@@ -6518,6 +8706,145 @@
         "card",
         "by",
         "expected_seq"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Durable starting sample before a new issue or one physical retry of an immutable issue.\nIts own LSN identifies this attempt; it carries no task or instruction contents.",
+      "properties": {
+        "owner": {
+          "$ref": "#/$defs/InstructionObservationOwner",
+          "description": "Physical attempt or whole Attached process owner."
+        },
+        "snapshot": {
+          "$ref": "#/$defs/InstructionSnapshot",
+          "description": "Frozen discovery plan, fingerprints and independent coverage gaps."
+        },
+        "t": {
+          "const": "instruction_observation_started",
+          "type": "string"
+        },
+        "ticket": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstructionTicketAssociation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Frozen ticket interval association, if observed."
+        }
+      },
+      "required": [
+        "t",
+        "owner",
+        "snapshot"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Terminal evidence for one physical attempt or an actual turn with a missing start.\nA later attempt cannot replace this record's uncertainty or known changes.",
+      "properties": {
+        "baseline": {
+          "$ref": "#/$defs/InstructionBaselineRef",
+          "description": "Exact starting record, or an explicit actual missing turn boundary."
+        },
+        "owner": {
+          "$ref": "#/$defs/InstructionObservationOwner",
+          "description": "Original attempt or Attached process owner."
+        },
+        "settlement": {
+          "$ref": "#/$defs/InstructionSettlement",
+          "description": "Comparison, actual no-process proof or honest uncertainty."
+        },
+        "t": {
+          "const": "instruction_observation_finished",
+          "type": "string"
+        },
+        "ticket": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstructionTicketAssociation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Original ticket interval association."
+        }
+      },
+      "required": [
+        "t",
+        "owner",
+        "baseline",
+        "settlement"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "One atomic Operator action consumes exactly the reviewed set and applies acceptance or\nthe existing admitted rework assignment, without a separate acknowledgement write.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/InstructionReviewAction",
+          "description": "Acceptance qualification or admitted assignment and bounded message."
+        },
+        "by": {
+          "$ref": "#/$defs/Actor",
+          "description": "Router-resolved Operator actor."
+        },
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "Reviewed ticket."
+        },
+        "expected_seq": {
+          "$ref": "#/$defs/Seq",
+          "description": "Current card sequence admitted on the serialized append boundary."
+        },
+        "t": {
+          "const": "ticket_instruction_reviewed",
+          "type": "string"
+        },
+        "watermark": {
+          "$ref": "#/$defs/InstructionReviewWatermark",
+          "description": "Exact set consumed, never a newer observation."
+        }
+      },
+      "required": [
+        "t",
+        "card",
+        "by",
+        "expected_seq",
+        "watermark",
+        "action"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Monotonic scoped native-boundary absence for one exact physical attempt.\nIt neither replaces comparison evidence nor acknowledges ticket review.",
+      "properties": {
+        "owner": {
+          "$ref": "#/$defs/InstructionObservationOwner",
+          "description": "Original exact attempt owner."
+        },
+        "proof": {
+          "$ref": "#/$defs/InstructionBoundaryAbsenceProof",
+          "description": "Fresh scoped host evidence or comparable prior-boot evidence."
+        },
+        "started_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Exact starting record position."
+        },
+        "t": {
+          "const": "instruction_attempt_boundary_settled",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "owner",
+        "started_lsn",
+        "proof"
       ],
       "type": "object"
     }
