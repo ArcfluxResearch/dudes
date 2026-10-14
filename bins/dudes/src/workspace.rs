@@ -190,6 +190,16 @@ pub enum WorkspaceError {
     /// `add` was given a directory that is not a repository.
     #[error("{0} is not a git repository. Run `dudes workspace add` in a folder that holds .git.")]
     NotARepository(PathBuf),
+    /// A check whose program is a file inside the repository the agent works in.
+    #[error(
+        "The check program `{program}` is inside the project's repository. An agent working \
+         there could change it, so it cannot be the judge of the agent's work. Use a program \
+         outside the repository instead, for example the project's usual test command."
+    )]
+    CheckInsideRepository {
+        /// The program as typed.
+        program: String,
+    },
     /// A path TOML cannot carry.
     #[error("{0} is not valid UTF-8")]
     NotUtf8(PathBuf),
@@ -319,6 +329,7 @@ fn checked(new: &NewWorkspace) -> Result<PathBuf, WorkspaceError> {
     if !valid_id(&new.id) {
         return Err(WorkspaceError::InvalidId(new.id.clone()));
     }
+    outside_repository(&cwd, &new.predicate_argv)?;
     Ok(cwd)
 }
 
@@ -361,6 +372,39 @@ fn push(
     Ok(())
 }
 
+/// Refuse a check whose program has a path separator and resolves inside `repo`.
+///
+/// This mirrors the daemon's `resolve` and `spec_for` in `bins/duded/src/predicate.rs`: a relative
+/// program with a separator resolves against the working folder, an absolute one as written, both
+/// canonicalized, and one inside the canonical tree is refused. A bare name is left to the daemon,
+/// which alone owns the `PATH` lookup, and so is a program that does not resolve to a file.
+///
+/// # Errors
+///
+/// [`WorkspaceError::CheckInsideRepository`] when the program resolves inside `repo`.
+pub(crate) fn outside_repository(repo: &Path, argv: &[String]) -> Result<(), WorkspaceError> {
+    let Some(program) = argv.first() else {
+        return Ok(());
+    };
+    let candidate = Path::new(program);
+    let found = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else if candidate.components().count() > 1 {
+        repo.join(candidate)
+    } else {
+        return Ok(());
+    };
+    let (Ok(program_path), Ok(tree)) = (found.canonicalize(), repo.canonicalize()) else {
+        return Ok(());
+    };
+    if program_path.starts_with(tree) {
+        return Err(WorkspaceError::CheckInsideRepository {
+            program: program.clone(),
+        });
+    }
+    Ok(())
+}
+
 /// Append one row to the workspace's `[[floor.onboarding.workspaces.checks]]` table.
 ///
 /// # Errors
@@ -383,6 +427,9 @@ pub fn add_check(config: &Path, new: &NewCheck) -> Result<Edit, WorkspaceError> 
     let index = position(list, &new.workspace)
         .ok_or_else(|| WorkspaceError::UnknownId(new.workspace.clone()))?;
     let entry = list.get_mut(index).expect("a position in the list");
+    if let Some(repo) = entry.get("cwd").and_then(Item::as_str) {
+        outside_repository(Path::new(repo), &new.argv)?;
+    }
     if check_ids(entry).any(|id| id == new.id) {
         return Err(WorkspaceError::DuplicateCheck {
             workspace: new.workspace.clone(),
