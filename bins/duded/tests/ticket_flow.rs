@@ -645,8 +645,11 @@ impl Flow {
                     .expect("genuine pending instruction review");
                 assert!(!review.pending_comparison);
                 assert!(
-                    !review.gaps.is_empty(),
-                    "Claude effective coverage remains honestly incomplete"
+                    review
+                        .gaps
+                        .iter()
+                        .any(dudes_proto::InstructionCoverageGap::holds),
+                    "an unavailable home folder is an observed gap, which holds the ticket"
                 );
                 return detail.card;
             }

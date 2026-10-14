@@ -114,9 +114,10 @@ pub(super) fn instruction_participant(
         digest.text("configuration-unknown");
     }
     if declaration.mode == DeclarationMode::PiManaged {
-        builder.gap(
+        builder.gap_from(
             InstructionGapKind::PathUnresolved,
             InstructionPathContext::Unresolved,
+            InstructionGapOrigin::Declared,
         );
         if facts
             .canonical_execution_folder
@@ -827,6 +828,8 @@ fn gap_origin(gap: DeclarationGap) -> InstructionGapOrigin {
         | DeclarationGap::CodexRootMarkers
         | DeclarationGap::CodexModelInstructionsFile
         | DeclarationGap::CodexEffectiveConfiguration
+        | DeclarationGap::CodexEffectiveTrust
+        | DeclarationGap::PiEffectiveConfiguration
         | DeclarationGap::ClaudeEffectiveConfiguration
         | DeclarationGap::ClaudeAgentsPlugin
         | DeclarationGap::ClaudeManagedInlinePolicy => InstructionGapOrigin::Declared,
@@ -1199,7 +1202,10 @@ mod tests {
     ) -> InstructionParticipant {
         use dudes_providers::adapter::AgentCtx;
         use dudes_types::{Mode, ModelSelection};
-        let env = [dudes_types::EnvVar::new("HOME", "/home/operator")];
+        let env = [dudes_providers::launch::EnvVar::new(
+            "HOME",
+            "/home/operator",
+        )];
         let ctx = AgentCtx {
             agent: agent(),
             cwd: Path::new(FOLDER),
@@ -1226,9 +1232,14 @@ mod tests {
             claude::ClaudeAdapter, claude::config::ClaudeConfig, codex::CodexAdapter,
             codex::config::CodexConfig, pi::PiAdapter,
         };
-        let adapters: [Box<dyn dudes_providers::adapter::Adapter>; 3] = [
+        let streaming = CodexConfig {
+            streaming: true,
+            ..CodexConfig::default()
+        };
+        let adapters: [Box<dyn dudes_providers::adapter::Adapter>; 4] = [
             Box::new(ClaudeAdapter::new(ClaudeConfig::default())),
             Box::new(CodexAdapter::new(CodexConfig::default())),
+            Box::new(CodexAdapter::new(streaming).with_managed_home("/state/codex-home".into())),
             Box::new(PiAdapter::default()),
         ];
         for adapter in adapters {
@@ -1251,6 +1262,31 @@ mod tests {
             )
             .expect("a stock declaration always carries standing limits");
             assert!(note.saw_no_change);
+        }
+    }
+
+    #[test]
+    fn only_inputs_the_engine_reads_outside_the_project_are_declared() {
+        use dudes_providers::instructions::{ExplicitFilePurpose, ProfileKind, ResourceKind};
+        let observed = [
+            DeclarationGap::DeclarationMissing,
+            DeclarationGap::DeclarationLimit,
+            DeclarationGap::MetadataLimit,
+            DeclarationGap::PathUnresolved,
+            DeclarationGap::ProfileUnavailable(ProfileKind::CodexLegacy),
+            DeclarationGap::ClaudeSettingSourcesRefused,
+            DeclarationGap::ClaudeImportApproval,
+            DeclarationGap::ClaudeImportHomeUnavailable,
+            DeclarationGap::ClaudeAdditionalDirectoriesSwitch,
+            DeclarationGap::ClaudeInlinePrompt,
+            DeclarationGap::ClaudeInlineAgentDefinitions,
+            DeclarationGap::ExplicitResourceUnknown(ResourceKind::ClaudePlugin),
+            DeclarationGap::ExplicitFileValueMissing(ExplicitFilePurpose::SystemPrompt),
+            DeclarationGap::ExplicitDirectoryValueMissing,
+            DeclarationGap::ArgumentEncoding,
+        ];
+        for gap in observed {
+            assert_eq!(gap_origin(gap), InstructionGapOrigin::Observed, "{gap:?}");
         }
     }
 

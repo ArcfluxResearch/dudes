@@ -473,8 +473,11 @@ fn assert_exact_review(
 ) {
     let review = read.ticket.instruction_review.as_ref().unwrap();
     assert!(
-        !review.gaps.is_empty(),
-        "actual Claude composition keeps unresolved coverage explicit"
+        review
+            .gaps
+            .iter()
+            .any(dudes_proto::InstructionCoverageGap::holds),
+        "the idle recorded peer is an observed gap, which holds the ticket"
     );
     assert_eq!(
         review
