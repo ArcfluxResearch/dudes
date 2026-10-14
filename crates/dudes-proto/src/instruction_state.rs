@@ -1718,9 +1718,12 @@ mod tests {
         let note = slot.unwrap();
         assert!(!note.saw_no_change);
         assert_eq!(note.limits, [InstructionGapKind::PluginUnknown]);
-        let mut none = None;
-        TicketCoverageNote::absorb(&mut none, TicketCoverageNote::withdrawn(None, None));
-        assert!(none.is_none(), "no note appears from a held interval alone");
+        let mut empty = None;
+        TicketCoverageNote::absorb(&mut empty, TicketCoverageNote::withdrawn(None, None));
+        assert!(
+            empty.is_none(),
+            "no note appears from a held interval alone"
+        );
     }
 
     #[test]
