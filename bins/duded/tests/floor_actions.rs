@@ -4038,6 +4038,15 @@ fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
         "control: a session that hired four times is refused a fifth: {head}"
     );
     let exported = operator_current(&settings, CurrentMethod::FloorSessionExport, None);
+    // Stop only once the journal has stopped growing, so the next run replays a settled history.
+    let mut seen = fixture.records().len();
+    let mut quiet = 0;
+    while quiet < 4 {
+        std::thread::sleep(Duration::from_millis(150));
+        let now = fixture.records().len();
+        quiet = if now == seen { quiet + 1 } else { 0 };
+        seen = now;
+    }
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
     let daemon = boot_run(&clock);
