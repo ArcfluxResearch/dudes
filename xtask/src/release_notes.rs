@@ -713,7 +713,7 @@ The script picks the archive for your machine, checks it against `SHA256SUMS`, a
 
 ### Upgrading
 
-There is no upgrade command. Run the installer again to replace your installed version with this one:
+To install this exact version, run the installer again:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/example/dudes/main/install.sh | sh -s -- --version 0.2.0
