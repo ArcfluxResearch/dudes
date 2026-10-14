@@ -411,6 +411,7 @@ mod tests {
             },
             TicketRow {
                 instruction_review: None,
+                coverage: None,
                 description: String::new(),
                 project: PROJECT.into(),
                 done_when: TicketCheck {

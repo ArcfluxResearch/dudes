@@ -645,6 +645,7 @@ mod tests {
                 inputs: Vec::new(),
                 inventoried: Vec::new(),
                 gaps: vec![InstructionCoverageGap {
+                    origin: dudes_proto::InstructionGapOrigin::Observed,
                     reason: InstructionGapKind::ParticipantCoverageUnknown,
                     context: InstructionPathContext::Unresolved,
                     agent: None,
@@ -787,6 +788,7 @@ mod tests {
                         changes: Vec::new(),
                         usage: InstructionSampleUsage::default(),
                         gaps: vec![InstructionCoverageGap {
+                            origin: dudes_proto::InstructionGapOrigin::Observed,
                             reason: InstructionGapKind::UnrecordedLaunchBoundary,
                             context: InstructionPathContext::Unresolved,
                             agent: Some(fixture.agent),

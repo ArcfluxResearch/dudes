@@ -587,6 +587,16 @@ fn claude_project(
             imports,
         );
     }
+    declaration.input(
+        root.clone(),
+        DiscoveryRule::FixedCandidates {
+            names: names(&[".claude/settings.json", ".claude/settings.local.json"]),
+            selection: CandidateSelection::All,
+        },
+        Activation::Active,
+        evidence,
+        ImportRule::None,
+    );
     for scope in [
         RuleDirectoryScope::Ancestors,
         RuleDirectoryScope::Descendants,
@@ -968,7 +978,7 @@ pub(crate) fn codex_manifest(
     }
     if let Some(path) = declaration.path(ctx.cwd) {
         declaration.input(
-            InstructionRoot::ExecutionDirectory(path),
+            InstructionRoot::ExecutionDirectory(path.clone()),
             DiscoveryRule::AncestorCandidates {
                 names: names(&["AGENTS.override.md", "AGENTS.md"]),
                 selection: CandidateSelection::FirstRegular,
@@ -977,6 +987,19 @@ pub(crate) fn codex_manifest(
                 },
             },
             activation,
+            EvidenceRevision::Codex01601,
+            ImportRule::None,
+        );
+        declaration.input(
+            InstructionRoot::ExecutionDirectory(path),
+            DiscoveryRule::AncestorCandidates {
+                names: names(&[".codex/config.toml"]),
+                selection: CandidateSelection::All,
+                boundary: AncestorBoundary::CodexRootMarkers {
+                    defaults: names(&[".git"]),
+                },
+            },
+            Activation::Active,
             EvidenceRevision::Codex01601,
             ImportRule::None,
         );
@@ -1754,7 +1777,7 @@ mod tests {
         assert!(manifest.gaps.contains(&DeclarationGap::DeclarationLimit));
         assert_eq!(
             manifest.inputs.last().unwrap().root,
-            InstructionRoot::AdditionalDirectory("additional/167".into())
+            InstructionRoot::AdditionalDirectory("additional/166".into())
         );
         assert!(manifest.inputs.iter().any(|input| {
             input.root == InstructionRoot::AdditionalDirectory("additional/0".into())

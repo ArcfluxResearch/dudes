@@ -783,6 +783,7 @@ mod owed_retry_tests {
                     recovery: true,
                     comparison: InstructionComparison {
                         gaps: vec![InstructionCoverageGap {
+                            origin: dudes_proto::InstructionGapOrigin::Observed,
                             reason: InstructionGapKind::UnrecordedLaunchBoundary,
                             context: InstructionPathContext::SharedProject,
                             agent: Some(agent),

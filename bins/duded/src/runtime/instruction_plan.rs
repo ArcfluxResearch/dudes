@@ -4,11 +4,11 @@ use dudes_proto::instruction::{
     InstructionActivation, InstructionAncestorStop, InstructionCandidate, InstructionCondition,
     InstructionCoverageGap, InstructionDeclarationMode, InstructionDiscoveryEvidence,
     InstructionDiscoveryEvidenceKind, InstructionDiscoveryPlan, InstructionDiscoveryRule,
-    InstructionGapKind, InstructionImportPolicy, InstructionParticipant, InstructionPathContext,
-    InstructionRoot, InstructionRootKind, InstructionRuleDirectoryScope, InstructionSelection,
-    InstructionSharedInput, InstructionValidationError, MAX_CLAUDE_IMPORT_DEPTH,
-    MAX_INSTRUCTION_INPUTS, MAX_INSTRUCTION_METADATA_BYTES, MAX_INSTRUCTION_PATH_BYTES,
-    NativeInstructionPath,
+    InstructionGapKind, InstructionGapOrigin, InstructionImportPolicy, InstructionParticipant,
+    InstructionPathContext, InstructionRoot, InstructionRootKind, InstructionRuleDirectoryScope,
+    InstructionSelection, InstructionSharedInput, InstructionValidationError,
+    MAX_CLAUDE_IMPORT_DEPTH, MAX_INSTRUCTION_INPUTS, MAX_INSTRUCTION_METADATA_BYTES,
+    MAX_INSTRUCTION_PATH_BYTES, NativeInstructionPath,
 };
 use dudes_proto::record::Hex32;
 use dudes_providers::instructions::{
@@ -129,9 +129,10 @@ pub(super) fn instruction_participant(
         {
             gap.path = Some(path);
         }
-        builder.gap(
+        builder.gap_from(
             InstructionGapKind::ConfigurationUnknown,
             shared(InstructionSharedInput::ExplicitFile),
+            InstructionGapOrigin::Declared,
         );
     }
     digest.path(facts.canonical_execution_folder);
@@ -146,7 +147,7 @@ pub(super) fn instruction_participant(
     for gap in declaration.gaps.iter().take(MAX_INSTRUCTION_INPUTS) {
         digest.text(&format!("{gap:?}"));
         if !discharged(*gap, declaration.mode, facts.codex_guard) {
-            builder.gap(map_gap(*gap), gap_context(*gap));
+            builder.gap_from(map_gap(*gap), gap_context(*gap), gap_origin(*gap));
         }
     }
     if declaration.gaps.len() > MAX_INSTRUCTION_INPUTS
@@ -381,7 +382,17 @@ impl PlanBuilder {
     }
 
     fn gap(&mut self, reason: InstructionGapKind, context: InstructionPathContext) {
+        self.gap_from(reason, context, InstructionGapOrigin::Observed);
+    }
+
+    fn gap_from(
+        &mut self,
+        reason: InstructionGapKind,
+        context: InstructionPathContext,
+        origin: InstructionGapOrigin,
+    ) {
         let gap = InstructionCoverageGap {
+            origin,
             reason,
             context,
             agent: Some(self.agent),
@@ -694,7 +705,11 @@ fn input_candidate(
         }
         DiscoveryRule::GeneratedConfig { .. } => {
             if facts.daemon_configuration_digest.is_none() {
-                builder.gap(InstructionGapKind::ConfigurationUnknown, context);
+                builder.gap_from(
+                    InstructionGapKind::ConfigurationUnknown,
+                    context,
+                    InstructionGapOrigin::Declared,
+                );
             }
             return None;
         }
@@ -800,6 +815,22 @@ fn gap_context(gap: DeclarationGap) -> InstructionPathContext {
             shared(InstructionSharedInput::ExplicitFile)
         }
         _ => InstructionPathContext::Unresolved,
+    }
+}
+
+/// Only the inputs an engine reads from outside the project, which Dudes can never observe, are
+/// standing limits. Every other declaration gap, and every gap added to the declaration later,
+/// is observed until it is listed here.
+fn gap_origin(gap: DeclarationGap) -> InstructionGapOrigin {
+    match gap {
+        DeclarationGap::CodexFallbackNames
+        | DeclarationGap::CodexRootMarkers
+        | DeclarationGap::CodexModelInstructionsFile
+        | DeclarationGap::CodexEffectiveConfiguration
+        | DeclarationGap::ClaudeEffectiveConfiguration
+        | DeclarationGap::ClaudeAgentsPlugin
+        | DeclarationGap::ClaudeManagedInlinePolicy => InstructionGapOrigin::Declared,
+        _ => InstructionGapOrigin::Observed,
     }
 }
 

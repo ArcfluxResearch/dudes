@@ -229,6 +229,7 @@ mod tests {
                 comparison: InstructionComparison {
                     changes: Vec::new(),
                     gaps: vec![InstructionCoverageGap {
+                        origin: dudes_proto::InstructionGapOrigin::Observed,
                         reason: InstructionGapKind::UnrecordedLaunchBoundary,
                         context: InstructionPathContext::SharedProject,
                         agent: None,

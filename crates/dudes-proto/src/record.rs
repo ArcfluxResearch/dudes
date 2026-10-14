@@ -3024,6 +3024,7 @@ pub mod samples {
                     inputs: Vec::new(),
                     inventoried: Vec::new(),
                     gaps: vec![crate::instruction::InstructionCoverageGap {
+                        origin: crate::instruction::InstructionGapOrigin::Observed,
                         reason: crate::instruction::InstructionGapKind::DeclarationMissing,
                         context: crate::instruction::InstructionPathContext::Unresolved,
                         agent: Some(agent()),

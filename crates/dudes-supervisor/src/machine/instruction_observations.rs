@@ -219,6 +219,7 @@ fn owner_agent(owner: InstructionObservationOwner) -> AgentId {
 
 fn gap(reason: InstructionGapKind, agent: AgentId) -> InstructionCoverageGap {
     InstructionCoverageGap {
+        origin: dudes_proto::InstructionGapOrigin::Observed,
         reason,
         context: InstructionPathContext::Unresolved,
         agent: Some(agent),

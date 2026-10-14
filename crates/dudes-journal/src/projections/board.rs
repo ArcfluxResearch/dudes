@@ -223,6 +223,7 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
                 summary: None,
                 check: None,
                 instruction_review: None,
+                coverage: None,
             };
             let row = BoardRow {
                 view,
@@ -320,6 +321,14 @@ pub(super) fn apply_instruction(
             .map_err(|reason| crate::Error::Instruction { lsn, reason })?;
         let reason = state.ticket_reason(card);
         if let Some(ticket) = &mut row.ticket {
+            if let Some((noted, note)) = &folded.coverage_note
+                && *noted == card
+            {
+                match &mut ticket.coverage {
+                    Some(held) => held.merge(note.clone()),
+                    held @ None => *held = Some(note.clone()),
+                }
+            }
             ticket.instruction_review = review;
             if let Some(reason) = reason {
                 ticket.reason = Some(reason);
@@ -438,6 +447,7 @@ fn start_ticket(row: &mut BoardRow, lsn: Lsn, agent: AgentId, goal: GoalId, expe
         ticket.reason = None;
         ticket.summary = None;
         ticket.check = None;
+        ticket.coverage = None;
         ticket.round = ticket.round.saturating_add(1);
     }
 }

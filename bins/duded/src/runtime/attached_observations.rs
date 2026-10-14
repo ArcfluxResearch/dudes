@@ -412,6 +412,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         };
         let mut comparison = dudes_proto::InstructionComparison::default();
         let _ = comparison.try_push_gap(dudes_proto::InstructionCoverageGap {
+            origin: dudes_proto::InstructionGapOrigin::Observed,
             reason: dudes_proto::InstructionGapKind::UnrecordedLaunchBoundary,
             context: dudes_proto::InstructionPathContext::Unresolved,
             agent: Some(agent),

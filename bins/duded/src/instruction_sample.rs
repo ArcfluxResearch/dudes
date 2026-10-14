@@ -97,6 +97,7 @@ pub(crate) fn bounded_seed(mut snapshot: InstructionSnapshot) -> InstructionSnap
     }
     if snapshot.execution_folder.is_none() {
         let _ = snapshot.try_push_gap(InstructionCoverageGap {
+            origin: dudes_proto::InstructionGapOrigin::Observed,
             reason: InstructionGapKind::PathUnresolved,
             context: InstructionPathContext::Unresolved,
             agent: None,
@@ -105,6 +106,7 @@ pub(crate) fn bounded_seed(mut snapshot: InstructionSnapshot) -> InstructionSnap
     }
     if snapshot.source == InstructionSnapshotSource::MissingBaseline {
         let _ = snapshot.try_push_gap(InstructionCoverageGap {
+            origin: dudes_proto::InstructionGapOrigin::Observed,
             reason: InstructionGapKind::MissingBaseline,
             context: InstructionPathContext::Unresolved,
             agent: None,
@@ -119,6 +121,7 @@ pub(crate) fn bounded_seed(mut snapshot: InstructionSnapshot) -> InstructionSnap
     for participant in participants {
         if snapshot.participants.len() == MAX_INSTRUCTION_PARTICIPANTS {
             let _ = snapshot.try_push_gap(InstructionCoverageGap {
+                origin: dudes_proto::InstructionGapOrigin::Observed,
                 reason: InstructionGapKind::ParticipantLimit,
                 context: InstructionPathContext::Unresolved,
                 agent: None,
@@ -136,6 +139,7 @@ pub(crate) fn bounded_seed(mut snapshot: InstructionSnapshot) -> InstructionSnap
                 InstructionGapKind::DeclarationMissing
             };
             let _ = snapshot.try_push_gap(InstructionCoverageGap {
+                origin: dudes_proto::InstructionGapOrigin::Observed,
                 reason,
                 context: InstructionPathContext::Unresolved,
                 agent: Some(agent),
@@ -208,6 +212,7 @@ impl Sample {
         });
         let path = path.and_then(|path| NativeInstructionPath::from_path(path).ok());
         let gap = InstructionCoverageGap {
+            origin: dudes_proto::InstructionGapOrigin::Observed,
             reason,
             context,
             agent: Some(agent),
@@ -1235,6 +1240,7 @@ fn compare_participants(
         {
             None => {
                 let _ = comparison.try_push_gap(InstructionCoverageGap {
+                    origin: dudes_proto::InstructionGapOrigin::Observed,
                     reason: InstructionGapKind::ParticipantChanged,
                     context: InstructionPathContext::SharedProject,
                     agent: Some(participant.agent),
@@ -1243,6 +1249,7 @@ fn compare_participants(
             }
             Some(old) if old.declaration_digest != participant.declaration_digest => {
                 let _ = comparison.try_push_gap(InstructionCoverageGap {
+                    origin: dudes_proto::InstructionGapOrigin::Observed,
                     reason: InstructionGapKind::DeclarationChanged,
                     context: InstructionPathContext::SharedProject,
                     agent: Some(participant.agent),
@@ -1259,6 +1266,7 @@ fn compare_participants(
             .any(|current| current.agent == participant.agent)
         {
             let _ = comparison.try_push_gap(InstructionCoverageGap {
+                origin: dudes_proto::InstructionGapOrigin::Observed,
                 reason: InstructionGapKind::ParticipantChanged,
                 context: InstructionPathContext::SharedProject,
                 agent: Some(participant.agent),
@@ -1279,6 +1287,7 @@ fn compare_path_fingerprints(
                 || prior.resolved_path != input.resolved_path)
         {
             let _ = comparison.try_push_gap(InstructionCoverageGap {
+                origin: dudes_proto::InstructionGapOrigin::Observed,
                 reason: InstructionGapKind::ChangedDuringRead,
                 context: merged_context(prior.context, input.context),
                 agent: Some(input.source.agent),
@@ -1356,6 +1365,7 @@ fn compare_input_pair(
         }
         (None, _) | (_, None) => {
             let _ = comparison.try_push_gap(InstructionCoverageGap {
+                origin: dudes_proto::InstructionGapOrigin::Observed,
                 reason: InstructionGapKind::UninventoriedMember,
                 context,
                 agent: Some(representative.source.agent),
@@ -1372,6 +1382,7 @@ fn compare_input_pair(
         )
     {
         let _ = comparison.try_push_gap(InstructionCoverageGap {
+            origin: dudes_proto::InstructionGapOrigin::Observed,
             reason: InstructionGapKind::ChangedDuringRead,
             context,
             agent: Some(representative.source.agent),

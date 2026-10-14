@@ -535,6 +535,7 @@ mod tests {
             );
         }
         let gap = InstructionCoverageGap {
+            origin: dudes_proto::InstructionGapOrigin::Observed,
             reason: InstructionGapKind::DeclarationMissing,
             context: InstructionPathContext::Unresolved,
             agent: Some(agent),
@@ -549,6 +550,7 @@ mod tests {
             inventoried: Vec::new(),
             gaps: vec![
                 InstructionCoverageGap {
+                    origin: dudes_proto::InstructionGapOrigin::Observed,
                     reason: InstructionGapKind::PathUnresolved,
                     ..gap.clone()
                 },

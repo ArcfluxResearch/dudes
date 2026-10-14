@@ -160,6 +160,7 @@ fn finished(turn: TurnId, end_lsn: Lsn, ticket: Option<InstructionTicketAssociat
             recovery: true,
             comparison: InstructionComparison {
                 gaps: vec![InstructionCoverageGap {
+                    origin: dudes_proto::InstructionGapOrigin::Observed,
                     reason: InstructionGapKind::AttachedTurnStartMissing,
                     context: InstructionPathContext::Unresolved,
                     agent: Some(agent()),

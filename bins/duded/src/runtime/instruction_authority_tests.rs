@@ -176,6 +176,7 @@ fn finishing(
                 recovery: true,
                 comparison: InstructionComparison {
                     gaps: vec![InstructionCoverageGap {
+                        origin: dudes_proto::InstructionGapOrigin::Observed,
                         reason: InstructionGapKind::AttachedTurnStartMissing,
                         context: InstructionPathContext::Unresolved,
                         agent: Some(agent),

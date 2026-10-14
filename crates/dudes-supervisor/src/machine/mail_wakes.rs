@@ -714,6 +714,7 @@ mod tests {
                 ] = effects.as_slice()
                 {
                     let gap = dudes_proto::InstructionCoverageGap {
+                        origin: dudes_proto::InstructionGapOrigin::Observed,
                         reason: dudes_proto::InstructionGapKind::DeclarationMissing,
                         context: dudes_proto::InstructionPathContext::Unresolved,
                         agent: None,
@@ -728,6 +729,7 @@ mod tests {
                         inventoried: Vec::new(),
                         gaps: vec![
                             dudes_proto::InstructionCoverageGap {
+                                origin: dudes_proto::InstructionGapOrigin::Observed,
                                 reason: dudes_proto::InstructionGapKind::PathUnresolved,
                                 ..gap.clone()
                             },

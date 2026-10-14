@@ -16,7 +16,7 @@ use crate::instruction::{
     InstructionReviewInterval, InstructionReviewWatermark, InstructionSettlement,
     InstructionSnapshot, InstructionTicketAssociation, InstructionUnknownReason,
     InstructionValidationError, MAX_INSTRUCTION_INPUTS, MAX_INSTRUCTION_METADATA_BYTES,
-    validate_instruction_record,
+    TicketCoverageNote, validate_instruction_record,
 };
 use crate::record::{Entry, Hex32, Record};
 use crate::ticket::TicketReason;
@@ -84,6 +84,8 @@ pub struct InstructionFold {
     pub reviewed: Option<(CardId, InstructionReviewAction)>,
     /// Validated goal clearing carried by the atomic rework record. Never set by acceptance.
     pub cleared_goal: Option<InstructionGoalClear>,
+    /// A finished ticket interval that holds nothing but met standing engine limits.
+    pub coverage_note: Option<(CardId, TicketCoverageNote)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,6 +274,7 @@ impl InstructionState {
             } => {
                 if self.finish_attempt(lsn, *owner, *ticket, *baseline, settlement)? {
                     note_card(&mut folded.evidence_cards, *ticket);
+                    folded.coverage_note = self.coverage_note(baseline_key(*baseline));
                 }
             }
             Record::TicketInstructionReviewed {
@@ -433,6 +436,28 @@ impl InstructionState {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    fn coverage_note(&self, key: Lsn) -> Option<(CardId, TicketCoverageNote)> {
+        let attempt = self.attempts.get(&key)?;
+        let ticket = attempt.ticket?;
+        let InstructionSettlement::Compared { comparison, .. } =
+            &attempt.finished.as_ref()?.settlement
+        else {
+            return None;
+        };
+        if requires_review(attempt) {
+            return None;
+        }
+        let agent = owner_agent(attempt.owner);
+        let provider = attempt.snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .participants
+                .iter()
+                .find(|participant| participant.agent == agent)
+                .map(|participant| participant.provider)
+        });
+        TicketCoverageNote::from_comparison(comparison, provider).map(|note| (ticket.card, note))
     }
 
     /// Every durable attempt in canonical position order, including reviewed uncertainty.
@@ -1532,6 +1557,7 @@ mod tests {
                 comparison: InstructionComparison {
                     changes: Vec::new(),
                     gaps: vec![InstructionCoverageGap {
+                        origin: crate::instruction::InstructionGapOrigin::Observed,
                         reason: InstructionGapKind::UnrecordedLaunchBoundary,
                         context: InstructionPathContext::SharedProject,
                         agent: Some(samples::agent()),
@@ -2209,6 +2235,7 @@ mod tests {
                 issue_lsn,
             };
             comparison.gaps.push(InstructionCoverageGap {
+                origin: crate::instruction::InstructionGapOrigin::Observed,
                 reason: InstructionGapKind::MissingBaseline,
                 context: InstructionPathContext::Unresolved,
                 agent: Some(samples::agent()),

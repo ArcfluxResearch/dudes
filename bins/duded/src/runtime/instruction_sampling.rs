@@ -617,6 +617,7 @@ fn deadline_snapshot(
         .clone();
     snapshot.sampled_at = sampled_at;
     let _ = snapshot.try_push_gap(InstructionCoverageGap {
+        origin: dudes_proto::InstructionGapOrigin::Observed,
         reason: InstructionGapKind::Deadline,
         context: InstructionPathContext::Unresolved,
         agent: None,
@@ -634,6 +635,7 @@ fn unknown_seed(job: &SampleJob, sampled_at: Timestamp) -> InstructionSnapshot {
         inputs: Vec::new(),
         inventoried: Vec::new(),
         gaps: vec![InstructionCoverageGap {
+            origin: dudes_proto::InstructionGapOrigin::Observed,
             reason: InstructionGapKind::PathUnresolved,
             context: InstructionPathContext::Unresolved,
             agent: Some(job.agent),
@@ -694,6 +696,7 @@ fn assemble(job: &SampleJob, sampled_at: Timestamp) -> InstructionSnapshot {
     }
     if incomplete {
         let _ = snapshot.try_push_gap(InstructionCoverageGap {
+            origin: dudes_proto::InstructionGapOrigin::Observed,
             reason: InstructionGapKind::ParticipantCoverageUnknown,
             context: InstructionPathContext::Unresolved,
             agent: None,
@@ -730,6 +733,7 @@ fn assemble(job: &SampleJob, sampled_at: Timestamp) -> InstructionSnapshot {
         snapshot.participants.push(participant);
         if source.agent != job.agent || job.candidate_context_unknown {
             let _ = snapshot.try_push_gap(InstructionCoverageGap {
+                origin: dudes_proto::InstructionGapOrigin::Observed,
                 reason: InstructionGapKind::ConfigurationUnknown,
                 context: InstructionPathContext::Unresolved,
                 agent: Some(source.agent),
@@ -739,6 +743,7 @@ fn assemble(job: &SampleJob, sampled_at: Timestamp) -> InstructionSnapshot {
     }
     if members.len() > MAX_INSTRUCTION_PARTICIPANTS {
         let _ = snapshot.try_push_gap(InstructionCoverageGap {
+            origin: dudes_proto::InstructionGapOrigin::Observed,
             reason: InstructionGapKind::ParticipantLimit,
             context: InstructionPathContext::SharedProject,
             agent: None,
@@ -778,6 +783,7 @@ fn merge_baseline(snapshot: &mut InstructionSnapshot, baseline: Option<&Instruct
                         || old.discovery.configuration_digest != now.discovery.configuration_digest
                     {
                         let _ = snapshot.try_push_gap(InstructionCoverageGap {
+                            origin: dudes_proto::InstructionGapOrigin::Observed,
                             reason: InstructionGapKind::ConfigurationUnknown,
                             context: InstructionPathContext::Unresolved,
                             agent: Some(old.agent),
@@ -802,6 +808,7 @@ fn merge_baseline(snapshot: &mut InstructionSnapshot, baseline: Option<&Instruct
                 }
                 None => {
                     let _ = snapshot.try_push_gap(InstructionCoverageGap {
+                        origin: dudes_proto::InstructionGapOrigin::Observed,
                         reason: InstructionGapKind::ParticipantChanged,
                         context: InstructionPathContext::SharedProject,
                         agent: Some(old.agent),
@@ -1006,6 +1013,7 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
         if let Err(job) = self.instruction_sampler.submit(job) {
             let mut snapshot = unknown_seed(&job, self.clock.now());
             let _ = snapshot.try_push_gap(InstructionCoverageGap {
+                origin: dudes_proto::InstructionGapOrigin::Observed,
                 reason: InstructionGapKind::Deadline,
                 context: InstructionPathContext::Unresolved,
                 agent: Some(agent),
@@ -1102,6 +1110,7 @@ mod tests {
             inputs: Vec::new(),
             inventoried: Vec::new(),
             gaps: vec![InstructionCoverageGap {
+                origin: dudes_proto::InstructionGapOrigin::Observed,
                 reason: InstructionGapKind::DeclarationMissing,
                 context: InstructionPathContext::Unresolved,
                 agent: None,
@@ -1709,6 +1718,7 @@ mod tests {
                 recovery: true,
                 comparison: InstructionComparison {
                     gaps: vec![InstructionCoverageGap {
+                        origin: dudes_proto::InstructionGapOrigin::Observed,
                         reason: InstructionGapKind::CleanupUnconfirmed,
                         context: InstructionPathContext::Unresolved,
                         agent: Some(owner_agent(owner)),

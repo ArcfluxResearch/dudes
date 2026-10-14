@@ -2864,6 +2864,7 @@ mod current_census_tests {
                 inputs: Vec::new(),
                 inventoried: Vec::new(),
                 gaps: vec![InstructionCoverageGap {
+                    origin: dudes_proto::InstructionGapOrigin::Observed,
                     reason: InstructionGapKind::DeclarationMissing,
                     context: InstructionPathContext::Unresolved,
                     agent: Some(agent()),
@@ -2886,6 +2887,7 @@ mod current_census_tests {
                 recovery: true,
                 comparison: InstructionComparison {
                     gaps: vec![InstructionCoverageGap {
+                        origin: dudes_proto::InstructionGapOrigin::Observed,
                         reason: InstructionGapKind::UnrecordedLaunchBoundary,
                         context: InstructionPathContext::SharedProject,
                         agent: Some(agent()),

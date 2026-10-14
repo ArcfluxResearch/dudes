@@ -81,6 +81,10 @@ pub struct TicketRow {
     /// Bounded instruction evidence and the exact pending review set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction_review: Option<InstructionPendingReview>,
+    /// The standing engine limits Dudes met while this ticket's work passed without a seen
+    /// change. It is shown on Ready for you and holds nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<crate::instruction::TicketCoverageNote>,
 }
 
 /// Which side of the queue a ticket sits on. Given-again work is served before new work.

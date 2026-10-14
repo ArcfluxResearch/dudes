@@ -109,6 +109,7 @@ fn unknown(
             comparison: InstructionComparison {
                 changes: Vec::new(),
                 gaps: vec![InstructionCoverageGap {
+                    origin: crate::instruction::InstructionGapOrigin::Observed,
                     reason: InstructionGapKind::UnrecordedLaunchBoundary,
                     context: crate::InstructionPathContext::SharedProject,
                     agent: None,
@@ -404,6 +405,7 @@ fn keyed_attached_process_and_missing_turn_evidence_reconstruct_exactly() {
                 comparison: InstructionComparison {
                     changes: Vec::new(),
                     gaps: vec![InstructionCoverageGap {
+                        origin: crate::instruction::InstructionGapOrigin::Observed,
                         reason: InstructionGapKind::AttachedTurnStartMissing,
                         context: crate::InstructionPathContext::SharedProject,
                         agent: None,
@@ -621,6 +623,7 @@ fn keyed_legacy_issue_keeps_a_single_snapshotless_interval_after_acknowledgment(
             issue_lsn: Lsn(3),
         };
         comparison.gaps.push(InstructionCoverageGap {
+            origin: crate::instruction::InstructionGapOrigin::Observed,
             reason: InstructionGapKind::MissingBaseline,
             context: crate::InstructionPathContext::Unresolved,
             agent: None,
