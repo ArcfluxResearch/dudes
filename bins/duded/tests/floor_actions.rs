@@ -4025,6 +4025,12 @@ fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
     for last in ["A", "E", "I", "M"] {
         let head = hire(addr, &cookie, &csrf, last);
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        if last == "A" {
+            assert!(
+                snapshot(addr, &cookie, &csrf).0["onboarding"].is_object(),
+                "control: a session with one hire is still offered another"
+            );
+        }
     }
     let head = hire(addr, &cookie, &csrf, "Q");
     assert!(
@@ -4063,11 +4069,6 @@ fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
             .get("onboarding")
             .is_none(),
         "the carried session is offered no further hire"
-    );
-    let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    assert!(
-        snapshot(addr, &fresh_cookie, &fresh_csrf).0["onboarding"].is_object(),
-        "control: a session the upgrade did not carry starts from none, and is offered a hire"
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
