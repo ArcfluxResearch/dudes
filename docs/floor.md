@@ -112,6 +112,8 @@ is interrupted, ends the same way.
 The first upgrade from a version that predates this feature still signs open tabs out, because
 the older daemon cannot hand its sign-ins over.
 
+Do not paste a new sign-in link into a tab that says Dudes stopped answering. Reload the tab first.
+
 One sign-in serves one tab at a time. If you opened a second tab with the same sign-in, it asks you
 to sign in again after the reload.
 

@@ -20,7 +20,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
-import { resetFloorStore } from '../src/renderer/floor/store.ts';
+import { getFloorState, resetFloorStore } from '../src/renderer/floor/store.ts';
 import {
   AWAY_GIVE_UP_MS,
   AWAY_POLL_MS,
@@ -36,7 +36,7 @@ import {
   openFloorStream,
   refreshFloorSnapshot,
 } from '../src/renderer/floor/stream.ts';
-import { floorFetch, floorRequestsPaused } from '../src/transport.ts';
+import { floorFetch, floorRequestsPaused, lazyChunk } from '../src/transport.ts';
 
 const CSRF = 'p8Zt3Qd1Kx9Lm2Nv5Rb7Yc0Ae4Gh6Jk8Sw1Uz3Xq0';
 const HERE = { protocol: 'http:', host: '127.0.0.1:7717' };
@@ -124,8 +124,56 @@ test('the reconnect ladder ends in the away watch, and nothing else is opened', 
   assert.equal(floorRequestsPaused(), true);
   assert.deepEqual(timers.delays.slice(0, RECONNECT_ATTEMPTS), [250, 500, 1_000, 2_000, 4_000]);
   assert.deepEqual(timers.delays.slice(RECONNECT_ATTEMPTS), [AWAY_POLL_MS], 'the first look is two seconds out');
-  assert.equal(asked.length, 0, 'the watch asks nothing before its first tick');
+  assert.equal(asked.length, 1, 'only the probe at the first close asked; the watch waits for its first tick');
   assert.equal(opened.length, RECONNECT_ATTEMPTS + 1, 'no socket is opened after the ladder');
+});
+
+async function runLadder(timers, ports, opened = []) {
+  const stop = openFloorStream(
+    { csrf: CSRF },
+    HERE,
+    () => {
+      const socket = fakeSocket();
+      opened.push(socket);
+      return socket;
+    },
+    timers,
+    ports,
+  );
+  for (let attempt = 0; attempt <= RECONNECT_ATTEMPTS; attempt += 1) {
+    opened[opened.length - 1].emit('close');
+    await timers.step(0).catch(() => {});
+  }
+  return stop;
+}
+
+test('a daemon that answers while it refuses the socket is not a daemon that went away', async () => {
+  const timers = manualTimers();
+  const stop = await runLadder(timers, { fetchIndex: async () => index('app-aaaaaaaa.js'), ownRefs: OWN });
+  assert.equal(getAway().kind, 'present', 'a refused socket put the page in the away state');
+  assert.equal(floorRequestsPaused(), false);
+  assert.equal(getFloorState().phase, 'closed', 'the page still says it stopped trying');
+  stop();
+});
+
+test('a daemon that does not answer when the failures begin is a daemon that went away', async () => {
+  const timers = manualTimers();
+  const stop = await runLadder(timers, { fetchIndex: async () => null, ownRefs: OWN });
+  assert.equal(getAway().kind, 'watching');
+  stop();
+});
+
+test('putting the stream down stops the watch', async () => {
+  const timers = manualTimers();
+  let asks = 0;
+  const stop = await runLadder(timers, { fetchIndex: async () => (asks += 1, null), ownRefs: OWN });
+  assert.equal(getAway().kind, 'watching');
+  assert.equal(timers.waiting, 1, 'the watch has its next look scheduled');
+  stop();
+  assert.equal(timers.waiting, 0, 'the watch survived the stream');
+  const before = asks;
+  await new Promise((settle) => setImmediate(settle));
+  assert.equal(asks, before);
 });
 
 test('a different set of built files is an update, the same set is a restart', async () => {
@@ -237,6 +285,43 @@ test('only the transport and the away watch reach window.fetch', async () => {
   };
   await walk(root);
   assert.deepEqual(offenders.sort(), ['renderer/floor/away.ts', 'transport.ts']);
+});
+
+test('every other way the page can load something goes through the pause too', async () => {
+  const root = resolve(import.meta.dirname, '../src');
+  const offenders = [];
+  const sites = [
+    [/(?<!lazyChunk\(\(\) => )(?<!typeof )(?<![\w.])import\(/, 'import( outside lazyChunk'],
+    [/\bnew URL\(|\bnew Image\b|\bnew (Shared)?Worker\b|\bnew Audio\b/, 'URL, Image, Worker or Audio load'],
+    [/<(img|iframe|audio|video|embed|script|link|source)\b/i, 'markup that loads a resource'],
+    [/createElement\(\s*['"](script|link|img|iframe)['"]/, 'a created loading element'],
+    [/\.src\s*=|\.href\s*=|location\.(assign|replace)\(|window\.open\(/, 'a navigation or source assignment'],
+    [/serviceWorker/, 'a service worker'],
+  ];
+  const walk = async (dir) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = resolve(dir, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (/\.(ts|tsx)$/.test(entry.name)) {
+        const text = (await readFile(path, 'utf8')).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+        for (const [pattern, what] of sites) if (pattern.test(text)) offenders.push(`${path.slice(root.length + 1)}: ${what}`);
+      }
+    }
+  };
+  await walk(root);
+  assert.deepEqual(offenders, [], 'a request path the pause does not cover');
+  // The control: the scan sees an unguarded one.
+  assert.ok(sites[0][0].test("const m = import('./x.ts');"));
+  assert.ok(!sites[0][0].test("const m = lazyChunk(() => import('./x.ts'));"));
+});
+
+test('a paused page refuses a lazy chunk without loading it', async () => {
+  let loaded = 0;
+  const load = () => { loaded += 1; return Promise.resolve('chunk'); };
+  assert.equal(await lazyChunk(load), 'chunk', 'control: before the pause it loads');
+  beginAway({ fetchIndex: async () => null, ownRefs: OWN }, manualTimers());
+  await assert.rejects(() => lazyChunk(load), TypeError);
+  assert.equal(loaded, 1);
 });
 
 let server;

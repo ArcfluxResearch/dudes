@@ -36,7 +36,7 @@ import {
 import type { OutputMode } from './store.ts';
 import { loadedAssetRefs } from '../../session.ts';
 import { floorRequestsPaused } from '../../transport.ts';
-import { beginAway, browserIndexFetch } from './away.ts';
+import { beginAway, browserIndexFetch, indexAnswers } from './away.ts';
 import type { AwayPorts } from './away.ts';
 import { publishProjection } from './projection.ts';
 import { observeReadFrame } from './reads.ts';
@@ -253,6 +253,10 @@ export function openFloorStream(
   let cancelRetry: (() => void) | null = null;
   let disposed = false;
   let ended = false;
+  // Whether the daemon answered when this run of failures began. One that did is up and refusing the
+  // socket, which is a session problem the page already explains, not a daemon that went away.
+  let answeredAtFirstClose = false;
+  let stopAway: () => void = () => {};
   let reconcileSelection = () => {};
   const stopSelectionWatch = subscribeToFloor(() => reconcileSelection());
 
@@ -394,8 +398,14 @@ export function openFloorStream(
     if (attempts >= RECONNECT_ATTEMPTS) {
       // The ladder is spent. From here the page sends no cookie, on a request or a socket, until it is
       // reloaded: whatever answers on this address may not be the daemon that issued the session.
-      beginAway(away, timers);
+      if (!answeredAtFirstClose) stopAway = beginAway(away, timers);
       return;
+    }
+    if (attempts === 0) {
+      answeredAtFirstClose = false;
+      void indexAnswers(away).then((answered) => {
+        if (!disposed) answeredAtFirstClose = answered;
+      });
     }
     // Clearing here rather than on the next open: the rows stop being confirmed
     // the moment the subscription ends, and a page that held them until a
@@ -453,6 +463,7 @@ export function openFloorStream(
 
   return () => {
     disposed = true;
+    stopAway();
     if (refreshOpenStream === refresh) refreshOpenStream = null;
     if (reauthenticateOpenStream === reauthenticate) reauthenticateOpenStream = null;
     stopSelectionWatch();

@@ -1466,7 +1466,7 @@ const REQUESTS = {
   'src/renderer/floor/away.ts': {
     paths: ['/floor/'],
     methods: ['GET'],
-    fetches: ["window.fetch('/floor/')", 'ports.fetchIndex()'],
+    fetches: ["window.fetch('/floor/')", 'ports.fetchIndex()', 'ports.fetchIndex()'],
   },
   'src/transport.ts': {
     paths: [],

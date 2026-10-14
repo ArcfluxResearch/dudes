@@ -76,15 +76,28 @@ export async function browserIndexFetch(): Promise<string | null> {
   }
 }
 
+/** Whether something that serves the Floor answers now: the index it names built files in. Sends no credentials. */
+export async function indexAnswers(ports: AwayPorts): Promise<boolean> {
+  try {
+    const html = await ports.fetchIndex();
+    return html !== null && servedAssetRefs(html).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Stop sending the session cookie, and watch for the daemon: every two seconds for up to ten
- * minutes. Once per page load, since only a reload leaves it.
+ * minutes. Once per page load, since only a reload leaves it. The returned function stops the
+ * watch, for a stream that is put down.
  */
-export function beginAway(ports: AwayPorts, timers: StreamTimers): void {
-  if (state.kind !== 'present') return;
+export function beginAway(ports: AwayPorts, timers: StreamTimers): () => void {
+  if (state.kind !== 'present') return () => {};
   pauseFloorRequests();
   set('watching');
   const deadline = timers.now() + AWAY_GIVE_UP_MS;
+  let stopped = false;
+  let cancel: () => void = () => {};
   const poll = async (): Promise<void> => {
     let html: string | null;
     try {
@@ -92,14 +105,19 @@ export function beginAway(ports: AwayPorts, timers: StreamTimers): void {
     } catch {
       html = null;
     }
+    if (stopped) return;
     const served = html === null ? [] : servedAssetRefs(html);
     if (served.length > 0) {
       set(sameBuild(ports.ownRefs, served) ? 'restarted' : 'updated');
     } else if (timers.now() >= deadline) {
       set('expired');
     } else {
-      timers.after(AWAY_POLL_MS, () => void poll());
+      cancel = timers.after(AWAY_POLL_MS, () => void poll());
     }
   };
-  timers.after(AWAY_POLL_MS, () => void poll());
+  cancel = timers.after(AWAY_POLL_MS, () => void poll());
+  return () => {
+    stopped = true;
+    cancel();
+  };
 }
