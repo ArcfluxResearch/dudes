@@ -324,10 +324,7 @@ pub(super) fn apply_instruction(
             if let Some((noted, note)) = &folded.coverage_note
                 && *noted == card
             {
-                match &mut ticket.coverage {
-                    Some(held) => held.merge(note.clone()),
-                    held @ None => *held = Some(note.clone()),
-                }
+                dudes_proto::TicketCoverageNote::absorb(&mut ticket.coverage, note.clone());
             }
             ticket.instruction_review = review;
             if let Some(reason) = reason {

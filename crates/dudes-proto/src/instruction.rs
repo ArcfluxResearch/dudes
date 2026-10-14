@@ -1187,7 +1187,8 @@ impl TicketCoverageNote {
                 InstructionGapKind::RootMarkerUnknown => "root markers",
                 InstructionGapKind::PluginUnknown => "plugins",
                 InstructionGapKind::PolicyUnknown => "managed policy",
-                _ => continue,
+                InstructionGapKind::PathUnresolved => "project folder lookup",
+                _ => "other inputs",
             };
             if !phrases.contains(&phrase) {
                 phrases.push(phrase);
@@ -1196,7 +1197,7 @@ impl TicketCoverageNote {
         let list = match phrases.split_last() {
             Some((only, [])) => (*only).to_owned(),
             Some((end, rest)) => format!("{} or {end}", rest.join(", ")),
-            None => "some of its own inputs".to_owned(),
+            None => "own inputs".to_owned(),
         };
         let mut sentence = format!("Dudes cannot see {engine}'s {list}.");
         if self.saw_no_change {
@@ -1204,6 +1205,28 @@ impl TicketCoverageNote {
                 .push_str(" It saw no change to the instruction and settings files it can read.");
         }
         sentence
+    }
+
+    /// The note for an interval that holds: its own limits, and no claim that nothing changed.
+    #[must_use]
+    pub fn withdrawn(note: Option<Self>, provider: Option<Provider>) -> Self {
+        let mut note = note.unwrap_or(Self {
+            provider,
+            limits: Vec::new(),
+            saw_no_change: false,
+        });
+        note.saw_no_change = false;
+        note
+    }
+
+    /// Fold an interval's note into a ticket's slot. An interval with no limits of its own only
+    /// withdraws the claim of no change from a note that already exists.
+    pub fn absorb(slot: &mut Option<Self>, note: Self) {
+        match slot {
+            Some(held) => held.merge(note),
+            None if note.limits.is_empty() => {}
+            None => *slot = Some(note),
+        }
     }
 
     /// Fold a later interval of the same ticket into this note.

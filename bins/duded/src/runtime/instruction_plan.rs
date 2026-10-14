@@ -1199,6 +1199,7 @@ mod tests {
 
     fn engine_participant(
         adapter: &dyn dudes_providers::adapter::Adapter,
+        folder: &Path,
     ) -> InstructionParticipant {
         use dudes_providers::adapter::AgentCtx;
         use dudes_types::{Mode, ModelSelection};
@@ -1208,7 +1209,7 @@ mod tests {
         )];
         let ctx = AgentCtx {
             agent: agent(),
-            cwd: Path::new(FOLDER),
+            cwd: folder,
             agent_dir: Path::new("/state/agents/owner"),
             daemon_env: &env,
             sandbox: None,
@@ -1221,6 +1222,7 @@ mod tests {
             adapter.instruction_manifest(&ctx, Mode::Managed, &ModelSelection::provider_default());
         let evidence = evidence();
         let mut facts = facts(&evidence);
+        facts.canonical_execution_folder = folder;
         facts.project_context = ProjectInstructionContext::Shared;
         facts.daemon_configuration_digest = None;
         instruction_participant(agent(), adapter.provider(), &declaration, &facts)
@@ -1243,7 +1245,7 @@ mod tests {
             Box::new(PiAdapter::default()),
         ];
         for adapter in adapters {
-            let participant = engine_participant(adapter.as_ref());
+            let participant = engine_participant(adapter.as_ref(), Path::new(FOLDER));
             let comparison = dudes_proto::instruction::InstructionComparison {
                 changes: Vec::new(),
                 gaps: participant.discovery.gaps.clone(),
@@ -1262,6 +1264,64 @@ mod tests {
             )
             .expect("a stock declaration always carries standing limits");
             assert!(note.saw_no_change);
+        }
+    }
+
+    #[test]
+    fn editing_a_project_settings_file_in_a_shared_project_is_a_known_shared_change() {
+        use dudes_providers::{
+            claude::ClaudeAdapter, claude::config::ClaudeConfig, codex::CodexAdapter,
+            codex::config::CodexConfig, pi::PiAdapter,
+        };
+        let cases: [(Box<dyn dudes_providers::adapter::Adapter>, &str); 4] = [
+            (
+                Box::new(ClaudeAdapter::new(ClaudeConfig::default())),
+                ".claude/settings.json",
+            ),
+            (
+                Box::new(ClaudeAdapter::new(ClaudeConfig::default())),
+                ".claude/settings.local.json",
+            ),
+            (
+                Box::new(CodexAdapter::new(CodexConfig::default())),
+                ".codex/config.toml",
+            ),
+            (Box::new(PiAdapter::default()), ".pi/settings.json"),
+        ];
+        for (adapter, file) in cases {
+            let directory = tempfile::tempdir().unwrap();
+            let folder = std::fs::canonicalize(directory.path()).unwrap();
+            std::fs::create_dir(folder.join(".git")).unwrap();
+            let target = folder.join(file);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(&target, "one").unwrap();
+            let participant = engine_participant(adapter.as_ref(), &folder);
+            let snapshot = dudes_proto::instruction::InstructionSnapshot {
+                sampled_at: dudes_types::Timestamp::UNIX_EPOCH,
+                source: dudes_proto::instruction::InstructionSnapshotSource::Fresh,
+                boot: None,
+                execution_folder: Some(NativeInstructionPath::from_path(&folder).unwrap()),
+                participants: vec![participant],
+                inputs: Vec::new(),
+                inventoried: Vec::new(),
+                gaps: Vec::new(),
+                usage: dudes_proto::InstructionSampleUsage::default(),
+            };
+            let before = crate::instruction_sample::observe(snapshot.clone());
+            std::fs::write(&target, "two").unwrap();
+            let after = crate::instruction_sample::observe(snapshot);
+            let comparison = crate::instruction_sample::compare(&before, &after);
+            assert!(
+                comparison.has_shared_changes()
+                    && comparison.changes.iter().any(|change| change
+                        .path
+                        .to_path()
+                        .ok()
+                        .as_deref()
+                        == Some(target.as_path())),
+                "{file}: {:?}",
+                comparison.changes
+            );
         }
     }
 

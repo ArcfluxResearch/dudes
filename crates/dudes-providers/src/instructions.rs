@@ -1068,6 +1068,16 @@ pub(crate) fn pi_manifest(ctx: &AgentCtx<'_>) -> InstructionDeclaration {
             ImportRule::None,
         );
         declaration.input(
+            root.clone(),
+            DiscoveryRule::FixedCandidates {
+                names: names(&[".pi/settings.json"]),
+                selection: CandidateSelection::All,
+            },
+            Activation::Active,
+            EvidenceRevision::Pi104,
+            ImportRule::None,
+        );
+        declaration.input(
             root,
             DiscoveryRule::FixedCandidates {
                 names: names(&[".pi/SYSTEM.md", ".pi/APPEND_SYSTEM.md"]),
@@ -1589,6 +1599,8 @@ mod tests {
             Mode::Managed,
         );
         assert!(settings(&codex, &[".codex/config.toml"]));
+        let pi = declaration(&PiAdapter::default(), &ctx(&supplied, true), Mode::Managed);
+        assert!(settings(&pi, &[".pi/settings.json"]));
     }
 
     #[test]
@@ -1617,14 +1629,14 @@ mod tests {
             }
         );
         assert_eq!(
-            manifest.inputs[3].rule,
+            manifest.inputs[4].rule,
             DiscoveryRule::FixedCandidates {
                 names: names(&[".pi/SYSTEM.md", ".pi/APPEND_SYSTEM.md"]),
                 selection: CandidateSelection::All,
             }
         );
         assert_eq!(
-            manifest.inputs[3].activation,
+            manifest.inputs[4].activation,
             Activation::Inactive(InactiveReason::PiNoApprove)
         );
         assert!(matches!(

@@ -202,29 +202,31 @@ const COVERAGE_ENGINES = Object.freeze({ codex: 'Codex', claude: 'Claude', pi: '
 const COVERAGE_PHRASES = Object.freeze({
   configuration_unknown: 'settings in its home folder', fallback_unknown: 'fallback file names',
   root_marker_unknown: 'root markers', plugin_unknown: 'plugins', policy_unknown: 'managed policy',
+  path_unresolved: 'project folder lookup',
 } as const);
-type CoverageLimit = keyof typeof COVERAGE_PHRASES;
+const COVERAGE_OTHER = 'other inputs';
 
 /** What Dudes could not see on a ticket that passed without a seen change. It holds nothing. */
 export interface CoverageNote {
   readonly provider: string | null;
-  readonly limits: readonly CoverageLimit[];
+  readonly limits: readonly string[];
   readonly saw_no_change: boolean;
 }
 
 export function decodeCoverageNote(value: unknown): CoverageNote | null {
   if (!object(value) || !Array.isArray(value.limits) || value.limits.length === 0 || value.limits.length > 8
-    || !value.limits.every((limit) => typeof limit === 'string' && Object.hasOwn(COVERAGE_PHRASES, limit))
+    || !value.limits.every((limit) => typeof limit === 'string' && limit.length > 0 && limit.length <= 64)
     || new Set(value.limits).size !== value.limits.length || typeof value.saw_no_change !== 'boolean') return null;
   const provider = value.provider ?? null;
   if (provider !== null && typeof provider !== 'string') return null;
-  return Object.freeze({ provider, limits: Object.freeze([...value.limits]) as readonly CoverageLimit[], saw_no_change: value.saw_no_change });
+  return Object.freeze({ provider, limits: Object.freeze([...value.limits]) as readonly string[], saw_no_change: value.saw_no_change });
 }
 
 export function coverageText(note: CoverageNote): string {
   const engine = note.provider !== null && Object.hasOwn(COVERAGE_ENGINES, note.provider)
     ? COVERAGE_ENGINES[note.provider as keyof typeof COVERAGE_ENGINES] : 'the engine';
-  const phrases = note.limits.map((limit) => COVERAGE_PHRASES[limit]);
+  const phrases = [...new Set(note.limits.map((limit) => (Object.hasOwn(COVERAGE_PHRASES, limit)
+    ? COVERAGE_PHRASES[limit as keyof typeof COVERAGE_PHRASES] : COVERAGE_OTHER)))];
   const last = phrases.pop() as string;
   const list = phrases.length === 0 ? last : `${phrases.join(', ')} or ${last}`;
   return `Dudes cannot see ${engine}'s ${list}.${note.saw_no_change ? ' It saw no change to the instruction and settings files it can read.' : ''}`;

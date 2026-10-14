@@ -182,12 +182,20 @@ test('a ready ticket names what Dudes could not see, and a held one does not', a
   assert.ok(!/What Dudes could not see/.test(panel()), 'Needs you keeps its own reasons');
 });
 
+test('a Pi note reads in plain words and an unknown limit falls back instead of dropping the note', async () => {
+  await open({ coverage: { provider: 'pi', limits: ['configuration_unknown', 'path_unresolved'], saw_no_change: true } });
+  assert.match(panel(), /Dudes cannot see Pi&#x27;s settings in its home folder or project folder lookup\. It saw no change/);
+  detail.resetDetail();
+  store.resetFloorStore();
+  await open({ coverage: { provider: 'pi', limits: ['something_new'], saw_no_change: false } });
+  assert.match(panel(), /Dudes cannot see Pi&#x27;s other inputs\./);
+});
+
 test('the decoder refuses a coverage note it does not know', () => {
   const decode = (coverage) => detail.decodeDetail(reply({ coverage }), NEW);
   assert.ok(decode({ provider: 'pi', limits: ['configuration_unknown'], saw_no_change: true }));
   for (const bad of [
     { provider: 'pi', limits: [], saw_no_change: true },
-    { provider: 'pi', limits: ['read_failed'], saw_no_change: true },
     { provider: 'pi', limits: ['plugin_unknown', 'plugin_unknown'], saw_no_change: true },
     { provider: 'pi', limits: ['plugin_unknown'] },
     { provider: 7, limits: ['plugin_unknown'], saw_no_change: true },

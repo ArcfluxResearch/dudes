@@ -446,9 +446,6 @@ impl InstructionState {
         else {
             return None;
         };
-        if requires_review(attempt) {
-            return None;
-        }
         let agent = owner_agent(attempt.owner);
         let provider = attempt.snapshot.as_ref().and_then(|snapshot| {
             snapshot
@@ -457,7 +454,12 @@ impl InstructionState {
                 .find(|participant| participant.agent == agent)
                 .map(|participant| participant.provider)
         });
-        TicketCoverageNote::from_comparison(comparison, provider).map(|note| (ticket.card, note))
+        let note = TicketCoverageNote::from_comparison(comparison, provider);
+        if requires_review(attempt) {
+            // A held interval keeps the limits already noted but withdraws any claim of no change.
+            return Some((ticket.card, TicketCoverageNote::withdrawn(note, provider)));
+        }
+        note.map(|note| (ticket.card, note))
     }
 
     /// Every durable attempt in canonical position order, including reviewed uncertainty.
@@ -1675,7 +1677,50 @@ mod tests {
             state.ticket_reason(samples::card()),
             Some(TicketReason::SharedInstructionsUnknown)
         );
-        assert!(folded.coverage_note.is_none());
+        let (_, held) = folded.coverage_note.expect("a held interval still reports");
+        assert!(!held.saw_no_change);
+    }
+
+    #[test]
+    fn a_pi_note_has_plain_words_for_every_limit_it_carries() {
+        let note = TicketCoverageNote {
+            provider: Some(dudes_types::Provider::Pi),
+            limits: vec![
+                InstructionGapKind::ConfigurationUnknown,
+                InstructionGapKind::PathUnresolved,
+            ],
+            saw_no_change: true,
+        };
+        assert_eq!(
+            note.sentence(),
+            "Dudes cannot see Pi's settings in its home folder or project folder lookup. It saw no change to the instruction and settings files it can read."
+        );
+        let sentence = TicketCoverageNote {
+            limits: vec![InstructionGapKind::PathUnresolved],
+            saw_no_change: false,
+            ..note
+        }
+        .sentence();
+        assert_eq!(sentence, "Dudes cannot see Pi's project folder lookup.");
+    }
+
+    #[test]
+    fn a_later_held_interval_withdraws_the_claim_of_no_change_and_keeps_the_limits() {
+        use crate::instruction::InstructionGapOrigin::{Declared, Observed};
+        let (_, clean) = finish_ticket(vec![gap_of(Declared, InstructionGapKind::PluginUnknown)]);
+        let mut slot = None;
+        TicketCoverageNote::absorb(&mut slot, clean.coverage_note.unwrap().1);
+        assert!(slot.as_ref().unwrap().saw_no_change);
+        let (_, held) = finish_ticket(vec![gap_of(Observed, InstructionGapKind::ReadFailed)]);
+        let (_, held_note) = held.coverage_note.expect("a held interval reports");
+        assert!(held_note.limits.is_empty());
+        TicketCoverageNote::absorb(&mut slot, held_note);
+        let note = slot.unwrap();
+        assert!(!note.saw_no_change);
+        assert_eq!(note.limits, [InstructionGapKind::PluginUnknown]);
+        let mut none = None;
+        TicketCoverageNote::absorb(&mut none, TicketCoverageNote::withdrawn(None, None));
+        assert!(none.is_none(), "no note appears from a held interval alone");
     }
 
     #[test]
