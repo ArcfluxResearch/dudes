@@ -3961,6 +3961,147 @@ fn fourth_durable_hire_precedes_queued_session_catalog_snapshot() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
+/// One operator call to a current method on a fresh connection.
+fn operator_current(
+    settings: &duded::Settings,
+    method: dudes_proto::rpc::CurrentMethod,
+    params: Option<Value>,
+) -> Value {
+    let credential = std::fs::read_to_string(
+        settings
+            .runtime_dir
+            .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+    )
+    .expect("operator credential");
+    let mut client = Client::connect(settings.socket()).expect("daemon socket");
+    client
+        .call_current_as_operator(
+            method,
+            params,
+            OperatorCredential::new(credential).expect("credential"),
+        )
+        .expect("the daemon answers")
+        .result
+        .expect("the operator is admitted")
+}
+
+/// A browser's session carries its hire count across `dudes upgrade`: the count is rebuilt from the
+/// journal by the digest the imported session keeps, so four hires before the upgrade are still four
+/// after it, and a session the upgrade did not carry starts from none.
+#[test]
+fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
+    use dudes_proto::rpc::CurrentMethod;
+
+    let fixture = Fixture::new();
+    let mut settings = enrolled_settings(&fixture);
+    if let Some(floor) = settings.floor.as_mut() {
+        floor.port = None;
+    }
+    let clock = Arc::new(TestClock::new());
+    let boot_run = |clock: &Arc<TestClock>| {
+        boot(
+            &settings,
+            seams(
+                SharedHost::new(),
+                Arc::new(ScriptedRunner::default()),
+                Arc::clone(clock),
+                Witness::default(),
+            ),
+        )
+        .expect("boot Floor")
+    };
+    let hire = |addr: SocketAddr, cookie: &str, csrf: &str, last: &str| {
+        let request = json!({
+            "attempt_id": format!("{}{last}", "A".repeat(42)),
+            "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        });
+        post_onboard(addr, cookie, csrf, &request).0
+    };
+
+    let daemon = boot_run(&clock);
+    let addr = daemon.floor_addr().expect("Floor address");
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    for last in ["A", "E", "I", "M"] {
+        let head = hire(addr, &cookie, &csrf, last);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        if last == "A" {
+            assert!(
+                snapshot(addr, &cookie, &csrf).0["onboarding"].is_object(),
+                "control: a session with one hire is still offered another"
+            );
+        }
+    }
+    let head = hire(addr, &cookie, &csrf, "Q");
+    assert!(
+        head.starts_with("HTTP/1.1 403 Forbidden"),
+        "control: a session that hired four times is refused a fifth: {head}"
+    );
+    let exported = operator_current(&settings, CurrentMethod::FloorSessionExport, None);
+    // Stop only once the journal has stopped growing, so the next run replays a settled history.
+    let mut seen = fixture.records().len();
+    let mut quiet = 0;
+    while quiet < 4 {
+        std::thread::sleep(Duration::from_millis(150));
+        let now = fixture.records().len();
+        quiet = if now == seen { quiet + 1 } else { 0 };
+        seen = now;
+    }
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+
+    let daemon = boot_run(&clock);
+    assert_eq!(
+        daemon.floor_addr(),
+        Some(addr),
+        "the Floor kept its address"
+    );
+    let mut running = common::start(daemon);
+    let imported = operator_current(
+        &settings,
+        CurrentMethod::FloorSessionImport,
+        Some(json!({ "exported": exported })),
+    );
+    assert_eq!(imported, json!({ "restored": 1 }));
+    let recovered = raw_recover(addr, &cookie);
+    let rotated = serde_json::from_str::<Value>(recovered.1.trim()).expect("recovery JSON")["csrf"]
+        .as_str()
+        .expect("rotated CSRF")
+        .to_owned();
+    let head = hire(addr, &cookie, &rotated, "U");
+    assert!(
+        head.starts_with("HTTP/1.1 403 Forbidden"),
+        "the four hires before the upgrade still count: {head}"
+    );
+    assert!(
+        snapshot(addr, &cookie, &rotated)
+            .0
+            .get("onboarding")
+            .is_none(),
+        "the carried session is offered no further hire"
+    );
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// `POST /floor/session/recover` for `cookie`, as the status head and the body.
+fn raw_recover(addr: SocketAddr, cookie: &str) -> (String, String) {
+    let host = addr.to_string();
+    let mut stream = TcpStream::connect(addr).expect("Floor listener");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("timeout");
+    let request = format!(
+        "POST /floor/session/recover HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).expect("recover");
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    let (head, body) = response
+        .split_once("\r\n\r\n")
+        .expect("a complete response");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    (head.to_owned(), body.to_owned())
+}
+
 /// The browser's first hire ends the pre-agent operator epoch exactly as a local hire does.
 ///
 /// Every local connection here resolves `NoRecordedAgent` and presents the operator credential,

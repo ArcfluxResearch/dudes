@@ -761,10 +761,10 @@ where
         witness.startup.record(StartupStep::FloorReady);
     }
 
-    let floor_sessions = daemon
+    let floor_carry = daemon
         .floor
         .as_ref()
-        .map(crate::floor_gateway::FloorGateway::sessions);
+        .map(|floor| floor.carry(daemon.ctx.baselines.check_runs()));
     open_the_door(
         &mut daemon,
         settings,
@@ -779,7 +779,7 @@ where
             transport,
             stop,
             operator_authority,
-            floor_sessions,
+            floor_carry,
             provider_check,
             sign_in,
             mailbox_report,
@@ -936,7 +936,7 @@ struct Door {
     transport: Arc<LocalTransport>,
     stop: Arc<StopFlag>,
     operator_authority: Arc<OperatorAuthoritySource>,
-    floor_sessions: Option<crate::floor_session::FloorSessions>,
+    floor_carry: Option<crate::floor_session::FloorCarry>,
     provider_check: crate::provider_check::ProviderCheck,
     sign_in: crate::sign_in::SignInCheck,
     mailbox_report: Arc<std::sync::Mutex<system::MailboxReport>>,
@@ -1008,7 +1008,7 @@ where
         &door.subscribers,
         door.last_lsn,
         Arc::clone(&door.operator_authority),
-        door.floor_sessions,
+        door.floor_carry,
         daemon.ctx.onboarding_pause.clone(),
         door.provider_check,
         Some(door.sign_in),
@@ -1420,6 +1420,60 @@ fn check_socket(
 ) {
 }
 
+/// `floor.session.export` and `floor.session.import`, which `dudes upgrade` uses to keep Floor
+/// sign-ins across its restart.
+///
+/// Both are `Operator` only, like `floor.session.issue`: an import chooses the digests it admits,
+/// so a caller that is not the operator could admit a cookie of its own. A daemon that serves no
+/// Floor exports nothing and imports nothing.
+fn register_floor_carry(
+    dispatcher: &mut Dispatcher,
+    carry: Option<crate::floor_session::FloorCarry>,
+    run: Option<String>,
+) {
+    use dudes_proto::rpc::floor::{SessionExport, SessionImportParams, SessionImportResult};
+    use dudes_proto::rpc::{CurrentMethod, Empty};
+
+    let exporting = carry.clone();
+    let exporting_run = run.clone();
+    dispatcher.register_current_audited(
+        CurrentMethod::FloorSessionExport,
+        Requirement::Operator,
+        move |call, pid| {
+            let _: Empty = dudes_rpc::methods::params(&call)?;
+            let exported = exporting.as_ref().map_or_else(
+                || SessionExport {
+                    run: String::new(),
+                    origin: String::new(),
+                    sessions: Vec::new(),
+                },
+                |carry| carry.export(exporting_run.as_deref()),
+            );
+            tracing::info!(
+                ?pid,
+                sessions = exported.sessions.len(),
+                "floor sign-ins exported"
+            );
+            dudes_rpc::methods::encode_current(CurrentMethod::FloorSessionExport, &exported)
+        },
+    );
+    dispatcher.register_current_audited(
+        CurrentMethod::FloorSessionImport,
+        Requirement::Operator,
+        move |call, pid| {
+            let params: SessionImportParams = dudes_rpc::methods::params(&call)?;
+            let restored = carry
+                .as_ref()
+                .map_or(0, |carry| carry.import(run.as_deref(), &params.exported));
+            tracing::info!(?pid, restored, "floor sign-ins imported");
+            dudes_rpc::methods::encode_current(
+                CurrentMethod::FloorSessionImport,
+                &SessionImportResult { restored },
+            )
+        },
+    );
+}
+
 /// The method table: `register_all`'s nine ordinary rows, the three conditioned rows,
 /// the four board rows, `hook.event`, plus `floor.session.issue`, `floor.enrollment.reload`,
 /// `agent.list`, `system.ping`, `system.doctor` and `system.shutdown`.
@@ -1483,7 +1537,7 @@ fn dispatch_with_floor<C>(
     subscribers: &Arc<Subscribers>,
     last_lsn: Arc<AtomicU64>,
     operator_authority: Arc<OperatorAuthoritySource>,
-    floor_sessions: Option<crate::floor_session::FloorSessions>,
+    floor_carry: Option<crate::floor_session::FloorCarry>,
     reload_pause: crate::runtime::OnboardingPause,
     provider_check: crate::provider_check::ProviderCheck,
     sign_in: Option<crate::sign_in::SignInCheck>,
@@ -1514,14 +1568,21 @@ where
     dudes_rpc::methods::register_memory_search(&mut dispatcher, &control);
     dudes_rpc::methods::register_team_roster(&mut dispatcher, &control);
     crate::hooks::register(&mut dispatcher, hooks, settings.max_connections);
+    let run = completion
+        .completion
+        .as_ref()
+        .map(|receipt| receipt.run.clone());
+    let issue_carry = floor_carry.clone();
+    register_floor_carry(&mut dispatcher, floor_carry, run);
     dispatcher.register(
         Method::FloorSessionIssue,
         // The local operator mints only a read-only web bootstrap.
         Requirement::Operator,
         move |call| {
             let _: dudes_proto::rpc::Empty = dudes_rpc::methods::params(&call)?;
-            let sessions = floor_sessions
+            let sessions = issue_carry
                 .as_ref()
+                .map(crate::floor_session::FloorCarry::sessions)
                 .ok_or_else(|| dudes_proto::rpc::RpcError {
                     code: dudes_proto::rpc::ErrorCode::InternalError.code(),
                     message: "the Floor is not configured: install the built Floor as a \

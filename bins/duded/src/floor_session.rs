@@ -12,10 +12,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use dudes_proto::record::Hex32;
-use dudes_proto::rpc::floor::{SESSION_EXPIRES_IN_S, SessionIssueResult};
+use dudes_proto::rpc::floor::{
+    ExportedSession, SESSION_EXPIRES_IN_S, SessionExport, SessionIssueResult,
+};
 use dudes_supervisor::Clock;
 use dudes_types::Timestamp;
 use sha2::{Digest as _, Sha256};
+
+use crate::baseline::CheckRuns;
+use crate::floor_ticket::TicketLimits;
 
 /// Cookie name used by the read-only Floor session.
 pub const SESSION_COOKIE_NAME: &str = "dudes_floor_session";
@@ -144,7 +149,7 @@ impl FloorSessionAuthorizer {
         }
         state.prune(now);
         let session = state.sessions.get_mut(&cookie)?;
-        if session.csrf != csrf {
+        if session.csrf != Some(csrf) {
             return None;
         }
         session.last_used = now;
@@ -219,7 +224,7 @@ impl FloorSessionAuthorizer {
         }
         state.prune(now);
         let session = state.sessions.get_mut(&cookie)?;
-        if session.csrf != csrf {
+        if session.csrf != Some(csrf) {
             return None;
         }
         let taken = take(session)?;
@@ -645,6 +650,7 @@ mod registry {
 
 #[derive(Default)]
 struct State {
+    imported: bool,
     pending: BTreeMap<[u8; 32], Timestamp>,
     sessions: BTreeMap<[u8; 32], Session>,
     inflight: BTreeMap<(ActionKind, Hex32), Hex32>,
@@ -652,7 +658,9 @@ struct State {
 
 struct Session {
     revoked: Arc<AtomicBool>,
-    csrf: [u8; 32],
+    /// `None` for a session imported from the previous run, which matches no secret until the
+    /// recovery route issues one.
+    csrf: Option<[u8; 32]>,
     created: Timestamp,
     last_used: Timestamp,
     websockets: usize,
@@ -660,14 +668,18 @@ struct Session {
     recovery_pending_until: Option<Timestamp>,
 }
 
+impl Session {
+    fn live_at(&self, now: Timestamp) -> bool {
+        now.millis_since(self.created) < ABSOLUTE_EXPIRES_MS
+            && now.millis_since(self.last_used) < IDLE_EXPIRES_MS
+    }
+}
+
 impl State {
     fn prune(&mut self, now: Timestamp) {
         self.pending
             .retain(|_, issued| now.millis_since(*issued) < BOOTSTRAP_EXPIRES_MS);
-        self.sessions.retain(|_, session| {
-            now.millis_since(session.created) < ABSOLUTE_EXPIRES_MS
-                && now.millis_since(session.last_used) < IDLE_EXPIRES_MS
-        });
+        self.sessions.retain(|_, session| session.live_at(now));
     }
 }
 
@@ -692,7 +704,7 @@ impl FloorSessions {
         }
         state.prune(now);
         let session = state.sessions.get_mut(&cookie)?;
-        if session.csrf != csrf {
+        if session.csrf != Some(csrf) {
             return None;
         }
         session.last_used = now;
@@ -791,7 +803,7 @@ impl FloorSessions {
             digest(cookie.as_bytes()),
             Session {
                 revoked: Arc::new(AtomicBool::new(false)),
-                csrf: digest(csrf.as_bytes()),
+                csrf: Some(digest(csrf.as_bytes())),
                 created: now,
                 last_used: now,
                 websockets: 0,
@@ -824,7 +836,7 @@ impl FloorSessions {
             return None;
         }
         let csrf = mint_secret();
-        session.csrf = digest(csrf.as_bytes());
+        session.csrf = Some(digest(csrf.as_bytes()));
         session.last_used = now;
         session.recovery_pending_until = Some(now.saturating_add_millis(RECOVERY_WINDOW_MS));
         Some(Recovery { csrf })
@@ -840,6 +852,124 @@ impl FloorSessions {
         state.pending.clear();
         state.sessions.clear();
         state.inflight.clear();
+    }
+}
+
+/// The Floor sessions and the run-local counts that follow them, which `dudes upgrade` carries
+/// across its restart through `floor.session.export` and `floor.session.import`.
+///
+/// Lock order is the session registry, then a count's own lock. No count's lock is held while
+/// the registry is taken.
+#[derive(Clone)]
+pub(crate) struct FloorCarry {
+    sessions: FloorSessions,
+    tickets: Option<Arc<TicketLimits>>,
+    checks: CheckRuns,
+}
+
+impl FloorCarry {
+    pub(crate) const fn new(
+        sessions: FloorSessions,
+        tickets: Option<Arc<TicketLimits>>,
+        checks: CheckRuns,
+    ) -> Self {
+        Self {
+            sessions,
+            tickets,
+            checks,
+        }
+    }
+
+    pub(crate) const fn sessions(&self) -> &FloorSessions {
+        &self.sessions
+    }
+
+    /// Every live session as this run holds it. Nothing is refreshed, and no cookie, CSRF secret,
+    /// pending bootstrap, terminal grant or reservation leaves.
+    ///
+    /// A run with no identity exports nothing: an import could not tell its own run from another.
+    pub(crate) fn export(&self, run: Option<&str>) -> SessionExport {
+        let inner = &self.sessions.0;
+        let mut exported = SessionExport {
+            run: run.unwrap_or_default().to_owned(),
+            origin: inner.origin.clone(),
+            sessions: Vec::new(),
+        };
+        if run.is_none() || !inner.valid.load(Ordering::Acquire) {
+            return exported;
+        }
+        let registry::Locked { mut state, now } = inner.registry.lock_at_now();
+        if !inner.valid.load(Ordering::Acquire) {
+            return exported;
+        }
+        state.prune(now);
+        exported.sessions = state
+            .sessions
+            .iter()
+            .map(|(cookie, session)| {
+                let (ticket_creates, ticket_assigns) = self
+                    .tickets
+                    .as_ref()
+                    .map_or((0, 0), |tickets| tickets.counts(*cookie));
+                ExportedSession {
+                    digest: Hex32::new(*cookie),
+                    created: session.created,
+                    last_used: session.last_used,
+                    ticket_creates,
+                    ticket_assigns,
+                    check_runs: self.checks.started(Hex32::new(*cookie)),
+                }
+            })
+            .collect();
+        exported
+    }
+
+    /// Admit the sessions an earlier run exported, and say how many were admitted. Each one
+    /// becomes the session it was, except that it matches no CSRF secret until recovery issues
+    /// one. A run takes one import, from a run other than itself, and any attempt that passes the run check uses it up,
+    /// whatever else it is refused for.
+    pub(crate) fn import(&self, run: Option<&str>, exported: &SessionExport) -> u32 {
+        let Some(run) = run else {
+            return 0;
+        };
+        let inner = &self.sessions.0;
+        let registry::Locked { mut state, now } = inner.registry.lock_at_now();
+        if !inner.valid.load(Ordering::Acquire) || state.imported || exported.run == run {
+            return 0;
+        }
+        state.imported = true;
+        if exported.origin != inner.origin {
+            return 0;
+        }
+        state.prune(now);
+        let mut restored = 0;
+        for entry in &exported.sessions {
+            let key = entry.digest.bytes();
+            let session = Session {
+                revoked: Arc::new(AtomicBool::new(false)),
+                csrf: None,
+                created: entry.created,
+                last_used: entry.last_used,
+                websockets: 0,
+                terminal: None,
+                recovery_pending_until: None,
+            };
+            if now.millis_since(entry.created) < 0
+                || now.millis_since(entry.last_used) < 0
+                || !session.live_at(now)
+                || state.sessions.contains_key(&key)
+                || state.sessions.len() >= MAX_LIVE_SESSIONS
+            {
+                continue;
+            }
+            if let Some(tickets) = &self.tickets {
+                tickets.seed(key, entry.ticket_creates, entry.ticket_assigns);
+            }
+            self.checks.seed(entry.digest, entry.check_runs);
+            state.sessions.insert(key, session);
+            restored += 1;
+        }
+        restored
     }
 }
 
@@ -1677,5 +1807,377 @@ mod tests {
         assert_eq!(sessions.issue(), Err(IssueError::Capacity));
         clock.advance(BOOTSTRAP_EXPIRES_MS);
         assert!(sessions.issue().is_ok(), "expiry releases pending capacity");
+    }
+}
+
+#[cfg(test)]
+mod carry_tests {
+    use dudes_supervisor::testing::FakeClock;
+
+    use super::*;
+    use crate::floor_ticket::Counted;
+
+    const HOST: &str = "127.0.0.1:43211";
+    const ORIGIN: &str = "http://127.0.0.1:43211";
+    const OLD_RUN: &str = "run-old-0";
+    const NEW_RUN: &str = "run-new-0";
+
+    struct Run {
+        carry: FloorCarry,
+        tickets: Arc<TicketLimits>,
+        checks: CheckRuns,
+    }
+
+    fn run(clock: &Arc<FakeClock>, host: &str) -> Run {
+        let tickets = Arc::new(TicketLimits::new());
+        let checks = CheckRuns::default();
+        let sessions = FloorSessions::new(host.parse().expect("loopback"), Arc::clone(clock));
+        Run {
+            carry: FloorCarry::new(sessions, Some(Arc::clone(&tickets)), checks.clone()),
+            tickets,
+            checks,
+        }
+    }
+
+    fn sign_in(run: &Run) -> Exchange {
+        let issued = run.carry.sessions().issue().expect("bootstrap");
+        run.carry
+            .sessions()
+            .exchange(HOST, ORIGIN, issued.bootstrap.as_bytes())
+            .expect("session")
+    }
+
+    fn key(exchange: &Exchange) -> [u8; 32] {
+        digest(exchange.cookie.as_bytes())
+    }
+
+    fn created(run: &Run, exchange: &Exchange, creates: u32, assigns: u32, checks: u32) {
+        for (counted, times) in [(Counted::Create, creates), (Counted::Assign, assigns)] {
+            for _ in 0..times {
+                let turn = run
+                    .tickets
+                    .begin(key(exchange), Some(counted))
+                    .expect("admitted");
+                turn.succeeded();
+            }
+        }
+        run.checks.seed(Hex32::new(key(exchange)), checks);
+    }
+
+    fn can_read(run: &Run, exchange: &Exchange, csrf: &str) -> bool {
+        run.carry
+            .sessions()
+            .authorizer()
+            .authorize_read(HOST, ORIGIN, &exchange.cookie, csrf)
+            .is_some()
+    }
+
+    #[test]
+    fn export_names_digests_times_and_counts_and_nothing_secret() {
+        let clock = Arc::new(FakeClock::frozen(1_000));
+        let old = run(&clock, HOST);
+        let one = sign_in(&old);
+        created(&old, &one, 3, 2, 5);
+        clock.advance(60_000);
+
+        let exported = old.carry.export(Some(OLD_RUN));
+        let text = serde_json::to_string(&exported).expect("serializes");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let top: Vec<_> = value.as_object().expect("object").keys().cloned().collect();
+        assert_eq!(top, ["origin", "run", "sessions"]);
+        let row = value["sessions"][0].as_object().expect("one row");
+        let fields: Vec<_> = row.keys().map(String::as_str).collect();
+        assert_eq!(
+            fields,
+            [
+                "check_runs",
+                "created",
+                "digest",
+                "last_used",
+                "ticket_assigns",
+                "ticket_creates"
+            ]
+        );
+        assert_eq!(row["ticket_creates"], 3);
+        assert_eq!(row["ticket_assigns"], 2);
+        assert_eq!(row["check_runs"], 5);
+        assert_eq!(row["created"], 1_000);
+        assert_eq!(row["last_used"], 1_000, "the export refreshes nothing");
+        assert_eq!(value["run"], OLD_RUN);
+        assert_eq!(value["origin"], ORIGIN);
+        assert!(!text.contains(&one.cookie) && !text.contains(&one.csrf));
+        let digest = row["digest"].as_str().expect("digest");
+        assert!(
+            !format!("{exported:?}").contains(digest),
+            "Debug lists no digest"
+        );
+        assert_eq!(digest.len(), 64, "the digest, not the cookie");
+    }
+
+    #[test]
+    fn an_import_restores_the_session_with_its_counts_and_no_csrf() {
+        let clock = Arc::new(FakeClock::frozen(1_000));
+        let old = run(&clock, HOST);
+        let one = sign_in(&old);
+        created(&old, &one, 3, 2, 5);
+        let exported = old.carry.export(Some(OLD_RUN));
+        old.carry.sessions().invalidate();
+
+        let new = run(&clock, HOST);
+        assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 1);
+
+        assert!(
+            !can_read(&new, &one, &one.csrf),
+            "the old CSRF secret matches nothing"
+        );
+        assert!(!can_read(&new, &one, ""), "neither does an empty one");
+        let recovery = new
+            .carry
+            .sessions()
+            .recover(HOST, ORIGIN, &one.cookie)
+            .expect("the cookie recovers");
+        assert!(can_read(&new, &one, &recovery.csrf));
+        assert_eq!(new.tickets.counts(key(&one)), (3, 2));
+        assert_eq!(new.checks.started(Hex32::new(key(&one))), 5);
+        let state = new.carry.sessions().0.registry.lock();
+        let session = &state.sessions[&key(&one)];
+        assert!(session.terminal.is_none());
+        assert_eq!(session.websockets, 0);
+    }
+
+    #[test]
+    fn the_original_sign_in_time_keeps_counting() {
+        let now = 100_000_000;
+        let clock = Arc::new(FakeClock::frozen(now));
+        let cookie = "a-cookie-the-new-run-never-saw";
+        let exported = SessionExport {
+            run: OLD_RUN.to_owned(),
+            origin: ORIGIN.to_owned(),
+            sessions: vec![ExportedSession {
+                digest: Hex32::new(digest(cookie.as_bytes())),
+                created: Timestamp::from_unix_millis(now - (ABSOLUTE_EXPIRES_MS - 10_000)),
+                last_used: Timestamp::from_unix_millis(now - 1_000),
+                ticket_creates: 0,
+                ticket_assigns: 0,
+                check_runs: 0,
+            }],
+        };
+        let new = run(&clock, HOST);
+        assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 1);
+        clock.advance(10_001);
+        assert!(
+            new.carry.sessions().recover(HOST, ORIGIN, cookie).is_none(),
+            "eight hours after the original sign-in the imported session is gone"
+        );
+    }
+
+    #[test]
+    fn an_import_refuses_or_skips_what_it_must() {
+        let clock = Arc::new(FakeClock::frozen(10_000));
+        let old = run(&clock, HOST);
+        let one = sign_in(&old);
+        let exported = old.carry.export(Some(OLD_RUN));
+
+        assert_eq!(
+            old.carry.import(Some(OLD_RUN), &exported),
+            0,
+            "the run that exported"
+        );
+        let new = run(&clock, HOST);
+        assert_eq!(new.carry.import(Some(OLD_RUN), &exported), 0, "same run id");
+
+        let first = new.carry.import(Some(NEW_RUN), &exported);
+        assert_eq!(first, 1);
+        let later = sign_in(&old);
+        assert_eq!(
+            new.carry
+                .import(Some(NEW_RUN), &old.carry.export(Some(OLD_RUN))),
+            0,
+            "a second import admits nothing, not even a session the first one lacked"
+        );
+        assert!(
+            new.carry
+                .sessions()
+                .recover(HOST, ORIGIN, &later.cookie)
+                .is_none()
+        );
+
+        let other = run(&clock, HOST);
+        let mut moved = exported.clone();
+        moved.origin = "http://127.0.0.1:43212".to_owned();
+        assert_eq!(
+            other.carry.import(Some(NEW_RUN), &moved),
+            0,
+            "another origin"
+        );
+        assert!(
+            other
+                .carry
+                .sessions()
+                .recover(HOST, ORIGIN, &one.cookie)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_live_digest_is_skipped_and_never_overwritten() {
+        let clock = Arc::new(FakeClock::frozen(10_000));
+        let new = run(&clock, HOST);
+        let live = sign_in(&new);
+        created(&new, &live, 1, 1, 1);
+        let before = new.carry.export(Some(NEW_RUN)).sessions;
+        let mut entry = before[0];
+        entry.ticket_creates = 30;
+        entry.created = Timestamp::from_unix_millis(5_000);
+        let exported = SessionExport {
+            run: OLD_RUN.to_owned(),
+            origin: ORIGIN.to_owned(),
+            sessions: vec![entry],
+        };
+        assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 0);
+        assert_eq!(new.carry.export(Some(NEW_RUN)).sessions, before);
+        assert!(can_read(&new, &live, &live.csrf), "its secret still works");
+    }
+
+    #[test]
+    fn expired_and_future_entries_are_dropped() {
+        let now = 100_000_000;
+        let clock = Arc::new(FakeClock::frozen(now));
+        let entry = |created: i64, last_used: i64| ExportedSession {
+            digest: Hex32::new([9; 32]),
+            created: Timestamp::from_unix_millis(created),
+            last_used: Timestamp::from_unix_millis(last_used),
+            ticket_creates: 0,
+            ticket_assigns: 0,
+            check_runs: 0,
+        };
+        let restored = |entry: ExportedSession| {
+            run(&clock, HOST).carry.import(
+                Some(NEW_RUN),
+                &SessionExport {
+                    run: OLD_RUN.to_owned(),
+                    origin: ORIGIN.to_owned(),
+                    sessions: vec![entry],
+                },
+            )
+        };
+        assert_eq!(restored(entry(now - 1_000, now - 500)), 1, "control");
+        assert_eq!(
+            restored(entry(now - IDLE_EXPIRES_MS, now - IDLE_EXPIRES_MS)),
+            0
+        );
+        assert_eq!(restored(entry(now - ABSOLUTE_EXPIRES_MS, now)), 0);
+        assert_eq!(restored(entry(now - 1_000, now + 1)), 0);
+        assert_eq!(restored(entry(now + 1, now + 1)), 0);
+    }
+
+    #[test]
+    fn an_import_keeps_the_sessions_the_run_already_issued_within_the_cap() {
+        let clock = Arc::new(FakeClock::frozen(1_000));
+        let old = run(&clock, HOST);
+        for _ in 0..MAX_LIVE_SESSIONS {
+            sign_in(&old);
+        }
+        let exported = old.carry.export(Some(OLD_RUN));
+        assert_eq!(exported.sessions.len(), MAX_LIVE_SESSIONS);
+
+        let new = run(&clock, HOST);
+        let issued = [sign_in(&new), sign_in(&new), sign_in(&new)];
+        assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 1);
+        for exchange in &issued {
+            assert!(can_read(&new, exchange, &exchange.csrf));
+        }
+    }
+
+    #[test]
+    fn a_run_that_never_imports_restores_nothing_and_an_ended_run_exports_nothing() {
+        let clock = Arc::new(FakeClock::frozen(1_000));
+        let old = run(&clock, HOST);
+        let one = sign_in(&old);
+        old.carry.sessions().invalidate();
+        assert!(old.carry.export(Some(OLD_RUN)).sessions.is_empty());
+        let new = run(&clock, HOST);
+        assert!(
+            new.carry
+                .sessions()
+                .recover(HOST, ORIGIN, &one.cookie)
+                .is_none(),
+            "a plain restart signs everyone out"
+        );
+    }
+
+    #[test]
+    fn any_import_that_passes_the_run_check_uses_the_runs_one_chance() {
+        let clock = Arc::new(FakeClock::frozen(1_000));
+        let old = run(&clock, HOST);
+        sign_in(&old);
+        let exported = old.carry.export(Some(OLD_RUN));
+        let new = run(&clock, HOST);
+        let mut wrong = exported.clone();
+        wrong.origin = "http://127.0.0.1:43212".to_owned();
+        assert_eq!(new.carry.import(Some(NEW_RUN), &wrong), 0);
+        assert_eq!(
+            new.carry.import(Some(NEW_RUN), &exported),
+            0,
+            "a refused attempt still used the one import"
+        );
+    }
+
+    #[test]
+    fn a_run_with_no_identity_exports_nothing_and_imports_nothing() {
+        let clock = Arc::new(FakeClock::frozen(1_000));
+        let old = run(&clock, HOST);
+        sign_in(&old);
+        assert!(old.carry.export(None).sessions.is_empty());
+        let exported = old.carry.export(Some(OLD_RUN));
+        assert_eq!(
+            exported.sessions.len(),
+            1,
+            "control: the same run exports with an identity"
+        );
+        let new = run(&clock, HOST);
+        assert_eq!(new.carry.import(None, &exported), 0);
+        assert_eq!(
+            new.carry.import(Some(NEW_RUN), &exported),
+            1,
+            "a refused import without an identity did not use the run's chance"
+        );
+    }
+
+    #[test]
+    fn carried_allowances_refuse_with_their_literal_reason_after_an_import() {
+        use crate::baseline::{Baselines, Limit, SESSION_BASELINES};
+        use crate::floor_ticket::{MOST_ASSIGNS, MOST_CREATES};
+
+        let clock = Arc::new(FakeClock::frozen(1_000));
+        let old = run(&clock, HOST);
+        let one = sign_in(&old);
+        created(&old, &one, 3, 2, 5);
+        let mut exported = old.carry.export(Some(OLD_RUN));
+        exported.sessions[0].ticket_creates = MOST_CREATES;
+        exported.sessions[0].ticket_assigns = MOST_ASSIGNS - 1;
+        exported.sessions[0].check_runs = SESSION_BASELINES;
+
+        let baselines = Baselines::default();
+        let tickets = Arc::new(TicketLimits::new());
+        let sessions = FloorSessions::new(HOST.parse().expect("loopback"), Arc::clone(&clock));
+        let carry = FloorCarry::new(sessions, Some(Arc::clone(&tickets)), baselines.check_runs());
+        let mut baselines = baselines;
+        assert_eq!(carry.import(Some(NEW_RUN), &exported), 1);
+
+        assert_eq!(
+            tickets.begin(key(&one), Some(Counted::Create)).err(),
+            Some("limit_reached"),
+            "the create allowance was spent before the upgrade"
+        );
+        assert!(
+            tickets.begin(key(&one), Some(Counted::Assign)).is_ok(),
+            "control: an assign still has one left"
+        );
+        assert_eq!(
+            baselines.start_browser(None, Hex32::new(key(&one))),
+            Err(Limit::Exhausted),
+            "the check-run cap was reached before the upgrade"
+        );
     }
 }

@@ -237,10 +237,17 @@ fn the_exported_current_catalog_matches_the_production_dispatcher() {
     let exempt: BTreeSet<_> = UNROUTED.iter().copied().map(CurrentMethod::from).collect();
     assert!(routed.is_disjoint(&exempt));
     assert_eq!(declared, routed.union(&exempt).copied().collect());
-    assert_eq!(
-        dispatcher.current_requirement(CurrentMethod::TicketCheckout),
-        Some(Requirement::Operator)
-    );
+    for method in [
+        CurrentMethod::TicketCheckout,
+        CurrentMethod::FloorSessionExport,
+        CurrentMethod::FloorSessionImport,
+    ] {
+        assert_eq!(
+            dispatcher.current_requirement(method),
+            Some(Requirement::Operator),
+            "{method}"
+        );
+    }
     assert_eq!(
         dispatcher
             .methods()

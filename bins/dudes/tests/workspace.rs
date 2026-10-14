@@ -1032,3 +1032,100 @@ fn check_add_refuses_before_writing() {
     };
     assert!(error.to_string().contains("16384 byte cap"), "{error}");
 }
+
+fn new_workspace(path: &Path, argv: &[&str]) -> NewWorkspace {
+    NewWorkspace {
+        path: path.to_path_buf(),
+        id: "app".to_owned(),
+        label: "app".to_owned(),
+        completion_check_label: "tests".to_owned(),
+        department: "engineering".to_owned(),
+        agent_usd_per_day: None,
+        goal_usd: None,
+        hop_cap: 3,
+        predicate_argv: argv.iter().map(|part| (*part).to_owned()).collect(),
+        predicate_timeout_s: 10,
+        tokens_per_day: None,
+        goal_tokens: None,
+    }
+}
+
+/// The CLI refuses what `duded::predicate::spec_for` refuses for a program with a separator.
+#[test]
+fn a_check_program_inside_the_repository_is_refused_as_the_daemon_refuses_it() {
+    let root = tempfile::tempdir().expect("a root");
+    let here = repo(root.path(), "app");
+    std::fs::write(here.join("test.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::create_dir(here.join("bin")).unwrap();
+    std::fs::write(here.join("bin/check"), "").unwrap();
+    std::os::unix::fs::symlink(here.join("test.sh"), root.path().join("outside-link")).unwrap();
+    let absolute = here.join("test.sh").display().to_string();
+    let linked = root.path().join("outside-link").display().to_string();
+    let cases = [
+        "./test.sh",
+        "bin/check",
+        "./bin/../test.sh",
+        absolute.as_str(),
+        linked.as_str(),
+        "/bin/sh",
+        "./missing.sh",
+        "sh",
+    ];
+    for program in cases {
+        let argv = vec![program.to_owned(), "x".to_owned()];
+        let daemon =
+            duded::predicate::spec_for(&argv, &here, &[], std::env::var_os("PATH").as_deref());
+        let daemon_refuses_inside =
+            matches!(&daemon, Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied);
+        let config = root.path().join("operator.toml");
+        let cli = workspace::add(&config, &new_workspace(&here, &[program, "x"]));
+        let cli_refuses_inside = matches!(cli, Err(WorkspaceError::CheckInsideRepository { .. }));
+        assert_eq!(cli_refuses_inside, daemon_refuses_inside, "{program}");
+        if cli_refuses_inside {
+            assert!(!config.exists(), "{program} wrote the file");
+        }
+    }
+}
+
+#[test]
+fn the_refusal_names_the_rule_and_a_way_out() {
+    let root = tempfile::tempdir().expect("a root");
+    let here = repo(root.path(), "app");
+    std::fs::write(here.join("test.sh"), "").unwrap();
+    let config = root.path().join("operator.toml");
+    let error = workspace::add(&config, &new_workspace(&here, &["./test.sh"]))
+        .expect_err("a program inside the repository");
+    let text = error.to_string();
+    assert!(
+        text.contains("`./test.sh` is inside the project's repository"),
+        "{text}"
+    );
+    assert!(text.contains("could change it"), "{text}");
+    assert!(text.contains("outside the repository"), "{text}");
+    workspace::add(&config, &new_workspace(&here, &["sh", "test.sh"])).expect("sh test.sh is fine");
+}
+
+#[test]
+fn check_add_refuses_a_program_inside_the_workspace_before_writing() {
+    let root = tempfile::tempdir().expect("a root");
+    let here = repo(root.path(), "app");
+    std::fs::write(here.join("test.sh"), "").unwrap();
+    let config = root.path().join("operator.toml");
+    workspace::add(&config, &new_workspace(&here, &["sh", "test.sh"])).unwrap();
+    let before = std::fs::read(&config).unwrap();
+    let check = |argv: &[&str]| workspace::NewCheck {
+        workspace: "app".to_owned(),
+        id: "mine".to_owned(),
+        label: "mine".to_owned(),
+        argv: argv.iter().map(|part| (*part).to_owned()).collect(),
+        timeout_s: 10,
+        may_already_pass: false,
+    };
+    let error = workspace::add_check(&config, &check(&["./test.sh"])).expect_err("inside");
+    assert!(
+        matches!(error, WorkspaceError::CheckInsideRepository { .. }),
+        "{error}"
+    );
+    assert_eq!(std::fs::read(&config).unwrap(), before);
+    workspace::add_check(&config, &check(&["sh", "test.sh"])).expect("outside");
+}

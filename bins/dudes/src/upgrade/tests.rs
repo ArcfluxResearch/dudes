@@ -3,6 +3,9 @@ use std::cell::RefCell;
 use super::*;
 use crate::layout::{NOTICES, PROGRAMS};
 use crate::lifecycle::fake::Fake;
+use dudes_proto::record::Hex32;
+use dudes_proto::rpc::floor::ExportedSession;
+use dudes_types::Timestamp;
 
 fn v(text: &str) -> Version {
     Version::parse(text).unwrap_or_else(|| panic!("{text} should parse"))
@@ -156,6 +159,34 @@ impl Restart for Fake {
             return Err("it would not start".to_owned());
         }
         Ok(self.started_as.unwrap_or("0.86.0").to_owned())
+    }
+
+    fn export_sign_ins(&self) -> Result<SessionExport, String> {
+        self.events.borrow_mut().push("export".to_owned());
+        if self.export_fails {
+            return Err("method not found".to_owned());
+        }
+        Ok(SessionExport {
+            run: "old-run".to_owned(),
+            origin: "http://127.0.0.1:43111".to_owned(),
+            sessions: (0..self.sign_ins)
+                .map(|index| ExportedSession {
+                    digest: Hex32::new([u8::try_from(index).expect("a few"); 32]),
+                    created: Timestamp::from_unix_millis(1_000),
+                    last_used: Timestamp::from_unix_millis(2_000),
+                    ticket_creates: 0,
+                    ticket_assigns: 0,
+                    check_runs: 0,
+                })
+                .collect(),
+        })
+    }
+
+    fn import_sign_ins(&self, exported: &SessionExport) -> Result<u32, String> {
+        self.events
+            .borrow_mut()
+            .push(format!("import {}", exported.sessions.len()));
+        self.import_keeps.ok_or_else(|| "refused".to_owned())
     }
 }
 
@@ -457,7 +488,10 @@ fn busy_agents_refuse_by_name_before_any_network_and_now_means_closing_time() {
     assert_eq!(code, 0);
     assert!(out.contains("Closing time: every agent gets up to 6 minutes to save its work before the daemon stops.\n"), "{out}");
     assert!(out.ends_with("0.85.0 → 0.86.0\n"), "{out}");
-    assert_eq!(*daemon.events.borrow(), ["busy", "busy", "stop", "start"]);
+    assert_eq!(
+        *daemon.events.borrow(),
+        ["busy", "busy", "export", "stop", "start"]
+    );
 }
 
 #[test]
@@ -509,7 +543,7 @@ fn a_lock_that_outlives_the_stop_is_reported_with_the_recovery_command() {
             fixture.inputs.state_dir.display()
         )
     );
-    assert_eq!(*daemon.events.borrow(), ["busy", "stop"]);
+    assert_eq!(*daemon.events.borrow(), ["busy", "export", "stop"]);
     drop(lock);
 }
 
@@ -577,7 +611,7 @@ fn a_full_upgrade_runs_exactly_three_commands_with_their_limits_and_restarts_the
             Duration::from_secs(600)
         ]
     );
-    assert_eq!(*daemon.events.borrow(), ["busy", "stop", "start"]);
+    assert_eq!(*daemon.events.borrow(), ["busy", "export", "stop", "start"]);
     assert!(out.contains("the daemon stopped\n"));
     assert!(out.ends_with("0.85.0 → 0.86.0\n"), "{out}");
     assert!(
@@ -707,7 +741,7 @@ fn a_restart_that_fails_prints_the_recovery_command() {
             "dudes: 0.86.0 is installed, but the old daemon did not stop (it would not stop). Run {bin} stop, then {bin} start\n"
         )
     );
-    assert_eq!(*daemon.events.borrow(), ["busy", "stop"]);
+    assert_eq!(*daemon.events.borrow(), ["busy", "export", "stop"]);
 }
 
 #[test]
@@ -790,4 +824,102 @@ fn windows_is_refused_before_anything_runs() {
         )
     );
     assert!(runner.calls.borrow().is_empty());
+}
+
+fn signed_in(sign_ins: usize, import_keeps: Option<u32>) -> Fake {
+    Fake {
+        sign_ins,
+        import_keeps,
+        ..running()
+    }
+}
+
+#[test]
+fn sign_ins_are_exported_before_the_stop_and_imported_after_the_start() {
+    let fixture = Fixture::new();
+    let daemon = signed_in(2, Some(2));
+    let (code, out, err) = fixture.run(none(), &FakeRunner::default(), &daemon);
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert_eq!(
+        *daemon.events.borrow(),
+        ["busy", "export", "stop", "start", "import 2"]
+    );
+    assert!(
+        out.ends_with(
+            "0.85.0 → 0.86.0\nKept 2 of 2 Floor sign-ins. Reload an open Floor tab to continue.\n"
+        ),
+        "{out}"
+    );
+    assert!(
+        !out.contains("0101010101") && !out.contains("43111"),
+        "the upgrade prints counts, never digests or the origin: {out}"
+    );
+}
+
+#[test]
+fn a_stop_that_fails_imports_nothing_and_says_nothing_about_sign_ins() {
+    let fixture = Fixture::new();
+    let daemon = Fake {
+        stop_fails: true,
+        ..signed_in(2, Some(2))
+    };
+    let (code, out, _) = fixture.run(none(), &FakeRunner::default(), &daemon);
+    assert_eq!(code, exit::OTHER);
+    assert_eq!(*daemon.events.borrow(), ["busy", "export", "stop"]);
+    assert!(!out.contains("sign-in"), "{out}");
+}
+
+#[test]
+fn a_start_that_fails_or_answers_with_another_version_imports_nothing() {
+    for (start_fails, started_as) in [(true, None), (false, Some("0.85.0"))] {
+        let fixture = Fixture::new();
+        let daemon = Fake {
+            start_fails,
+            started_as,
+            ..signed_in(2, Some(2))
+        };
+        let (code, _, _) = fixture.run(none(), &FakeRunner::default(), &daemon);
+        assert_eq!(code, exit::OTHER);
+        assert_eq!(*daemon.events.borrow(), ["busy", "export", "stop", "start"]);
+    }
+}
+
+#[test]
+fn an_export_or_import_that_fails_still_upgrades_and_says_to_sign_in_again() {
+    let fixture = Fixture::new();
+    let daemon = Fake {
+        export_fails: true,
+        ..signed_in(2, Some(2))
+    };
+    let (code, out, err) = fixture.run(none(), &FakeRunner::default(), &daemon);
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert_eq!(*daemon.events.borrow(), ["busy", "export", "stop", "start"]);
+    assert!(
+        out.ends_with(
+            "This upgrade could not keep Floor sign-ins: the running version did not hand them over (a version from before this feature cannot). If a Floor tab was open, run dudes floor open to sign in again.\n"
+        ),
+        "{out}"
+    );
+
+    let daemon = signed_in(2, None);
+    let (code, out, err) = fixture.run(none(), &FakeRunner::default(), &daemon);
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert!(
+        out.ends_with("Kept 0 of 2 Floor sign-ins. Run dudes floor open to sign in again.\n"),
+        "{out}"
+    );
+
+    let daemon = signed_in(3, Some(1));
+    let (_, out, _) = fixture.run(none(), &FakeRunner::default(), &daemon);
+    assert!(out.contains("Kept 1 of 3 Floor sign-ins."), "{out}");
+}
+
+#[test]
+fn a_daemon_with_no_sign_ins_prints_nothing_about_them_and_imports_nothing() {
+    let fixture = Fixture::new();
+    let daemon = signed_in(0, Some(0));
+    let (code, out, _) = fixture.run(none(), &FakeRunner::default(), &daemon);
+    assert_eq!(code, 0);
+    assert_eq!(*daemon.events.borrow(), ["busy", "export", "stop", "start"]);
+    assert!(out.ends_with("0.85.0 → 0.86.0\n"), "{out}");
 }

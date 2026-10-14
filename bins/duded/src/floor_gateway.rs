@@ -246,6 +246,7 @@ impl PreparedAssets {
 pub struct FloorGateway {
     addr: SocketAddr,
     sessions: FloorSessions,
+    tickets: Option<Arc<TicketLimits>>,
     streams: FloorStreams,
     connection_slots: Arc<ConnectionSlots>,
     phase: Arc<AtomicU8>,
@@ -643,6 +644,7 @@ impl PreparedAssets {
         let terminal = self.terminal;
         let git = self.git;
         let board = self.board;
+        let tickets = board.clone();
         let memory = fault
             .0
             .memory_interval
@@ -725,6 +727,7 @@ impl PreparedAssets {
                         Ok(FloorGateway {
                             addr,
                             sessions,
+                            tickets,
                             streams,
                             connection_slots,
                             phase,
@@ -778,10 +781,13 @@ impl FloorGateway {
         }
     }
 
-    /// The shared mint/exchange state handed only to the local RPC dispatcher.
+    /// The sessions and the counts that follow them, for `dudes upgrade` to carry across a restart.
     #[must_use]
-    pub(crate) fn sessions(&self) -> FloorSessions {
-        self.sessions.clone()
+    pub(crate) fn carry(
+        &self,
+        checks: crate::baseline::CheckRuns,
+    ) -> crate::floor_session::FloorCarry {
+        crate::floor_session::FloorCarry::new(self.sessions.clone(), self.tickets.clone(), checks)
     }
 
     /// Stop admission and wait only to the finite completion bound.

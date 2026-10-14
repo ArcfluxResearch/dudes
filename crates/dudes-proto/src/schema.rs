@@ -1361,7 +1361,11 @@ mod tests {
         let current: BTreeSet<_> = legacy
             .iter()
             .copied()
-            .chain([CurrentMethod::TicketCheckout.name()])
+            .chain([
+                CurrentMethod::TicketCheckout.name(),
+                CurrentMethod::FloorSessionExport.name(),
+                CurrentMethod::FloorSessionImport.name(),
+            ])
             .collect();
         for schema in [&generated, &committed] {
             assert_eq!(

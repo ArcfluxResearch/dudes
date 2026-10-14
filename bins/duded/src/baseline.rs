@@ -11,9 +11,9 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dudes_proto::record::Hex32;
@@ -129,15 +129,42 @@ impl Limit {
     }
 }
 
-/// The runs the loop thread counts. Run-local: a restart ends every Floor session.
+/// How many runs each Floor session has started. Shared with the Floor session export and
+/// import, which carry the counts across `dudes upgrade`'s restart and are the only other users.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CheckRuns(Arc<Mutex<BTreeMap<Hex32, u32>>>);
+
+impl CheckRuns {
+    fn lock(&self) -> MutexGuard<'_, BTreeMap<Hex32, u32>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The runs `session` has started, none when it has started none.
+    pub(crate) fn started(&self, session: Hex32) -> u32 {
+        self.lock().get(&session).copied().unwrap_or(0)
+    }
+
+    /// Continue `session`'s count from `started`.
+    pub(crate) fn seed(&self, session: Hex32, started: u32) {
+        self.lock().insert(session, started);
+    }
+}
+
+/// The runs the loop thread counts. Run-local, except that `dudes upgrade` carries each Floor
+/// session's count into the next run along with the session.
 #[derive(Debug, Default)]
 pub(crate) struct Baselines {
     next: u64,
     running: BTreeMap<u64, Mark>,
-    started: BTreeMap<Hex32, u32>,
+    started: CheckRuns,
 }
 
 impl Baselines {
+    /// The shared per-session counts.
+    pub(crate) fn check_runs(&self) -> CheckRuns {
+        self.started.clone()
+    }
+
     /// Count a run a local route starts for `agent`. Local routes have no limit.
     pub(crate) fn start_local(&mut self, agent: AgentId) -> u64 {
         self.insert(Mark {
@@ -159,11 +186,13 @@ impl Baselines {
         }) {
             return Err(Limit::Running);
         }
-        let started = self.started.entry(session).or_default();
+        let mut counts = self.started.lock();
+        let started = counts.entry(session).or_default();
         if *started >= SESSION_BASELINES {
             return Err(Limit::Exhausted);
         }
         *started += 1;
+        drop(counts);
         Ok(self.insert(Mark {
             agent,
             session: Some(session),

@@ -14,6 +14,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use dudes_proto::rpc::floor::SessionExport;
 use dudes_providers::launch::EnvVar;
 
 use crate::args::UpgradeOptions;
@@ -129,6 +130,10 @@ pub(crate) trait Runner {
 pub(crate) trait Restart: Daemon {
     /// Start it the way `dudes start` does, and return the version that answers.
     fn start(&self, err: &mut dyn Write) -> Result<String, String>;
+    /// The running daemon's Floor sign-ins, to hold in memory across the restart.
+    fn export_sign_ins(&self) -> Result<SessionExport, String>;
+    /// Hand them to the daemon that answers now, and return how many it kept.
+    fn import_sign_ins(&self, exported: &SessionExport) -> Result<u32, String>;
 }
 
 /// Where this copy lives and what it may use.
@@ -494,6 +499,7 @@ fn restart(
         return Ok(exit::SUCCESS);
     }
     let by_hand = format!("Run {bin} stop, then {bin} start");
+    let exported = daemon.export_sign_ins();
     daemon.stop(out, err).map_err(|reason| {
         format!("{latest} is installed, but the old daemon did not stop ({reason}). {by_hand}")
     })?;
@@ -512,7 +518,73 @@ fn restart(
         ));
     }
     let _ = writeln!(out, "{summary}");
+    if let Some(report) = sign_in_report(daemon, exported) {
+        let _ = writeln!(out, "{report}");
+    }
     Ok(exit::SUCCESS)
+}
+
+/// Hand the sign-ins that were exported before the stop to the daemon that now answers, and say
+/// how many were kept. Any failure ends in the plain "sign in again": the upgrade itself already
+/// succeeded.
+fn sign_in_report(daemon: &dyn Restart, exported: Result<SessionExport, String>) -> Option<String> {
+    let again = "Run dudes floor open to sign in again.";
+    let Ok(exported) = exported else {
+        return Some(format!(
+            "This upgrade could not keep Floor sign-ins: the running version did not hand them over (a version from before this feature cannot). If a Floor tab was open, {}",
+            again.to_lowercase()
+        ));
+    };
+    let held = exported.sessions.len();
+    if held == 0 {
+        return None;
+    }
+    let kept = daemon.import_sign_ins(&exported).unwrap_or(0);
+    Some(if kept == 0 {
+        format!("Kept 0 of {held} Floor sign-ins. {again}")
+    } else {
+        format!("Kept {kept} of {held} Floor sign-ins. Reload an open Floor tab to continue.")
+    })
+}
+
+/// The restart half of `dudes upgrade` against the daemon `daemon` reaches, for the tests that run
+/// it against a real daemon. It installs nothing: the caller has already put the new files where
+/// the daemon looks for them.
+pub(crate) fn restart_only(
+    daemon: &dyn Restart,
+    state_dir: &Path,
+    latest: &str,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<u8, String> {
+    struct NoRunner;
+    impl Runner for NoRunner {
+        fn run(
+            &self,
+            _: &Path,
+            _: &[OsString],
+            _: &[EnvVar],
+            _: Duration,
+        ) -> std::io::Result<Output> {
+            Err(std::io::Error::other("the restart runs no installer"))
+        }
+    }
+    let inputs = Inputs {
+        windows: false,
+        current: String::new(),
+        executable: PathBuf::new(),
+        temp_dir: PathBuf::new(),
+        child_env: Vec::new(),
+        state_dir: state_dir.to_path_buf(),
+        lock_wait: Duration::from_secs(10),
+        daemon_override: None,
+    };
+    let context = Context {
+        inputs: &inputs,
+        runner: &NoRunner,
+        daemon,
+    };
+    restart(&context, latest, Path::new("/"), true, out, err)
 }
 
 #[cfg(test)]

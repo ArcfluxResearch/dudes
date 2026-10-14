@@ -323,6 +323,28 @@ impl TicketLimits {
         }
     }
 
+    /// How many tickets `session` has created and assigned in this run.
+    pub(crate) fn counts(&self, session: [u8; 32]) -> (u32, u32) {
+        let sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        sessions
+            .get(&session)
+            .map_or((0, 0), |counts| (counts.creates, counts.assigns))
+    }
+
+    /// Continue `session`'s counts from `creates` and `assigns`.
+    pub(crate) fn seed(&self, session: [u8; 32], creates: u32, assigns: u32) {
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        sessions.insert(
+            session,
+            SessionCounts {
+                creates,
+                assigns,
+                busy: false,
+                seen: Instant::now(),
+            },
+        );
+    }
+
     /// Admit one request of `session`, or the reason it is refused: `busy` while another of its
     /// requests is in flight, `limit_reached` when a count it would move is spent. A refused request changes nothing.
     pub(crate) fn begin(

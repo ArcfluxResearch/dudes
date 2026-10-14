@@ -11,15 +11,15 @@ use duded::settings::FloorSettings;
 use duded::startup::Witness;
 use duded::{ExitCause, boot};
 use dudes_proto::Record;
-use dudes_proto::rpc::Method;
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::floor::{SESSION_BOOTSTRAP_LEN, SessionIssueResult};
+use dudes_proto::rpc::{CurrentMethod, ErrorCode, Method, RpcError};
 use dudes_rpc::Client;
 use dudes_supervisor::testing::FakeRng;
 
 mod common;
 
-use common::{Fixture, ScriptedRunner, SharedHost, TestClock, goal_params, seams};
+use common::{Fixture, ScriptedColumn, ScriptedRunner, SharedHost, TestClock, goal_params, seams};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -744,4 +744,189 @@ fn an_explicit_port_wins_over_the_remembered_one() {
         format!("{error:#}").contains("binding the Floor listener"),
         "{error:#}"
     );
+}
+
+fn carry_call(
+    settings: &duded::Settings,
+    method: CurrentMethod,
+    params: Option<serde_json::Value>,
+    credential: Option<OperatorCredential>,
+) -> Result<serde_json::Value, RpcError> {
+    let mut client = Client::connect(settings.socket()).expect("connect to the daemon");
+    let response = client
+        .call_current_presenting(method, params, credential)
+        .expect("the daemon answers");
+    match (response.result, response.error) {
+        (Some(result), None) => Ok(result),
+        (None, Some(error)) => Err(error),
+        other => panic!("one answer or one error, not {other:?}"),
+    }
+}
+
+fn carry_daemon(
+    settings: &duded::Settings,
+    clock: &Arc<TestClock>,
+    column: &Arc<ScriptedColumn>,
+) -> TestDaemon {
+    boot(
+        settings,
+        common::seams_with(
+            SharedHost::new(),
+            Arc::new(ScriptedRunner::default()),
+            Arc::clone(clock),
+            Witness::default(),
+            Arc::clone(column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
+        ),
+    )
+    .expect("daemon boot")
+}
+
+fn recovered_csrf(addr: SocketAddr, host: &str, origin: &str, cookie: &str) -> String {
+    let response = raw_recover(addr, host, Some(origin), Some(cookie));
+    let (head, body) = response_parts(&response);
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head:?}");
+    let json: serde_json::Value = serde_json::from_slice(body).expect("recovery JSON");
+    json["csrf"].as_str().expect("rotated CSRF").to_owned()
+}
+
+/// What `dudes upgrade` does: export from the old run, stop it, start the next, import. A plain
+/// restart between two other runs restores nothing.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered scenario across three daemon runs"
+)]
+fn an_upgrade_carries_open_sign_ins_through_the_operator_door_and_a_plain_restart_does_not() {
+    use dudes_rpc::auth::PeerProvenance;
+
+    let fixture = Fixture::new();
+    let port = free_port();
+    let settings = settings(&fixture, Some(port));
+    let host = format!("127.0.0.1:{port}");
+    let origin = format!("http://{host}");
+    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
+    let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
+
+    let daemon = carry_daemon(&settings, &clock, &column);
+    let addr = daemon.floor_addr().expect("Floor address");
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    let first = issue(&settings);
+    let (cookie, csrf) = exchange(addr, &host, &origin, &first.bootstrap);
+    let second = issue(&settings);
+    let (other_cookie, _) = exchange(addr, &host, &origin, &second.bootstrap);
+
+    let operator = || Some(credential_of(&settings));
+    let exported = carry_call(
+        &settings,
+        CurrentMethod::FloorSessionExport,
+        None,
+        operator(),
+    )
+    .expect("the operator exports");
+    let text = exported.to_string();
+    assert!(!text.contains(&cookie) && !text.contains(&csrf), "{text}");
+    assert_eq!(
+        exported
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["origin", "run", "sessions"]
+    );
+    assert_eq!(exported["origin"], origin);
+    let rows = exported["sessions"].as_array().expect("sessions");
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        assert_eq!(
+            row.as_object()
+                .expect("a row")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "check_runs",
+                "created",
+                "digest",
+                "last_used",
+                "ticket_assigns",
+                "ticket_creates"
+            ]
+        );
+    }
+    let import = serde_json::json!({ "exported": exported });
+
+    let unauthorized = ErrorCode::Unauthorized.code();
+    for method in [
+        CurrentMethod::FloorSessionExport,
+        CurrentMethod::FloorSessionImport,
+    ] {
+        let params = (method == CurrentMethod::FloorSessionImport).then(|| import.clone());
+        let unproven = carry_call(&settings, method, params.clone(), None).expect_err("unproven");
+        assert_eq!(unproven.code, unauthorized, "{method}");
+        column.set(PeerProvenance::Agent(agent));
+        let as_agent = carry_call(&settings, method, params, operator()).expect_err("an agent");
+        assert_eq!(as_agent.code, unauthorized, "{method}");
+        column.set(PeerProvenance::Unresolvable);
+    }
+
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+
+    let daemon = carry_daemon(&settings, &clock, &column);
+    assert_eq!(daemon.floor_addr(), Some(addr));
+    let authorizer = daemon.floor_session_authorizer().expect("authorizer");
+    let mut running = common::start(daemon);
+    assert_empty_refusal(&raw_recover(addr, &host, Some(&origin), Some(&cookie)));
+
+    let imported = carry_call(
+        &settings,
+        CurrentMethod::FloorSessionImport,
+        Some(import.clone()),
+        operator(),
+    )
+    .expect("the operator imports");
+    assert_eq!(imported, serde_json::json!({ "restored": 2 }));
+    assert!(
+        authorizer
+            .authorize_read(&host, &origin, &cookie, &csrf)
+            .is_none(),
+        "the old CSRF secret is refused"
+    );
+    let rotated = recovered_csrf(addr, &host, &origin, &cookie);
+    assert!(
+        authorizer
+            .authorize_read(&host, &origin, &cookie, &rotated)
+            .is_some()
+    );
+    let protocols = format!("dudes-floor-v3, dudes-csrf.{rotated}");
+    let (mut browser, upgrade) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
+    assert!(upgrade.starts_with("HTTP/1.1 101 "), "{upgrade:?}");
+    browser
+        .write_all(&masked_text(br#"{"type":"floor.subscribe"}"#))
+        .expect("subscribe");
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&server_text(&mut browser)).expect("snapshot JSON");
+    assert_eq!(
+        snapshot["projection"]["agents"][0]["id"],
+        serde_json::Value::String(agent.to_string()),
+        "the carried sign-in sees the agent hired in the earlier run"
+    );
+    drop(browser);
+    let again = carry_call(
+        &settings,
+        CurrentMethod::FloorSessionImport,
+        Some(import),
+        operator(),
+    )
+    .expect("a second import is answered");
+    assert_eq!(again, serde_json::json!({ "restored": 0 }));
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+
+    let daemon = carry_daemon(&settings, &clock, &column);
+    let mut running = common::start(daemon);
+    for carried in [&cookie, &other_cookie] {
+        assert_empty_refusal(&raw_recover(addr, &host, Some(&origin), Some(carried)));
+    }
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }

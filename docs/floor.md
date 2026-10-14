@@ -46,7 +46,8 @@ A link works once, in one browser. Once a browser has used it, that browser keep
 and the same link pasted into a second browser, or reloaded after it expired, is refused. The page
 then says so and tells you to run `dudes floor open` again for a new link. Copying the address from
 the browser's address bar does not help, because the browser removes the secret from the address as
-soon as it signs in. The daemon allows four Floor sessions at a time. `--no-browser` is still
+soon as it signs in. `dudes stop` and `dudes start` end every Floor session; [after you
+upgrade](#after-you-upgrade) explains what `dudes upgrade` does instead. The daemon allows four Floor sessions at a time. `--no-browser` is still
 accepted and changes nothing, because printing is now the default. The link is a loopback address, so on a remote machine forward the port first, for example `ssh -L <port>:127.0.0.1:<port> <host>`, and paste the link into a browser on your own computer.
 
 **Setup** shows each engine the daemon turned on and whether it found that engine's program on its
@@ -92,6 +93,23 @@ After upgrading Dudes, copy any unsent drafts before reloading an open Floor tab
 Floor bundle must have matching release and browser protocol versions. An older open tab cannot
 connect to an incompatible daemon. Reload the tab explicitly to load the installed bundle.
 
+`dudes upgrade` keeps the Floor sign-ins that are open when it starts, so a reload is all it
+takes. After the reload the tab is signed in again and shows the same agents, with no new link.
+The sign-in keeps its original time limits: the idle limit of 30 minutes, and the eight-hour limit
+that counts from the first sign-in. Ticket and check allowances carry over too, so an upgrade does
+not refill them.
+
+Only `dudes upgrade` carries sign-ins. A plain `dudes stop` and `dudes start` signs every browser
+out. The reload then asks you to run `dudes floor open`, which is also the way to end every Floor
+session at once. An upgrade that cannot keep a sign-in, for example because the Floor comes back on
+a different port or the upgrade is interrupted, ends the same way.
+
+The first upgrade from a version that predates this feature still signs open tabs out, because
+the older daemon cannot hand its sign-ins over.
+
+One sign-in serves one tab at a time. If you opened a second tab with the same sign-in, it asks you
+to sign in again after the reload.
+
 ## Serve the Floor
 
 The daemon serves the Floor at `/floor/` on `127.0.0.1`. It takes the Floor bundle from a `floor`
@@ -110,7 +128,8 @@ unsigned ASCII decimal that fits `u16`; `0` asks the operating system for a free
 port stops startup. Without it, the daemon first asks for the port its last run bound, which it
 keeps in a `floor-port` file in the state directory, and takes a free port when that one is taken.
 The Floor's address then stays the same across restarts, so the roster order a
-browser keeps for it survives `dudes stop` and `dudes start`. The startup line and
+browser keeps for it survives `dudes stop` and `dudes start`, and it is what lets `dudes upgrade` keep
+your sign-ins. The startup line and
 `dudes floor open` both show the port chosen. `dudes quickstart` and `dudes start` pass
 neither variable to the daemon. Dudes always binds `127.0.0.1`; neither variable can change the host.
 
