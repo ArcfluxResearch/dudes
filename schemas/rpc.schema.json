@@ -2917,6 +2917,42 @@
           ],
           "type": "object"
         },
+        "floor.session.export": {
+          "description": "The operator's read of the live Floor sign-ins.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/SessionExport",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "floor.session.import": {
+          "description": "The operator's admission of sign-ins an earlier run exported.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/SessionImportParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/SessionImportResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "floor.session.issue": {
           "description": "Issue a bounded, single-use bootstrap bearer for the read-only Floor.",
           "properties": {
@@ -3588,7 +3624,9 @@
         "ticket.read",
         "ticket.accept",
         "ticket.stop",
-        "ticket.checkout"
+        "ticket.checkout",
+        "floor.session.export",
+        "floor.session.import"
       ],
       "title": "CurrentMethods",
       "type": "object"
@@ -7497,6 +7535,50 @@
           "type": "null"
         }
       ]
+    },
+    "ExportedSession": {
+      "description": "One Floor sign-in as the exporting run held it.",
+      "properties": {
+        "check_runs": {
+          "description": "Checks the session started in the run.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the person signed in. The eight-hour limit keeps counting from here."
+        },
+        "digest": {
+          "description": "SHA-256 of the session cookie.",
+          "type": "string"
+        },
+        "last_used": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the session was last used, not refreshed by the export."
+        },
+        "ticket_assigns": {
+          "description": "Tickets the session assigned in the run.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ticket_creates": {
+          "description": "Tickets the session created in the run.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "digest",
+        "created",
+        "last_used",
+        "ticket_creates",
+        "ticket_assigns",
+        "check_runs"
+      ],
+      "type": "object"
     },
     "FloorDelta": {
       "description": "What changed since the previous delta. Each entity present is its complete current view;\n`removed_agents` names agents that were retired.",
@@ -15206,9 +15288,64 @@
       "minimum": 0,
       "type": "integer"
     },
+    "SessionExport": {
+      "description": "Floor sign-ins one daemon run hands to the next: `floor.session.export`'s result, and what\n`floor.session.import` takes in its params.\n\nA digest is not a cookie and cannot be presented as one. [`Debug`](fmt::Debug) names only the\ncount, so a diagnostic never lists the digests.",
+      "properties": {
+        "origin": {
+          "description": "The Floor origin that run served; empty when it served none.",
+          "type": "string"
+        },
+        "run": {
+          "description": "The run that exported them.",
+          "type": "string"
+        },
+        "sessions": {
+          "description": "The live sessions at the time of the export.",
+          "items": {
+            "$ref": "#/$defs/ExportedSession"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "run",
+        "origin",
+        "sessions"
+      ],
+      "type": "object"
+    },
     "SessionId": {
       "description": "A vendor session handle (`claude --resume <id>`, `codex exec resume <id>`, …).\n\nNot a Dudes identity: it is an attribute of an agent, recorded on `TurnIssued` /\n`SessionLearned` / `TurnEnded`, may be rotated over the agent's life, and never outlives or\nidentifies the agent. Opaque text; the vendor decides its shape.",
       "type": "string"
+    },
+    "SessionImportParams": {
+      "additionalProperties": false,
+      "description": "`floor.session.import` params.",
+      "properties": {
+        "exported": {
+          "$ref": "#/$defs/SessionExport",
+          "description": "What an earlier run exported."
+        }
+      },
+      "required": [
+        "exported"
+      ],
+      "type": "object"
+    },
+    "SessionImportResult": {
+      "description": "`floor.session.import` result.",
+      "properties": {
+        "restored": {
+          "description": "How many of the exported sessions this run admitted.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "restored"
+      ],
+      "type": "object"
     },
     "SessionIssueResult": {
       "description": "`floor.session.issue` result.\n\nThe bootstrap bearer remains a string on the wire, but [`Debug`](fmt::Debug) redacts it so a\ndiagnostic cannot disclose the capability. Deserialization enforces every finite field and\nreturns value-free errors; result objects remain open to additive fields.",

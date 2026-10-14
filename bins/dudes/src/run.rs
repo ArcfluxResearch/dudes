@@ -36,7 +36,8 @@ use dudes_proto::rpc::closing::{
     ClosingReport, ClosingStarted, closing_ack_params,
 };
 use dudes_proto::rpc::floor::{
-    EnrollmentApply, EnrollmentReloadParams, EnrollmentReloadResult, SessionIssueResult,
+    EnrollmentApply, EnrollmentReloadParams, EnrollmentReloadResult, SessionExport,
+    SessionImportParams, SessionImportResult, SessionIssueResult,
 };
 use dudes_proto::rpc::goal::{
     CompletionCheckDeclaration, ENROLLED_CHECK_ID, GoalSetParams, GoalSetResult,
@@ -45,7 +46,9 @@ use dudes_proto::rpc::journal::JournalAppendedParams;
 use dudes_proto::rpc::system::{
     DoctorResult, PingResult, ProviderProbe, SHUTDOWN_CONTAINMENT_UNPROVEN, ShutdownResult, SignIn,
 };
-use dudes_proto::rpc::{AgentRef, Empty, Method, NotificationKind, Response, RpcError};
+use dudes_proto::rpc::{
+    AgentRef, CurrentMethod, Empty, Method, NotificationKind, Response, RpcError,
+};
 use dudes_rpc::{ClientError, Inbound, LocalClient};
 use dudes_types::{AgentId, Provider, Tokens, Usd};
 use serde::de::DeserializeOwned;
@@ -265,11 +268,30 @@ impl crate::upgrade::Restart for Lifecycle<'_> {
             .map(|answer| answer.version)
             .map_err(|failure| failure.message().to_owned())
     }
+
+    fn export_sign_ins(&self) -> Result<SessionExport, String> {
+        operator_current_call(self.0, CurrentMethod::FloorSessionExport, None)
+            .and_then(typed)
+            .map_err(|failure| failure.message().to_owned())
+    }
+
+    fn import_sign_ins(&self, exported: &SessionExport) -> Result<u32, String> {
+        let params = SessionImportParams {
+            exported: exported.clone(),
+        };
+        encode(&params)
+            .and_then(|params| {
+                operator_current_call(self.0, CurrentMethod::FloorSessionImport, Some(params))
+            })
+            .and_then(typed::<SessionImportResult>)
+            .map(|result| result.restored)
+            .map_err(|failure| failure.message().to_owned())
+    }
 }
 
 /// The daemon `uninstall` and `upgrade` ask, through the same calls `dudes stop` and
 /// `dudes worktree list` make.
-struct Lifecycle<'a>(&'a Environment);
+pub(crate) struct Lifecycle<'a>(pub(crate) &'a Environment);
 
 impl crate::lifecycle::Daemon for Lifecycle<'_> {
     fn running(&self) -> bool {
@@ -1759,6 +1781,20 @@ fn operator_call(
 ) -> Result<Value, Failure> {
     let cred = operator_credential(env)?;
     answer_result(call_presenting(&mut connect(env)?, method, params, cred)?)
+}
+
+/// One operator call to a current method on a fresh connection, answered with its result value.
+fn operator_current_call(
+    env: &Environment,
+    method: CurrentMethod,
+    params: Option<Value>,
+) -> Result<Value, Failure> {
+    let cred = operator_credential(env)?;
+    answer_result(
+        connect(env)?
+            .call_current_presenting(method, params, cred)
+            .map_err(local)?,
+    )
 }
 
 fn hard_stop_daemon(env: &Environment, err: &mut dyn Write) -> Result<(), Failure> {

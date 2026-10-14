@@ -14,8 +14,11 @@
 
 use std::fmt;
 
+use dudes_types::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::record::Hex32;
 
 /// Largest `base_url` value in UTF-8 bytes.
 pub const SESSION_BASE_URL_MAX_BYTES: usize = 2048;
@@ -58,6 +61,70 @@ impl fmt::Debug for SessionIssueResult {
             .field("expires_in_s", &self.expires_in_s)
             .finish()
     }
+}
+
+/// Floor sign-ins one daemon run hands to the next: `floor.session.export`'s result, and what
+/// `floor.session.import` takes in its params.
+///
+/// A digest is not a cookie and cannot be presented as one. [`Debug`](fmt::Debug) names only the
+/// count, so a diagnostic never lists the digests.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SessionExport {
+    /// The run that exported them.
+    pub run: String,
+    /// The Floor origin that run served; empty when it served none.
+    pub origin: String,
+    /// The live sessions at the time of the export.
+    pub sessions: Vec<ExportedSession>,
+}
+
+impl fmt::Debug for SessionExport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionExport")
+            .field("run", &self.run)
+            .field("origin", &self.origin)
+            .field("sessions", &self.sessions.len())
+            .finish()
+    }
+}
+
+/// One Floor sign-in as the exporting run held it.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ExportedSession {
+    /// SHA-256 of the session cookie.
+    #[schemars(with = "String")]
+    pub digest: Hex32,
+    /// When the person signed in. The eight-hour limit keeps counting from here.
+    pub created: Timestamp,
+    /// When the session was last used, not refreshed by the export.
+    pub last_used: Timestamp,
+    /// Tickets the session created in the run.
+    pub ticket_creates: u32,
+    /// Tickets the session assigned in the run.
+    pub ticket_assigns: u32,
+    /// Checks the session started in the run.
+    pub check_runs: u32,
+}
+
+impl fmt::Debug for ExportedSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ExportedSession(<digest withheld>)")
+    }
+}
+
+/// `floor.session.import` params.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionImportParams {
+    /// What an earlier run exported.
+    pub exported: SessionExport,
+}
+
+/// `floor.session.import` result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SessionImportResult {
+    /// How many of the exported sessions this run admitted.
+    pub restored: u32,
 }
 
 /// A SHA-256 digest as the wire writes it: 64 lowercase hexadecimal digits.

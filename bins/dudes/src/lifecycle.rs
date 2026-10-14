@@ -121,6 +121,9 @@ pub(crate) mod fake {
         pub(crate) start_fails: bool,
         pub(crate) started_as: Option<&'static str>,
         pub(crate) plant_on_stop: Option<PathBuf>,
+        pub(crate) sign_ins: usize,
+        pub(crate) export_fails: bool,
+        pub(crate) import_keeps: Option<u32>,
         pub(crate) events: RefCell<Vec<String>>,
     }
 
