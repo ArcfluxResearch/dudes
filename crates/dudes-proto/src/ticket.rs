@@ -150,7 +150,7 @@ impl TicketReason {
                 "This project is not set up any more. Enroll it again with `dudes workspace add`, then Give to agent, or Remove the ticket."
             }
             Self::CheckCannotRun => {
-                "The check's program was not found. Install it, then Give to agent. If the check itself is wrong, Remove this ticket and create it again."
+                "The check cannot run: its program is missing, or it is a file inside the project that an agent could change. Install the program, or use one outside the project's repository, then Give to agent. If the check itself is wrong, Remove this ticket and create it again."
             }
             Self::CeilingRequired => {
                 "Set a spending limit first, because your account bills per use. Add one to the project's enrollment (`dudes workspace add`) or the agent's hire, then Give to agent."

@@ -11,6 +11,34 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.87.0] - 2026-10-14
+
+### Highlights
+
+- **Review shared instruction changes.** Tickets require operator review when observed shared instructions change or their coverage is uncertain. The Floor and `dudes ticket show` display known changed paths, coverage gaps and observation details. Accept or Ask for changes applies to the exact reviewed state. (#57)
+- **Upgrade and uninstall from the CLI.** `dudes upgrade` installs the latest release and restarts a running daemon; `--check` reports availability without installing. `dudes uninstall` previews removal and asks for confirmation. Both commands support macOS and Linux installer installations. Uninstall refuses to remove agent worktrees. (#55, #56)
+
+### Changes
+
+- Refuse inherited Claude context when a live peer shares the folder or owned-peer evidence is unresolved. Refusals explain when to use a separate worktree or wait for confirmed absence. (#57)
+- When instruction review is pending, `dudes ticket accept` and `dudes ticket changes` require an explicit `--expected-seq` from `dudes ticket show`. (#57)
+- Opt in to desktop notifications in Floor settings for tickets ready for review, tickets needing you and agent questions. Keep the Floor tab open; delivery depends on browser permission and the operating system.
+- Open a ticket's recorded checkout with `dudes ticket open <card>`, using `VISUAL`, `EDITOR` or `--editor`. `--print` and `--json` inspect the directory without launching an editor. (#48)
+- Document release checksum and provenance verification, plus Dudes and engine network/data boundaries. Add static regression checks for known outbound socket and DNS APIs. These checks do not sandbox child programs. (#50, #51)
+
+### Fixes
+
+- Refuse nonlocal Windows named-pipe overrides before attempting a control connection.
+- Default repeated quickstart hiring to **No**, so pressing Enter does not hire another idle agent. (#47)
+
+### Breaking
+
+- Instruction observations and reviews add required journal records. Older readers refuse a journal containing these records; downgrading after they are written is unsupported. (#57)
+- Rust ticket clients must include `instruction_review` in `TicketRow` and `CardTicket` constructors, and `review_watermark` in `TicketAssignParams` and `TicketAcceptParams`. (#57)
+- Rust exhaustive matches must handle new variants in `Record`, `RecordKind`, `TicketReason`, `TicketRefusal`, `HoldReason`, supervisor `Effect` and `Seen`, and daemon `Answered` and `OnboardRefusal`. `OnboardRefusal` no longer implements `Copy`. (#57)
+
+Instruction review compares bounded sampled endpoints. Windows and other unsupported platforms report coverage gaps. The comparison cannot identify an exclusive writer or prove that edits were not made and restored between samples.
+
 ## [0.86.0] - 2026-10-12
 
 ### Highlights
@@ -121,7 +149,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.86.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.0...HEAD
+[0.87.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.86.0...v0.87.0
 [0.86.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.85.1...v0.86.0
 [0.85.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.85.0...v0.85.1
 [0.85.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.84.0...v0.85.0

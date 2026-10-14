@@ -321,7 +321,10 @@ pub fn worktree_remove_command(
     }
     writeln!(
         err,
-        "the tree still exists. Remove it with your own git, then run this command again:\n  git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C {} worktree remove -- {}",
+        "the tree still exists. Removing it deletes ignored files such as a .env, a local database or build output.\n\
+         Check what is in it with:\n  git -C {} status --ignored\n\
+         Review the tree for uncommitted work (?? untracked, M modified, !! ignored files that removal deletes), commit or copy out what you want to keep, then remove it with your own git and run this command again:\n  git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C {} worktree remove -- {}",
+        quoted(path),
         quoted(origin),
         quoted(path)
     )
@@ -1104,6 +1107,25 @@ mod tests {
             printed.contains(
                 "git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C '/repos/it'\\''s here' \
                  worktree remove -- '/trees/a b'"
+            ),
+            "{printed}"
+        );
+    }
+
+    #[test]
+    fn the_removal_text_warns_that_ignored_files_are_deleted_before_the_command() {
+        let printed = text(|out| {
+            worktree_remove_command(
+                out,
+                std::path::Path::new("/repos/main"),
+                std::path::Path::new("/trees/a b"),
+            )
+        });
+        assert!(
+            printed.starts_with(
+                "the tree still exists. Removing it deletes ignored files such as a .env, a local database or build output.\n\
+                 Check what is in it with:\n  git -C '/trees/a b' status --ignored\n\
+                 Review the tree for uncommitted work (?? untracked, M modified, !! ignored files that removal deletes), commit or copy out what you want to keep, then remove it with your own git and run this command again:\n  git -c "
             ),
             "{printed}"
         );

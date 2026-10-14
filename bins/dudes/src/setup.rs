@@ -479,6 +479,7 @@ fn ask_check(
     question: &str,
     suggestion: Option<&[String]>,
     skippable: bool,
+    repo: &Path,
 ) -> Result<Option<Vec<String>>, Stopped> {
     let suggested = suggestion.map(|argv| argv.join(" "));
     let prompt = match (&suggested, skippable) {
@@ -496,7 +497,10 @@ fn ask_check(
             (text, _) => text,
         };
         match words(text) {
-            Ok(Some(argv)) => return Ok(Some(argv)),
+            Ok(Some(argv)) => match crate::workspace::outside_repository(repo, &argv) {
+                Ok(()) => return Ok(Some(argv)),
+                Err(why) => term.say(&why.to_string())?,
+            },
             Ok(None) => term.say("Type the program and its arguments.")?,
             Err(why) => term.say(&why)?,
         }
@@ -532,6 +536,7 @@ fn workspace_step(
         "Completion check for this repository",
         suggestion.as_deref(),
         true,
+        cwd,
     )?
     else {
         return Ok(());
@@ -1129,6 +1134,31 @@ mod tests {
         );
         assert!(run.plan.expect("answered").enroll.is_none());
         assert!(!run.shown.contains("Name the check"), "{}", run.shown);
+    }
+
+    #[test]
+    fn a_check_program_inside_the_repository_is_asked_again() {
+        let go = repo(&[("go.mod", ""), ("test.sh", "#!/bin/sh\n")]);
+        let prompt = "Completion check for this repository [go test ./...] (- to skip):";
+        let run = run_guided(
+            None,
+            &[
+                (FLOOR, "n"),
+                (prompt, "./test.sh"),
+                (prompt, "make check"),
+                ("Hire a first agent named Kim on claude, idle? [Y/n]", "n"),
+            ],
+            Some(go.path()),
+            &host(&[Provider::Claude], &[]),
+        );
+        assert!(
+            run.shown
+                .contains("`./test.sh` is inside the project's repository"),
+            "{}",
+            run.shown
+        );
+        let plan = run.plan.expect("answered");
+        assert_eq!(plan.check.expect("a check").argv, ["make", "check"]);
     }
 
     #[test]

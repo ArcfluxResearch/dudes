@@ -426,8 +426,7 @@ fn upgrade_text(version: &str, repo: &str, breaking: &str) -> String {
         format!("Breaking changes:\n\n{breaking}")
     };
     format!(
-        "There is no upgrade command. Run the installer again to replace your installed version \
-         with this one:\n\n\
+        "To install this exact version, run the installer again:\n\n\
          ```sh\n\
          curl -fsSL https://raw.githubusercontent.com/{repo}/main/install.sh | sh -s -- --version {version}\n\
          ```\n\n\
@@ -713,7 +712,7 @@ The script picks the archive for your machine, checks it against `SHA256SUMS`, a
 
 ### Upgrading
 
-There is no upgrade command. Run the installer again to replace your installed version with this one:
+To install this exact version, run the installer again:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/example/dudes/main/install.sh | sh -s -- --version 0.2.0
