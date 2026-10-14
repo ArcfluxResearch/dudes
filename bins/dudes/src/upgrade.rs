@@ -13,6 +13,8 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use dudes_providers::launch::EnvVar;
+
 use crate::args::UpgradeOptions;
 use crate::exit;
 use crate::render::{self, Escaped};
@@ -110,12 +112,7 @@ impl PartialOrd for Version {
 pub(crate) trait Runner {
     /// Whether `program` is a file.
     fn exists(&self, program: &Path) -> bool;
-    fn run(
-        &self,
-        program: &Path,
-        args: &[OsString],
-        env: &[(OsString, OsString)],
-    ) -> std::io::Result<Output>;
+    fn run(&self, program: &Path, args: &[OsString], env: &[EnvVar]) -> std::io::Result<Output>;
 }
 
 /// What `upgrade` needs from a daemon that may be running.
@@ -136,7 +133,7 @@ pub(crate) struct Inputs {
     pub(crate) current: String,
     pub(crate) executable: PathBuf,
     pub(crate) temp_dir: PathBuf,
-    pub(crate) child_env: Vec<(OsString, OsString)>,
+    pub(crate) child_env: Vec<EnvVar>,
 }
 
 fn arguments(parts: &[&str]) -> Vec<OsString> {

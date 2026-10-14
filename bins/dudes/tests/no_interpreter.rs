@@ -3486,10 +3486,10 @@ mod runner_item {
         if calls.methods
             != [
                 "args",
+                "env",
                 "env_clear",
-                "envs",
-                "iter",
-                "map",
+                "expose_value",
+                "name",
                 "output",
                 "stdin",
                 "success",

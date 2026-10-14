@@ -179,11 +179,7 @@ fn upgrade_command(
         current: env!("CARGO_PKG_VERSION").to_owned(),
         executable: std::env::current_exe().map_err(local)?,
         temp_dir: std::env::temp_dir(),
-        child_env: env
-            .upgrade_env()
-            .iter()
-            .map(|var| (var.name().to_owned(), var.expose_value().to_owned()))
-            .collect(),
+        child_env: env.upgrade_env().to_vec(),
     };
     Ok(crate::upgrade::run(
         &inputs,
@@ -206,7 +202,7 @@ impl crate::upgrade::Runner for SystemRunner {
         &self,
         program: &Path,
         args: &[OsString],
-        env: &[(OsString, OsString)],
+        env: &[dudes_providers::launch::EnvVar],
     ) -> std::io::Result<crate::runner::Output> {
         crate::runner::run(program, args, env)
     }

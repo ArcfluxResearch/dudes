@@ -8,6 +8,8 @@ use std::ffi::OsString;
 use std::io;
 use std::path::Path;
 
+use dudes_providers::launch::EnvVar;
+
 /// What a finished program left behind.
 #[derive(Debug)]
 pub(crate) struct Output {
@@ -22,14 +24,12 @@ pub(crate) struct Output {
     clippy::disallowed_types,
     reason = "upgrade runs the system curl and the release installer; the source gate confines it"
 )]
-pub(crate) fn run(
-    program: &Path,
-    args: &[OsString],
-    env: &[(OsString, OsString)],
-) -> io::Result<Output> {
+pub(crate) fn run(program: &Path, args: &[OsString], env: &[EnvVar]) -> io::Result<Output> {
     let mut command = std::process::Command::new(program);
     command.env_clear();
-    command.envs(env.iter().map(|(name, value)| (name, value)));
+    for var in env {
+        command.env(var.name(), var.expose_value());
+    }
     command.args(args);
     command.stdin(std::process::Stdio::null());
     let output = command.output()?;
@@ -41,11 +41,7 @@ pub(crate) fn run(
 }
 
 #[cfg(not(unix))]
-pub(crate) fn run(
-    _program: &Path,
-    _args: &[OsString],
-    _env: &[(OsString, OsString)],
-) -> io::Result<Output> {
+pub(crate) fn run(_program: &Path, _args: &[OsString], _env: &[EnvVar]) -> io::Result<Output> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "upgrade is not supported on this platform",

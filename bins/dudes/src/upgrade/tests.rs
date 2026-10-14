@@ -180,12 +180,7 @@ impl Runner for FakeRunner {
         self.curl_present
     }
 
-    fn run(
-        &self,
-        program: &Path,
-        args: &[OsString],
-        _: &[(OsString, OsString)],
-    ) -> std::io::Result<Output> {
+    fn run(&self, program: &Path, args: &[OsString], _: &[EnvVar]) -> std::io::Result<Output> {
         let shown: Vec<String> = args
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
