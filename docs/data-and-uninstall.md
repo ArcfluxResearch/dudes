@@ -59,13 +59,23 @@ dudes uninstall
 - **Agent worktrees stop it.** While any tree exists under `worktrees/` in the state directory,
   `dudes uninstall` deletes nothing. It prints the repository each tree belongs to and the git
   commands from steps 3 and 4 below, so you can review and remove each tree first.
-- **A running daemon is stopped first**, the way `dudes stop` does it. If an agent is in the middle
-  of a turn, it refuses unless you add `--now`, which ends those turns at once.
+- **A running daemon is stopped first**, the way `dudes stop` does it. If an agent is running a
+  turn, waiting for your answer or attached to your own session, it refuses and names each one.
+  `--now` stops the daemon with closing time anyway, which gives every agent up to 6 minutes to
+  save its work. To end turns at once, run `dudes stop --hard` first.
 - **Without a terminal it needs `--yes`.** `--dry-run` prints the plan and deletes nothing.
-- **Guards.** It deletes a data directory only at its default path, or at a `DUDES_STATE_DIR` or
-  `DUDES_RUNTIME_DIR` that holds Dudes' own files. It never deletes the filesystem root, your home
-  directory, a parent of it, or a symbolic link. With `DUDES_CONFIG` set it deletes only that file.
-  It deletes the programs only by their three exact names.
+  Answering no at the prompt changes nothing and exits 0.
+- **Guards.** It touches a data directory only at its default path, or at a `DUDES_STATE_DIR` or
+  `DUDES_RUNTIME_DIR` whose content only Dudes writes. In a folder that a setting chose, including
+  the operator file's folder, it deletes only the files Dudes writes and removes the folder only if
+  that leaves it empty; anything else stays, and it says what. It never deletes the filesystem
+  root, your home directory, a parent of it, or a symbolic link. With `DUDES_CONFIG` set it deletes
+  only that file, and only if it reads as an operator file.
+- **Programs.** It deletes `duded`, `dudes` and `dudes-hook` only when this copy was put there by
+  `install.sh`. For a source build, `cargo install` or a link, it removes the data, leaves the
+  programs and prints the commands to remove them by hand.
+- **Exit codes.** A deliberate refusal exits 3, and a failure part way exits 4 and lists what
+  remains. Run the command again once the cause is fixed.
 - **It cannot clean up everything.** It prints, and does not do, the cleanup that lies outside
   Dudes: the engines' own session history, Codex shell snapshots that hold a `DUDES_TOKEN=` line,
   and your browser's site data for the Floor.

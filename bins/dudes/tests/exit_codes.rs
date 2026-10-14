@@ -300,3 +300,15 @@ fn the_help_text_lists_the_same_codes_in_the_same_order() {
         help.stdout
     );
 }
+
+/// A deliberate refusal by `uninstall` is exit 3, as a literal: an agent's token is one.
+#[cfg(unix)]
+#[test]
+fn uninstall_refused_for_an_agents_token_exits_three() {
+    let token = "t".repeat(dudes_proto::rpc::hook::HOOK_TOKEN_LEN);
+    let run = Cli::bare()
+        .env("DUDES_TOKEN", token)
+        .args(["uninstall", "--yes"])
+        .run();
+    assert_eq!(run.code(), 3, "{}", run.output());
+}

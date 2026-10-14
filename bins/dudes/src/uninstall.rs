@@ -1,37 +1,76 @@
 //! `dudes uninstall`: work out what Dudes owns, refuse while anything irreplaceable remains, and
 //! delete the rest in an order that keeps `dudes` itself until last.
 //!
-//! The daemon is reached through [`Daemon`], so everything here is drivable without one.
+//! The daemon is reached through [`Owned`], so everything here is drivable without one.
 //!
 //! # What is never deleted
 //!
-//! A directory is deleted only when it is the default path, or an override that holds Dudes' own
-//! files. The filesystem root, the home directory, any parent of it and any symbolic link are
+//! A directory is touched only when it is the default path, or an override that holds content only
+//! Dudes writes. The filesystem root, the home directory, any parent of it and any symbolic link are
 //! refused by name. Agent worktrees are never deleted: they can hold the only copy of an agent's
-//! work, so their presence refuses the whole command before anything is touched.
+//! work, so their presence refuses the whole command before anything is touched, and again after
+//! the daemon stops.
+//!
+//! A folder that a setting chose is never removed wholesale. Dudes deletes the entries it knows
+//! it writes there, then removes the folder only if that left it empty.
 
 use std::collections::BTreeSet;
-use std::fs::File;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use dudes_proto::rpc::cred::OperatorCredential;
 
 use crate::args::UninstallOptions;
 use crate::env::LOCK_NAME;
 use crate::exit;
+use crate::layout::{self, NOTICES, PROGRAMS};
+use crate::lifecycle::{self, Daemon};
 use crate::render::{self, Escaped};
 use crate::setup::Terminal;
 
-/// The three programs `install.sh` puts in `<prefix>/bin`, by their exact names.
-const PROGRAMS: [&str; 3] = ["duded", "dudes", "dudes-hook"];
+/// The first bytes of a `redb` database, which only the daemon's projection writes here.
+const REDB_MAGIC: [u8; 9] = [b'r', b'e', b'd', b'b', 0x1A, 0x0A, 0xA9, 0x0D, 0x0A];
 
-/// Files that show a directory was made by the daemon's state.
-const STATE_MARKERS: [&str; 3] = ["journal", "state.redb", LOCK_NAME];
+/// The top-level tables the daemon reads from the operator file.
+const OPERATOR_TABLES: [&str; 5] = ["budget", "floor", "providers", "memory", "mcp"];
 
-/// Files that show a directory was made by the daemon's runtime.
-const RUNTIME_MARKERS: [&str; 3] = ["duded.sock", "operator.cred", "duded.log"];
+/// What the state directory holds, markers last so an interrupted run can be repeated.
+const STATE_KNOWN: Known = Known {
+    names: &[
+        "journal",
+        "agents",
+        "condense-model-cwd",
+        "providers",
+        "worktrees",
+        "floor-port",
+        "floor",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "THIRD-PARTY.md",
+    ],
+    prefixes: &[".install-rollback."],
+    last: &["state.redb", LOCK_NAME],
+};
 
-/// Files that show a `share/dudes` directory was made by `install.sh`.
-const SHARE_MARKERS: [&str; 4] = ["floor", "LICENSE-APACHE", "LICENSE-MIT", "THIRD-PARTY.md"];
+/// What the runtime directory holds, markers last.
+const RUNTIME_KNOWN: Known = Known {
+    names: &["agent-bin", "git-read"],
+    prefixes: &["shutdown-"],
+    last: &["duded.log", "duded.sock", "operator.cred"],
+};
+
+const CONFIG_KNOWN: Known = Known {
+    names: &["config.toml"],
+    prefixes: &[".config.toml."],
+    last: &[],
+};
+
+const SHARE_KNOWN: Known = Known {
+    names: &["floor", "LICENSE-APACHE", "LICENSE-MIT", "THIRD-PARTY.md"],
+    prefixes: &[".install-rollback."],
+    last: &[],
+};
 
 /// Where everything lives, resolved once from the environment.
 pub(crate) struct Layout {
@@ -41,34 +80,78 @@ pub(crate) struct Layout {
     pub(crate) config: PathBuf,
     pub(crate) config_overridden: bool,
     pub(crate) executable: PathBuf,
+    pub(crate) lock_wait: Duration,
 }
 
-/// What `uninstall` needs from a daemon that may be running.
-pub(crate) trait Daemon {
-    /// Whether a daemon answers.
-    fn running(&self) -> bool;
-    /// The agents that are mid-turn, each as a printable `name (id)`.
-    fn mid_turn(&self) -> Result<Vec<String>, String>;
-    /// The path of every worktree the daemon knows of.
-    fn worktrees(&self) -> Vec<PathBuf>;
-    /// Stop it the way `dudes stop` does, or at once when `now`.
-    fn stop(&self, now: bool, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), String>;
+/// What `uninstall` needs beyond the shared daemon: the trees the daemon knows of.
+pub(crate) trait Owned: Daemon {
+    /// The path of every worktree the daemon knows of. An error is a refusal, not an empty list.
+    fn worktrees(&self) -> Result<Vec<PathBuf>, String>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Guard {
-    Directory {
-        markers: &'static [&'static str],
-        default: bool,
-    },
+enum Kind {
+    Runtime,
+    State,
+    ConfigFolder,
+    ConfigFile,
+    Share,
+    Program,
+}
+
+impl Kind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Runtime => "runtime directory",
+            Self::State => "state directory",
+            Self::ConfigFolder => "operator file folder",
+            Self::ConfigFile => "operator file",
+            Self::Share => "installed Floor and notices",
+            Self::Program => "program",
+        }
+    }
+}
+
+/// The entries Dudes writes in a folder a setting may have chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Known {
+    names: &'static [&'static str],
+    prefixes: &'static [&'static str],
+    last: &'static [&'static str],
+}
+
+impl Known {
+    fn matches(self, name: &str) -> bool {
+        self.names.contains(&name)
+            || self.last.contains(&name)
+            || self.prefixes.iter().any(|prefix| name.starts_with(prefix))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Removal {
+    /// The default path: everything in it is Dudes' own.
+    Whole,
+    /// A path a setting chose: only the known entries, then the folder if it is empty.
+    Known(Known),
     File,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Content {
+    Any,
+    State,
+    Runtime,
+    Share,
 }
 
 #[derive(Debug)]
 struct Entry {
-    label: &'static str,
+    kind: Kind,
     path: PathBuf,
-    guard: Guard,
+    removal: Removal,
+    content: Content,
+    operator_file: bool,
     bytes: u64,
 }
 
@@ -78,6 +161,13 @@ struct Tree {
     path: PathBuf,
     repository: Option<PathBuf>,
     branch: Option<String>,
+}
+
+struct Plan {
+    entries: Vec<Entry>,
+    skipped: Vec<String>,
+    by_hand: Option<Vec<PathBuf>>,
+    why_by_hand: String,
 }
 
 fn exists(path: &Path) -> bool {
@@ -99,6 +189,16 @@ fn size(path: &Path) -> u64 {
         .sum()
 }
 
+fn known_size(path: &Path, known: Known) -> u64 {
+    std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| known.matches(&entry.file_name().to_string_lossy()))
+        .map(|entry| size(&entry.path()))
+        .sum()
+}
+
 fn human(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
     if bytes < 1024 {
@@ -113,8 +213,56 @@ fn human(bytes: u64) -> String {
     format!("{}.{} {}", scaled / 10, scaled % 10, UNITS[unit])
 }
 
+fn regular(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file())
+}
+
+fn starts_with_magic(path: &Path) -> bool {
+    use std::io::Read as _;
+    let mut head = [0_u8; 9];
+    regular(path)
+        && std::fs::File::open(path)
+            .and_then(|mut file| file.read_exact(&mut head))
+            .is_ok()
+        && head == REDB_MAGIC
+}
+
+#[cfg(unix)]
+fn is_socket(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt as _;
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_socket())
+}
+
+#[cfg(not(unix))]
+fn is_socket(_: &Path) -> bool {
+    false
+}
+
+/// Whether `dir` holds content only the named writer produces, not just a name.
+fn has_content(dir: &Path, content: Content) -> bool {
+    match content {
+        Content::Any => true,
+        Content::State => {
+            regular(&dir.join(LOCK_NAME)) && starts_with_magic(&dir.join("state.redb"))
+        }
+        Content::Runtime => {
+            std::fs::read_to_string(dir.join("operator.cred"))
+                .is_ok_and(|text| OperatorCredential::new(text).is_ok())
+                || is_socket(&dir.join("duded.sock"))
+                || std::fs::read_to_string(dir.join("duded.log"))
+                    .is_ok_and(|log| log.starts_with("quickstart started duded pid "))
+        }
+        Content::Share => NOTICES.iter().all(|name| regular(&dir.join(name))),
+    }
+}
+
 /// Why `path` may not be deleted as a directory, or `Ok` when it may.
-fn vet_directory(path: &Path, home: &Path, markers: &[&str], default: bool) -> Result<(), String> {
+fn vet_directory(
+    path: &Path,
+    home: &Path,
+    content: Content,
+    removal: Removal,
+) -> Result<(), String> {
     let shown = path.display();
     if !path.is_absolute() {
         return Err(format!("{shown} is not an absolute path"));
@@ -140,106 +288,188 @@ fn vet_directory(path: &Path, home: &Path, markers: &[&str], default: bool) -> R
             "{shown} is the home directory or a parent of it, which Dudes never deletes"
         ));
     }
-    if !default && !markers.iter().any(|name| exists(&path.join(name))) {
+    if removal != Removal::Whole && !has_content(path, content) {
         return Err(format!(
-            "{shown} is not the default location and holds none of Dudes' own files ({}), so Dudes will not delete it",
-            markers.join(", ")
+            "{shown} is not the default location and does not hold what Dudes writes there, so Dudes will not delete in it"
         ));
     }
     Ok(())
 }
 
-fn vet_file(path: &Path) -> Result<(), String> {
-    let metadata =
-        std::fs::symlink_metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    if metadata.is_dir() {
-        return Err(format!("{} is a directory, not a file", path.display()));
-    }
-    Ok(())
+fn operator_file_problem(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let Ok(table) = text.parse::<toml::Table>() else {
+        return Some("it is not valid TOML".to_owned());
+    };
+    let foreign: Vec<_> = table
+        .keys()
+        .filter(|key| !OPERATOR_TABLES.contains(&key.as_str()))
+        .cloned()
+        .collect();
+    (!foreign.is_empty()).then(|| {
+        format!(
+            "it has tables an operator file does not: {}",
+            foreign.join(", ")
+        )
+    })
 }
 
 fn vet(entry: &Entry, home: &Path) -> Result<(), String> {
-    match entry.guard {
-        Guard::Directory { markers, default } => vet_directory(&entry.path, home, markers, default),
-        Guard::File => vet_file(&entry.path),
+    match entry.removal {
+        Removal::Whole | Removal::Known(_) => {
+            vet_directory(&entry.path, home, entry.content, entry.removal)
+        }
+        Removal::File => {
+            let metadata = std::fs::symlink_metadata(&entry.path)
+                .map_err(|error| format!("{}: {error}", entry.path.display()))?;
+            if metadata.is_dir() {
+                return Err(format!(
+                    "{} is a directory, not a file",
+                    entry.path.display()
+                ));
+            }
+            Ok(())
+        }
     }
 }
 
-/// Everything Dudes owns that is present, in deletion order, or the first guard that refuses.
-fn plan(layout: &Layout) -> Result<Vec<Entry>, String> {
+fn candidates(layout: &Layout, prefix: Option<&Path>) -> Vec<Entry> {
     let home = &layout.home;
-    let mut candidates = vec![
-        (
-            "runtime directory",
-            layout.runtime_dir.clone(),
-            Guard::Directory {
-                markers: &RUNTIME_MARKERS,
-                default: layout.runtime_dir == home.join(".local/state/dudes"),
-            },
+    let default = |path: &Path, tail: &str| path == home.join(tail);
+    let directory = |kind, path: &Path, is_default: bool, known, content| Entry {
+        kind,
+        path: path.to_path_buf(),
+        removal: if is_default {
+            Removal::Whole
+        } else {
+            Removal::Known(known)
+        },
+        content,
+        operator_file: false,
+        bytes: 0,
+    };
+    let mut list = vec![
+        directory(
+            Kind::Runtime,
+            &layout.runtime_dir,
+            default(&layout.runtime_dir, ".local/state/dudes"),
+            RUNTIME_KNOWN,
+            Content::Runtime,
         ),
-        (
-            "state directory",
-            layout.state_dir.clone(),
-            Guard::Directory {
-                markers: &STATE_MARKERS,
-                default: layout.state_dir == home.join(".local/share/dudes"),
-            },
+        directory(
+            Kind::State,
+            &layout.state_dir,
+            default(&layout.state_dir, ".local/share/dudes"),
+            STATE_KNOWN,
+            Content::State,
         ),
     ];
-    let folder = layout
-        .config
-        .parent()
-        .filter(|folder| !layout.config_overridden && folder.file_name() == Some("dudes".as_ref()));
+    let folder = layout.config.parent().filter(|folder| {
+        !layout.config_overridden
+            && layout.config.file_name() == Some("config.toml".as_ref())
+            && folder.file_name() == Some("dudes".as_ref())
+    });
     match folder {
-        Some(folder) => candidates.push((
-            "operator file folder",
-            folder.to_path_buf(),
-            Guard::Directory {
-                markers: &[],
-                default: true,
-            },
-        )),
-        None => candidates.push(("operator file", layout.config.clone(), Guard::File)),
+        Some(folder) => list.push(Entry {
+            removal: Removal::Known(CONFIG_KNOWN),
+            ..directory(
+                Kind::ConfigFolder,
+                folder,
+                false,
+                CONFIG_KNOWN,
+                Content::Any,
+            )
+        }),
+        None => list.push(Entry {
+            kind: Kind::ConfigFile,
+            path: layout.config.clone(),
+            removal: Removal::File,
+            content: Content::Any,
+            operator_file: layout.config_overridden,
+            bytes: 0,
+        }),
     }
-    let bin = layout.executable.parent();
-    if let Some(share) = bin
-        .filter(|bin| bin.file_name() == Some("bin".as_ref()))
-        .and_then(Path::parent)
-        .map(|prefix| prefix.join("share/dudes"))
-        .filter(|share| *share != layout.state_dir)
-        .filter(|share| SHARE_MARKERS.iter().any(|name| exists(&share.join(name))))
-    {
-        candidates.push((
-            "installed Floor and notices",
-            share,
-            Guard::Directory {
-                markers: &SHARE_MARKERS,
-                default: false,
-            },
-        ));
-    }
-    if let Some(bin) = bin {
+    if let Some(prefix) = prefix {
+        let share = prefix.join("share/dudes");
+        if share != layout.state_dir {
+            list.push(directory(
+                Kind::Share,
+                &share,
+                false,
+                SHARE_KNOWN,
+                Content::Share,
+            ));
+        }
         for name in PROGRAMS {
-            let name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
-            candidates.push(("program", bin.join(name), Guard::File));
+            list.push(Entry {
+                kind: Kind::Program,
+                path: prefix
+                    .join("bin")
+                    .join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
+                removal: Removal::File,
+                content: Content::Any,
+                operator_file: false,
+                bytes: 0,
+            });
         }
     }
+    list
+}
+
+/// Everything Dudes owns that is present, in deletion order, or the first guard that refuses.
+fn plan(layout: &Layout) -> Result<Plan, String> {
+    let installed = layout::installed_prefix(&layout.executable);
+    let (prefix, why_by_hand) = match &installed {
+        Ok(prefix) => (Some(prefix.as_path()), String::new()),
+        Err(reason) => (None, reason.clone()),
+    };
     let mut entries = Vec::new();
-    for (label, path, guard) in candidates {
-        if !exists(&path) {
+    let mut skipped = Vec::new();
+    for mut entry in candidates(layout, prefix) {
+        if !exists(&entry.path) {
             continue;
         }
-        let mut entry = Entry {
-            bytes: 0,
-            label,
-            path,
-            guard,
+        vet(&entry, &layout.home)?;
+        if entry.operator_file
+            && let Some(problem) = operator_file_problem(&entry.path)
+        {
+            skipped.push(format!(
+                "{} is not deleted: {problem}",
+                entry.path.display()
+            ));
+            continue;
+        }
+        entry.bytes = match entry.removal {
+            Removal::Known(known) => known_size(&entry.path, known),
+            Removal::Whole | Removal::File => size(&entry.path),
         };
-        vet(&entry, home)?;
-        entry.bytes = size(&entry.path);
         entries.push(entry);
     }
-    Ok(entries)
+    let by_hand = installed
+        .is_err()
+        .then(|| {
+            let real = layout
+                .executable
+                .canonicalize()
+                .unwrap_or_else(|_| layout.executable.clone());
+            let mut found: Vec<PathBuf> = real
+                .parent()
+                .into_iter()
+                .flat_map(|bin| PROGRAMS.iter().map(|name| bin.join(name)))
+                .filter(|path| exists(path))
+                .collect();
+            if real != layout.executable && exists(&layout.executable) {
+                found.push(layout.executable.clone());
+            }
+            found
+        })
+        .filter(|programs| !programs.is_empty());
+    Ok(Plan {
+        entries,
+        skipped,
+        by_hand,
+        why_by_hand,
+    })
 }
 
 /// The repository and branch a tree belongs to, read from its `.git` pointer without running git.
@@ -302,7 +532,7 @@ fn refuse_worktrees(found: &[Tree], err: &mut dyn Write) -> std::io::Result<()> 
     render::local_error(
         err,
         &format!(
-            "refusing to uninstall: {count} agent worktree{} exist{}. A tree can hold the only copy of an agent's work, so nothing was deleted.",
+            "refusing to uninstall: {count} agent worktree{} exist{}. A tree can hold the only copy of an agent's work, so it was not deleted.",
             if count == 1 { "" } else { "s" },
             if count == 1 { "s" } else { "" },
         ),
@@ -353,22 +583,87 @@ fn refuse_worktrees(found: &[Tree], err: &mut dyn Write) -> std::io::Result<()> 
     )
 }
 
-fn lock_held(state_dir: &Path) -> bool {
-    File::open(state_dir.join(LOCK_NAME)).is_ok_and(|lock| {
-        matches!(
-            lock.try_lock_shared(),
-            Err(std::fs::TryLockError::WouldBlock)
-        )
-    })
+/// What a deletion left behind.
+#[derive(Default)]
+struct Outcome {
+    removed: usize,
+    failed: Vec<String>,
+    kept: Vec<(PathBuf, Vec<String>)>,
 }
 
-fn remove(entry: &Entry, home: &Path) -> Result<(), String> {
-    vet(entry, home)?;
-    let result = match entry.guard {
-        Guard::Directory { .. } => std::fs::remove_dir_all(&entry.path),
-        Guard::File => std::fs::remove_file(&entry.path),
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(path)?.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+/// Delete the known entries of a folder a setting chose, markers last, then the folder if empty.
+fn remove_known(entry: &Entry, known: Known, outcome: &mut Outcome) {
+    let Ok(listing) = std::fs::read_dir(&entry.path) else {
+        outcome
+            .failed
+            .push(format!("{}: cannot be read", entry.path.display()));
+        return;
     };
-    result.map_err(|error| format!("{}: {error}", entry.path.display()))
+    let mut ordinary = Vec::new();
+    let mut last = Vec::new();
+    for child in listing.flatten() {
+        let name = child.file_name().to_string_lossy().into_owned();
+        if known.last.contains(&name.as_str()) {
+            last.push(child.path());
+        } else if known.matches(&name) {
+            ordinary.push(child.path());
+        }
+    }
+    let before = outcome.failed.len();
+    for path in ordinary {
+        match remove_path(&path) {
+            Ok(()) => outcome.removed += 1,
+            Err(error) => outcome.failed.push(format!("{}: {error}", path.display())),
+        }
+    }
+    if outcome.failed.len() > before {
+        return;
+    }
+    for path in last {
+        match remove_path(&path) {
+            Ok(()) => outcome.removed += 1,
+            Err(error) => outcome.failed.push(format!("{}: {error}", path.display())),
+        }
+    }
+    if outcome.failed.len() > before {
+        return;
+    }
+    if std::fs::remove_dir(&entry.path).is_ok() {
+        outcome.removed += 1;
+        return;
+    }
+    let mut left: Vec<String> = std::fs::read_dir(&entry.path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|child| child.file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    outcome.kept.push((entry.path.clone(), left));
+}
+
+fn remove(entry: &Entry, home: &Path, outcome: &mut Outcome) {
+    if let Err(reason) = vet(entry, home) {
+        outcome.failed.push(reason);
+        return;
+    }
+    match entry.removal {
+        Removal::Known(known) => remove_known(entry, known, outcome),
+        Removal::Whole | Removal::File => match remove_path(&entry.path) {
+            Ok(()) => outcome.removed += 1,
+            Err(error) => outcome
+                .failed
+                .push(format!("{}: {error}", entry.path.display())),
+        },
+    }
 }
 
 fn leftovers(out: &mut dyn Write) -> std::io::Result<()> {
@@ -409,7 +704,7 @@ pub(crate) fn run(
     layout: &Layout,
     options: UninstallOptions,
     terminal: Option<&mut dyn BufRead>,
-    daemon: &dyn Daemon,
+    daemon: &dyn Owned,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> u8 {
@@ -422,191 +717,233 @@ pub(crate) fn run(
     }
 }
 
-/// What stops a run before it asks or deletes: an exit code when something does.
-fn blockers(
-    layout: &Layout,
-    options: UninstallOptions,
-    daemon: &dyn Daemon,
-    running: bool,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> Result<Option<u8>, String> {
-    let io = |error: std::io::Error| error.to_string();
-    let found = trees(
-        &layout.state_dir,
-        if running {
-            daemon.worktrees()
+fn unlisted(reason: &str) -> String {
+    format!(
+        "refusing to uninstall: could not ask the daemon for its worktrees ({reason}); nothing was deleted"
+    )
+}
+
+fn refuse(err: &mut dyn Write, message: &str) -> Result<u8, String> {
+    render::local_error(err, message).map_err(|error| error.to_string())?;
+    Ok(exit::REFUSED)
+}
+
+fn print_plan(plan: &Plan, out: &mut dyn Write) -> std::io::Result<()> {
+    writeln!(out, "Dudes will remove:")?;
+    for entry in &plan.entries {
+        let only = if matches!(entry.removal, Removal::Known(_)) {
+            ", only the files Dudes writes there"
         } else {
-            Vec::new()
-        },
-    );
-    if !found.is_empty() {
-        writeln!(out).map_err(io)?;
-        refuse_worktrees(&found, err).map_err(io)?;
-        return Ok(Some(exit::REFUSED));
+            ""
+        };
+        writeln!(
+            out,
+            "  {:<27} {}  ({}{only})",
+            entry.kind.label(),
+            Escaped(&entry.path.display().to_string()),
+            human(entry.bytes)
+        )?;
     }
-    if running {
-        if !options.now {
-            let busy = daemon.mid_turn().map_err(|reason| {
-                format!(
-                    "could not list the agents that are mid-turn ({reason}); nothing was deleted. Pass --now to stop the daemon anyway"
-                )
-            })?;
-            if !busy.is_empty() {
-                render::local_error(
-                    err,
-                    &format!(
-                        "refusing to uninstall: these agents are mid-turn: {}. Wait for them to finish, or pass --now to stop the daemon and end their turns at once. Nothing was deleted.",
-                        busy.join(", ")
-                    ),
-                )
-                .map_err(io)?;
-                return Ok(Some(exit::REFUSED));
+    for note in &plan.skipped {
+        writeln!(out, "  skipped: {}", Escaped(note))?;
+    }
+    if let Some(programs) = &plan.by_hand {
+        writeln!(out, "\nThe programs are not removed: {}.", plan.why_by_hand)?;
+        if !programs.is_empty() {
+            writeln!(out, "Remove them by hand when you no longer need them:")?;
+            for path in programs {
+                writeln!(out, "  rm {}", quoted(path))?;
             }
         }
-        writeln!(out, "\nThe daemon is running and will be stopped first.").map_err(io)?;
-    } else if lock_held(&layout.state_dir) {
-        render::local_error(
-            err,
-            &format!(
-                "refusing to uninstall: a process holds the lock in {}, so a daemon is still running; stop it with dudes stop. Nothing was deleted.",
-                layout.state_dir.display()
-            ),
-        )
-        .map_err(io)?;
-        return Ok(Some(exit::REFUSED));
     }
-    Ok(None)
+    Ok(())
 }
 
 fn confirm(
     options: UninstallOptions,
     terminal: Option<&mut dyn BufRead>,
     out: &mut dyn Write,
-) -> Result<(), String> {
+    err: &mut dyn Write,
+) -> Result<Option<u8>, String> {
     if options.yes {
-        return Ok(());
+        return Ok(None);
     }
     let Some(input) = terminal else {
-        return Err(
-            "uninstall needs --yes when it is not run on a terminal; nothing was deleted"
-                .to_owned(),
-        );
+        return refuse(
+            err,
+            "uninstall needs --yes when it is not run on a terminal; nothing was deleted",
+        )
+        .map(Some);
     };
     writeln!(out).map_err(|error| error.to_string())?;
-    match Terminal::new(input, out).yes("Delete all of this?", false) {
-        Ok(true) => Ok(()),
-        _ => Err("uninstall canceled; nothing was deleted".to_owned()),
+    if matches!(
+        Terminal::new(input, out).yes("Delete all of this?", false),
+        Ok(true)
+    ) {
+        return Ok(None);
     }
+    writeln!(out, "Nothing was changed.").map_err(|error| error.to_string())?;
+    Ok(Some(exit::SUCCESS))
 }
 
 fn uninstall(
     layout: &Layout,
     options: UninstallOptions,
     terminal: Option<&mut dyn BufRead>,
-    daemon: &dyn Daemon,
+    daemon: &dyn Owned,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<u8, String> {
     let io = |error: std::io::Error| error.to_string();
-    let entries = match plan(layout) {
-        Ok(entries) => entries,
+    let plan = match plan(layout) {
+        Ok(plan) => plan,
         Err(reason) => {
-            render::local_error(err, &format!("refusing to uninstall: {reason}")).map_err(io)?;
-            writeln!(err, "Nothing was deleted.").map_err(io)?;
-            return Ok(exit::REFUSED);
+            return refuse(
+                err,
+                &format!("refusing to uninstall: {reason}. Nothing was deleted."),
+            );
         }
     };
-    if entries.is_empty() {
+    if plan.entries.is_empty() && plan.skipped.is_empty() && plan.by_hand.is_none() {
         writeln!(out, "Dudes has nothing installed or stored here.").map_err(io)?;
         return Ok(exit::SUCCESS);
     }
-    writeln!(out, "Dudes will remove:").map_err(io)?;
-    for entry in &entries {
-        writeln!(
-            out,
-            "  {:<27} {}  ({})",
-            entry.label,
-            Escaped(&entry.path.display().to_string()),
-            human(entry.bytes)
-        )
-        .map_err(io)?;
-    }
+    print_plan(&plan, out).map_err(io)?;
     let running = daemon.running();
-    if let Some(code) = blockers(layout, options, daemon, running, out, err)? {
-        return Ok(code);
+    if running {
+        match lifecycle::check_busy(daemon, options.now, out) {
+            Ok(None) => {}
+            Ok(Some(message)) | Err(message) => {
+                return refuse(err, &format!("refusing to uninstall: {message}"));
+            }
+        }
+        writeln!(out, "\nThe daemon is running and will be stopped first.").map_err(io)?;
+    } else if lifecycle::lock_held(&layout.state_dir) {
+        return refuse(
+            err,
+            &format!(
+                "refusing to uninstall: a process holds the lock in {}, so a daemon is still running; stop it with dudes stop. Nothing was deleted.",
+                layout.state_dir.display()
+            ),
+        );
+    }
+    let listed = if running {
+        match daemon.worktrees() {
+            Ok(listed) => listed,
+            Err(reason) => return refuse(err, &unlisted(&reason)),
+        }
+    } else {
+        Vec::new()
+    };
+    let found = trees(&layout.state_dir, listed);
+    if !found.is_empty() {
+        writeln!(out).map_err(io)?;
+        refuse_worktrees(&found, err).map_err(io)?;
+        return Ok(exit::REFUSED);
     }
     if options.dry_run {
         writeln!(out, "\nThis was a dry run. Nothing was deleted.").map_err(io)?;
         return Ok(exit::SUCCESS);
     }
-    confirm(options, terminal, out)?;
+    if let Some(code) = confirm(options, terminal, out, err)? {
+        return Ok(code);
+    }
     if running {
         daemon
-            .stop(options.now, out, err)
+            .stop(out, err)
             .map_err(|reason| format!("the daemon did not stop ({reason}); nothing was deleted"))?;
-        if lock_held(&layout.state_dir) {
-            return Err(format!(
-                "the daemon stopped but a process still holds the lock in {}; nothing was deleted",
-                layout.state_dir.display()
-            ));
+        if !lifecycle::wait_for_unlock(&layout.state_dir, layout.lock_wait) {
+            return refuse(
+                err,
+                &format!(
+                    "the daemon stopped but a process still holds the lock in {}; nothing was deleted",
+                    layout.state_dir.display()
+                ),
+            );
+        }
+        let listed = match daemon.worktrees() {
+            Ok(listed) => listed,
+            Err(reason) => return refuse(err, &unlisted(&reason)),
+        };
+        let found = trees(&layout.state_dir, listed);
+        if !found.is_empty() {
+            refuse_worktrees(&found, err).map_err(io)?;
+            return Ok(exit::REFUSED);
         }
     }
-    delete(layout, &entries, out, err)
+    delete(layout, &plan, out, err)
 }
 
 /// Delete in order, keeping the programs if anything before them failed.
 fn delete(
     layout: &Layout,
-    entries: &[Entry],
+    plan: &Plan,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<u8, String> {
     let io = |error: std::io::Error| error.to_string();
-    let mut failed = Vec::new();
-    let mut removed = 0usize;
-    for entry in entries {
-        if entry.label == "program" && !failed.is_empty() {
+    let mut outcome = Outcome::default();
+    for entry in &plan.entries {
+        if entry.kind == Kind::Program && !outcome.failed.is_empty() {
             break;
         }
         if !exists(&entry.path) {
             continue;
         }
-        match remove(entry, &layout.home) {
-            Ok(()) => {
-                removed += 1;
-                writeln!(
-                    out,
-                    "removed {}",
-                    Escaped(&entry.path.display().to_string())
-                )
-                .map_err(io)?;
-            }
-            Err(reason) => failed.push(reason),
+        let before = outcome.removed;
+        remove(entry, &layout.home, &mut outcome);
+        if outcome.removed > before {
+            writeln!(
+                out,
+                "removed {}",
+                Escaped(&entry.path.display().to_string())
+            )
+            .map_err(io)?;
         }
     }
-    let remaining: Vec<_> = entries.iter().filter(|entry| exists(&entry.path)).collect();
-    if remaining.is_empty() {
-        writeln!(out, "\nDudes is uninstalled ({removed} items removed).").map_err(io)?;
+    for (path, left) in &outcome.kept {
+        writeln!(
+            out,
+            "kept {}: it holds files that are not Dudes': {}",
+            Escaped(&path.display().to_string()),
+            Escaped(&left.join(", "))
+        )
+        .map_err(io)?;
+    }
+    let remaining: Vec<_> = plan
+        .entries
+        .iter()
+        .filter(|entry| {
+            exists(&entry.path) && !outcome.kept.iter().any(|(path, _)| *path == entry.path)
+        })
+        .collect();
+    if outcome.failed.is_empty() && remaining.is_empty() {
+        writeln!(
+            out,
+            "\nDudes is uninstalled ({} items removed).",
+            outcome.removed
+        )
+        .map_err(io)?;
         leftovers(out).map_err(io)?;
         return Ok(exit::SUCCESS);
     }
     render::local_error(
         err,
         &format!(
-            "uninstall did not finish: {removed} removed, {} remain",
+            "uninstall did not finish: {} removed, {} remain",
+            outcome.removed,
             remaining.len()
         ),
     )
     .map_err(io)?;
-    for reason in &failed {
+    for reason in &outcome.failed {
         writeln!(err, "  failed: {}", Escaped(reason)).map_err(io)?;
     }
     writeln!(err, "Still present:").map_err(io)?;
     for entry in &remaining {
         writeln!(err, "  {}", Escaped(&entry.path.display().to_string())).map_err(io)?;
     }
-    if remaining.iter().any(|entry| entry.label == "program") {
+    if remaining.iter().any(|entry| entry.kind == Kind::Program) {
         writeln!(
             err,
             "The programs were kept so you can run dudes uninstall again once the cause is fixed."

@@ -575,19 +575,23 @@ COMMANDS
 
     uninstall [--dry-run] [--yes] [--now]
         Remove Dudes from this machine: the state and runtime directories, the operator
-        file, and the duded, dudes and dudes-hook programs next to this dudes (plus the
-        Floor and licence notices an install into another prefix put in <prefix>/share/dudes).
-        It prints every path and its size first, then asks y/N on a terminal; without a
-        terminal it needs --yes. --dry-run prints the plan and removes nothing. It refuses,
-        and removes nothing, while any agent worktree exists, because a tree can hold the only
-        copy of an agent's work; it prints the git commands to review and remove each one.
-        A running daemon is stopped first the way dudes stop does it, and a daemon with an
-        agent mid-turn is refused unless --now, which ends those turns at once. It deletes
-        a directory only at its default path, or at an override that holds Dudes' own files,
-        never the home directory, a parent of it or a symbolic link, and with DUDES_CONFIG
-        set only that file. It prints the cleanup it cannot do for you: engine history,
-        Codex shell snapshots and the browser's site data for the Floor. Not supported on
-        Windows yet.
+        file, and, for a copy that install.sh installed, the duded, dudes and dudes-hook
+        programs and the Floor and licence notices in <prefix>/share/dudes. It prints every
+        path and its size first, then asks y/N on a terminal; without a terminal it needs
+        --yes. --dry-run prints the plan and removes nothing. It refuses, and removes
+        nothing, while any agent worktree exists, because a tree can hold the only copy of
+        an agent's work; it prints the git commands to review and remove each one. A running
+        daemon is stopped the way dudes stop does it. It refuses while an agent is running a
+        turn, waiting for an answer or attached to a person's session, and names each one;
+        --now stops with closing time anyway, which gives every agent up to 6 minutes to save
+        its work, and dudes stop --hard first ends turns at once. In a folder that
+        DUDES_STATE_DIR, DUDES_RUNTIME_DIR or the operator file's location chose, it deletes only
+        the files Dudes writes and removes the folder only if that leaves it empty. It never
+        deletes the home directory, a parent of it or a symbolic link, and with DUDES_CONFIG set
+        only that file, and only if it is an operator file. For a copy that install.sh did not
+        install it leaves the programs and prints how to remove them. It prints the cleanup it
+        cannot do for you: engine history, Codex shell snapshots and the browser's site data for
+        the Floor. Not supported on Windows yet.
 
     closing ack --announcement-lsn <lsn>
         Acknowledge your own participation using DUDES_TOKEN. The daemon derives

@@ -177,12 +177,15 @@ fn uninstall_command(
              https://github.com/ArcfluxResearch/dudes/blob/main/docs/data-and-uninstall.md",
         )
         .map_err(local)?;
-        return Ok(exit::OTHER);
+        return Ok(exit::REFUSED);
     }
     if env.agent_token().is_some() {
-        return Err(local(
+        render::local_error(
+            err,
             "uninstall is for the operator and refuses to run with an agent's DUDES_TOKEN set",
-        ));
+        )
+        .map_err(local)?;
+        return Ok(exit::REFUSED);
     }
     let layout = crate::uninstall::Layout {
         home: env
@@ -194,51 +197,46 @@ fn uninstall_command(
         config: env.config().map_err(local)?.to_path_buf(),
         config_overridden: env.config_overridden(),
         executable: std::env::current_exe().map_err(local)?,
+        lock_wait: Duration::from_secs(5),
     };
     Ok(crate::uninstall::run(
         &layout,
         options,
         terminal,
-        &LiveDaemon(env),
+        &Lifecycle(env),
         out,
         err,
     ))
 }
 
-/// The daemon `uninstall` asks, through the same calls `dudes stop` and `dudes worktree list` make.
-struct LiveDaemon<'a>(&'a Environment);
+/// The daemon `uninstall` and `upgrade` ask, through the same calls `dudes stop` and
+/// `dudes worktree list` make.
+struct Lifecycle<'a>(&'a Environment);
 
-impl crate::uninstall::Daemon for LiveDaemon<'_> {
+impl crate::lifecycle::Daemon for Lifecycle<'_> {
     fn running(&self) -> bool {
         ping_once(self.0).is_ok()
     }
 
-    fn mid_turn(&self) -> Result<Vec<String>, String> {
+    fn busy_agents(&self) -> Result<Vec<String>, String> {
         let agents = operator_call(self.0, Method::AgentList, None)
             .and_then(typed::<Vec<dudes_proto::AgentView>>)
             .map_err(|failure| failure.message().to_owned())?;
-        Ok(agents
-            .iter()
-            .filter(|agent| agent.status == dudes_types::AgentStatus::Running)
-            .map(|agent| format!("{} ({})", agent.name, agent.id))
-            .collect())
+        Ok(crate::lifecycle::agents_busy(&agents))
     }
 
-    fn worktrees(&self) -> Vec<PathBuf> {
+    fn stop(&self, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), String> {
+        stop_closing(false, self.0, out, err)
+            .map(|_| ())
+            .map_err(|failure| failure.message().to_owned())
+    }
+}
+
+impl crate::uninstall::Owned for Lifecycle<'_> {
+    fn worktrees(&self) -> Result<Vec<PathBuf>, String> {
         operator_call(self.0, Method::WorktreeList, None)
             .and_then(typed::<Vec<dudes_proto::rpc::worktree::WorktreeEntry>>)
             .map(|entries| entries.into_iter().map(|entry| entry.path).collect())
-            .unwrap_or_default()
-    }
-
-    fn stop(&self, now: bool, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), String> {
-        let stopped = if now {
-            hard_stop_daemon(self.0, err).map(|()| exit::SUCCESS)
-        } else {
-            stop_closing(false, self.0, out, err)
-        };
-        stopped
-            .map(|_| ())
             .map_err(|failure| failure.message().to_owned())
     }
 }

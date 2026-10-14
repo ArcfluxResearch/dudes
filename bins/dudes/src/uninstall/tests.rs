@@ -1,11 +1,27 @@
-use std::cell::RefCell;
+use std::fs::File;
 use std::io::Cursor;
 
 use super::*;
+use crate::lifecycle::fake::Fake;
+
+impl Owned for Fake {
+    fn worktrees(&self) -> Result<Vec<PathBuf>, String> {
+        if self.list_fails {
+            return Err("unauthorized".to_owned());
+        }
+        Ok(self.listed.clone())
+    }
+}
 
 struct Fixture {
     root: tempfile::TempDir,
     layout: Layout,
+}
+
+fn redb_header() -> Vec<u8> {
+    let mut bytes = REDB_MAGIC.to_vec();
+    bytes.extend_from_slice(&[0; 32]);
+    bytes
 }
 
 impl Fixture {
@@ -21,6 +37,9 @@ impl Fixture {
             std::fs::create_dir_all(dir).expect("a directory");
         }
         std::fs::write(state.join("journal/segment"), b"12345").expect("a segment");
+        for name in NOTICES {
+            std::fs::write(state.join(name), "").expect("a notice");
+        }
         std::fs::write(runtime.join("duded.log"), b"log").expect("a log");
         std::fs::write(config_folder.join("config.toml"), b"[floor]\n").expect("a config");
         for name in PROGRAMS {
@@ -33,12 +52,17 @@ impl Fixture {
             config: config_folder.join("config.toml"),
             config_overridden: false,
             executable: bin.join("dudes"),
+            lock_wait: Duration::from_millis(300),
         };
         Self { root, layout }
     }
 
     fn base(&self) -> PathBuf {
         self.root.path().canonicalize().expect("a real path")
+    }
+
+    fn bin(&self) -> PathBuf {
+        self.layout.executable.parent().expect("bin").to_path_buf()
     }
 
     fn run(
@@ -60,40 +84,26 @@ impl Fixture {
 
     fn everything_exists(&self) -> bool {
         let l = &self.layout;
-        let bin = l.executable.parent().expect("bin");
         [&l.state_dir, &l.runtime_dir, &l.config]
             .into_iter()
             .chain(
                 PROGRAMS
-                    .map(|name| bin.join(name))
+                    .map(|name| self.bin().join(name))
                     .iter()
                     .collect::<Vec<_>>(),
             )
             .all(|path| path.exists())
     }
-}
 
-#[derive(Default)]
-struct Fake {
-    running: bool,
-    busy: Vec<String>,
-    listed: Vec<PathBuf>,
-    stops: RefCell<Vec<bool>>,
-}
-
-impl Daemon for Fake {
-    fn running(&self) -> bool {
-        self.running
-    }
-    fn mid_turn(&self) -> Result<Vec<String>, String> {
-        Ok(self.busy.clone())
-    }
-    fn worktrees(&self) -> Vec<PathBuf> {
-        self.listed.clone()
-    }
-    fn stop(&self, now: bool, out: &mut dyn Write, _: &mut dyn Write) -> Result<(), String> {
-        self.stops.borrow_mut().push(now);
-        writeln!(out, "the daemon stopped").map_err(|error| error.to_string())
+    /// A state directory a setting chose, with what the daemon writes in it.
+    fn custom_state(&mut self) -> PathBuf {
+        let custom = self.base().join("custom-state");
+        std::fs::create_dir_all(custom.join("journal")).unwrap();
+        std::fs::write(custom.join("journal/segment"), "x").unwrap();
+        std::fs::write(custom.join(LOCK_NAME), "").unwrap();
+        std::fs::write(custom.join("state.redb"), redb_header()).unwrap();
+        self.layout.state_dir = custom.clone();
+        custom
     }
 }
 
@@ -104,24 +114,31 @@ fn yes() -> UninstallOptions {
     }
 }
 
+fn dry() -> UninstallOptions {
+    UninstallOptions {
+        dry_run: true,
+        ..UninstallOptions::default()
+    }
+}
+
+fn running() -> Fake {
+    Fake {
+        running: true,
+        ..Fake::default()
+    }
+}
+
 #[test]
 fn the_plan_lists_every_path_with_its_size() {
     let fixture = Fixture::new();
-    let (code, out, err) = fixture.run(
-        UninstallOptions {
-            dry_run: true,
-            ..UninstallOptions::default()
-        },
-        None,
-        &Fake::default(),
-    );
+    let (code, out, err) = fixture.run(dry(), None, &Fake::default());
     let l = &fixture.layout;
-    let bin = l.executable.parent().unwrap().display();
+    let bin = fixture.bin();
     let expected = format!(
         "Dudes will remove:\n\
          \x20 runtime directory           {runtime}  (3 B)\n\
          \x20 state directory             {state}  (5 B)\n\
-         \x20 operator file folder        {config}  (8 B)\n\
+         \x20 operator file folder        {config}  (8 B, only the files Dudes writes there)\n\
          \x20 program                     {bin}/duded  (2.0 KiB)\n\
          \x20 program                     {bin}/dudes  (2.0 KiB)\n\
          \x20 program                     {bin}/dudes-hook  (2.0 KiB)\n\
@@ -130,6 +147,7 @@ fn the_plan_lists_every_path_with_its_size() {
         runtime = l.runtime_dir.display(),
         state = l.state_dir.display(),
         config = l.config.parent().unwrap().display(),
+        bin = bin.display(),
     );
     assert_eq!(
         (code, out.as_str(), err.as_str()),
@@ -138,22 +156,24 @@ fn the_plan_lists_every_path_with_its_size() {
     assert!(fixture.everything_exists());
 }
 
-#[test]
-fn a_worktree_refuses_everything_and_prints_the_git_commands() {
-    let fixture = Fixture::new();
-    let base = fixture.base();
-    let repository = base.join("repo");
+fn plant_tree(fixture: &Fixture) -> (PathBuf, PathBuf) {
+    let repository = fixture.base().join("repo");
     let admin = repository.join(".git/worktrees/01TREE");
     std::fs::create_dir_all(&admin).unwrap();
     std::fs::write(admin.join("HEAD"), "ref: refs/heads/dudes/abc123def456\n").unwrap();
     let tree = fixture.layout.state_dir.join("worktrees/01TREE");
     std::fs::create_dir_all(&tree).unwrap();
     std::fs::write(tree.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+    (tree, repository)
+}
 
+#[test]
+fn a_worktree_refuses_everything_and_prints_the_git_commands() {
+    let fixture = Fixture::new();
+    let (tree, repository) = plant_tree(&fixture);
     let (code, _, err) = fixture.run(yes(), None, &Fake::default());
-
     let expected = format!(
-        "dudes: refusing to uninstall: 1 agent worktree exists. A tree can hold the only copy of an agent's work, so nothing was deleted.\n\
+        "dudes: refusing to uninstall: 1 agent worktree exists. A tree can hold the only copy of an agent's work, so it was not deleted.\n\
          \n\
          \x20 {tree}\n\
          \x20   repository: {repository}\n\
@@ -166,15 +186,13 @@ fn a_worktree_refuses_everything_and_prints_the_git_commands() {
         repository = repository.display(),
     );
     assert_eq!((code, err), (exit::REFUSED, expected));
-    assert!(fixture.everything_exists());
-    assert!(tree.exists());
+    assert!(fixture.everything_exists() && tree.exists());
 }
 
 #[test]
 fn a_tree_without_a_readable_pointer_still_refuses() {
     let fixture = Fixture::new();
-    let tree = fixture.layout.state_dir.join("worktrees/01LOST");
-    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::create_dir_all(fixture.layout.state_dir.join("worktrees/01LOST")).unwrap();
     let (code, _, err) = fixture.run(yes(), None, &Fake::default());
     assert_eq!(code, exit::REFUSED);
     assert!(err.contains("repository: unknown (this tree's .git file is missing or unreadable)"));
@@ -182,44 +200,68 @@ fn a_tree_without_a_readable_pointer_still_refuses() {
 }
 
 #[test]
-fn a_tree_only_the_daemon_lists_also_refuses() {
+fn a_tree_only_the_daemon_lists_also_refuses_and_a_listing_error_is_a_refusal() {
     let fixture = Fixture::new();
     let elsewhere = fixture.base().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
     let daemon = Fake {
-        running: true,
         listed: vec![elsewhere.clone(), fixture.base().join("never-created")],
-        ..Fake::default()
+        ..running()
     };
     let (code, _, err) = fixture.run(yes(), None, &daemon);
     assert_eq!(code, exit::REFUSED);
     assert!(err.contains(&format!("  {}\n", elsewhere.display())));
     assert!(!err.contains("never-created"));
-    assert!(daemon.stops.borrow().is_empty());
+    assert!(!daemon.events.borrow().contains(&"stop".to_owned()));
+
+    let broken = Fake {
+        list_fails: true,
+        ..running()
+    };
+    let (code, _, err) = fixture.run(yes(), None, &broken);
+    assert_eq!(code, exit::REFUSED);
+    assert!(
+        err.contains(
+            "could not ask the daemon for its worktrees (unauthorized); nothing was deleted"
+        ),
+        "{err}"
+    );
     assert!(fixture.everything_exists());
 }
 
 #[test]
-fn a_mid_turn_agent_refuses_unless_now() {
+fn a_tree_that_appears_while_the_daemon_stops_refuses_before_any_delete() {
     let fixture = Fixture::new();
     let daemon = Fake {
-        running: true,
-        busy: vec![
-            "Ada (01JBQ8XK2M3N4P5Q6R7S8T9VWX)".to_owned(),
-            "Bob (01ARZ3NDEKTSV4RRFFQ69G5FAV)".to_owned(),
-        ],
-        ..Fake::default()
+        plant_on_stop: Some(fixture.layout.state_dir.join("worktrees/01LATE")),
+        ..running()
     };
+    let (code, _, err) = fixture.run(yes(), None, &daemon);
+    assert_eq!(code, exit::REFUSED);
+    assert!(err.contains("1 agent worktree exists"), "{err}");
+    assert_eq!(*daemon.events.borrow(), ["busy", "stop"]);
+    assert!(fixture.everything_exists());
+}
 
+#[test]
+fn busy_agents_refuse_by_name_and_state_and_now_means_closing_time() {
+    let fixture = Fixture::new();
+    let daemon = Fake {
+        busy: vec![
+            "Ada (01JBQ8XK2M3N4P5Q6R7S8T9VWX) is running a turn".to_owned(),
+            "Bob (01ARZ3NDEKTSV4RRFFQ69G5FAV) is attached to a person's live session".to_owned(),
+        ],
+        ..running()
+    };
     let (code, _, err) = fixture.run(yes(), None, &daemon);
     assert_eq!(
         (code, err.as_str()),
         (
             exit::REFUSED,
-            "dudes: refusing to uninstall: these agents are mid-turn: Ada (01JBQ8XK2M3N4P5Q6R7S8T9VWX), Bob (01ARZ3NDEKTSV4RRFFQ69G5FAV). Wait for them to finish, or pass --now to stop the daemon and end their turns at once. Nothing was deleted.\n"
+            "dudes: refusing to uninstall: these agents are busy: Ada (01JBQ8XK2M3N4P5Q6R7S8T9VWX) is running a turn; Bob (01ARZ3NDEKTSV4RRFFQ69G5FAV) is attached to a person's live session. Wait for them to finish, pass --now to stop with closing time (every agent gets up to 6 minutes to save its work), or run dudes stop --hard first to end their turns at once. Nothing was changed.\n"
         )
     );
-    assert!(daemon.stops.borrow().is_empty());
+    assert_eq!(*daemon.events.borrow(), ["busy"]);
     assert!(fixture.everything_exists());
 
     let now = UninstallOptions {
@@ -227,35 +269,63 @@ fn a_mid_turn_agent_refuses_unless_now() {
         now: true,
         ..UninstallOptions::default()
     };
-    let (code, _, _) = fixture.run(now, None, &daemon);
+    let (code, out, _) = fixture.run(now, None, &daemon);
     assert_eq!(code, exit::SUCCESS);
-    assert_eq!(*daemon.stops.borrow(), [true]);
+    assert!(out.contains("Closing time: every agent gets up to 6 minutes to save its work before the daemon stops.\n"), "{out}");
+    assert_eq!(*daemon.events.borrow(), ["busy", "busy", "stop"]);
     assert!(!fixture.layout.state_dir.exists());
 }
 
 #[test]
-fn a_running_daemon_is_stopped_the_closing_way_before_anything_is_deleted() {
+fn the_busy_call_comes_first_even_with_now_and_a_refusal_stops_everything() {
     let fixture = Fixture::new();
     let daemon = Fake {
-        running: true,
-        ..Fake::default()
+        busy_fails: true,
+        ..running()
     };
-    let (code, out, _) = fixture.run(yes(), None, &daemon);
-    assert_eq!(code, exit::SUCCESS);
-    assert_eq!(*daemon.stops.borrow(), [false]);
-    let stopped = out.find("the daemon stopped").expect("stop output");
-    let first = out.find("removed ").expect("a deletion");
-    assert!(stopped < first);
+    let now = UninstallOptions {
+        yes: true,
+        now: true,
+        ..UninstallOptions::default()
+    };
+    let (code, _, err) = fixture.run(now, None, &daemon);
+    assert_eq!(code, exit::REFUSED);
+    assert!(
+        err.contains(
+            "could not ask the daemon which agents are busy (unauthorized); nothing was changed"
+        ),
+        "{err}"
+    );
+    assert_eq!(*daemon.events.borrow(), ["busy"]);
+    assert!(fixture.everything_exists());
 }
 
 #[test]
-fn a_lock_held_by_an_unseen_daemon_refuses() {
+fn a_running_daemon_is_stopped_before_anything_is_deleted() {
+    let fixture = Fixture::new();
+    let daemon = running();
+    let (code, out, _) = fixture.run(yes(), None, &daemon);
+    assert_eq!(code, exit::SUCCESS);
+    assert_eq!(*daemon.events.borrow(), ["busy", "stop"]);
+    assert!(out.find("the daemon stopped").unwrap() < out.find("removed ").unwrap());
+}
+
+#[test]
+fn a_lock_held_by_an_unseen_daemon_refuses_and_so_does_one_that_outlives_the_stop() {
     let fixture = Fixture::new();
     let lock = File::create(fixture.layout.state_dir.join(LOCK_NAME)).unwrap();
     lock.lock().unwrap();
     let (code, _, err) = fixture.run(yes(), None, &Fake::default());
     assert_eq!(code, exit::REFUSED);
     assert!(err.contains("a process holds the lock"), "{err}");
+    let daemon = running();
+    let (code, _, err) = fixture.run(yes(), None, &daemon);
+    assert_eq!(code, exit::REFUSED);
+    assert!(
+        err.contains("the daemon stopped but a process still holds the lock"),
+        "{err}"
+    );
+    assert_eq!(*daemon.events.borrow(), ["busy", "stop"]);
     drop(lock);
     assert!(fixture.everything_exists());
 }
@@ -267,7 +337,7 @@ fn without_a_terminal_and_without_yes_nothing_is_deleted() {
     assert_eq!(
         (code, err.as_str()),
         (
-            exit::OTHER,
+            exit::REFUSED,
             "dudes: uninstall needs --yes when it is not run on a terminal; nothing was deleted\n"
         )
     );
@@ -275,19 +345,15 @@ fn without_a_terminal_and_without_yes_nothing_is_deleted() {
 }
 
 #[test]
-fn a_terminal_asks_and_only_y_deletes() {
+fn a_declined_prompt_changes_nothing_and_exits_zero() {
     let fixture = Fixture::new();
     let (code, out, err) = fixture.run(UninstallOptions::default(), Some("n\n"), &Fake::default());
-    assert_eq!(
-        (code, err.as_str()),
-        (
-            exit::OTHER,
-            "dudes: uninstall canceled; nothing was deleted\n"
-        )
+    assert_eq!((code, err.as_str()), (exit::SUCCESS, ""));
+    assert!(
+        out.ends_with("Delete all of this? [y/N] Nothing was changed.\n"),
+        "{out}"
     );
-    assert!(out.ends_with("Delete all of this? [y/N] "), "{out}");
     assert!(fixture.everything_exists());
-
     let (code, _, _) = fixture.run(UninstallOptions::default(), Some("y\n"), &Fake::default());
     assert_eq!(code, exit::SUCCESS);
     assert!(!fixture.layout.state_dir.exists());
@@ -299,7 +365,7 @@ fn a_full_delete_leaves_nothing_behind_and_prints_what_it_cannot_do() {
     let (code, out, err) = fixture.run(yes(), None, &Fake::default());
     assert_eq!((code, err.as_str()), (exit::SUCCESS, ""));
     let l = &fixture.layout;
-    let bin = l.executable.parent().unwrap();
+    let bin = fixture.bin();
     for gone in [
         &l.state_dir,
         &l.runtime_dir,
@@ -314,8 +380,10 @@ fn a_full_delete_leaves_nothing_behind_and_prints_what_it_cannot_do() {
         bin.is_dir(),
         "the bin folder itself is not Dudes' to delete"
     );
-    assert!(out.contains(&format!("removed {}\n", l.state_dir.display())));
-    assert!(out.contains("\nDudes is uninstalled (6 items removed).\n"));
+    assert!(
+        out.contains("\nDudes is uninstalled (7 items removed).\n"),
+        "{out}"
+    );
     assert!(out.contains(
         "find ~/.codex/shell_snapshots -type f -exec grep -q 'DUDES_TOKEN=' {} \\; -print -delete\n"
     ));
@@ -323,40 +391,95 @@ fn a_full_delete_leaves_nothing_behind_and_prints_what_it_cannot_do() {
     assert!(out.contains("browser's site data for the Floor's 127.0.0.1 address"));
 }
 
-#[test]
-fn an_install_into_another_prefix_also_removes_its_share_folder() {
-    let mut fixture = Fixture::new();
+fn other_prefix(fixture: &mut Fixture) -> PathBuf {
     let prefix = fixture.base().join("opt");
-    let share = prefix.join("share/dudes");
-    std::fs::create_dir_all(share.join("floor")).unwrap();
+    std::fs::create_dir_all(prefix.join("share/dudes/floor")).unwrap();
     std::fs::create_dir_all(prefix.join("bin")).unwrap();
-    std::fs::write(share.join("LICENSE-MIT"), "x").unwrap();
+    for name in NOTICES {
+        std::fs::write(prefix.join("share/dudes").join(name), "x").unwrap();
+    }
     for name in PROGRAMS {
         std::fs::write(prefix.join("bin").join(name), "x").unwrap();
     }
     fixture.layout.executable = prefix.join("bin/dudes");
-    let (code, out, _) = fixture.run(yes(), None, &Fake::default());
-    assert_eq!(code, exit::SUCCESS);
-    assert!(out.contains(&format!("removed {}\n", share.display())));
-    assert!(!share.exists());
-    assert!(prefix.join("share").is_dir());
+    prefix
 }
 
 #[test]
-fn a_share_folder_without_installer_files_is_left_alone() {
+fn an_install_into_another_prefix_also_removes_its_share_folder_when_that_empties_it() {
     let mut fixture = Fixture::new();
-    let prefix = fixture.base().join("opt");
-    std::fs::create_dir_all(prefix.join("bin")).unwrap();
-    std::fs::create_dir_all(prefix.join("share/dudes")).unwrap();
-    std::fs::write(prefix.join("share/dudes/mine.txt"), "x").unwrap();
-    fixture.layout.executable = prefix.join("bin/dudes");
+    let prefix = other_prefix(&mut fixture);
+    let share = prefix.join("share/dudes");
     let (code, out, _) = fixture.run(yes(), None, &Fake::default());
     assert_eq!(code, exit::SUCCESS);
     assert!(
-        !out.contains(&prefix.join("share/dudes").display().to_string()),
+        out.contains(&format!("removed {}\n", share.display())),
         "{out}"
     );
-    assert!(prefix.join("share/dudes/mine.txt").exists());
+    assert!(!share.exists() && prefix.join("share").is_dir());
+}
+
+#[test]
+fn a_share_folder_with_a_foreign_file_keeps_the_folder_and_the_file() {
+    let mut fixture = Fixture::new();
+    let prefix = other_prefix(&mut fixture);
+    let share = prefix.join("share/dudes");
+    std::fs::write(share.join("mine.txt"), "x").unwrap();
+    let (code, out, _) = fixture.run(yes(), None, &Fake::default());
+    assert_eq!(code, exit::SUCCESS);
+    assert!(
+        out.contains(&format!(
+            "kept {}: it holds files that are not Dudes': mine.txt\n",
+            share.display()
+        )),
+        "{out}"
+    );
+    assert!(share.join("mine.txt").exists() && !share.join("floor").exists());
+}
+
+#[test]
+fn a_copy_install_sh_did_not_make_keeps_its_programs_and_says_how_to_remove_them() {
+    let mut fixture = Fixture::new();
+    let installed = fixture.bin().join("dudes");
+    let dist = fixture.base().join("checkout/target/dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    for name in PROGRAMS {
+        std::fs::write(dist.join(name), "x").unwrap();
+    }
+    fixture.layout.executable = dist.join("dudes");
+    let (code, out, _) = fixture.run(yes(), None, &Fake::default());
+    assert_eq!(code, exit::SUCCESS);
+    assert!(
+        out.contains("The programs are not removed: this copy of dudes ("),
+        "{out}"
+    );
+    for name in PROGRAMS {
+        assert!(
+            out.contains(&format!("  rm '{}'\n", dist.join(name).display())),
+            "{out}"
+        );
+        assert!(dist.join(name).exists());
+    }
+    assert!(!fixture.layout.state_dir.exists());
+    assert!(installed.exists(), "the real bin is not this copy's");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symbolic_link_to_dudes_is_not_an_install() {
+    let mut fixture = Fixture::new();
+    let real = fixture.bin().join("dudes");
+    let link = fixture.base().join("linked-dudes");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    fixture.layout.executable = link.clone();
+    let (code, out, _) = fixture.run(yes(), None, &Fake::default());
+    assert_eq!(code, exit::SUCCESS);
+    assert!(out.contains("The programs are not removed"), "{out}");
+    assert!(
+        out.contains(&format!("  rm '{}'\n", real.display())),
+        "{out}"
+    );
+    assert!(real.exists() && link.exists());
 }
 
 fn refused(fixture: &Fixture, needle: &str) {
@@ -367,58 +490,83 @@ fn refused(fixture: &Fixture, needle: &str) {
 }
 
 #[test]
-fn the_home_directory_is_never_deleted() {
+fn the_home_directory_and_its_parents_and_root_are_never_deleted() {
     let mut fixture = Fixture::new();
     fixture.layout.state_dir = fixture.layout.home.clone();
     refused(
         &fixture,
         "is the home directory or a parent of it, which Dudes never deletes",
     );
-    assert!(fixture.layout.home.exists());
-}
-
-#[test]
-fn a_parent_of_the_home_directory_is_never_deleted() {
-    let mut fixture = Fixture::new();
+    fixture.layout.state_dir = fixture.layout.home.join(".local/share/dudes");
     fixture.layout.runtime_dir = fixture.base();
-    std::fs::write(fixture.base().join("duded.log"), "marked").unwrap();
     refused(
         &fixture,
         "is the home directory or a parent of it, which Dudes never deletes",
     );
-    assert!(fixture.everything_exists());
-}
-
-#[test]
-fn the_filesystem_root_is_never_deleted() {
-    let mut fixture = Fixture::new();
-    fixture.layout.state_dir = PathBuf::from("/");
+    fixture.layout.runtime_dir = PathBuf::from("/");
     refused(&fixture, "/ is the filesystem root");
 }
 
 #[test]
-fn an_override_without_dudes_files_is_not_deleted() {
+fn an_override_that_only_has_the_names_is_not_enough() {
     let mut fixture = Fixture::new();
     let other = fixture.base().join("projects");
-    std::fs::create_dir_all(&other).unwrap();
-    std::fs::write(other.join("notes.txt"), "mine").unwrap();
+    std::fs::create_dir_all(other.join("journal")).unwrap();
+    std::fs::write(other.join(LOCK_NAME), "").unwrap();
+    std::fs::write(other.join("state.redb"), "not a database").unwrap();
     fixture.layout.state_dir = other.clone();
     refused(
         &fixture,
         &format!(
-            "{} is not the default location and holds none of Dudes' own files (journal, state.redb, LOCK)",
+            "{} is not the default location and does not hold what Dudes writes there",
             other.display()
         ),
     );
-    assert!(other.join("notes.txt").exists());
+    assert!(other.join("journal").exists());
 }
 
 #[test]
-fn an_override_with_dudes_files_is_deleted() {
+fn a_runtime_override_needs_a_credential_a_socket_or_the_quickstart_log() {
     let mut fixture = Fixture::new();
-    let custom = fixture.base().join("custom-state");
-    std::fs::create_dir_all(custom.join("journal")).unwrap();
-    fixture.layout.state_dir = custom.clone();
+    let custom = fixture.base().join("custom-run");
+    std::fs::create_dir_all(&custom).unwrap();
+    std::fs::write(custom.join("duded.log"), "somebody else's log").unwrap();
+    fixture.layout.runtime_dir = custom.clone();
+    refused(&fixture, "does not hold what Dudes writes there");
+    std::fs::write(
+        custom.join("operator.cred"),
+        "c".repeat(dudes_proto::rpc::cred::OPERATOR_CREDENTIAL_LEN),
+    )
+    .unwrap();
+    let (code, _, _) = fixture.run(yes(), None, &Fake::default());
+    assert_eq!(code, exit::SUCCESS);
+    assert!(!custom.exists());
+}
+
+#[test]
+fn an_override_keeps_the_folder_and_a_foreign_file_and_deletes_only_what_dudes_wrote() {
+    let mut fixture = Fixture::new();
+    let custom = fixture.custom_state();
+    std::fs::write(custom.join("notes.txt"), "mine").unwrap();
+    let (code, out, _) = fixture.run(yes(), None, &Fake::default());
+    assert_eq!(code, exit::SUCCESS, "{out}");
+    assert!(custom.join("notes.txt").exists());
+    for gone in ["journal", LOCK_NAME, "state.redb"] {
+        assert!(!custom.join(gone).exists(), "{gone}");
+    }
+    assert!(
+        out.contains(&format!(
+            "kept {}: it holds files that are not Dudes': notes.txt\n",
+            custom.display()
+        )),
+        "{out}"
+    );
+}
+
+#[test]
+fn an_override_that_empties_is_removed() {
+    let mut fixture = Fixture::new();
+    let custom = fixture.custom_state();
     let (code, _, _) = fixture.run(yes(), None, &Fake::default());
     assert_eq!(code, exit::SUCCESS);
     assert!(!custom.exists());
@@ -428,8 +576,7 @@ fn an_override_with_dudes_files_is_deleted() {
 #[test]
 fn a_symbolic_link_is_refused_and_named() {
     let mut fixture = Fixture::new();
-    let real = fixture.base().join("real-state");
-    std::fs::create_dir_all(real.join("journal")).unwrap();
+    let real = fixture.custom_state();
     let link = fixture.base().join("link-state");
     std::os::unix::fs::symlink(&real, &link).unwrap();
     fixture.layout.state_dir = link.clone();
@@ -444,52 +591,112 @@ fn a_symbolic_link_is_refused_and_named() {
 }
 
 #[test]
-fn with_dudes_config_set_only_that_file_goes() {
+fn a_config_folder_keeps_a_foreign_file() {
+    let fixture = Fixture::new();
+    let folder = fixture.layout.config.parent().unwrap().to_path_buf();
+    std::fs::write(folder.join("other.toml"), "mine").unwrap();
+    let (code, _, _) = fixture.run(yes(), None, &Fake::default());
+    assert_eq!(code, exit::SUCCESS);
+    assert!(folder.join("other.toml").exists() && !folder.join("config.toml").exists());
+}
+
+#[test]
+fn with_dudes_config_set_only_an_operator_file_goes() {
     let mut fixture = Fixture::new();
     let folder = fixture.base().join("my-configs");
     std::fs::create_dir_all(&folder).unwrap();
     let file = folder.join("dudes.toml");
-    std::fs::write(&file, "x").unwrap();
+    std::fs::write(&file, "[floor.hire]\nenabled = true\n").unwrap();
     std::fs::write(folder.join("other.toml"), "keep").unwrap();
     fixture.layout.config = file.clone();
     fixture.layout.config_overridden = true;
     let (code, out, _) = fixture.run(yes(), None, &Fake::default());
     assert_eq!(code, exit::SUCCESS);
     assert!(out.contains(&format!("removed {}\n", file.display())));
-    assert!(!file.exists());
-    assert!(folder.join("other.toml").exists());
+    assert!(!file.exists() && folder.join("other.toml").exists());
+}
+
+#[test]
+fn with_dudes_config_set_a_file_that_is_not_an_operator_file_is_skipped_and_explained() {
+    let mut fixture = Fixture::new();
+    let file = fixture.base().join("Cargo.toml");
+    std::fs::write(&file, "[package]\nname = \"x\"\n").unwrap();
+    fixture.layout.config = file.clone();
+    fixture.layout.config_overridden = true;
+    let (code, out, _) = fixture.run(yes(), None, &Fake::default());
+    assert_eq!(code, exit::SUCCESS);
+    assert!(
+        out.contains(&format!(
+            "skipped: {} is not deleted: it has tables an operator file does not: package",
+            file.display()
+        )),
+        "{out}"
+    );
+    assert!(file.exists());
+    std::fs::write(&file, "not toml [").unwrap();
+    let (_, out, _) = fixture.run(yes(), None, &Fake::default());
+    assert!(
+        out.contains("is not deleted: it is not valid TOML"),
+        "{out}"
+    );
+    assert!(file.exists());
+}
+
+#[cfg(unix)]
+fn locked_journal(state: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let locked = state.join("journal");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+    locked
+}
+
+#[cfg(unix)]
+fn unlock(path: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
 }
 
 #[cfg(unix)]
 #[test]
-fn a_partial_failure_lists_what_remains_and_keeps_the_programs() {
-    use std::os::unix::fs::PermissionsExt as _;
+fn a_partial_failure_lists_what_remains_keeps_the_programs_and_a_rerun_finishes() {
     let fixture = Fixture::new();
-    let locked = fixture.layout.state_dir.join("journal");
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let locked = locked_journal(&fixture.layout.state_dir);
     let (code, out, err) = fixture.run(yes(), None, &Fake::default());
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    unlock(&locked);
     let l = &fixture.layout;
-    let bin = l.executable.parent().unwrap();
     assert_eq!(code, exit::OTHER, "{err}");
     assert!(
-        err.starts_with("dudes: uninstall did not finish: 2 removed, 4 remain\n"),
+        err.starts_with("dudes: uninstall did not finish: 3 removed, 4 remain\n"),
         "{err}"
     );
     assert!(
         err.contains(&format!("Still present:\n  {}\n", l.state_dir.display())),
         "{err}"
     );
-    assert!(
-        err.contains(&format!("  {}\n", bin.join("dudes").display())),
-        "{err}"
-    );
     assert!(err.ends_with(
         "The programs were kept so you can run dudes uninstall again once the cause is fixed.\n"
     ));
     assert!(out.contains(&format!("removed {}\n", l.runtime_dir.display())));
-    assert!(!l.runtime_dir.exists());
-    assert!(bin.join("dudes").exists());
+    assert!(fixture.bin().join("dudes").exists());
+    let (code, out, err) = fixture.run(yes(), None, &Fake::default());
+    assert_eq!((code, err.as_str()), (exit::SUCCESS, ""), "{out}");
+    assert!(!l.state_dir.exists() && !fixture.bin().join("dudes").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_partial_failure_in_an_override_keeps_its_markers_so_a_rerun_is_allowed() {
+    let mut fixture = Fixture::new();
+    let custom = fixture.custom_state();
+    std::fs::write(custom.join("notes.txt"), "mine").unwrap();
+    let locked = locked_journal(&custom);
+    let (code, _, err) = fixture.run(yes(), None, &Fake::default());
+    unlock(&locked);
+    assert_eq!(code, exit::OTHER, "{err}");
+    assert!(custom.join("state.redb").exists() && custom.join(LOCK_NAME).exists());
+    let (code, out, err) = fixture.run(yes(), None, &Fake::default());
+    assert_eq!((code, err.as_str()), (exit::SUCCESS, ""), "{out}");
+    assert!(!custom.join("journal").exists() && custom.join("notes.txt").exists());
 }
 
 #[test]

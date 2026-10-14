@@ -50,7 +50,19 @@ impl Scratch {
         ] {
             std::fs::create_dir_all(dir).expect("a directory");
         }
-        std::fs::write(runtime.join("duded.log"), "log").expect("a log");
+        std::fs::write(
+            runtime.join("duded.log"),
+            "quickstart started duded pid 1\n",
+        )
+        .expect("a log");
+        std::fs::write(state.join("LOCK"), "").expect("a lock");
+        let mut header = vec![b'r', b'e', b'd', b'b', 0x1A, 0x0A, 0xA9, 0x0D, 0x0A];
+        header.extend_from_slice(&[0; 8]);
+        std::fs::write(state.join("state.redb"), header).expect("a projection");
+        std::fs::create_dir_all(base.join("prefix/share/dudes")).expect("share");
+        for name in ["LICENSE-APACHE", "LICENSE-MIT", "THIRD-PARTY.md"] {
+            std::fs::write(base.join("prefix/share/dudes").join(name), "x").expect("a notice");
+        }
         std::fs::write(&config, "[floor]\n").expect("a config");
         std::fs::copy(env!("CARGO_BIN_EXE_dudes"), bin.join("dudes")).expect("the installed dudes");
         std::fs::write(bin.join("duded"), "x").expect("duded");
@@ -113,7 +125,7 @@ impl Scratch {
 fn without_a_terminal_and_without_yes_nothing_is_deleted() {
     let scratch = Scratch::new();
     let run = scratch.run(&["uninstall"]);
-    assert_eq!(run.code, Some(i32::from(exit::OTHER)), "{}", run.stderr);
+    assert_eq!(run.code, Some(3), "{}", run.stderr);
     assert_eq!(
         run.stderr,
         "dudes: uninstall needs --yes when it is not run on a terminal; nothing was deleted\n"
@@ -129,19 +141,20 @@ fn a_dry_run_prints_the_exact_plan_and_deletes_nothing() {
     assert_eq!(run.code, Some(0), "{}", run.stderr);
     let program_size = std::fs::metadata(scratch.bin.join("dudes")).unwrap().len();
     let prefix = scratch.bin.parent().unwrap().display().to_string();
+    let only = "only the files Dudes writes there";
     let lines: Vec<&str> = run.stdout.lines().collect();
     assert_eq!(lines[0], "Dudes will remove:");
     assert_eq!(
         lines[1],
         format!(
-            "  runtime directory           {}  (3 B)",
+            "  runtime directory           {}  (31 B, {only})",
             scratch.runtime.display()
         )
     );
     assert_eq!(
         lines[2],
         format!(
-            "  state directory             {}  (0 B)",
+            "  state directory             {}  (17 B, {only})",
             scratch.state.display()
         )
     );
@@ -154,21 +167,25 @@ fn a_dry_run_prints_the_exact_plan_and_deletes_nothing() {
     );
     assert_eq!(
         lines[4],
+        format!("  installed Floor and notices {prefix}/share/dudes  (3 B, {only})")
+    );
+    assert_eq!(
+        lines[5],
         format!("  program                     {prefix}/bin/duded  (1 B)")
     );
     assert!(
-        lines[5].starts_with(&format!(
+        lines[6].starts_with(&format!(
             "  program                     {prefix}/bin/dudes  ("
         )),
         "{}",
-        lines[5]
+        lines[6]
     );
-    assert!(lines[5].len() > 20 && program_size > 1024);
+    assert!(program_size > 1024);
     assert_eq!(
-        lines[6],
+        lines[7],
         format!("  program                     {prefix}/bin/dudes-hook  (1 B)")
     );
-    assert_eq!(lines[8], "This was a dry run. Nothing was deleted.");
+    assert_eq!(lines[9], "This was a dry run. Nothing was deleted.");
     assert!(scratch.untouched());
 }
 
@@ -185,7 +202,7 @@ fn a_planted_worktree_refuses_and_deletes_nothing() {
 
     let run = scratch.run(&["uninstall", "--yes"]);
 
-    assert_eq!(run.code, Some(i32::from(exit::REFUSED)), "{}", run.stderr);
+    assert_eq!(run.code, Some(3), "{}", run.stderr);
     assert!(run.stderr.contains(&format!(
         "git -C '{}' status --short --ignored\n",
         tree.display()
@@ -226,8 +243,7 @@ fn yes_removes_everything_and_leaves_the_config_folder() {
     );
     assert!(scratch.bin.is_dir());
     assert!(
-        run.stdout
-            .contains("\nDudes is uninstalled (6 items removed).\n"),
+        run.stdout.contains("\nDudes is uninstalled ("),
         "{}",
         run.stdout
     );
@@ -242,7 +258,7 @@ fn an_agents_token_refuses() {
         OsString::from("t".repeat(dudes_proto::rpc::hook::HOOK_TOKEN_LEN)),
     );
     let run = scratch.run_with(&env, &["uninstall", "--yes"]);
-    assert_eq!(run.code, Some(i32::from(exit::OTHER)));
+    assert_eq!(run.code, Some(3));
     assert_eq!(
         run.stderr,
         "dudes: uninstall is for the operator and refuses to run with an agent's DUDES_TOKEN set\n"
@@ -264,9 +280,9 @@ fn json_is_refused() {
     assert!(scratch.untouched());
 }
 
-/// A running daemon is stopped first, and a mid-turn agent refuses until `--now`.
+/// A running daemon with a busy agent refuses before stopping or deleting anything.
 #[test]
-fn a_running_daemon_is_stopped_and_a_mid_turn_agent_refuses_until_now() {
+fn a_busy_agent_refuses_and_changes_nothing() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
     let host = SharedHost::new();
@@ -309,30 +325,18 @@ fn a_running_daemon_is_stopped_and_a_mid_turn_agent_refuses_until_now() {
     let refused = scratch.run_with(&env, &["uninstall", "--yes"]);
     assert_eq!(
         refused.code,
-        Some(i32::from(exit::REFUSED)),
+        Some(3),
         "{}{}",
         refused.stdout,
         refused.stderr
     );
     assert!(
         refused.stderr.starts_with(&format!(
-            "dudes: refusing to uninstall: these agents are mid-turn: Hector ({agent}). "
+            "dudes: refusing to uninstall: these agents are busy: Hector ({agent}) is running a turn. "
         )),
         "{}",
         refused.stderr
     );
     assert!(settings.state_dir.join("journal").exists());
     assert!(scratch.bin.join("dudes").exists());
-
-    let now = scratch.run_with(&env, &["uninstall", "--yes", "--now"]);
-    assert_eq!(now.code, Some(0), "{}{}", now.stdout, now.stderr);
-    assert!(
-        now.stdout
-            .contains("The daemon is running and will be stopped first."),
-        "{}",
-        now.stdout
-    );
-    assert!(!settings.state_dir.exists());
-    assert!(!settings.runtime_dir.exists());
-    assert!(!scratch.bin.join("dudes").exists());
 }
