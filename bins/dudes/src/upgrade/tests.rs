@@ -896,7 +896,7 @@ fn an_export_or_import_that_fails_still_upgrades_and_says_to_sign_in_again() {
     assert_eq!(*daemon.events.borrow(), ["busy", "export", "stop", "start"]);
     assert!(
         out.ends_with(
-            "This upgrade could not keep Floor sign-ins: the version that was running cannot hand them over. If a Floor tab was open, run dudes floor open to sign in again.\n"
+            "This upgrade could not keep Floor sign-ins: the running version did not hand them over (a version from before this feature cannot). If a Floor tab was open, run dudes floor open to sign in again.\n"
         ),
         "{out}"
     );
