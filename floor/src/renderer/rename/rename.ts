@@ -6,6 +6,7 @@ import { getFloorState } from '../floor/store.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { mintAttemptId, trimAsciiSpace, utf8Bytes } from '../onboarding/hire.ts';
 import type { AgentRow } from '../scene/cast.ts';
+import { floorFetch } from '../../transport.ts';
 
 export interface RenamePayload {
   readonly request_id: string;
@@ -32,7 +33,7 @@ export interface RenameDeps {
   refresh(): void;
 }
 export const browserRenameDeps: RenameDeps = {
-  fetch: (url, init) => window.fetch(url, init),
+  fetch: floorFetch,
   csrf: () => currentFloorSession()?.csrf ?? null,
   random: (bytes) => { crypto.getRandomValues(bytes); },
   session: floorSessionGeneration,

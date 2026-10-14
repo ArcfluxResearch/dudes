@@ -94,18 +94,25 @@ Floor bundle must have matching release and browser protocol versions. An older 
 connect to an incompatible daemon. Reload the tab explicitly to load the installed bundle.
 
 `dudes upgrade` keeps the Floor sign-ins that are open when it starts, so a reload is all it
-takes. After the reload the tab is signed in again and shows the same agents, with no new link.
+takes. When the daemon stops, an open tab reconnects for about eight seconds, then stops sending
+anything that carries your sign-in and checks every two seconds, without it, whether Dudes is
+back. After an upgrade it says "Dudes was updated. Reload this tab to continue." After the reload
+the tab is signed in again and shows the same agents, with no new link.
 The sign-in keeps its original time limits: the idle limit of 30 minutes, and the eight-hour limit
 that counts from the first sign-in. Ticket and check allowances carry over too, so an upgrade does
 not refill them.
 
 Only `dudes upgrade` carries sign-ins. A plain `dudes stop` and `dudes start` signs every browser
-out. The reload then asks you to run `dudes floor open`, which is also the way to end every Floor
-session at once. An upgrade that cannot keep a sign-in, for example because the Floor comes back on
-a different port or the upgrade is interrupted, ends the same way.
+out. The tab says "Dudes restarted. Reload this tab to continue.", and the reload then asks you to
+run `dudes floor open`, which is also the way to end every Floor session at once. A tab that finds
+no daemon for ten minutes stops checking and shows that same sign-in message. An upgrade that
+cannot keep a sign-in, for example because the Floor comes back on a different port or the upgrade
+is interrupted, ends the same way.
 
 The first upgrade from a version that predates this feature still signs open tabs out, because
 the older daemon cannot hand its sign-ins over.
+
+Do not paste a new sign-in link into a tab that says Dudes stopped answering. Reload the tab first.
 
 One sign-in serves one tab at a time. If you opened a second tab with the same sign-in, it asks you
 to sign in again after the reload.

@@ -34,6 +34,10 @@ import {
   subscribeToFloor,
 } from './store.ts';
 import type { OutputMode } from './store.ts';
+import { loadedAssetRefs } from '../../session.ts';
+import { floorRequestsPaused } from '../../transport.ts';
+import { beginAway, browserIndexFetch, indexAnswers } from './away.ts';
+import type { AwayPorts } from './away.ts';
 import { publishProjection } from './projection.ts';
 import { observeReadFrame } from './reads.ts';
 
@@ -180,7 +184,7 @@ let refreshOpenStream: (() => void) | null = null;
  * @returns whether a stream was there to ask.
  */
 export function refreshFloorSnapshot(): boolean {
-  if (refreshOpenStream === null) return false;
+  if (refreshOpenStream === null || floorRequestsPaused()) return false;
   refreshOpenStream();
   return true;
 }
@@ -201,10 +205,13 @@ let reauthenticateOpenStream: ((session: FloorSessionLike) => void) | null = nul
  * @returns whether a stream was there to take it.
  */
 export function reauthenticateFloorStream(session: FloorSessionLike): boolean {
-  if (reauthenticateOpenStream === null) return false;
+  if (reauthenticateOpenStream === null || floorRequestsPaused()) return false;
   reauthenticateOpenStream(session);
   return true;
 }
+
+/** What the page asks when the daemon has gone away: the browser's own request and the files it was loaded with. */
+const BROWSER_AWAY: AwayPorts = { fetchIndex: browserIndexFetch, ownRefs: loadedAssetRefs() };
 
 /** The stream endpoint beside the page that authenticated. */
 export function streamUrl(location: LocationLike): string {
@@ -231,6 +238,7 @@ export function openFloorStream(
   location: LocationLike,
   connect: SocketFactory,
   timers: StreamTimers = browserTimers,
+  away: AwayPorts = BROWSER_AWAY,
 ): () => void {
   // The session every socket is opened for. It changes only when the page is
   // re-authenticated in place, and the next socket then offers the new nonce.
@@ -245,6 +253,10 @@ export function openFloorStream(
   let cancelRetry: (() => void) | null = null;
   let disposed = false;
   let ended = false;
+  // Whether the daemon answered when this run of failures began. One that did is up and refusing the
+  // socket, which is a session problem the page already explains, not a daemon that went away.
+  let answeredAtFirstClose = false;
+  let stopAway: () => void = () => {};
   let reconcileSelection = () => {};
   const stopSelectionWatch = subscribeToFloor(() => reconcileSelection());
 
@@ -382,7 +394,25 @@ export function openFloorStream(
   }
 
   function retry(): void {
-    if (disposed || attempts >= RECONNECT_ATTEMPTS) return;
+    if (disposed) return;
+    if (attempts >= RECONNECT_ATTEMPTS) {
+      // The ladder is spent. From here the page sends no cookie, on a request or a socket, until it is
+      // reloaded: whatever answers on this address may not be the daemon that issued the session.
+      // Only a daemon that answered at the first close and answers again now is up and refusing the
+      // socket. An answer at the first close alone may be an old daemon that was still stopping.
+      const answeredBefore = answeredAtFirstClose;
+      void indexAnswers(away).then((answeredNow) => {
+        if (disposed || (answeredBefore && answeredNow)) return;
+        stopAway = beginAway(away, timers);
+      });
+      return;
+    }
+    if (attempts === 0) {
+      answeredAtFirstClose = false;
+      void indexAnswers(away).then((answered) => {
+        if (!disposed) answeredAtFirstClose = answered;
+      });
+    }
     // Clearing here rather than on the next open: the rows stop being confirmed
     // the moment the subscription ends, and a page that held them until a
     // replacement arrived would be showing a floor nothing stands behind.
@@ -408,7 +438,7 @@ export function openFloorStream(
 
   const refresh = () => {
     // A retry already pending will bring the fresh snapshot by itself.
-    if (disposed || cancelRetry !== null) return;
+    if (disposed || cancelRetry !== null || floorRequestsPaused()) return;
     if (socket === null || ended) {
       attempts = 0;
       retry();
@@ -421,7 +451,7 @@ export function openFloorStream(
   refreshOpenStream = refresh;
 
   const reauthenticate = (next: FloorSessionLike) => {
-    if (disposed) return;
+    if (disposed || floorRequestsPaused()) return;
     session = next;
     // A fresh session is a fresh start: the ladder may already have given up
     // on the old one.
@@ -439,6 +469,7 @@ export function openFloorStream(
 
   return () => {
     disposed = true;
+    stopAway();
     if (refreshOpenStream === refresh) refreshOpenStream = null;
     if (reauthenticateOpenStream === reauthenticate) reauthenticateOpenStream = null;
     stopSelectionWatch();
@@ -456,5 +487,7 @@ export function openFloorStream(
 }
 
 /** The browser's own socket. Separate so the rest of the file needs no DOM. */
-export const browserSocket: SocketFactory = (url, protocols) =>
-  new WebSocket(url, [...protocols]) as unknown as SocketLike;
+export const browserSocket: SocketFactory = (url, protocols) => {
+  if (floorRequestsPaused()) throw new TypeError('The Floor page is waiting for a reload');
+  return new WebSocket(url, [...protocols]) as unknown as SocketLike;
+};

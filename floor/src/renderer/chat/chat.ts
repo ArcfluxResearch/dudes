@@ -9,6 +9,7 @@ import { ATTEMPT_ID, mintAttemptId, trimAsciiSpace, utf8Bytes } from '../onboard
 import type { AgentRow } from '../scene/cast.ts';
 import { chatReason, exactObject } from './model.ts';
 import type { ChatReason, ChatView, PendingNote } from './model.ts';
+import { floorFetch } from '../../transport.ts';
 
 export type ChatPayload = { readonly request_id: string; readonly agent: string; readonly text: string; readonly context_reset_turn?: string }
   | { readonly request_id: string; readonly agent: string; readonly note_lsn: string };
@@ -131,7 +132,7 @@ export interface ChatDeps {
 }
 
 export const browserChatDeps: ChatDeps = {
-  fetch: (url, init) => window.fetch(url, init),
+  fetch: floorFetch,
   random: bytes => { window.crypto.getRandomValues(bytes); },
   csrf: () => currentFloorSession()?.csrf ?? null,
   floor: getFloorState,

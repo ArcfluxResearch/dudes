@@ -2,10 +2,23 @@
 
 import { useSyncExternalStore } from 'react';
 import type { FloorState } from './floor/store.ts';
+import { getAway, subscribeToAway } from './floor/away.ts';
 import { getStreamRetry, subscribeToStreamRetry, STALE_AFTER_MS } from './floor/stream.ts';
+import { SignInExpired } from './SignInExpired.tsx';
 
 export function StreamNotice({ floor }: { readonly floor: FloorState }) {
   const retry = useSyncExternalStore(subscribeToStreamRetry, getStreamRetry, getStreamRetry);
+  const away = useSyncExternalStore(subscribeToAway, getAway, getAway);
+  if (away.kind === 'watching') return <p className="office-closed stream-notice" role="status">
+    Dudes stopped answering. This page keeps checking and will ask you to reload when it is back.
+  </p>;
+  if (away.kind === 'updated') return <p className="office-closed stream-notice" role="status">
+    Dudes was updated. Reload this tab to continue.
+  </p>;
+  if (away.kind === 'restarted') return <p className="office-closed stream-notice" role="status">
+    Dudes restarted. Reload this tab to continue.
+  </p>;
+  if (away.kind === 'expired') return <SignInExpired />;
   if (floor.phase === 'closed') return <p className="office-closed stream-notice" role="status">
     Disconnected. The page is not retrying{retry.attempt > 0 ? ` after ${retry.attempt} reconnect attempts` : ''}.
     {' '}The session may have ended or the daemon may have stopped. After a daemon restart, get a fresh link with

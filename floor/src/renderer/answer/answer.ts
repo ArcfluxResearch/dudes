@@ -29,6 +29,7 @@ import { AGENT_ID, getFloorState } from '../floor/store.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { mintAttemptId, trimAsciiSpace, utf8Bytes } from '../onboarding/hire.ts';
 import type { AgentRow } from '../scene/cast.ts';
+import { floorFetch } from '../../transport.ts';
 
 /** A question's journal position as the wire carries it: 1 to 20 digits, no leading zero. */
 export const QUESTION_LSN = /^[1-9][0-9]{0,19}$/;
@@ -170,7 +171,7 @@ export interface AnswerDeps {
 }
 
 export const browserAnswerDeps: AnswerDeps = {
-  fetch: (url, init) => window.fetch(url, init),
+  fetch: floorFetch,
   csrf: () => currentFloorSession()?.csrf ?? null,
   random: (bytes) => {
     crypto.getRandomValues(bytes);

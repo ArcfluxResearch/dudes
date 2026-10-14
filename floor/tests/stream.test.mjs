@@ -18,6 +18,7 @@
 import assert from 'node:assert/strict';
 import test, { beforeEach } from 'node:test';
 
+import { AWAY_POLL_MS, getAway, resetAway } from '../src/renderer/floor/away.ts';
 import { getFloorState, resetFloorStore } from '../src/renderer/floor/store.ts';
 import {
   CSRF_PROTOCOL_PREFIX,
@@ -152,6 +153,7 @@ function manualTimers(start = 1_000) {
 
 beforeEach(() => {
   resetFloorStore();
+  resetAway();
 });
 
 test('the handshake offers exactly the two subprotocols the gateway admits', () => {
@@ -386,14 +388,15 @@ test('a frame still in flight on the replaced socket cannot mutate the new view'
   assert.equal(after.discarded, 1);
 });
 
-test('the reconnect gives up rather than spinning against a daemon that is gone', () => {
+test('the reconnect gives up rather than spinning against a daemon that is gone', async () => {
   const timers = manualTimers();
   const opened = [];
+  // A daemon that never answers the away watch, so the watch schedules nothing more.
   openFloorStream({ csrf: CSRF }, HERE, () => {
     const socket = fakeSocket();
     opened.push(socket);
     return socket;
-  }, timers);
+  }, timers, { fetchIndex: async () => null, ownRefs: [] });
 
   // Every attempt is refused the way an invalidated session refuses one: the
   // socket closes without ever opening.
@@ -401,10 +404,15 @@ test('the reconnect gives up rather than spinning against a daemon that is gone'
     opened[opened.length - 1].emit('close');
     timers.runPending();
   }
+  await new Promise((settle) => setImmediate(settle));
 
   assert.equal(opened.length, RECONNECT_ATTEMPTS + 1, 'the reconnect did not stop at its cap');
-  assert.deepEqual(timers.delays, [250, 500, 1_000, 2_000, 4_000], 'the backoff is not doubling from the base');
-  assert.equal(timers.waiting, 0, 'a delay is still pending after the cap');
+  assert.deepEqual(
+    timers.delays,
+    [250, 500, 1_000, 2_000, 4_000, AWAY_POLL_MS],
+    'the backoff is not doubling from the base, or the ladder did not end in the away watch',
+  );
+  assert.equal(getAway().kind, 'watching');
   assert.deepEqual([...getFloorState().agents], [], 'a floor nothing is behind is still on screen');
   // And the page says which of the two it is in. `resyncing` means a fresh
   // snapshot is on its way; after the cap none is, and claiming otherwise would
@@ -470,7 +478,7 @@ test('a floor.resync throws the view away and goes back for a snapshot', () => {
   assert.equal(opened, 2);
 });
 
-test('re-authentication resubscribes with the new session’s CSRF, from a live stream and from one that gave up', () => {
+test('re-authentication resubscribes with the new session’s CSRF from a live stream, and a stream that gave up takes none', async () => {
   const FRESH = 'Fr3shNonce0Fr3shNonce0Fr3shNonce0Fr3shNonc8';
   const LATER = 'L4terNonce0L4terNonce0L4terNonce0L4terNonc0';
   const timers = manualTimers();
@@ -492,17 +500,18 @@ test('re-authentication resubscribes with the new session’s CSRF, from a live 
   assert.equal(opened.length, 2);
   assert.deepEqual(opened[1].protocols, streamProtocols(FRESH), 'the next socket offered the old session');
 
-  // A stream that gave up is started again, from the bottom of the ladder.
+  // A stream that gave up waits for a reload and takes no session in place: whatever answers on
+  // the address may not be the daemon the session came from.
   for (let attempt = 0; attempt <= RECONNECT_ATTEMPTS; attempt += 1) {
     opened[opened.length - 1].emit('close');
     timers.runPending();
   }
+  await new Promise((settle) => setImmediate(settle));
   assert.equal(getFloorState().phase, 'closed');
   const before = opened.length;
-  reauthenticateFloorStream({ csrf: LATER });
+  assert.equal(reauthenticateFloorStream({ csrf: LATER }), false);
   timers.runPending();
-  assert.equal(opened.length, before + 1, 'a fresh session did not restart a stream that gave up');
-  assert.deepEqual(opened[opened.length - 1].protocols, streamProtocols(LATER));
+  assert.equal(opened.length, before, 'a stream that gave up opened a socket');
 
   dispose();
   assert.equal(reauthenticateFloorStream({ csrf: CSRF }), false, 'a disposed stream took a session');

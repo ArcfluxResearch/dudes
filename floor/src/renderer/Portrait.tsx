@@ -5,6 +5,7 @@ import type { CSSProperties } from 'react';
 
 import { lookKey } from './appearance.ts';
 import type { Accessory, Look } from './appearance.ts';
+import { lazyChunk } from '../transport.ts';
 
 type PortraitStyle = 'figure' | 'badge';
 
@@ -44,7 +45,7 @@ export function Portrait({ look, accessory = null, name, className }: {
   useEffect(() => {
     if (!figure) return;
     let current = true;
-    import('./figurePortrait.ts').then(({ paintFigurePortrait }) => {
+    lazyChunk(() => import('./figurePortrait.ts')).then(({ paintFigurePortrait }) => {
       if (current && canvas.current !== null && !paintFigurePortrait(canvas.current, look, accessory)) setFailedKey(key);
     }).catch(() => {
       if (current) setFailedKey(key);

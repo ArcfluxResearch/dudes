@@ -43,6 +43,7 @@ import {
   applyServerFrame, beginFloorEpoch, getFloorState, invalidateFloorEpoch, noteStale, noteTransport, resetFloorStore,
   selectOutputAgent,
 } from '../src/renderer/floor/store.ts';
+import { getAway, resetAway } from '../src/renderer/floor/away.ts';
 import { RECONNECT_ATTEMPTS, openFloorStream, refreshFloorSnapshot } from '../src/renderer/floor/stream.ts';
 import { decodeOnboardingCatalog, formatUsdMicros } from '../src/renderer/onboarding/catalog.ts';
 import * as hire from '../src/renderer/onboarding/hire.ts';
@@ -191,6 +192,7 @@ after(async () => {
 
 beforeEach(() => {
   resetFloorStore();
+  resetAway();
   hire.resetHire();
 });
 
@@ -1194,24 +1196,25 @@ test('a complete Hire clears the catalog and resubscribes through the resync pat
   assert.equal(refreshFloorSnapshot(), false, 'a disposed stream still answers a refresh');
 });
 
-test('a refresh restarts a stream that gave up, and is a no-op while a retry is pending', () => {
+test('a refresh is a no-op while a retry is pending, and once the stream has given up', async () => {
   const net = network();
-  const stop = openFloorStream({ csrf: CSRF }, HERE, net.connect, net.timers);
+  const stop = openFloorStream({ csrf: CSRF }, HERE, net.connect, net.timers,
+    { fetchIndex: async () => null, ownRefs: [] });
   try {
-    for (let attempt = 0; attempt <= RECONNECT_ATTEMPTS; attempt += 1) {
-      net.sockets.at(-1).emit('close');
+    net.sockets.at(-1).emit('close');
+    assert.equal(refreshFloorSnapshot(), true, 'a stream with a retry pending is still there to ask');
+    assert.equal(net.sockets.length, 1, 'a refresh beside a pending retry opened a socket early');
+    for (let attempt = 0; attempt < RECONNECT_ATTEMPTS; attempt += 1) {
       net.flush();
+      net.sockets.at(-1).emit('close');
     }
+    await new Promise((settle) => setImmediate(settle));
     assert.equal(getFloorState().phase, 'closed');
+    assert.equal(getAway().kind, 'watching');
     const before = net.sockets.length;
-    assert.equal(refreshFloorSnapshot(), true);
-    assert.equal(refreshFloorSnapshot(), true);
+    assert.equal(refreshFloorSnapshot(), false, 'a stream that gave up took a refresh');
     net.flush();
-    assert.equal(net.sockets.length, before + 1, 'one refresh, one new subscription');
-    net.sockets.at(-1).emit('open');
-    net.sockets.at(-1).emit('message', snapshotFrame([]));
-    assert.equal(getFloorState().phase, 'live');
-    assert.equal(getFloorState().snapshotEpoch, getFloorState().epoch);
+    assert.equal(net.sockets.length, before, 'a refresh after the ladder ended opened a socket');
   } finally {
     stop();
   }

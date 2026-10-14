@@ -54,6 +54,7 @@ import type { Visit } from './scene/visits.ts';
 import { useHeard } from './useHeard.ts';
 import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
 import { getOfficePin, subscribeToOfficePin } from './view.ts';
+import { lazyChunk } from '../transport.ts';
 
 const TURN_PER_PIXEL = 0.008;
 const DRAG_THRESHOLD = 4;
@@ -70,7 +71,7 @@ type RendererModule = typeof import('./office3d/OfficeRenderer.ts');
 let rendererModule: Promise<RendererModule> | null = null;
 
 function loadRenderer(): Promise<RendererModule> {
-  rendererModule ??= import('./office3d/OfficeRenderer.ts');
+  rendererModule ??= lazyChunk(() => import('./office3d/OfficeRenderer.ts'));
   return rendererModule;
 }
 

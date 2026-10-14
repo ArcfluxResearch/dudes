@@ -1405,27 +1405,27 @@ const REQUESTS = {
   [CHAT_MODULE]: {
     paths: ['/floor/chat/send', 'application/json', '/floor/chat/cancel', 'application/json'],
     methods: ['POST', 'POST'],
-    fetches: ['fetch', 'window.fetch(url)', 'deps.fetch', "fetch('/floor/chat/send')", "fetch('/floor/chat/cancel')"],
+    fetches: ['floorFetch', 'fetch', 'floorFetch', 'deps.fetch', "fetch('/floor/chat/send')", "fetch('/floor/chat/cancel')"],
   },
   [LOOK_MODULE]: {
     paths: ['/floor/look', 'application/json'],
     methods: ['POST'],
-    fetches: ['fetch', 'window.fetch(url)', "deps.fetch('/floor/look')"],
+    fetches: ['floorFetch', 'fetch', 'floorFetch', "deps.fetch('/floor/look')"],
   },
   [RENAME_MODULE]: {
     paths: ['/floor/rename', 'application/json'],
     methods: ['POST'],
-    fetches: ['fetch', 'window.fetch(url)', "deps.fetch('/floor/rename')"],
+    fetches: ['floorFetch', 'fetch', 'floorFetch', "deps.fetch('/floor/rename')"],
   },
   [ANSWER_MODULE]: {
     paths: ['/floor/answer', 'application/json'],
     methods: ['POST'],
-    fetches: ['fetch', 'window.fetch(url)', 'deps.fetch', "fetch('/floor/answer')"],
+    fetches: ['floorFetch', 'fetch', 'floorFetch', 'deps.fetch', "fetch('/floor/answer')"],
   },
   [CONTROL_MODULE]: {
     paths: ['/floor/pause', '/floor/resume', 'application/json'],
     methods: ['POST'],
-    fetches: ['fetch', 'window.fetch(url)', 'deps.fetch', 'fetch(ROUTES[attempt.verb])'],
+    fetches: ['floorFetch', 'fetch', 'floorFetch', 'deps.fetch', 'fetch(ROUTES[attempt.verb])'],
   },
   'src/renderer/control/pauseAll.ts': {
     paths: [],
@@ -1435,7 +1435,7 @@ const REQUESTS = {
   [GOAL_MODULE]: {
     paths: ['/floor/goal', '/floor/renew', 'application/json'],
     methods: ['POST'],
-    fetches: ['fetch', 'window.fetch(url)', 'deps.fetch', 'fetch(routeOf(attempt.payload))'],
+    fetches: ['floorFetch', 'fetch', 'floorFetch', 'deps.fetch', 'fetch(routeOf(attempt.payload))'],
   },
   [RETIRE_MODULE]: {
     paths: ['/floor/retire', 'application/json'],
@@ -1461,12 +1461,22 @@ const REQUESTS = {
   'src/renderer/floor/stream.ts': {
     paths: ['template: `${scheme}//${location.host}/floor/stream`'],
     methods: [],
-    fetches: [],
+    fetches: ['browserIndexFetch', 'fetchIndex', 'browserIndexFetch'],
+  },
+  'src/renderer/floor/away.ts': {
+    paths: ['/floor/'],
+    methods: ['GET'],
+    fetches: ["window.fetch('/floor/')", 'ports.fetchIndex()', 'ports.fetchIndex()'],
+  },
+  'src/transport.ts': {
+    paths: [],
+    methods: [],
+    fetches: ['window.fetch(url)'],
   },
   'src/renderer/onboarding/hire.ts': {
     paths: ['/floor/onboard', 'application/json'],
     methods: ['POST'],
-    fetches: ['fetch', 'window.fetch(url)', 'deps.fetch', "fetch('/floor/onboard')"],
+    fetches: ['floorFetch', 'fetch', 'floorFetch', 'deps.fetch', "fetch('/floor/onboard')"],
   },
   [TERMINAL_MODULE]: {
     paths: ['template: `${scheme}//${location.host}/floor/terminal`'],
@@ -1476,7 +1486,7 @@ const REQUESTS = {
   'src/session.ts': {
     paths: ['/floor/assets/', '/floor/session', 'text/plain;charset=UTF-8', '/floor/', '/floor/session/recover'],
     methods: ['POST', 'GET', 'POST'],
-    fetches: ['window.fetch(url)', 'FetchPort', 'fetch', 'window.fetch(url)', 'FetchPort', 'fetch', 'FetchPort', 'fetch',
+    fetches: ['floorFetch', 'floorFetch', 'FetchPort', 'fetch', 'floorFetch', 'FetchPort', 'fetch', 'FetchPort', 'fetch',
       'fetch', 'FetchPort', 'fetch', "fetch('/floor/session')", 'FetchPort', "fetch('/floor/')", 'FetchPort', "fetch('/floor/session/recover')"],
   },
 };
@@ -1590,7 +1600,7 @@ function requestsIn(text, file, pinned) {
   return { paths, methods, fetches };
 }
 
-test('fetch and new WebSocket match in twelve known files, and requestsIn yields the REQUESTS pins', async () => {
+test('fetch and new WebSocket match in fourteen known files, and requestsIn yields the REQUESTS pins', async () => {
   // `session.ts` calls `fetch`, and should: exchanging the operator's bootstrap
   // for a session is its whole job, and `stream.ts` opens the one socket.
   // The Hire sends one POST to one path, and so do the answer and Retire;
@@ -1612,8 +1622,8 @@ test('fetch and new WebSocket match in twelve known files, and requestsIn yields
     Object.fromEntries([...reaching].sort().map(([name, files]) => [name, [...files].sort()])),
     {
       WebSocket: ['src/renderer/floor/stream.ts'],
-      fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RENAME_MODULE, RETIRE_MODULE,
-        TICKET_MODULE, 'src/session.ts'],
+      fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RENAME_MODULE, RETIRE_MODULE,
+        TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
     },
     'the page reaches the network somewhere new',
   );
@@ -1714,8 +1724,8 @@ test('fetch and new WebSocket match in twelve known files, and requestsIn yields
 
   const fetching = reaching.get('fetch') ?? [];
   assert.deepEqual(fetching.sort(),
-    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RENAME_MODULE, RETIRE_MODULE, TICKET_MODULE, 'src/session.ts'],
-    'something other than the session exchange, the Hire, the answer, pause or resume, goal change, Retire, the Git read and the memory reads fetches');
+    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RENAME_MODULE, RETIRE_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
+    'something other than the session exchange, the Hire, the answer, pause or resume, goal change, Retire, the Git read, the memory reads, the away watch and the transport fetches');
   assert.deepEqual(calling.sort(), fetching,
     'a module other than those six calls fetch with a space before the parenthesis');
 
@@ -1723,12 +1733,10 @@ test('fetch and new WebSocket match in twelve known files, and requestsIn yields
   const controlText = await readFile(resolve(floor, CONTROL_MODULE), 'utf8');
   assert.deepEqual([...controlText.matchAll(/^.*\bfetch\(.*$/gm)].map((match) => match[0].trim()), [
     'fetch(url: string, init: RequestInit): Promise<ControlResponse>;',
-    'fetch: (url, init) => window.fetch(url, init),',
     'const response = await fetch(ROUTES[attempt.verb], {',
   ], 'the control module calls fetch somewhere new');
   assert.deepEqual([...controlText.matchAll(/^.*\bfetch\s*\(.*$/gm)].map((match) => match[0].trim()), [
     'fetch(url: string, init: RequestInit): Promise<ControlResponse>;',
-    'fetch: (url, init) => window.fetch(url, init),',
     'const response = await fetch(ROUTES[attempt.verb], {',
   ], 'the control module calls fetch somewhere new');
   assert.match(controlText, /const ROUTES = Object\.freeze\(\{ pause: '\/floor\/pause', resume: '\/floor\/resume' \}\);/);

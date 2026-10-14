@@ -1,3 +1,5 @@
+import { floorFetch } from './transport.ts';
+
 const SECRET = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 const BOOTSTRAP_PREFIX = '#bootstrap=';
 const ASSET_PREFIX = '/floor/assets/';
@@ -73,7 +75,7 @@ export async function establishFloorSession(): Promise<FloorSession | null> {
   return openFloorSessionWith(
     window.location,
     window.history,
-    (url, init) => window.fetch(url, init),
+    floorFetch,
     (delayMs) => new Promise((resolve) => window.setTimeout(resolve, delayMs)),
   );
 }
@@ -109,7 +111,7 @@ export async function reauthenticateFloorSession(): Promise<FloorSession | null>
   return reauthenticateFloorSessionWith(
     window.location,
     window.history,
-    (url, init) => window.fetch(url, init),
+    floorFetch,
     LOADED_WITH,
   );
 }
@@ -132,6 +134,11 @@ export function ownAssetRefs(doc: { querySelectorAll(selector: string): Iterable
  */
 const LOADED_WITH = typeof document === 'undefined' ? [] : ownAssetRefs(document);
 
+/** The built files this page was loaded with, which a served index is compared against. */
+export function loadedAssetRefs(): readonly string[] {
+  return LOADED_WITH;
+}
+
 /** The built files a served index names, read as `ownAssetRefs` reads a document: script `src` and link `href` outside comments. */
 export function servedAssetRefs(html: string): readonly string[] {
   const refs: string[] = [];
@@ -144,7 +151,7 @@ export function servedAssetRefs(html: string): readonly string[] {
   return refs;
 }
 
-function sameBuild(own: readonly string[], served: readonly string[]): boolean {
+export function sameBuild(own: readonly string[], served: readonly string[]): boolean {
   const left = [...new Set(own)].sort();
   const right = [...new Set(served)].sort();
   return left.length === right.length && left.every((ref, index) => ref === right[index]);

@@ -30,6 +30,7 @@ import {
   getTerminalState, leavesTerminal, subscribeToTerminal, terminalOffer, writeTerminal,
 } from './terminal.ts';
 import type { TerminalChannel, TerminalEnding, TerminalOffer, TerminalPorts } from './terminal.ts';
+import { lazyChunk } from '../../transport.ts';
 
 type OpenChannel = Exclude<TerminalChannel, { readonly phase: 'idle' }>;
 
@@ -311,7 +312,7 @@ function TerminalScreen({ phase, leaveTo, theme, screen, fontSize, platform, onC
     if (element === null) return undefined;
     let release = () => {};
     let gone = false;
-    void import('./grid.ts').then(({ Terminal }) => {
+    void lazyChunk(() => import('./grid.ts')).then(({ Terminal }) => {
       if (gone) return;
       const term = new Terminal({
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',

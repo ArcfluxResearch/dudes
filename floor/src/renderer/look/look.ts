@@ -7,6 +7,7 @@ import { getFloorState } from '../floor/store.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { mintAttemptId, trimAsciiSpace, utf8Bytes } from '../onboarding/hire.ts';
 import type { AgentRow } from '../scene/cast.ts';
+import { floorFetch } from '../../transport.ts';
 
 export interface LookFields {
   readonly character: string | null;
@@ -39,7 +40,7 @@ export interface LookDeps {
   refresh(): void;
 }
 export const browserLookDeps: LookDeps = {
-  fetch: (url, init) => window.fetch(url, init),
+  fetch: floorFetch,
   csrf: () => currentFloorSession()?.csrf ?? null,
   random: (bytes) => { crypto.getRandomValues(bytes); },
   session: floorSessionGeneration,

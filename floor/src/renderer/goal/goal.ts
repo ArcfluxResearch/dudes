@@ -43,6 +43,7 @@ import { mintAttemptId, trimAsciiSpace, utf8Bytes } from '../onboarding/hire.ts'
 import type { AgentRow } from '../scene/cast.ts';
 import { decodeWorkspace } from '../workspace.ts';
 import { completionCheckOf } from './completionCheck.ts';
+import { floorFetch } from '../../transport.ts';
 
 /** A `GoalId` has the same canonical text form as an `AgentId`. */
 const GOAL_ID = AGENT_ID;
@@ -363,7 +364,7 @@ export interface GoalDeps {
 }
 
 export const browserGoalDeps: GoalDeps = {
-  fetch: (url, init) => window.fetch(url, init),
+  fetch: floorFetch,
   csrf: () => currentFloorSession()?.csrf ?? null,
   random: (bytes) => {
     crypto.getRandomValues(bytes);

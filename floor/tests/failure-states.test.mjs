@@ -17,6 +17,7 @@ let StreamNotice;
 let OverviewSummary;
 let streamModule;
 let streamStore;
+let awayModule;
 before(async () => {
   server = await createServer({ root: resolve(import.meta.dirname, '..'),
     cacheDir: resolve(import.meta.dirname, '../node_modules/.vite-failure-states'),
@@ -29,6 +30,7 @@ before(async () => {
   ({ OverviewSummary } = await server.ssrLoadModule('/src/renderer/Control.tsx'));
   streamModule = await server.ssrLoadModule('/src/renderer/floor/stream.ts');
   streamStore = await server.ssrLoadModule('/src/renderer/floor/store.ts');
+  awayModule = await server.ssrLoadModule('/src/renderer/floor/away.ts');
 });
 after(async () => { await server?.close(); });
 
@@ -88,8 +90,9 @@ test('a silent open stream says it is waiting rather than retrying', () => {
   assert.match(rendered, /fresh link.*dudes floor/);
 });
 
-test('the stream notice reports the actual retry schedule and then gives fresh-link guidance', () => {
+test('the stream notice reports the actual retry schedule and then says the daemon stopped answering', async () => {
   streamStore.resetFloorStore();
+  awayModule.resetAway();
   const sockets = [];
   let scheduled;
   const dispose = streamModule.openFloorStream({ csrf: 'test-nonce' },
@@ -102,7 +105,7 @@ test('the stream notice reports the actual retry schedule and then gives fresh-l
     }, { now: () => 0, repeat: () => () => {}, after: (delay, run) => {
       scheduled = run;
       return () => { scheduled = undefined; };
-    } });
+    } }, { fetchIndex: async () => null, ownRefs: [] });
   try {
     sockets[0].emit('close');
     let rendered = html(StreamNotice, streamStore.getFloorState());
@@ -113,12 +116,11 @@ test('the stream notice reports the actual retry schedule and then gives fresh-l
       run();
       sockets.at(-1).emit('close');
     }
-    assert.equal(scheduled, undefined);
+    await new Promise((settle) => setImmediate(settle));
     rendered = html(StreamNotice, streamStore.getFloorState());
-    assert.match(rendered, /Disconnected.*page is not retrying after 5 reconnect attempts/);
-    assert.match(rendered, /daemon may have stopped.*After a daemon restart, get a fresh link/);
-    assert.doesNotMatch(rendered, /daemon restarted\./);
-  } finally { dispose(); }
+    assert.match(rendered, /Dudes stopped answering.*ask you to reload/);
+    assert.doesNotMatch(rendered, /fresh link|not retrying/);
+  } finally { dispose(); awayModule.resetAway(); }
 });
 
 test('a socket that never opens cannot claim an open connection after silence', () => {
