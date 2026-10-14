@@ -4057,11 +4057,17 @@ fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
         head.starts_with("HTTP/1.1 403 Forbidden"),
         "the four hires before the upgrade still count: {head}"
     );
-    let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let head = hire(addr, &fresh_cookie, &fresh_csrf, "Y");
     assert!(
-        head.starts_with("HTTP/1.1 200 OK"),
-        "control: a session the upgrade did not carry starts from none: {head}"
+        snapshot(addr, &cookie, &rotated)
+            .0
+            .get("onboarding")
+            .is_none(),
+        "the carried session is offered no further hire"
+    );
+    let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
+    assert!(
+        snapshot(addr, &fresh_cookie, &fresh_csrf).0["onboarding"].is_object(),
+        "control: a session the upgrade did not carry starts from none, and is offered a hire"
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
