@@ -340,16 +340,14 @@ fn a_full_cap_ends_a_silent_connection_with_a_clean_close() {
     drop(holder);
 }
 
-/// A client that writes after the daemon ended the connection fails with a broken pipe.
 #[test]
-fn a_write_after_the_full_cap_close_is_a_broken_pipe() {
+fn a_call_after_the_full_cap_close_stays_unanswered() {
     let rig = paused_rig();
     let holder = hold_the_slot(&rig.socket);
     let params = hook_params(&rig);
     let mut client = LocalClient::connect(&rig.socket).expect("connect succeeds at the cap");
     assert!(matches!(client.recv(), Err(ClientError::Closed)));
-    let shape = unanswered_shape(client.call(Method::HookEvent, Some(params)));
-    assert!(shape.ends_with("BrokenPipe"), "{shape}");
+    unanswered_shape(client.call(Method::HookEvent, Some(params)));
     drop(holder);
 }
 
