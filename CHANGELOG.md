@@ -11,6 +11,10 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+### Fixed
+
+- Recognize native Linux ZFS when sampling instruction files.
+
 ## [0.87.0] - 2026-10-14
 
 ### Highlights
