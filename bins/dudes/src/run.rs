@@ -202,6 +202,9 @@ fn uninstall_command(
         config_overridden: env.config_overridden(),
         executable: std::env::current_exe().map_err(local)?,
         lock_wait: Duration::from_secs(5),
+        codex_home: std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute()),
     };
     Ok(crate::uninstall::run(
         &layout,
