@@ -112,7 +112,7 @@ export function instructionReview(fields = {}) {
     changed_paths: [{ path: { encoding: 'utf8', value: '/project/AGENTS\n.md' }, display: '/project/AGENTS\\n.md', display_truncated: false,
       context: { kind: 'shared_project' } }],
     gaps: [{ reason: 'read_failed', context: { kind: 'shared_input', source: 'import' }, agent: ADA,
-      path: { encoding: 'unix_bytes', hex: '2fff' }, display: 'unix:2fff', display_truncated: false }],
+      path: { encoding: 'unix_bytes', hex: '2fff' }, display: 'unix:2fff', display_truncated: false, origin: 'observed', holds: true }],
     ...fields,
   };
 }

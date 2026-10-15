@@ -165,7 +165,7 @@ test('the decoder keeps exactly the daemon\'s members and refuses the rest', asy
   assert.equal(decode({ state: 'ok', card: { id: NEW } }), null);
 });
 
-test('a ready ticket names what Dudes could not see, and a held one does not', async () => {
+test('a ready or held ticket names what Dudes could not see', async () => {
   const coverage = { provider: 'codex', limits: ['configuration_unknown', 'fallback_unknown', 'root_marker_unknown'], saw_no_change: true };
   await open({ coverage });
   const html = panel();
@@ -179,7 +179,7 @@ test('a ready ticket names what Dudes could not see, and a held one does not', a
   detail.resetDetail();
   store.resetFloorStore();
   await open({ coverage }, { status: 'blocked' });
-  assert.ok(!/What Dudes could not see/.test(panel()), 'Needs you keeps its own reasons');
+  assert.match(panel(), /<h4>What Dudes could not see<\/h4><p>Dudes cannot see Codex&#x27;s settings in its home folder, fallback file names or root markers\./, 'Needs you shows the standing limits too');
 });
 
 test('a Pi note reads in plain words and an unknown limit falls back instead of dropping the note', async () => {
@@ -361,23 +361,24 @@ test('gap evidence names only agents that were not working on the ticket and kee
   assert.match(visible, /Dudes could not read unix:2fff\./);
   assert.equal(visible.split('Dudes could not read unix:2fff.').length, 2, 'the same sentence is listed once');
   assert.match(visible, /Other agents: a recorded agent\./);
+  assert.match(visible, /An agent&#x27;s engine settings changed during the ticket, or Dudes could not check them\./);
   assert.ok(!visible.includes('Participant Ada') && !visible.includes('configuration unknown'), visible);
   assert.ok(!visible.includes(ADA) && !visible.includes(GRACE), visible);
   const trace = html.slice(disclosure, html.indexOf('</details>', disclosure));
   assert.ok(trace.includes(`<code>${ADA}</code>`), trace);
   assert.ok(trace.includes(`<code>${GRACE}</code>`), trace);
-  assert.match(trace, /Coverage gap 3\. configuration unknown\. Unresolved context\./);
+  assert.match(trace, /Coverage gap 3\. configuration unknown\. Unresolved context\.[\s\S]*?Found during this ticket\./);
   assert.match(visible, /do not identify an exclusive writer/);
 });
 
 test('every gap kind reads as a plain sentence and the review says what to do next', async () => {
   const kinds = {
-    configuration_unknown: 'Dudes cannot see the settings the engine loads from its home folder.',
-    plugin_unknown: 'Dudes cannot see the engine&#x27;s plugins.',
-    policy_unknown: 'Dudes cannot see the engine&#x27;s managed policy.',
-    root_marker_unknown: 'Dudes cannot see which root markers the engine uses to find the project folder.',
-    fallback_unknown: 'Dudes cannot see which fallback file names the engine reads.',
-    profile_unknown: 'Dudes cannot see the engine&#x27;s profile settings.',
+    configuration_unknown: 'An agent&#x27;s engine settings changed during the ticket, or Dudes could not check them.',
+    plugin_unknown: 'Dudes could not tell what a plugin given to the engine adds.',
+    policy_unknown: 'Dudes could not check the engine&#x27;s managed policy.',
+    root_marker_unknown: 'Dudes could not check which root markers the engine used.',
+    fallback_unknown: 'Dudes could not check which fallback file names the engine used.',
+    profile_unknown: 'Dudes could not look up the engine&#x27;s profile settings.',
     declaration_missing: 'Dudes found no instruction file it knows how to read for this engine.',
     path_unresolved: 'Dudes could not look up the project folder or a path it needed.',
     read_failed: 'Dudes could not read an instruction file.',
@@ -404,7 +405,7 @@ test('every gap kind reads as a plain sentence and the review says what to do ne
     ending_boundary_missing: 'Dudes did not see the agent&#x27;s process end after the daemon restarted.',
   };
   const gaps = Object.keys(kinds).map((reason) => ({ reason, context: { kind: 'unresolved' }, agent: null,
-    path: null, display: null, display_truncated: false }));
+    path: null, display: null, display_truncated: false, origin: 'observed', holds: true }));
   await open({ instruction_review: instructionReview({ gaps }) });
   const html = panel();
   const start = html.indexOf('<section aria-label="Instruction review">');
@@ -413,9 +414,31 @@ test('every gap kind reads as a plain sentence and the review says what to do ne
   assert.match(visible, /Look at the changed files above or the paths named here, then Accept if the work is fine\./);
   assert.match(visible, /Accept records that you reviewed it despite these gaps\. If it is not fine, choose Ask for changes\./);
   const named = instructionReview({ gaps: [{ reason: 'changed_during_read', context: { kind: 'shared_project' }, agent: null,
-    path: { encoding: 'utf8', value: '/p/AGENTS.md' }, display: '/p/AGENTS.md', display_truncated: false }] });
+    path: { encoding: 'utf8', value: '/p/AGENTS.md' }, display: '/p/AGENTS.md', display_truncated: false, origin: 'observed', holds: true }] });
   await open({ instruction_review: named });
   assert.match(panel(), /\/p\/AGENTS\.md changed while Dudes was reading it\./);
+});
+
+test('only gaps that hold the ticket are reasons, standing limits are named as what Dudes could not see, and every gap keeps its origin', async () => {
+  const gap = (fields) => ({ reason: 'read_failed', context: { kind: 'unresolved' }, agent: null, path: null, display: null,
+    display_truncated: false, origin: 'observed', holds: true, ...fields });
+  const review = instructionReview({ gaps: [
+    gap({ reason: 'configuration_unknown' }),
+    gap({ reason: 'fallback_unknown', origin: 'declared', holds: false }),
+    gap({ reason: 'import_cycle', context: { kind: 'unshared_project' }, holds: false }),
+  ] });
+  const coverage = { provider: 'codex', limits: ['fallback_unknown'], saw_no_change: false };
+  await open({ instruction_review: review, coverage }, { status: 'blocked' });
+  const html = panel();
+  const start = html.indexOf('<section aria-label="Instruction review">');
+  const disclosure = html.indexOf('<details', start);
+  const visible = html.slice(start, disclosure);
+  assert.match(visible, /An agent&#x27;s engine settings changed during the ticket, or Dudes could not check them\./);
+  assert.ok(!visible.includes('fallback file names') && !visible.includes('loop'), visible);
+  const trace = html.slice(disclosure, html.indexOf('</details>', disclosure));
+  assert.match(trace, /Coverage gap 2\. fallback unknown\. Unresolved context\.[^<]*Standing engine limit\./);
+  assert.match(trace, /Coverage gap 3\. import cycle\. Unshared project\.[^<]*Found during this ticket\./);
+  assert.match(html, /<h4>What Dudes could not see<\/h4><p>Dudes cannot see Codex&#x27;s fallback file names\.<\/p>/);
 });
 
 test('an issued turn with a missing sampled start shows launch uncertainty without an invented baseline or end', async () => {
@@ -423,10 +446,10 @@ test('an issued turn with a missing sampled start shows launch uncertainty witho
     baseline_lsn: null, missing_start: true, end_lsn: null, sampled_at: null, recovery: true };
   const review = instructionReview({ intervals: [interval], changed_paths: [], gaps: [{
     reason: 'missing_baseline', context: { kind: 'unresolved' }, agent: ADA,
-    path: null, display: null, display_truncated: false,
+    path: null, display: null, display_truncated: false, origin: 'observed', holds: true,
   }, {
     reason: 'unrecorded_launch_boundary', context: { kind: 'unresolved' }, agent: ADA,
-    path: null, display: null, display_truncated: false,
+    path: null, display: null, display_truncated: false, origin: 'observed', holds: true,
   }] });
   await open({ instruction_review: review, reason: 'shared_instructions_unknown', check_result: null }, {
     status: 'blocked', cardFields: { ticket: { reason: 'shared_instructions_unknown', instruction_review: instructionSummary({ changed_paths: 0, gaps: 2 }) } },
@@ -453,8 +476,8 @@ test('an issued turn with a missing sampled start shows launch uncertainty witho
 test('an unobserved recovered ending boundary preserves the recorded baseline and reports only ending uncertainty', async () => {
   const interval = { ...instructionReview().intervals[0], end_lsn: null, sampled_at: null, recovery: true };
   const review = instructionReview({ intervals: [interval], changed_paths: [], gaps: [{
-    reason: 'ending_boundary_missing', context: { kind: 'unshared_project' }, agent: ADA,
-    path: null, display: null, display_truncated: false,
+    reason: 'ending_boundary_missing', context: { kind: 'shared_project' }, agent: ADA,
+    path: null, display: null, display_truncated: false, origin: 'observed', holds: true,
   }] });
   await open({ instruction_review: review, reason: 'shared_instructions_unknown', check_result: null }, {
     status: 'blocked', cardFields: { ticket: { reason: 'shared_instructions_unknown',

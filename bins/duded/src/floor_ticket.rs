@@ -511,7 +511,8 @@ fn mark_evidence_omitted(review: &mut Value) {
     if !gaps.iter().any(|gap| gap["reason"] == "metadata_limit") {
         gaps.push(
             json!({"reason":"metadata_limit", "context":{"kind":"unresolved"},
-            "agent":null, "path":null, "display":null, "display_truncated":false}),
+            "agent":null, "path":null, "display":null, "display_truncated":false,
+            "origin":"observed", "holds":true}),
         );
     }
 }
@@ -680,6 +681,7 @@ fn instruction_review_value(review: &InstructionPendingReview) -> Value {
         })).collect::<Vec<_>>(),
         "gaps": review.gaps.iter().map(|gap| json!({
             "reason": gap.reason, "context": gap.context, "agent": gap.agent,
+            "origin": gap.origin, "holds": gap.holds(),
             "path": gap.path, "display": gap.path.as_ref().map(dudes_proto::instruction::NativeInstructionPath::display),
             "display_truncated": gap.path.as_ref().is_some_and(dudes_proto::instruction::NativeInstructionPath::display_truncated),
         })).collect::<Vec<_>>(),
@@ -956,6 +958,10 @@ mod tests {
         let gaps = shown["gaps"].as_array().expect("gaps");
         assert!(gaps.iter().any(|gap| gap["reason"] == "read_failed"));
         assert!(gaps.iter().any(|gap| gap["reason"] == "metadata_limit"));
+        assert!(
+            gaps.iter()
+                .all(|gap| gap["origin"] == "observed" && gap["holds"].is_boolean())
+        );
     }
 
     #[test]

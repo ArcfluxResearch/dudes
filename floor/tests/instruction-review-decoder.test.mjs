@@ -10,7 +10,7 @@ function review(reason, context = { kind: 'unresolved' }) {
     pending_comparison: false,
     intervals: [],
     changed_paths: [],
-    gaps: [{ reason, context, agent: null, path: null, display: null, display_truncated: false }],
+    gaps: [{ reason, context, agent: null, path: null, display: null, display_truncated: false, origin: 'observed', holds: true }],
   };
 }
 
@@ -31,4 +31,13 @@ test('actual count overflow remains a separate accepted reason', () => {
   assert.equal(decoded.gaps[0].reason, 'participant_limit');
   assert.deepEqual(decoded.gaps[0].context, { kind: 'shared_project' });
   assert.equal(decodeInstructionReview(review('invented_participant_reason')), null);
+});
+
+test('a gap must say where it came from and whether it holds the ticket', () => {
+  const base = review('read_failed', { kind: 'shared_project' });
+  assert.equal(decodeInstructionReview(base).gaps[0].origin, 'observed');
+  assert.equal(decodeInstructionReview(base).gaps[0].holds, true);
+  for (const patch of [{ origin: 'invented' }, { holds: 'yes' }, { origin: undefined }, { holds: undefined }]) {
+    assert.equal(decodeInstructionReview({ ...base, gaps: [{ ...base.gaps[0], ...patch }] }), null);
+  }
 });

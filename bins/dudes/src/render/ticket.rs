@@ -5,7 +5,7 @@ use std::io::{self, Write};
 
 use chrono::TimeZone;
 use dudes_proto::instruction::{
-    InstructionBaselineRef, InstructionEndBoundary, InstructionGapKind,
+    InstructionBaselineRef, InstructionEndBoundary, InstructionGapKind, InstructionGapOrigin,
     InstructionIssueAssociation, InstructionObservationOwner, InstructionPathContext,
     InstructionPendingReview, InstructionReviewInterval,
 };
@@ -204,11 +204,11 @@ where
     }
     if let Some(review) = &read.ticket.instruction_review {
         instruction_evidence(out, review, names, zone)?;
-    } else if read.card.status == CardStatus::Review
-        && let Some(note) = &read.ticket.coverage
+    }
+    if let Some(note) = &read.ticket.coverage
         && !note.limits.is_empty()
     {
-        writeln!(out, "Coverage: {}", note.sentence())?;
+        writeln!(out, "What Dudes could not see: {}", note.sentence())?;
     }
     if read.ticket.round > 0 {
         writeln!(out, "Open the Floor to see the changed files.")?;
@@ -269,7 +269,8 @@ where
     review_gaps(out, review, names)
 }
 
-/// One plain sentence per kind of gap. A path is named when the gap carries one.
+/// One plain sentence per kind of gap that holds a ticket, which is always one this run found. A
+/// path is named when the gap carries one.
 fn gap_sentence(kind: InstructionGapKind, path: Option<&str>) -> String {
     use InstructionGapKind as Kind;
     let named = |with: &dyn Fn(&str) -> String, without: &str| {
@@ -307,15 +308,13 @@ fn gap_sentence(kind: InstructionGapKind, path: Option<&str>) -> String {
             );
         }
         Kind::ConfigurationUnknown => {
-            "Dudes cannot see the settings the engine loads from its home folder."
+            "An agent's engine settings changed during the ticket, or Dudes could not check them."
         }
-        Kind::PluginUnknown => "Dudes cannot see the engine's plugins.",
-        Kind::PolicyUnknown => "Dudes cannot see the engine's managed policy.",
-        Kind::RootMarkerUnknown => {
-            "Dudes cannot see which root markers the engine uses to find the project folder."
-        }
-        Kind::FallbackUnknown => "Dudes cannot see which fallback file names the engine reads.",
-        Kind::ProfileUnknown => "Dudes cannot see the engine's profile settings.",
+        Kind::PluginUnknown => "Dudes could not tell what a plugin given to the engine adds.",
+        Kind::PolicyUnknown => "Dudes could not check the engine's managed policy.",
+        Kind::RootMarkerUnknown => "Dudes could not check which root markers the engine used.",
+        Kind::FallbackUnknown => "Dudes could not check which fallback file names the engine used.",
+        Kind::ProfileUnknown => "Dudes could not look up the engine's profile settings.",
         Kind::DeclarationMissing => {
             "Dudes found no instruction file it knows how to read for this engine."
         }
@@ -359,19 +358,6 @@ fn gap_sentence(kind: InstructionGapKind, path: Option<&str>) -> String {
     fixed.to_owned()
 }
 
-/// The unknown-input kinds describe the engine, not an agent, so naming one would only add noise.
-const fn names_agent(kind: InstructionGapKind) -> bool {
-    !matches!(
-        kind,
-        InstructionGapKind::ConfigurationUnknown
-            | InstructionGapKind::PluginUnknown
-            | InstructionGapKind::PolicyUnknown
-            | InstructionGapKind::RootMarkerUnknown
-            | InstructionGapKind::FallbackUnknown
-            | InstructionGapKind::ProfileUnknown
-    )
-}
-
 fn shown_path(path: &dudes_proto::instruction::NativeInstructionPath) -> String {
     format!(
         "{}{}",
@@ -406,7 +392,7 @@ fn review_gaps(
         })
         .collect();
     let mut groups: Vec<(String, Vec<AgentId>)> = Vec::new();
-    for gap in &review.gaps {
+    for gap in review.gaps.iter().filter(|gap| gap.holds()) {
         let path = gap.path.as_ref().map(shown_path);
         let sentence = gap_sentence(gap.reason, path.as_deref());
         let at = groups
@@ -417,14 +403,15 @@ fn review_gaps(
                 groups.len() - 1
             });
         if let Some(agent) = gap.agent
-            && names_agent(gap.reason)
             && !working.contains(&agent)
             && !groups[at].1.contains(&agent)
         {
             groups[at].1.push(agent);
         }
     }
-    writeln!(out, "Why this needs your review:")?;
+    if !groups.is_empty() {
+        writeln!(out, "Why this needs your review:")?;
+    }
     for (sentence, others) in &groups {
         write!(out, "  - {sentence}")?;
         if !others.is_empty() {
@@ -438,7 +425,12 @@ fn review_gaps(
     }
     writeln!(
         out,
-        "What to do: look at the changed files above (or the paths named here), then Accept if the work is fine (Accept records that you reviewed it despite these gaps), or Ask for changes."
+        "What to do: look at the changed files above (or the paths named here), then Accept if the work is fine (Accept records that you reviewed it{}), or Ask for changes.",
+        if groups.is_empty() {
+            ""
+        } else {
+            " despite these gaps"
+        }
     )?;
     writeln!(out, "Gap details:")?;
     for gap in &review.gaps {
@@ -454,7 +446,11 @@ fn review_gaps(
         if let Some(path) = &gap.path {
             write!(out, ", {}", shown_path(path))?;
         }
-        writeln!(out, ".")?;
+        let origin = match gap.origin {
+            InstructionGapOrigin::Declared => "standing engine limit",
+            InstructionGapOrigin::Observed => "found during this ticket",
+        };
+        writeln!(out, ", {origin}.")?;
     }
     Ok(())
 }
@@ -658,7 +654,7 @@ mod instruction_tests {
                 "ticket":{"card":"01JBQ8XK2M3N4P5Q6R7S8T0001","goal":"01JBQ8XK2M3N4P5Q6R7S8T0041","assignment_lsn":9,"seq_at_start":2},
                 "finished_lsn":14,"end":null,"sampled_at":null,"recovery":true
             }], "changed_paths":[],
-            "gaps":[{"reason":"ending_boundary_missing","context":{"kind":"unshared_project"},"agent":null,"path":null}]
+            "gaps":[{"reason":"ending_boundary_missing","context":{"kind":"shared_project"},"agent":null,"path":null}]
         })).expect("recorded missing-ending review");
         let mut output = Vec::new();
         instruction_evidence(&mut output, &review, &AgentNames::new(), &chrono::Utc)
@@ -709,7 +705,7 @@ mod instruction_tests {
         let output = String::from_utf8(output).expect("utf8");
         let plain = output.split("Gap details:").next().expect("plain part");
         for sentence in [
-            "Dudes cannot see the settings the engine loads from its home folder.",
+            "An agent's engine settings changed during the ticket, or Dudes could not check them. Other agents: 01JBQ8XK2M3N4P5Q6R7S8T9VWY.",
             "Dudes could not read /work/AGENTS.md. Other agents: 01JBQ8XK2M3N4P5Q6R7S8T9VWY.",
             "Another agent was working in this folder, so Dudes cannot tell who changed what.",
             "A file changed while Dudes was reading it.",
@@ -729,15 +725,93 @@ mod instruction_tests {
         let details = output.split("Gap details:").nth(1).expect("details");
         assert!(
             details.contains(
-                "configuration unknown (unresolved context), agent 01JBQ8XK2M3N4P5Q6R7S8T9VWY."
+                "configuration unknown (unresolved context), agent 01JBQ8XK2M3N4P5Q6R7S8T9VWY, found during this ticket."
             ),
             "{details}"
         );
         assert!(
             details.contains(
-                "read failed (shared project), agent 01JBQ8XK2M3N4P5Q6R7S8T9VWY, /work/AGENTS.md."
-            ) && details.contains("read failed (shared project), /work/AGENTS.md."),
+                "read failed (shared project), agent 01JBQ8XK2M3N4P5Q6R7S8T9VWY, /work/AGENTS.md, found during this ticket."
+            ) && details.contains("read failed (shared project), /work/AGENTS.md, found during this ticket."),
             "{details}"
         );
+    }
+
+    fn plain_and_details(gaps: &serde_json::Value) -> (String, String) {
+        let mut output = Vec::new();
+        instruction_evidence(
+            &mut output,
+            &review_with_gaps(gaps),
+            &AgentNames::new(),
+            &chrono::Utc,
+        )
+        .expect("write");
+        let output = String::from_utf8(output).expect("utf8");
+        let (plain, details) = output.split_once("Gap details:").expect("details block");
+        (plain.to_owned(), details.to_owned())
+    }
+
+    #[test]
+    fn only_gaps_that_hold_the_ticket_are_reasons_and_every_gap_keeps_its_origin_in_the_details() {
+        let (plain, details) = plain_and_details(&serde_json::json!([
+            {"reason":"configuration_unknown","context":{"kind":"unresolved"},"agent":null,"path":null,"origin":"observed"},
+            {"reason":"fallback_unknown","context":{"kind":"unresolved"},"agent":null,"path":null,"origin":"declared"},
+            {"reason":"read_failed","context":{"kind":"unshared_project"},"agent":null,"path":null,"origin":"observed"}
+        ]));
+        assert!(plain.contains("An agent's engine settings changed during the ticket, or Dudes could not check them."), "{plain}");
+        assert!(!plain.contains("fallback file names"), "{plain}");
+        assert!(
+            !plain.contains("Dudes could not read an instruction file"),
+            "{plain}"
+        );
+        assert!(
+            details
+                .contains("configuration unknown (unresolved context), found during this ticket."),
+            "{details}"
+        );
+        assert!(
+            details.contains("fallback unknown (unresolved context), standing engine limit."),
+            "{details}"
+        );
+        assert!(
+            details.contains("read failed (unshared project), found during this ticket."),
+            "{details}"
+        );
+    }
+
+    #[test]
+    fn observed_engine_unknowns_say_what_was_found_not_what_the_engine_hides() {
+        for (reason, sentence) in [
+            (
+                "configuration_unknown",
+                "An agent's engine settings changed during the ticket, or Dudes could not check them.",
+            ),
+            (
+                "plugin_unknown",
+                "Dudes could not tell what a plugin given to the engine adds.",
+            ),
+            (
+                "policy_unknown",
+                "Dudes could not check the engine's managed policy.",
+            ),
+            (
+                "root_marker_unknown",
+                "Dudes could not check which root markers the engine used.",
+            ),
+            (
+                "fallback_unknown",
+                "Dudes could not check which fallback file names the engine used.",
+            ),
+            (
+                "profile_unknown",
+                "Dudes could not look up the engine's profile settings.",
+            ),
+        ] {
+            let (plain, _) = plain_and_details(&serde_json::json!([
+                {"reason":reason,"context":{"kind":"unresolved"},"agent":null,"path":null,"origin":"observed"}
+            ]));
+            assert!(plain.contains(sentence), "{reason}: {plain}");
+            assert!(!plain.contains("cannot see"), "{reason}: {plain}");
+        }
     }
 }

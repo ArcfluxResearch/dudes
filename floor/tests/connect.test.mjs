@@ -274,10 +274,10 @@ test('a link refused for a different build says so, keeps the page, and a matchi
   assert.equal(entry.pastedLinkBuildMismatch(), false);
 });
 
-const USED = 'This sign-in link was refused\. Either it was already used or has expired, or four Floor tabs are already signed in\. '
-  + 'Each link works once, in one browser\. If you have a Floor tab open that you no longer use, close it, wait for its '
-  + 'sign-in to lapse after 30 minutes without use, and run <code>dudes floor open</code> again\. If no other tab is open, '
-  + 'run <code>dudes floor open</code> for a fresh link and paste it here within 60 seconds\.';
+const USED = 'This sign-in link was refused, either because it was already used or has expired, or because four Floor tabs are already signed in\. '
+  + 'For a used or expired link, run <code>dudes floor open</code> for a new one and paste it here within 60 seconds\. '
+  + 'For a full set of tabs, close the ones you no longer use and wait 30 minutes, or run <code>dudes stop</code> then '
+  + '<code>dudes start</code> to sign every tab out \\(this ends running turns\\), and then <code>dudes floor open</code>\.';
 const NO_LINK = 'The sign-in link in the address of this page is not one the daemon can read\. Run '
   + '<code>dudes floor open</code> and paste the new link here within 60 seconds\.';
 const EXPIRED = 'This sign-in has expired\. Run <code>dudes floor open</code> for a new link\. Each link works once, in one '

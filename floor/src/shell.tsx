@@ -45,7 +45,8 @@ import {
  * daemon does not say why it refused a first link, so the page names both
  * causes, a link that was already used or expired and a full set of four Floor
  * sessions, with a way out of each. A closed tab frees its place only once its
- * sign-in lapses after 30 minutes without use. A page opened with no link, as a
+ * sign-in lapses after 30 minutes without use; stopping and starting the daemon
+ * ends every sign-in at once. A page opened with no link, as a
  * copied address is because a browser
  * scrubs the secret as soon as it signs in, is told its sign-in has expired.
  */
@@ -56,10 +57,11 @@ export function PastedLinkNotice() {
   if (first === 'refused') {
     return (
       <p className="link-refused" role="alert">
-        This sign-in link was refused. Either it was already used or has expired, or four Floor tabs are already signed in.
-        Each link works once, in one browser. If you have a Floor tab open that you no longer use, close it, wait for its
-        sign-in to lapse after 30 minutes without use, and run <code>dudes floor open</code> again. If no other tab is open,
-        run <code>dudes floor open</code> for a fresh link and paste it here within 60 seconds.
+        This sign-in link was refused, either because it was already used or has expired, or because four Floor tabs are
+        already signed in. For a used or expired link, run <code>dudes floor open</code> for a new one and paste it here
+        within 60 seconds. For a full set of tabs, close the ones you no longer use and wait 30 minutes, or run{' '}
+        <code>dudes stop</code> then <code>dudes start</code> to sign every tab out (this ends running turns), and then{' '}
+        <code>dudes floor open</code>.
       </p>
     );
   }

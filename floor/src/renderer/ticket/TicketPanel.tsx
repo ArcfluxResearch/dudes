@@ -79,6 +79,7 @@ function InstructionEvidence({ floor, review }: {
   readonly floor: FloorState;
   readonly review: InstructionReview;
 }) {
+  const holding = groupGaps(review);
   return <section aria-label="Instruction review"><h4>Instruction review</h4>
     <h5>Known changed paths</h5>
     {review.changed_paths.length === 0 ? <p>No known changed paths were retained.</p>
@@ -87,15 +88,15 @@ function InstructionEvidence({ floor, review }: {
       </li>)}</ul>}
     <h5>Why this needs your review</h5>
     {review.gaps.length === 0 ? <p>No coverage gaps were recorded.</p>
-      : <ul>{groupGaps(review).map((group, at) => <li key={at}>
+      : holding.length === 0 ? null : <ul>{holding.map((group, at) => <li key={at}>
         {group.sentence}
         {group.others.length === 0 ? null : <> Other agents: {group.others.map((id) => {
           const name = agentRow(floor, id)?.name;
           return typeof name === 'string' && name !== '' ? name : 'a recorded agent';
         }).join(', ')}.</>}
       </li>)}</ul>}
-    <p>Look at the changed files above{review.gaps.length === 0 ? '' : ' or the paths named here'}, then Accept if the work is fine.
-      {review.gaps.length === 0 ? ' Accept records that you reviewed the change.'
+    <p>Look at the changed files above{holding.length === 0 ? '' : ' or the paths named here'}, then Accept if the work is fine.
+      {holding.length === 0 ? ' Accept records that you reviewed the change.'
         : ' Accept records that you reviewed it despite these gaps.'} If it is not fine, choose Ask for changes.</p>
     <p>These observations compare sampled endpoints. They do not identify an exclusive writer or prove that instructions were unchanged between samples.</p>
     {review.pending_comparison ? <p role="status">The instruction comparison is still pending. Review actions are unavailable.</p> : null}
@@ -108,6 +109,7 @@ function InstructionEvidence({ floor, review }: {
           Coverage gap {at + 1}. {row.reason.replaceAll('_', ' ')}. {instructionContextText(row.context)}.
           {row.agent === null ? null : <> Participant <code>{row.agent}</code>.</>}
           {row.display === null ? null : <> <span className="git-path data">{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>.</>}
+          {row.origin === 'declared' ? ' Standing engine limit.' : ' Found during this ticket.'}
         </li>)}</ul>
       </>}
       <h5>Observed intervals</h5>
@@ -329,7 +331,7 @@ export function TicketPanel({ floor, card, onHire }: {
       <button type="button" className="ticket-look" disabled={detail.phase === 'loading'}
         onClick={() => { void loadDetail(card); }}>Read again</button>
     </div> : null}
-    {card.status === 'review' && loaded?.instruction_review == null && loaded?.coverage != null && loaded.coverage.limits.length > 0
+    {loaded?.coverage != null && loaded.coverage.limits.length > 0
       ? <section aria-label="What Dudes could not see"><h4>What Dudes could not see</h4><p>{coverageText(loaded.coverage)}</p></section> : null}
     {card.status === 'review' ? <ChangedFiles floor={floor} card={card} /> : null}
     {loaded?.result == null ? null : <section aria-label="Check result"><h4>Check result</h4>

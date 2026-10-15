@@ -63,6 +63,9 @@ export interface InstructionGap {
   readonly path: InstructionPath | null;
   readonly display: string | null;
   readonly display_truncated: boolean;
+  /** Whether the daemon counts this gap as holding the ticket: observed, in a context that needs shared review. */
+  readonly holds: boolean;
+  readonly origin: 'observed' | 'declared';
 }
 
 export interface InstructionReview {
@@ -176,13 +179,14 @@ export function decodeInstructionReview(value: unknown): InstructionReview | nul
   }
   const gaps: InstructionGap[] = [];
   for (const row of value.gaps) {
-    if (!object(row) || !(INSTRUCTION_GAPS as readonly unknown[]).includes(row.reason) || !nullableId(row.agent) || typeof row.display_truncated !== 'boolean') return null;
+    if (!object(row) || !(INSTRUCTION_GAPS as readonly unknown[]).includes(row.reason) || !nullableId(row.agent) || typeof row.display_truncated !== 'boolean'
+      || typeof row.holds !== 'boolean' || (row.origin !== 'observed' && row.origin !== 'declared')) return null;
     const scope = context(row.context);
     const native = row.path === null ? null : path(row.path);
     if (scope === null || (row.path !== null && (native === null || !display(row.display)))
       || (row.path === null && row.display !== null)) return null;
     gaps.push(Object.freeze({ reason: row.reason as InstructionGapReason, context: scope, agent: row.agent,
-      path: native, display: row.display as string | null, display_truncated: row.display_truncated }));
+      path: native, display: row.display as string | null, display_truncated: row.display_truncated, holds: row.holds, origin: row.origin }));
   }
   return Object.freeze({ watermark, pending_comparison: value.pending_comparison,
     intervals: Object.freeze(intervals as InstructionInterval[]), changed_paths: Object.freeze(paths), gaps: Object.freeze(gaps) });
@@ -199,12 +203,12 @@ export function instructionContextText(scope: InstructionContext): string {
 }
 
 const GAP_SENTENCES: Readonly<Record<InstructionGapReason, string>> = Object.freeze({
-  configuration_unknown: 'Dudes cannot see the settings the engine loads from its home folder.',
-  plugin_unknown: "Dudes cannot see the engine's plugins.",
-  policy_unknown: "Dudes cannot see the engine's managed policy.",
-  root_marker_unknown: 'Dudes cannot see which root markers the engine uses to find the project folder.',
-  fallback_unknown: 'Dudes cannot see which fallback file names the engine reads.',
-  profile_unknown: "Dudes cannot see the engine's profile settings.",
+  configuration_unknown: "An agent's engine settings changed during the ticket, or Dudes could not check them.",
+  plugin_unknown: 'Dudes could not tell what a plugin given to the engine adds.',
+  policy_unknown: "Dudes could not check the engine's managed policy.",
+  root_marker_unknown: 'Dudes could not check which root markers the engine used.',
+  fallback_unknown: 'Dudes could not check which fallback file names the engine used.',
+  profile_unknown: "Dudes could not look up the engine's profile settings.",
   declaration_missing: 'Dudes found no instruction file it knows how to read for this engine.',
   path_unresolved: 'Dudes could not look up the project folder or a path it needed.',
   read_failed: 'Dudes could not read an instruction file.',
@@ -239,16 +243,12 @@ const GAP_WITH_PATH: Partial<Record<InstructionGapReason, (path: string) => stri
   uninventoried_member: (path) => `${path} is new and Dudes has no earlier copy to compare it with.`,
 };
 
-/** One plain sentence for a gap, naming its path when the gap carries one. */
+/** One plain sentence for a gap that holds a ticket, which is always one this run found. It names its path when the gap carries one. */
 export function gapSentence(gap: InstructionGap): string {
   const shown = gap.display === null ? null : `${gap.display}${gap.display_truncated ? ' [display truncated]' : ''}`;
   const withPath = GAP_WITH_PATH[gap.reason];
   return shown !== null && withPath !== undefined ? withPath(shown) : GAP_SENTENCES[gap.reason];
 }
-
-const ENGINE_UNKNOWNS: ReadonlySet<InstructionGapReason> = new Set([
-  'configuration_unknown', 'plugin_unknown', 'policy_unknown', 'root_marker_unknown', 'fallback_unknown', 'profile_unknown',
-]);
 
 export interface GapGroup {
   readonly sentence: string;
@@ -256,13 +256,13 @@ export interface GapGroup {
   readonly others: readonly string[];
 }
 
-/** Gaps that say the same thing become one line. Only an agent outside the ticket's own intervals is named. */
+/** Holding gaps that say the same thing become one line. Only an agent outside the ticket's own intervals is named. */
 export function groupGaps(review: InstructionReview): readonly GapGroup[] {
   const working = new Set(review.intervals.map((row) => row.agent));
   const groups = new Map<string, string[]>();
-  for (const gap of review.gaps) {
+  for (const gap of review.gaps.filter((row) => row.holds)) {
     const others = groups.get(gapSentence(gap)) ?? [];
-    if (gap.agent !== null && !ENGINE_UNKNOWNS.has(gap.reason) && !working.has(gap.agent) && !others.includes(gap.agent)) others.push(gap.agent);
+    if (gap.agent !== null && !working.has(gap.agent) && !others.includes(gap.agent)) others.push(gap.agent);
     groups.set(gapSentence(gap), others);
   }
   return [...groups].map(([sentence, others]) => Object.freeze({ sentence, others: Object.freeze(others) }));
