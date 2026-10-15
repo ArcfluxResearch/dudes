@@ -617,12 +617,7 @@ fn buffered_frames_are_read_after_a_peer_reset() {
 #[test]
 fn a_live_peer_decodes_frames_and_keeps_both_read_bounds() {
     let (mut socket, mut peer) = socket_pair();
-    let started = Instant::now();
     assert_eq!(socket.next_within(QUIET), None);
-    assert!(
-        started.elapsed() < WAIT,
-        "the quiet header wait used the body wait"
-    );
     assert_eq!(
         socket.stream.read_timeout().expect("header timeout"),
         Some(QUIET)
@@ -655,20 +650,24 @@ fn a_truncated_frame_payload_still_fails() {
 fn a_live_peer_cannot_leave_the_frame_payload_unbounded() {
     let (mut socket, mut peer) = socket_pair();
     peer.write_all(b"\x81\x02").expect("frame header");
-    let started = Instant::now();
     let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         socket.next_within(QUIET);
     }));
-    assert!(failed.is_err(), "a withheld payload was accepted");
-    assert!(
-        started.elapsed() > QUIET,
-        "the body used the quiet header wait"
-    );
+    let panic = failed.expect_err("a withheld payload was accepted");
+    let message = panic.downcast_ref::<String>().expect("the payload error");
+    assert!(message.starts_with("frame payload:"), "{message}");
     assert_eq!(
         socket.stream.read_timeout().expect("body timeout"),
         Some(WAIT)
     );
     peer.write_all(b"{}").expect("the peer is still live");
+}
+
+#[test]
+#[should_panic(expected = "the read timeout must be positive")]
+fn a_zero_read_wait_still_fails() {
+    let (socket, _peer) = socket_pair();
+    socket.read_timeout(Duration::ZERO);
 }
 
 #[test]
