@@ -1862,6 +1862,50 @@ fn a_started_ticket_records_its_baseline_before_its_first_turn() {
     flow.stop();
 }
 
+/// An agent whose recorded worktree has no lease has no readable tree. The round still records a
+/// finite unavailable baseline, before its first turn, and the turn is issued.
+#[test]
+fn a_round_whose_agent_has_no_readable_tree_records_an_unavailable_baseline_and_still_issues() {
+    let fixture = Fixture::new();
+    let (settings, repo) = enrolled(&fixture);
+    let card = CardId::from_parts(4, 1);
+    let mut records = given("service", &repo, None, card);
+    let Record::AgentHired { worktree, .. } = &mut records[0] else {
+        unreachable!("the first record is the hire");
+    };
+    *worktree = Some(dudes_types::WorktreeId::from_bytes([0xab; 16]));
+    seed(&fixture, records);
+    let flow = Flow::boot(&fixture, settings, repo, [common::fails()]);
+    let (_, agent, goal, _) = Flow::await_turn_number(&fixture, 1);
+
+    let entries = fixture.entries();
+    let baseline_lsn = lsn_of_first(&entries, RecordKind::TicketBaselineRecorded);
+    assert!(baseline_lsn < lsn_of_first(&entries, RecordKind::TurnIssued));
+    let Some(Record::TicketBaselineRecorded { baseline, .. }) = entries
+        .iter()
+        .map(|(_, entry)| entry.record.clone())
+        .find(|record| record.kind() == RecordKind::TicketBaselineRecorded)
+    else {
+        panic!("the baseline was journaled")
+    };
+    assert_eq!(
+        baseline.binding,
+        dudes_proto::diff_stamp::TicketBinding {
+            card,
+            round: 1,
+            goal,
+            claimant: agent,
+        }
+    );
+    assert_eq!(
+        baseline.outcome,
+        dudes_proto::diff_stamp::BaselineOutcome::Unavailable {
+            reason: dudes_proto::DiffRefusal::Unreadable
+        }
+    );
+    flow.stop();
+}
+
 /// A check's result is followed by its stamp before the loop issues the next turn.
 #[test]
 fn a_checks_stamp_names_the_result_and_the_baseline_and_precedes_the_next_turn() {

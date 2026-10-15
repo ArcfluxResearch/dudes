@@ -1299,6 +1299,11 @@ impl Handle {
         }
     }
 
+    /// The flag [`Self::stop_waiting`] sets, for work that must stop when the daemon does.
+    pub(crate) fn stopping_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.stopping)
+    }
+
     /// Mark the daemon as stopping, before the exit path joins connections.
     pub(crate) fn stop_waiting(&self) {
         let _admission = self
