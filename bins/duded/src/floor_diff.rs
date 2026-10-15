@@ -267,6 +267,30 @@ struct State {
     sessions: BTreeMap<[u8; 32], Session>,
 }
 
+impl State {
+    /// Drop every manifest whose lifetime has ended, remembering that it did.
+    fn expire(&mut self, now: Timestamp) {
+        for kept in self.sessions.values_mut() {
+            if kept
+                .manifest
+                .as_ref()
+                .is_some_and(|stored| now >= stored.manifest.expires_at())
+            {
+                kept.manifest = None;
+                kept.expired = true;
+            }
+        }
+    }
+
+    /// How many sessions other than `session` hold a manifest.
+    fn holders_besides(&self, session: [u8; 32]) -> usize {
+        self.sessions
+            .iter()
+            .filter(|(key, kept)| **key != session && kept.manifest.is_some())
+            .count()
+    }
+}
+
 enum Admitted {
     New,
     Held(Arc<Stored>),
@@ -444,21 +468,8 @@ impl DiffReads {
         state
             .sessions
             .retain(|_, kept| kept.seen.is_none_or(|seen| at.duration_since(seen) < KEEP));
-        for kept in state.sessions.values_mut() {
-            if kept
-                .manifest
-                .as_ref()
-                .is_some_and(|stored| now >= stored.manifest.expires_at())
-            {
-                kept.manifest = None;
-                kept.expired = true;
-            }
-        }
-        let others = state
-            .sessions
-            .iter()
-            .filter(|(key, kept)| **key != session && kept.manifest.is_some())
-            .count();
+        state.expire(now);
+        let others = state.holders_besides(session);
         let kept = state.sessions.entry(session).or_default();
         kept.seen = Some(at);
         if kept.charged >= self.allowance {
@@ -498,12 +509,8 @@ impl DiffReads {
         &self,
         lookup: &impl Fn(CardId) -> Option<Result<Recorded, DiffRefusal>>,
         card: CardId,
-    ) -> Result<Result<Subject, DiffRefusal>, ()> {
-        match lookup(card) {
-            None => Err(()),
-            Some(Err(reason)) => Ok(Err(reason)),
-            Some(Ok(recorded)) => Ok(self.bind(&recorded)),
-        }
+    ) -> Option<Result<Subject, DiffRefusal>> {
+        lookup(card).map(|found| found.and_then(|recorded| self.bind(&recorded)))
     }
 
     fn drop_manifest(&self, session: [u8; 32]) {
@@ -539,12 +546,12 @@ impl DiffReads {
             (_, Admitted::New) => return refused(DiffRefusal::InvalidRequest),
         };
         let subject = match self.resolve(&lookup, card) {
-            Err(()) => return Reply::Unavailable,
-            Ok(Err(reason)) => {
+            None => return Reply::Unavailable,
+            Some(Err(reason)) => {
                 self.drop_manifest(session);
                 return refused(reason);
             }
-            Ok(Ok(subject)) => subject,
+            Some(Ok(subject)) => subject,
         };
         let current = match (request, &admitted) {
             (DiffRequest::Manifest { expected_seq, .. }, _) => subject.binding.seq == *expected_seq,
@@ -564,9 +571,9 @@ impl DiffReads {
             return Reply::Revoked;
         }
         match self.resolve(&lookup, card) {
-            Err(()) => return Reply::Unavailable,
-            Ok(Ok(again)) if again == subject => {}
-            Ok(_) => {
+            None => return Reply::Unavailable,
+            Some(Ok(again)) if again == subject => {}
+            Some(_) => {
                 self.drop_manifest(session);
                 return refused(DiffRefusal::StaleTicket);
             }
@@ -578,17 +585,8 @@ impl DiffReads {
     /// charged unless the reply fits the session's allowance.
     fn deliver(&self, session: [u8; 32], built: Built, subject: Subject, now: Timestamp) -> Reply {
         let mut state = self.state();
-        let others = state
-            .sessions
-            .iter()
-            .filter(|(key, kept)| {
-                **key != session
-                    && kept
-                        .manifest
-                        .as_ref()
-                        .is_some_and(|stored| now < stored.manifest.expires_at())
-            })
-            .count();
+        state.expire(now);
+        let others = state.holders_besides(session);
         let Some(kept) = state.sessions.get_mut(&session) else {
             return refused(DiffRefusal::StaleManifest);
         };

@@ -122,14 +122,11 @@ impl Lab {
             .map(|dir| dir.join("git"))
             .find(|path| path.is_file())
             .unwrap();
-        let mut reader = DiffReader::new(
+        let reader = DiffReader::new(
             runner.clone(),
             std::env::var_os("PATH"),
             &root.path().join("scratch"),
         );
-        if let Some(deadline) = deadline {
-            reader = reader.with_deadline(deadline);
-        }
         let now = Arc::new(AtomicI64::new(START));
         let capture_clock = Arc::clone(&now);
         let capture = Arc::new(DiffCapture::new(
@@ -137,7 +134,15 @@ impl Lab {
             Box::new(move || Timestamp::from_unix_millis(capture_clock.load(Ordering::Relaxed))),
         ));
         let route_clock = Arc::clone(&now);
-        let reads = DiffReads::new(capture.reader(), capture.slot(), move || {
+        let mut route_reader = DiffReader::new(
+            runner.clone(),
+            std::env::var_os("PATH"),
+            &root.path().join("route-scratch"),
+        );
+        if let Some(deadline) = deadline {
+            route_reader = route_reader.with_deadline(deadline);
+        }
+        let reads = DiffReads::new(Arc::new(route_reader), capture.slot(), move || {
             Timestamp::from_unix_millis(route_clock.load(Ordering::Relaxed))
         })
         .with_limits(interval, Duration::from_secs(30));
