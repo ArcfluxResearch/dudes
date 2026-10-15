@@ -6,7 +6,7 @@
 mod common;
 
 use std::io::{Read as _, Write as _};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -424,6 +424,10 @@ impl Socket {
             }
             Err(_) => return Some(Frame::Gone),
         }
+        Some(self.read_frame(head))
+    }
+
+    fn read_frame(&mut self, head: [u8; 2]) -> Frame {
         let length = match head[1] & 0x7f {
             n @ 0..=125 => usize::from(n),
             126 => {
@@ -440,7 +444,7 @@ impl Socket {
         let mut payload = vec![0; length];
         self.stream.set_read_timeout(Some(WAIT)).expect("timeout");
         self.stream.read_exact(&mut payload).expect("frame payload");
-        Some(match head[0] {
+        match head[0] {
             0x81 => {
                 let text = String::from_utf8(payload).expect("UTF-8 text");
                 self.texts.push(text.clone());
@@ -450,7 +454,7 @@ impl Socket {
                 (payload.len() >= 2).then(|| u16::from_be_bytes([payload[0], payload[1]])),
             ),
             other => panic!("unexpected opcode {other:#x}"),
-        })
+        }
     }
 
     fn next(&mut self) -> Frame {
@@ -527,6 +531,132 @@ impl Socket {
             .expect("terminal.data is canonical base64")
             .0
     }
+}
+
+fn socket_pair() -> (Socket, TcpStream) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let stream = TcpStream::connect(listener.local_addr().expect("loopback address"))
+        .expect("loopback client");
+    let (peer, _) = listener.accept().expect("loopback peer");
+    stream
+        .set_read_timeout(Some(WAIT))
+        .expect("initial timeout");
+    (
+        Socket {
+            stream,
+            texts: Vec::new(),
+        },
+        peer,
+    )
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn buffered_frames_are_read_after_a_peer_reset() {
+    for (wire, expected) in [
+        (&b"\x81\x02{}"[..], Frame::Message(json!({}))),
+        (&b"\x88\x02\x03\xf0"[..], Frame::Close(Some(1008))),
+    ] {
+        let (mut socket, mut peer) = socket_pair();
+        let after_header = std::sync::Barrier::new(2);
+        let after_close = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                peer.write_all(wire).expect("frame");
+                after_header.wait();
+                nix::sys::socket::setsockopt(
+                    &peer,
+                    nix::sys::socket::sockopt::Linger,
+                    &nix::libc::linger {
+                        l_onoff: 1,
+                        l_linger: 0,
+                    },
+                )
+                .expect("abortive close");
+                drop(peer);
+                after_close.wait();
+            });
+            let mut head = [0; 2];
+            socket.stream.read_exact(&mut head).expect("frame header");
+            after_header.wait();
+            after_close.wait();
+            let deadline = Instant::now() + WAIT;
+            loop {
+                match socket.stream.set_read_timeout(Some(WAIT)) {
+                    Err(error) => {
+                        assert_eq!(error.raw_os_error(), Some(nix::libc::EINVAL));
+                        break;
+                    }
+                    Ok(()) => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "the reset did not end the socket"
+                        );
+                        std::thread::yield_now();
+                    }
+                }
+            }
+            assert_eq!(socket.read_frame(head), expected);
+            assert_eq!(socket.next_within(QUIET), Some(Frame::Gone));
+        });
+    }
+}
+
+#[test]
+fn a_live_peer_decodes_frames_and_keeps_both_read_bounds() {
+    let (mut socket, mut peer) = socket_pair();
+    let started = Instant::now();
+    assert_eq!(socket.next_within(QUIET), None);
+    assert!(
+        started.elapsed() < WAIT,
+        "the quiet header wait used the body wait"
+    );
+    assert_eq!(
+        socket.stream.read_timeout().expect("header timeout"),
+        Some(QUIET)
+    );
+
+    peer.write_all(b"\x81\x02{}").expect("JSON frame");
+    assert_eq!(socket.next_within(QUIET), Some(Frame::Message(json!({}))));
+    assert_eq!(socket.texts, ["{}"]);
+    assert_eq!(
+        socket.stream.read_timeout().expect("body timeout"),
+        Some(WAIT)
+    );
+
+    peer.write_all(b"\x88\x02\x03\xf0").expect("close frame");
+    assert_eq!(socket.next_within(QUIET), Some(Frame::Close(Some(1008))));
+    peer.shutdown(std::net::Shutdown::Write).expect("peer FIN");
+    assert_eq!(socket.next_within(QUIET), Some(Frame::Gone));
+}
+
+#[test]
+#[should_panic(expected = "frame payload")]
+fn a_truncated_frame_payload_still_fails() {
+    let (mut socket, mut peer) = socket_pair();
+    peer.write_all(b"\x81\x02{").expect("partial frame");
+    peer.shutdown(std::net::Shutdown::Write).expect("peer FIN");
+    socket.next_within(QUIET);
+}
+
+#[test]
+fn a_live_peer_cannot_leave_the_frame_payload_unbounded() {
+    let (mut socket, mut peer) = socket_pair();
+    peer.write_all(b"\x81\x02").expect("frame header");
+    let started = Instant::now();
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        socket.next_within(QUIET);
+    }));
+    assert!(failed.is_err(), "a withheld payload was accepted");
+    assert!(
+        started.elapsed() >= WAIT,
+        "the body used the quiet header wait"
+    );
+    assert_eq!(
+        socket.stream.read_timeout().expect("body timeout"),
+        Some(WAIT)
+    );
+    peer.write_all(b"{}").expect("the peer is still live");
 }
 
 #[test]
