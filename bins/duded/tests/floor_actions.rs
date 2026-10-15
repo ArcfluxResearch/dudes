@@ -17116,10 +17116,8 @@ fn legacy_goal_set_keeps_its_bypass_and_browser_current_goal_check_rules() {
     let release = clock.hold();
     end_turn(&running.handle, turn, None);
     clock.wait_held();
-    let legacy = common::set_goal(
-        &running.handle,
-        common::goal_params(agent, &[true_program(), "regression"]),
-    );
+    let params = common::goal_params(agent, &[true_program(), "regression"]);
+    let legacy = common::set_goal(&running.handle, params);
     assert_ne!(legacy, old_goal);
     assert!(
         runner.ran().is_empty(),

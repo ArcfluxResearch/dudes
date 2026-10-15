@@ -1761,11 +1761,8 @@ fn assert_failed_replay_preserves_history(failure: &str) {
         ..dudes_supervisor::testing::FakeHost::wall_clock_anchored()
     });
     let settings = history.fixture.settings();
-    let mut seams = with_owned_program(
-        &settings,
-        host.clone(),
-        Arc::new(common::ScriptedRunner::default()),
-    );
+    let predicates = Arc::new(common::ScriptedRunner::default());
+    let mut seams = with_owned_program(&settings, host.clone(), predicates);
     seams.adapters = Adapters::new([Box::new(ClaudeAdapter::new(ClaudeConfig {
         command: if failure == "resolution" {
             history
