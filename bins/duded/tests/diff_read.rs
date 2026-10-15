@@ -135,6 +135,10 @@ impl Lab {
             EnvVar::new("HOME", self.root.path().join("home")),
             EnvVar::new("GIT_CONFIG_NOSYSTEM", "1"),
             EnvVar::new("GIT_CONFIG_GLOBAL", "/dev/null"),
+            // A commit otherwise detaches a background maintenance run that briefly adds a lock file to the object directory.
+            EnvVar::new("GIT_CONFIG_COUNT", "1"),
+            EnvVar::new("GIT_CONFIG_KEY_0", "maintenance.auto"),
+            EnvVar::new("GIT_CONFIG_VALUE_0", "false"),
             EnvVar::new("GIT_AUTHOR_NAME", "Fixture"),
             EnvVar::new("GIT_AUTHOR_EMAIL", "fixture@example.invalid"),
             EnvVar::new("GIT_COMMITTER_NAME", "Fixture"),
