@@ -11,9 +11,22 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
-### Fixed
+## [0.87.1] - 2026-10-15
 
-- Recognize native Linux ZFS and OverlayFS, including Docker filesystems, when sampling instruction files. Direct NFS, CIFS and SMB mounts remain refused. FUSE and unknown filesystem types also remain refused. OverlayFS may hide network-backed layers, whose locality and freshness Dudes does not establish.
+### Highlights
+
+- **Passing tickets reach Ready for you.** In 0.87.0, the first ticket landed in Needs you for every engine because standing engine limits blocked instruction review. This release fixes that behavior. A ticket whose completion check passes and whose only instruction gaps are standing engine limits reaches Ready for you, with a note explaining what Dudes could not observe. Known shared instruction changes and gaps found during sampling still require review. (#65)
+- **Keep Floor sign-ins across upgrades.** `dudes upgrade` carries live Floor sign-ins between versions that support the handover. An open tab asks for one reload after an upgrade or restart. Only an upgrade keeps the sign-in. After a plain restart, reloading asks you to sign in again. (#60, #61)
+
+### Fixes
+
+- Recognize native Linux ZFS and OverlayFS, including Docker filesystems, when sampling instruction files. Direct NFS, CIFS and SMB mounts remain refused. FUSE and unknown filesystem types also remain refused. OverlayFS may hide network-backed layers, whose locality and freshness Dudes does not establish. (#70)
+- Quickstart prints the Floor link last and omits misleading failing-check advice for an idle first hire. Floor help explains that enabled actions let a session control agents. Uninstall names engine-history and snapshot folders only when they exist. (#69)
+- Avoid a passing lone-agent ticket reaching Needs you because its finished child process was still counted as uncertain. Dudes now uses the host's proof that the child is gone when counting the folder's agents. (#67)
+- Refuse an explicit completion check program path that resolves inside the project's repository when it is entered during quickstart, workspace enrollment, or check registration. Guided quickstart asks for another program before writing configuration. (#64)
+- Warn that removing an agent worktree deletes ignored files, and show how to inspect the tree before removing it. (#62)
+
+The running 0.87.0 daemon cannot hand over Floor sign-ins. After upgrading from 0.87.0, run `dudes floor open` to sign in again. A plain `dudes stop` followed by `dudes start` also ends Floor sessions.
 
 ## [0.87.0] - 2026-10-14
 
@@ -153,7 +166,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.1...HEAD
+[0.87.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.0...v0.87.1
 [0.87.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.86.0...v0.87.0
 [0.86.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.85.1...v0.86.0
 [0.85.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.85.0...v0.85.1
