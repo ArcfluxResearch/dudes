@@ -261,6 +261,12 @@ export interface FloorState {
    */
   readonly git: boolean;
   /**
+   * Whether the latest snapshot carried the `diff` sibling: the operator turned on both the Git
+   * tab and the ticket changes view. It names no path, id or repository. Display metadata, never
+   * authority, and never kept past the subscription that carried it.
+   */
+  readonly diff: boolean;
+  /**
    * Whether the latest snapshot carried the `ticket` sibling: the operator turned the board's
    * actions on. Without it the page draws no ticket form and no ticket action.
    */
@@ -311,6 +317,7 @@ const EMPTY: FloorState = Object.freeze({
   terminal: false,
   retire: false,
   git: false,
+  diff: false,
   ticket: false,
   daemon: null,
   settings: null,
@@ -366,6 +373,7 @@ export function noteTransport(event: 'open' | 'close'): void {
     terminal: event === 'close' ? false : state.terminal,
     retire: event === 'close' ? false : state.retire,
     git: event === 'close' ? false : state.git,
+    diff: event === 'close' ? false : state.diff,
     ticket: event === 'close' ? false : state.ticket,
     daemon: event === 'close' ? null : state.daemon,
     settings: event === 'close' ? null : state.settings,
@@ -462,6 +470,7 @@ export function invalidateFloorEpoch(): void {
     terminal: false,
     retire: false,
     git: false,
+    diff: false,
     ticket: false,
     daemon: null,
     settings: null,
@@ -511,7 +520,7 @@ export function applyServerFrame(
         retiredAgents: Object.freeze([]),
         messages: Object.freeze([]),
         threads: Object.freeze([]), messagesLsn: null, onboarding: null, checks: null, answering: null, control: false,
-        goalChange: null, terminal: false, retire: false, git: false, ticket: false, daemon: null, settings: null, journalStopped: null,
+        goalChange: null, terminal: false, retire: false, git: false, diff: false, ticket: false, daemon: null, settings: null, journalStopped: null,
         finishedToday: FINISHED_TODAY_UNAVAILABLE, closingTime: null });
       return;
     case 'floor.heartbeat':
@@ -545,6 +554,7 @@ interface ServerMessage {
   readonly terminal?: unknown;
   readonly retire?: unknown;
   readonly git?: unknown;
+  readonly diff?: unknown;
   readonly ticket?: unknown;
   readonly daemon?: unknown;
   readonly settings?: unknown;
@@ -792,6 +802,7 @@ function fromSnapshot(message: ServerMessage): FloorState {
     terminal: decodeSwitchSibling(message.terminal),
     retire: decodeSwitchSibling(message.retire),
     git: decodeSwitchSibling(message.git),
+    diff: decodeSwitchSibling(message.diff),
     ticket: decodeSwitchSibling(message.ticket),
     goalChange: decodeGoalLimits(message.goal),
     daemon: decodeDaemonReport(message.daemon),
@@ -941,6 +952,7 @@ function unchanged(current: FloorState, next: FloorState): boolean {
     && current.terminal === next.terminal
     && current.retire === next.retire
     && current.git === next.git
+    && current.diff === next.diff
     && current.ticket === next.ticket
     && current.daemon === next.daemon
     && current.settings === next.settings

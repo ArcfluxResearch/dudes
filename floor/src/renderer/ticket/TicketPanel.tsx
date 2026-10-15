@@ -5,6 +5,8 @@ import type { FormEvent } from 'react';
 
 import type { CardRow } from '../board.ts';
 import { browserControlDeps } from '../control/control.ts';
+import { DiffPanel } from '../diff/DiffPanel.tsx';
+import { browserDiffTransport } from '../diff/transport.ts';
 import { getFloorState } from '../floor/store.ts';
 import type { FloorState } from '../floor/store.ts';
 import { handFocusOnLeave } from '../focus.ts';
@@ -334,6 +336,8 @@ export function TicketPanel({ floor, card, onHire }: {
     {loaded?.coverage != null && loaded.coverage.limits.length > 0
       ? <section aria-label="What Dudes could not see"><h4>What Dudes could not see</h4><p>{coverageText(loaded.coverage)}</p></section> : null}
     {card.status === 'review' ? <ChangedFiles floor={floor} card={card} /> : null}
+    {floor.diff && (card.status === 'review' || card.status === 'blocked')
+      ? <DiffPanel card={card.id} expectedSeq={card.seq} transport={browserDiffTransport} /> : null}
     {loaded?.result == null ? null : <section aria-label="Check result"><h4>Check result</h4>
       <p>{loaded.result.pass ? 'The check passed' : 'The check failed'}
         {loaded.result.exit === null ? '' : `, exit status ${loaded.result.exit}`}

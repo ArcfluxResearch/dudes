@@ -18,14 +18,20 @@
 .diff-panel button:disabled { cursor: default; opacity: 0.6; }
 .diff-panel button:focus-visible, .diff-source:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
 .diff-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 0.75rem 0; }
-.diff-freshness { padding: 0.6rem 0.75rem; border-left: 3px solid var(--accent-ink); background: var(--surface-muted); font-weight: 600; }
+.diff-fresh { padding: 0.6rem 0.75rem; border-left: 3px solid var(--line); background: var(--surface-muted); }
+.diff-badge { display: inline-block; padding: 0.05rem 0.55rem; border: 1px solid var(--accent-ink); border-radius: 999px; background: var(--selected); font-weight: 600; white-space: nowrap; }
+.diff-badge[data-freshness='changed_after_check'] { border-color: var(--danger-ink); background: var(--danger-background); }
+.diff-badge[data-freshness='unknown'] { border-style: dashed; border-color: var(--muted-ink); background: transparent; }
 .diff-warning { padding: 0.6rem 0.75rem; border-left: 3px solid var(--danger-ink); background: var(--danger-background); }
 .diff-omission { border-left: 2px solid var(--line); padding-left: 0.65rem; }
 .diff-path { overflow-wrap: anywhere; font-family: var(--font-data); }
 .diff-kind { color: var(--muted-ink); font-size: 0.7rem; }
 .diff-selection { list-style: none; padding: 0; margin: 0.75rem 0; border-top: 1px solid var(--line); }
 .diff-selection li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.5rem; padding: 0.65rem 0; border-bottom: 1px solid var(--line); }
-.diff-selection li > p { grid-column: 1 / -1; margin: 0; }
+.diff-selection li > p, .diff-selection li > .diff-compare { grid-column: 1 / -1; margin: 0; }
+.diff-compare { min-width: 0; }
+.diff-sides { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 0.3rem; overflow: hidden; }
+.diff-sides > .diff-side + .diff-side { border-top: 0; border-left: 1px solid var(--line); }
 .diff-file { min-width: 0; margin: 1.25rem 0; border: 1px solid var(--line); border-radius: 0.3rem; overflow: hidden; }
 .diff-file h5 { margin: 0; padding: 0.65rem; background: var(--surface-muted); font-size: 0.8rem; }
 .diff-file > p { padding: 0 0.65rem; }

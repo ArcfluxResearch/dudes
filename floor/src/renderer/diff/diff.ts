@@ -203,3 +203,30 @@ export function decodeDiffResponse(body: string): DiffResponse | null {
   }
   return null;
 }
+
+export async function postDiff(request: DiffRequest, csrf: string | null,
+  fetch: (url: string, init: RequestInit) => Promise<{ readonly status: number; text(): Promise<string> }>): Promise<DiffOutcome> {
+  if (csrf === null) return Object.freeze({ kind: 'forbidden' });
+  let status: number;
+  let body: string;
+  try {
+    const reply = await fetch('/floor/diff', {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      body: JSON.stringify(request),
+    });
+    status = reply.status;
+    body = await reply.text();
+  } catch {
+    return Object.freeze({ kind: 'unavailable' });
+  }
+  if (status === 200) {
+    const response = decodeDiffResponse(body);
+    return response === null ? Object.freeze({ kind: 'unknown' }) : Object.freeze({ kind: 'response', response });
+  }
+  if (status === 403) return Object.freeze({ kind: 'forbidden' });
+  return Object.freeze({ kind: status === 503 ? 'unavailable' : 'unknown' });
+}
