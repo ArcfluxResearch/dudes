@@ -88,7 +88,9 @@ export class DevTools {
       }
     });
     input.on('end', () => this.close());
+    input.on('close', () => this.close());
     input.on('error', () => this.close());
+    output.on('close', () => this.close());
     output.on('error', () => this.close());
   }
 
@@ -305,8 +307,11 @@ exec /bin/sleep 120
       '--remote-debugging-pipe', `--user-data-dir=${profile}`, 'about:blank',
     ], { env: this.env, detached: true, stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
     this.chromeChild = this.chrome;
-    this.chrome.on('error', () => {});
-    this.cdp = new DevTools(this.chrome.stdio[4], this.chrome.stdio[3]);
+    let cdp;
+    this.chrome.on('error', () => cdp?.close());
+    this.chrome.on('exit', () => cdp?.close());
+    cdp = new DevTools(this.chrome.stdio[4], this.chrome.stdio[3]);
+    this.cdp = cdp;
     await this.cdp.send('Browser.getVersion');
     check(this.chrome.exitCode === null && this.chrome.signalCode === null, 'Chrome exited before ownership was recorded');
     const identity = await this.processInfo(this.chrome.pid);

@@ -29,9 +29,6 @@ use serde_json::json;
 
 mod common;
 
-/// Inside the two-second reply timeout, with room for the slower fsyncs of a shared CI machine.
-const PROMPT: Duration = Duration::from_millis(1_500);
-
 struct Floor {
     fixture: Fixture,
     settings: duded::Settings,
@@ -154,6 +151,27 @@ impl Floor {
     }
 }
 
+fn paused_socket_denials() -> [VendorReply; 2] {
+    [
+        VendorReply {
+            body: Some(json!({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "the loop is paused"
+            }})),
+            exit_code: 2,
+        },
+        VendorReply {
+            body: Some(json!({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "the daemon did not answer the control hook; retry, and restart duded if this persists"
+            }})),
+            exit_code: 2,
+        },
+    ]
+}
+
 fn hooks_until(mut done: impl FnMut() -> bool, mut hook: impl FnMut()) {
     let deadline = Instant::now() + Duration::from_secs(120);
     while !done() {
@@ -232,23 +250,25 @@ fn a_queued_hook_runs_before_an_eight_by_thirty_two_backlog_drains() {
         marker.recv_timeout(Duration::from_secs(30)),
         Ok(Ok(duded::ports::Answered::Done))
     ));
-    let paused_socket_reply = VendorReply {
-        body: Some(json!({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": "the loop is paused"
-        }})),
-        exit_code: 2,
-    };
+    let socket_denials = paused_socket_denials();
     hooks_until(
         || floor.delivered() == 8 * 32,
         || {
-            assert_eq!(
-                floor.hook(),
-                paused_socket_reply,
-                "the socket hook answered a paused agent"
+            let reply = floor.hook();
+            assert!(
+                socket_denials.contains(&reply),
+                "the socket hook must deny the paused agent: {reply:?}"
             );
         },
+    );
+    assert!(matches!(
+        handle.ask(duded::ports::Ask::Pause(floor.agents[1])),
+        Ok(duded::ports::Answered::Done)
+    ));
+    assert_eq!(
+        floor.hook(),
+        socket_denials[0],
+        "the writer answered the paused socket hook after the mailbox drained"
     );
     running.stop(ExitCause::ShutdownRpc);
     let records = floor.fixture.records();
@@ -270,9 +290,14 @@ fn a_queued_hook_runs_before_an_eight_by_thirty_two_backlog_drains() {
 }
 
 #[test]
-fn ten_thousand_inbox_entries_defer_the_recipient_and_hooks_stay_prompt() {
+fn ten_thousand_inbox_entries_defer_the_recipient_without_blocking_a_queued_hook() {
     let mut floor = Floor::new(2);
     let (sender, recipient) = (floor.agents[0], floor.agents[1]);
+    assert!(matches!(
+        floor.running.handle.ask(duded::ports::Ask::Pause(sender)),
+        Ok(duded::ports::Answered::Done)
+    ));
+    floor.running.stop(ExitCause::ShutdownRpc);
     let inbox = floor.directory(recipient, "inbox");
     fs::create_dir_all(&inbox).unwrap();
     for n in 0..10_000 {
@@ -281,36 +306,72 @@ fn ten_thousand_inbox_entries_defer_the_recipient_and_hooks_stay_prompt() {
     let id = MailId::from_parts(7, 1);
     floor.send(sender, recipient, id);
     let id = dudes_journal::mail_recipient_id(id, recipient);
-    let mut slowest = Duration::ZERO;
-    hooks_until(
-        || {
-            floor
-                .mailbox_report()
-                .mailbox
-                .diagnostics
-                .iter()
-                .any(|row| {
-                    row.agent == recipient
-                        && row.filename == "inbox"
-                        && row.problem == MailboxProblem::ScanOverflow
-                })
+    let clock = Arc::new(TestClock::new());
+    let daemon = boot(
+        &floor.settings,
+        seams_with(
+            &floor.settings,
+            SharedHost::new(),
+            Arc::new(ScriptedRunner::default()),
+            Arc::clone(&clock),
+            Witness::default(),
+            Arc::clone(&floor.resolver) as Arc<dyn PeerResolver>,
+        ),
+    )
+    .expect("reboot before queuing overflowed mailbox work");
+    let handle = daemon.handle();
+    let event = dudes_providers::claude::translate(sender, clock.now(), &payload("PreToolUse"))
+        .expect("translate the hook");
+    let hook = handle
+        .hook_queued_for_test(event)
+        .expect("queue the hook before the writer starts");
+    let marker = handle
+        .ask_queued(duded::ports::Ask::Pause(recipient))
+        .expect("queue the writer-order marker after the hook");
+    floor.running = common::start(daemon);
+    let reply = hook
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the writer did not answer the queued hook")
+        .expect("the writer refused the queued hook")
+        .into_reply_for_test();
+    assert_eq!(
+        reply,
+        HookReply {
+            decision: HookDecision::Deny {
+                reason: "the loop is paused".to_owned(),
+            },
+            context: None,
         },
-        || {
-            let started = Instant::now();
-            floor.hook();
-            slowest = slowest.max(started.elapsed());
-        },
+        "the writer answered the paused hook"
     );
-    assert!(slowest < PROMPT, "slowest hook reply {slowest:?}");
+    assert!(matches!(
+        marker.recv_timeout(Duration::from_secs(30)),
+        Ok(Ok(duded::ports::Answered::Done))
+    ));
     assert!(
         floor
-            .fixture
-            .records()
+            .mailbox_report()
+            .mailbox
+            .diagnostics
+            .iter()
+            .any(|row| {
+                row.agent == recipient
+                    && row.filename == "inbox"
+                    && row.problem == MailboxProblem::ScanOverflow
+            })
+    );
+    floor.running.stop(ExitCause::ShutdownRpc);
+    let records = floor.fixture.records();
+    let marker = records
+        .iter()
+        .position(|record| matches!(record, Record::Pause { agent, .. } if *agent == recipient))
+        .expect("the writer-order marker is durable");
+    assert!(
+        records[..marker]
             .iter()
             .any(|record| matches!(record, Record::Mail { id: found, .. } if *found == id))
     );
     assert!(!inbox.join(format!("{id}.json")).exists());
-    floor.running.stop(ExitCause::ShutdownRpc);
 }
 
 #[test]

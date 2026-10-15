@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
-import { once } from 'node:events';
+import childProcess, { execFile, spawn } from 'node:child_process';
+import { EventEmitter, once } from 'node:events';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
@@ -148,6 +149,135 @@ test('null DevTools reply closes the pipes and rejects pending commands', async 
   } finally {
     cdp.close();
     await rejected;
+  }
+});
+
+for (const pipe of ['input', 'output']) {
+  test(`closed DevTools ${pipe} rejects pending commands without spending their deadline`, async (t) => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const cdp = new DevTools(input, output);
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let rejected = false;
+    const pending = cdp.send('Browser.getVersion').catch((error) => {
+      rejected = true;
+      return error;
+    });
+    try {
+      const closed = once(cdp[pipe], 'close');
+      cdp[pipe].destroy();
+      await closed;
+      const beforeDeadline = rejected;
+      t.mock.timers.runAll();
+      assert.equal((await pending).message, 'Chrome connection closed');
+      assert.equal(beforeDeadline, true);
+      assert.equal(cdp.pending.size, 0);
+      assert.throws(() => cdp.send('Browser.getVersion'), /Chrome connection closed/);
+    } finally {
+      t.mock.timers.reset();
+      cdp.close();
+      await pending;
+    }
+  });
+}
+
+test('an open DevTools pipe keeps the command deadline and a completed reply', async (t) => {
+  const cdp = new DevTools(new PassThrough(), new PassThrough());
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = cdp.send('Browser.getVersion').catch((error) => error);
+  try {
+    t.mock.timers.tick(29999);
+    assert.equal(cdp.pending.size, 1);
+    assert.equal(cdp.closed, false);
+    t.mock.timers.tick(1);
+    assert.equal((await pending).message, 'Chrome Browser.getVersion timed out');
+    assert.equal(cdp.closed, false);
+    const answered = cdp.send('Browser.getVersion');
+    cdp.input.write(JSON.stringify({ id: 2, result: { product: 'pipe control' } }) + '\0');
+    cdp.close();
+    assert.deepEqual(await answered, { product: 'pipe control' });
+  } finally {
+    t.mock.timers.reset();
+    cdp.close();
+    await pending;
+  }
+});
+
+test('Chrome spawn failure has an error handler before stdio is available', async (t) => {
+  const child = new EventEmitter();
+  t.mock.method(childProcess, 'spawn', () => child);
+  syncBuiltinESMExports();
+  try {
+    const run = new ScratchRun('', process.cwd(), '', '', 'chrome-stand-in');
+    await assert.rejects(run.browser(), TypeError);
+    assert.doesNotThrow(() => child.emit('error', new Error('spawn EMFILE')));
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
+test('Chrome exit rejects the handshake while a helper retains the reply pipe', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dudes-smoke-test-'));
+  const program = join(root, 'chrome-stand-in');
+  const witness = join(root, 'request.json');
+  const run = new ScratchRun(root, process.cwd(), '', '', program);
+  let helper;
+  let handshake;
+  try {
+    for (const path of [run.repo, run.home, run.env.TMPDIR]) await mkdir(path);
+    await writeFile(program, `#!/usr/bin/env node
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const input = fs.createReadStream(null, { fd: 3 });
+let buffer = '';
+input.on('data', (chunk) => {
+  buffer += chunk;
+  if (!buffer.includes('\\0')) return;
+  input.pause();
+  const request = JSON.parse(buffer.slice(0, buffer.indexOf('\\0')));
+  const helper = spawn(process.execPath, ['-e',
+    'setTimeout(() => {}, 10000);'],
+    { stdio: ['ignore', 'ignore', 'ignore', 'ignore', 4] });
+  fs.writeFileSync(${JSON.stringify(witness)}, JSON.stringify({ request, helper: helper.pid }));
+  process.exit(0);
+});
+`, { mode: 0o700 });
+    run.env.PATH = `${dirname(process.execPath)}${delimiter}${run.env.PATH}`;
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let rejected = false;
+    handshake = run.browser().then(() => null, (error) => {
+      rejected = true;
+      return error;
+    });
+    await once(run.chrome, 'exit', { signal: AbortSignal.timeout(5000) });
+    await new Promise((done) => setImmediate(done));
+    const beforeDeadline = rejected;
+    const observed = JSON.parse(await readFile(witness, 'utf8'));
+    helper = await run.processInfo(observed.helper);
+    assert.deepEqual(observed.request, { id: 1, method: 'Browser.getVersion', params: {} });
+    assert.equal(run.chrome.exitCode, 0);
+    assert.equal(helper?.group, run.chrome.pid);
+    assert.equal(run.cdp.input.readableEnded, false);
+    t.mock.timers.runAll();
+    const error = await handshake;
+    t.diagnostic(`child exit with retained reply pipe: ${error?.message}; rejected before deadline: ${beforeDeadline}`);
+    assert.equal(error?.message, 'Chrome connection closed');
+    assert.equal(beforeDeadline, true);
+  } finally {
+    t.mock.timers.reset();
+    run.cdp?.close();
+    if (!helper) {
+      const observed = await readFile(witness, 'utf8').then(JSON.parse, () => null);
+      if (observed) helper = await run.processInfo(observed.helper);
+    }
+    if (helper) await run.killOwned(helper);
+    if (run.chrome) {
+      await stopChild(run.chrome);
+      await eventually(() => !run.groupAlive(run.chrome.pid));
+    }
+    await handshake;
+    await rm(root, { recursive: true, force: true });
   }
 });
 

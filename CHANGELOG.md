@@ -11,6 +11,20 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.87.2] - 2026-10-16
+
+### Changes
+
+- New ticket rounds record a checkout baseline before their first turn and a review stamp after completion checks. Once either new required record is written, Dudes 0.87.1 and older refuse to open that journal. (#78)
+
+### Fixes
+
+- Explain instruction-review gaps in plain language in the Floor and CLI, group repeated reasons, and distinguish standing engine limits from findings during the ticket. (#68)
+- Explain both used or expired Floor sign-in links and the limit of four signed-in tabs, with steps to obtain a new link or end existing sign-ins. (#68)
+- List each known changed instruction path once per context, even when it appears in multiple review intervals or is reported by more than one agent. (#72)
+- Name the record kind when an instruction record is refused before append. Keep the actual journal position for failures in durable instruction history. (#80)
+- Cancel ticket checkout captures when the daemon is shutting down. (#83)
+
 ## [0.87.1] - 2026-10-15
 
 ### Highlights
@@ -166,7 +180,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.1...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.2...HEAD
+[0.87.2]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.1...v0.87.2
 [0.87.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.0...v0.87.1
 [0.87.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.86.0...v0.87.0
 [0.86.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.85.1...v0.86.0
