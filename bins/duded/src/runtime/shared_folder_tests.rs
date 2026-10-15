@@ -2,12 +2,8 @@ use super::work_test_support as common;
 use super::*;
 use dudes_types::IsolationMode;
 
-type TestDaemon = Daemon<
-    common::SharedHost,
-    common::ScriptedRunner,
-    common::TestClock,
-    dudes_supervisor::testing::FakeRng,
->;
+type TestDaemon =
+    Daemon<common::SharedHost, common::ScriptedRunner, common::TestClock, common::FixtureRng>;
 
 fn hire(daemon: &mut TestDaemon, cwd: &std::path::Path, inherit: bool) -> AgentId {
     let answer = daemon
@@ -82,7 +78,9 @@ fn a_batch_sees_the_created_child_before_its_spawn_receipt_is_folded() {
         let distinct = fixture.state.path().join("distinct");
         std::fs::create_dir(&distinct).unwrap();
         let host = common::SharedHost::new();
+        let settings = fixture.settings();
         let mut seams = common::seams(
+            &settings,
             host.clone(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::new()),
@@ -96,7 +94,7 @@ fn a_batch_sees_the_created_child_before_its_spawn_receipt_is_folded() {
         )) as Box<dyn dudes_providers::adapter::Adapter>]
         .into_iter()
         .collect();
-        let mut daemon = crate::boot(&fixture.settings(), seams).unwrap();
+        let mut daemon = crate::boot(&settings, seams).unwrap();
         let first_agent = hire(&mut daemon, fixture.state.path(), false);
         let second_agent = hire(
             &mut daemon,

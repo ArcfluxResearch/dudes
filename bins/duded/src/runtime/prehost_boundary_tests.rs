@@ -11,12 +11,8 @@ use dudes_providers::launch::LaunchSpec;
 use dudes_supervisor::host::{AdoptionKey, HostBoot, Liveness};
 use dudes_types::Provenance;
 
-type TestDaemon = Daemon<
-    CountingHost,
-    common::ScriptedRunner,
-    common::TestClock,
-    dudes_supervisor::testing::FakeRng,
->;
+type TestDaemon =
+    Daemon<CountingHost, common::ScriptedRunner, common::TestClock, common::FixtureRng>;
 
 #[derive(Clone)]
 struct CountingHost {
@@ -91,7 +87,9 @@ fn boot(
     provider: Provider,
     command: &str,
 ) -> TestDaemon {
+    let settings = fixture.settings();
     let mut seams = common::seams(
+        &settings,
         host.clone(),
         Arc::new(common::ScriptedRunner::default()),
         Arc::new(common::TestClock::new()),
@@ -113,7 +111,7 @@ fn boot(
         _ => panic!("the pre-host fixtures use Claude or legacy Codex"),
     };
     seams.adapters = [adapter].into_iter().collect();
-    crate::boot(&fixture.settings(), seams).expect("real pre-host fixture boot")
+    crate::boot(&settings, seams).expect("real pre-host fixture boot")
 }
 
 fn execute(daemon: &mut TestDaemon, effect: &Effect, queue: &mut VecDeque<Input>) {

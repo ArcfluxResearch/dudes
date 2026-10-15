@@ -9,12 +9,8 @@ use dudes_proto::record::{RecordedWorkspace, samples};
 use dudes_proto::{AgentBudget, Goal, RecordKind, TicketCheck};
 use dudes_supervisor::world::AttachedTurnEndReceipt;
 
-type TestDaemon = Daemon<
-    common::SharedHost,
-    common::ScriptedRunner,
-    common::TestClock,
-    dudes_supervisor::testing::FakeRng,
->;
+type TestDaemon =
+    Daemon<common::SharedHost, common::ScriptedRunner, common::TestClock, common::FixtureRng>;
 
 fn append(daemon: &mut TestDaemon, record: Record) -> Lsn {
     let entry = Entry {
@@ -190,13 +186,15 @@ fn finishing(
 }
 
 fn boot_attached(fixture: &common::Fixture, project: &std::path::Path) -> (TestDaemon, AgentId) {
+    let settings = fixture.settings();
     let seams = common::seams(
+        &settings,
         common::SharedHost::new(),
         Arc::new(common::ScriptedRunner::default()),
         Arc::new(common::TestClock::new()),
         Witness::default(),
     );
-    let mut daemon = crate::boot(&fixture.settings(), seams).unwrap();
+    let mut daemon = crate::boot(&settings, seams).unwrap();
     let agent = AgentId::from_parts(2, 1);
     let mut hired = samples::record(RecordKind::AgentHired);
     let Record::AgentHired {

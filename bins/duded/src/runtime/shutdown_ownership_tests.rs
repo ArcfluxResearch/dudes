@@ -7,14 +7,16 @@ fn an_owned_child_sampled_and_spawned_before_run_is_swept_when_the_daemon_drops(
     let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
     let runner = Arc::new(common::ScriptedRunner::default());
     let witness = Witness::default();
+    let settings = fixture.settings();
     let seams = common::seams(
+        &settings,
         host.clone(),
         Arc::clone(&runner),
         Arc::new(common::TestClock::new()),
         witness.clone(),
     );
     host.bind_child_ends(Arc::clone(&seams.children));
-    let mut daemon = crate::boot(&fixture.settings(), seams).unwrap();
+    let mut daemon = crate::boot(&settings, seams).unwrap();
     let Answered::Hired(hired) = daemon
         .ask(Ask::Hire(Box::new(common::hire_params(
             fixture.state.path(),

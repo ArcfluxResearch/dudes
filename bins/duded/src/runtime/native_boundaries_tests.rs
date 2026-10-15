@@ -12,12 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-type TestDaemon = Daemon<
-    MockNativeHost,
-    common::ScriptedRunner,
-    common::TestClock,
-    dudes_supervisor::testing::FakeRng,
->;
+type TestDaemon =
+    Daemon<MockNativeHost, common::ScriptedRunner, common::TestClock, common::FixtureRng>;
 
 fn same_recorded_key(left: &AdoptionKey, right: &AdoptionKey) -> bool {
     left.pid == right.pid && left.start_time == right.start_time && left.boot == right.boot
@@ -229,7 +225,9 @@ impl Owned {
     fn new() -> Self {
         let fixture = common::Fixture::new();
         let host = MockNativeHost::new();
+        let settings = fixture.settings();
         let mut seams = common::seams(
+            &settings,
             host.clone(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::new()),
@@ -243,7 +241,7 @@ impl Owned {
         )) as Box<dyn dudes_providers::adapter::Adapter>]
         .into_iter()
         .collect();
-        let daemon = crate::boot(&fixture.settings(), seams).expect("native mock fixture boot");
+        let daemon = crate::boot(&settings, seams).expect("native mock fixture boot");
         Self {
             daemon,
             fixture,

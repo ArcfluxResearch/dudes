@@ -12,12 +12,8 @@ use dudes_supervisor::host::{AdoptionKey, NativeBoundaryReceipt};
 use std::num::NonZeroUsize;
 use std::sync::{Mutex, PoisonError};
 
-type TestDaemon = Daemon<
-    common::SharedHost,
-    common::ScriptedRunner,
-    common::TestClock,
-    dudes_supervisor::testing::FakeRng,
->;
+type TestDaemon =
+    Daemon<common::SharedHost, common::ScriptedRunner, common::TestClock, common::FixtureRng>;
 
 #[derive(Clone)]
 struct CloseHost(Arc<Mutex<CloseState>>);
@@ -286,7 +282,9 @@ impl Attached {
             shutdown_calls: 0,
             fail_refresh_on_close: None,
         }));
+        let settings = fixture.settings();
         let mut seams = common::seams(
+            &settings,
             common::SharedHost::new(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::new()),
@@ -301,7 +299,7 @@ impl Attached {
         .into_iter()
         .collect();
         seams.pty_host = Box::new(CloseHost(Arc::clone(&state)));
-        let mut daemon = crate::boot(&fixture.settings(), seams).unwrap();
+        let mut daemon = crate::boot(&settings, seams).unwrap();
         let Answered::Hired(hired) = daemon
             .ask(Ask::Hire(Box::new(common::hire_params(
                 fixture.state.path(),
@@ -1189,7 +1187,9 @@ impl FailedOpen {
             called: Vec::new(),
             append_failure: None,
         }));
+        let settings = fixture.settings();
         let mut seams = common::seams(
+            &settings,
             common::SharedHost::new(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::new()),
@@ -1204,7 +1204,7 @@ impl FailedOpen {
         .into_iter()
         .collect();
         seams.pty_host = Box::new(FailedOpenHost(Arc::clone(&state)));
-        let mut daemon = crate::boot(&fixture.settings(), seams).unwrap();
+        let mut daemon = crate::boot(&settings, seams).unwrap();
         let Answered::Hired(hired) = daemon
             .ask(Ask::Hire(Box::new(common::hire_params(
                 fixture.state.path(),
