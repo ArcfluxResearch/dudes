@@ -1035,6 +1035,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         self.handle.clone()
     }
 
+    /// A read-only observer of this run's RPC connection registry.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn rpc_connections_for_test(&self) -> Box<dyn Fn() -> usize + Send + Sync> {
+        let stop = Arc::clone(&self.stop);
+        Box::new(move || stop.live_connections())
+    }
+
     /// The bound socket's path.
     #[must_use]
     pub fn socket(&self) -> &std::path::Path {
