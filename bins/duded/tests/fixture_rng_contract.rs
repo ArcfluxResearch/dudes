@@ -1,5 +1,3 @@
-//! The prepared fixture RNG reads the same complete prefix as the real journal reader.
-
 mod common;
 
 use std::any::Any;

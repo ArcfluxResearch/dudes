@@ -9,7 +9,6 @@ use dudes_supervisor::testing::{FakeRng, FakeTokens};
 use dudes_types::Lsn;
 use ulid::Ulid;
 
-/// A fake generator prepared from the exact journal that the next boot will replay.
 #[derive(Clone, Debug)]
 pub(crate) struct FixtureRng(FakeRng);
 

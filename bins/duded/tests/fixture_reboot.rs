@@ -1,4 +1,3 @@
-//! Rebooted fixtures allocate identities outside their durable prefix.
 #![cfg(unix)]
 
 mod common;
