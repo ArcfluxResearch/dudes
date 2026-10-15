@@ -33,10 +33,12 @@ runs differently, which a restart applies: `dudes stop`, then `dudes start`.
   to off and requires macOS or Linux. After restarting, sign in with `dudes login codex`. See
   [Chat](chat.md).
 - `floor.answer`, `floor.hire`, `floor.control`, `floor.goal`, `floor.renew`, `floor.retire`,
-  `floor.board`, `floor.terminal` and `floor.git`, on or off, are the Floor's actions. Each is off
-  unless you turn it on. Chat is always on and has no setting. `floor.board` lets the Floor make
-  tickets and give them to agents, which then run and spend under your account, so it needs
-  `floor.control` and `floor.goal` on. See [The Floor](floor.md#tickets).
+  `floor.board`, `floor.terminal`, `floor.git` and `floor.diff`, on or off, are the Floor's
+  actions. Each is off unless you turn it on. Chat is always on and has no setting. `floor.board`
+  lets the Floor make tickets and give them to agents, which then run and spend under your account,
+  so it needs `floor.control` and `floor.goal` on. `floor.diff` lets the Floor show the files a
+  ticket's agent changed, so it only has an effect with `floor.git` on. See
+  [The Floor](floor.md#tickets).
 - `budget.floor_usd_per_day` and `budget.per_turn_floor.usd` are in dollars, and
   `budget.per_turn_floor.tokens` is in tokens. See [Budgets](#budgets).
 

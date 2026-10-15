@@ -2005,6 +2005,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         .ctx
                         .git_enabled
                         .then_some(&crate::floor_git::GIT_SWITCH),
+                    diff: (self.ctx.git_enabled && self.ctx.diff_enabled)
+                        .then_some(&crate::floor_diff::DIFF_SWITCH),
                     ticket: self
                         .ctx
                         .board_enabled

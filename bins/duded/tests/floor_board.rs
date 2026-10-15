@@ -1468,7 +1468,11 @@ fn the_diff_route_needs_both_the_git_and_the_diff_switch() {
             assert!(!answer.head.contains("application/json"), "{}", answer.head);
         }
         let (view, _) = page.snapshot();
-        assert!(view.get("diff").is_none(), "nothing is advertised");
+        assert_eq!(
+            view.get("diff").cloned(),
+            (git && diff).then(|| json!({})),
+            "git={git} diff={diff}: the sibling is an empty object exactly when the route exists"
+        );
         board.stop();
     }
 }

@@ -385,6 +385,10 @@ fn a_value_the_key_does_not_take_is_refused_before_any_write() {
             "`floor.git` does not take `true`: on or off".to_owned(),
         ),
         (
+            &["floor.diff", "true"],
+            "`floor.diff` does not take `true`: on or off".to_owned(),
+        ),
+        (
             &["floor.control"],
             "`floor.control` needs a value".to_owned(),
         ),
@@ -392,7 +396,7 @@ fn a_value_the_key_does_not_take_is_refused_before_any_write() {
             &["floor.bogus", "on"],
             "`floor.bogus` is not a config key; the keys are providers.codex, providers.codex.streaming, providers.pi, \
              floor.answer, floor.hire, floor.control, floor.goal, floor.renew, floor.retire, floor.board, floor.terminal, \
-             floor.git, budget.floor_usd_per_day, budget.per_turn_floor.usd, budget.per_turn_floor.tokens"
+             floor.git, floor.diff, budget.floor_usd_per_day, budget.per_turn_floor.usd, budget.per_turn_floor.tokens"
                 .to_owned(),
         ),
     ] {
@@ -466,6 +470,7 @@ floor.retire                  off
 floor.board                   off
 floor.terminal                off
 floor.git                     off
+floor.diff                    off
 budget.floor_usd_per_day      5
 budget.per_turn_floor.usd     0
 budget.per_turn_floor.tokens  20000
@@ -1035,6 +1040,11 @@ fn an_unreadable_value_is_a_refusal_on_both_sides() {
             dudes::config::Key::Git,
             "floor.git holds a value the daemon does not read",
         ),
+        (
+            "[floor.diff]\nenabled = 1\n",
+            dudes::config::Key::Diff,
+            "floor.diff holds a value the daemon does not read",
+        ),
     ] {
         std::fs::write(&path, text).expect("the file");
         let settings = Settings::read(&path).expect("a TOML document");
@@ -1204,6 +1214,7 @@ fn floor_switches_are_written_without_a_budget() {
         .clone()
         .args(["config", "set", "floor.hire", "on", "floor.control", "on"])
         .args(["floor.goal", "on", "floor.retire", "on", "floor.git", "on"])
+        .args(["floor.diff", "on"])
         .run();
     assert_eq!(set.code(), exit::SUCCESS, "{}", set.output());
     assert!(!read(&config).contains("budget"), "{}", read(&config));
@@ -1212,9 +1223,15 @@ fn floor_switches_are_written_without_a_budget() {
         "{}",
         read(&config)
     );
+    assert!(
+        read(&config).contains("[floor.diff]\nenabled = true\n"),
+        "{}",
+        read(&config)
+    );
     let loaded = duded::config::load_operator(&config).expect("the daemon loads it");
     assert!(loaded.hire_enabled);
     assert!(loaded.git_enabled);
+    assert!(loaded.diff_enabled);
     assert_eq!(
         loaded.control,
         duded::settings::FloorControl::On {
@@ -1225,13 +1242,13 @@ fn floor_switches_are_written_without_a_budget() {
     );
     assert_eq!(loaded.budget.floor_usd_per_day, None);
 
-    let off = cli.args(["config", "set", "floor.git", "off"]).run();
+    let off = cli
+        .args(["config", "set", "floor.git", "off", "floor.diff", "off"])
+        .run();
     assert_eq!(off.code(), exit::SUCCESS, "{}", off.output());
-    assert!(
-        !duded::config::load_operator(&config)
-            .expect("the daemon loads it")
-            .git_enabled
-    );
+    let loaded = duded::config::load_operator(&config).expect("the daemon loads it");
+    assert!(!loaded.git_enabled);
+    assert!(!loaded.diff_enabled);
 }
 
 /// `dudes config` shows an unset reserve as the daemon's default and reads it as

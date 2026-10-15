@@ -240,6 +240,8 @@ pub(crate) struct Siblings<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) git: Option<&'a crate::floor_git::GitSwitch>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) diff: Option<&'a crate::floor_diff::DiffSwitch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) ticket: Option<&'a crate::floor_ticket::TicketSwitch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) journal_stopped: Option<dudes_proto::rpc::floor::FloorJournalStopped>,
@@ -259,6 +261,7 @@ impl Siblings<'_> {
             && self.retire.is_none()
             && self.terminal.is_none()
             && self.git.is_none()
+            && self.diff.is_none()
             && self.ticket.is_none()
             && self.journal_stopped.is_none()
             && self.finished_today.is_none()
@@ -737,6 +740,7 @@ impl FloorStreams {
                 retire: siblings.retire,
                 terminal: siblings.terminal,
                 git: siblings.git,
+                diff: siblings.diff,
                 ticket: siblings.ticket,
                 chat: state.chat.as_ref(),
                 journal_stopped: state.journal_stopped,

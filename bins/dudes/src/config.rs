@@ -51,6 +51,9 @@ pub enum Key {
     Terminal,
     /// `[floor.git] enabled`: the Floor reads an agent's checkout for its Git tab.
     Git,
+    /// `[floor.diff] enabled`: with `floor.git` also on, the Floor reads a ticket's changed files
+    /// for its Changes view.
+    Diff,
     /// `[budget] floor_usd_per_day`: the floor-wide daily dollar ceiling; none when absent.
     FloorUsdPerDay,
     /// `[budget.per_turn_floor] usd`: the dollars reserved for each turn whose cost is unseen.
@@ -109,7 +112,7 @@ const RULES: [(Key, Key); 7] = [
 
 impl Key {
     /// Every key, in the order `dudes config` shows them.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Codex,
         Self::CodexStreaming,
         Self::Pi,
@@ -122,6 +125,7 @@ impl Key {
         Self::Board,
         Self::Terminal,
         Self::Git,
+        Self::Diff,
         Self::FloorUsdPerDay,
         Self::PerTurnUsd,
         Self::PerTurnTokens,
@@ -143,6 +147,7 @@ impl Key {
             Self::Board => "floor.board",
             Self::Terminal => "floor.terminal",
             Self::Git => "floor.git",
+            Self::Diff => "floor.diff",
             Self::FloorUsdPerDay => "budget.floor_usd_per_day",
             Self::PerTurnUsd => "budget.per_turn_floor.usd",
             Self::PerTurnTokens => "budget.per_turn_floor.tokens",
@@ -173,6 +178,7 @@ impl Key {
             Self::Board => Place::Switch(&["floor", "board"], "enabled"),
             Self::Terminal => Place::Switch(&["floor", "terminal"], "enabled"),
             Self::Git => Place::Switch(&["floor", "git"], "enabled"),
+            Self::Diff => Place::Switch(&["floor", "diff"], "enabled"),
             Self::FloorUsdPerDay => Place::Dollars(&["budget"], "floor_usd_per_day"),
             Self::PerTurnUsd => Place::Dollars(&["budget", "per_turn_floor"], "usd"),
             Self::PerTurnTokens => Place::Tokens(&["budget", "per_turn_floor"], "tokens"),
