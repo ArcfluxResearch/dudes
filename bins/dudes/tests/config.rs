@@ -986,6 +986,7 @@ fn representative_switches_reach_boot_with_journaled_ceilings() {
                     settings.floor_control = loaded.control;
                     settings.floor_terminal_enabled = loaded.terminal_enabled;
                     settings.floor_git_enabled = loaded.git_enabled;
+                    settings.floor_diff_enabled = loaded.diff_enabled;
                     duded::boot(
                         &settings,
                         common::seams(

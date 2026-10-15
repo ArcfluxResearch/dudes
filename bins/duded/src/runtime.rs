@@ -881,6 +881,9 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) retire_index: crate::floor_retire::RetireIndex,
     /// `[floor.git] enabled`, fixed for the run: whether snapshots carry the `git` sibling.
     pub(crate) git_enabled: bool,
+    /// `[floor.diff] enabled`, fixed for the run. Nothing is advertised; it only decides whether
+    /// a reload that changes it asks for a restart.
+    pub(crate) diff_enabled: bool,
     /// `[floor.board] enabled`, fixed for the run: whether snapshots carry the `ticket` sibling.
     pub(crate) board_enabled: bool,
     /// `None` while `[floor.terminal]` is off, for the whole run.
@@ -1448,6 +1451,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 }
                 Job::GitTarget { agent, reply } => {
                     let _ = reply.send(crate::floor_git::GitTarget::of(self.sup.world(), agent));
+                }
+                Job::DiffRecorded { card, reply } => {
+                    let recorded = match self.ctx.projections.ticket(card) {
+                        Ok(Some((view, ticket))) => {
+                            crate::floor_diff::recorded(self.sup.world(), &view, &ticket)
+                        }
+                        Ok(None) => Err(dudes_proto::DiffRefusal::StaleTicket),
+                        Err(_) => Err(dudes_proto::DiffRefusal::Unreadable),
+                    };
+                    let _ = reply.send(recorded);
                 }
                 Job::FloorMemory { request, reply } => {
                     let _ = reply.send(crate::floor_memory::answer(
@@ -2028,6 +2041,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             control: self.ctx.control,
             terminal_enabled: self.ctx.browser_grants.is_some(),
             git_enabled: self.ctx.git_enabled,
+            diff_enabled: self.ctx.diff_enabled,
             board_enabled: self.ctx.board_enabled,
             condense_model_enabled: self.ctx.condense_model_enabled,
             condense_model: self.ctx.condense_model.clone(),
@@ -6367,6 +6381,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let _ = reply.send(GoalStep::Answer(Err(GoalRefusal::UnavailableNoEffect)));
                 }
                 Job::GitTarget { reply, .. } => drop(reply),
+                Job::DiffRecorded { reply, .. } => drop(reply),
                 // Unanswered, which the route answers as unavailable.
                 Job::FloorMemory { reply, .. } => drop(reply),
                 Job::Retire { reply, .. } => {

@@ -602,6 +602,7 @@ where
             look_index,
             retire_index,
             git_enabled: settings.floor_git_enabled,
+            diff_enabled: settings.floor_diff_enabled,
             board_enabled: settings.floor_board_enabled,
             browser_grants: settings.floor_terminal_enabled.then(BTreeMap::new),
             #[cfg(feature = "testing")]
@@ -692,6 +693,14 @@ where
         let prepared = if settings.floor_git_enabled {
             prepared.with_git(Arc::new(git_reads(settings, &daemon)))
         } else {
+            prepared
+        };
+        let prepared = if settings.floor_git_enabled && settings.floor_diff_enabled {
+            prepared.with_diff(Arc::new(diff_reads(&daemon)))
+        } else {
+            if settings.floor_diff_enabled {
+                tracing::warn!("[floor.diff] needs [floor.git]; the diff route is not served");
+            }
             prepared
         };
         daemon.sup.enable_activity_sampling();
@@ -988,6 +997,20 @@ where
     reader.sweep_scratch();
     let clock = Arc::clone(&daemon.ctx.clock);
     crate::floor_git::GitReads::new(Arc::new(reader), move || clock.now())
+}
+
+/// The Floor's diff route: the reader and the slot the ticket captures already use, so the route
+/// and the captures never read a checkout at the same time.
+fn diff_reads<H, P, C, R>(daemon: &Daemon<H, P, C, R>) -> crate::floor_diff::DiffReads
+where
+    H: ProcessHost,
+    P: PredicateRunner,
+    C: Clock + Send + Sync + 'static,
+    R: Rng,
+{
+    let capture = &daemon.ctx.ticket_capture;
+    let clock = Arc::clone(&daemon.ctx.clock);
+    crate::floor_diff::DiffReads::new(capture.reader(), capture.slot(), move || clock.now())
 }
 
 /// Build the classifier and the method table, and start the accept loop.

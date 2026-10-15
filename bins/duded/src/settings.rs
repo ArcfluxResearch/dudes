@@ -265,6 +265,8 @@ pub struct Settings {
     pub floor_terminal_enabled: bool,
     /// [`crate::config::OperatorConfig::git_enabled`].
     pub floor_git_enabled: bool,
+    /// [`crate::config::OperatorConfig::diff_enabled`].
+    pub floor_diff_enabled: bool,
     /// [`crate::config::OperatorConfig::condense_model_enabled`].
     pub condense_model_enabled: bool,
     /// [`crate::config::OperatorConfig::condense_model`].

@@ -23,7 +23,7 @@ use crate::git_read::diff::{
 /// Samples a recorded checkout and describes the result as bounded payloads.
 pub struct DiffCapture {
     reader: Arc<DiffReader>,
-    serial: Mutex<()>,
+    serial: Arc<Mutex<()>>,
     clock: Box<dyn Fn() -> Timestamp + Send + Sync>,
 }
 
@@ -33,9 +33,22 @@ impl DiffCapture {
     pub fn new(reader: Arc<DiffReader>, clock: Box<dyn Fn() -> Timestamp + Send + Sync>) -> Self {
         Self {
             reader,
-            serial: Mutex::new(()),
+            serial: Arc::new(Mutex::new(())),
             clock,
         }
+    }
+
+    /// The reader this service samples with, for the Floor's diff route to use.
+    #[must_use]
+    pub fn reader(&self) -> Arc<DiffReader> {
+        Arc::clone(&self.reader)
+    }
+
+    /// The slot every capture and every Floor diff read takes in turn: at most one of them reads
+    /// a checkout at a time, daemon-wide.
+    #[must_use]
+    pub fn slot(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.serial)
     }
 
     /// Observe the round-start state of `tree` for `binding`.

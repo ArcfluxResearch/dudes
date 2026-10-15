@@ -437,6 +437,7 @@ fn not_applied(
             running.terminal_enabled != file.terminal_enabled,
         ),
         ("floor.git", running.git_enabled != file.git_enabled),
+        ("floor.diff", running.diff_enabled != file.diff_enabled),
         ("floor.board", running.board_enabled != file.board_enabled),
         ("mcp.servers", running.mcp_servers != file.mcp_servers),
         (
@@ -802,6 +803,7 @@ mod tests {
             ),
             ("floor.terminal", with(|file| file.terminal_enabled = true)),
             ("floor.git", with(|file| file.git_enabled = true)),
+            ("floor.diff", with(|file| file.diff_enabled = true)),
             ("floor.board", with(|file| file.board_enabled = true)),
         ] {
             file_read.config = file;

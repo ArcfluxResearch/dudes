@@ -1714,6 +1714,7 @@ pub(crate) fn settings_at(state: &Path, runtime: &Path) -> Settings {
         floor_control: duded::settings::FloorControl::Off,
         floor_terminal_enabled: false,
         floor_git_enabled: false,
+        floor_diff_enabled: false,
         floor_board_enabled: false,
         // Off by default in the shared test harness, so the many existing tests that never
         // exercise memory condense keep their exact deterministic-only behavior unchanged; tests

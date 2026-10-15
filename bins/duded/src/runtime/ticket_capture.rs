@@ -70,8 +70,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 baseline: service.baseline_unavailable(binding, DiffRefusal::Unreadable),
             })
         };
-        let observe =
-            move || baseline_input(&service, target.as_ref(), binding, goal, stopping);
+        let observe = move || baseline_input(&service, target.as_ref(), binding, goal, stopping);
         self.answer_capture(
             format!("dudes-baseline-{goal}"),
             observe,

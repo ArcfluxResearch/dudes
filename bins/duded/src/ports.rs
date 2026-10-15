@@ -59,7 +59,7 @@ use dudes_rpc::methods::{
     ConditionedMemoryControl, ConditionedPtyControl, Control, JournalRead,
 };
 use dudes_supervisor::{HookId, KeyHealth, RuntimeSignal};
-use dudes_types::{AgentId, GoalId, Lsn};
+use dudes_types::{AgentId, CardId, GoalId, Lsn};
 
 use crate::pty_output::OutputSubscription;
 
@@ -780,6 +780,13 @@ pub enum Job {
         /// What to read or answer, or `None` when the journal has nothing to read for this id.
         reply: Sender<Option<crate::floor_git::GitTarget>>,
     },
+    /// What the journal records about one ticket's review, for the Floor's diff route.
+    DiffRecorded {
+        /// The ticket the Floor asked about.
+        card: CardId,
+        /// The recorded review, or the finite reason the ticket holds none.
+        reply: Sender<Result<crate::floor_diff::Recorded, dudes_proto::DiffRefusal>>,
+    },
     /// One read of an agent's memory for the Floor's Memory tab, from recorded values only.
     FloorMemory {
         /// The agent and what to read of its memory.
@@ -1225,6 +1232,15 @@ impl Handle {
         let (reply, answers) = mpsc::channel();
         self.send_floor(Job::GitTarget { agent, reply })?;
         answers.recv().map_err(|_| Unavailable)
+    }
+    /// What the journal records about `card`'s review, or `None` once the loop has ended.
+    pub(crate) fn diff_recorded(
+        &self,
+        card: CardId,
+    ) -> Option<Result<crate::floor_diff::Recorded, dudes_proto::DiffRefusal>> {
+        let (reply, answers) = mpsc::channel();
+        self.send_floor(Job::DiffRecorded { card, reply }).ok()?;
+        answers.recv().ok()
     }
     /// The loop's answer to one Floor memory read, or `None` when the loop has ended or is ending.
     pub(crate) fn floor_memory(

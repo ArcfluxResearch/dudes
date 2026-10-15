@@ -146,7 +146,7 @@ struct State {
 struct Shared {
     state: Mutex<State>,
     /// Workers whose connection gave up on them and which have not ended.
-    abandoned: AtomicUsize,
+    abandoned: Arc<AtomicUsize>,
 }
 
 /// The daemon-wide slot, released when the read ends, times out or is abandoned.
@@ -164,7 +164,7 @@ impl Drop for Slot {
 
 /// One worker's end, which the connection and the worker settle between them under one lock.
 #[derive(Default)]
-struct Worker {
+pub(crate) struct Worker {
     ending: Mutex<Ending>,
 }
 
@@ -176,32 +176,33 @@ struct Ending {
 
 impl Worker {
     /// The connection stops waiting. Counted only if the worker has not already ended.
-    fn abandon(&self, shared: &Shared) {
+    pub(crate) fn abandon(&self, abandoned: &AtomicUsize) {
         let mut ending = self.ending.lock().unwrap_or_else(PoisonError::into_inner);
         if !ending.done {
             ending.abandoned = true;
-            shared.abandoned.fetch_add(1, Ordering::AcqRel);
+            abandoned.fetch_add(1, Ordering::AcqRel);
         }
     }
 
     /// The worker ends, normally or by unwinding. An abandoned worker stops counting.
-    fn finish(&self, shared: &Shared) {
+    fn finish(&self, abandoned: &AtomicUsize) {
         let mut ending = self.ending.lock().unwrap_or_else(PoisonError::into_inner);
         ending.done = true;
         if ending.abandoned {
-            shared.abandoned.fetch_sub(1, Ordering::AcqRel);
+            abandoned.fetch_sub(1, Ordering::AcqRel);
         }
     }
 }
 
-struct Finish {
-    worker: Arc<Worker>,
-    shared: Arc<Shared>,
+/// Settles a worker's end when the worker's closure ends, however it ends.
+pub(crate) struct Finish {
+    pub(crate) worker: Arc<Worker>,
+    pub(crate) abandoned: Arc<AtomicUsize>,
 }
 
 impl Drop for Finish {
     fn drop(&mut self) {
-        self.worker.finish(&self.shared);
+        self.worker.finish(&self.abandoned);
     }
 }
 
@@ -301,7 +302,7 @@ impl GitReads {
         let worker = Arc::new(Worker::default());
         let finish = Finish {
             worker: Arc::clone(&worker),
-            shared: Arc::clone(&self.shared),
+            abandoned: Arc::clone(&self.shared.abandoned),
         };
         let reader = Arc::clone(&self.reader);
         let spawned = thread::Builder::new()
@@ -316,12 +317,12 @@ impl GitReads {
         let started = Instant::now();
         loop {
             if stopped() {
-                worker.abandon(&self.shared);
+                worker.abandon(&self.shared.abandoned);
                 return Ok(None);
             }
             let left = self.deadline.saturating_sub(started.elapsed());
             if left.is_zero() {
-                worker.abandon(&self.shared);
+                worker.abandon(&self.shared.abandoned);
                 return Ok(Some(GitView::refused(GitState::TimedOut, now)));
             }
             match rx.recv_timeout(left.min(POLL)) {

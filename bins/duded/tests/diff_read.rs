@@ -968,7 +968,9 @@ fn a_maintenance_lock_in_the_object_directory_is_a_busy_refusal_until_it_clears(
     let lock = lab.repo().join(".git/objects/maintenance.lock");
     std::fs::write(&lock, "").unwrap();
     assert_eq!(
-        lab.reader.capture_baseline(&lab.tree(), cancel()).unwrap_err(),
+        lab.reader
+            .capture_baseline(&lab.tree(), cancel())
+            .unwrap_err(),
         DiffRefusal::Busy
     );
     std::fs::remove_file(&lock).unwrap();

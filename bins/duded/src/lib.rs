@@ -70,6 +70,7 @@ pub mod floor_actions;
 pub mod floor_answer;
 pub mod floor_chat;
 pub mod floor_control;
+pub mod floor_diff;
 pub mod floor_gateway;
 pub mod floor_git;
 pub mod floor_goal;

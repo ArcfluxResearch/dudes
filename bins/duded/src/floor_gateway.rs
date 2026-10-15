@@ -32,6 +32,7 @@ use crate::floor_chat::{ChatOutcome, ChatRefusal, ChatRequest, ChatVerb, MAX_CHA
 use crate::floor_control::{
     ControlOutcome, ControlRefusal, ControlRequest, ControlVerb, MAX_CONTROL_BODY_BYTES,
 };
+use crate::floor_diff::{DiffReads, DiffRequest, MAX_DIFF_BODY_BYTES, Reply as DiffReply};
 use crate::floor_git::{GitReads, GitRequest, MAX_GIT_BODY_BYTES};
 use crate::floor_goal::{GoalOutcome, GoalRefusal, GoalRequest, MAX_GOAL_BODY_BYTES};
 use crate::floor_look::{LookOutcome, LookRefusal, LookRequest, MAX_LOOK_BODY_BYTES};
@@ -91,6 +92,9 @@ const TERMINAL_PATH: &str = "/floor/terminal";
 /// Routed only when the operator enabled the Git tab; otherwise a POST here is any
 /// unrouted POST.
 const GIT_PATH: &str = "/floor/git";
+/// Routed only when the operator enabled both the Git tab and the ticket diff; otherwise a POST
+/// here is any unrouted POST.
+const DIFF_PATH: &str = "/floor/diff";
 /// Always routed: an agent's memory, read on demand.
 const MEMORY_PAGE_PATH: &str = "/floor/memory/page";
 const MEMORY_ENTRY_PATH: &str = "/floor/memory/entry";
@@ -220,6 +224,8 @@ pub struct PreparedAssets {
     pub(crate) terminal: bool,
     /// `Some` exactly when `[floor.git] enabled`: the route's reader and limits.
     git: Option<Arc<GitReads>>,
+    /// `Some` exactly when `[floor.git]` and `[floor.diff]` are both enabled.
+    diff: Option<Arc<DiffReads>>,
     /// `Some` exactly when `[floor.board] enabled`: the ticket routes' per-session limits.
     board: Option<Arc<TicketLimits>>,
 }
@@ -511,6 +517,13 @@ impl PreparedAssets {
         self
     }
 
+    /// Route `POST /floor/diff` over `reads`, and leave it an unrouted path otherwise.
+    #[must_use]
+    pub(crate) fn with_diff(mut self, reads: Arc<DiffReads>) -> Self {
+        self.diff = Some(reads);
+        self
+    }
+
     #[must_use]
     pub(crate) const fn with_remembered_port(mut self, port: Option<u16>) -> Self {
         self.remembered = port;
@@ -643,6 +656,7 @@ impl PreparedAssets {
         let control = self.control;
         let terminal = self.terminal;
         let git = self.git;
+        let diff = self.diff;
         let board = self.board;
         let tickets = board.clone();
         let memory = fault
@@ -671,6 +685,7 @@ impl PreparedAssets {
                             control,
                             terminal,
                             git: git.as_deref(),
+                            diff: diff.as_deref(),
                             board: board.as_deref(),
                             memory: &memory,
                         },
@@ -1039,6 +1054,7 @@ struct Catalog<'a> {
     control: FloorControl,
     terminal: bool,
     git: Option<&'a GitReads>,
+    diff: Option<&'a DiffReads>,
     board: Option<&'a TicketLimits>,
     memory: &'a MemoryReads,
 }
@@ -1062,6 +1078,7 @@ enum ActionRoute {
     Look,
     Retire,
     Git,
+    Diff,
     Memory(MemoryRoute),
     Chat(ChatVerb),
     Ticket(TicketRoute),
@@ -1090,6 +1107,7 @@ impl ActionRoute {
             LOOK_PATH if catalog.control.pause_resume() => Some(Self::Look),
             RETIRE_PATH if catalog.control.retire() => Some(Self::Retire),
             GIT_PATH if catalog.git.is_some() => Some(Self::Git),
+            DIFF_PATH if catalog.diff.is_some() => Some(Self::Diff),
             MEMORY_PAGE_PATH => Some(Self::Memory(MemoryRoute::Page)),
             MEMORY_ENTRY_PATH => Some(Self::Memory(MemoryRoute::Entry)),
             _ => catalog.board.and(TicketRoute::of(path)).map(Self::Ticket),
@@ -1107,6 +1125,7 @@ impl ActionRoute {
             Self::Look => MAX_LOOK_BODY_BYTES,
             Self::Retire => MAX_RETIRE_BODY_BYTES,
             Self::Git => MAX_GIT_BODY_BYTES,
+            Self::Diff => MAX_DIFF_BODY_BYTES,
             Self::Memory(_) => MAX_MEMORY_BODY_BYTES,
             Self::Chat(_) => MAX_CHAT_BODY_BYTES,
             Self::Ticket(_) => MAX_TICKET_BODY_BYTES,
@@ -1308,6 +1327,12 @@ fn read_request<'a>(
                         ActionRoute::Retire => retire_response(sessions, handle, &action, &body),
                         ActionRoute::Git => {
                             return Ok(git_response(
+                                sessions, handle, catalog, phase, &action, &body,
+                            )
+                            .map(ConnectionAction::Response));
+                        }
+                        ActionRoute::Diff => {
+                            return Ok(diff_response(
                                 sessions, handle, catalog, phase, &action, &body,
                             )
                             .map(ConnectionAction::Response));
@@ -2197,6 +2222,41 @@ fn git_response<'a>(
     ))
 }
 
+/// On this connection thread: the session and the body are checked, the read runs on a worker
+/// this thread waits for, and the reply is charged to the session before any byte of it is sent.
+/// Every refusal is one finite reply with no repository data. A session that ends while the read
+/// runs gets `403` and no reply.
+fn diff_response<'a>(
+    sessions: &FloorSessions,
+    handle: &Handle,
+    catalog: Catalog<'_>,
+    phase: &AtomicU8,
+    head: &ActionHead,
+    body: &[u8],
+) -> Option<Response<'a>> {
+    let reads = catalog.diff?;
+    let Some(session) =
+        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
+    else {
+        return Some(error_response(403, "Forbidden"));
+    };
+    let Ok(request) = DiffRequest::parse(body) else {
+        return Some(error_response(400, "Bad Request"));
+    };
+    match reads.serve(
+        session.limit_key(),
+        &request,
+        |card| handle.diff_recorded(card),
+        || stop_requested(phase),
+        || session.is_valid(),
+    ) {
+        DiffReply::Body(bytes) => Some(json_response(200, "OK", bytes)),
+        DiffReply::Stopping => None,
+        DiffReply::Revoked => Some(error_response(403, "Forbidden")),
+        DiffReply::Unavailable => Some(error_response(503, "Service Unavailable")),
+    }
+}
+
 /// The session and body checks, then the session's interval, then one read on the loop, then the
 /// session again, because it can expire or be revoked while the loop answers. A loop that is
 /// ending drops the read, and the route answers `503`.
@@ -3064,6 +3124,7 @@ pub fn prepare(settings: &FloorSettings) -> Result<PreparedAssets> {
         control: FloorControl::Off,
         terminal: false,
         git: None,
+        diff: None,
         board: None,
     })
 }
@@ -3352,6 +3413,7 @@ mod tests {
             control: FloorControl::Off,
             terminal: false,
             git: None,
+            diff: None,
             board: None,
             memory: &MEMORY,
         }

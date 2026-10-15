@@ -173,6 +173,18 @@ impl CandidateManifest {
         Ok(manifest)
     }
 
+    /// The opaque manifest identity a request must present.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// When the manifest's fixed lifetime ends.
+    #[must_use]
+    pub const fn expires_at(&self) -> Timestamp {
+        self.expires_at
+    }
+
     pub(super) fn metadata_digest(&self) -> Option<&str> {
         self.metadata_digest.as_deref()
     }

@@ -76,6 +76,10 @@ pub struct OperatorConfig {
     /// `[floor.git] enabled`: whether the Floor may read an agent's checkout for its Git tab.
     /// Absent or `false` registers no route and sends no `git` sibling.
     pub git_enabled: bool,
+    /// `[floor.diff] enabled`: whether the Floor may read a ticket's bounded checkout diff. Absent or
+    /// `false` registers no route. The route also needs `[floor.git]` on; with either off it
+    /// does not exist.
+    pub diff_enabled: bool,
     /// The `[providers.<name>]` tables the operator wrote.
     pub providers: ProviderTables,
     /// `[memory] condense_model_enabled`: whether a condense may spend a one-shot model call for
@@ -330,6 +334,7 @@ struct FloorTable {
     board: Option<BoardTable>,
     terminal: Option<TerminalTable>,
     git: Option<GitTable>,
+    diff: Option<DiffTable>,
     chat: Option<ChatTable>,
 }
 
@@ -337,6 +342,13 @@ struct FloorTable {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct GitTable {
+    enabled: bool,
+}
+
+/// `[floor.diff]`: the operator's opt-in to the Floor's ticket diff route, read once at start.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct DiffTable {
     enabled: bool,
 }
 
@@ -753,6 +765,7 @@ pub(crate) fn parse_operator_and_memory_with_options(
     let board_enabled = floor.board.unwrap_or_default().enabled;
     let terminal_enabled = floor.terminal.unwrap_or_default().enabled;
     let git_enabled = floor.git.unwrap_or_default().enabled;
+    let diff_enabled = floor.diff.unwrap_or_default().enabled;
     let floor_usd_per_day = budget
         .floor_usd_per_day
         .map(|value| {
@@ -814,6 +827,7 @@ pub(crate) fn parse_operator_and_memory_with_options(
                 board_enabled,
                 terminal_enabled,
                 git_enabled,
+                diff_enabled,
                 providers,
                 condense_model_enabled,
                 condense_model,
