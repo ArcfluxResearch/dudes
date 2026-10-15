@@ -732,7 +732,11 @@ fn a_page_reads_only_the_cached_manifest_and_takes_no_slot() {
     let DiffResponse::Page(second) = lab.respond(1, &page) else {
         panic!("not a page")
     };
-    assert_eq!(second.entries.len(), 6, "served while a capture holds the slot");
+    assert_eq!(
+        second.entries.len(),
+        6,
+        "served while a capture holds the slot"
+    );
     let content =
         json!({"mode": "content", "manifest_id": first.manifest_id, "entries": ids(&first)[..1]});
     assert_eq!(
@@ -767,7 +771,10 @@ fn an_incomplete_current_sample_is_unknown_even_beside_a_complete_stamp() {
         lab.write(&format!("f{n:03}.txt"), "new\n");
     }
     lab.check_passes();
-    assert_eq!(lab.manifest(1).freshness, DiffFreshness::MatchesReviewSample);
+    assert_eq!(
+        lab.manifest(1).freshness,
+        DiffFreshness::MatchesReviewSample
+    );
     for n in 250..300 {
         lab.write(&format!("g{n:03}.txt"), "x\n");
         lab.git(&["add", &format!("g{n:03}.txt")]);

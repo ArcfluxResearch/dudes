@@ -371,7 +371,10 @@ fn a_missing_start_commit_is_an_unavailable_stamp_never_a_new_base() {
 #[test]
 fn a_waiting_capture_makes_floor_reads_give_way_even_while_the_slot_is_free() {
     let slot = duded::diff_capture::ReadSlot::default();
-    assert!(slot.floor().is_ok(), "control: an idle slot serves a Floor read");
+    assert!(
+        slot.floor().is_ok(),
+        "control: an idle slot serves a Floor read"
+    );
     let place = slot.announce();
     assert_eq!(slot.waiting(), 1);
     assert_eq!(slot.floor().err(), Some(DiffRefusal::Busy));
@@ -408,7 +411,11 @@ fn a_capture_waits_for_one_floor_read_in_flight_and_no_later_one_overtakes_it() 
     drop(in_flight);
     got_rx.recv().unwrap();
     assert_eq!(slot.waiting(), 0);
-    assert_eq!(slot.floor().err(), Some(DiffRefusal::Busy), "the capture holds it");
+    assert_eq!(
+        slot.floor().err(),
+        Some(DiffRefusal::Busy),
+        "the capture holds it"
+    );
     release.send(()).unwrap();
     capture.join().unwrap();
     assert!(slot.floor().is_ok(), "the capture released it");
