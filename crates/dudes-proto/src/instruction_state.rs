@@ -782,10 +782,14 @@ impl InstructionState {
         for (_, attempt) in self.review_attempts(card) {
             if let Some(comparison) = comparison(attempt) {
                 for change in &comparison.changes {
-                    review.changed_paths.push(InstructionChangedPath {
+                    let shown = InstructionChangedPath {
                         path: change.path.clone(),
                         context: change.context,
-                    });
+                    };
+                    if review.changed_paths.contains(&shown) {
+                        continue;
+                    }
+                    review.changed_paths.push(shown);
                     if !review_fits(&review) {
                         let _ = review.changed_paths.pop();
                         overflow(&mut review);
@@ -2420,6 +2424,120 @@ mod tests {
             });
         }
         record
+    }
+
+    fn changed(
+        path: &str,
+        context: InstructionPathContext,
+    ) -> crate::instruction::InstructionPathChange {
+        crate::instruction::InstructionPathChange {
+            path: crate::instruction::NativeInstructionPath::Utf8 { value: path.into() },
+            context,
+            source: crate::instruction::InstructionInputSource {
+                agent: samples::agent(),
+                rule: 0,
+                root: crate::instruction::NativeInstructionPath::Utf8 {
+                    value: "/shared".into(),
+                },
+                kind: crate::instruction::InstructionSourceKind::Fixed,
+            },
+            before: crate::instruction::InstructionFingerprint::Absent,
+            after: crate::instruction::InstructionFingerprint::File {
+                digest: Hex32::new([7; 32]),
+                bytes: 3,
+            },
+        }
+    }
+
+    fn shown(
+        path: &str,
+        context: InstructionPathContext,
+    ) -> crate::instruction::InstructionChangedPath {
+        crate::instruction::InstructionChangedPath {
+            path: crate::instruction::NativeInstructionPath::Utf8 { value: path.into() },
+            context,
+        }
+    }
+
+    #[test]
+    fn review_lists_each_known_changed_path_once_in_first_seen_order() {
+        let mut state = seeded();
+        let first = InstructionIssueAssociation::Prospective;
+        let retry = InstructionIssueAssociation::Issued { issue_lsn: Lsn(5) };
+        let agents = changed("/shared/AGENTS.md", InstructionPathContext::SharedProject);
+        let notes = changed("/shared/NOTES.md", InstructionPathContext::SharedProject);
+        let agents_unresolved = changed("/shared/AGENTS.md", InstructionPathContext::Unresolved);
+        let apply = |state: &mut InstructionState, lsn, record| {
+            state.apply(Lsn(lsn), &stamp(record), None, hash).unwrap();
+        };
+        apply(&mut state, 4, start(first));
+        apply(&mut state, 5, samples::record(RecordKind::TurnIssued));
+        let Record::InstructionObservationFinished {
+            baseline,
+            settlement:
+                InstructionSettlement::Unknown {
+                    reason,
+                    end,
+                    sampled_at,
+                    recovery,
+                    mut comparison,
+                },
+            ..
+        } = unknown(first, 4)
+        else {
+            unreachable!()
+        };
+        comparison.changes = vec![agents.clone(), notes.clone()];
+        apply(
+            &mut state,
+            6,
+            Record::InstructionObservationFinished {
+                owner: owner(first),
+                ticket: Some(ticket()),
+                baseline,
+                settlement: InstructionSettlement::Unknown {
+                    reason,
+                    end,
+                    sampled_at,
+                    recovery,
+                    comparison,
+                },
+            },
+        );
+        apply(&mut state, 7, start(retry));
+        apply(&mut state, 8, samples::record(RecordKind::TurnSpawned));
+        apply(&mut state, 9, samples::record(RecordKind::TurnEnded));
+        apply(
+            &mut state,
+            10,
+            Record::InstructionObservationFinished {
+                owner: owner(retry),
+                ticket: Some(ticket()),
+                baseline: InstructionBaselineRef::Started { lsn: Lsn(7) },
+                settlement: InstructionSettlement::Compared {
+                    end: InstructionEndBoundary::ManagedTurn {
+                        turn: samples::turn(),
+                        end_lsn: Lsn(9),
+                    },
+                    sampled_at: Timestamp::UNIX_EPOCH,
+                    recovery: false,
+                    comparison: InstructionComparison {
+                        changes: vec![agents, agents_unresolved],
+                        gaps: Vec::new(),
+                        usage: crate::InstructionSampleUsage::default(),
+                    },
+                },
+            },
+        );
+        let review = state.review(samples::card(), hash).unwrap().unwrap();
+        assert_eq!(
+            review.changed_paths,
+            vec![
+                shown("/shared/AGENTS.md", InstructionPathContext::SharedProject),
+                shown("/shared/NOTES.md", InstructionPathContext::SharedProject),
+                shown("/shared/AGENTS.md", InstructionPathContext::Unresolved),
+            ]
+        );
     }
 
     #[test]
