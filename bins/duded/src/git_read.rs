@@ -1,4 +1,7 @@
-//! The Floor Git tab's read of one agent's checkout.
+//! The Floor Git metadata view and the separate bounded review reader in [`diff`].
+//!
+//! The metadata-view contract below describes [`GitReader::read`]. The review reader owns its
+//! baseline metadata, scope samples and bounded source-text responses separately.
 //!
 //! # The rule
 //!
@@ -21,7 +24,7 @@
 //!
 //! # The commands
 //!
-//! Seven invocations in four steps, and no other. `status` always runs with
+//! The metadata view uses seven invocations in four steps, and no other. `status` always runs with
 //! `--ignore-submodules=all`, **which is a security control**: without it a gitlink entry starts a
 //! child git with the nested repository's own configuration. `status` is the only command that
 //! compares the working tree, and none may be added without review. Output is parsed as bytes
@@ -29,8 +32,8 @@
 //!
 //! # What this is not
 //!
-//! A live read of a directory the agent writes: never journaled, never in a projection, never
-//! evidence. Nothing here reaches the loop.
+//! A [`GitReader::read`] result is a live read of a directory the agent writes: never journaled,
+//! never in a projection, never evidence. That metadata view never reaches the loop.
 //!
 //! The read is Unix only. Elsewhere [`GitReader::read`] answers `unsupported_platform` and runs
 //! nothing, so the Unix half is gated rather than stubbed.
@@ -48,6 +51,7 @@ use dudes_types::{GitCommit, Timestamp, WorktreeId};
 
 use crate::predicate::{PredicateCaptured, PredicateRunner};
 
+pub mod diff;
 mod parse;
 #[cfg(unix)]
 mod shadow;
@@ -213,6 +217,14 @@ impl GitReader {
     /// enough. The version is asked once per program.
     #[cfg(unix)]
     fn program(&self, cwd: &Path) -> Result<PathBuf, GitState> {
+        self.program_with_timeout(cwd, COMMAND_DEADLINE)
+    }
+
+    #[cfg(unix)]
+    fn program_with_timeout(&self, cwd: &Path, timeout: Duration) -> Result<PathBuf, GitState> {
+        if timeout.is_zero() {
+            return Err(GitState::TimedOut);
+        }
         let unavailable = |_| GitState::GitUnavailable;
         let found =
             crate::predicate::resolve("git", cwd, self.path.as_deref()).map_err(unavailable)?;
@@ -222,14 +234,14 @@ impl GitReader {
         }
         let mut verified = self.verified.lock().unwrap_or_else(PoisonError::into_inner);
         if verified.as_deref() != Some(found.as_str()) {
-            self.check_version(&found)?;
+            self.check_version(&found, timeout.min(COMMAND_DEADLINE))?;
             *verified = Some(found.clone());
         }
         Ok(PathBuf::from(found))
     }
 
     #[cfg(unix)]
-    fn check_version(&self, program: &str) -> Result<(), GitState> {
+    fn check_version(&self, program: &str, timeout: Duration) -> Result<(), GitState> {
         let spec = LaunchSpec {
             argv: vec![OsString::from(program), OsString::from("--version")],
             env: self.base_env(),
@@ -241,7 +253,7 @@ impl GitReader {
             stdout: output,
             timed_out: false,
             ..
-        }) = self.runner.run_captured(&spec, COMMAND_DEADLINE, 256)
+        }) = self.runner.run_captured(&spec, timeout, 256)
         else {
             return Err(GitState::GitUnavailable);
         };

@@ -99,6 +99,16 @@ const INDEX_EXTENDED_FLAG: u16 = 0x4000;
 /// Git compares each entry with the file at that path in the work tree, so an index an agent
 /// wrote can make `status` open any file the daemon can reach (measured with `../outside.txt`).
 pub(super) fn check_index(bytes: &[u8]) -> Result<(), IndexRefusal> {
+    index_summary(bytes).map(|_| ())
+}
+
+#[derive(Default)]
+pub(super) struct IndexSummary {
+    pub(super) has_gitlinks: bool,
+    pub(super) has_hidden_entries: bool,
+}
+
+pub(super) fn index_summary(bytes: &[u8]) -> Result<IndexSummary, IndexRefusal> {
     let word = |at: usize| -> Option<u32> {
         Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
     };
@@ -112,12 +122,25 @@ pub(super) fn check_index(bytes: &[u8]) -> Result<(), IndexRefusal> {
     }
     let count = word(8).ok_or(IndexRefusal::Unsafe)?;
     let mut at = 12;
+    let mut summary = IndexSummary::default();
     for _ in 0..count {
+        summary.has_gitlinks |= word(at + 24).ok_or(IndexRefusal::Unsafe)? & 0o170_000 == 0o160_000;
         let flags = bytes
             .get(at + 60..at + 62)
             .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
             .ok_or(IndexRefusal::Unsafe)?;
         let extended = flags & INDEX_EXTENDED_FLAG != 0;
+        let extended_flags = if extended {
+            u16::from_be_bytes(
+                bytes
+                    .get(at + 62..at + 64)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or(IndexRefusal::Unsafe)?,
+            )
+        } else {
+            0
+        };
+        summary.has_hidden_entries |= flags & 0x8000 != 0 || extended_flags & 0x4000 != 0;
         let start = at + INDEX_ENTRY_FIXED + if extended { 2 } else { 0 };
         let rest = bytes.get(start..).ok_or(IndexRefusal::Unsafe)?;
         let length = rest
@@ -135,7 +158,7 @@ pub(super) fn check_index(bytes: &[u8]) -> Result<(), IndexRefusal> {
         // The entry, name and padding are a multiple of eight bytes, with at least one NUL.
         at += (start - at + length + 8) & !7;
     }
-    Ok(())
+    Ok(summary)
 }
 
 /// Whether `bytes` is a `shallow` file: lines of 40-digit ids.

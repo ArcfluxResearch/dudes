@@ -38,15 +38,16 @@ const FORMAT_CHARS: &[(u32, u32)] = &[
     (0xE0020, 0xE007F),
 ];
 
+pub(super) fn is_format(c: char) -> bool {
+    let code = u32::from(c);
+    FORMAT_CHARS
+        .iter()
+        .any(|&(low, high)| (low..=high).contains(&code))
+}
+
 /// Whether `c` may not appear in a string the Floor shows.
 fn forbidden(c: char) -> bool {
-    let code = u32::from(c);
-    c.is_control()
-        || code == 0x2028
-        || code == 0x2029
-        || FORMAT_CHARS
-            .iter()
-            .any(|&(low, high)| (low..=high).contains(&code))
+    c.is_control() || c == '\u{2028}' || c == '\u{2029}' || is_format(c)
 }
 
 /// `text` if it is showable, else `None`.

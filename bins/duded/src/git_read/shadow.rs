@@ -31,13 +31,13 @@ use rustix::io::Errno;
 
 use super::{Lease, Tree, parse};
 
-const HEAD_MAX: u64 = 256;
-const PACKED_REFS_MAX: u64 = 1024 * 1024;
-const LOOSE_REF_MAX: u64 = 256;
-const INDEX_MAX: u64 = 32 * 1024 * 1024;
-const SHALLOW_MAX: u64 = 64 * 1024;
+pub(in crate::git_read) const HEAD_MAX: u64 = 256;
+pub(in crate::git_read) const PACKED_REFS_MAX: u64 = 1024 * 1024;
+pub(in crate::git_read) const LOOSE_REF_MAX: u64 = 256;
+pub(in crate::git_read) const INDEX_MAX: u64 = 32 * 1024 * 1024;
+pub(in crate::git_read) const SHALLOW_MAX: u64 = 64 * 1024;
 /// A worktree's `.git` file or its `commondir`: one path and a line end.
-const LINK_MAX: u64 = 4 * 1024;
+pub(in crate::git_read) const LINK_MAX: u64 = 4 * 1024;
 /// Entries, directories included, a walk of the loose refs may visit before the repository is
 /// refused as too large for this read.
 const REF_ENTRIES_MAX: usize = 2_000;
@@ -50,7 +50,7 @@ const REF_DEPTH_MAX: usize = 16;
 /// git's default 1 GiB window would otherwise exhaust on a large pack. For the same reason git
 /// runs no helper threads: each reserves a stack and a malloc arena, and with the limit in force
 /// a large index made `status` fail at random with "unable to create threaded lstat".
-const CONFIG: &str = if cfg!(target_os = "macos") {
+pub(in crate::git_read) const CONFIG: &str = if cfg!(target_os = "macos") {
     "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tignorecase = true\n\tprecomposeunicode = true\n\tpackedGitWindowSize = 32m\n\tpackedGitLimit = 256m\n\tpreloadindex = false\n[index]\n\tthreads = false\n"
 } else {
     "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tpackedGitWindowSize = 32m\n\tpackedGitLimit = 256m\n\tpreloadindex = false\n[index]\n\tthreads = false\n"

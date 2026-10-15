@@ -24,6 +24,7 @@
 pub mod budget;
 pub mod chat;
 pub mod decision;
+pub mod diff;
 pub mod event;
 pub mod git;
 pub mod goal;
@@ -49,6 +50,13 @@ pub const CONTRACT_VERSION: u16 = 1;
 pub use budget::{AgentBudget, BudgetScope, Ceiling, GoalBudget, Spend};
 pub use decision::{
     AutomaticHold, ExhaustedReason, Gate, GateStep, HoldReason, LoopDecision, NoteAdmission,
+};
+pub use diff::{
+    DIFF_MANIFEST_LIFETIME_MS, DiffAvailability, DiffBinding, DiffContent, DiffEntry, DiffFile,
+    DiffFreshness, DiffKind, DiffOmission, DiffOmissionReason, DiffPage, DiffRefusal, DiffResponse,
+    MAX_DIFF_CANDIDATES, MAX_DIFF_CONTENT_BYTES, MAX_DIFF_FILES, MAX_DIFF_LINE_BYTES,
+    MAX_DIFF_MANIFEST_BYTES, MAX_DIFF_PAGE_BYTES, MAX_DIFF_PAGE_ENTRIES, MAX_DIFF_PATH_BYTES,
+    MAX_DIFF_SIDE_BYTES,
 };
 pub use event::{Event, EventKind};
 pub use git::{
