@@ -541,10 +541,6 @@ fn workspace_step(
     else {
         return Ok(());
     };
-    term.say(
-        "A goal normally needs a check that fails until that goal is met. Add a check for each \
-         kind of goal with dudes workspace check add.",
-    )?;
     let label = argv.join(" ");
     plan.enroll = Some(Enroll {
         check_label: display_text(&label)
@@ -1108,6 +1104,11 @@ mod tests {
             ],
             Some(go.path()),
             &quiet,
+        );
+        assert!(
+            !run.shown.contains("A goal normally needs a check"),
+            "the first hire has no goal, so no goal advice: {}",
+            run.shown
         );
         let plan = run.plan.expect("answered");
         assert_eq!(plan.check.expect("a check").argv, ["make", "check"]);

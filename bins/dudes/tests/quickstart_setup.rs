@@ -175,7 +175,8 @@ fn alive(pid: i32) -> bool {
 }
 
 /// What a set-up quickstart prints after the daemon starts, in order: the ping, each engine with
-/// its sign-in, the Floor, and the hire. A terminal run gets the Floor link, printed; a script is told the command and gets no live link.
+/// its sign-in, the hire, and last the Floor. A terminal run gets the Floor link, printed, after
+/// everything else so it stays on screen; a script is told the command and gets no live link.
 fn assert_set_up(run_output: &str, layout: &Layout, terminal: bool) {
     let engines = layout.path("engines");
     let floor: &[&str] = if terminal {
@@ -200,8 +201,8 @@ fn assert_set_up(run_output: &str, layout: &Layout, terminal: bool) {
         ),
     ]
     .into_iter()
-    .chain(floor.iter().map(|line| (*line).to_owned()))
     .chain(["hired ".to_owned()])
+    .chain(floor.iter().map(|line| (*line).to_owned()))
     .collect();
     if !terminal {
         assert!(
@@ -215,6 +216,12 @@ fn assert_set_up(run_output: &str, layout: &Layout, terminal: bool) {
             .find(line.as_str())
             .unwrap_or_else(|| panic!("`{line}` is missing or out of order in:\n{run_output}"));
         rest = &rest[at + line.len()..];
+    }
+    if terminal {
+        assert!(
+            rest.trim().is_empty() || rest.trim_start().starts_with("It works once"),
+            "something printed after the Floor link:\n{run_output}"
+        );
     }
     assert_only_status_checks(layout);
 }
@@ -1196,6 +1203,7 @@ fn a_terminal_is_asked_each_step_and_gets_the_same_setup() {
         screen.answer(answer);
     }
     screen.expect("hired ");
+    screen.expect("run dudes floor open for a new one.");
 
     let deadline = Instant::now() + Duration::from_secs(60);
     let status = loop {
@@ -1637,8 +1645,8 @@ fn options_on_a_terminal_ask_nothing_and_print_the_commands() {
         .spawn_on_terminal(&pty.slave);
     drop(pty.slave);
     let mut screen = Screen::new(pty.master);
-    screen.expect("Open the Floor with: dudes floor open");
     screen.expect("Claude is signed out. Sign in with: dudes login claude");
+    screen.expect("Open the Floor with: dudes floor open");
     let status = exit_status(&mut child, &screen);
     assert!(status.success(), "{status:?}:\n{}", screen.shown());
     let shown = screen.shown();

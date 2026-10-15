@@ -81,6 +81,8 @@ pub(crate) struct Layout {
     pub(crate) config_overridden: bool,
     pub(crate) executable: PathBuf,
     pub(crate) lock_wait: Duration,
+    /// Where Codex keeps its files when `CODEX_HOME` names a folder other than `~/.codex`.
+    pub(crate) codex_home: Option<PathBuf>,
 }
 
 /// What `uninstall` needs beyond the shared daemon: the trees the daemon knows of.
@@ -666,29 +668,51 @@ fn remove(entry: &Entry, home: &Path, outcome: &mut Outcome) {
     }
 }
 
-fn leftovers(out: &mut dyn Write) -> std::io::Result<()> {
+fn leftovers(out: &mut dyn Write, layout: &Layout) -> std::io::Result<()> {
+    let claude_sessions = layout.home.join(".claude/projects");
+    let codex_folders: Vec<PathBuf> = std::iter::once(layout.home.join(".codex"))
+        .chain(layout.codex_home.clone())
+        .collect();
+    let codex_sessions = codex_folders
+        .iter()
+        .any(|folder| exists(&folder.join("sessions")));
+    let codex_snapshots = codex_folders
+        .iter()
+        .any(|folder| exists(&folder.join("shell_snapshots")));
+    let session_folders: Vec<&str> = [
+        (exists(&claude_sessions), "~/.claude/projects/"),
+        (codex_sessions, "~/.codex/sessions/"),
+    ]
+    .into_iter()
+    .filter_map(|(present, name)| present.then_some(name))
+    .collect();
     writeln!(out)?;
     writeln!(out, "Dudes cannot clean up these, so they are yours to do:")?;
-    writeln!(
-        out,
-        "  - Claude Code and Codex keep their own session history in their own folders, for example"
-    )?;
-    writeln!(
-        out,
-        "    ~/.claude/projects/ and ~/.codex/sessions/. Dudes does not read or delete them."
-    )?;
-    writeln!(
-        out,
-        "  - Codex shell snapshots from earlier versions can hold an agent's DUDES_TOKEN. Delete the"
-    )?;
-    writeln!(
-        out,
-        "    ones that do (use $CODEX_HOME instead of ~/.codex if you set it):"
-    )?;
-    writeln!(
-        out,
-        "      find ~/.codex/shell_snapshots -type f -exec grep -q 'DUDES_TOKEN=' {{}} \\; -print -delete"
-    )?;
+    if !session_folders.is_empty() {
+        writeln!(
+            out,
+            "  - Claude Code and Codex keep their own session history in their own folders, for example"
+        )?;
+        writeln!(
+            out,
+            "    {}. Dudes does not read or delete them.",
+            session_folders.join(" and ")
+        )?;
+    }
+    if codex_snapshots {
+        writeln!(
+            out,
+            "  - Codex shell snapshots from earlier versions can hold an agent's DUDES_TOKEN. Delete the"
+        )?;
+        writeln!(
+            out,
+            "    ones that do (use $CODEX_HOME instead of ~/.codex if you set it):"
+        )?;
+        writeln!(
+            out,
+            "      find ~/.codex/shell_snapshots -type f -exec grep -q 'DUDES_TOKEN=' {{}} \\; -print -delete"
+        )?;
+    }
     writeln!(
         out,
         "  - Clear your browser's site data for the Floor's 127.0.0.1 address to remove its view preferences."
@@ -921,7 +945,7 @@ fn delete(
             outcome.removed
         )
         .map_err(io)?;
-        leftovers(out).map_err(io)?;
+        leftovers(out, layout).map_err(io)?;
         return Ok(exit::SUCCESS);
     }
     render::local_error(

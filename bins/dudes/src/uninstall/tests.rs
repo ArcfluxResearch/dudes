@@ -55,6 +55,7 @@ impl Fixture {
             config_overridden: false,
             executable: bin.join("dudes"),
             lock_wait: Duration::from_millis(300),
+            codex_home: None,
         };
         Self { root, layout }
     }
@@ -374,8 +375,44 @@ fn a_declined_prompt_changes_nothing_and_exits_zero() {
 }
 
 #[test]
+fn the_tail_names_no_engine_folder_the_user_does_not_have() {
+    let fixture = Fixture::new();
+    let (code, out, _) = fixture.run(yes(), None, &Fake::default());
+    assert_eq!(code, exit::SUCCESS);
+    for absent in [".claude", ".codex", "shell_snapshots", "session history"] {
+        assert!(!out.contains(absent), "{absent} in:\n{out}");
+    }
+    assert!(out.contains("browser's site data for the Floor's 127.0.0.1 address"));
+    assert!(out.contains("Branches named dudes/<id>"));
+}
+
+#[test]
+fn the_tail_names_only_the_engine_folders_that_exist() {
+    let mut fixture = Fixture::new();
+    let elsewhere = fixture.base().join("codex-elsewhere");
+    std::fs::create_dir_all(elsewhere.join("shell_snapshots")).unwrap();
+    std::fs::create_dir_all(fixture.layout.home.join(".claude/projects")).unwrap();
+    fixture.layout.codex_home = Some(elsewhere);
+    let (code, out, _) = fixture.run(yes(), None, &Fake::default());
+    assert_eq!(code, exit::SUCCESS);
+    assert!(
+        out.contains("    ~/.claude/projects/. Dudes does not read"),
+        "{out}"
+    );
+    assert!(!out.contains("~/.codex/sessions/"), "{out}");
+    assert!(out.contains("find ~/.codex/shell_snapshots"), "{out}");
+}
+
+#[test]
 fn a_full_delete_leaves_nothing_behind_and_prints_what_it_cannot_do() {
     let fixture = Fixture::new();
+    for folder in [
+        ".claude/projects",
+        ".codex/sessions",
+        ".codex/shell_snapshots",
+    ] {
+        std::fs::create_dir_all(fixture.layout.home.join(folder)).unwrap();
+    }
     let (code, out, err) = fixture.run(yes(), None, &Fake::default());
     assert_eq!((code, err.as_str()), (exit::SUCCESS, ""));
     let l = &fixture.layout;
