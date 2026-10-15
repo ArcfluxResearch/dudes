@@ -145,7 +145,7 @@ impl Rng for FakeRng {
     fn agent_token(&mut self) -> HookToken {
         loop {
             let counter = self.next_counter();
-            let text = format!("{counter:A>width$}", width = HOOK_TOKEN_LEN);
+            let text = format!("{counter:A>HOOK_TOKEN_LEN$}");
             let hash = blake3_hex(text.as_bytes());
             if self.occupied.contains(&text) || self.occupied.contains(&hash) {
                 continue;
