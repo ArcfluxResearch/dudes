@@ -233,6 +233,7 @@ impl ReviewCapture {
 pub struct DiffReader {
     git: super::super::GitReader,
     scratch: PathBuf,
+    deadline: std::time::Duration,
 }
 
 // Off Unix every public method is a refusal stub that ignores its arguments.
@@ -244,7 +245,22 @@ impl DiffReader {
         Self {
             git: super::super::GitReader::new(runner, path, scratch.join("metadata")),
             scratch: scratch.join("content"),
+            deadline: super::super::READ_DEADLINE,
         }
+    }
+
+    /// The same reader with another whole-read deadline, for tests that would otherwise wait out
+    /// the real one.
+    #[must_use]
+    #[doc(hidden)]
+    pub const fn with_deadline(mut self, deadline: std::time::Duration) -> Self {
+        self.deadline = deadline;
+        self
+    }
+
+    #[cfg(unix)]
+    fn budget(&self, cancelled: Arc<AtomicBool>) -> Budget {
+        Budget::within(self.deadline, cancelled)
     }
 
     /// Reclaim only verified owned content shadows before admitting this run's readers.
@@ -254,7 +270,7 @@ impl DiffReader {
     pub fn reclaim_scratch(&self, cancelled: Arc<AtomicBool>) -> Result<usize, DiffRefusal> {
         #[cfg(unix)]
         {
-            ContentShadow::reclaim(&self.scratch, &Budget::new(cancelled))
+            ContentShadow::reclaim(&self.scratch, &self.budget(cancelled))
         }
         #[cfg(not(unix))]
         {
@@ -274,7 +290,7 @@ impl DiffReader {
     ) -> Result<BaselineCapture, DiffRefusal> {
         #[cfg(unix)]
         {
-            let budget = Budget::new(cancelled);
+            let budget = self.budget(cancelled);
             let shadow = self.shadow(tree, None, &budget)?;
             let mut baseline = BaselineCapture {
                 root: shadow.root().identity(),
@@ -303,7 +319,7 @@ impl DiffReader {
     ) -> Result<ReviewCapture, DiffRefusal> {
         #[cfg(unix)]
         {
-            let budget = Budget::new(cancelled);
+            let budget = self.budget(cancelled);
             let shadow = self.shadow(tree, Some(baseline.root), &budget)?;
             self.observe(tree, &shadow, baseline, &budget)
         }
@@ -329,7 +345,7 @@ impl DiffReader {
         let selected = manifest.select(ids)?;
         #[cfg(unix)]
         {
-            let budget = Budget::new(cancelled);
+            let budget = self.budget(cancelled);
             let shadow = self.shadow(tree, Some(baseline.root), &budget)?;
             if manifest.metadata_digest() != Some(metadata_digest(&shadow).as_str()) {
                 return Err(DiffRefusal::StaleManifest);
@@ -440,7 +456,7 @@ impl DiffReader {
                 metadata.work_tree(),
                 budget.remaining()?.min(super::super::COMMAND_DEADLINE),
             )
-            .map_err(|_| DiffRefusal::GitUnavailable)?;
+            .map_err(|_| git_failure(budget))?;
         let spec = super::super::launch(&self.git, &program, &metadata, args);
         let result = self
             .git
@@ -450,7 +466,7 @@ impl DiffReader {
                 budget.remaining()?.min(super::super::COMMAND_DEADLINE),
                 super::super::STDOUT_CAP,
             )
-            .map_err(|_| DiffRefusal::GitUnavailable)?;
+            .map_err(|_| git_failure(budget))?;
         content.verify(budget)?;
         match result {
             PredicateCaptured::Finished {
@@ -485,7 +501,7 @@ impl DiffReader {
                 shadow.root().path(),
                 budget.remaining()?.min(super::super::COMMAND_DEADLINE),
             )
-            .map_err(|_| DiffRefusal::GitUnavailable)?;
+            .map_err(|_| git_failure(budget))?;
         let mut env = self.git.base_env();
         env.extend([
             EnvVar::new("GIT_DIR", shadow.dir()),
@@ -526,7 +542,7 @@ impl DiffReader {
                 cut: truncated,
             }),
             Ok(PredicateCaptured::Swept) => Err(DiffRefusal::Unreadable),
-            Err(_) => Err(DiffRefusal::GitUnavailable),
+            Err(_) => Err(git_failure(budget)),
         }
     }
 
@@ -846,6 +862,13 @@ fn metadata_head(
             Err(DiffRefusal::Unreadable)
         }
     }
+}
+
+/// Why a program that could not run failed: a spent budget says so, because the program has no
+/// time left to answer, instead of passing for a missing one.
+#[cfg(unix)]
+fn git_failure(budget: &Budget) -> DiffRefusal {
+    budget.check().err().unwrap_or(DiffRefusal::GitUnavailable)
 }
 
 fn regular(mode: u32) -> bool {

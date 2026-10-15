@@ -25,6 +25,7 @@ struct Real {
     commands: AtomicUsize,
     argv: Mutex<Vec<Vec<OsString>>>,
     cut_listing: AtomicBool,
+    exhaust: AtomicBool,
 }
 impl PredicateRunner for Real {
     fn run(&self, spec: &LaunchSpec, timeout: Duration) -> io::Result<PredicateOutcome> {
@@ -49,6 +50,10 @@ impl PredicateRunner for Real {
     ) -> io::Result<PredicateCaptured> {
         self.commands.fetch_add(1, Ordering::Relaxed);
         self.argv.lock().unwrap().push(spec.argv.clone());
+        if self.exhaust.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(400));
+            return Err(io::Error::other("the program was lost"));
+        }
         self.host
             .run_captured(spec, timeout, cap)
             .map(|result| match result {
@@ -104,6 +109,7 @@ impl Lab {
             commands: AtomicUsize::new(0),
             argv: Mutex::new(Vec::new()),
             cut_listing: AtomicBool::new(false),
+            exhaust: AtomicBool::new(false),
         });
         let git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
             .map(|dir| dir.join("git"))
@@ -954,4 +960,50 @@ fn long_unchanged_names_neither_hide_nor_invent_a_changed_file() {
         ),
         (0, false, true)
     );
+}
+
+#[test]
+fn a_maintenance_lock_in_the_object_directory_is_a_busy_refusal_until_it_clears() {
+    let lab = Lab::new();
+    let lock = lab.repo().join(".git/objects/maintenance.lock");
+    std::fs::write(&lock, "").unwrap();
+    assert_eq!(
+        lab.reader.capture_baseline(&lab.tree(), cancel()).unwrap_err(),
+        DiffRefusal::Busy
+    );
+    std::fs::remove_file(&lock).unwrap();
+    assert!(lab.reader.capture_baseline(&lab.tree(), cancel()).is_ok());
+}
+
+#[test]
+fn a_read_whose_budget_ran_out_before_git_answered_is_a_timeout_not_a_missing_git() {
+    let lab = Lab::new();
+    let reader = DiffReader::new(
+        lab.real.clone(),
+        std::env::var_os("PATH"),
+        &lab.root.path().join("short-scratch"),
+    )
+    .with_deadline(Duration::from_millis(150));
+    lab.real.exhaust.store(true, Ordering::Relaxed);
+    assert_eq!(
+        reader.capture_baseline(&lab.tree(), cancel()).unwrap_err(),
+        DiffRefusal::TimedOut
+    );
+}
+
+#[test]
+fn git_that_cannot_run_with_budget_to_spare_is_still_a_missing_git() {
+    let lab = Lab::new();
+    let reader = DiffReader::new(
+        lab.real.clone(),
+        std::env::var_os("PATH"),
+        &lab.root.path().join("long-scratch"),
+    );
+    lab.real.exhaust.store(true, Ordering::Relaxed);
+    let started = std::time::Instant::now();
+    assert_eq!(
+        reader.capture_baseline(&lab.tree(), cancel()).unwrap_err(),
+        DiffRefusal::GitUnavailable
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
 }

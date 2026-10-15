@@ -20,9 +20,13 @@ pub(super) struct Budget {
 }
 
 impl Budget {
+    #[cfg(test)]
     pub(super) fn new(cancelled: Arc<AtomicBool>) -> Self {
+        Self::within(super::super::READ_DEADLINE, cancelled)
+    }
+    pub(super) fn within(deadline: Duration, cancelled: Arc<AtomicBool>) -> Self {
         Self {
-            deadline: Instant::now() + super::super::READ_DEADLINE,
+            deadline: Instant::now() + deadline,
             cancelled,
         }
     }

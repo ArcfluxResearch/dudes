@@ -1146,6 +1146,9 @@ fn stage_objects(
             absent(&info, "http-alternates")?;
             continue;
         }
+        if bytes == b"maintenance.lock" {
+            return Err(DiffRefusal::Busy);
+        }
         if bytes != b"pack" && !hex(bytes, 2) {
             return Err(DiffRefusal::UnsupportedStorage);
         }
