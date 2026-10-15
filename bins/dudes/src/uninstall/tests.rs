@@ -395,7 +395,10 @@ fn the_tail_names_only_the_engine_folders_that_exist() {
     fixture.layout.codex_home = Some(elsewhere);
     let (code, out, _) = fixture.run(yes(), None, &Fake::default());
     assert_eq!(code, exit::SUCCESS);
-    assert!(out.contains("    ~/.claude/projects/. Dudes does not read"), "{out}");
+    assert!(
+        out.contains("    ~/.claude/projects/. Dudes does not read"),
+        "{out}"
+    );
     assert!(!out.contains("~/.codex/sessions/"), "{out}");
     assert!(out.contains("find ~/.codex/shell_snapshots"), "{out}");
 }
@@ -403,7 +406,11 @@ fn the_tail_names_only_the_engine_folders_that_exist() {
 #[test]
 fn a_full_delete_leaves_nothing_behind_and_prints_what_it_cannot_do() {
     let fixture = Fixture::new();
-    for folder in [".claude/projects", ".codex/sessions", ".codex/shell_snapshots"] {
+    for folder in [
+        ".claude/projects",
+        ".codex/sessions",
+        ".codex/shell_snapshots",
+    ] {
         std::fs::create_dir_all(fixture.layout.home.join(folder)).unwrap();
     }
     let (code, out, err) = fixture.run(yes(), None, &Fake::default());
