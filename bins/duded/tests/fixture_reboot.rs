@@ -14,7 +14,7 @@ use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::{Method, Response};
 use dudes_rpc::Client;
 use dudes_supervisor::Clock;
-use dudes_types::Timestamp;
+use dudes_types::{GoalId, Timestamp, TurnId};
 use serde_json::json;
 
 struct SampleClock {
@@ -123,19 +123,11 @@ fn list(settings: &Settings) -> Response {
         .unwrap()
 }
 
-#[test]
-fn pending_instruction_samples_issue_fresh_turns_after_reboot() {
-    let fixture = Fixture::new();
-    let settings = fixture.settings();
+fn leave_pending_prefix(fixture: &Fixture, settings: &Settings) -> (Vec<TurnId>, Vec<GoalId>) {
     let host = SharedHost::new();
     let clock = SampleClock::new();
-    let mut running = common::start(
-        boot(
-            &settings,
-            parts(&settings, host.clone(), Arc::clone(&clock)),
-        )
-        .unwrap(),
-    );
+    let mut running =
+        common::start(boot(settings, parts(settings, host.clone(), Arc::clone(&clock))).unwrap());
     let mut old_turns = Vec::new();
     for _ in 0..2 {
         let agent = common::hire(&running.handle, fixture.state.path());
@@ -144,8 +136,13 @@ fn pending_instruction_samples_issue_fresh_turns_after_reboot() {
             common::goal_params(agent, &["/usr/bin/false"]),
         );
         let turn = fixture.await_record("initial issued turn", |record| match record {
-            Record::TurnSpawned { turn, .. } if fixture.records().iter().any(|record| matches!(record, Record::TurnIssued { turn: seen, goal: found, .. } if seen == turn && *found == goal)) => Some(*turn),
+            Record::TurnIssued {
+                turn, goal: found, ..
+            } if *found == goal => Some(*turn),
             _ => None,
+        });
+        fixture.await_record("initial spawned turn", |record| {
+            matches!(record, Record::TurnSpawned { turn: seen, .. } if *seen == turn).then_some(())
         });
         running.handle.ask(duded::ports::Ask::Pause(agent)).unwrap();
         common::end_turn(&running.handle, turn);
@@ -187,6 +184,14 @@ fn pending_instruction_samples_issue_fresh_turns_after_reboot() {
             .any(|r| matches!(r, Record::TurnIssued { goal: found, .. } if found == goal))
     }));
 
+    (old_turns, pending)
+}
+
+#[test]
+fn pending_instruction_samples_issue_fresh_turns_after_reboot() {
+    let fixture = Fixture::new();
+    let settings = fixture.settings();
+    let (old_turns, pending) = leave_pending_prefix(&fixture, &settings);
     let clock = SampleClock::new();
     let release = clock.hold();
     let daemon = boot(
