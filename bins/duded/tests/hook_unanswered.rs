@@ -396,10 +396,41 @@ fn a_running_agent_with_a_free_slot_is_allowed() {
     }
 }
 
-#[test]
-fn a_durable_token_mint_alone_does_not_make_the_hook_subject_ready() {
+fn assert_unpublished_token_refusal(socket: &Path, token: &HookToken) {
     use std::io::Write as _;
 
+    let response = LocalClient::connect(socket)
+        .unwrap()
+        .call(
+            Method::HookEvent,
+            Some(
+                serde_json::to_value(HookEventParams {
+                    token: HookToken::new(token.expose()).unwrap(),
+                    raw: payload("PreToolUse"),
+                })
+                .unwrap(),
+            ),
+        )
+        .expect("the unpublished token refusal is answered");
+    let refusal = response
+        .error
+        .expect("the durable mint is not yet published");
+    assert_eq!(refusal.code, -32004);
+    assert_eq!(
+        refusal.message,
+        "the presented token matches no minting for a live agent"
+    );
+    assert_eq!(refusal.data, Some(json!({"gate": "token"})));
+    writeln!(
+        std::io::stderr(),
+        "unpublished token reply: {}",
+        serde_json::to_string(&refusal).unwrap()
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_durable_token_mint_alone_does_not_make_the_hook_subject_ready() {
     let fixture = Fixture::new();
     let mut settings = fixture.settings();
     settings.max_connections = NonZeroUsize::MIN;
@@ -471,34 +502,7 @@ fn a_durable_token_mint_alone_does_not_make_the_hook_subject_ready() {
             "{output:?}"
         );
         await_rpc_connections(rpc_connections.as_ref(), 0);
-        let response = LocalClient::connect(&socket)
-            .unwrap()
-            .call(
-                Method::HookEvent,
-                Some(
-                    serde_json::to_value(HookEventParams {
-                        token: HookToken::new(token.expose()).unwrap(),
-                        raw: payload("PreToolUse"),
-                    })
-                    .unwrap(),
-                ),
-            )
-            .expect("the unpublished token refusal is answered");
-        let refusal = response
-            .error
-            .expect("the durable mint is not yet published");
-        assert_eq!(refusal.code, -32004);
-        assert_eq!(
-            refusal.message,
-            "the presented token matches no minting for a live agent"
-        );
-        assert_eq!(refusal.data, Some(json!({"gate": "token"})));
-        writeln!(
-            std::io::stderr(),
-            "unpublished token reply: {}",
-            serde_json::to_string(&refusal).unwrap()
-        )
-        .unwrap();
+        assert_unpublished_token_refusal(&socket, &token);
         clock.release();
         setting.join().unwrap();
         await_hook_subject(&fixture, &running, agent);
