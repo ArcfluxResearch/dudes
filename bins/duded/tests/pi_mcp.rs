@@ -102,6 +102,7 @@ fn boot_case(output: &[u8], timed_out: bool, truncated: bool) -> PiCase {
         EnvVar::new("DUDES_MAILBOX", "/scratch/mailbox"),
     ]);
     let mut seams = common::seams(
+        &settings,
         common::SharedHost::new(),
         runner.clone(),
         Arc::new(common::TestClock::new()),
@@ -357,6 +358,7 @@ impl GatedCase {
             release: Mutex::new(release),
         });
         let mut seams = common::seams(
+            &settings,
             common::SharedHost::new(),
             runner,
             Arc::new(common::TestClock::new()),

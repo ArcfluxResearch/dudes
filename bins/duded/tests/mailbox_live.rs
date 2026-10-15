@@ -39,6 +39,7 @@ fn structural_sender_and_observed_ack_survive_restart() {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -85,6 +86,7 @@ fn structural_sender_and_observed_ack_survive_restart() {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -115,6 +117,7 @@ fn checkpoint_poison_retains_sources_and_stops_all_new_mailbox_files() {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

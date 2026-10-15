@@ -336,7 +336,7 @@ fn real_short_child_eof_before_registration_keeps_durably_bound_ended_text() {
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(LocalAdapter) as Box<dyn Adapter>]
             .into_iter()
@@ -412,7 +412,7 @@ fn real_no_init_and_rejected_init_end_as_empty_without_unconfirmed_text() {
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(LocalAdapter) as Box<dyn Adapter>]
             .into_iter()
@@ -502,7 +502,7 @@ fn real_durable_overcap_session_acknowledges_empty_live_view_before_end() {
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(LocalAdapter) as Box<dyn Adapter>]
             .into_iter()
@@ -577,7 +577,7 @@ fn capture_attributed_assistant_text_in_bounded_run_registry() {
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(LocalAdapter) as Box<dyn Adapter>]
             .into_iter()
@@ -811,7 +811,7 @@ fn capture_attributed_assistant_text_in_bounded_run_registry() {
             pty_host: Box::new(duded::ports::ClosedPtyHost),
             predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
             clock: Arc::new(TestClock::new()),
-            rng: FakeRng::new(),
+            rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
             resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
             adapters: [Box::new(LocalAdapter) as Box<dyn Adapter>]
                 .into_iter()

@@ -176,6 +176,7 @@ fn on_an_injected_column(
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let seams = common::seams_with(
+        &settings,
         host.clone(),
         Arc::new(runner),
         Arc::new(TestClock::new()),
@@ -206,6 +207,7 @@ fn retire_demotes_a_live_connection_under_the_production_pair() {
     let settings = fixture.settings();
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let seams = common::seams(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),

@@ -169,6 +169,7 @@ fn daemon_scratch_child() {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             common::SharedHost::new(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::new()),

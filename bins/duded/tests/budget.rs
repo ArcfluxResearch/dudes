@@ -82,6 +82,7 @@ fn restored_ceiling_requires_same_unit_reserve_before_bind() {
     let error = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -134,6 +135,7 @@ fn restored_ceiling_requires_same_unit_reserve_before_bind() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -157,6 +159,7 @@ fn live_ceiling_requires_same_unit_reserve_before_append() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -223,6 +226,7 @@ fn live_ceiling_requires_same_unit_reserve_before_append() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -360,6 +364,7 @@ fn spend_against(ceiling: Usd, spent: Usd) -> Vec<Record> {
         &fixture.settings(),
         // A predicate that never holds, so the loop's only reason to stop is the ceiling.
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::scripted([common::fails()])),
             Arc::new(TestClock::new()),
@@ -426,6 +431,7 @@ fn spend_against_floor(source: &str, spent: Usd, expect_next_turn: bool) -> (Vec
     let mut settings = fixture.settings();
     settings.floor_usd_per_day = budget.floor_usd_per_day;
     let runtime_seams = seams(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::scripted([common::fails()])),
         Arc::new(TestClock::new()),
@@ -1195,6 +1201,7 @@ fn an_absent_floor_ceiling_issues_a_turn_the_old_default_would_have_refused() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::scripted([common::fails()])),
             Arc::new(TestClock::new()),
@@ -1435,6 +1442,7 @@ fn tokens_against_inner(budget: GoalBudget, tokens: u64, expect_a_turn: bool) ->
         &settings,
         // A predicate that never holds, so the loop's only reason to stop is a ceiling.
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::scripted([common::fails()])),
             Arc::new(TestClock::new()),
@@ -1632,6 +1640,7 @@ fn zero_and_no_ceiling_controls_keep_units_independent() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1690,6 +1699,7 @@ fn zero_and_no_ceiling_controls_keep_units_independent() {
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -1739,6 +1749,7 @@ fn unknown_ends_and_floor_rebuild_from_journal_and_config() {
     settings.per_turn_floor = budget.per_turn_floor;
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let runtime_seams = seams(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::scripted([common::fails(), common::fails()])),
         Arc::new(TestClock::new()),
@@ -1875,6 +1886,7 @@ fn an_unset_reserve_prices_an_unobserved_end_at_the_default() {
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::scripted([common::fails()])),
                 Arc::new(TestClock::new()),

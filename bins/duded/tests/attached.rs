@@ -477,6 +477,7 @@ fn attached_claude_inherits_context_and_refuses_a_live_peer_before_pty_open() {
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut seams = common::seams_with(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::scripted([common::passes()])),
         Arc::new(TestClock::new()),
@@ -577,7 +578,7 @@ fn agent_attach_binds_the_durable_attachment_to_one_connection() {
         pty_host: Box::new(ptys.clone()),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: common::native_resolver(&ptys),
         adapters: dudes_providers::registry::Adapters::from_config(
             &dudes_providers::registry::ProvidersConfig {
@@ -1064,7 +1065,7 @@ fn hired_with_resolver(
         pty_host: Box::new(ptys.clone()),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver,
         adapters: dudes_providers::registry::Adapters::from_config(
             &dudes_providers::registry::ProvidersConfig {
@@ -3036,6 +3037,7 @@ fn gone_attachment_short_write_keeps_operator_diagnostics_available() {
     let first = duded::boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -3071,6 +3073,7 @@ fn gone_attachment_short_write_keeps_operator_diagnostics_available() {
     let daemon = duded::boot(
         &settings,
         common::seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -3145,7 +3148,7 @@ fn replay_run(fixture: &Fixture, ptys: SharedPtyHost) -> dudes_types::Lsn {
         pty_host: Box::new(ptys),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(
             Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>
         ),

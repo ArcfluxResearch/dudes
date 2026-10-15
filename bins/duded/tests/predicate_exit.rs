@@ -138,6 +138,7 @@ fn in_flight_predicate_dies_with_the_daemon(cause: ExitCause) {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host,
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -302,6 +303,7 @@ fn a_predicate_that_reaches_the_runner_after_the_sweep_starts_no_child() {
     });
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let runtime_seams = seams(
+        &settings,
         host.clone(),
         Arc::clone(&runner),
         Arc::new(TestClock::new()),
@@ -383,6 +385,7 @@ fn checks_after_a_restart(fixture: &Fixture, goal: GoalId, first_turn: TurnId) -
     let runtime_seams = Seams {
         rng,
         ..seams(
+            &settings,
             host.clone(),
             Arc::clone(&scripted),
             Arc::new(TestClock::ticking(1_787_394_700_000, 1)),
@@ -431,6 +434,7 @@ fn a_really_swept_predicate_journals_no_result() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),

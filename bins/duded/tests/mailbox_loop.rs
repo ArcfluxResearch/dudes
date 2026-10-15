@@ -51,6 +51,7 @@ impl Floor {
         let daemon = boot(
             &settings,
             seams_with(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -180,6 +181,7 @@ fn a_queued_hook_runs_before_an_eight_by_thirty_two_backlog_drains() {
     let daemon = boot(
         &floor.settings,
         seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -315,6 +317,7 @@ fn back_to_back_jobs_do_not_each_run_a_mailbox_pass() {
     let daemon = boot(
         &fixture.settings(),
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

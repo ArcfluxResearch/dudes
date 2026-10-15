@@ -57,6 +57,7 @@ fn all_ten_installed_claude_events_reach_one_local_hook_route() {
     let daemon = boot(
         &settings,
         seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -161,6 +162,7 @@ fn activity_after_one_pre_tool(floor: Option<&std::path::Path>) -> Vec<LiveActiv
     let daemon = boot(
         &settings,
         seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -239,6 +241,7 @@ fn a_sibling_process_with_a_stolen_hook_token_is_refused_without_effect() {
     let daemon = boot(
         &settings,
         seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

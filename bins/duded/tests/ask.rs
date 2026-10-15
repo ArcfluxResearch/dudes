@@ -743,6 +743,7 @@ fn ready(fixture: &Fixture) -> Ready {
     let daemon = boot(
         &settings,
         common::seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -799,7 +800,7 @@ fn managed_child_reaches_agent_ask_and_four_agent_wait_arm() {
             common::passes(),
         ])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver,
         adapters: [Box::new(ManagedAskAdapter {
             marker: marker.clone(),
@@ -1359,6 +1360,7 @@ fn every_ask_variant_preserves_publication_before_reply() {
     let daemon = boot(
         &settings,
         common::seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1862,6 +1864,7 @@ fn local_loop_control_refuses_an_absent_agent_and_appends_nothing() {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

@@ -23,23 +23,41 @@ impl FixtureRng {
                 let (reader, _) = Reader::open(&dir).unwrap_or_else(|error| {
                     panic!("preparing fixture RNG from {}: {error}", dir.display())
                 });
-                reader.iter_from(Lsn::ZERO).unwrap_or_else(|error| {
-                    panic!("preparing fixture RNG from {}: {error}", dir.display())
-                }).map(|entry| entry.unwrap_or_else(|error| {
-                    panic!("preparing fixture RNG from {}: {error}", dir.display())
-                }).1).collect()
+                reader
+                    .iter_from(Lsn::ZERO)
+                    .unwrap_or_else(|error| {
+                        panic!("preparing fixture RNG from {}: {error}", dir.display())
+                    })
+                    .map(|entry| {
+                        entry
+                            .unwrap_or_else(|error| {
+                                panic!("preparing fixture RNG from {}: {error}", dir.display())
+                            })
+                            .1
+                    })
+                    .collect()
             }
         };
-        initial.reserve_entries(&entries).expect("fixture entries serialize");
+        initial
+            .reserve_entries(&entries)
+            .expect("fixture entries serialize");
         Self(initial)
     }
 
-    pub(crate) fn tokens(&self) -> FakeTokens { self.0.tokens() }
+    pub(crate) fn tokens(&self) -> FakeTokens {
+        self.0.tokens()
+    }
 
-    pub(crate) fn drawn(&self) -> u128 { self.0.drawn() }
+    pub(crate) fn drawn(&self) -> u128 {
+        self.0.drawn()
+    }
 }
 
 impl Rng for FixtureRng {
-    fn ulid(&mut self) -> Ulid { self.0.ulid() }
-    fn agent_token(&mut self) -> HookToken { self.0.agent_token() }
+    fn ulid(&mut self) -> Ulid {
+        self.0.ulid()
+    }
+    fn agent_token(&mut self) -> HookToken {
+        self.0.agent_token()
+    }
 }

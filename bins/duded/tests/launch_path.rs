@@ -158,7 +158,7 @@ fn turn_of(fixture: &Fixture, program: OsString, workspace: &Path, mark: &Path, 
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(NamedAdapter(program)) as Box<dyn Adapter>]
             .into_iter()
@@ -269,7 +269,7 @@ fn two_real_fast_failed_processes_hold_before_a_third_launch() {
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::default()),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(NamedAdapter("/usr/bin/false".into())) as Box<dyn Adapter>]
             .into_iter()

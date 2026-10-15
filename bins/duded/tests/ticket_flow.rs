@@ -280,6 +280,7 @@ impl Flow {
         let runner = Arc::new(ScriptedRunner::scripted(answers));
         let durable_at_spawn = Arc::new(Mutex::new(Vec::new()));
         let mut seams = common::seams_with(
+            &settings,
             WatchHost {
                 inner: host.clone(),
                 journal: fixture.journal_dir(),

@@ -131,7 +131,7 @@ fn daemon_with(
             pty_host: Box::new(duded::ports::ClosedPtyHost),
             predicates: runner(),
             clock: Arc::new(TestClock::new()),
-            rng: FakeRng::new(),
+            rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
             resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
             adapters,
             children: duded::ChildEnds::new(),

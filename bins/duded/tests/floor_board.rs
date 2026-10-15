@@ -118,6 +118,7 @@ impl Board {
         let host =
             SharedHost::with_native_evidence(settings.state_dir.join(duded::boot::JOURNAL_DIR));
         let seams = common::seams_with(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::scripted(answers)),
             Arc::new(TestClock::new()),

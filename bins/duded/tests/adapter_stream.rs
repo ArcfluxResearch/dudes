@@ -243,6 +243,7 @@ fn one_turn(reader: Reader) -> Vec<Record> {
             .collect(),
         children: Arc::clone(&children),
         ..common::seams(
+            &settings,
             RealHost::watching(Arc::new(HostStreams(children))),
             Arc::new(ScriptedRunner::scripted([common::passes()])),
             Arc::new(TestClock::new()),

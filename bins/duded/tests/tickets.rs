@@ -102,6 +102,7 @@ fn enrolled(fixture: &Fixture) -> (duded::Settings, PathBuf) {
 fn start(fixture: &Fixture, settings: duded::Settings) -> Daemon {
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
     let mut seams = common::seams_with(
+        &settings,
         SharedHost::new(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),

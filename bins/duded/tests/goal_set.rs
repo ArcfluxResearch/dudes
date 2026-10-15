@@ -44,6 +44,7 @@ fn hired(fixture: &Fixture) -> (duded::Settings, common::Running, SocketClient, 
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -265,6 +266,7 @@ fn goal_set_records_the_check_name_it_is_given() {
     let again = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

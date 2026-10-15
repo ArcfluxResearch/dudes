@@ -82,6 +82,7 @@ fn hire_on_authorized_connection(
     let daemon = boot(
         &settings,
         common::seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -125,6 +126,7 @@ fn ready_with_mutation(fixture: &Fixture) -> MutationReady {
     let daemon = boot(
         &settings,
         common::seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

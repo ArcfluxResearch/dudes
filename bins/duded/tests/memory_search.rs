@@ -45,6 +45,7 @@ fn daemon(fixture: &common::Fixture) -> (duded::Settings, common::Running, dudes
     let daemon = duded::boot(
         &settings,
         common::seams(
+            &settings,
             common::SharedHost::new(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::new()),

@@ -82,6 +82,7 @@ fn boot() -> Daemon {
     let host = SharedHost::new();
     let predicates = Arc::new(ScriptedRunner::default());
     let mut seams = seams(
+        &settings,
         host.clone(),
         Arc::clone(&predicates),
         Arc::new(TestClock::new()),

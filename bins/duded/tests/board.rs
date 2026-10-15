@@ -46,6 +46,7 @@ fn start(
     let daemon = duded::boot(
         &settings,
         common::seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1144,6 +1145,7 @@ fn startup_with_an_absent_card_holds_later_wakes_until_an_explicit_new_goal() {
         duded::ExitCause::ShutdownRpc
     );
     let mut restarted = common::seams_with(
+        &settings,
         SharedHost::new(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),

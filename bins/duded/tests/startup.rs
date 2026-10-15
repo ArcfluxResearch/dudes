@@ -73,6 +73,7 @@ fn the_seven_startup_steps_happen_in_order() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -143,6 +144,7 @@ fn the_first_decide_writes_a_decision_when_there_is_an_agent_to_decide_for() {
     let first = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -177,6 +179,7 @@ fn the_first_decide_writes_a_decision_when_there_is_an_agent_to_decide_for() {
     let second = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_787_394_700_000, 1)),
@@ -214,6 +217,7 @@ fn a_second_daemon_on_the_same_state_directory_is_refused_by_the_lock() {
     let first = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -232,6 +236,7 @@ fn a_second_daemon_on_the_same_state_directory_is_refused_by_the_lock() {
     let error = boot(
         &second_settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -255,6 +260,7 @@ fn a_second_daemon_on_the_same_state_directory_is_refused_by_the_lock() {
     let third = boot(
         &other.settings(),
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -279,6 +285,7 @@ fn enabled_floor_prepares_before_first_decide_and_binds_after_it() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -321,6 +328,7 @@ fn missing_and_mixed_floor_assets_refuse_before_listener_bind() {
         let result = boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -353,6 +361,7 @@ fn missing_and_mixed_floor_assets_refuse_before_listener_bind() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

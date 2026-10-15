@@ -349,13 +349,9 @@ impl PredicateRunner for Gated {
 
 fn seams_for(
     predicates: Arc<impl PredicateRunner>,
-) -> duded::settings::Seams<
-    SharedHost,
-    impl PredicateRunner,
-    TestClock,
-    dudes_supervisor::testing::FakeRng,
-> {
+) -> duded::settings::Seams<SharedHost, impl PredicateRunner, TestClock, common::FixtureRng> {
     common::seams(
+        &settings,
         SharedHost::new(),
         predicates,
         Arc::new(TestClock::new()),

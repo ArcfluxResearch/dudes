@@ -26,6 +26,7 @@ fn agent_bin_holds_one_link_while_running_and_is_gone_after_a_clean_stop() {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

@@ -32,6 +32,7 @@ fn start(fixture: &Fixture, host: &SharedHost) -> (duded::Settings, common::Runn
         port: Some(0),
     });
     let seams = seams(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::scripted([common::passes()])),
         Arc::new(TestClock::new()),

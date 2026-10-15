@@ -64,6 +64,7 @@ fn rig() -> Rig {
     let daemon = boot(
         &settings,
         seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

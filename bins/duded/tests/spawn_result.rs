@@ -74,6 +74,7 @@ fn unconfirmed_cleanup_retains_ownership_and_never_ends_the_turn() {
     let daemon = boot(
         &fixture.settings(),
         common::seams(
+            &settings,
             host.clone(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::ticking(1_787_394_600_000, 1)),
@@ -157,6 +158,7 @@ fn the_daemon_maps_only_confirmed_absence_to_spawn_failed() {
     let daemon = boot(
         &fixture.settings(),
         common::seams(
+            &settings,
             common::ConfirmedFailureHost::new(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::ticking(1_787_394_600_000, 1)),

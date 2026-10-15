@@ -324,6 +324,7 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let runtime_seams = common::seams_with(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -517,6 +518,7 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
 
     let restart_host = SharedHost::with_native_evidence(fixture.journal_dir());
     let runtime_seams = common::seams(
+        &settings,
         restart_host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -566,6 +568,7 @@ fn daemon_writes_all_presence_cases_and_quarantines_cap_plus_one() {
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
     let first_host = SharedHost::with_native_evidence(fixture.journal_dir());
     let runtime_seams = common::seams_with(
+        &settings,
         first_host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -714,6 +717,7 @@ fn daemon_writes_all_presence_cases_and_quarantines_cap_plus_one() {
 
     let restart_host = SharedHost::with_native_evidence(fixture.journal_dir());
     let runtime_seams = common::seams(
+        &settings,
         restart_host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -769,6 +773,7 @@ fn own_connection(
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let runtime_seams = common::seams_with(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),

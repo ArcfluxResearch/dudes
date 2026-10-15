@@ -128,9 +128,9 @@ fn seed(fixture: &Fixture, records: Vec<Record>) -> duded::Settings {
 
 fn seams(
     fixture: &Fixture,
-) -> duded::settings::Seams<SharedHost, ScriptedRunner, TestClock, dudes_supervisor::testing::FakeRng>
-{
+) -> duded::settings::Seams<SharedHost, ScriptedRunner, TestClock, common::FixtureRng> {
     let mut seams = common::seams(
+        &settings,
         SharedHost::new(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),

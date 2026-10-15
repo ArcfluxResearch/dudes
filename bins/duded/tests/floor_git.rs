@@ -96,6 +96,7 @@ fn floor(fixture: &Fixture, enabled: bool, git_path: Option<OsString>) -> Floor 
     settings.floor_git_enabled = enabled;
     settings.predicate_path = git_path.or_else(|| std::env::var_os("PATH"));
     let seams = common::seams(
+        &settings,
         SharedHost::new(),
         Arc::new(Real(OneShot::new())),
         Arc::new(TestClock::new()),

@@ -204,7 +204,7 @@ impl Daemon {
             pty_host: Box::new(ptys.clone()),
             predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
             clock: Arc::new(TestClock::new()),
-            rng: FakeRng::new(),
+            rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
             resolver,
             adapters: dudes_providers::registry::Adapters::from_config(
                 &dudes_providers::registry::ProvidersConfig {

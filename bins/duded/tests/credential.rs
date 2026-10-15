@@ -45,6 +45,7 @@ fn the_operator_credential_is_minted_once_and_is_owner_only() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -134,6 +135,7 @@ fn a_second_run_mints_a_second_credential() {
     let first = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -156,6 +158,7 @@ fn a_second_run_mints_a_second_credential() {
     let second = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_787_394_700_000, 1)),

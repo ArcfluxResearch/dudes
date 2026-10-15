@@ -44,9 +44,9 @@ fn start(fixture: &Fixture) -> (duded::Settings, common::Running) {
 
 fn replay_seams(
     fixture: &Fixture,
-) -> duded::settings::Seams<SharedHost, ScriptedRunner, TestClock, dudes_supervisor::testing::FakeRng>
-{
+) -> duded::settings::Seams<SharedHost, ScriptedRunner, TestClock, common::FixtureRng> {
     let mut seams = common::seams(
+        &settings,
         SharedHost::new(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -62,11 +62,12 @@ fn native_goal_seams<P: duded::predicate::PredicateRunner>(
     fixture: &Fixture,
     runner: Arc<P>,
 ) -> (
-    duded::settings::Seams<SharedHost, P, TestClock, dudes_supervisor::testing::FakeRng>,
+    duded::settings::Seams<SharedHost, P, TestClock, common::FixtureRng>,
     SharedHost,
 ) {
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let parts = common::seams(
+        &settings,
         host.clone(),
         runner,
         Arc::new(TestClock::new()),
@@ -435,6 +436,7 @@ fn invalid_record_cannot_bypass_startup_validation_through_cached_projections() 
     let result = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -459,6 +461,7 @@ fn reservation_reports_pending_and_conflict_without_duplicating_the_append() {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -521,6 +524,7 @@ fn own_uncertain_fsync_stays_pending_and_replays_exactly_once() {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -635,6 +639,7 @@ fn older_goal_check_blocks_only_its_owner_until_writer_settlement() {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -687,6 +692,7 @@ fn known_no_effect_append_failure_can_retry_without_spending_or_replenishing() {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -823,6 +829,7 @@ fn ordinary_operator_admission_refuses_a_recorded_agent_with_copied_credential()
     let daemon = boot(
         &settings,
         common::seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -962,6 +969,7 @@ fn uncertain_replacement_fences_ordinary_commands_and_internal_work_until_replay
         let daemon = boot(
             &settings,
             common::seams(
+                &settings,
                 host.clone(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -1049,6 +1057,7 @@ fn uncertain_journal_never_allows_a_hook_or_delivers_new_context() {
     let daemon = boot(
         &settings,
         common::seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1113,6 +1122,7 @@ fn uncertain_replacement_preserves_mailbox_sources_without_new_journal_or_delive
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1244,6 +1254,7 @@ fn a_coherence_fence_keeps_operator_memory_diagnostics_but_refuses_agent_reads()
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1467,6 +1478,7 @@ fn every_changed_reviewed_field_conflicts_both_inflight_and_durable() {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1659,9 +1671,10 @@ fn replay_sample_seams(
     common::UnconfirmedHost,
     ScriptedRunner,
     ReplaySampleClock,
-    dudes_supervisor::testing::FakeRng,
+    common::FixtureRng,
 > {
     let parts = common::seams(
+        &settings,
         host,
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -1688,6 +1701,7 @@ fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_go
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1888,6 +1902,7 @@ fn a_failed_predicate_thread_spawn_and_a_lost_run_never_invent_a_pass() {
         let daemon = boot(
             &settings,
             common::seams(
+                &settings,
                 SharedHost::new(),
                 Arc::clone(&runner),
                 Arc::new(TestClock::new()),
@@ -2007,6 +2022,7 @@ fn partially_settled_old_goal_runs_keep_the_owner_busy_until_the_last_completion
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),

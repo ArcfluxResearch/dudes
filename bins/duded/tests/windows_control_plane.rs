@@ -96,6 +96,7 @@ fn daemon_answers_ping_and_admits_a_presented_operator_credential() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -144,6 +145,7 @@ fn a_runtime_alias_cannot_replace_a_live_daemons_credential() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

@@ -86,6 +86,7 @@ fn run_one_predicate(outcome: duded::predicate::PredicateOutcome) -> (Fixture, V
     let daemon = boot(
         &fixture.settings(),
         seams(
+            &settings,
             host,
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -163,6 +164,7 @@ fn run_symlinked_predicate<P: PredicateRunner>(
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host,
             Arc::clone(runner),
             Arc::new(TestClock::new()),
@@ -444,6 +446,7 @@ fn a_check_that_cannot_run_reads_not_run() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -587,6 +590,7 @@ fn baselined_with(edit: impl FnOnce(&mut duded::Settings), seeded: Vec<Record>) 
     let runner = CountingRunner::new();
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let seams = seams(
+        &settings,
         host.clone(),
         Arc::clone(&runner),
         Arc::new(TestClock::new()),
@@ -1141,6 +1145,7 @@ fn goal_set_guards_run_before_the_baseline() {
             boot(
                 &settings,
                 seams(
+                    &settings,
                     SharedHost::new(),
                     runner,
                     Arc::new(TestClock::new()),
@@ -1391,6 +1396,7 @@ fn goal_set_is_abandoned_when_the_client_disconnects() {
     let daemon = boot(
         &fixture.settings(),
         seams(
+            &settings,
             SharedHost::new(),
             CountingRunner::new(),
             Arc::new(TestClock::new()),

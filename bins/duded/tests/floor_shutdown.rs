@@ -210,6 +210,7 @@ fn shutdown_read(path: &str) {
     let daemon = duded::boot(
         &settings,
         common::seams(
+            &settings,
             ShutdownGate {
                 host: host.clone(),
                 entered,
@@ -294,6 +295,7 @@ fn an_unknown_git_agent_still_answers_200() {
     let daemon = duded::boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

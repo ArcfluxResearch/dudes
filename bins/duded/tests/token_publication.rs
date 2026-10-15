@@ -273,6 +273,7 @@ fn publication_work(mintings: usize) -> (usize, usize) {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -325,6 +326,7 @@ fn changed_token_projection_is_published_before_answer() {
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let seams = common::seams_with(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -427,6 +429,7 @@ fn failed_retirement_stays_refused_after_the_next_quiet_pump() {
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
     let host = GoneOnKillHost::with_native_evidence(fixture.journal_dir());
     let seams = common::seams_with(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -518,6 +521,7 @@ fn failed_retirement_refuses_the_same_connection_before_another_pump() {
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
     let host = GoneOnKillHost::with_native_evidence(fixture.journal_dir());
     let seams = common::seams_with(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),

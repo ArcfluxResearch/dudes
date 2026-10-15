@@ -28,6 +28,7 @@ fn codex_and_pi_hires_refuse_ignored_options_without_journaling() {
         .into_iter()
         .collect(),
         ..common::seams(
+            &settings,
             common::SharedHost::new(),
             Arc::new(ScriptedRunner::scripted([])),
             Arc::new(TestClock::new()),

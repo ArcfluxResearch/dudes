@@ -112,6 +112,7 @@ impl Daemon {
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::scripted([common::passes()])),
                 Arc::new(TestClock::new()),
@@ -828,6 +829,7 @@ fn every_engine(fixture: Fixture, env: Vec<EnvVar>) -> Daemon {
                 Box::new(PiAdapter::default()),
             ]),
             ..seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::scripted([common::passes()])),
                 Arc::new(TestClock::new()),

@@ -726,7 +726,7 @@ fn start_real_with(
         pty_host,
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver,
         adapters,
         children,
@@ -1497,7 +1497,7 @@ fn dispatch_negative_with_resolver(label: &str, resolver: Resolver, expected: Ne
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::default()),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver,
         adapters: [Box::new(HelperAdapter) as Box<dyn Adapter>]
             .into_iter()
@@ -1709,7 +1709,7 @@ fn sibling_escape_unreadable_and_absent_identity_are_refused() {
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver,
         adapters: [Box::new(HelperAdapter) as Box<dyn Adapter>]
             .into_iter()

@@ -296,6 +296,7 @@ fn run(case: Case) {
             .collect(),
         children: Arc::clone(&children),
         ..common::seams(
+            &settings,
             RealHost::watching(Arc::new(HostStreams(children))),
             Arc::new(Runner),
             Arc::new(common::TestClock::new()),

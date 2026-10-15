@@ -75,6 +75,7 @@ impl Daemon {
         });
         let clock = Arc::new(TestClock::new());
         let seams = common::seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -1229,6 +1230,7 @@ fn a_page_read_never_reaches_the_sessions_stream() {
     let daemon = duded::boot::boot_with_floor_faults(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

@@ -458,6 +458,7 @@ fn a_booted_floor_beats_at_the_shipped_period_and_journals_nothing() {
     let daemon = duded::boot::boot_with_floor_faults(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -535,6 +536,7 @@ fn snapshot_precedes_live_deltas() {
     let daemon = duded::boot::boot_with_floor_faults(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -750,6 +752,7 @@ fn start_closing_cut(
 ) -> (common::Running, SocketAddr) {
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let parts = common::seams_with(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -997,6 +1000,7 @@ fn an_unfolded_announcement_never_publishes_a_mismatched_closing_cut() {
     let daemon = duded::boot::boot_with_floor_faults(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1060,6 +1064,7 @@ fn ten_quiet_seconds_send_no_progress_and_a_new_subscription_samples_fresh_time(
     let daemon = duded::boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1149,6 +1154,7 @@ fn only_generation_three_upgrades_before_any_domain_frame() {
     let daemon = duded::boot::boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
@@ -1199,6 +1205,7 @@ fn stream_admission_limits_refuse_then_recover() {
     let daemon = duded::boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
@@ -1297,6 +1304,7 @@ fn stream_queue_message_and_byte_limits_are_independent() {
     let daemon = duded::boot::boot_with_floor_faults(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
@@ -1457,6 +1465,7 @@ fn stream_idle_and_absolute_expiry_release_slots() {
     let daemon = duded::boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -1533,6 +1542,7 @@ fn stalled_upgraded_streams_stop_within_join_bound() {
     let daemon = duded::boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
@@ -1578,6 +1588,7 @@ fn close_oracle_refuses_open_peer() {
     let daemon = duded::boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
@@ -1620,6 +1631,7 @@ fn connection_spawn_failure_stops_existing_streams() {
     let daemon = duded::boot::boot_with_floor_fault(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
@@ -1663,6 +1675,7 @@ fn append_poison_publishes_only_the_stopped_fact_and_keeps_authenticated_reads()
     let daemon = duded::boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -1766,6 +1779,7 @@ fn checkpoint_poison_keeps_the_stopped_fact_after_durable_projection_publication
     let daemon = duded::boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

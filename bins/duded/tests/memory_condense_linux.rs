@@ -28,6 +28,7 @@ fn unproved_linux_capture_uses_exact_excerpts_before_admission() {
     let daemon = duded::boot::boot_with_memory_config(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),

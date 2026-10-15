@@ -101,6 +101,7 @@ fn pi_run(predicates: impl IntoIterator<Item = PredicateOutcome>, turns: usize) 
             .collect(),
         children: Arc::clone(&children),
         ..common::seams(
+            &settings,
             RealHost::watching(Arc::new(HostStreams(children))),
             Arc::new(ScriptedRunner::scripted(predicates)),
             Arc::new(TestClock::new()),
@@ -250,6 +251,7 @@ fn a_pi_hire_is_refused_without_its_adapter() {
         boot(
             &fixture.settings(),
             common::seams(
+                &settings,
                 common::SharedHost::new(),
                 Arc::new(ScriptedRunner::scripted([])),
                 Arc::new(TestClock::new()),

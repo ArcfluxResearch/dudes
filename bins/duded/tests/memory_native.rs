@@ -777,7 +777,7 @@ fn a_detected_durable_summary_invalidation_fences_later_local_work() {
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(common::ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(common::TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver,
         adapters: [Box::new(Helper) as Box<dyn Adapter>].into_iter().collect(),
         children,

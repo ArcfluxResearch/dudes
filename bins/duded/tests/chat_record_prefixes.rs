@@ -170,6 +170,7 @@ impl Prefix {
         let daemon = duded::boot(
             &common::settings_at(state.path(), runtime.path()),
             common::seams(
+                &settings,
                 host.clone(),
                 runner.clone(),
                 Arc::new(common::TestClock::new()),
@@ -998,6 +999,7 @@ fn daemon_startup_reserves_uncertain_history_bytes_at_the_global_boundary() {
     let daemon = duded::boot(
         &common::settings_at(dir.path(), runtime.path()),
         common::seams(
+            &settings,
             host.clone(),
             runner.clone(),
             Arc::new(common::TestClock::new()),
@@ -1252,6 +1254,7 @@ fn daemon_refuses_framing(bytes: &[u8], expected: &str) {
     let result = duded::boot(
         &common::settings_at(state.path(), runtime.path()),
         common::seams(
+            &settings,
             host.clone(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::new()),
@@ -1579,6 +1582,7 @@ fn startup_reserves_uncertain_conversation_before_all_admission() {
         let host = common::SharedHost::new();
         let clock = Arc::new(common::TestClock::new());
         let mut seams = common::seams(
+            &settings,
             host.clone(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -1636,6 +1640,7 @@ fn conversation_issued_under_previous_credentials_stays_owned_when_replay_needs_
     let daemon = duded::boot_with_options(
         &settings,
         common::seams(
+            &settings,
             host.clone(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::new()),
@@ -1656,6 +1661,7 @@ fn conversation_issued_under_previous_credentials_stays_owned_when_replay_needs_
     let daemon = duded::boot_with_options(
         &settings,
         common::seams(
+            &settings,
             host.clone(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::new()),
