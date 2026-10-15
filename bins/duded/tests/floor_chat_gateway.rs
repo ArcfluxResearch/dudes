@@ -75,6 +75,7 @@ fn start_configured(
     let clock = Arc::new(TestClock::new());
     let host = SharedHost::with_native_evidence(settings.state_dir.join(duded::boot::JOURNAL_DIR));
     let mut seams = seams(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::scripted([])),
         Arc::clone(&clock),
@@ -985,7 +986,7 @@ fn start_real_conversation(
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::clone(&predicates),
         clock: Arc::clone(&clock),
-        rng: dudes_supervisor::testing::FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, dudes_supervisor::testing::FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(ClaudeAdapter::new(ClaudeConfig {
             command: command.into_os_string(),
@@ -1532,6 +1533,7 @@ fn conversation_replayed_hire_obeys_provider_billing_ceiling_guard() {
             let host = SharedHost::new();
             let clock = Arc::new(TestClock::new());
             let mut seams = seams(
+                &settings,
                 host.clone(),
                 Arc::new(ScriptedRunner::scripted([])),
                 Arc::clone(&clock),
