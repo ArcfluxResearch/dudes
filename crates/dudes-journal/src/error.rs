@@ -24,6 +24,14 @@ pub enum Error {
         /// Fixed contract or history failure.
         reason: dudes_proto::instruction_state::InstructionStateError,
     },
+    /// An instruction record was refused against the committed prefix before append.
+    #[error("journal instruction record {kind:?} refused before append: {reason}")]
+    InstructionAdmission {
+        /// The refused record's kind.
+        kind: dudes_proto::RecordKind,
+        /// Fixed contract or history failure.
+        reason: dudes_proto::instruction_state::InstructionStateError,
+    },
     /// An instruction payload is not carried by its exact required-v2 header.
     #[error(
         "journal instruction header at {lsn} has kind {kind} version {version}, expected kind {expected_kind} version 2"

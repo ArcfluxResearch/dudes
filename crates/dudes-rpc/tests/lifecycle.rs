@@ -14,18 +14,22 @@
 //! a Windows build fails on.
 #![cfg(unix)]
 
-use std::io::BufReader;
+use std::io::{self, BufRead, BufReader, Read, Write as _};
+use std::net::Shutdown;
 use std::num::NonZeroUsize;
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use dudes_proto::record::{Entry, Record};
 use dudes_proto::rpc::Method;
-use dudes_rpc::testing::{AdmitAll, TestServer};
-use dudes_rpc::{Client, ClientError, Dispatcher, FrameError, Requirement, Subscribers};
+use dudes_rpc::testing::{AdmitAll, FakeResolver, TestServer};
+use dudes_rpc::{
+    Client, ClientError, Connection, Dispatcher, FrameError, Halt, HangUp, Listener,
+    LocalTransport, PeerIdentity, Requirement, StopFlag, Subscribers,
+};
 use dudes_types::{AgentId, Lsn, Timestamp};
 use serde_json::json;
 use tempfile::TempDir;
@@ -53,6 +57,245 @@ const PAYLOAD_BYTES: usize = 64 * 1024;
 /// socket buffer; an arm that gets through all of them without blocking has not wedged, and says so
 /// as a failed assertion rather than passing quietly.
 const APPENDS: u64 = 128;
+
+struct NextReadGate {
+    reached: mpsc::Sender<()>,
+    released: mpsc::Receiver<()>,
+}
+
+struct GatedReader {
+    inner: BufReader<UnixStream>,
+    gate: Option<NextReadGate>,
+    first_frame_read: bool,
+}
+
+impl Read for GatedReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let available = self.fill_buf()?;
+        let count = available.len().min(buf.len());
+        buf[..count].copy_from_slice(&available[..count]);
+        self.consume(count);
+        Ok(count)
+    }
+}
+
+impl BufRead for GatedReader {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        if self.first_frame_read
+            && let Some(gate) = self.gate.take()
+        {
+            gate.reached.send(()).expect("the reader gate is observed");
+            let _ = gate.released.recv();
+        }
+        self.inner.fill_buf()
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.first_frame_read |= self.inner.buffer()[..amount].contains(&b'\n');
+        self.inner.consume(amount);
+    }
+}
+
+struct GatedConnection {
+    stream: UnixStream,
+    gate: Option<NextReadGate>,
+}
+
+impl Connection for GatedConnection {
+    type Reader = GatedReader;
+    type Writer = <UnixStream as Connection>::Writer;
+
+    fn split(self) -> io::Result<(Self::Reader, Self::Writer)> {
+        let (reader, writer, _) = self.split_with_hang_up()?;
+        Ok((reader, writer))
+    }
+
+    fn halt_handle(&self) -> io::Result<Box<dyn Halt>> {
+        self.stream.halt_handle()
+    }
+
+    fn split_with_hang_up(self) -> io::Result<(Self::Reader, Self::Writer, HangUp)> {
+        let (inner, writer, hang_up) = self.stream.split_with_hang_up()?;
+        Ok((
+            GatedReader {
+                inner,
+                gate: self.gate,
+                first_frame_read: false,
+            },
+            writer,
+            hang_up,
+        ))
+    }
+}
+
+struct GatedListener {
+    inner: LocalTransport,
+    gate: Mutex<Option<NextReadGate>>,
+}
+
+impl Listener for GatedListener {
+    type Conn = GatedConnection;
+
+    fn accept(&self) -> io::Result<(Self::Conn, PeerIdentity)> {
+        let (stream, peer) = self.inner.accept()?;
+        Ok((
+            GatedConnection {
+                stream,
+                gate: self.gate.lock().unwrap().take(),
+            },
+            peer,
+        ))
+    }
+}
+
+struct GatedServer {
+    socket: std::path::PathBuf,
+    stop: Arc<StopFlag>,
+    reached: mpsc::Receiver<()>,
+    release: Option<mpsc::Sender<()>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl GatedServer {
+    fn start(dir: &TempDir) -> Self {
+        let inner = LocalTransport::bind_in(dir.path().join("gated"), "duded.sock").unwrap();
+        let socket = inner.path().to_path_buf();
+        let (reached, observed) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let listener = GatedListener {
+            inner,
+            gate: Mutex::new(Some(NextReadGate { reached, released })),
+        };
+        let stop = Arc::new(StopFlag::new());
+        let serving = Arc::clone(&stop);
+        let thread = thread::spawn(move || {
+            let mut dispatcher = Dispatcher::new(AdmitAll);
+            dispatcher.register(Method::SystemPing, Requirement::AnyRole, |_| {
+                Ok(json!({ "pong": true }))
+            });
+            dudes_rpc::serve(
+                &listener,
+                &FakeResolver::new(dudes_proto::PeerProvenance::Unresolvable),
+                &dispatcher,
+                &serving,
+                NonZeroUsize::MIN,
+            )
+            .expect("the gated server stops cleanly");
+        });
+        Self {
+            socket,
+            stop,
+            reached: observed,
+            release: Some(release),
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for GatedServer {
+    fn drop(&mut self) {
+        self.release.take();
+        self.stop.stop();
+        let _ = UnixStream::connect(&self.socket);
+        if let Some(thread) = self.thread.take() {
+            thread.join().expect("the gated server exits");
+        }
+    }
+}
+
+#[test]
+fn a_response_alone_does_not_order_connection_teardown() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = GatedServer::start(&dir);
+    let stream = UnixStream::connect(&server.socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut client = Client::new(
+        BufReader::new(stream.try_clone().unwrap()),
+        stream.try_clone().unwrap(),
+    );
+    let response = client.call(Method::SystemPing, None).unwrap();
+    assert_eq!(response.result, Some(json!({ "pong": true })));
+    server.reached.recv_timeout(BOUND).unwrap();
+    assert_eq!(server.stop.live_connections(), 1);
+    stream.shutdown(Shutdown::Write).unwrap();
+    let result = client.recv();
+    writeln!(std::io::stderr(), "held teardown response: {result:?}").unwrap();
+    assert!(
+        matches!(&result, Err(ClientError::Frame(FrameError::Io(error)))
+            if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock)),
+        "{result:?}"
+    );
+    assert_eq!(server.stop.live_connections(), 1);
+}
+
+fn await_rpc_connections(count: &dyn Fn() -> usize, expected: usize) {
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let observed = count();
+        if observed == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected {expected} RPC connections, observed {observed}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_released_connection_slot_orders_the_first_clean_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut server = GatedServer::start(&dir);
+    let stream = UnixStream::connect(&server.socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut client = Client::new(
+        BufReader::new(stream.try_clone().unwrap()),
+        stream.try_clone().unwrap(),
+    );
+    let response = client.call(Method::SystemPing, None).unwrap();
+    assert_eq!(response.result, Some(json!({ "pong": true })));
+    server.reached.recv_timeout(BOUND).unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
+
+    thread::scope(|scope| {
+        let release = server.release.take();
+        let stop = Arc::clone(&server.stop);
+        let (observations, observed) = mpsc::channel();
+        let (finished, done) = mpsc::channel();
+        let waiting = scope.spawn(move || {
+            let reads = std::cell::Cell::new(0);
+            await_rpc_connections(
+                &|| {
+                    let count = stop.live_connections();
+                    if reads.get() < 2 {
+                        reads.set(reads.get() + 1);
+                        observations.send(count).unwrap();
+                    }
+                    count
+                },
+                0,
+            );
+            finished.send(()).unwrap();
+        });
+        assert_eq!(observed.recv_timeout(BOUND), Ok(1));
+        assert_eq!(observed.recv_timeout(BOUND), Ok(1));
+        drop(release);
+        done.recv_timeout(BOUND).unwrap();
+        let result = client.recv();
+        writeln!(
+            std::io::stderr(),
+            "released teardown first read: {result:?}"
+        )
+        .unwrap();
+        assert!(matches!(result, Err(ClientError::Closed)), "{result:?}");
+        waiting.join().unwrap();
+    });
+}
 
 /// A server carrying two methods and the registry the daemon would append through.
 ///
