@@ -154,6 +154,7 @@ struct Rig {
     agent: AgentId,
     token: HookToken,
     resolver: Arc<Resolver>,
+    rpc_connections: Box<dyn Fn() -> usize + Send + Sync>,
 }
 
 fn rig() -> Rig {
@@ -174,6 +175,7 @@ fn rig() -> Rig {
     );
     let tokens = parts.rng.tokens();
     let daemon = boot(&settings, parts).expect("boot daemon");
+    let rpc_connections = daemon.rpc_connections_for_test();
     let socket = daemon.socket().to_path_buf();
     let running = common::start(daemon);
     let agent = hire(&running.handle, fixture.state.path());
@@ -182,6 +184,7 @@ fn rig() -> Rig {
         goal_params(agent, &[common::true_program()]),
     );
     let token = minted_token(&fixture, &tokens, agent);
+    await_hook_subject(&fixture, &running, agent);
     *resolver.provenance.lock().unwrap() = PeerProvenance::Agent(agent);
     Rig {
         fixture,
@@ -190,6 +193,7 @@ fn rig() -> Rig {
         agent,
         token,
         resolver,
+        rpc_connections,
     }
 }
 
@@ -215,42 +219,59 @@ fn denied(event: &str, output: &std::process::Output) -> bool {
         })
 }
 
-/// Holds the only slot by completing one call and then staying idle.
-/// The daemon frees the previous shim's slot only after it sees that shim close, so the holder
-/// retries until it is admitted.
-fn hold_the_slot(socket: &Path) -> LocalClient {
+fn await_hook_subject(fixture: &Fixture, running: &common::Running, agent: AgentId) {
+    let turn = fixture.await_record("the hook subject's issued turn", |record| match record {
+        dudes_proto::Record::TurnIssued {
+            agent: owner, turn, ..
+        } if *owner == agent => Some(*turn),
+        _ => None,
+    });
+    fixture.await_record("the hook subject's actual managed spawn", |record| {
+        matches!(record, dudes_proto::Record::TurnSpawned { agent: owner, turn: seen, .. }
+            if *owner == agent && *seen == turn)
+        .then_some(())
+    });
+    running
+        .handle
+        .doctor()
+        .expect("finish the hook subject's setup pump");
+}
+
+fn await_rpc_connections(count: &dyn Fn() -> usize, expected: usize) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        if let Ok(mut holder) = LocalClient::connect(socket)
-            && holder.call(Method::SystemPing, None).is_ok()
-        {
-            return holder;
+        let observed = count();
+        if observed == expected {
+            return;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the holder was never admitted"
+            "expected {expected} RPC connections, observed {observed}"
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
-/// Retries a shim run until it is answered rather than refused for want of a slot.
-fn run_hook_until_answered(rig: &Rig, token: &HookToken, event: &str) -> std::process::Output {
+fn hold_the_slot(rig: &Rig) -> LocalClient {
+    await_rpc_connections(rig.rpc_connections.as_ref(), 0);
+    let mut holder = LocalClient::connect(&rig.socket).expect("connect the holder");
+    let response = holder
+        .call(Method::SystemPing, None)
+        .expect("admit the holder");
+    assert!(response.error.is_none(), "{response:?}");
+    holder
+}
+
+fn run_hook_with_a_free_slot(rig: &Rig, token: &HookToken, event: &str) -> std::process::Output {
+    await_rpc_connections(rig.rpc_connections.as_ref(), 0);
     let settings = generated_handlers(rig.agent, rig.fixture.state.path());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let output = spawn_handler(
-            handler(&settings, event),
-            &rig.socket,
-            token,
-            &payload(event),
-        )
-        .1;
-        if output.status.code() == Some(0) || std::time::Instant::now() >= deadline {
-            return output;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    spawn_handler(
+        handler(&settings, event),
+        &rig.socket,
+        token,
+        &payload(event),
+    )
+    .1
 }
 
 #[test]
@@ -261,24 +282,12 @@ fn a_full_cap_blocks_a_paused_agents_control_steps_and_nothing_else() {
         Ok(duded::ports::Answered::Done)
     ));
 
-    // Reference: with a free slot the paused control step is denied. The slot is freed when the
-    // daemon sees the previous shim close, so the first run can race it and is retried.
     for event in CONTROL {
-        let mut answered = false;
-        for _ in 0..200 {
-            if denied(event, &run_hook(&rig, &rig.socket, event)) {
-                answered = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(
-            answered,
-            "{event}: a paused agent is denied with a free slot"
-        );
+        let output = run_hook_with_a_free_slot(&rig, &rig.token, event);
+        assert!(denied(event, &output), "{event}: {output:?}");
     }
 
-    let holder = hold_the_slot(&rig.socket);
+    let holder = hold_the_slot(&rig);
     for event in CONTROL {
         for run in 0..RUNS {
             let output = run_hook(&rig, &rig.socket, event);
@@ -370,7 +379,7 @@ fn an_error_answer_keeps_the_control_steps_fail_open() {
     let rig = paused_rig();
     let unknown = HookToken::new("B".repeat(43)).unwrap();
     for event in CONTROL {
-        let output = run_hook_until_answered(&rig, &unknown, event);
+        let output = run_hook_with_a_free_slot(&rig, &unknown, event);
         assert_fails_open(event, &output);
         assert!(!output.stderr.starts_with(b"dudes-hook: daemon accepted"));
     }
@@ -380,7 +389,7 @@ fn an_error_answer_keeps_the_control_steps_fail_open() {
 fn a_running_agent_with_a_free_slot_is_allowed() {
     let rig = rig();
     for event in CONTROL {
-        let output = run_hook_until_answered(&rig, &rig.token, event);
+        let output = run_hook_with_a_free_slot(&rig, &rig.token, event);
         assert_eq!(output.status.code(), Some(0), "{event}: {output:?}");
         assert!(!denied(event, &output), "{event}: {output:?}");
         assert!(output.stderr.is_empty(), "{event}: {output:?}");
@@ -389,6 +398,8 @@ fn a_running_agent_with_a_free_slot_is_allowed() {
 
 #[test]
 fn a_durable_token_mint_alone_does_not_make_the_hook_subject_ready() {
+    use std::io::Write as _;
+
     let fixture = Fixture::new();
     let mut settings = fixture.settings();
     settings.max_connections = NonZeroUsize::MIN;
@@ -405,12 +416,14 @@ fn a_durable_token_mint_alone_does_not_make_the_hook_subject_ready() {
         refuse: AtomicBool::new(false),
     });
     let original = seams_with(
+        &settings,
         SharedHost::new(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
         Witness::default(),
         Arc::clone(&resolver) as Arc<dyn PeerResolver>,
     );
+    let tokens = original.rng.tokens();
     let daemon = boot(
         &settings,
         duded::Seams {
@@ -427,6 +440,7 @@ fn a_durable_token_mint_alone_does_not_make_the_hook_subject_ready() {
     )
     .unwrap();
     *clock.publication.lock().unwrap() = Some(daemon.token_publication_work());
+    let rpc_connections = daemon.rpc_connections_for_test();
     let socket = daemon.socket().to_path_buf();
     let running = common::start(daemon);
     let agent = hire(&running.handle, fixture.state.path());
@@ -441,7 +455,7 @@ fn a_durable_token_mint_alone_does_not_make_the_hook_subject_ready() {
             )
         });
         clock.wait_reached();
-        let token = minted_token(&fixture, agent);
+        let token = minted_token(&fixture, &tokens, agent);
         *resolver.provenance.lock().unwrap() = PeerProvenance::Agent(agent);
         let output = spawn_handler(
             handler(&handlers, "PreToolUse"),
@@ -452,9 +466,50 @@ fn a_durable_token_mint_alone_does_not_make_the_hook_subject_ready() {
         .1;
         assert_eq!(output.status.code(), Some(0), "{output:?}");
         assert!(output.stdout.is_empty(), "{output:?}");
-        assert!(output.stderr.is_empty(), "{output:?}");
+        assert_eq!(
+            output.stderr, b"dudes-hook: hook delivery failed\n",
+            "{output:?}"
+        );
+        await_rpc_connections(rpc_connections.as_ref(), 0);
+        let response = LocalClient::connect(&socket)
+            .unwrap()
+            .call(
+                Method::HookEvent,
+                Some(
+                    serde_json::to_value(HookEventParams {
+                        token: HookToken::new(token.expose()).unwrap(),
+                        raw: payload("PreToolUse"),
+                    })
+                    .unwrap(),
+                ),
+            )
+            .expect("the unpublished token refusal is answered");
+        let refusal = response
+            .error
+            .expect("the durable mint is not yet published");
+        assert_eq!(refusal.code, -32004);
+        assert_eq!(
+            refusal.message,
+            "the presented token matches no minting for a live agent"
+        );
+        assert_eq!(refusal.data, Some(json!({"gate": "token"})));
+        writeln!(
+            std::io::stderr(),
+            "unpublished token reply: {}",
+            serde_json::to_string(&refusal).unwrap()
+        )
+        .unwrap();
         clock.release();
         setting.join().unwrap();
+        await_hook_subject(&fixture, &running, agent);
+        for event in CONTROL {
+            await_rpc_connections(rpc_connections.as_ref(), 0);
+            let ready =
+                spawn_handler(handler(&handlers, event), &socket, &token, &payload(event)).1;
+            assert_eq!(ready.status.code(), Some(0), "{event}: {ready:?}");
+            assert!(!denied(event, &ready), "{event}: {ready:?}");
+            assert!(ready.stderr.is_empty(), "{event}: {ready:?}");
+        }
     });
 }
 
@@ -493,7 +548,7 @@ fn hook_params(rig: &Rig) -> Value {
 #[test]
 fn a_full_cap_never_answers_and_ends_in_a_shape_the_shim_blocks_on() {
     let rig = paused_rig();
-    let holder = hold_the_slot(&rig.socket);
+    let holder = hold_the_slot(&rig);
     let params = hook_params(&rig);
     for _ in 0..RUNS {
         let mut client = LocalClient::connect(&rig.socket).expect("connect succeeds at the cap");
@@ -507,7 +562,7 @@ fn a_full_cap_never_answers_and_ends_in_a_shape_the_shim_blocks_on() {
 #[test]
 fn a_full_cap_ends_a_silent_connection_with_a_clean_close() {
     let rig = paused_rig();
-    let holder = hold_the_slot(&rig.socket);
+    let holder = hold_the_slot(&rig);
     let mut client = LocalClient::connect(&rig.socket).expect("connect succeeds at the cap");
     assert!(matches!(client.recv(), Err(ClientError::Closed)));
     drop(holder);
@@ -516,7 +571,7 @@ fn a_full_cap_ends_a_silent_connection_with_a_clean_close() {
 #[test]
 fn a_call_after_the_full_cap_close_stays_unanswered() {
     let rig = paused_rig();
-    let holder = hold_the_slot(&rig.socket);
+    let holder = hold_the_slot(&rig);
     let params = hook_params(&rig);
     let mut client = LocalClient::connect(&rig.socket).expect("connect succeeds at the cap");
     assert!(matches!(client.recv(), Err(ClientError::Closed)));
@@ -529,7 +584,7 @@ fn a_peer_the_daemon_could_not_place_has_its_control_steps_blocked() {
     let rig = rig();
     rig.resolver.refuse.store(true, Ordering::SeqCst);
     for event in CONTROL {
-        let output = run_hook(&rig, &rig.socket, event);
+        let output = run_hook_with_a_free_slot(&rig, &rig.token, event);
         assert_eq!(output.status.code(), Some(2), "{event}: {output:?}");
         assert_eq!(output.stderr, BLOCK);
     }

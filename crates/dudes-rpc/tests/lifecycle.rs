@@ -14,7 +14,7 @@
 //! a Windows build fails on.
 #![cfg(unix)]
 
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read, Write as _};
 use std::net::Shutdown;
 use std::num::NonZeroUsize;
 use std::os::unix::net::UnixStream;
@@ -221,7 +221,80 @@ fn a_response_alone_does_not_order_connection_teardown() {
     assert_eq!(server.stop.live_connections(), 1);
     stream.shutdown(Shutdown::Write).unwrap();
     let result = client.recv();
-    assert!(matches!(result, Err(ClientError::Closed)), "{result:?}");
+    writeln!(std::io::stderr(), "held teardown response: {result:?}").unwrap();
+    assert!(
+        matches!(&result, Err(ClientError::Frame(FrameError::Io(error)))
+            if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock)),
+        "{result:?}"
+    );
+    assert_eq!(server.stop.live_connections(), 1);
+}
+
+fn await_rpc_connections(count: &dyn Fn() -> usize, expected: usize) {
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let observed = count();
+        if observed == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected {expected} RPC connections, observed {observed}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_released_connection_slot_orders_the_first_clean_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut server = GatedServer::start(&dir);
+    let stream = UnixStream::connect(&server.socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut client = Client::new(
+        BufReader::new(stream.try_clone().unwrap()),
+        stream.try_clone().unwrap(),
+    );
+    let response = client.call(Method::SystemPing, None).unwrap();
+    assert_eq!(response.result, Some(json!({ "pong": true })));
+    server.reached.recv_timeout(BOUND).unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
+
+    thread::scope(|scope| {
+        let release = server.release.take();
+        let stop = Arc::clone(&server.stop);
+        let (observations, observed) = mpsc::channel();
+        let (finished, done) = mpsc::channel();
+        let waiting = scope.spawn(move || {
+            let reads = std::cell::Cell::new(0);
+            await_rpc_connections(
+                &|| {
+                    let count = stop.live_connections();
+                    if reads.get() < 2 {
+                        reads.set(reads.get() + 1);
+                        observations.send(count).unwrap();
+                    }
+                    count
+                },
+                0,
+            );
+            finished.send(()).unwrap();
+        });
+        assert_eq!(observed.recv_timeout(BOUND), Ok(1));
+        assert_eq!(observed.recv_timeout(BOUND), Ok(1));
+        drop(release);
+        done.recv_timeout(BOUND).unwrap();
+        let result = client.recv();
+        writeln!(
+            std::io::stderr(),
+            "released teardown first read: {result:?}"
+        )
+        .unwrap();
+        assert!(matches!(result, Err(ClientError::Closed)), "{result:?}");
+        waiting.join().unwrap();
+    });
 }
 
 /// A server carrying two methods and the registry the daemon would append through.

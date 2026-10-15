@@ -41,6 +41,21 @@ use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(10);
 
+fn await_rpc_connections(count: &dyn Fn() -> usize, expected: usize) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let observed = count();
+        if observed == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected {expected} RPC connections, observed {observed}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[derive(Clone, Debug)]
 enum Walk {
     Unowned,
@@ -153,6 +168,7 @@ struct Daemon {
     append_failure: AppendFailure,
     post_fsync_failure: OnboardingFailure,
     owner: Option<LocalClient>,
+    rpc_connections: Box<dyn Fn() -> usize + Send + Sync>,
     floor: Option<std::net::SocketAddr>,
 }
 
@@ -220,6 +236,7 @@ impl Daemon {
         host.bind_child_ends(Arc::clone(&seams.children));
         let tokens = seams.rng.tokens();
         let daemon = duded::boot(&settings, seams).expect("boot");
+        let rpc_connections = daemon.rpc_connections_for_test();
         let append_failure = daemon.append_failure();
         let post_fsync_failure = daemon.onboarding_failure();
         let floor = daemon.floor_addr();
@@ -238,6 +255,7 @@ impl Daemon {
             append_failure,
             post_fsync_failure,
             owner: Some(owner),
+            rpc_connections,
             floor,
         }
     }
@@ -930,6 +948,7 @@ fn a_notification_flood_does_not_block_another_agents_control_step() {
     let owner = daemon.owner.as_mut().expect("the operator connection");
     let fixture = &daemon.fixture;
     let handle = &daemon.running.handle;
+    let rpc_connections = daemon.rpc_connections.as_ref();
 
     std::thread::scope(|scope| {
         let writing = scope.spawn(move || write_bytes(owner, credential, pty, b"hold the loop"));
@@ -937,6 +956,7 @@ fn a_notification_flood_does_not_block_another_agents_control_step() {
             matches!(record, Record::PtyWriteRequested { pty: seen, .. } if *seen == pty)
                 .then_some(())
         });
+        await_rpc_connections(rpc_connections, 1);
         for _ in 0..2 {
             let stream = UnixStream::connect(&socket).expect("hook connection");
             let reader = BufReader::new(stream.try_clone().expect("hook reader"));
@@ -957,7 +977,12 @@ fn a_notification_flood_does_not_block_another_agents_control_step() {
             stream
                 .shutdown(Shutdown::Write)
                 .expect("finish observation requests");
-            assert!(matches!(client.recv(), Err(ClientError::Closed)));
+            await_rpc_connections(rpc_connections, 1);
+            let disconnected = client.recv();
+            assert!(
+                matches!(disconnected, Err(ClientError::Closed)),
+                "{disconnected:?}"
+            );
         }
         assert_eq!(handle.hooks_queued(), before + 2, "both permits are queued");
 
@@ -1003,6 +1028,7 @@ fn timed_out_control_backlog_blocks_both_control_hooks_without_more_jobs() {
     let owner = daemon.owner.as_mut().expect("the operator connection");
     let fixture = &daemon.fixture;
     let handle = &daemon.running.handle;
+    let rpc_connections = daemon.rpc_connections.as_ref();
 
     std::thread::scope(|scope| {
         let writing = scope.spawn(move || write_bytes(owner, credential, pty, b"hold the loop"));
@@ -1010,6 +1036,7 @@ fn timed_out_control_backlog_blocks_both_control_hooks_without_more_jobs() {
             matches!(record, Record::PtyWriteRequested { pty: seen, .. } if *seen == pty)
                 .then_some(())
         });
+        await_rpc_connections(rpc_connections, 1);
         let started = Instant::now();
         let first = spawn_handler(
             handler(&handlers, "PreToolUse"),
@@ -1018,6 +1045,7 @@ fn timed_out_control_backlog_blocks_both_control_hooks_without_more_jobs() {
             &payload("PreToolUse"),
         )
         .1;
+        await_rpc_connections(rpc_connections, 1);
         let refused_share = spawn_handler(
             handler(&handlers, "UserPromptSubmit"),
             &socket,
@@ -1026,6 +1054,7 @@ fn timed_out_control_backlog_blocks_both_control_hooks_without_more_jobs() {
         )
         .1;
         daemon.relation.walk(Walk::Inside(other_key));
+        await_rpc_connections(rpc_connections, 1);
         let second = spawn_handler(
             handler(&other_handlers, "PreToolUse"),
             &socket,
@@ -1036,6 +1065,7 @@ fn timed_out_control_backlog_blocks_both_control_hooks_without_more_jobs() {
         daemon.relation.walk(Walk::Inside(third_key));
         let mut outputs = vec![first, second];
         for event in ["PreToolUse", "UserPromptSubmit"] {
+            await_rpc_connections(rpc_connections, 1);
             outputs.push(
                 spawn_handler(
                     handler(&third_handlers, event),
