@@ -1180,7 +1180,7 @@ fn local_statfs(stat: &rustix::fs::StatFs) -> bool {
     {
         matches!(
             stat.f_type,
-            0xef53 | 0x0102_1994 | 0x9123_683e | 0x5846_5342 | 0x2fc1_2fc1
+            0xef53 | 0x0102_1994 | 0x9123_683e | 0x5846_5342 | 0x2fc1_2fc1 | 0x794c_7630
         )
     }
 }
