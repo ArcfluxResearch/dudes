@@ -58,6 +58,7 @@ mod closing;
 mod codex_profile;
 mod condense_output;
 pub mod config;
+pub mod diff_capture;
 pub mod enrollment_reload;
 /// The end-to-end gate's crash arms, and nothing else. Absent from every build that does not ask for it —
 /// `cargo build --release --workspace` does not.

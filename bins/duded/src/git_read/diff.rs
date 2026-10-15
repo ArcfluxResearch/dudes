@@ -40,7 +40,7 @@ impl From<text::TextRefusal> for dudes_proto::DiffOmissionReason {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut value = String::with_capacity(bytes.len() * 2);
     for byte in bytes {

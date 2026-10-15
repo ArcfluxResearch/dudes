@@ -25,6 +25,7 @@ pub mod budget;
 pub mod chat;
 pub mod decision;
 pub mod diff;
+pub mod diff_stamp;
 pub mod event;
 pub mod git;
 pub mod goal;
