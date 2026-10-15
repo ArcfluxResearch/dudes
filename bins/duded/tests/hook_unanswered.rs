@@ -396,9 +396,7 @@ fn a_running_agent_with_a_free_slot_is_allowed() {
     }
 }
 
-fn assert_unpublished_token_refusal(socket: &Path, token: &HookToken) {
-    use std::io::Write as _;
-
+fn unpublished_token_refusal(socket: &Path, token: &HookToken) -> dudes_proto::rpc::RpcError {
     let response = LocalClient::connect(socket)
         .unwrap()
         .call(
@@ -412,25 +410,15 @@ fn assert_unpublished_token_refusal(socket: &Path, token: &HookToken) {
             ),
         )
         .expect("the unpublished token refusal is answered");
-    let refusal = response
+    response
         .error
-        .expect("the durable mint is not yet published");
-    assert_eq!(refusal.code, -32004);
-    assert_eq!(
-        refusal.message,
-        "the presented token matches no minting for a live agent"
-    );
-    assert_eq!(refusal.data, Some(json!({"gate": "token"})));
-    writeln!(
-        std::io::stderr(),
-        "unpublished token reply: {}",
-        serde_json::to_string(&refusal).unwrap()
-    )
-    .unwrap();
+        .expect("the durable mint is not yet published")
 }
 
 #[test]
 fn a_durable_token_mint_alone_does_not_make_the_hook_subject_ready() {
+    use std::io::Write as _;
+
     let fixture = Fixture::new();
     let mut settings = fixture.settings();
     settings.max_connections = NonZeroUsize::MIN;
@@ -502,7 +490,19 @@ fn a_durable_token_mint_alone_does_not_make_the_hook_subject_ready() {
             "{output:?}"
         );
         await_rpc_connections(rpc_connections.as_ref(), 0);
-        assert_unpublished_token_refusal(&socket, &token);
+        let refusal = unpublished_token_refusal(&socket, &token);
+        assert_eq!(refusal.code, -32004);
+        assert_eq!(
+            refusal.message,
+            "the presented token matches no minting for a live agent"
+        );
+        assert_eq!(refusal.data, Some(json!({"gate": "token"})));
+        writeln!(
+            std::io::stderr(),
+            "unpublished token reply: {}",
+            serde_json::to_string(&refusal).unwrap()
+        )
+        .unwrap();
         clock.release();
         setting.join().unwrap();
         await_hook_subject(&fixture, &running, agent);
