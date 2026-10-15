@@ -1180,7 +1180,7 @@ fn local_statfs(stat: &rustix::fs::StatFs) -> bool {
     {
         matches!(
             stat.f_type,
-            0xef53 | 0x0102_1994 | 0x9123_683e | 0x5846_5342
+            0xef53 | 0x0102_1994 | 0x9123_683e | 0x5846_5342 | 0x2fc1_2fc1 | 0x794c_7630
         )
     }
 }
@@ -1550,6 +1550,89 @@ mod tests {
         let file = open_regular(&path).unwrap();
         assert_eq!(local_open_file(&file), local_filesystem(&path));
         assert!(file.metadata().unwrap().is_file());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_filesystem_admission_retains_local_types_and_refuses_unproven_types() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("instruction");
+        fs::write(&path, b"owned source").unwrap();
+        let file = open_regular(&path).unwrap();
+        let mut pathname = rustix::fs::statfs(&path).unwrap();
+        let mut descriptor = rustix::fs::fstatfs(&file).unwrap();
+        for (name, f_type, expected) in [
+            ("ext4", 0xef53, true),
+            ("tmpfs", 0x0102_1994, true),
+            ("btrfs", 0x9123_683e, true),
+            ("xfs", 0x5846_5342, true),
+            ("nfs", 0x6969, false),
+            ("cifs", 0xff53_4d42, false),
+            ("smb2", 0xfe53_4d42, false),
+            ("fuse", 0x6573_5546, false),
+            ("unknown zero", 0, false),
+            ("unknown magic", 0xdead_beef, false),
+            ("zfs", 0x2fc1_2fc1, true),
+            ("overlayfs", 0x794c_7630, true),
+        ] {
+            pathname.f_type = f_type;
+            descriptor.f_type = f_type;
+            assert_eq!(local_statfs(&pathname), expected, "pathname {name}");
+            assert_eq!(local_statfs(&descriptor), expected, "descriptor {name}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires /tmp on a real Linux OverlayFS mount"]
+    fn overlayfs_sampling_reads_instruction_files_and_observes_edits() {
+        let directory = tempfile::tempdir_in("/tmp").unwrap();
+        let path = directory.path().join("CLAUDE.md");
+        fs::write(&path, b"one").unwrap();
+        let file = open_regular(&path).unwrap();
+        assert_eq!(rustix::fs::statfs(&path).unwrap().f_type, 0x794c_7630);
+        assert_eq!(rustix::fs::fstatfs(&file).unwrap().f_type, 0x794c_7630);
+        let plan = fixture(directory.path());
+        let before = observe(plan.clone());
+        assert!(before.gaps.is_empty(), "{:?}", before.gaps);
+        assert_eq!(before.inputs.len(), 2);
+        assert_eq!(before.inputs[0].path, native(&path));
+        assert_eq!(
+            serde_json::to_value(before.inputs[0].fingerprint).unwrap(),
+            serde_json::json!({
+                "kind": "file",
+                "digest": "7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed",
+                "bytes": 3
+            })
+        );
+        assert_eq!(before.inputs[1].fingerprint, InstructionFingerprint::Absent);
+        assert!(compare(&before, &observe(plan.clone())).is_unchanged());
+        fs::write(&path, b"two").unwrap();
+        let after = observe(plan);
+        assert!(after.gaps.is_empty(), "{:?}", after.gaps);
+        assert_eq!(after.inputs.len(), 2);
+        assert_eq!(
+            serde_json::to_value(after.inputs[0].fingerprint).unwrap(),
+            serde_json::json!({
+                "kind": "file",
+                "digest": "3fc4ccfe745870e2c0d99f71f30ff0656c8dedd41cc1d7d3d376b0dbe685e2f3",
+                "bytes": 3
+            })
+        );
+        let comparison = compare(&before, &after);
+        assert!(comparison.gaps.is_empty(), "{:?}", comparison.gaps);
+        assert_eq!(comparison.changes.len(), 1);
+        assert_eq!(comparison.changes[0].path, native(&path));
+        assert_eq!(
+            comparison.changes[0].context,
+            InstructionPathContext::SharedProject
+        );
+        assert_eq!(
+            comparison.changes[0].source.kind,
+            InstructionSourceKind::Fixed
+        );
+        assert_eq!(comparison.changes[0].before, before.inputs[0].fingerprint);
+        assert_eq!(comparison.changes[0].after, after.inputs[0].fingerprint);
     }
 
     #[test]

@@ -10305,6 +10305,9 @@ fn browser_enrollment_view_follows_an_operator_reload() {
             if *cwd == repo_2 && meta.profile_id == "repo_2"
     )));
 
+    let goal = GoalId::parse(body["goal"].as_str().expect("goal id")).expect("goal id");
+    issued_goal_turn(&fixture, goal);
+    running.handle.doctor().unwrap();
     let journal = fixture.records().len();
     let sha = rewrite(&settings, &reload_config(&[("repo_2", &repo_2)]));
     let result = operator_reload(&settings, apply(&sha, &[], &["repo_1"], &[])).expect("applied");

@@ -1380,11 +1380,6 @@ impl ProcessHost for RetainedFailureHost {
     }
 }
 
-/// A host that reports unconfirmed cleanup for its first launch and counts every request.
-///
-/// The fake models the runtime result, not real process ownership: `dudes-host`'s native tests own
-/// that half. `CleanupUnconfirmed` queues no input, so the durable prefix remains `TurnIssued`
-/// without `TurnSpawned` or `TurnEnded`; the next boot may reissue it during startup step 7.
 #[derive(Clone)]
 pub(crate) struct UnconfirmedHost {
     inner: SharedHost,
