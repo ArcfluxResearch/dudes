@@ -88,7 +88,7 @@ fn parts(
     clock: Arc<SampleClock>,
 ) -> duded::Seams<SharedHost, ScriptedRunner, SampleClock, common::FixtureRng> {
     let parts = common::seams(
-        &settings,
+        settings,
         host,
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),

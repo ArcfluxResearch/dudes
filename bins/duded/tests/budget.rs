@@ -156,17 +156,14 @@ fn live_ceiling_requires_same_unit_reserve_before_append() {
         usd: Usd::from_micros(1),
         ..Spend::default()
     };
-    let daemon = boot(
+    let fixture_parts = seams(
         &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("ceiling-less state boots");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    let daemon = boot(&settings, fixture_parts).expect("ceiling-less state boots");
     let mut running = common::start(daemon);
 
     let token_hire = dudes_proto::rpc::agent::HireParams {

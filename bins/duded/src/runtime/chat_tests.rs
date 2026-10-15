@@ -1841,14 +1841,12 @@ fn assert_failed_replay_preserves_history(failure: &str) {
     assert!(matches!(outcome, ChatOutcome::ReissueCancelled { .. }));
     assert!(host.spawned().is_empty());
     restarted.stop(ExitCause::Ended);
-    let projection = dudes_journal::Projections::open(
-        &history
-            .fixture
-            .state
-            .path()
-            .join(crate::boot::PROJECTION_FILE),
-    )
-    .unwrap();
+    let projection_path = history
+        .fixture
+        .state
+        .path()
+        .join(crate::boot::PROJECTION_FILE);
+    let projection = dudes_journal::Projections::open(&projection_path).unwrap();
     let day = dudes_types::Timestamp::from_unix_millis(1_787_394_600_000).utc_day();
     assert_eq!(
         format!(

@@ -205,8 +205,7 @@ mod tests {
 
     #[test]
     fn empty_history_preserves_the_literal_fresh_sequence() {
-        const EMPTY: FakeRng = FakeRng::new();
-        let mut rng = EMPTY;
+        let mut rng = const { FakeRng::new() };
         rng.reserve_entries(&[]).unwrap();
         assert_eq!(rng.ulid().to_string(), "00000000000000000000000001");
         assert_eq!(
@@ -315,7 +314,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "the fixture minted this token hash")]
     fn token_observation_refuses_unknown_hashes() {
-        FakeTokens::default().token_of("unknown");
+        let _ = FakeTokens::default().token_of("unknown");
     }
 
     #[test]

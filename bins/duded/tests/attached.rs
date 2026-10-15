@@ -3215,17 +3215,14 @@ fn gone_attachment_short_write_keeps_operator_diagnostics_available() {
 
     let fixture = Fixture::new();
     let settings = fixture.settings();
-    let first = duded::boot(
+    let fixture_parts = common::seams(
         &settings,
-        common::seams(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .unwrap();
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    let first = duded::boot(&settings, fixture_parts).unwrap();
     let mut first = common::start(first);
     let agent = common::hire(&first.handle, fixture.state.path());
     first.stop(duded::ExitCause::Ended);

@@ -3046,17 +3046,14 @@ fn replayed_partial_refuses_every_effective_profile_change() {
     let fixture = Fixture::new();
     let settings = enrolled_settings(&fixture);
     let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
-    let daemon = boot(
+    let fixture_parts = seams(
         &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::clone(&clock),
-            Witness::default(),
-        ),
-    )
-    .expect("first boot");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::clone(&clock),
+        Witness::default(),
+    );
+    let daemon = boot(&settings, fixture_parts).expect("first boot");
     let pause = daemon.onboarding_pause();
     pause.arm(OnboardingPausePoint::BeforeGoalPermit);
     let addr = daemon.floor_addr().expect("Floor address");
@@ -7728,18 +7725,15 @@ fn browser_pause_on_attached_agent_refuses_prompts_and_tools_and_issues_nothing(
 
     // The operator's own calls resolve as the shipped daemon's do; the hooks, as the agent's.
     let resolver = RecordingResolver::new(PeerProvenance::Unresolvable);
-    let daemon = boot(
+    let fixture_parts = seams_with(
         &settings,
-        seams_with(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&resolver) as Arc<dyn PeerResolver>,
-        ),
-    )
-    .expect("boot Floor");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&resolver) as Arc<dyn PeerResolver>,
+    );
+    let daemon = boot(&settings, fixture_parts).expect("boot Floor");
     let socket = daemon.socket().to_path_buf();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -16984,11 +16978,8 @@ fn pending_instruction_check_blocks(route: PendingCheckRoute) {
     }
     let runner = BaselineRunner::new();
     let clock = HeldInstructionClock::new();
-    let daemon = boot(
-        &settings,
-        held_instruction_seams(&settings, &runner, &clock),
-    )
-    .expect("boot");
+    let fixture_parts = held_instruction_seams(&settings, &runner, &clock);
+    let daemon = boot(&settings, fixture_parts).expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -17101,11 +17092,8 @@ fn legacy_goal_set_keeps_its_bypass_and_browser_current_goal_check_rules() {
     let settings = checks_settings(&fixture);
     let runner = BaselineRunner::new();
     let clock = HeldInstructionClock::new();
-    let daemon = boot(
-        &settings,
-        held_instruction_seams(&settings, &runner, &clock),
-    )
-    .expect("boot");
+    let fixture_parts = held_instruction_seams(&settings, &runner, &clock);
+    let daemon = boot(&settings, fixture_parts).expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -17468,17 +17456,14 @@ fn browser_renew_keeps_or_names_a_check() {
     );
     let settings = renew_settings(&fixture, &renew_config(&entries));
     let runner = BaselineRunner::new();
-    let daemon = boot(
+    let fixture_parts = seams(
         &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::clone(&runner),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot Floor");
+        SharedHost::new(),
+        Arc::clone(&runner),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    let daemon = boot(&settings, fixture_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, &repo);

@@ -197,17 +197,14 @@ fn explicit_limits_reach_first_and_reissued_launch() {
     let settings = fixture.settings();
 
     let first_host = LoggingHost::new(true);
-    let daemon = boot(
+    let fixture_parts = seams(
         &settings,
-        seams(
-            &settings,
-            first_host.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot");
+        first_host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    let daemon = boot(&settings, fixture_parts).expect("boot");
     let mut running = common::start(daemon);
     let mut client = Client::connect(settings.socket()).expect("connect to the daemon");
 

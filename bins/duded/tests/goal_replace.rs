@@ -1707,17 +1707,14 @@ fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_go
     let fixture = Fixture::new();
     let settings = fixture.settings();
     let host = common::UnconfirmedHost::new(true);
-    let daemon = boot(
+    let fixture_parts = common::seams(
         &settings,
-        common::seams(
-            &settings,
-            host.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .unwrap();
+        host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    let daemon = boot(&settings, fixture_parts).unwrap();
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     let goal = common::set_goal(
