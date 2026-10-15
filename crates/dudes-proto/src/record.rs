@@ -5108,6 +5108,80 @@ mod tests {
     }
 
     #[test]
+    fn worst_case_review_records_round_trip_with_payloads_under_the_cap() {
+        use crate::diff_stamp::{
+            BaselineOutcome, BaselinePayload, CaptureInterval, SamplerVersions, StampOutcome,
+            StampPayload, TicketBinding,
+        };
+        let binding = TicketBinding {
+            card: CardId::parse("7ZZZZZZZZZZZZZZZZZZZZZZZZZ").unwrap(),
+            round: u32::MAX,
+            goal: GoalId::parse("7ZZZZZZZZZZZZZZZZZZZZZZZZZ").unwrap(),
+            claimant: AgentId::parse("7ZZZZZZZZZZZZZZZZZZZZZZZZZ").unwrap(),
+        };
+        let interval = CaptureInterval {
+            started_at: Timestamp::from_unix_millis(i64::MIN),
+            ended_at: Timestamp::from_unix_millis(i64::MAX),
+        };
+        let versions = SamplerVersions {
+            sampler: u32::MAX,
+            policy: u32::MAX,
+        };
+        let baseline = BaselinePayload::new(
+            binding,
+            interval,
+            versions,
+            BaselineOutcome::Captured {
+                device: u64::MAX,
+                inode: u64::MAX,
+                head: dudes_types::GitCommit::parse("0123456789abcdef0123456789abcdef01234567")
+                    .unwrap(),
+                preexisting_tracked: false,
+            },
+        )
+        .unwrap();
+        let stamp = StampPayload::new(
+            binding,
+            Lsn(u64::MAX),
+            Lsn(u64::MAX),
+            interval,
+            versions,
+            StampOutcome::Sampled {
+                complete: false,
+                digest: crate::diff_stamp::DigestHex::parse(&"f".repeat(64)).unwrap(),
+                omitted: u32::MAX,
+                omitted_lower_bound: false,
+                untracked: u32::MAX,
+                untracked_lower_bound: false,
+            },
+        )
+        .unwrap();
+        let records = [
+            Record::TicketBaselineRecorded {
+                card: binding.card,
+                goal: binding.goal,
+                baseline,
+            },
+            Record::TicketReviewStamped {
+                card: binding.card,
+                goal: binding.goal,
+                stamp,
+            },
+        ];
+        for (record, payload_len) in records.iter().zip([425, 551]) {
+            let encoded = serde_json::to_vec(record).unwrap();
+            assert_eq!(serde_json::from_slice::<Record>(&encoded).unwrap(), *record);
+            assert!(encoded.len() < 1024 + 160, "{} bytes", encoded.len());
+            let payload = match record {
+                Record::TicketBaselineRecorded { baseline, .. } => baseline.encode().unwrap(),
+                Record::TicketReviewStamped { stamp, .. } => stamp.encode().unwrap(),
+                _ => unreachable!("two review records"),
+            };
+            assert_eq!(payload.as_slice().len(), payload_len);
+        }
+    }
+
+    #[test]
     fn review_records_are_required_frames_with_fixed_tags() {
         for (kind, tag, name) in [
             (

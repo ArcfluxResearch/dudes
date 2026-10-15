@@ -435,3 +435,90 @@ fn baseline_outcomes_survive_replay_unchanged() {
         BaselineOutcome::Unavailable { .. }
     ));
 }
+
+#[test]
+fn a_replayed_baseline_naming_another_claimant_is_ignored() {
+    let mut harness = Harness::new();
+    let agent = harness.hire();
+    start(&mut harness, agent, 1);
+    let goal = started_goal(&harness, 0);
+    let other = AgentId::from_parts(9, 9);
+    for entry in &mut harness.journal {
+        if let Record::TicketBaselineRecorded { baseline, .. } = &mut entry.record {
+            *baseline = unavailable_baseline(other, card(), 1, goal);
+        }
+    }
+    harness.restart();
+    assert!(harness.supervisor.world().ticket_review(goal).is_none());
+}
+
+#[test]
+fn a_replayed_stamp_naming_another_baseline_is_ignored() {
+    let (mut harness, _, goal) = round_with_failed_check();
+    let check_lsn = stamp_requests(&harness)[0].2;
+    let baseline_lsn = stamp_requests(&harness)[0].1;
+    let baseline = requested_baseline(&harness);
+    harness.drive(Input::StampCaptured {
+        goal,
+        check_lsn,
+        stamp: unavailable_stamp(&baseline, baseline_lsn, check_lsn),
+    });
+    assert_eq!(count(&harness, RecordKind::TicketReviewStamped), 1);
+    for entry in &mut harness.journal {
+        if let Record::TicketReviewStamped { stamp, .. } = &mut entry.record {
+            stamp.baseline_lsn = Lsn(777);
+        }
+    }
+    harness.restart();
+    let review = harness.supervisor.world().ticket_review(goal).unwrap();
+    assert_eq!(review.stamp, None);
+}
+
+#[test]
+fn a_passing_check_is_stamped_before_the_loop_decides_done() {
+    let mut harness = Harness::new();
+    let agent = harness.hire();
+    start(&mut harness, agent, 1);
+    let goal = started_goal(&harness, 0);
+    let turn = harness.open_turn(agent).expect("a turn is running");
+    harness.drive(Input::ChildExited {
+        final_reply: None,
+        elapsed_ms: None,
+        turn,
+        exit: ExitStatus {
+            code: Some(0),
+            signal: None,
+        },
+        usage: None,
+        model_usage: BTreeMap::new(),
+        outcome: TurnOutcome::Completed,
+        last_message: None,
+    });
+    harness.drive(Input::PredicateDone {
+        goal,
+        pass: true,
+        evidence: Evidence::Command {
+            argv: vec!["true".into()],
+            program: Some("/usr/bin/true".into()),
+            exit: Some(0),
+            output_tail: String::new(),
+        },
+    });
+
+    let kinds = kinds(&harness);
+    let result = position(&harness, RecordKind::PredicateResult);
+    let stamp = position(&harness, RecordKind::TicketReviewStamped);
+    let done = harness
+        .records()
+        .position(|record| {
+            matches!(
+                record,
+                Record::LoopDecided {
+                    decision: dudes_proto::LoopDecision::Done,
+                    ..
+                }
+            )
+        })
+        .unwrap_or_else(|| panic!("the loop never decided Done: {kinds:?}"));
+    assert!(result < stamp && stamp < done, "{kinds:?}");
+}
