@@ -34,6 +34,8 @@
 #![allow(dead_code)]
 
 pub(crate) mod hook_shim;
+mod rng;
+pub(crate) use rng::FixtureRng;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
@@ -1828,39 +1830,17 @@ impl dudes_rpc::auth::PeerResolver for ScriptedColumn {
     }
 }
 
-/// The plaintext of the agent token whose blake3 digest the journal carries.
-///
-/// **Recovered rather than predicted, and the recovery carries its own check.** `FakeRng`'s
-/// `agent_token` is its draw counter left-padded with `A`, and that counter is shared with id
-/// generation — so which number a given run reaches is an implementation detail no test should
-/// assert. Candidate counters are therefore hashed with `dudes_supervisor::blake3_hex`, the very
-/// function the mint hashes with, and the one whose digest equals the journaled hash is the token.
-/// A wrong plaintext cannot pass that equality, so this either returns the token the daemon minted
-/// or it panics.
-pub(crate) fn token_of(token_hash: &str) -> dudes_proto::rpc::hook::HookToken {
-    const CANDIDATES: u32 = 256;
-    for counter in 1..=CANDIDATES {
-        let text = format!(
-            "{counter:A>width$}",
-            width = dudes_proto::rpc::hook::HOOK_TOKEN_LEN
-        );
-        if dudes_supervisor::blake3_hex(text.as_bytes()) == token_hash {
-            return dudes_proto::rpc::hook::HookToken::new(text)
-                .expect("a counter padded with 'A' is base64url");
-        }
-    }
-    panic!("no counter below {CANDIDATES} hashes to {token_hash}");
-}
-
 /// The seams a test daemon runs on: a chosen host and predicate runner, a test clock and a counting
 /// rng.
 pub(crate) fn seams<H: ProcessHost, P: PredicateRunner>(
+    settings: &Settings,
     host: H,
     predicates: Arc<P>,
     clock: Arc<TestClock>,
     witness: Witness,
-) -> Seams<H, P, TestClock, FakeRng> {
+) -> Seams<H, P, TestClock, FixtureRng> {
     seams_with(
+        settings,
         host,
         predicates,
         clock,
@@ -1871,18 +1851,19 @@ pub(crate) fn seams<H: ProcessHost, P: PredicateRunner>(
 
 /// [`seams`] with a chosen peer-classification column, for the tests that need one the daemon cannot produce.
 pub(crate) fn seams_with<H: ProcessHost, P: PredicateRunner>(
+    settings: &Settings,
     host: H,
     predicates: Arc<P>,
     clock: Arc<TestClock>,
     witness: Witness,
     resolver: Arc<dyn dudes_rpc::auth::PeerResolver>,
-) -> Seams<H, P, TestClock, FakeRng> {
+) -> Seams<H, P, TestClock, FixtureRng> {
     Seams {
         host,
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates,
         clock,
-        rng: FakeRng::new(),
+        rng: FixtureRng::from_rng(settings, FakeRng::new()),
         // `seams` deliberately passes the fixed `NoWalk` column used by these fixtures. Tests of
         // production process resolution pass a concrete test-local adapter to
         // `Resolver::processes`; a test that needs another fixed column passes

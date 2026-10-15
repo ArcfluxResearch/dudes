@@ -14,7 +14,6 @@ use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::{Method, Response};
 use dudes_rpc::Client;
 use dudes_supervisor::Clock;
-use dudes_supervisor::testing::FakeRng;
 use dudes_types::Timestamp;
 use serde_json::json;
 
@@ -84,10 +83,12 @@ impl Drop for ReleaseSample {
 }
 
 fn parts(
+    settings: &Settings,
     host: SharedHost,
     clock: Arc<SampleClock>,
-) -> duded::Seams<SharedHost, ScriptedRunner, SampleClock, FakeRng> {
+) -> duded::Seams<SharedHost, ScriptedRunner, SampleClock, common::FixtureRng> {
     let parts = common::seams(
+        &settings,
         host,
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -128,8 +129,13 @@ fn pending_instruction_samples_issue_fresh_turns_after_reboot() {
     let settings = fixture.settings();
     let host = SharedHost::new();
     let clock = SampleClock::new();
-    let mut running =
-        common::start(boot(&settings, parts(host.clone(), Arc::clone(&clock))).unwrap());
+    let mut running = common::start(
+        boot(
+            &settings,
+            parts(&settings, host.clone(), Arc::clone(&clock)),
+        )
+        .unwrap(),
+    );
     let mut old_turns = Vec::new();
     for _ in 0..2 {
         let agent = common::hire(&running.handle, fixture.state.path());
@@ -183,7 +189,11 @@ fn pending_instruction_samples_issue_fresh_turns_after_reboot() {
 
     let clock = SampleClock::new();
     let release = clock.hold();
-    let daemon = boot(&settings, parts(SharedHost::new(), Arc::clone(&clock))).unwrap();
+    let daemon = boot(
+        &settings,
+        parts(&settings, SharedHost::new(), Arc::clone(&clock)),
+    )
+    .unwrap();
     let mut restarted = common::start(daemon);
     clock.wait_held();
     assert!(list(&settings).error.is_none());

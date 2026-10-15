@@ -16,7 +16,7 @@ use dudes_rpc::auth::{PeerIdentity, PeerProvenance, PeerResolution, PeerResolver
 use dudes_types::AgentId;
 use serde_json::{Value, json};
 
-use super::{Fixture, token_of};
+use super::Fixture;
 
 pub(crate) const PROCESS_WAIT: Duration = Duration::from_secs(10);
 static HOOK_BINARY: OnceLock<PathBuf> = OnceLock::new();
@@ -230,7 +230,11 @@ pub(crate) fn wait_bounded(mut child: Child) -> Output {
     child.wait_with_output().expect("collect hook output")
 }
 
-pub(crate) fn minted_token(fixture: &Fixture, agent: AgentId) -> HookToken {
+pub(crate) fn minted_token(
+    fixture: &Fixture,
+    tokens: &dudes_supervisor::testing::FakeTokens,
+    agent: AgentId,
+) -> HookToken {
     let hash = fixture.await_record("HookTokenMinted", |record| match record {
         Record::HookTokenMinted {
             agent: owner,
@@ -238,5 +242,5 @@ pub(crate) fn minted_token(fixture: &Fixture, agent: AgentId) -> HookToken {
         } if *owner == agent => Some(token_hash.clone()),
         _ => None,
     });
-    token_of(&hash)
+    tokens.token_of(&hash)
 }
