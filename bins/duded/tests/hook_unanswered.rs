@@ -6,8 +6,8 @@ mod common;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex};
 
 use common::hook_shim::{generated_handlers, handler, minted_token, payload, spawn_handler};
 use common::{
@@ -16,17 +16,120 @@ use common::{
 use duded::boot;
 use duded::ports::Ask;
 use duded::startup::Witness;
+use dudes_journal::Reader;
 use dudes_proto::PeerProvenance;
 use dudes_proto::rpc::hook::{HookEventParams, HookToken};
 use dudes_proto::rpc::{Method, Response};
 use dudes_rpc::auth::{PeerIdentity, PeerResolution, PeerResolver};
 use dudes_rpc::{ClientError, FrameError, LocalClient};
+use dudes_supervisor::host::Clock;
 use dudes_types::AgentId;
+use dudes_types::{Lsn, Timestamp};
 use serde_json::{Value, json};
 
 const BLOCK: &[u8] = b"dudes-hook: daemon accepted the connection but did not answer; control step blocked; retry, and restart duded if this persists\n";
 const CONTROL: [&str; 2] = ["PreToolUse", "UserPromptSubmit"];
 const RUNS: usize = 1000;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum MintPhase {
+    Idle,
+    Armed,
+    Waiting,
+    Released,
+}
+
+struct MintClock {
+    inner: TestClock,
+    journal: std::path::PathBuf,
+    publication: Mutex<Option<duded::classify::TokenPublicationWork>>,
+    phase: Mutex<MintPhase>,
+    changed: Condvar,
+}
+
+impl MintClock {
+    fn new(journal: std::path::PathBuf) -> Self {
+        Self {
+            inner: TestClock::new(),
+            journal,
+            publication: Mutex::new(None),
+            phase: Mutex::new(MintPhase::Idle),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn wait_reached(&self) {
+        let (phase, _) = self
+            .changed
+            .wait_timeout_while(
+                self.phase.lock().unwrap(),
+                std::time::Duration::from_secs(10),
+                |phase| *phase != MintPhase::Waiting,
+            )
+            .unwrap();
+        let reached = *phase == MintPhase::Waiting;
+        drop(phase);
+        assert!(reached, "the mint was not held");
+    }
+
+    fn release(&self) {
+        *self
+            .phase
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = MintPhase::Released;
+        self.changed.notify_all();
+    }
+}
+
+impl Clock for MintClock {
+    fn now(&self) -> Timestamp {
+        let armed = *self.phase.lock().unwrap() == MintPhase::Armed;
+        if armed && std::thread::current().name() == Some("duded-under-test") {
+            let minted = Reader::new(&self.journal)
+                .iter_from(Lsn::ZERO)
+                .unwrap()
+                .any(|entry| {
+                    matches!(
+                        entry.unwrap().1.record,
+                        dudes_proto::Record::HookTokenMinted { .. }
+                    )
+                });
+            let copied = self
+                .publication
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .copied_entries();
+            if minted && copied == 0 {
+                let mut phase = self.phase.lock().unwrap();
+                if *phase != MintPhase::Armed {
+                    return self.inner.now();
+                }
+                *phase = MintPhase::Waiting;
+                self.changed.notify_all();
+                let (returned, _) = self
+                    .changed
+                    .wait_timeout_while(phase, std::time::Duration::from_secs(10), |phase| {
+                        *phase == MintPhase::Waiting
+                    })
+                    .unwrap();
+                let released = *returned == MintPhase::Released;
+                drop(returned);
+                assert!(released, "the mint gate was not released");
+            }
+        }
+        self.inner.now()
+    }
+}
+
+struct ReleaseMint<'a>(&'a MintClock);
+
+impl Drop for ReleaseMint<'_> {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
 
 #[derive(Debug)]
 struct Resolver {
@@ -282,6 +385,77 @@ fn a_running_agent_with_a_free_slot_is_allowed() {
         assert!(!denied(event, &output), "{event}: {output:?}");
         assert!(output.stderr.is_empty(), "{event}: {output:?}");
     }
+}
+
+#[test]
+fn a_durable_token_mint_alone_does_not_make_the_hook_subject_ready() {
+    let fixture = Fixture::new();
+    let mut settings = fixture.settings();
+    settings.max_connections = NonZeroUsize::MIN;
+    settings.floor = Some(duded::settings::FloorSettings {
+        assets_dir: std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/floor-release-v3"
+        )),
+        port: Some(0),
+    });
+    let clock = Arc::new(MintClock::new(fixture.journal_dir()));
+    let resolver = Arc::new(Resolver {
+        provenance: Mutex::new(PeerProvenance::Unresolvable),
+        refuse: AtomicBool::new(false),
+    });
+    let original = seams_with(
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&resolver) as Arc<dyn PeerResolver>,
+    );
+    let daemon = boot(
+        &settings,
+        duded::Seams {
+            host: original.host,
+            pty_host: original.pty_host,
+            predicates: original.predicates,
+            clock: Arc::clone(&clock),
+            rng: original.rng,
+            resolver: original.resolver,
+            adapters: original.adapters,
+            children: original.children,
+            witness: original.witness,
+        },
+    )
+    .unwrap();
+    *clock.publication.lock().unwrap() = Some(daemon.token_publication_work());
+    let socket = daemon.socket().to_path_buf();
+    let running = common::start(daemon);
+    let agent = hire(&running.handle, fixture.state.path());
+    let handlers = generated_handlers(agent, fixture.state.path());
+    std::thread::scope(|scope| {
+        let _release = ReleaseMint(&clock);
+        *clock.phase.lock().unwrap() = MintPhase::Armed;
+        let setting = scope.spawn(|| {
+            set_goal(
+                &running.handle,
+                goal_params(agent, &[common::true_program()]),
+            )
+        });
+        clock.wait_reached();
+        let token = minted_token(&fixture, agent);
+        *resolver.provenance.lock().unwrap() = PeerProvenance::Agent(agent);
+        let output = spawn_handler(
+            handler(&handlers, "PreToolUse"),
+            &socket,
+            &token,
+            &payload("PreToolUse"),
+        )
+        .1;
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        clock.release();
+        setting.join().unwrap();
+    });
 }
 
 /// Names the shape of an unanswered conversation, and fails on any shape the shim would not block on.
