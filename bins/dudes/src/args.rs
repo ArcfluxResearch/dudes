@@ -539,11 +539,12 @@ COMMANDS
         --hire, --goal and budget options for other choices.
         It then writes the operator file once, starts
         the daemon (or restarts one that runs other settings), shows where the daemon
-        found each engine and whether it is signed in, prints the Floor's one-time
-        link to paste into any browser, and makes the hire. It prints the dudes login
-        command for each engine that is signed out. It reads no engine's files.
-        With options it asks nothing and prints no Floor link: it prints dudes floor
-        open, and dudes login <engine> for each engine that is signed out. --yes
+        found each engine and whether it is signed in, makes the hire, and prints the
+        dudes login command for each engine that is signed out. It reads no engine's
+        files. Last, so it stays on screen, it prints the Floor's one-time link to
+        paste into any browser.
+        With options it asks nothing and prints no Floor link: it prints, last, dudes
+        floor open, after dudes login <engine> for each engine that is signed out. --yes
         takes every default, --set is `config set`, --enroll enrolls the current
         repository, --hire hires a first agent there, and everything after `--` is
         the completion check that the workspace and the goal share (default: at
@@ -868,9 +869,11 @@ COMMANDS
         runs differently, which a restart applies: dudes stop, then dudes start.
 
     floor open [--no-browser]
-        Mint a read-only Floor session and print its one-time sign-in link. Paste the
-        link into any browser. It expires in 60 seconds and works once, in one
-        browser; run the command again for a new one. Nothing is opened for you.
+        Mint a Floor session and print its one-time sign-in link. The session can view
+        the Floor, and it can also act on agents (hire, answer, pause, retire and the
+        rest) for each floor.* action that is on. Paste the link into any browser. It
+        expires in 60 seconds and works once, in one browser; run the command again for
+        a new one. Nothing is opened for you.
         --no-browser is accepted and changes nothing: printing is now the default.
 
     login claude|codex|pi
