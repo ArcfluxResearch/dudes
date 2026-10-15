@@ -1,3 +1,5 @@
+//! Contracts for live instruction admission and positioned durable validation.
+
 use std::path::Path;
 
 use dudes_journal::segment::{list_segments, segment_path};
