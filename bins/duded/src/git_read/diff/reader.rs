@@ -239,6 +239,8 @@ pub struct DiffReader {
     scratch: PathBuf,
 }
 
+// Off Unix every public method is a refusal stub that ignores its arguments.
+#[cfg_attr(not(unix), allow(clippy::unused_self, clippy::needless_pass_by_value))]
 impl DiffReader {
     /// Use the daemon's runner/PATH and a private content-only scratch directory.
     #[must_use]
