@@ -14,7 +14,6 @@ use dudes_proto::diff_stamp::{
     StampPayload, StampPayloadError, TicketBinding,
 };
 use dudes_types::{Lsn, Timestamp};
-use sha2::{Digest as _, Sha256};
 
 use crate::git_read::Tree;
 use crate::git_read::diff::{
@@ -57,7 +56,8 @@ impl DiffCapture {
         BaselinePayload::new(binding, self.interval(started_at), versions(), outcome)
     }
 
-    /// Sample the review scope of `tree` after the predicate result at `check_lsn`.
+    /// Sample the review scope of `tree` after the predicate result at `check_lsn`, against the
+    /// baseline recorded at `baseline_lsn`.
     ///
     /// # Errors
     /// Fails only if the payload cannot be encoded, which fixed-width fields cannot cause.
@@ -65,6 +65,7 @@ impl DiffCapture {
         &self,
         tree: &Tree,
         baseline: &BaselinePayload,
+        baseline_lsn: Lsn,
         binding: TicketBinding,
         check_lsn: Lsn,
         cancelled: Arc<AtomicBool>,
@@ -76,7 +77,7 @@ impl DiffCapture {
         };
         StampPayload::new(
             binding,
-            baseline_id(baseline)?,
+            baseline_lsn,
             check_lsn,
             self.interval(started_at),
             versions(),
@@ -117,15 +118,6 @@ impl DiffCapture {
             ended_at: (self.clock)().max(started_at),
         }
     }
-}
-
-/// The fingerprint a stamp carries to name the baseline it compares against.
-///
-/// # Errors
-/// Fails only if the baseline cannot be encoded, which a built payload cannot cause.
-pub fn baseline_id(baseline: &BaselinePayload) -> Result<DigestHex, StampPayloadError> {
-    let digest = Sha256::digest(baseline.encode()?.as_slice());
-    DigestHex::parse(&crate::git_read::diff::hex(&digest))
 }
 
 fn versions() -> SamplerVersions {

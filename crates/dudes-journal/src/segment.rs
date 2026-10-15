@@ -214,6 +214,7 @@ mod tests {
                 }
                 refs
             }
+            Record::TicketReviewStamped { stamp, .. } => vec![stamp.baseline_lsn, stamp.check_lsn],
             Record::InstructionAttemptBoundarySettled {
                 owner,
                 started_lsn,
@@ -441,6 +442,7 @@ mod tests {
                 browser: _,
                 destination: _,
             }
+            | Record::TicketBaselineRecorded { .. }
             | Record::AgentRenamed { .. }
             | Record::AgentLookChanged { .. }
             | Record::AgentMcpServersChanged { .. }
@@ -514,7 +516,7 @@ mod tests {
 
     #[test]
     fn no_sample_lsn_is_below_the_first_segment() {
-        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 52;
+        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 54;
 
         let mut swept = 0_usize;
         let mut lsns = 0_usize;

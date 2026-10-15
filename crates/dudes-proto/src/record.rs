@@ -1779,6 +1779,28 @@ pub enum Record {
         /// Fresh scoped host evidence or comparable prior-boot evidence.
         proof: InstructionBoundaryAbsenceProof,
     },
+    /// A ticket round's review baseline, recorded before the round's first turn is issued. It
+    /// holds bounded metadata only, never file text, and a failed observation is recorded as an
+    /// unavailable outcome rather than left out.
+    TicketBaselineRecorded {
+        /// The card.
+        card: CardId,
+        /// The round's installed goal.
+        goal: GoalId,
+        /// The bounded observation.
+        baseline: crate::diff_stamp::BaselinePayload,
+    },
+    /// A ticket round's post-check sample, recorded after a predicate result is appended. It
+    /// names that result and the baseline record it compares against, and holds bounded
+    /// metadata only.
+    TicketReviewStamped {
+        /// The card.
+        card: CardId,
+        /// The round's installed goal.
+        goal: GoalId,
+        /// The bounded sample.
+        stamp: crate::diff_stamp::StampPayload,
+    },
 }
 
 /// Who removed a worktree.
@@ -2044,6 +2066,8 @@ impl Record {
             Self::InstructionAttemptBoundarySettled { .. } => {
                 RecordKind::InstructionAttemptBoundarySettled
             }
+            Self::TicketBaselineRecorded { .. } => RecordKind::TicketBaselineRecorded,
+            Self::TicketReviewStamped { .. } => RecordKind::TicketReviewStamped,
         }
     }
 
@@ -2229,6 +2253,10 @@ pub enum RecordKind {
     TicketInstructionReviewed = 78,
     /// [`Record::InstructionAttemptBoundarySettled`].
     InstructionAttemptBoundarySettled = 79,
+    /// [`Record::TicketBaselineRecorded`].
+    TicketBaselineRecorded = 80,
+    /// [`Record::TicketReviewStamped`].
+    TicketReviewStamped = 81,
 }
 
 impl RecordKind {
@@ -2285,8 +2313,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 79] {
-        let mut kinds = [Self::AgentHired; 79];
+    const fn known_kinds() -> [Self; 81] {
+        let mut kinds = [Self::AgentHired; 81];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2325,6 +2353,8 @@ impl RecordKind {
         kinds[76] = Self::InstructionObservationFinished;
         kinds[77] = Self::TicketInstructionReviewed;
         kinds[78] = Self::InstructionAttemptBoundarySettled;
+        kinds[79] = Self::TicketBaselineRecorded;
+        kinds[80] = Self::TicketReviewStamped;
         kinds
     }
 
@@ -2364,6 +2394,8 @@ impl RecordKind {
                 | Self::InstructionObservationFinished
                 | Self::TicketInstructionReviewed
                 | Self::InstructionAttemptBoundarySettled
+                | Self::TicketBaselineRecorded
+                | Self::TicketReviewStamped
         )
     }
 
@@ -3080,6 +3112,56 @@ pub mod samples {
                     },
                 }
             }
+            RecordKind::TicketBaselineRecorded => Record::TicketBaselineRecorded {
+                card: CardId::from_parts(7, 1),
+                goal: goal(),
+                baseline: crate::diff_stamp::BaselinePayload::new(
+                    crate::diff_stamp::TicketBinding {
+                        card: CardId::from_parts(7, 1),
+                        round: 1,
+                        goal: goal(),
+                        claimant: agent(),
+                    },
+                    crate::diff_stamp::CaptureInterval {
+                        started_at: Timestamp::from_unix_millis(1_787_394_600_000),
+                        ended_at: Timestamp::from_unix_millis(1_787_394_600_250),
+                    },
+                    crate::diff_stamp::SamplerVersions {
+                        sampler: 1,
+                        policy: 1,
+                    },
+                    crate::diff_stamp::BaselineOutcome::Unavailable {
+                        reason: crate::diff::DiffRefusal::Unreadable,
+                    },
+                )
+                .unwrap(),
+            },
+            RecordKind::TicketReviewStamped => Record::TicketReviewStamped {
+                card: CardId::from_parts(7, 1),
+                goal: goal(),
+                stamp: crate::diff_stamp::StampPayload::new(
+                    crate::diff_stamp::TicketBinding {
+                        card: CardId::from_parts(7, 1),
+                        round: 1,
+                        goal: goal(),
+                        claimant: agent(),
+                    },
+                    Lsn::from_parts(1, 12).unwrap(),
+                    Lsn::from_parts(1, 14).unwrap(),
+                    crate::diff_stamp::CaptureInterval {
+                        started_at: Timestamp::from_unix_millis(1_787_394_700_000),
+                        ended_at: Timestamp::from_unix_millis(1_787_394_700_250),
+                    },
+                    crate::diff_stamp::SamplerVersions {
+                        sampler: 1,
+                        policy: 1,
+                    },
+                    crate::diff_stamp::StampOutcome::Unavailable {
+                        reason: crate::diff::DiffRefusal::TimedOut,
+                    },
+                )
+                .unwrap(),
+            },
             RecordKind::AgentRenamed => Record::AgentRenamed {
                 id: agent(),
                 name: "Kim renamed".to_owned(),
@@ -3491,7 +3573,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 79);
+        assert_eq!(RecordKind::KNOWN.len(), 81);
         for &kind in &RecordKind::KNOWN[46..66] {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys() {
@@ -3994,7 +4076,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            79,
+            81,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -4992,8 +5074,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 79);
-        assert_eq!(RecordKind::from_tag(80), None);
+        assert_eq!(RecordKind::KNOWN.len(), 81);
+        assert_eq!(RecordKind::from_tag(82), None);
     }
 
     const TICKET_KINDS: [(RecordKind, u16); 5] = [
@@ -5023,6 +5105,27 @@ mod tests {
             !RecordKind::CardCreated.requires_required_frame(),
             "a plain card is still a compatible frame"
         );
+    }
+
+    #[test]
+    fn review_records_are_required_frames_with_fixed_tags() {
+        for (kind, tag, name) in [
+            (
+                RecordKind::TicketBaselineRecorded,
+                80,
+                "ticket_baseline_recorded",
+            ),
+            (RecordKind::TicketReviewStamped, 81, "ticket_review_stamped"),
+        ] {
+            assert_eq!(kind.tag(), tag);
+            assert_eq!(RecordKind::from_tag(tag), Some(kind));
+            let record = samples::record(kind);
+            assert_eq!(record.kind(), kind);
+            assert!(record.requires_required_frame());
+            let json = serde_json::to_value(&record).unwrap();
+            assert_eq!(json["t"], name);
+            assert_eq!(serde_json::from_value::<Record>(json).unwrap(), record);
+        }
     }
 
     #[test]

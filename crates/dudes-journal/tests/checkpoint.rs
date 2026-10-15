@@ -185,7 +185,9 @@ fn placement(kind: RecordKind) -> Placement {
         | RecordKind::TicketEdited
         | RecordKind::TicketAssigned
         | RecordKind::TicketStarted
-        | RecordKind::TicketRemoved => Placement::Out(
+        | RecordKind::TicketRemoved
+        | RecordKind::TicketBaselineRecorded
+        | RecordKind::TicketReviewStamped => Placement::Out(
             "a ticket's records need the card they name; tests/tickets.rs replays the lifecycle with and without checkpoints",
         ),
         RecordKind::InstructionObservationStarted

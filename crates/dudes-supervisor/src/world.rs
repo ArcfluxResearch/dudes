@@ -212,6 +212,18 @@ pub struct GoalRow {
     pub cleared: bool,
 }
 
+/// The review metadata one ticket goal's round holds: its baseline and the newest post-check
+/// sample. Bounded payloads only; no file text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TicketReview {
+    /// Position of the baseline record.
+    pub baseline_lsn: Lsn,
+    /// The round-start observation.
+    pub baseline: dudes_proto::diff_stamp::BaselinePayload,
+    /// Position and content of the newest post-check sample, once one is recorded.
+    pub stamp: Option<(Lsn, dudes_proto::diff_stamp::StampPayload)>,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ObservedPredicateResult {
     turn: TurnId,
@@ -430,6 +442,7 @@ pub struct World {
     /// Goals by id.
     pub goals: BTreeMap<GoalId, GoalRow>,
     observed_predicates: BTreeMap<GoalId, ObservedPredicateResult>,
+    ticket_reviews: BTreeMap<GoalId, TicketReview>,
     /// Turns by id.
     pub turns: BTreeMap<TurnId, TurnRow>,
     mcp_grants: BTreeMap<Lsn, McpGrant>,
@@ -1885,6 +1898,14 @@ impl World {
             | Record::InstructionObservationFinished { .. }
             | Record::InstructionAttemptBoundarySettled { .. }
             | Record::TicketInstructionReviewed { .. } => {}
+            Record::TicketBaselineRecorded {
+                card,
+                goal,
+                baseline,
+            } => self.fold_ticket_baseline(lsn, *card, *goal, baseline),
+            Record::TicketReviewStamped { card, goal, stamp } => {
+                self.fold_ticket_stamp(lsn, *card, *goal, stamp);
+            }
             Record::CardCreated { card, .. }
             | Record::CardTransition { card, .. }
             | Record::Claim { card, .. }
@@ -2470,6 +2491,67 @@ impl World {
                 })
                 .collect(),
         })
+    }
+
+    /// The review metadata recorded for a ticket goal, if any.
+    #[must_use]
+    pub fn ticket_review(&self, goal: GoalId) -> Option<&TicketReview> {
+        self.ticket_reviews.get(&goal)
+    }
+
+    /// Whether any turn was ever issued for `goal`.
+    #[must_use]
+    pub fn goal_has_turn(&self, goal: GoalId) -> bool {
+        self.turns.values().any(|turn| turn.goal == Some(goal))
+    }
+
+    /// The first baseline for a goal wins, and only when it names the card, goal and claimant
+    /// the journal installed. Anything else is ignored: the payload is display metadata and
+    /// never an authority.
+    fn fold_ticket_baseline(
+        &mut self,
+        lsn: Lsn,
+        card: CardId,
+        goal: GoalId,
+        baseline: &dudes_proto::diff_stamp::BaselinePayload,
+    ) {
+        let Some(row) = self.goals.get(&goal) else {
+            return;
+        };
+        if baseline.binding.card != card
+            || baseline.binding.goal != goal
+            || baseline.binding.claimant != row.agent
+            || baseline.encode().is_err()
+        {
+            return;
+        }
+        self.ticket_reviews
+            .entry(goal)
+            .or_insert_with(|| TicketReview {
+                baseline_lsn: lsn,
+                baseline: *baseline,
+                stamp: None,
+            });
+    }
+
+    /// A stamp counts only against the recorded baseline it names, with the same binding.
+    fn fold_ticket_stamp(
+        &mut self,
+        lsn: Lsn,
+        card: CardId,
+        goal: GoalId,
+        stamp: &dudes_proto::diff_stamp::StampPayload,
+    ) {
+        let Some(review) = self.ticket_reviews.get_mut(&goal) else {
+            return;
+        };
+        if stamp.binding.card == card
+            && stamp.binding == review.baseline.binding
+            && stamp.baseline_lsn == review.baseline_lsn
+            && stamp.encode().is_ok()
+        {
+            review.stamp = Some((lsn, *stamp));
+        }
     }
 
     /// Unspawned issues whose replay is still owed, excluding durable browser cancellation tombstones.

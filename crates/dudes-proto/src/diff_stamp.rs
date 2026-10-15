@@ -7,6 +7,7 @@
 use std::fmt;
 
 use dudes_types::{AgentId, CardId, GitCommit, GoalId, Lsn, Timestamp};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::diff::DiffRefusal;
@@ -50,7 +51,7 @@ impl fmt::Display for StampPayloadError {
 impl std::error::Error for StampPayloadError {}
 
 /// The ticket round a payload belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TicketBinding {
     /// Ticket identity.
     pub card: CardId,
@@ -63,7 +64,7 @@ pub struct TicketBinding {
 }
 
 /// When a capture began and ended, in Unix milliseconds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CaptureInterval {
     /// Capture start.
     pub started_at: Timestamp,
@@ -72,7 +73,7 @@ pub struct CaptureInterval {
 }
 
 /// Sampler and text-policy revisions in force for a capture.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SamplerVersions {
     /// Candidate sampling algorithm revision.
     pub sampler: u32,
@@ -111,6 +112,16 @@ impl DigestHex {
     }
 }
 
+impl JsonSchema for DigestHex {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "DigestHex".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "string", "pattern": "^[0-9a-f]{64}$"})
+    }
+}
+
 impl Serialize for DigestHex {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
@@ -125,7 +136,7 @@ impl<'de> Deserialize<'de> for DigestHex {
 }
 
 /// What the round-start observation found.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum BaselineOutcome {
@@ -148,7 +159,7 @@ pub enum BaselineOutcome {
 }
 
 /// What the post-check sample found.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum StampOutcome {
@@ -175,7 +186,7 @@ pub enum StampOutcome {
 }
 
 /// The round-start observation, recorded before the round's first turn is issued.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BaselinePayload {
     /// Encoding revision.
     pub v: u32,
@@ -192,15 +203,15 @@ pub struct BaselinePayload {
 }
 
 /// The post-check scope sample, recorded after the predicate result is appended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StampPayload {
     /// Encoding revision.
     pub v: u32,
     /// Ticket round.
     #[serde(flatten)]
     pub binding: TicketBinding,
-    /// Fingerprint of the encoded baseline this sample compares against.
-    pub baseline_id: DigestHex,
+    /// Position of the baseline record this sample compares against.
+    pub baseline_lsn: Lsn,
     /// Position of the predicate result this sample follows.
     pub check_lsn: Lsn,
     /// Capture interval.
@@ -306,7 +317,7 @@ impl StampPayload {
     /// Refuses a reversed interval or an encoding over the cap.
     pub fn new(
         binding: TicketBinding,
-        baseline_id: DigestHex,
+        baseline_lsn: Lsn,
         check_lsn: Lsn,
         interval: CaptureInterval,
         versions: SamplerVersions,
@@ -316,7 +327,7 @@ impl StampPayload {
         let payload = Self {
             v: STAMP_PAYLOAD_VERSION,
             binding,
-            baseline_id,
+            baseline_lsn,
             check_lsn,
             interval,
             versions,
@@ -410,7 +421,7 @@ mod tests {
     fn stamp_encodes_to_the_literal_text() {
         let payload = StampPayload::new(
             binding(),
-            DigestHex::parse(&"cd".repeat(32)).unwrap(),
+            Lsn(12),
             Lsn(77),
             interval(),
             VERSIONS,
@@ -430,8 +441,7 @@ mod tests {
             concat!(
                 r#"{"v":1,"card":"00000000000000000000000000","round":2,"#,
                 r#""goal":"00000000000000000000000000","claimant":"00000000000000000000000000","#,
-                r#""baseline_id":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","#,
-                r#""check_lsn":77,"started_at":1000,"ended_at":1250,"#,
+                r#""baseline_lsn":12,"check_lsn":77,"started_at":1000,"ended_at":1250,"#,
                 r#""versions":{"sampler":1,"policy":3},"#,
                 r#""outcome":{"state":"sampled","complete":false,"#,
                 r#""digest":"abababababababababababababababababababababababababababababababab","#,
@@ -492,7 +502,7 @@ mod tests {
         assert_eq!(baseline.encode().unwrap().as_slice().len(), 425);
         let stamp = StampPayload::new(
             worst_binding,
-            DigestHex::parse(&"f".repeat(64)).unwrap(),
+            Lsn(u64::MAX),
             Lsn(u64::MAX),
             worst_interval,
             worst_versions,
@@ -506,7 +516,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(stamp.encode().unwrap().as_slice().len(), 596);
+        assert_eq!(stamp.encode().unwrap().as_slice().len(), 551);
     }
 
     #[test]

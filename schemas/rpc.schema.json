@@ -933,6 +933,123 @@
         }
       ]
     },
+    "BaselineOutcome": {
+      "description": "What the round-start observation found.",
+      "oneOf": [
+        {
+          "description": "The root and start commit were observed.",
+          "properties": {
+            "device": {
+              "description": "Filesystem device of the opened root.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "head": {
+              "$ref": "#/$defs/GitCommit",
+              "description": "Full start commit."
+            },
+            "inode": {
+              "description": "Directory inode of the opened root.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "preexisting_tracked": {
+              "description": "Tracked changes existed when the round started.",
+              "type": "boolean"
+            },
+            "state": {
+              "const": "captured",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "device",
+            "inode",
+            "head",
+            "preexisting_tracked"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No baseline could be observed.",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/DiffRefusal",
+              "description": "Finite reason."
+            },
+            "state": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "BaselinePayload": {
+      "description": "The round-start observation, recorded before the round's first turn is issued.",
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "Ticket identity."
+        },
+        "claimant": {
+          "$ref": "#/$defs/AgentId",
+          "description": "Claimant when the capture began."
+        },
+        "ended_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Capture end."
+        },
+        "goal": {
+          "$ref": "#/$defs/GoalId",
+          "description": "Installed goal."
+        },
+        "outcome": {
+          "$ref": "#/$defs/BaselineOutcome",
+          "description": "Observation result."
+        },
+        "round": {
+          "description": "Installed round.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "started_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Capture start."
+        },
+        "v": {
+          "description": "Encoding revision.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "versions": {
+          "$ref": "#/$defs/SamplerVersions",
+          "description": "Sampler and policy revisions."
+        }
+      },
+      "required": [
+        "v",
+        "card",
+        "round",
+        "goal",
+        "claimant",
+        "started_at",
+        "ended_at",
+        "versions",
+        "outcome"
+      ],
+      "type": "object"
+    },
     "BodyIntegrity": {
       "description": "What `system.doctor` found for one out-of-line body.",
       "properties": {
@@ -3630,6 +3747,90 @@
       ],
       "title": "CurrentMethods",
       "type": "object"
+    },
+    "DiffRefusal": {
+      "description": "A finite refusal. A refused response contains no repository data.",
+      "oneOf": [
+        {
+          "const": "baseline_unavailable",
+          "description": "The recorded baseline is absent or its objects cannot be read.",
+          "type": "string"
+        },
+        {
+          "const": "stale_ticket",
+          "description": "The current ticket no longer has the requested binding.",
+          "type": "string"
+        },
+        {
+          "const": "stale_manifest",
+          "description": "The manifest or selection no longer belongs to this live session.",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "The manifest's fixed lifetime ended.",
+          "type": "string"
+        },
+        {
+          "const": "invalid_request",
+          "description": "The request is not one of the admitted closed shapes.",
+          "type": "string"
+        },
+        {
+          "const": "disabled",
+          "description": "Either content switch is disabled.",
+          "type": "string"
+        },
+        {
+          "const": "busy",
+          "description": "Another capture is running or the session interval has not elapsed.",
+          "type": "string"
+        },
+        {
+          "const": "session_limit",
+          "description": "The session has spent its cumulative response allowance.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported_platform",
+          "description": "This platform cannot perform the descriptor-relative read.",
+          "type": "string"
+        },
+        {
+          "const": "worktree_mismatch",
+          "description": "The recorded checkout layout disagrees with the opened directories.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported_storage",
+          "description": "The repository uses unsupported object or index storage.",
+          "type": "string"
+        },
+        {
+          "const": "root_mismatch",
+          "description": "The recorded root has been replaced or linked elsewhere.",
+          "type": "string"
+        },
+        {
+          "const": "timed_out",
+          "description": "The read reached its deadline or was cancelled.",
+          "type": "string"
+        },
+        {
+          "const": "git_unavailable",
+          "description": "No suitable daemon-resolved Git program is available.",
+          "type": "string"
+        },
+        {
+          "const": "unreadable",
+          "description": "A finite filesystem or Git refusal.",
+          "type": "string"
+        }
+      ]
+    },
+    "DigestHex": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
     },
     "DoctorResult": {
       "description": "Additive operator-only journal diagnostic beside the existing doctor fields.",
@@ -7204,6 +7405,62 @@
             "owner",
             "started_lsn",
             "proof"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A ticket round's review baseline, recorded before the round's first turn is issued. It\nholds bounded metadata only, never file text, and a failed observation is recorded as an\nunavailable outcome rather than left out.",
+          "properties": {
+            "baseline": {
+              "$ref": "#/$defs/BaselinePayload",
+              "description": "The bounded observation."
+            },
+            "card": {
+              "$ref": "#/$defs/CardId",
+              "description": "The card."
+            },
+            "goal": {
+              "$ref": "#/$defs/GoalId",
+              "description": "The round's installed goal."
+            },
+            "t": {
+              "const": "ticket_baseline_recorded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "card",
+            "goal",
+            "baseline"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A ticket round's post-check sample, recorded after a predicate result is appended. It\nnames that result and the baseline record it compares against, and holds bounded\nmetadata only.",
+          "properties": {
+            "card": {
+              "$ref": "#/$defs/CardId",
+              "description": "The card."
+            },
+            "goal": {
+              "$ref": "#/$defs/GoalId",
+              "description": "The round's installed goal."
+            },
+            "stamp": {
+              "$ref": "#/$defs/StampPayload",
+              "description": "The bounded sample."
+            },
+            "t": {
+              "const": "ticket_review_stamped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "card",
+            "goal",
+            "stamp"
           ],
           "type": "object"
         }
@@ -15302,6 +15559,28 @@
       ],
       "type": "object"
     },
+    "SamplerVersions": {
+      "description": "Sampler and text-policy revisions in force for a capture.",
+      "properties": {
+        "policy": {
+          "description": "Text and sensitive-content policy revision.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sampler": {
+          "description": "Candidate sampling algorithm revision.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sampler",
+        "policy"
+      ],
+      "type": "object"
+    },
     "Seq": {
       "description": "A per-card sequence number. Every board transition carries the `expected_seq` it was decided\nagainst; the journal rejects a transition whose `expected_seq` is stale before appending it.",
       "format": "uint64",
@@ -15470,6 +15749,143 @@
           "description": "Tokens attributable to work: uncached input, output and prompt-cache creation."
         }
       },
+      "type": "object"
+    },
+    "StampOutcome": {
+      "description": "What the post-check sample found.",
+      "oneOf": [
+        {
+          "description": "The scope was sampled. An incomplete sample is never compared for freshness.",
+          "properties": {
+            "complete": {
+              "description": "The whole eligible scope was sampled without a cap or refusal.",
+              "type": "boolean"
+            },
+            "digest": {
+              "$ref": "#/$defs/DigestHex",
+              "description": "Scope digest."
+            },
+            "omitted": {
+              "description": "Omitted eligible pairs.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "omitted_lower_bound": {
+              "description": "The omitted count is only a lower bound.",
+              "type": "boolean"
+            },
+            "state": {
+              "const": "sampled",
+              "type": "string"
+            },
+            "untracked": {
+              "description": "Purely untracked names.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "untracked_lower_bound": {
+              "description": "The untracked count is only a lower bound.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "state",
+            "complete",
+            "digest",
+            "omitted",
+            "omitted_lower_bound",
+            "untracked",
+            "untracked_lower_bound"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No sample could be taken.",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/DiffRefusal",
+              "description": "Finite reason."
+            },
+            "state": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "StampPayload": {
+      "description": "The post-check scope sample, recorded after the predicate result is appended.",
+      "properties": {
+        "baseline_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Position of the baseline record this sample compares against."
+        },
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "Ticket identity."
+        },
+        "check_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Position of the predicate result this sample follows."
+        },
+        "claimant": {
+          "$ref": "#/$defs/AgentId",
+          "description": "Claimant when the capture began."
+        },
+        "ended_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Capture end."
+        },
+        "goal": {
+          "$ref": "#/$defs/GoalId",
+          "description": "Installed goal."
+        },
+        "outcome": {
+          "$ref": "#/$defs/StampOutcome",
+          "description": "Sample result."
+        },
+        "round": {
+          "description": "Installed round.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "started_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Capture start."
+        },
+        "v": {
+          "description": "Encoding revision.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "versions": {
+          "$ref": "#/$defs/SamplerVersions",
+          "description": "Sampler and policy revisions."
+        }
+      },
+      "required": [
+        "v",
+        "card",
+        "round",
+        "goal",
+        "claimant",
+        "baseline_lsn",
+        "check_lsn",
+        "started_at",
+        "ended_at",
+        "versions",
+        "outcome"
+      ],
       "type": "object"
     },
     "SummaryWatermark": {

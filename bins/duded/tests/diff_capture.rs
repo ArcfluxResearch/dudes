@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
-use duded::diff_capture::{DiffCapture, baseline_id};
+use duded::diff_capture::DiffCapture;
 use duded::git_read::Tree;
 use duded::git_read::diff::DiffReader;
 use duded::predicate::{PredicateCaptured, PredicateOutcome, PredicateRunner};
@@ -153,7 +153,14 @@ impl Lab {
     }
     fn stamp(&self, baseline: &BaselinePayload) -> StampPayload {
         self.capture
-            .stamp(&self.tree(), baseline, binding(), Lsn(41), cancel())
+            .stamp(
+                &self.tree(),
+                baseline,
+                Lsn(12),
+                binding(),
+                Lsn(41),
+                cancel(),
+            )
             .unwrap()
     }
 }
@@ -257,7 +264,7 @@ fn a_cancelled_capture_is_an_unavailable_baseline_and_stamp() {
     );
     let stamp = lab
         .capture
-        .stamp(&lab.tree(), &baseline, binding(), Lsn(41), stop)
+        .stamp(&lab.tree(), &baseline, Lsn(12), binding(), Lsn(41), stop)
         .unwrap();
     assert_eq!(
         stamp.outcome,
@@ -275,21 +282,13 @@ fn a_stamp_samples_the_scope_and_names_its_baseline_and_check() {
     lab.write("scratch-notes", "untracked\n");
     let first = lab.stamp(&baseline);
     assert_eq!(first.check_lsn, Lsn(41));
-    assert_eq!(first.baseline_id, baseline_id(&baseline).unwrap());
+    assert_eq!(first.baseline_lsn, Lsn(12));
     let (complete, digest, omitted, untracked) = sampled(&first);
     assert_eq!((complete, omitted, untracked), (true, 0, 1));
     assert_eq!(digest.len(), 64);
     assert_eq!(sampled(&lab.stamp(&baseline)).1, digest);
     lab.write("a.txt", "edited again\n");
     assert_ne!(sampled(&lab.stamp(&baseline)).1, digest);
-}
-
-#[test]
-fn a_different_baseline_has_a_different_id() {
-    let lab = Lab::new();
-    let first = lab.baseline();
-    let second = lab.baseline();
-    assert_ne!(baseline_id(&first).unwrap(), baseline_id(&second).unwrap());
 }
 
 #[test]
@@ -313,7 +312,7 @@ fn a_stamp_for_another_round_is_stale() {
     later.round = 3;
     let stamp = lab
         .capture
-        .stamp(&lab.tree(), &baseline, later, Lsn(41), cancel())
+        .stamp(&lab.tree(), &baseline, Lsn(12), later, Lsn(41), cancel())
         .unwrap();
     assert_eq!(stamp.binding.round, 3);
     assert_eq!(

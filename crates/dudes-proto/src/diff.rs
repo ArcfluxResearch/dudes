@@ -1,6 +1,7 @@
 //! Bounded, display-only checkout review responses. These bytes are never a verdict.
 
 use dudes_types::{AgentId, CardId, GoalId, Lsn, Seq, Timestamp};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Maximum UTF-8 bytes on one file side before JSON escaping.
@@ -25,7 +26,7 @@ pub const MAX_DIFF_PATH_BYTES: usize = 200;
 pub const DIFF_MANIFEST_LIFETIME_MS: i64 = 60_000;
 
 /// A finite refusal. A refused response contains no repository data.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum DiffRefusal {
