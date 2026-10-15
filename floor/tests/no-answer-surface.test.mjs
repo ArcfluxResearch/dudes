@@ -266,6 +266,7 @@ const TICKET_PANEL = 'src/renderer/ticket/TicketPanel.tsx';
 const ADMITTED_IN_TICKET_FORM = Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler', 'a submit handler']);
 const GIT_MODULE = 'src/renderer/git/git.ts';
 const GIT_PANEL = 'src/renderer/git/GitPanel.tsx';
+const DIFF_PANEL = 'src/renderer/diff/DiffPanel.tsx';
 const MEMORY_MODULE = 'src/renderer/memory/memory.ts';
 const MEMORY_PANEL = 'src/renderer/memory/MemoryPanel.tsx';
 const ADMITTED_IN_CONTROL_PANEL = Object.freeze(['a key handler']);
@@ -1042,7 +1043,8 @@ test('the goal form has one text field, named goal, and one check choice, each w
 test('the only activators are named selection, retry, view, Hire, answer, Chat, pause, Pause all, resume, goal change, look edit and dismiss buttons, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, Retire\'s own four, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
-  + 'Settings\' office layout and desktop notification choices, and the guide\'s navigation and Hire opener', async () => {
+  + 'Settings\' office layout and desktop notification choices, the guide\'s navigation and Hire opener, '
+  + 'and checkout differences\' explicit open, refresh, close, selection, page and content controls', async () => {
   const buttons = [];
   const clicks = [];
   for (const path of await filesUnder(source, ['.ts', '.tsx', '.html'])) {
@@ -1074,6 +1076,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     HIRE_ENTRY,
     ...Array(6).fill(RETIRE_PANEL),
     ...Array(2).fill(GIT_PANEL),
+    ...Array(6).fill(DIFF_PANEL),
     ...Array(4).fill(MEMORY_PANEL),
     ...Array(4).fill(RENAME_PANEL),
     ...Array(4).fill(LOOK_PANEL),
@@ -1231,6 +1234,16 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => { if (!goal.sending && floor.goalChange) void checkGoalStatus(browserGoalDeps); }',
     '() => void submitGoal(gate, browserGoalDeps)',
   ].sort());
+  const diff = await readFile(resolve(floor, DIFF_PANEL), 'utf8');
+  assert.deepEqual(clicksIn(diff), [
+    '() => { if (entry.entry_id !== null) onSelect(entry.entry_id); }',
+    'onRead', 'onPage',
+    "() => { void read({ mode: 'manifest', card, expected_seq: expectedSeq }, null); }",
+    "() => { void read({ mode: 'manifest', card, expected_seq: expectedSeq }, null); }",
+    "() => { latest.current += 1; setState({ owner, phase: 'closed' }); }",
+  ]);
+  assert.match(diff, /onPage=\{\(\) => \{ if \(review\.page\.next_cursor !== null\) void read\(\{ mode: 'page', manifest_id: review\.page\.manifest_id, cursor: review\.page\.next_cursor \}, review\); \}\}/);
+  assert.match(diff, /onRead=\{\(\) => \{ if \(review\.selected\.length > 0\) void read\(\{ mode: 'content', manifest_id: review\.page\.manifest_id, entries: review\.selected \}, review\); \}\}/);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TERMINAL_PANEL), 'utf8')).sort(), [
     '() => { if (target !== null) { if (claudeTrust) setConfirming(true); else attachTerminal(target, browserTerminalPorts()); } }',
     '(event) => { if (event.detail < 2) onConfirm(); }',
