@@ -1229,6 +1229,25 @@ mod tests {
         assert_eq!(appended, Lsn(tail.0 + 1));
     }
 
+    #[test]
+    fn both_restarts_keep_entropy_progress_and_account_for_inserted_history() {
+        let mut harness = Harness::new();
+        let first = harness.hire();
+        harness.restart();
+        let second = harness.hire();
+        assert_ne!(first, second);
+        let mut inserted = harness.journal[0].clone();
+        let Record::AgentHired { id, .. } = &mut inserted.record else {
+            unreachable!()
+        };
+        *id = AgentId::from_parts(0, 900);
+        harness.journal.push(inserted);
+        harness.restart_with_missing_worktrees(Vec::new());
+        assert_eq!(harness.hire(), AgentId::from_parts(0, 901));
+        harness.restart();
+        assert_eq!(harness.hire(), AgentId::from_parts(0, 902));
+    }
+
     /// The clock is the only source of time, so a frozen one stamps every entry alike and a
     /// ticking one gives each `Persist` its own value.
     #[test]

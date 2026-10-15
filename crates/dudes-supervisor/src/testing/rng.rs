@@ -344,6 +344,152 @@ mod tests {
         assert_eq!(once.drawn(), 801);
     }
 
+    fn assert_record_floor(record: dudes_proto::Record) {
+        let mut rng = FakeRng::new();
+        rng.reserve_entries(&[Entry {
+            at: dudes_types::Timestamp::UNIX_EPOCH,
+            record,
+        }])
+        .unwrap();
+        assert_eq!(rng.ulid(), Ulid::from_parts(0, 901));
+    }
+
+    #[test]
+    fn retired_agents_cleared_goals_removed_tickets_and_mail_keep_their_ids() {
+        use dudes_proto::{Actor, Record};
+        use dudes_types::{CardId, GoalId, MailId, MailState, Seq};
+        assert_record_floor(Record::AgentRetired {
+            id: AgentId::from_parts(0, 900),
+            reason: "retired".into(),
+            browser_retire: None,
+        });
+        assert_record_floor(Record::GoalCleared {
+            agent: AgentId::NIL,
+            goal: GoalId::from_parts(0, 900),
+        });
+        assert_record_floor(Record::TicketRemoved {
+            card: CardId::from_parts(0, 900),
+            by: Actor::System,
+            expected_seq: Seq(1),
+        });
+        assert_record_floor(Record::MailState {
+            id: MailId::from_parts(0, 900),
+            state: MailState::Acked,
+        });
+    }
+
+    #[test]
+    fn ordinary_ticket_and_embedded_onboarding_goals_use_the_serialized_graph() {
+        use dudes_proto::Record;
+        use dudes_proto::record::{BrowserOnboardingHire, Hex32};
+        use dudes_types::{CardId, GoalId, Seq};
+        let (mut entries, agent, _) = super::super::journal_with_issued_turn(None, "task");
+        let Record::GoalSet { goal, .. } = &mut entries[1].record else {
+            unreachable!()
+        };
+        goal.id = GoalId::from_parts(0, 900);
+        let goal = goal.clone();
+        assert_record_floor(entries[1].record.clone());
+        assert_record_floor(Record::TicketStarted {
+            card: CardId::NIL,
+            agent,
+            goal: goal.clone(),
+            expected_seq: Seq(1),
+        });
+        let Record::AgentHired {
+            browser_onboarding, ..
+        } = &mut entries[0].record
+        else {
+            unreachable!()
+        };
+        *browser_onboarding = Some(Box::new(BrowserOnboardingHire {
+            attempt_id: Hex32::new([1; 32]),
+            request_digest: Hex32::new([2; 32]),
+            profile_id: "fixture".into(),
+            session_digest: Hex32::new([3; 32]),
+            intended_goal: goal,
+        }));
+        assert_record_floor(entries[0].record.clone());
+    }
+
+    #[test]
+    fn prospective_owners_reserve_turns_before_an_issue_exists() {
+        use dudes_proto::{InstructionObservationOwner, Record};
+        let mut harness = super::super::Harness::new();
+        harness.hire_with_goal(&["/usr/bin/false"]);
+        let mut record = harness
+            .journal
+            .into_iter()
+            .find_map(|entry| {
+                matches!(entry.record, Record::InstructionObservationStarted { .. })
+                    .then_some(entry.record)
+            })
+            .unwrap();
+        let Record::InstructionObservationStarted {
+            owner: InstructionObservationOwner::Managed { turn, .. },
+            ..
+        } = &mut record
+        else {
+            unreachable!()
+        };
+        *turn = dudes_types::TurnId::from_parts(0, 900);
+        assert_record_floor(record);
+    }
+
+    #[test]
+    fn thread_and_plain_card_records_are_reservations_too() {
+        use dudes_proto::record::{MailAct, MailFrom, MailTo};
+        use dudes_proto::{Actor, Record};
+        use dudes_types::{CardId, MailId, MailState, ThreadId};
+        assert_record_floor(Record::CardCreated {
+            card: CardId::from_parts(0, 900),
+            title: "card".into(),
+            department: "infra".into(),
+            by: Actor::System,
+            deps: Vec::new(),
+        });
+        assert_record_floor(Record::Mail {
+            id: MailId::NIL,
+            from: MailFrom::Human,
+            to: MailTo::Human,
+            act: MailAct::Message,
+            subject: "thread".into(),
+            body: Some(String::new()),
+            body_len: 0,
+            body_path: None,
+            body_blake3: None,
+            thread: Some(ThreadId::from_parts(0, 900)),
+            thread_seq: 1,
+            members: Vec::new(),
+            state: MailState::Durable,
+            actor: None,
+            provenance: None,
+        });
+    }
+
+    #[test]
+    fn a_session_recorded_only_by_a_reissue_excludes_its_lost_bit_alias() {
+        let session = session_id_from_ulid(Ulid::from_parts(0, 7));
+        let mut rng = FakeRng {
+            counter: (1 << 76) + 6,
+            ..FakeRng::new()
+        };
+        rng.reserve_entries(&[Entry {
+            at: dudes_types::Timestamp::UNIX_EPOCH,
+            record: dudes_proto::Record::TurnSpawned {
+                agent: AgentId::NIL,
+                turn: dudes_types::TurnId::NIL,
+                pid: 1,
+                start_time: 1,
+                boot: None,
+                session: Some(session),
+                reissued: true,
+            },
+        }])
+        .unwrap();
+        assert_eq!(rng.ulid(), Ulid::from_parts(0, (1 << 76) + 8));
+    }
+
     #[test]
     #[should_panic(expected = "fake RNG exhausted its 80-bit counter")]
     fn ulid_exhaustion_never_wraps() {

@@ -40,14 +40,13 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use duded::predicate::{PredicateOutcome, PredicateRunner};
-use duded::settings::Seams;
 use duded::startup::Witness;
 use duded::{ExitCause, boot};
 use dudes_host::{OneShot, OneShotOutcome};
 use dudes_proto::rpc::goal::GoalSetParams;
 use dudes_proto::{ExitStatus, GoalBudget, Record, TurnOutcome};
 use dudes_providers::launch::LaunchSpec;
-use dudes_supervisor::{Input, Rng as _};
+use dudes_supervisor::Input;
 use dudes_types::{GoalId, TurnId, Usd};
 
 mod common;
