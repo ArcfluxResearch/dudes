@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use dudes_proto::record::{Entry, Record};
 use dudes_proto::rpc::Method;
-use dudes_rpc::testing::{AdmitAll, DEFAULT_COLUMN, FakeResolver, TestServer};
+use dudes_rpc::testing::{AdmitAll, FakeResolver, TestServer};
 use dudes_rpc::{
     Client, ClientError, Connection, Dispatcher, FrameError, Halt, HangUp, Listener,
     LocalTransport, PeerIdentity, Requirement, StopFlag, Subscribers,
@@ -175,7 +175,7 @@ impl GatedServer {
             });
             dudes_rpc::serve(
                 &listener,
-                &FakeResolver::new(DEFAULT_COLUMN),
+                &FakeResolver::new(dudes_proto::PeerProvenance::Unresolvable),
                 &dispatcher,
                 &serving,
                 NonZeroUsize::MIN,
