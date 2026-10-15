@@ -54,6 +54,10 @@ fn stop_returns_after_the_daemon_sweeps_its_agent_processes() {
         .expect("stop returned once the sweep ended");
     assert_eq!(stopped.code(), exit::SUCCESS, "{}", stopped.output());
     assert_eq!(stopped.stdout, "the daemon stopped\n");
+    assert_eq!(
+        stopped.stderr, "",
+        "a daemon that started no agent process warns of nothing"
+    );
 }
 
 #[test]

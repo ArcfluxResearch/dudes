@@ -202,6 +202,9 @@ fn uninstall_command(
         config_overridden: env.config_overridden(),
         executable: std::env::current_exe().map_err(local)?,
         lock_wait: Duration::from_secs(5),
+        codex_home: std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute()),
     };
     Ok(crate::uninstall::run(
         &layout,
@@ -1301,12 +1304,6 @@ fn quickstart(
     render::mailbox_report(out, &extended.mailbox).map_err(local)?;
     let doctor = extended.doctor;
     setup::report_engines(out, &doctor.providers).map_err(local)?;
-    let guided = plan.is_none();
-    if guided {
-        floor_link(env, out, err)?;
-    } else {
-        writeln!(out, "Open the Floor with: dudes floor open").map_err(local)?;
-    }
     if let Some(hire) = &settled.hire {
         let department = settled
             .enroll
@@ -1329,10 +1326,16 @@ fn quickstart(
         )?;
     }
     project_hint(env, machine, out)?;
-    login_guidance(&doctor.providers, out)
+    login_guidance(&doctor.providers, out)?;
+    if plan.is_none() {
+        floor_link(env, out, err)?;
+    } else {
+        writeln!(out, "Open the Floor with: dudes floor open").map_err(local)?;
+    }
+    Ok(exit::SUCCESS)
 }
 
-fn login_guidance(providers: &[ProviderProbe], out: &mut dyn Write) -> Result<u8, Failure> {
+fn login_guidance(providers: &[ProviderProbe], out: &mut dyn Write) -> Result<(), Failure> {
     for engine in providers
         .iter()
         .filter(|row| row.sign_in == Some(SignIn::SignedOut))
@@ -1346,7 +1349,7 @@ fn login_guidance(providers: &[ProviderProbe], out: &mut dyn Write) -> Result<u8
         )
         .map_err(local)?;
     }
-    Ok(exit::SUCCESS)
+    Ok(())
 }
 
 /// `dudes login <engine>`: the daemon's answer first, then the engine's own login when it is not
