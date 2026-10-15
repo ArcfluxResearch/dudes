@@ -293,6 +293,7 @@ type SeedRecords = Vec<(Lsn, Entry)>;
 
 fn saving_source(fixture: &Fixture) -> (AgentId, SeedRecords, SeedRecords, Entry) {
     let source = Fixture::new();
+    let settings = source.settings();
     let host = SharedHost::with_native_evidence(source.journal_dir());
     let seams = seams(
         &settings,

@@ -932,6 +932,7 @@ fn replaying_both_session_triggers_keeps_world_and_redb_equal() {
 #[test]
 fn shutdown_drain_answers_doctor_queued_after_stop_without_hanging() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let daemon = boot(
         &fixture.settings(),
         seams(

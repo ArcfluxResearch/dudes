@@ -348,6 +348,7 @@ struct GatedCase {
 impl GatedCase {
     fn new() -> Self {
         let fixture = common::Fixture::new();
+        let settings = fixture.settings();
         let program = fixture.state.path().join("pi");
         std::fs::write(&program, "not executed by the injected runner").unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();

@@ -81,6 +81,7 @@ impl PredicateRunner for RealRunner {
 /// Drive one goal to a predicate run and return the journal's records.
 fn run_one_predicate(outcome: duded::predicate::PredicateOutcome) -> (Fixture, Vec<Record>) {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let host = SharedHost::new();
     let runner = Arc::new(ScriptedRunner::scripted([outcome]));
     let daemon = boot(
@@ -1392,6 +1393,7 @@ fn goal_set_is_abandoned_when_the_client_disconnects() {
     }
 
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let tree = tempfile::tempdir().expect("agent tree");
     let daemon = boot(
         &fixture.settings(),

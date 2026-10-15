@@ -359,6 +359,7 @@ fn await_spawned(fixture: &Fixture, turn: dudes_types::TurnId) {
 /// the journal.
 fn spend_against(ceiling: Usd, spent: Usd) -> Vec<Record> {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let host = SharedHost::new();
     let daemon = boot(
         &fixture.settings(),

@@ -80,6 +80,7 @@ fn hire_on(
 #[test]
 fn a_hire_on_a_provider_with_no_adapter_is_refused_by_name_and_journals_nothing() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let host = SharedHost::new();
     let daemon = boot(
         &fixture.settings(),

@@ -167,8 +167,9 @@ impl Prefix {
             }
         }
         let runner = Arc::new(common::ScriptedRunner::default());
+        let settings = common::settings_at(state.path(), runtime.path());
         let daemon = duded::boot(
-            &common::settings_at(state.path(), runtime.path()),
+            &settings,
             common::seams(
                 &settings,
                 host.clone(),
@@ -996,8 +997,9 @@ fn daemon_startup_reserves_uncertain_history_bytes_at_the_global_boundary() {
     let runtime = tempfile::tempdir().unwrap();
     let host = common::SharedHost::new();
     let runner = Arc::new(common::ScriptedRunner::default());
+    let settings = common::settings_at(dir.path(), runtime.path());
     let daemon = duded::boot(
-        &common::settings_at(dir.path(), runtime.path()),
+        &settings,
         common::seams(
             &settings,
             host.clone(),
@@ -1251,15 +1253,20 @@ fn daemon_refuses_framing(bytes: &[u8], expected: &str) {
     let segment = dudes_journal::segment::segment_path(&journal, 1);
     std::fs::write(&segment, bytes).unwrap();
     let host = common::SharedHost::new();
+    let settings = common::settings_at(state.path(), runtime.path());
     let result = duded::boot(
-        &common::settings_at(state.path(), runtime.path()),
-        common::seams(
-            &settings,
-            host.clone(),
-            Arc::new(common::ScriptedRunner::default()),
-            Arc::new(common::TestClock::new()),
-            duded::startup::Witness::default(),
-        ),
+        &settings,
+        duded::Seams {
+            host: host.clone(),
+            pty_host: Box::new(duded::ports::ClosedPtyHost),
+            predicates: Arc::new(common::ScriptedRunner::default()),
+            clock: Arc::new(common::TestClock::new()),
+            rng: dudes_supervisor::testing::FakeRng::new(),
+            resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
+            adapters: dudes_providers::registry::Adapters::new([]),
+            children: duded::ChildEnds::new(),
+            witness: duded::startup::Witness::default(),
+        },
     );
     let error = match result {
         Err(error) => format!("{error:#}"),

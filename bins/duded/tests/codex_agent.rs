@@ -212,6 +212,7 @@ fn outcomes(records: &[Record]) -> Vec<Option<TurnOutcome>> {
 #[test]
 fn a_codex_hire_is_refused_without_its_adapter() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let mut running = common::start(
         boot(
             &fixture.settings(),

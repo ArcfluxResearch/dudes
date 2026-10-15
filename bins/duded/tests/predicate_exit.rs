@@ -47,7 +47,6 @@ use dudes_host::{OneShot, OneShotOutcome};
 use dudes_proto::rpc::goal::GoalSetParams;
 use dudes_proto::{ExitStatus, GoalBudget, Record, TurnOutcome};
 use dudes_providers::launch::LaunchSpec;
-use dudes_supervisor::testing::FakeRng;
 use dudes_supervisor::{Input, Rng as _};
 use dudes_types::{GoalId, TurnId, Usd};
 
@@ -289,6 +288,7 @@ fn as_pid(pid: u32) -> Option<rustix::process::Pid> {
 #[test]
 fn a_predicate_that_reaches_the_runner_after_the_sweep_starts_no_child() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let pidfile = fixture.runtime.path().join("late.pid");
     let _cleanup = KillGroupAt(pidfile.clone());
     let (swept, released) = mpsc::channel();
@@ -310,7 +310,7 @@ fn a_predicate_that_reaches_the_runner_after_the_sweep_starts_no_child() {
         Witness::default(),
     );
     host.bind_child_ends(Arc::clone(&runtime_seams.children));
-    let daemon = boot(&fixture.settings(), runtime_seams).expect("boot");
+    let daemon = boot(&settings, runtime_seams).expect("boot");
     let mut running = common::start(daemon);
 
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -375,23 +375,16 @@ fn a_predicate_that_reaches_the_runner_after_the_sweep_starts_no_child() {
 }
 
 fn checks_after_a_restart(fixture: &Fixture, goal: GoalId, first_turn: TurnId) -> usize {
-    // `FakeRng` counts from zero again in a new daemon, so it would reissue the first run's ids.
-    let mut rng = FakeRng::new();
-    for _ in 0..64 {
-        let _ = rng.ulid();
-    }
+    let settings = fixture.settings();
     let scripted = Arc::new(ScriptedRunner::scripted([common::passes()]));
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
-    let runtime_seams = Seams {
-        rng,
-        ..seams(
-            &settings,
-            host.clone(),
-            Arc::clone(&scripted),
-            Arc::new(TestClock::ticking(1_787_394_700_000, 1)),
-            Witness::default(),
-        )
-    };
+    let runtime_seams = seams(
+        &settings,
+        host.clone(),
+        Arc::clone(&scripted),
+        Arc::new(TestClock::ticking(1_787_394_700_000, 1)),
+        Witness::default(),
+    );
     host.bind_child_ends(Arc::clone(&runtime_seams.children));
     let daemon =
         boot(&fixture.settings(), runtime_seams).expect("the same state directory boots again");

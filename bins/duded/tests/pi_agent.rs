@@ -247,6 +247,7 @@ fn charged(records: &[Record]) -> Vec<Option<(Tokens, Tokens)>> {
 #[test]
 fn a_pi_hire_is_refused_without_its_adapter() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let mut running = common::start(
         boot(
             &fixture.settings(),

@@ -20,6 +20,7 @@ use common::{Fixture, ScriptedRunner, TestClock};
 #[test]
 fn codex_and_pi_hires_refuse_ignored_options_without_journaling() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let seams = Seams {
         adapters: [
             Box::new(CodexAdapter::default()) as Box<dyn Adapter>,

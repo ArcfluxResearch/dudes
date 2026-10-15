@@ -136,6 +136,7 @@ fn launch_refusal_peers(
     fixture: &Fixture,
     host: &common::SharedHost,
 ) -> (common::Running, dudes_types::AgentId, dudes_types::AgentId) {
+    let settings = fixture.settings();
     let seams = seams(
         &settings,
         host.clone(),
