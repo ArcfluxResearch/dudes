@@ -307,6 +307,21 @@ fn the_function_name_guard_rejects_a_planted_raw_rng_field() {
             "FakeRng::new(),".to_owned()
         )]
     );
+    let inline = "fn ordinary_fixture() { Seams { rng: FakeRng::new(), ..parts } }";
+    assert_eq!(
+        unprepared_rng_fields(inline),
+        vec![(
+            "ordinary_fixture".to_owned(),
+            1,
+            "FakeRng::new(), ..parts } }".to_owned()
+        )]
+    );
+    for prepared in [
+        "fn ordinary_fixture() { Seams { rng: parts.rng, ..rest } }",
+        "fn ordinary_fixture() { Seams { rng: FixtureRng::from_rng(settings, initial), ..rest } }",
+    ] {
+        assert!(unprepared_rng_fields(prepared).is_empty());
+    }
 }
 
 #[test]
