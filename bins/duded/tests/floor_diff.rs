@@ -8,7 +8,7 @@ use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use duded::diff_capture::DiffCapture;
@@ -706,10 +706,73 @@ fn the_daemon_wide_slot_is_shared_with_the_captures() {
     lab.write("a.txt", "new a\n");
     {
         let slot = lab.capture.slot();
-        let _held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        let _held = slot.capture();
         assert_eq!(lab.refusal(1, &manifest_request()), DiffRefusal::Busy);
     }
     assert_eq!(lab.manifest(1).entries.len(), 1);
+}
+
+#[test]
+fn a_page_reads_only_the_cached_manifest_and_takes_no_slot() {
+    let lab = Lab::new();
+    for n in 0..70 {
+        lab.write(&format!("f{n:02}.txt"), "old\n");
+    }
+    lab.git(&["add", "-A"]);
+    lab.git(&["commit", "--quiet", "-m", "many"]);
+    lab.start_round();
+    for n in 0..70 {
+        lab.write(&format!("f{n:02}.txt"), "new\n");
+    }
+    let first = lab.manifest(1);
+    let cursor = first.next_cursor.clone().expect("more pages");
+    let slot = lab.capture.slot();
+    let _capture = slot.capture();
+    let page = json!({"mode": "page", "manifest_id": first.manifest_id, "cursor": cursor});
+    let DiffResponse::Page(second) = lab.respond(1, &page) else {
+        panic!("not a page")
+    };
+    assert_eq!(second.entries.len(), 6, "served while a capture holds the slot");
+    let content =
+        json!({"mode": "content", "manifest_id": first.manifest_id, "entries": ids(&first)[..1]});
+    assert_eq!(
+        lab.refusal(1, &content),
+        DiffRefusal::Busy,
+        "control: a content read still needs the slot"
+    );
+}
+
+#[test]
+fn a_manifest_read_gives_way_to_a_waiting_capture() {
+    let lab = Lab::new();
+    lab.start_round();
+    lab.write("a.txt", "new a\n");
+    let slot = lab.capture.slot();
+    let place = slot.announce();
+    assert_eq!(lab.refusal(1, &manifest_request()), DiffRefusal::Busy);
+    drop(place);
+    assert_eq!(lab.manifest(1).entries.len(), 1);
+}
+
+#[test]
+fn an_incomplete_current_sample_is_unknown_even_beside_a_complete_stamp() {
+    let lab = Lab::new();
+    for n in 0..250 {
+        lab.write(&format!("f{n:03}.txt"), "old\n");
+    }
+    lab.git(&["add", "-A"]);
+    lab.git(&["commit", "--quiet", "-m", "many"]);
+    lab.start_round();
+    for n in 0..250 {
+        lab.write(&format!("f{n:03}.txt"), "new\n");
+    }
+    lab.check_passes();
+    assert_eq!(lab.manifest(1).freshness, DiffFreshness::MatchesReviewSample);
+    for n in 250..300 {
+        lab.write(&format!("g{n:03}.txt"), "x\n");
+        lab.git(&["add", &format!("g{n:03}.txt")]);
+    }
+    assert_eq!(lab.manifest(2).freshness, DiffFreshness::Unknown);
 }
 
 #[test]

@@ -11,7 +11,8 @@
 //! is the session cookie's digest. A session may start a read once per interval. It may receive
 //! [`SESSION_ALLOWANCE`] bytes of successful replies in all, charged before the reply is sent and
 //! never refunded. A reply that does not fit ends the allowance, so a smaller one cannot follow. It may hold one manifest, and the daemon holds at most [`MAX_MANIFESTS`].
-//! Reads share one daemon-wide slot with the baseline and stamp captures.
+//! Manifest and content reads share one daemon-wide slot with the baseline and stamp captures, and
+//! give way to a waiting capture. A page reads only the cached manifest and takes no slot.
 //!
 //! What the journal recorded decides everything the browser is told about freshness. A reply is
 //! `unknown` unless the newest recorded stamp is complete, was taken by the sampler now running,
@@ -21,7 +22,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, PoisonError, TryLockError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -35,10 +36,11 @@ use dudes_types::{AgentId, CardId, GoalId, Lsn, Seq, Timestamp};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
+use crate::diff_capture::ReadSlot;
 use crate::floor_git::{Finish, GitTarget, Worker};
 use crate::git_read::Tree;
 use crate::git_read::diff::{
-    BaselineCapture, CandidateManifest, DiffReader, RootIdentity, SAMPLER_VERSION,
+    BaselineCapture, CandidateManifest, DiffReader, ReviewCapture, RootIdentity, SAMPLER_VERSION,
     TEXT_POLICY_VERSION,
 };
 
@@ -59,6 +61,14 @@ const KEEP: Duration = Duration::from_hours(9);
 const POLL: Duration = Duration::from_millis(25);
 /// What the connection allows beyond the reader's own deadline before it abandons a worker.
 const GRACE: Duration = Duration::from_secs(2);
+
+/// The `diff` sibling a Floor snapshot carries exactly when the diff route exists: an empty
+/// object that names no path, id or repository, outside `FloorProjection` and `floor.delta`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct DiffSwitch {}
+
+/// The one value [`DiffSwitch`] takes.
+pub const DIFF_SWITCH: DiffSwitch = DiffSwitch {};
 
 /// One bounded request. Every member is an opaque id the server minted or a card the journal
 /// already knows.
@@ -322,7 +332,7 @@ pub enum Reply {
 /// The route's reader and limits, shared by every Floor connection.
 pub struct DiffReads {
     reader: Arc<DiffReader>,
-    slot: Arc<Mutex<()>>,
+    slot: Arc<ReadSlot>,
     clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
     salt: [u8; 32],
     state: Mutex<State>,
@@ -349,7 +359,7 @@ impl DiffReads {
     #[must_use]
     pub fn new(
         reader: Arc<DiffReader>,
-        slot: Arc<Mutex<()>>,
+        slot: Arc<ReadSlot>,
         clock: impl Fn() -> Timestamp + Send + Sync + 'static,
     ) -> Self {
         let mut salt = [0_u8; 32];
@@ -618,7 +628,6 @@ impl DiffReads {
                 Work::Content(Arc::clone(stored), entries.clone())
             }
             (DiffRequest::Page { cursor, .. }, Admitted::Held(stored)) => {
-                let _slot = take(&self.slot)?;
                 let encoded = stored.manifest.page(Some(cursor))?;
                 return Ok(Some(Built {
                     bytes: encoded.bytes().to_vec(),
@@ -668,19 +677,13 @@ impl DiffReads {
     }
 }
 
-/// The daemon-wide slot, or `busy` while another read or capture holds it.
-fn take(slot: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, DiffRefusal> {
-    match slot.try_lock() {
-        Ok(guard) => Ok(guard),
-        Err(TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
-        Err(TryLockError::WouldBlock) => Err(DiffRefusal::Busy),
-    }
-}
-
 /// Whether the checkout still matches the newest recorded stamp. Only a complete stamp taken by
 /// the sampler now running can be matched, and only a complete current sample can disagree with
 /// it; anything else is unknown.
-fn freshness(stamp: Option<&StampPayload>, digest: &str) -> DiffFreshness {
+fn freshness(stamp: Option<&StampPayload>, current: &ReviewCapture) -> DiffFreshness {
+    if !current.complete {
+        return DiffFreshness::Unknown;
+    }
     let Some(StampPayload {
         versions,
         outcome:
@@ -697,7 +700,7 @@ fn freshness(stamp: Option<&StampPayload>, digest: &str) -> DiffFreshness {
     if versions.sampler != SAMPLER_VERSION || versions.policy != TEXT_POLICY_VERSION {
         return DiffFreshness::Unknown;
     }
-    if recorded.as_str() == digest {
+    if recorded.as_str() == current.digest {
         DiffFreshness::MatchesReviewSample
     } else {
         DiffFreshness::ChangedAfterCheck
@@ -707,16 +710,16 @@ fn freshness(stamp: Option<&StampPayload>, digest: &str) -> DiffFreshness {
 /// One read, on the worker, holding the daemon-wide slot.
 fn run(
     reader: &DiffReader,
-    slot: &Mutex<()>,
+    slot: &ReadSlot,
     work: Work,
     now: Timestamp,
     cancelled: Arc<AtomicBool>,
 ) -> Result<Built, DiffRefusal> {
-    let _slot = take(slot)?;
+    let _slot = slot.floor()?;
     match work {
         Work::Manifest(subject) => {
             let capture = reader.capture_review(&subject.tree, &subject.baseline, cancelled)?;
-            let fresh = freshness(subject.stamp.as_ref(), &capture.digest);
+            let fresh = freshness(subject.stamp.as_ref(), &capture);
             let manifest = capture.into_manifest(subject.binding, now, fresh)?;
             let bytes = manifest.page(None)?.bytes().to_vec();
             Ok(Built {

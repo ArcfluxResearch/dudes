@@ -367,3 +367,49 @@ fn a_missing_start_commit_is_an_unavailable_stamp_never_a_new_base() {
         }
     );
 }
+
+#[test]
+fn a_waiting_capture_makes_floor_reads_give_way_even_while_the_slot_is_free() {
+    let slot = duded::diff_capture::ReadSlot::default();
+    assert!(slot.floor().is_ok(), "control: an idle slot serves a Floor read");
+    let place = slot.announce();
+    assert_eq!(slot.waiting(), 1);
+    assert_eq!(slot.floor().err(), Some(DiffRefusal::Busy));
+    drop(place);
+    assert_eq!(slot.waiting(), 0);
+    assert!(slot.floor().is_ok(), "the line is empty again");
+}
+
+#[test]
+fn a_capture_waits_for_one_floor_read_in_flight_and_no_later_one_overtakes_it() {
+    use std::sync::mpsc;
+    let slot = Arc::new(duded::diff_capture::ReadSlot::default());
+    let in_flight = slot.floor().expect("an idle slot serves a Floor read");
+
+    let (got, got_rx) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    let capture = {
+        let slot = Arc::clone(&slot);
+        std::thread::spawn(move || {
+            let _held = slot.capture();
+            got.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+    };
+    while slot.waiting() == 0 {
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        slot.floor().err(),
+        Some(DiffRefusal::Busy),
+        "a later Floor read does not queue ahead of the capture"
+    );
+
+    drop(in_flight);
+    got_rx.recv().unwrap();
+    assert_eq!(slot.waiting(), 0);
+    assert_eq!(slot.floor().err(), Some(DiffRefusal::Busy), "the capture holds it");
+    release.send(()).unwrap();
+    capture.join().unwrap();
+    assert!(slot.floor().is_ok(), "the capture released it");
+}

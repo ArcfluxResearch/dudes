@@ -5,8 +5,8 @@
 //! reuses one across tickets, or writes a record: the caller appends the payload and decides
 //! what a failed append means.
 
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 
 use dudes_proto::DiffRefusal;
 use dudes_proto::diff_stamp::{
@@ -20,10 +20,68 @@ use crate::git_read::diff::{
     BaselineCapture, DiffReader, ReviewCapture, RootIdentity, SAMPLER_VERSION, TEXT_POLICY_VERSION,
 };
 
+/// The one slot every capture and every Floor diff read takes in turn.
+///
+/// A capture waits for it; a Floor read never does. While any capture waits, a Floor read is
+/// refused as busy, so a capture waits for at most the one Floor read already in flight.
+#[derive(Default)]
+pub struct ReadSlot {
+    lock: Mutex<()>,
+    waiting: AtomicUsize,
+}
+
+/// A capture's place in line, held while it waits for the slot.
+pub struct Waiting<'a>(&'a ReadSlot);
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.waiting.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl ReadSlot {
+    /// Announce a capture, so Floor reads give way until the returned value is dropped.
+    #[must_use]
+    pub fn announce(&self) -> Waiting<'_> {
+        self.waiting.fetch_add(1, Ordering::AcqRel);
+        Waiting(self)
+    }
+
+    /// Wait for the slot on behalf of a capture.
+    pub fn capture(&self) -> MutexGuard<'_, ()> {
+        let waiting = self.announce();
+        let guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        drop(waiting);
+        guard
+    }
+
+    /// The slot for a Floor read, or `busy` while a read or capture holds it or a capture waits.
+    ///
+    /// # Errors
+    /// `busy` when the slot is not free at once.
+    pub fn floor(&self) -> Result<MutexGuard<'_, ()>, DiffRefusal> {
+        if self.waiting.load(Ordering::Acquire) > 0 {
+            return Err(DiffRefusal::Busy);
+        }
+        match self.lock.try_lock() {
+            Ok(guard) => Ok(guard),
+            Err(TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => Err(DiffRefusal::Busy),
+        }
+    }
+
+    /// How many captures wait for the slot.
+    #[must_use]
+    #[doc(hidden)]
+    pub fn waiting(&self) -> usize {
+        self.waiting.load(Ordering::Acquire)
+    }
+}
+
 /// Samples a recorded checkout and describes the result as bounded payloads.
 pub struct DiffCapture {
     reader: Arc<DiffReader>,
-    serial: Arc<Mutex<()>>,
+    slot: Arc<ReadSlot>,
     clock: Box<dyn Fn() -> Timestamp + Send + Sync>,
 }
 
@@ -33,7 +91,7 @@ impl DiffCapture {
     pub fn new(reader: Arc<DiffReader>, clock: Box<dyn Fn() -> Timestamp + Send + Sync>) -> Self {
         Self {
             reader,
-            serial: Arc::new(Mutex::new(())),
+            slot: Arc::default(),
             clock,
         }
     }
@@ -47,8 +105,8 @@ impl DiffCapture {
     /// The slot every capture and every Floor diff read takes in turn: at most one of them reads
     /// a checkout at a time, daemon-wide.
     #[must_use]
-    pub fn slot(&self) -> Arc<Mutex<()>> {
-        Arc::clone(&self.serial)
+    pub fn slot(&self) -> Arc<ReadSlot> {
+        Arc::clone(&self.slot)
     }
 
     /// Observe the round-start state of `tree` for `binding`.
@@ -61,7 +119,7 @@ impl DiffCapture {
         binding: TicketBinding,
         cancelled: Arc<AtomicBool>,
     ) -> Result<BaselinePayload, StampPayloadError> {
-        let _one_at_a_time = self.serial.lock().unwrap_or_else(PoisonError::into_inner);
+        let _one_at_a_time = self.slot.capture();
         let started_at = (self.clock)();
         let outcome = match self.reader.capture_baseline(tree, cancelled) {
             Ok(capture) => BaselineOutcome::Captured {
@@ -89,7 +147,7 @@ impl DiffCapture {
         check_lsn: Lsn,
         cancelled: Arc<AtomicBool>,
     ) -> Result<StampPayload, StampPayloadError> {
-        let _one_at_a_time = self.serial.lock().unwrap_or_else(PoisonError::into_inner);
+        let _one_at_a_time = self.slot.capture();
         let started_at = (self.clock)();
         let outcome = match self.sample(tree, baseline, binding, cancelled) {
             Ok(capture) => sampled(&capture),
