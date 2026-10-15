@@ -594,19 +594,15 @@ fn buffered_frames_are_read_after_a_peer_reset() {
             after_close.wait();
             let deadline = Instant::now() + WAIT;
             loop {
-                match socket.stream.set_read_timeout(Some(WAIT)) {
-                    Err(error) => {
-                        assert_eq!(error.raw_os_error(), Some(nix::libc::EINVAL));
-                        break;
-                    }
-                    Ok(()) => {
-                        assert!(
-                            Instant::now() < deadline,
-                            "the reset did not end the socket"
-                        );
-                        std::thread::yield_now();
-                    }
+                if let Err(error) = socket.stream.set_read_timeout(Some(WAIT)) {
+                    assert_eq!(error.raw_os_error(), Some(nix::libc::EINVAL));
+                    break;
                 }
+                assert!(
+                    Instant::now() < deadline,
+                    "the reset did not end the socket"
+                );
+                std::thread::yield_now();
             }
             assert_eq!(socket.read_frame(head), expected);
             assert_eq!(socket.next_within(QUIET), Some(Frame::Gone));
