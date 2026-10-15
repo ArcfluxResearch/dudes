@@ -1070,7 +1070,8 @@ fn ten_quiet_seconds_send_no_progress_and_a_new_subscription_samples_fresh_time(
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
-    common::set_goal(&running.handle, goal_params(agent, &["/usr/bin/true"]));
+    let goal = common::set_goal(&running.handle, goal_params(agent, &["/usr/bin/true"]));
+    closing_participant_spawned(&fixture, goal);
     let issued = issue(&settings);
     let (cookie, csrf) = exchange(addr, &issued.bootstrap);
     let mut browser = WebSocket::connect(addr, &cookie, &csrf);
