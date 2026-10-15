@@ -716,7 +716,11 @@ fn reload_names_the_adapter_tables_that_need_a_restart() {
             .expect("the operator configuration");
             let mut settings = fixture.settings();
             settings.operator_config = Some(config);
-            let mut seams = common::seams(SharedHost::new(), Arc::new(OpenRunner::default()));
+            let mut seams = common::seams(
+                &settings,
+                SharedHost::new(),
+                Arc::new(OpenRunner::default()),
+            );
             let mut adapters: Vec<Box<dyn Adapter>> =
                 vec![Box::new(ClaudeAdapter::new(ClaudeConfig::default()))];
             if provider_running {

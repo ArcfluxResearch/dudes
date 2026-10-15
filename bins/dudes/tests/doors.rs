@@ -357,6 +357,7 @@ fn a_child_with_only_the_managed_pair_and_home_reaches_the_operator_table() {
     let mut running = start_with(
         &settings,
         seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(OpenRunner::default()),
             Arc::new(duded::classify::NoWalk),

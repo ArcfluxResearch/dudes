@@ -847,7 +847,11 @@ fn the_cli_refuses_exactly_what_the_daemon_refuses_at_start() {
         settings.per_turn_floor = loaded.budget.per_turn_floor;
         duded::boot(
             &settings,
-            common::seams(SharedHost::new(), Arc::new(OpenRunner::default())),
+            common::seams(
+                &settings,
+                SharedHost::new(),
+                Arc::new(OpenRunner::default()),
+            ),
         )
         .is_ok()
     };
@@ -984,7 +988,11 @@ fn representative_switches_reach_boot_with_journaled_ceilings() {
                     settings.floor_git_enabled = loaded.git_enabled;
                     duded::boot(
                         &settings,
-                        common::seams(SharedHost::new(), Arc::new(OpenRunner::default())),
+                        common::seams(
+                            &settings,
+                            SharedHost::new(),
+                            Arc::new(OpenRunner::default()),
+                        ),
                     )
                     .is_ok()
                 });
@@ -1093,7 +1101,7 @@ fn taking_a_reserve_to_zero_warns_before_the_daemon_refuses_to_start() {
         again.per_turn_floor = per_turn_floor;
         duded::boot(
             &again,
-            common::seams(SharedHost::new(), Arc::new(OpenRunner::default())),
+            common::seams(&again, SharedHost::new(), Arc::new(OpenRunner::default())),
         )
         .map(drop)
         .map_err(|error| format!("{error:#}"))

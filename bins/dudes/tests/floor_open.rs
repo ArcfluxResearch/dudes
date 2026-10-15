@@ -336,7 +336,11 @@ fn a_floor_with_no_release_manifest_refuses_to_start_the_daemon() {
 
     let failure = duded::boot(
         &settings,
-        seams(SharedHost::new(), Arc::new(OpenRunner::default())),
+        seams(
+            &settings,
+            SharedHost::new(),
+            Arc::new(OpenRunner::default()),
+        ),
     )
     .err()
     .expect("a Floor with no release manifest does not boot");

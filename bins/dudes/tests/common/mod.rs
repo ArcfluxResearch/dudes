@@ -43,6 +43,11 @@
 
 mod managed_native;
 
+#[path = "../../../duded/tests/common/rng.rs"]
+mod fixture_rng;
+
+pub(crate) use fixture_rng::FixtureRng;
+
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -71,7 +76,7 @@ use dudes_supervisor::host::{
     AdoptionKey, Clock, HostBoot, KillOutcome, Liveness, NativeBoundaryAcknowledgement,
     NativeBoundaryReceipt, OwnedTargets, ProcessHost, SpawnResult,
 };
-use dudes_supervisor::testing::{FakeHost, FakeRng};
+use dudes_supervisor::testing::{FakeHost, FakeRng, FakeTokens};
 use dudes_types::{Lsn, Timestamp, Tokens, Usd};
 
 // ---------------------------------------------------------------------------------------------
@@ -427,10 +432,12 @@ impl PeerResolver for ScriptedColumn {
 /// The seams a test daemon runs on. The classifier is not among them: `duded::boot` builds the
 /// shipped one, and what this chooses is its column.
 pub(crate) fn seams(
+    settings: &Settings,
     host: SharedHost,
     runner: Arc<OpenRunner>,
-) -> Seams<SharedHost, OpenRunner, TestClock, FakeRng> {
+) -> Seams<SharedHost, OpenRunner, TestClock, FixtureRng> {
     seams_with(
+        settings,
         host,
         runner,
         Arc::new(ScriptedColumn(PeerProvenance::NoRecordedAgent)),
@@ -439,10 +446,11 @@ pub(crate) fn seams(
 
 /// [`seams`] with a chosen column, for the arms that vary it.
 pub(crate) fn seams_with(
+    settings: &Settings,
     host: SharedHost,
     runner: Arc<OpenRunner>,
     resolver: Arc<dyn PeerResolver>,
-) -> Seams<SharedHost, OpenRunner, TestClock, FakeRng> {
+) -> Seams<SharedHost, OpenRunner, TestClock, FixtureRng> {
     let children = duded::ChildEnds::new();
     host.bind_child_ends(Arc::clone(&children));
     Seams {
@@ -450,7 +458,7 @@ pub(crate) fn seams_with(
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: runner,
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: FixtureRng::from_rng(settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(resolver),
         // The registry the shipped daemon builds: the default Claude adapter. A test that needs
         // a provider *absent* asks for it here.
@@ -470,6 +478,7 @@ pub(crate) fn seams_with(
 pub(crate) struct Running {
     pub(crate) append_failure: duded::runtime::AppendFailure,
     pub(crate) handle: duded::Handle,
+    pub(crate) tokens: FakeTokens,
     // `()`, not the daemon's `anyhow::Result<ExitCause>`: naming that type would put `anyhow` in
     // this package's dev-dependencies to hold a value nothing here reads. A daemon that failed to
     // run surfaces immediately and unmistakably anyway — every CLI run against it exits
@@ -495,14 +504,15 @@ impl Drop for Running {
 
 /// Boot a daemon on this fixture and start it on a thread.
 pub(crate) fn start(settings: &Settings, host: SharedHost, runner: Arc<OpenRunner>) -> Running {
-    start_with(settings, seams(host, runner))
+    start_with(settings, seams(settings, host, runner))
 }
 
 /// Boot and start with chosen seams.
 pub(crate) fn start_with(
     settings: &Settings,
-    seams: Seams<SharedHost, OpenRunner, TestClock, FakeRng>,
+    seams: Seams<SharedHost, OpenRunner, TestClock, FixtureRng>,
 ) -> Running {
+    let tokens = seams.rng.tokens();
     let daemon = duded::boot(settings, seams).expect("boot the test daemon");
     let handle = daemon.handle();
     let append_failure = daemon.append_failure();
@@ -515,6 +525,7 @@ pub(crate) fn start_with(
     Running {
         append_failure,
         handle,
+        tokens,
         thread: Some(thread),
     }
 }
