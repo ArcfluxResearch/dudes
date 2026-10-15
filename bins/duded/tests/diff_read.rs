@@ -188,26 +188,9 @@ impl Lab {
         Tree::Checkout(self.repo())
     }
     fn baseline(&self) -> BaselineCapture {
-        match self.reader.capture_baseline(&self.tree(), cancel()) {
-            Ok(baseline) => baseline,
-            Err(error) => {
-                let mut listing = String::new();
-                let mut pending = vec![self.repo().join(".git")];
-                while let Some(path) = pending.pop() {
-                    let Ok(entries) = std::fs::read_dir(&path) else {
-                        continue;
-                    };
-                    for entry in entries.flatten() {
-                        listing += &entry.path().display().to_string();
-                        listing += "\n";
-                        if entry.path().is_dir() {
-                            pending.push(entry.path());
-                        }
-                    }
-                }
-                panic!("baseline refused with {error:?}\n{listing}");
-            }
-        }
+        self.reader
+            .capture_baseline(&self.tree(), cancel())
+            .unwrap()
     }
     fn files(&self, baseline: &BaselineCapture) -> dudes_proto::DiffContent {
         let capture = self
