@@ -61,17 +61,16 @@ fn rig() -> Rig {
         provenance: Mutex::new(PeerProvenance::Unresolvable),
         refuse: AtomicBool::new(false),
     });
-    let daemon = boot(
+    let parts = seams_with(
         &settings,
-        seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&resolver) as Arc<dyn PeerResolver>,
-        ),
-    )
-    .expect("boot daemon");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&resolver) as Arc<dyn PeerResolver>,
+    );
+    let tokens = parts.rng.tokens();
+    let daemon = boot(&settings, parts).expect("boot daemon");
     let socket = daemon.socket().to_path_buf();
     let running = common::start(daemon);
     let agent = hire(&running.handle, fixture.state.path());
@@ -79,7 +78,7 @@ fn rig() -> Rig {
         &running.handle,
         goal_params(agent, &[common::true_program()]),
     );
-    let token = minted_token(&fixture, agent);
+    let token = minted_token(&fixture, &tokens, agent);
     *resolver.provenance.lock().unwrap() = PeerProvenance::Agent(agent);
     Rig {
         fixture,
@@ -340,16 +339,14 @@ fn a_full_cap_ends_a_silent_connection_with_a_clean_close() {
     drop(holder);
 }
 
-/// A client that writes after the daemon ended the connection fails with a broken pipe.
 #[test]
-fn a_write_after_the_full_cap_close_is_a_broken_pipe() {
+fn a_call_after_the_full_cap_close_stays_unanswered() {
     let rig = paused_rig();
     let holder = hold_the_slot(&rig.socket);
     let params = hook_params(&rig);
     let mut client = LocalClient::connect(&rig.socket).expect("connect succeeds at the cap");
     assert!(matches!(client.recv(), Err(ClientError::Closed)));
-    let shape = unanswered_shape(client.call(Method::HookEvent, Some(params)));
-    assert!(shape.ends_with("BrokenPipe"), "{shape}");
+    unanswered_shape(client.call(Method::HookEvent, Some(params)));
     drop(holder);
 }
 

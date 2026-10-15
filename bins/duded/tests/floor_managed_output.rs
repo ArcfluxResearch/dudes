@@ -235,9 +235,10 @@ fn settings(fixture: &Fixture, port: u16) -> duded::Settings {
 }
 
 fn seams(
+    settings: &duded::Settings,
     children: Arc<ChildEnds>,
     captured: Arc<Captured>,
-) -> Seams<RealHost, ScriptedRunner, TestClock, FakeRng> {
+) -> Seams<RealHost, ScriptedRunner, TestClock, common::FixtureRng> {
     Seams {
         host: RealHost::watching(Arc::new(HostStreams(Arc::clone(&children), captured))),
         pty_host: Box::new(duded::ports::ClosedPtyHost),
@@ -246,7 +247,7 @@ fn seams(
             common::passes(),
         ])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(LocalAdapter) as Box<dyn Adapter>]
             .into_iter()
@@ -469,7 +470,7 @@ fn selected_reply_arrives_before_child_completion_and_reconnects() {
     let captured = Arc::new(Captured::default());
     let daemon = duded::boot::boot_with_options_and_floor_faults(
         &settings,
-        seams(ChildEnds::new(), Arc::clone(&captured)),
+        seams(&settings, ChildEnds::new(), Arc::clone(&captured)),
         duded::settings::RunOptions::default(),
         None,
         FloorStreamFault::default().without_heartbeat(),
@@ -544,7 +545,7 @@ fn selected_output_read_is_epoch_scoped_and_bounded() {
     let fault = FloorStreamFault::default().without_heartbeat();
     let daemon = duded::boot::boot_with_floor_faults(
         &settings,
-        seams(Arc::clone(&children), Arc::clone(&captured)),
+        seams(&settings, Arc::clone(&children), Arc::clone(&captured)),
         None,
         fault.clone(),
     )
@@ -830,8 +831,11 @@ fn selected_output_read_is_epoch_scoped_and_bounded() {
     drop(flooded);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
-    let restarted =
-        boot(&settings, seams(ChildEnds::new(), Arc::default())).expect("restart from journal");
+    let restarted = boot(
+        &settings,
+        seams(&settings, ChildEnds::new(), Arc::default()),
+    )
+    .expect("restart from journal");
     let new_addr = restarted.floor_addr().expect("new Floor address");
     let mut running = common::start(restarted);
     let (_old, old_head) = upgrade(new_addr, Some(&cookie), Some(&fresh_csrf), None);

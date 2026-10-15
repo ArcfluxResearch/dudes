@@ -63,6 +63,7 @@ fn the_operator_surface_answers_over_the_socket_and_shutdown_needs_the_credentia
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -215,6 +216,7 @@ fn the_shipped_default_serves_ping_and_refuses_the_operator_surface() {
         // `seams`, not `seams_with`: the shipped resolver and the shipped classifier, exactly
         // as `main.rs` composes them.
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -249,6 +251,7 @@ fn agent_retire_is_routed_over_the_socket_and_journals_agent_retired() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -355,6 +358,7 @@ fn local_hire_appearance_is_finite_recorded_and_replayable() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

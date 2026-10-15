@@ -298,7 +298,11 @@ fn a_queued_call_that_cannot_be_journaled_prevents_a_clean_receipt() {
     running.stop();
     let daemon = duded::boot(
         &settings,
-        common::seams(SharedHost::new(), Arc::new(OpenRunner::default())),
+        common::seams(
+            &settings,
+            SharedHost::new(),
+            Arc::new(OpenRunner::default()),
+        ),
     )
     .expect("restart over the hired agent");
     let handle = daemon.handle();

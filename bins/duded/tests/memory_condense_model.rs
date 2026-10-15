@@ -348,14 +348,11 @@ impl PredicateRunner for Gated {
 }
 
 fn seams_for(
+    settings: &duded::Settings,
     predicates: Arc<impl PredicateRunner>,
-) -> duded::settings::Seams<
-    SharedHost,
-    impl PredicateRunner,
-    TestClock,
-    dudes_supervisor::testing::FakeRng,
-> {
+) -> duded::settings::Seams<SharedHost, impl PredicateRunner, TestClock, common::FixtureRng> {
     common::seams(
+        settings,
         SharedHost::new(),
         predicates,
         Arc::new(TestClock::new()),
@@ -419,9 +416,12 @@ fn condense_uses_bounded_raw_capture_instead_of_the_interleaved_tail() {
             timed_out: false,
         }),
     });
-    let daemon =
-        boot::boot_with_memory_config(&settings, seams_for(Arc::clone(&runner)), small_config())
-            .unwrap();
+    let daemon = boot::boot_with_memory_config(
+        &settings,
+        seams_for(&settings, Arc::clone(&runner)),
+        small_config(),
+    )
+    .unwrap();
     let mut running = common::start(daemon);
     let agent = hire(&running.handle, common::hire_params(fixture.state.path()));
     push_sections_over_threshold(&running.handle, agent);
@@ -444,9 +444,12 @@ fn assert_raw_capture_fallback(result: Result<PredicateCaptured, std::io::ErrorK
         captures: std::sync::Mutex::new(Vec::new()),
         result,
     });
-    let daemon =
-        boot::boot_with_memory_config(&settings, seams_for(Arc::clone(&runner)), small_config())
-            .unwrap();
+    let daemon = boot::boot_with_memory_config(
+        &settings,
+        seams_for(&settings, Arc::clone(&runner)),
+        small_config(),
+    )
+    .unwrap();
     let mut running = common::start(daemon);
     let agent = hire(&running.handle, common::hire_params(fixture.state.path()));
     push_sections_over_threshold(&running.handle, agent);
@@ -514,9 +517,12 @@ fn admission_refused_over_a_ceiling_falls_back_to_exact_excerpts() {
     let mut settings = fixture.settings();
     settings.condense_model_enabled = true;
     let runner = Arc::new(CapturedScriptedRunner::default());
-    let daemon =
-        boot::boot_with_memory_config(&settings, seams_for(Arc::clone(&runner)), small_config())
-            .expect("boot");
+    let daemon = boot::boot_with_memory_config(
+        &settings,
+        seams_for(&settings, Arc::clone(&runner)),
+        small_config(),
+    )
+    .expect("boot");
     let mut running = common::start(daemon);
 
     let agent = hire(
@@ -573,9 +579,12 @@ fn the_admission_decision_is_journaled_before_the_child_spawns() {
         journal_dir: fixture.journal_dir(),
         inner: CapturedScriptedRunner::scripted([common::passes()]),
     });
-    let daemon =
-        boot::boot_with_memory_config(&settings, seams_for(Arc::clone(&runner)), small_config())
-            .expect("boot");
+    let daemon = boot::boot_with_memory_config(
+        &settings,
+        seams_for(&settings, Arc::clone(&runner)),
+        small_config(),
+    )
+    .expect("boot");
     let mut running = common::start(daemon);
 
     let agent = hire(&running.handle, common::hire_params(fixture.state.path()));
@@ -618,9 +627,12 @@ fn assert_falls_back_to_exact_excerpts(outcome: PredicateOutcome) {
     let mut settings = fixture.settings();
     settings.condense_model_enabled = true;
     let runner = Arc::new(CapturedScriptedRunner::scripted([outcome]));
-    let daemon =
-        boot::boot_with_memory_config(&settings, seams_for(Arc::clone(&runner)), small_config())
-            .expect("boot");
+    let daemon = boot::boot_with_memory_config(
+        &settings,
+        seams_for(&settings, Arc::clone(&runner)),
+        small_config(),
+    )
+    .expect("boot");
     let mut running = common::start(daemon);
 
     let agent = hire(&running.handle, common::hire_params(fixture.state.path()));
@@ -667,9 +679,12 @@ fn an_admitted_call_left_in_flight_at_a_crash_gets_exact_catch_up() {
     settings.condense_model_enabled = true;
 
     let sleepy = Arc::new(Sleepy::new(Duration::from_secs(5), common::passes()));
-    let daemon =
-        boot::boot_with_memory_config(&settings, seams_for(Arc::clone(&sleepy)), small_config())
-            .expect("boot");
+    let daemon = boot::boot_with_memory_config(
+        &settings,
+        seams_for(&settings, Arc::clone(&sleepy)),
+        small_config(),
+    )
+    .expect("boot");
     let mut running = common::start(daemon);
     let agent = hire(&running.handle, common::hire_params(fixture.state.path()));
     push_sections_over_threshold(&running.handle, agent);
@@ -701,9 +716,12 @@ fn an_admitted_call_left_in_flight_at_a_crash_gets_exact_catch_up() {
             timed_out: false,
         },
     ]));
-    let daemon =
-        boot::boot_with_memory_config(&settings, seams_for(Arc::clone(&fast)), small_config())
-            .expect("reboot");
+    let daemon = boot::boot_with_memory_config(
+        &settings,
+        seams_for(&settings, Arc::clone(&fast)),
+        small_config(),
+    )
+    .expect("reboot");
     let mut running = common::start(daemon);
     append(
         &running.handle,
@@ -733,9 +751,12 @@ fn stopping_the_daemon_sweeps_an_in_flight_condense_model_call() {
     let mut settings = fixture.settings();
     settings.condense_model_enabled = true;
     let sleepy = Arc::new(Sleepy::new(Duration::from_secs(5), common::passes()));
-    let daemon =
-        boot::boot_with_memory_config(&settings, seams_for(Arc::clone(&sleepy)), small_config())
-            .expect("boot");
+    let daemon = boot::boot_with_memory_config(
+        &settings,
+        seams_for(&settings, Arc::clone(&sleepy)),
+        small_config(),
+    )
+    .expect("boot");
     let mut running = common::start(daemon);
     let agent = hire(&running.handle, common::hire_params(fixture.state.path()));
     push_sections_over_threshold(&running.handle, agent);
@@ -772,9 +793,12 @@ fn a_second_trigger_while_in_flight_publishes_nothing_early() {
         timed_out: false,
     });
     let gated = Arc::new(gated);
-    let daemon =
-        boot::boot_with_memory_config(&settings, seams_for(Arc::clone(&gated)), small_config())
-            .expect("boot");
+    let daemon = boot::boot_with_memory_config(
+        &settings,
+        seams_for(&settings, Arc::clone(&gated)),
+        small_config(),
+    )
+    .expect("boot");
     let mut running = common::start(daemon);
     let agent = hire(&running.handle, common::hire_params(fixture.state.path()));
 
@@ -832,9 +856,12 @@ fn at_most_one_model_call_per_turn_marker() {
             timed_out: false,
         },
     ]));
-    let daemon =
-        boot::boot_with_memory_config(&settings, seams_for(Arc::clone(&runner)), small_config())
-            .expect("boot");
+    let daemon = boot::boot_with_memory_config(
+        &settings,
+        seams_for(&settings, Arc::clone(&runner)),
+        small_config(),
+    )
+    .expect("boot");
     let mut running = common::start(daemon);
     let agent = hire(&running.handle, common::hire_params(fixture.state.path()));
 
@@ -882,9 +909,12 @@ fn a_restart_within_the_same_turn_spends_no_second_model_call() {
             timed_out: false,
         },
     ]));
-    let daemon =
-        boot::boot_with_memory_config(&settings, seams_for(Arc::clone(&runner)), small_config())
-            .expect("boot");
+    let daemon = boot::boot_with_memory_config(
+        &settings,
+        seams_for(&settings, Arc::clone(&runner)),
+        small_config(),
+    )
+    .expect("boot");
     let mut running = common::start(daemon);
     let agent = hire(&running.handle, common::hire_params(fixture.state.path()));
     common::set_goal(
@@ -918,9 +948,12 @@ fn a_restart_within_the_same_turn_spends_no_second_model_call() {
             timed_out: false,
         },
     ]));
-    let daemon =
-        boot::boot_with_memory_config(&settings, seams_for(Arc::clone(&runner)), small_config())
-            .expect("reboot");
+    let daemon = boot::boot_with_memory_config(
+        &settings,
+        seams_for(&settings, Arc::clone(&runner)),
+        small_config(),
+    )
+    .expect("reboot");
     let mut running = common::start(daemon);
     assert_eq!(
         turns_issued(&fixture),
@@ -963,9 +996,12 @@ fn a_goal_switch_and_back_does_not_reset_the_rate_limit() {
             timed_out: false,
         },
     ]));
-    let daemon =
-        boot::boot_with_memory_config(&settings, seams_for(Arc::clone(&runner)), small_config())
-            .expect("boot");
+    let daemon = boot::boot_with_memory_config(
+        &settings,
+        seams_for(&settings, Arc::clone(&runner)),
+        small_config(),
+    )
+    .expect("boot");
     let mut running = common::start(daemon);
     let agent = hire(&running.handle, common::hire_params(fixture.state.path()));
     common::set_goal(

@@ -10,12 +10,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::Instant;
 
-type TestDaemon = Daemon<
-    common::SharedHost,
-    ControlledRunner,
-    common::TestClock,
-    dudes_supervisor::testing::FakeRng,
->;
+type TestDaemon =
+    Daemon<common::SharedHost, ControlledRunner, common::TestClock, common::FixtureRng>;
 
 #[derive(Clone, Copy)]
 enum RunnerReply {
@@ -87,16 +83,14 @@ fn boot(
     let mut fake = FakeHost::wall_clock_anchored();
     fake.next_pid = if reserved.is_some() { 9_000 } else { 1_000 };
     let host = common::SharedHost::with(fake);
+    let settings = fixture.settings();
     let mut seams = common::seams(
+        &settings,
         host.clone(),
         Arc::clone(runner),
         Arc::new(common::TestClock::new()),
         Witness::default(),
     );
-    if let Some((agent, goal, turn)) = reserved {
-        let last = agent.as_ulid().max(goal.as_ulid()).max(turn.as_ulid());
-        while dudes_supervisor::Rng::ulid(&mut seams.rng) <= last {}
-    }
     seams.adapters = [Box::new(dudes_providers::claude::ClaudeAdapter::new(
         dudes_providers::claude::config::ClaudeConfig {
             command: "/usr/bin/true".into(),
@@ -105,7 +99,7 @@ fn boot(
     )) as Box<dyn dudes_providers::adapter::Adapter>]
     .into_iter()
     .collect();
-    (crate::boot(&fixture.settings(), seams).unwrap(), host)
+    (crate::boot(&settings, seams).unwrap(), host)
 }
 
 fn hire(daemon: &mut TestDaemon, cwd: &std::path::Path) -> AgentId {

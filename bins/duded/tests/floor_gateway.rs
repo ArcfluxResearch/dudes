@@ -1342,6 +1342,7 @@ fn unexpected_floor_thread_end_stops_duded_and_closes_listeners() {
     let daemon = duded::boot::boot_with_floor_fault(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             std::sync::Arc::new(ScriptedRunner::default()),
             std::sync::Arc::new(TestClock::new()),

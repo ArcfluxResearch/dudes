@@ -567,6 +567,7 @@ fn live_doctor_reports_boot_identity_and_the_uninterpretable_open_turn() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::with(FakeHost::boot_relative("boot-a")),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -604,6 +605,7 @@ fn live_doctor_reports_boot_identity_and_the_uninterpretable_open_turn() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::with(FakeHost::boot_unreadable("permission denied")),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -641,6 +643,7 @@ fn an_unconfirmed_resume_falls_back_once_to_first() {
     let settings = fixture.settings();
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let seams = seams(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::scripted([common::fails()])),
         Arc::new(TestClock::new()),
@@ -720,6 +723,7 @@ fn a_confirmed_resume_does_not_fall_back() {
     let settings = fixture.settings();
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let seams = seams(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::scripted([common::fails()])),
         Arc::new(TestClock::new()),
@@ -776,6 +780,7 @@ fn another_agents_session_neither_binds_nor_clears_resume_recovery() {
     let settings = fixture.settings();
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let seams = seams(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::scripted([common::fails()])),
         Arc::new(TestClock::new()),
@@ -927,9 +932,11 @@ fn replaying_both_session_triggers_keeps_world_and_redb_equal() {
 #[test]
 fn shutdown_drain_answers_doctor_queued_after_stop_without_hanging() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let daemon = boot(
         &fixture.settings(),
         seams(
+            &settings,
             SharedHost::with(FakeHost::boot_relative("boot-a")),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1078,6 +1085,7 @@ fn prog_daemon_with<P: duded::predicate::PredicateRunner>(
             },
         )) as Box<dyn Adapter>]),
         ..seams(
+            &settings,
             SharedHost::new(),
             runner,
             Arc::new(TestClock::new()),
@@ -1272,6 +1280,7 @@ fn doctor_provider_check_runs_off_the_loop_thread() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

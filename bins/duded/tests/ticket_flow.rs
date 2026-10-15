@@ -234,6 +234,7 @@ fn enrolled(fixture: &Fixture) -> (duded::Settings, PathBuf) {
 }
 
 struct Flow {
+    tokens: dudes_supervisor::testing::FakeTokens,
     running: common::Running,
     settings: duded::Settings,
     operator: Socket,
@@ -279,7 +280,8 @@ impl Flow {
         let host = SharedHost::with_native_evidence(fixture.journal_dir());
         let runner = Arc::new(ScriptedRunner::scripted(answers));
         let durable_at_spawn = Arc::new(Mutex::new(Vec::new()));
-        let mut seams = common::seams_with(
+        let seams = common::seams_with(
+            &settings,
             WatchHost {
                 inner: host.clone(),
                 journal: fixture.journal_dir(),
@@ -294,9 +296,7 @@ impl Flow {
             Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
         );
         host.bind_child_ends(Arc::clone(&seams.children));
-        for _ in 0..fixture.records().len() * 8 + 64 {
-            dudes_supervisor::Rng::ulid(&mut seams.rng);
-        }
+        let tokens = seams.rng.tokens();
         let daemon = duded::boot(&settings, seams).unwrap();
         let append_failure = daemon.append_failure();
         if let Some(nth) = options.refuse_nth_append {
@@ -305,6 +305,7 @@ impl Flow {
         let running = common::start(daemon);
         let operator = Client::connect(settings.socket()).unwrap();
         Self {
+            tokens,
             running,
             settings,
             operator,
@@ -2821,7 +2822,7 @@ fn a_daily_limit_and_an_open_question_move_no_card() {
         Record::HookTokenMinted { agent, token_hash } if *agent == dana => Some(token_hash.clone()),
         _ => None,
     });
-    let token = common::token_of(&hash);
+    let token = flow.tokens.token_of(&hash);
     fixture.await_record("question owner's actual TurnSpawned", |record| {
         matches!(record, Record::TurnSpawned { agent, .. } if *agent == dana).then_some(())
     });

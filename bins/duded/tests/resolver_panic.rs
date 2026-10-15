@@ -153,6 +153,7 @@ fn a_shipped_resolver_stops_for_the_cause_it_was_asked_to() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -189,6 +190,7 @@ fn a_panicking_resolver_stops_the_daemon_with_a_named_cause() {
     let daemon = boot(
         &settings,
         seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -251,6 +253,7 @@ fn no_connection_reaches_a_broken_resolver_after_exit_begins() {
     let daemon = boot(
         &settings,
         seams_with(
+            &settings,
             SharedHost::new(),
             Arc::clone(&predicates),
             Arc::new(TestClock::new()),

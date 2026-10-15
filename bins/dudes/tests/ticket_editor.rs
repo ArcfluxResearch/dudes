@@ -13,13 +13,12 @@ use std::sync::Arc;
 use common::{Cli, Fixture, OpenRunner, Running, SharedHost, start};
 use duded::floor_actions::{EnrolledCheck, Enrollment, Profile};
 use dudes_proto::rpc::agent::HireResult;
-use dudes_proto::rpc::hook::{HOOK_TOKEN_LEN, HookToken};
 use dudes_proto::rpc::ticket::{TicketCheckoutResult, TicketCreateResult, TicketReadResult};
 use dudes_proto::{AgentBudget, GoalBudget, Predicate, Record};
 use dudes_types::{IsolationMode, Usd};
 
 struct Review {
-    _running: Running,
+    running: Running,
     fixture: Fixture,
     cli: Cli,
     directory: PathBuf,
@@ -112,7 +111,7 @@ fn review() -> Review {
     assert_eq!(assigned.code(), 0, "{}", assigned.output());
 
     Review {
-        _running: running,
+        running,
         fixture,
         cli,
         directory,
@@ -551,16 +550,7 @@ fn an_editor_receives_no_minted_agent_token_or_control_socket() {
                 }
                 _ => None,
             });
-    let token = (1_u32..=256)
-        .find_map(|counter| {
-            let candidate = format!("{counter:A>HOOK_TOKEN_LEN$}");
-            if dudes_supervisor::blake3_hex(candidate.as_bytes()) == token_hash {
-                Some(HookToken::new(candidate).expect("a matching fixture token is well formed"))
-            } else {
-                None
-            }
-        })
-        .expect("the minted fixture token is recoverable within 256 counters");
+    let token = review.running.tokens.token_of(&token_hash);
     review
         .fixture
         .await_record("the owner's fake turn spawn", |record| match record {

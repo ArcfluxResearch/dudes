@@ -27,6 +27,7 @@ type Socket =
     Client<std::io::BufReader<std::os::unix::net::UnixStream>, std::os::unix::net::UnixStream>;
 
 struct Daemon {
+    tokens: dudes_supervisor::testing::FakeTokens,
     running: common::Running,
     column: Arc<ScriptedColumn>,
     settings: duded::Settings,
@@ -99,22 +100,22 @@ fn enrolled(fixture: &Fixture) -> (duded::Settings, PathBuf) {
     (settings, repo)
 }
 
-fn start(fixture: &Fixture, settings: duded::Settings) -> Daemon {
+fn start(settings: duded::Settings) -> Daemon {
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
-    let mut seams = common::seams_with(
+    let seams = common::seams_with(
+        &settings,
         SharedHost::new(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
         Witness::default(),
         Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
     );
-    for _ in 0..fixture.records().len() * 8 + 64 {
-        dudes_supervisor::Rng::ulid(&mut seams.rng);
-    }
+    let tokens = seams.rng.tokens();
     let daemon = duded::boot(&settings, seams).unwrap();
     let running = common::start(daemon);
     let operator = Client::connect(settings.socket()).unwrap();
     Daemon {
+        tokens,
         running,
         column,
         settings,
@@ -353,7 +354,7 @@ fn checkout_returns_the_recorded_subdirectory_and_appends_nothing() {
             ticket_assigned(card, sample_agent(), 0),
         ],
     );
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     fixture.await_record("checkout owner's settled starting sample", |record| {
         matches!(record, Record::InstructionObservationStarted {
             owner: dudes_proto::InstructionObservationOwner::Managed { agent, .. }, ..
@@ -387,7 +388,7 @@ fn checkout_returns_the_recorded_subdirectory_and_appends_nothing() {
 fn checkout_refuses_stale_unassigned_and_removed_tickets_without_appending() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     let agent = daemon.paused_agent(&repo);
     let card = daemon.create("Assigned");
     assert_eq!(position(daemon.assign(card, agent, None)), 1);
@@ -471,7 +472,7 @@ fn checkout_returns_an_active_recorded_lease_but_refuses_removed_and_retired_own
             _ => unreachable!(),
         }
         seed(&fixture, records);
-        let mut daemon = start(&fixture, settings);
+        let mut daemon = start(settings);
         let seq = daemon.card(card).seq;
         let before = fixture.records();
         let response = daemon.checkout(json!({"card": card, "expected_seq": seq}));
@@ -500,7 +501,7 @@ fn checkout_returns_an_active_recorded_lease_but_refuses_removed_and_retired_own
 fn a_created_ticket_replays_to_the_same_board_after_the_cache_is_deleted() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
-    let mut daemon = start(&fixture, settings.clone());
+    let mut daemon = start(settings.clone());
     let agent = daemon.paused_agent(&repo);
     let first = daemon.create("  Fix the parser \n");
     let created: dudes_proto::rpc::ticket::TicketCreateResult = daemon.ok(
@@ -544,7 +545,7 @@ fn a_created_ticket_replays_to_the_same_board_after_the_cache_is_deleted() {
 
     daemon.stop();
     std::fs::remove_file(settings.state_dir.join("state.redb")).unwrap();
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     assert_eq!(daemon.board(), board, "the rebuilt board is the live one");
     assert_eq!(&daemon.read(first), first_view);
     assert_eq!(&daemon.read(second), second_view);
@@ -560,7 +561,7 @@ fn operator_of(view: &CardView) -> Actor {
 fn the_ticket_records_are_journaled_in_required_frames() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     let agent = daemon.paused_agent(&repo);
     let card = daemon.create("Frame check");
     daemon.assign(card, agent, None);
@@ -590,7 +591,7 @@ fn the_ticket_records_are_journaled_in_required_frames() {
 fn edit_changes_the_three_fields_and_keeps_the_queue_place() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     let agent = daemon.paused_agent(&repo);
     let first = daemon.create("First");
     let second = daemon.create("Second");
@@ -641,7 +642,7 @@ fn a_working_ticket_can_be_neither_edited_nor_removed() {
             ticket_started(card, agent, 1, 1),
         ],
     );
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     fixture.await_record("working ticket's exact starting spawn", |record| {
         matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent).then_some(())
     });
@@ -689,7 +690,7 @@ fn a_working_ticket_can_be_neither_edited_nor_removed() {
 fn a_removed_ticket_leaves_the_board_and_stays_in_the_journal() {
     let fixture = Fixture::new();
     let (settings, _repo) = enrolled(&fixture);
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     let kept = daemon.create("Kept");
     let removed = daemon.create("Removed");
     let seq = daemon.card(removed).seq;
@@ -730,7 +731,7 @@ fn a_removed_ticket_leaves_the_board_and_stays_in_the_journal() {
 fn an_agent_cannot_claim_a_ticket_or_move_its_own_to_done_and_a_plain_card_is_unchanged() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     let agent = common::hire(&daemon.running.handle, &repo);
     common::set_goal(
         &daemon.running.handle,
@@ -743,7 +744,7 @@ fn an_agent_cannot_claim_a_ticket_or_move_its_own_to_done_and_a_plain_card_is_un
         } if *owner == agent => Some(token_hash.clone()),
         _ => None,
     });
-    let token = common::token_of(&hash);
+    let token = daemon.tokens.token_of(&hash);
     let held = daemon.create("Queued for the agent");
     let free = daemon.create("Still unassigned");
     assert_eq!(position(daemon.assign(held, agent, None)), 1);
@@ -864,7 +865,7 @@ fn an_agent_cannot_claim_a_ticket_or_move_its_own_to_done_and_a_plain_card_is_un
 fn every_refusal_carries_its_fixed_code_and_plain_sentence_and_appends_nothing() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     let agent = daemon.paused_agent(&repo);
     let elsewhere = common::hire(&daemon.running.handle, fixture.state.path());
     let card = daemon.create("Subject");
@@ -998,7 +999,7 @@ fn every_refusal_carries_its_fixed_code_and_plain_sentence_and_appends_nothing()
 fn text_is_trimmed_bounded_and_free_of_control_characters() {
     let fixture = Fixture::new();
     let (settings, _repo) = enrolled(&fixture);
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     let before = fixture.records().len();
     for (params, why) in [
         (json!({"title": "  \n "}), "an empty title"),
@@ -1072,7 +1073,7 @@ fn text_is_trimmed_bounded_and_free_of_control_characters() {
 fn an_assignment_message_is_trimmed_and_refuses_control_characters() {
     let fixture = Fixture::new();
     let (settings, repo) = enrolled(&fixture);
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     let agent = daemon.paused_agent(&repo);
     let card = daemon.create("Messaged");
     let before = fixture.records().len();
@@ -1108,7 +1109,7 @@ fn several_projects_need_the_caller_to_name_one() {
         vec![check("default", common::true_program())],
     ));
     let _ = repo;
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     let before = fixture.records().len();
     let response = daemon.call(Method::TicketCreate, json!({"title": "Which?"}));
     assert_eq!(
@@ -1133,7 +1134,7 @@ fn the_board_holds_at_most_512_open_tickets() {
         records.push(ticket_created(CardId::from_parts(5, index), "Seeded"));
     }
     seed(&fixture, records);
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     assert_eq!(daemon.board().len(), 512);
     assert_refused(
         &daemon.call(Method::TicketCreate, json!({"title": "One too many"})),
@@ -1175,7 +1176,7 @@ fn retiring_an_agent_keeps_its_ready_ticket_and_returns_the_rest() {
             ticket_assigned(queued, agent, 0),
         ],
     );
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     let response = daemon.call(
         Method::AgentRetire,
         json!({"agent": agent, "reason": "moved on"}),
@@ -1206,7 +1207,7 @@ fn retiring_an_agent_keeps_its_ready_ticket_and_returns_the_rest() {
 fn the_card_view_of_a_ticket_is_unchanged_for_older_readers() {
     let fixture = Fixture::new();
     let (settings, _repo) = enrolled(&fixture);
-    let mut daemon = start(&fixture, settings);
+    let mut daemon = start(settings);
     let card = daemon.create("Shape");
     let board: Value = daemon.ok(Method::BoardList, json!({}));
     assert_eq!(

@@ -96,6 +96,7 @@ fn abrupt_uncertain_daemon_helper() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_787_394_600_000, 1)),
@@ -187,6 +188,7 @@ fn await_abrupt_ready(child: &mut Child, ready: &Path) -> String {
 
 fn abrupt_exit_arm() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let ready = fixture.state.path().join("abrupt-uncertain.ready");
     let mut child = abrupt_daemon_command(&fixture, &ready)
         .spawn()
@@ -225,6 +227,7 @@ fn abrupt_exit_arm() {
     let daemon = boot(
         &fixture.settings(),
         seams(
+            &settings,
             restarted.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_787_394_700_000, 1)),
@@ -337,9 +340,11 @@ fn abrupt_ready_waits_for_complete_payload() {
 /// Run one daemon over `fixture` with `host`, hire an agent, set it a goal, and wait for the turn
 /// to be issued.
 fn one_run(fixture: &Fixture, host: UnconfirmedHost, start_millis: i64) {
+    let settings = fixture.settings();
     let daemon = boot(
         &fixture.settings(),
         seams(
+            &settings,
             host,
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(start_millis, 1)),
@@ -361,6 +366,7 @@ fn one_run(fixture: &Fixture, host: UnconfirmedHost, start_millis: i64) {
 #[test]
 fn cleanup_unconfirmed_is_run_local_across_any_daemon_exit() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
 
     // Run one: the turn is journaled and the launch never happens.
     let crashed = UnconfirmedHost::new(true);
@@ -402,6 +408,7 @@ fn cleanup_unconfirmed_is_run_local_across_any_daemon_exit() {
     let daemon = boot(
         &fixture.settings(),
         seams(
+            &settings,
             restarted.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_787_394_700_000, 1)),
@@ -484,6 +491,7 @@ fn finish_owned_retry(fixture: &Fixture, host: &common::SharedHost, turn: dudes_
 #[test]
 fn a_completed_owed_retry_keeps_unknown_history_without_blocking_next_work() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     one_run(&fixture, UnconfirmedHost::new(true), 1_787_394_600_000);
     let (agent, turn, task) =
         fixture.await_record("immutable issued work", |record| match record {
@@ -510,6 +518,7 @@ fn a_completed_owed_retry_keeps_unknown_history_without_blocking_next_work() {
         .expect("the failed attempt retains truthful uncertainty");
     let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
     let seams = seams(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::ticking(1_787_394_700_000, 1)),

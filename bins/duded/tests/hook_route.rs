@@ -54,17 +54,16 @@ fn all_ten_installed_claude_events_reach_one_local_hook_route() {
     // connect; room for every event makes sequential delivery independent of that ordering.
     settings.max_connections = NonZeroUsize::new(EVENTS.len()).unwrap();
     let resolver = RecordingResolver::new(PeerProvenance::Unresolvable);
-    let daemon = boot(
+    let parts = seams_with(
         &settings,
-        seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&resolver) as Arc<dyn PeerResolver>,
-        ),
-    )
-    .expect("boot daemon");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&resolver) as Arc<dyn PeerResolver>,
+    );
+    let tokens = parts.rng.tokens();
+    let daemon = boot(&settings, parts).expect("boot daemon");
     let socket = daemon.socket().to_path_buf();
     let mut running = common::start(daemon);
     let agent = hire(&running.handle, fixture.state.path());
@@ -72,7 +71,7 @@ fn all_ten_installed_claude_events_reach_one_local_hook_route() {
         &running.handle,
         goal_params(agent, &[common::true_program()]),
     );
-    let token = minted_token(&fixture, agent);
+    let token = minted_token(&fixture, &tokens, agent);
     resolver.set(PeerProvenance::Agent(agent));
 
     let generated = generated_handlers(agent, fixture.state.path());
@@ -158,17 +157,16 @@ fn activity_after_one_pre_tool(floor: Option<&std::path::Path>) -> Vec<LiveActiv
         port: Some(0),
     });
     let resolver = RecordingResolver::new(PeerProvenance::Unresolvable);
-    let daemon = boot(
+    let parts = seams_with(
         &settings,
-        seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&resolver) as Arc<dyn PeerResolver>,
-        ),
-    )
-    .expect("boot daemon");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&resolver) as Arc<dyn PeerResolver>,
+    );
+    let tokens = parts.rng.tokens();
+    let daemon = boot(&settings, parts).expect("boot daemon");
     let socket = daemon.socket().to_path_buf();
     let mut running = common::start(daemon);
     let agent = hire(&running.handle, fixture.state.path());
@@ -176,7 +174,7 @@ fn activity_after_one_pre_tool(floor: Option<&std::path::Path>) -> Vec<LiveActiv
         &running.handle,
         goal_params(agent, &[common::true_program()]),
     );
-    let token = minted_token(&fixture, agent);
+    let token = minted_token(&fixture, &tokens, agent);
     fixture.await_record("the hook subject's actual managed spawn", |record| {
         matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent).then_some(())
     });
@@ -236,17 +234,16 @@ fn a_sibling_process_with_a_stolen_hook_token_is_refused_without_effect() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
     let resolver = RecordingResolver::new(PeerProvenance::Unresolvable);
-    let daemon = boot(
+    let parts = seams_with(
         &settings,
-        seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&resolver) as Arc<dyn PeerResolver>,
-        ),
-    )
-    .expect("boot daemon");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&resolver) as Arc<dyn PeerResolver>,
+    );
+    let tokens = parts.rng.tokens();
+    let daemon = boot(&settings, parts).expect("boot daemon");
     let socket = daemon.socket().to_path_buf();
     let mut running = common::start(daemon);
     let alpha = hire(&running.handle, fixture.state.path());
@@ -254,7 +251,7 @@ fn a_sibling_process_with_a_stolen_hook_token_is_refused_without_effect() {
         &running.handle,
         goal_params(alpha, &[common::true_program()]),
     );
-    let stolen = minted_token(&fixture, alpha);
+    let stolen = minted_token(&fixture, &tokens, alpha);
     let bravo = hire(&running.handle, fixture.state.path());
     resolver.set(PeerProvenance::Agent(bravo));
 

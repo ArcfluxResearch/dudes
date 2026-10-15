@@ -77,6 +77,7 @@ interprocess.workspace = true
 # they buy is a daemon booted in-process — the same `duded::boot` the shipped daemon runs — carrying
 # the real `PeerClassifier` over the two ports that have no live implementation.
 [dev-dependencies]
+ulid.workspace = true
 duded.workspace = true
 dudes-journal.workspace = true
 # `BreakerConfig`, one field of the daemon's `Settings`. The CLI links the loop nowhere.

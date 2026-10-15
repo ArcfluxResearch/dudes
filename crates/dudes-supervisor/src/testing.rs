@@ -23,7 +23,7 @@
 //! the base64url alphabet; `A` and the digits satisfy both. So what comes out is a fully
 //! well-formed agent token with no distinguishable test shape, drawn from a space — the decimal
 //! integers, padded — that an attacker enumerates from 1 upward. [`crate::machine::Supervisor`] is
-//! generic over [`Rng`], so before the gate existed a daemon reached that mint with one `use`
+//! generic over [`crate::Rng`], so before the gate existed a daemon reached that mint with one `use`
 //! statement, no manifest edit and no warning: the real mint (`crate::token`, private) draws from
 //! whatever `Rng` it is handed, hashes it, journals the hash, and hands the plaintext to the child.
 //!
@@ -54,7 +54,6 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use dudes_policy::BreakerConfig;
 use dudes_proto::goal::Predicate;
 use dudes_proto::reply::HookReply;
-use dudes_proto::rpc::hook::{HOOK_TOKEN_LEN, HookToken};
 use dudes_proto::{AgentBudget, Entry, Goal, GoalBudget, Record, RecordKind, Spend};
 use dudes_providers::adapter::{Adapter, ManagedInstall};
 use dudes_providers::claude::ClaudeAdapter;
@@ -63,15 +62,17 @@ use dudes_providers::launch::{EnvVar, LaunchSpec};
 use dudes_types::{
     AgentId, GoalId, Lsn, Mode, Provider, SessionId, Timestamp, Tokens, TurnId, Usd,
 };
-use ulid::Ulid;
 
 use crate::effect::Effect;
 use crate::host::{
-    AdoptionKey, Clock, HostBoot, KillOutcome, Liveness, ProbeAnswer, ProcessHost, Rng,
-    SpawnResult, liveness,
+    AdoptionKey, Clock, HostBoot, KillOutcome, Liveness, ProbeAnswer, ProcessHost, SpawnResult,
+    liveness,
 };
 use crate::input::{ClientId, Command, HookId, Input, PersistToken};
 use crate::machine::{Config, Supervisor};
+
+mod rng;
+pub use rng::{FakeRng, FakeTokens};
 
 /// A clock that moves only when the test says so.
 #[derive(Clone, Debug)]
@@ -116,39 +117,6 @@ impl Clock for FakeClock {
     fn now(&self) -> Timestamp {
         let now = self.at.fetch_add(self.step, Ordering::Relaxed);
         Timestamp::from_unix_millis(now)
-    }
-}
-
-/// A counter dressed as randomness: the nth id and the nth token are always the same bytes.
-#[derive(Clone, Debug, Default)]
-pub struct FakeRng {
-    counter: u128,
-}
-
-impl FakeRng {
-    /// A generator that has minted nothing yet.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { counter: 0 }
-    }
-
-    /// How many values have been drawn.
-    #[must_use]
-    pub const fn drawn(&self) -> u128 {
-        self.counter
-    }
-}
-
-impl Rng for FakeRng {
-    fn ulid(&mut self) -> Ulid {
-        self.counter += 1;
-        Ulid::from_parts(0, self.counter)
-    }
-
-    fn agent_token(&mut self) -> HookToken {
-        self.counter += 1;
-        let text = format!("{:A>width$}", self.counter, width = HOOK_TOKEN_LEN);
-        HookToken::new(text).expect("a counter padded with 'A' is base64url")
     }
 }
 
@@ -695,7 +663,7 @@ impl Harness {
         adapter: impl Fn() -> Box<dyn Adapter> + Send + 'static,
     ) -> Self {
         Self {
-            supervisor: Self::machine(config.clone(), clock, adapter()),
+            supervisor: Self::machine(config.clone(), clock, adapter(), FakeRng::new()),
             host,
             journal: Vec::new(),
             trace: Vec::new(),
@@ -739,55 +707,41 @@ impl Harness {
         config: Config,
         clock: FakeClock,
         adapter: Box<dyn Adapter>,
+        rng: FakeRng,
     ) -> Supervisor<FakeClock, FakeRng> {
-        Supervisor::new(config, clock, FakeRng::new())
-            .with_adapters([adapter].into_iter().collect())
+        Supervisor::new(config, clock, rng).with_adapters([adapter].into_iter().collect())
     }
 
-    /// A second daemon run over the entries that reached the disk: a fresh machine, the journal
-    /// replayed through `Input::Replayed`, then `Input::Started`.
-    ///
-    /// The fresh `FakeRng` is the point — a restart mints new ids and a new agent token, exactly
-    /// as a real one does, so nothing a test asserts about re-issue can come from remembered
-    /// state.
+    /// Rebuild a fresh machine from the durable prefix, retaining only entropy progress.
     pub fn restart(&mut self) {
-        let entries = self.journal.clone();
-        self.next_lsn = u64::try_from(entries.len()).expect("the harness prefix fits an LSN");
-        self.supervisor = Self::machine(
-            self.config.clone(),
-            FakeClock::ticking(1_787_394_700_000, 1),
-            (self.adapter)(),
-        );
-        // The harness journal is the log: `follow_up` pushes an entry and hands out the next
-        // `Lsn` in the same breath, so its first entry was acknowledged at `Lsn(1)` and the
-        // n-th at `Lsn(n)`. Replaying at those same positions is what makes this second run a
-        // replay of the first rather than a differently-numbered one.
-        for (entry, position) in entries.into_iter().zip(1u64..) {
-            let _ = self.supervisor.handle(Input::Replayed {
-                lsn: Lsn(position),
-                entry,
-            });
-        }
-        self.drive(Input::Started);
+        self.rebuild(None);
     }
 
-    /// [`Harness::restart`], with the daemon having found `missing` agents' worktrees gone before
-    /// `Input::Started`.
+    /// [`Harness::restart`], with the specified worktrees missing before startup.
     pub fn restart_with_missing_worktrees(&mut self, missing: Vec<AgentId>) {
-        let entries = self.journal.clone();
-        self.next_lsn = u64::try_from(entries.len()).expect("the harness prefix fits an LSN");
+        self.rebuild(Some(missing));
+    }
+
+    fn rebuild(&mut self, missing: Option<Vec<AgentId>>) {
+        let mut rng = FakeRng::after_draws(self.supervisor.test_rng_drawn());
+        rng.reserve_entries(&self.journal)
+            .expect("harness entries serialize");
+        self.next_lsn = u64::try_from(self.journal.len()).expect("the harness prefix fits an LSN");
         self.supervisor = Self::machine(
             self.config.clone(),
             FakeClock::ticking(1_787_394_700_000, 1),
             (self.adapter)(),
+            rng,
         );
-        for (entry, position) in entries.into_iter().zip(1u64..) {
+        for (entry, position) in self.journal.iter().cloned().zip(1u64..) {
             let _ = self.supervisor.handle(Input::Replayed {
                 lsn: Lsn(position),
                 entry,
             });
         }
-        self.drive(Input::MissingWorktrees(missing));
+        if let Some(missing) = missing {
+            self.drive(Input::MissingWorktrees(missing));
+        }
         self.drive(Input::Started);
     }
 
@@ -1236,6 +1190,8 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Rng;
+    use dudes_proto::rpc::hook::HOOK_TOKEN_LEN;
 
     fn first_loaded_prefix_append(missing_worktrees: bool) -> (Lsn, Lsn) {
         let (entries, _, _) = journal_with_issued_turn(None, "make the tests pass");
@@ -1271,6 +1227,25 @@ mod tests {
     fn a_loaded_prefix_worktree_restart_appends_after_its_replayed_tail() {
         let (tail, appended) = first_loaded_prefix_append(true);
         assert_eq!(appended, Lsn(tail.0 + 1));
+    }
+
+    #[test]
+    fn both_restarts_keep_entropy_progress_and_account_for_inserted_history() {
+        let mut harness = Harness::new();
+        let first = harness.hire();
+        harness.restart();
+        let second = harness.hire();
+        assert_ne!(first, second);
+        let mut inserted = harness.journal[0].clone();
+        let Record::AgentHired { id, .. } = &mut inserted.record else {
+            unreachable!()
+        };
+        *id = AgentId::from_parts(0, 900);
+        harness.journal.push(inserted);
+        harness.restart_with_missing_worktrees(Vec::new());
+        assert_eq!(harness.hire(), AgentId::from_parts(0, 901));
+        harness.restart();
+        assert_eq!(harness.hire(), AgentId::from_parts(0, 902));
     }
 
     /// The clock is the only source of time, so a frozen one stamps every entry alike and a

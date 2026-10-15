@@ -127,6 +127,7 @@ fn exit_through(cause: ExitCause) {
     let runner = Arc::new(ScriptedRunner::default());
     let witness = Witness::default();
     let injected = seams(
+        &settings,
         host.clone(),
         Arc::clone(&runner),
         Arc::new(TestClock::new()),
@@ -231,12 +232,14 @@ fn the_main_returning_path_calls_shutdown_exactly_once_after_the_flush() {
 #[test]
 fn an_idle_daemon_still_shuts_its_host_down() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let host = SharedHost::new();
     let runner = Arc::new(ScriptedRunner::default());
     let witness = Witness::default();
     let daemon = boot(
         &fixture.settings(),
         seams(
+            &settings,
             host.clone(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -268,6 +271,7 @@ fn host_shutdown_error_is_visible_and_later_teardown_runs() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -320,8 +324,10 @@ fn replay_shutdown_fixture(fixture: &Fixture) -> World {
 }
 
 fn recorded_unconfirmed_cleanup(fixture: &Fixture) -> (TurnId, World) {
+    let settings = fixture.settings();
     let crashed = common::UnconfirmedHost::new(true);
     let mut first_seams = seams(
+        &settings,
         crashed.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -438,6 +444,7 @@ fn drop_before_run_preserves_unconfirmed_cleanup_and_tears_down_once() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             restarted.clone(),
             Arc::clone(&runner),
             Arc::new(TestClock::ticking(1_787_394_700_000, 1)),
@@ -488,11 +495,13 @@ fn drop_before_run_preserves_unconfirmed_cleanup_and_tears_down_once() {
 #[test]
 fn a_daemon_that_ran_does_not_sweep_again_when_it_is_dropped() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let host = SharedHost::new();
     let runner = Arc::new(ScriptedRunner::default());
     let daemon = boot(
         &fixture.settings(),
         seams(
+            &settings,
             host.clone(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -513,10 +522,12 @@ fn a_daemon_that_ran_does_not_sweep_again_when_it_is_dropped() {
 #[test]
 fn a_daemon_whose_turn_has_ended_shuts_down_once() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let host = SharedHost::new();
     let daemon = boot(
         &fixture.settings(),
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::scripted([common::fails()])),
             Arc::new(TestClock::new()),
@@ -567,6 +578,7 @@ fn enabled_floor_stops_before_control_transport_on_every_exit_path() {
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 host.clone(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -597,6 +609,7 @@ fn enabled_floor_drop_before_run_stops_once_within_bound() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

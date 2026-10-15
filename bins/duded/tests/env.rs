@@ -81,6 +81,7 @@ fn a_launched_child_carries_the_socket_and_a_token_that_is_never_journaled() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

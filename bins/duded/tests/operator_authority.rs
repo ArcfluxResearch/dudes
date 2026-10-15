@@ -48,6 +48,7 @@ fn zero_replayed_agents_opens_and_any_replayed_agent_seals() {
     let fresh = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -73,6 +74,7 @@ fn zero_replayed_agents_opens_and_any_replayed_agent_seals() {
     let replayed = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -104,6 +106,7 @@ fn production_accept_and_hire_share_the_authority_source() {
     let daemon = boot(
         &settings,
         seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

@@ -164,6 +164,7 @@ fn a_hire_at_under_or_above_a_live_tree_is_refused_and_appends_nothing() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

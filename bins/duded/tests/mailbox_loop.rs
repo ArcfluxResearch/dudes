@@ -38,6 +38,7 @@ struct Floor {
     running: Running,
     socket: PathBuf,
     token: String,
+    tokens: dudes_supervisor::testing::FakeTokens,
     resolver: Arc<RecordingResolver>,
     agents: Vec<AgentId>,
 }
@@ -48,30 +49,32 @@ impl Floor {
         let fixture = Fixture::new();
         let settings = fixture.settings();
         let resolver = RecordingResolver::new(PeerProvenance::Unresolvable);
-        let daemon = boot(
+        let parts = seams_with(
             &settings,
-            seams_with(
-                SharedHost::new(),
-                Arc::new(ScriptedRunner::default()),
-                Arc::new(TestClock::new()),
-                Witness::default(),
-                Arc::clone(&resolver) as Arc<dyn PeerResolver>,
-            ),
-        )
-        .expect("boot daemon");
+            SharedHost::new(),
+            Arc::new(ScriptedRunner::default()),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+            Arc::clone(&resolver) as Arc<dyn PeerResolver>,
+        );
+        let tokens = parts.rng.tokens();
+        let daemon = boot(&settings, parts).expect("boot daemon");
         let socket = daemon.socket().to_path_buf();
         let running = common::start(daemon);
         let agents: Vec<_> = (0..count)
             .map(|_| hire(&running.handle, fixture.state.path()))
             .collect();
         set_goal(&running.handle, goal_params(agents[0], &["true"]));
-        let token = minted_token(&fixture, agents[0]).expose().to_owned();
+        let token = minted_token(&fixture, &tokens, agents[0])
+            .expose()
+            .to_owned();
         Self {
             fixture,
             settings,
             running,
             socket,
             token,
+            tokens,
             resolver,
             agents,
         }
@@ -180,6 +183,7 @@ fn a_queued_hook_runs_before_an_eight_by_thirty_two_backlog_drains() {
     let daemon = boot(
         &floor.settings,
         seams_with(
+            &floor.settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -189,7 +193,7 @@ fn a_queued_hook_runs_before_an_eight_by_thirty_two_backlog_drains() {
     )
     .expect("reboot before queuing mailbox work");
     let handle = daemon.handle();
-    floor.token = minted_token(&floor.fixture, floor.agents[0])
+    floor.token = minted_token(&floor.fixture, &floor.tokens, floor.agents[0])
         .expose()
         .to_owned();
     for (n, sender) in floor.agents.iter().enumerate() {
@@ -312,9 +316,11 @@ fn ten_thousand_inbox_entries_defer_the_recipient_and_hooks_stay_prompt() {
 #[test]
 fn back_to_back_jobs_do_not_each_run_a_mailbox_pass() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let daemon = boot(
-        &fixture.settings(),
+        &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

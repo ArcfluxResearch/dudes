@@ -37,6 +37,7 @@ const PACE: Duration = Duration::from_millis(270);
 const SENTINEL: &str = "memory-sentinel-7f3a2c";
 
 struct Daemon {
+    tokens: dudes_supervisor::testing::FakeTokens,
     running: common::Running,
     settings: duded::Settings,
     addr: SocketAddr,
@@ -75,12 +76,14 @@ impl Daemon {
         });
         let clock = Arc::new(TestClock::new());
         let seams = common::seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
             Witness::default(),
             column,
         );
+        let tokens = seams.rng.tokens();
         let daemon = duded::boot::boot_with_memory_config_and_floor_fault(
             &settings,
             seams,
@@ -92,6 +95,7 @@ impl Daemon {
         let pause = daemon.memory_condense_pause();
         let failure = daemon.append_failure();
         Self {
+            tokens,
             running: common::start(daemon),
             settings,
             addr,
@@ -321,6 +325,7 @@ fn socket(
 
 fn token_after_mint_pump(
     fixture: &Fixture,
+    tokens: &dudes_supervisor::testing::FakeTokens,
     handle: &duded::Handle,
     agent: AgentId,
 ) -> dudes_proto::rpc::hook::HookToken {
@@ -331,7 +336,7 @@ fn token_after_mint_pump(
         } if *owner == agent => Some(token_hash.clone()),
         _ => None,
     });
-    let token = common::token_of(&token_hash);
+    let token = tokens.token_of(&token_hash);
     let minted = fixture
         .entries()
         .into_iter()
@@ -377,7 +382,7 @@ fn an_operator_reads_an_agents_entry_and_its_withheld_appends() {
         common::goal_params(agent, &["/usr/bin/false"]),
     );
     fixture.await_turn();
-    let token = token_after_mint_pump(&fixture, &daemon.running.handle, agent);
+    let token = token_after_mint_pump(&fixture, &daemon.tokens, &daemon.running.handle, agent);
 
     column.set(PeerProvenance::Agent(agent));
     let applied = socket(&daemon.settings)
@@ -1229,6 +1234,7 @@ fn a_page_read_never_reaches_the_sessions_stream() {
     let daemon = duded::boot::boot_with_floor_faults(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

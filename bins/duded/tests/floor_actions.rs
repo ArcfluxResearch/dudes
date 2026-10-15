@@ -239,20 +239,23 @@ impl ChildStream for HostChildTurn {
     }
 }
 
-fn real_stub_seams() -> Seams<RealHost, ScriptedRunner, TestClock, FakeRng> {
-    real_stub_seams_with(ScriptedRunner::scripted([common::passes()]))
+fn real_stub_seams(
+    settings: &duded::Settings,
+) -> Seams<RealHost, ScriptedRunner, TestClock, common::FixtureRng> {
+    real_stub_seams_with(settings, ScriptedRunner::scripted([common::passes()]))
 }
 
 fn real_stub_seams_with(
+    settings: &duded::Settings,
     predicates: ScriptedRunner,
-) -> Seams<RealHost, ScriptedRunner, TestClock, FakeRng> {
+) -> Seams<RealHost, ScriptedRunner, TestClock, common::FixtureRng> {
     let children = ChildEnds::new();
     Seams {
         host: RealHost::watching(Arc::new(HostStreams(Arc::clone(&children)))),
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(predicates),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(StubAdapter) as Box<dyn Adapter>]
             .into_iter()
@@ -698,6 +701,7 @@ fn browser_enrollment_view_is_finite_and_safe() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -738,6 +742,7 @@ fn enrolled_snapshot_refuses_wrong_host_origin_cookie_and_csrf() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -828,6 +833,7 @@ fn catalog_sentinels_stay_out_of_frame_asset_response_url_and_debug_log_values()
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -908,6 +914,7 @@ fn browser_catalog_preserves_micro_dollars_above_javascript_safe_integer() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -944,20 +951,24 @@ fn fresh_snapshot_omits_disabled_or_drifted_enrollment() {
         "unsupported isolation",
     ] {
         let mut settings = enrolled_settings(&fixture);
+        match case {
+            "no profiles" => settings.enrollment.profiles.clear(),
+            "hire off" => settings.floor_hire_enabled = false,
+            "no adapter" => {}
+            "unsupported isolation" => {
+                settings.enrollment.profiles[0].isolation = IsolationMode::Inherit;
+            }
+            _ => unreachable!(),
+        }
         let mut configured = seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
             Witness::default(),
         );
-        match case {
-            "no profiles" => settings.enrollment.profiles.clear(),
-            "hire off" => settings.floor_hire_enabled = false,
-            "no adapter" => configured.adapters = Adapters::new(Vec::<Box<dyn Adapter>>::new()),
-            "unsupported isolation" => {
-                settings.enrollment.profiles[0].isolation = IsolationMode::Inherit;
-            }
-            _ => unreachable!(),
+        if case == "no adapter" {
+            configured.adapters = Adapters::new(Vec::<Box<dyn Adapter>>::new());
         }
         let daemon = boot(&settings, configured).expect("boot disabled Floor");
         let addr = daemon.floor_addr().expect("Floor address");
@@ -972,6 +983,7 @@ fn fresh_snapshot_omits_disabled_or_drifted_enrollment() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1035,6 +1047,7 @@ fn every_engine_floor(settings: &duded::Settings) -> (common::Running, SocketAdd
                 Box::new(PiAdapter::default()),
             ]),
             ..seams(
+                settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -1314,6 +1327,7 @@ fn an_old_journal_with_ceilings_replays_and_its_ceilings_still_bind() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -1418,7 +1432,7 @@ fn browser_hire_briefing_is_finite_and_attributed() {
         }],
     };
     settings.daemon_env.push(EnvVar::new(HELPER_ROLE, "1"));
-    let daemon = boot(&settings, real_stub_seams()).expect("boot Floor");
+    let daemon = boot(&settings, real_stub_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -1610,6 +1624,7 @@ fn browser_admission_and_four_hire_limit_are_journal_derived() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1743,6 +1758,7 @@ fn browser_post_rejection(selected: Option<&str>) {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -1872,6 +1888,7 @@ fn refused_body_drain_discards_a_pipelined_action_without_effects() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -2050,6 +2067,7 @@ fn browser_onboarding_goal_text_holding_nul_is_refused_before_effect() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -2132,6 +2150,7 @@ fn concurrent_same_key_is_pending_and_changed_payload_refuses() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -2206,6 +2225,7 @@ fn local_goal_and_retirement_win_before_browser_initial_goal() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -2308,6 +2328,7 @@ fn uncertain_local_goal_and_retirement_fence_browser_continuation() {
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -2427,6 +2448,7 @@ fn uncertain_local_goal_and_retirement_fence_browser_continuation() {
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -2471,6 +2493,7 @@ fn fenced_complete_retry_returns_original_ids_without_effects() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -2590,6 +2613,7 @@ fn session_expiry_before_each_append_has_distinct_truthful_outcomes() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -2676,6 +2700,7 @@ fn expired_follower_after_registry_lock_wait_gets_empty_forbidden() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -2770,6 +2795,7 @@ fn expired_same_key_follower_blocked_in_reservation_gets_empty_forbidden() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -2871,6 +2897,7 @@ fn replayed_partial_finishes_only_its_preminted_goal_and_complete_retry_is_read_
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::clone(&clock),
@@ -2918,6 +2945,7 @@ fn replayed_partial_finishes_only_its_preminted_goal_and_complete_retry_is_read_
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -2988,6 +3016,7 @@ fn replayed_partial_finishes_only_its_preminted_goal_and_complete_retry_is_read_
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -3017,16 +3046,14 @@ fn replayed_partial_refuses_every_effective_profile_change() {
     let fixture = Fixture::new();
     let settings = enrolled_settings(&fixture);
     let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
-    let daemon = boot(
+    let fixture_parts = seams(
         &settings,
-        seams(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::clone(&clock),
-            Witness::default(),
-        ),
-    )
-    .expect("first boot");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::clone(&clock),
+        Witness::default(),
+    );
+    let daemon = boot(&settings, fixture_parts).expect("first boot");
     let pause = daemon.onboarding_pause();
     pause.arm(OnboardingPausePoint::BeforeGoalPermit);
     let addr = daemon.floor_addr().expect("Floor address");
@@ -3091,6 +3118,7 @@ fn replayed_partial_refuses_every_effective_profile_change() {
         let daemon = boot(
             &changed,
             seams(
+                &changed,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -3128,6 +3156,7 @@ fn session_revocation_linearizes_with_both_append_permits() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
@@ -3340,6 +3369,7 @@ fn post_fsync_cuts_replay_one_hire_goal_and_turn() {
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -3473,7 +3503,7 @@ fn post_fsync_cuts_replay_one_hire_goal_and_turn() {
         );
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
-        let (parts, host) = native_fixture_seams(&fixture, fake_seams());
+        let (parts, host) = native_fixture_seams(&fixture, fake_seams(&settings));
         let daemon = boot(&settings, parts).expect("replay durable prefix");
         let addr = daemon.floor_addr().expect("replayed Floor address");
         let mut running = common::start(daemon);
@@ -3538,6 +3568,7 @@ fn pre_append_failure_leaves_no_hire_and_same_key_retries_after_restart() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -3594,6 +3625,7 @@ fn pre_append_failure_leaves_no_hire_and_same_key_retries_after_restart() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -3637,6 +3669,7 @@ fn post_fsync_uncertainty_fences_fresh_hires_and_catalog() {
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -3739,7 +3772,7 @@ fn a_workspace_whose_first_check_cannot_run_is_still_offered() {
         ),
     );
     profile.checks[1].id = "suite".into();
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -3775,6 +3808,7 @@ fn snapshot_omits_invalid_profile_predicate_and_token_reserve() {
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -3815,6 +3849,7 @@ fn snapshot_omits_invalid_profile_predicate_and_token_reserve() {
         boot(
             &zero_dollar_reserve,
             seams(
+                &zero_dollar_reserve,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -3845,6 +3880,7 @@ fn fresh_snapshot_omits_predicate_that_disappeared_after_enrollment() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -3882,6 +3918,7 @@ fn fourth_durable_hire_precedes_queued_session_catalog_snapshot() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -4002,6 +4039,7 @@ fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
         boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::clone(clock),
@@ -4126,6 +4164,7 @@ fn browser_onboarding_hire_seals_the_pre_agent_epoch() {
     let daemon = boot(
         &settings,
         common::seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -4501,7 +4540,7 @@ fn browser_answer_is_finite_bound_and_observed() {
     settings
         .daemon_env
         .push(EnvVar::new(TASK_CAPTURE, capture.path().as_os_str()));
-    let daemon = boot(&settings, real_stub_seams()).expect("boot Floor");
+    let daemon = boot(&settings, real_stub_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (agent, question) = waiting_agent(&running, &fixture, "which branch?");
@@ -4732,6 +4771,7 @@ fn browser_answer_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -4841,6 +4881,7 @@ fn browser_answer_refuses_wrong_agent_stale_and_locally_answered_questions() {
     let daemon = boot(
         &settings,
         common::seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -4987,6 +5028,7 @@ fn browser_answer_refuses_attached_retired_and_answers_paused() {
     let first = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -5023,6 +5065,7 @@ fn browser_answer_refuses_attached_retired_and_answers_paused() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -5091,6 +5134,7 @@ fn browser_answer_same_key_retry_returns_original_and_changed_payload_conflicts(
         boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -5151,6 +5195,7 @@ fn browser_answer_concurrent_same_key_is_pending_and_two_keys_yield_one_answer()
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -5261,6 +5306,7 @@ fn browser_answer_restart_cut_points_replay_one_answer_and_one_continuation() {
             boot(
                 &settings,
                 seams(
+                    &settings,
                     host.clone(),
                     Arc::new(ScriptedRunner::default()),
                     Arc::new(TestClock::new()),
@@ -5412,7 +5458,7 @@ fn browser_answer_expiry_waiting_on_registry_lock_is_forbidden() {
             pty_host: Box::new(duded::ports::ClosedPtyHost),
             predicates: Arc::new(ScriptedRunner::default()),
             clock: Arc::clone(&clock),
-            rng: FakeRng::new(),
+            rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
             resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
             adapters: [Box::new(StubAdapter) as Box<dyn Adapter>]
                 .into_iter()
@@ -5502,6 +5548,7 @@ fn browser_answer_refuses_revoked_session_without_effect() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -5572,6 +5619,7 @@ fn browser_answer_uncertain_local_write_fences_fresh_requests_and_serves_durable
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -5643,6 +5691,7 @@ fn browser_answer_bounds_and_json_shape_refuse_before_effect() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -5804,6 +5853,7 @@ fn browser_answer_is_absent_when_not_enabled() {
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -6019,8 +6069,11 @@ fn expected_control_digest(path: &str, agent: AgentId, control_lsn: Option<Lsn>)
     hasher.finalize().into()
 }
 
-fn fake_seams() -> Seams<SharedHost, ScriptedRunner, TestClock, FakeRng> {
+fn fake_seams(
+    settings: &duded::Settings,
+) -> Seams<SharedHost, ScriptedRunner, TestClock, common::FixtureRng> {
     seams(
+        settings,
         SharedHost::new(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -6030,8 +6083,8 @@ fn fake_seams() -> Seams<SharedHost, ScriptedRunner, TestClock, FakeRng> {
 
 fn native_fixture_seams<P: duded::predicate::PredicateRunner, C: dudes_supervisor::Clock>(
     fixture: &Fixture,
-    mut parts: Seams<SharedHost, P, C, FakeRng>,
-) -> (Seams<SharedHost, P, C, FakeRng>, SharedHost) {
+    mut parts: Seams<SharedHost, P, C, common::FixtureRng>,
+) -> (Seams<SharedHost, P, C, common::FixtureRng>, SharedHost) {
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     host.bind_child_ends(Arc::clone(&parts.children));
     parts.host = host.clone();
@@ -6149,10 +6202,10 @@ fn browser_pause_resume_is_finite_and_observed() {
     };
     let daemon = boot(
         &settings,
-        real_stub_seams_with(ScriptedRunner::scripted([
-            common::fails(),
-            common::passes(),
-        ])),
+        real_stub_seams_with(
+            &settings,
+            ScriptedRunner::scripted([common::fails(), common::passes()]),
+        ),
     )
     .expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
@@ -6408,7 +6461,7 @@ fn browser_pause_resume_is_finite_and_observed() {
     }
 
     // Step 8: replay leaves the agent unpaused, and the index answers both keys.
-    let daemon = boot(&settings, fake_seams()).expect("replay boot");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("replay boot");
     let row = &daemon.world().agents[&agent];
     assert!(!row.paused && !row.halted, "replayed: {row:?}");
     assert_eq!(row.control_lsn, Some(r));
@@ -6455,6 +6508,7 @@ fn browser_pause_resume_refuses_wrong_session_host_origin_and_csrf_without_effec
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -6573,7 +6627,8 @@ fn browser_pause_resume_refuses_wrong_session_host_origin_and_csrf_without_effec
 fn browser_pause_resume_refuses_unknown_retired_and_foreign_control_lsn() {
     let fixture = Fixture::new();
     let settings = control_settings(&fixture, true);
-    let mut running = common::start(boot(&settings, fake_seams()).expect("boot the setup run"));
+    let mut running =
+        common::start(boot(&settings, fake_seams(&settings)).expect("boot the setup run"));
     let live = common::hire(&running.handle, fixture.state.path());
     let retired = common::hire(&running.handle, fixture.state.path());
     let other = common::hire(&running.handle, fixture.state.path());
@@ -6605,7 +6660,7 @@ fn browser_pause_resume_refuses_unknown_retired_and_foreign_control_lsn() {
         .expect("seeded");
     assert!(older_json.get("browser").is_none(), "{older_json}");
 
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -6674,7 +6729,7 @@ fn browser_pause_resume_refuses_unknown_retired_and_foreign_control_lsn() {
 fn browser_resume_cannot_lift_a_halt() {
     let fixture = Fixture::new();
     let settings = control_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -6775,7 +6830,7 @@ fn folded(fixture: &Fixture) -> dudes_supervisor::World {
 fn browser_pause_resume_replayed_body_has_no_effect() {
     let fixture = Fixture::new();
     let settings = control_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -6818,7 +6873,7 @@ fn browser_pause_resume_replayed_body_has_no_effect() {
 fn browser_pause_resume_same_key_retry_returns_original_and_changed_payload_conflicts() {
     let fixture = Fixture::new();
     let settings = control_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -6845,7 +6900,7 @@ fn browser_pause_resume_same_key_retry_returns_original_and_changed_payload_conf
     assert_eq!(fixture.records(), later, "no retry appended anything");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
-    let daemon = boot(&settings, fake_seams()).expect("restart");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("restart");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -6868,7 +6923,7 @@ fn browser_pause_resume_same_key_retry_returns_original_and_changed_payload_conf
 fn browser_pause_resume_concurrent_same_key_is_pending_and_two_keys_yield_one_record() {
     let fixture = Fixture::new();
     let settings = control_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let pause = daemon.onboarding_pause();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -6941,7 +6996,7 @@ fn browser_pause_resume_concurrent_same_key_is_pending_and_two_keys_yield_one_re
 fn browser_pause_resume_local_winner_is_never_overwritten() {
     let fixture = Fixture::new();
     let settings = control_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let append_failure = daemon.append_failure();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -7040,6 +7095,7 @@ fn browser_pause_resume_restart_cut_points_replay_one_record() {
             boot(
                 &settings,
                 seams(
+                    &settings,
                     host.clone(),
                     Arc::new(ScriptedRunner::default()),
                     Arc::new(TestClock::new()),
@@ -7166,7 +7222,7 @@ fn browser_pause_resume_restart_cut_points_replay_one_record() {
 fn browser_pause_resume_revocation_before_the_permit_is_forbidden() {
     let fixture = Fixture::new();
     let settings = control_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let pause = daemon.onboarding_pause();
     let authorizer = daemon.floor_session_authorizer().expect("Floor sessions");
     let addr = daemon.floor_addr().expect("Floor address");
@@ -7279,7 +7335,7 @@ fn browser_pause_resume_expiry_waiting_on_registry_lock_is_forbidden() {
             pty_host: Box::new(duded::ports::ClosedPtyHost),
             predicates: Arc::new(ScriptedRunner::default()),
             clock: Arc::clone(&clock),
-            rng: FakeRng::new(),
+            rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
             resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
             adapters: [Box::new(StubAdapter) as Box<dyn Adapter>]
                 .into_iter()
@@ -7352,7 +7408,7 @@ fn browser_pause_resume_expiry_waiting_on_registry_lock_is_forbidden() {
 fn browser_pause_resume_uncertain_local_write_fences_fresh_requests_and_serves_durable_retries() {
     let fixture = Fixture::new();
     let settings = control_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let failure = daemon.onboarding_failure();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -7410,7 +7466,7 @@ fn browser_pause_resume_uncertain_local_write_fences_fresh_requests_and_serves_d
 fn browser_pause_resume_bounds_and_json_shape_refuse_before_effect() {
     let fixture = Fixture::new();
     let settings = control_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -7533,7 +7589,7 @@ fn browser_pause_resume_is_absent_when_not_enabled() {
     for enabled in [false, true] {
         let fixture = Fixture::new();
         let settings = control_settings(&fixture, enabled);
-        let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+        let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
         let agent = common::hire(&running.handle, fixture.state.path());
@@ -7647,13 +7703,15 @@ fn browser_pause_on_attached_agent_refuses_prompts_and_tools_and_issues_nothing(
     };
     let fixture = Fixture::new();
     let settings = control_settings(&fixture, true);
-    let mut running = common::start(boot(&settings, fake_seams()).expect("boot the setup run"));
+    let parts = fake_seams(&settings);
+    let tokens = parts.rng.tokens();
+    let mut running = common::start(boot(&settings, parts).expect("boot the setup run"));
     let agent = common::hire(&running.handle, fixture.state.path());
     common::set_goal(
         &running.handle,
         common::goal_params(agent, &[true_program()]),
     );
-    let token = minted_token(&fixture, agent);
+    let token = minted_token(&fixture, &tokens, agent);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     seed(
         &fixture,
@@ -7667,17 +7725,15 @@ fn browser_pause_on_attached_agent_refuses_prompts_and_tools_and_issues_nothing(
 
     // The operator's own calls resolve as the shipped daemon's do; the hooks, as the agent's.
     let resolver = RecordingResolver::new(PeerProvenance::Unresolvable);
-    let daemon = boot(
+    let fixture_parts = seams_with(
         &settings,
-        seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&resolver) as Arc<dyn PeerResolver>,
-        ),
-    )
-    .expect("boot Floor");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&resolver) as Arc<dyn PeerResolver>,
+    );
+    let daemon = boot(&settings, fixture_parts).expect("boot Floor");
     let socket = daemon.socket().to_path_buf();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -7856,7 +7912,7 @@ fn browser_goal_refuses_a_legacy_predicate(status: dudes_types::CardStatus, reas
         retire: false,
         renew: true,
     };
-    let mut setup = common::start(boot(&settings, fake_seams()).expect("setup"));
+    let mut setup = common::start(boot(&settings, fake_seams(&settings)).expect("setup"));
     let (agent, goal) = paused_with_goal(&setup, &fixture);
     assert_eq!(setup.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     let mut legacy = fixture
@@ -7896,7 +7952,7 @@ fn browser_goal_refuses_a_legacy_predicate(status: dudes_types::CardStatus, reas
         check_chosen: false,
     }));
     seed(&fixture, [source, legacy]);
-    let daemon = boot(&settings, fake_seams()).expect("replay legacy goal");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("replay legacy goal");
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -8045,7 +8101,7 @@ fn browser_goal_change_is_finite_bounded_and_observed() {
     settings
         .daemon_env
         .push(EnvVar::new(STUB_HOLD, hold.as_os_str()));
-    let daemon = boot(&settings, real_stub_seams()).expect("boot Floor");
+    let daemon = boot(&settings, real_stub_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -8249,7 +8305,7 @@ fn browser_goal_change_is_finite_bounded_and_observed() {
         );
     }
 
-    let daemon = boot(&settings, fake_seams()).expect("replay boot");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("replay boot");
     assert_eq!(daemon.world().agents[&agent].goal, Some(g2));
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -8282,6 +8338,7 @@ fn browser_goal_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -8389,6 +8446,7 @@ fn browser_goal_refuses_absent_halted_stale_and_open_turn() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -8495,7 +8553,7 @@ fn browser_goal_refuses_absent_halted_stale_and_open_turn() {
 fn browser_goal_chain_never_exceeds_the_first_goal() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let (parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let (parts, native_host) = native_fixture_seams(&fixture, fake_seams(&settings));
     let daemon = boot(&settings, parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -8736,6 +8794,7 @@ impl VerdictArm {
         let (parts, native_host) = native_fixture_seams(
             &fixture,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::clone(&runner),
                 Arc::new(TestClock::new()),
@@ -8943,7 +9002,7 @@ fn browser_goal_waits_for_the_replaced_goals_verdict() {
 fn browser_goal_replayed_body_has_no_effect() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (agent, goal) = paused_with_goal(&running, &fixture);
@@ -8971,7 +9030,7 @@ fn browser_goal_replayed_body_has_no_effect() {
 fn browser_goal_same_key_retry_returns_original_and_changed_payload_conflicts() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (agent, goal) = paused_with_goal(&running, &fixture);
@@ -8995,7 +9054,7 @@ fn browser_goal_same_key_retry_returns_original_and_changed_payload_conflicts() 
     assert_eq!(fixture.records(), later, "no retry appended anything");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
-    let daemon = boot(&settings, fake_seams()).expect("restart");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("restart");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -9018,7 +9077,7 @@ fn browser_goal_same_key_retry_returns_original_and_changed_payload_conflicts() 
 fn browser_goal_concurrent_same_key_is_pending_and_two_keys_yield_one_record() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let pause = daemon.onboarding_pause();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -9079,7 +9138,7 @@ fn browser_goal_concurrent_same_key_is_pending_and_two_keys_yield_one_record() {
 fn browser_goal_local_winner_is_never_overwritten() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let append_failure = daemon.append_failure();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -9141,6 +9200,7 @@ fn browser_goal_restart_cut_points_replay_one_record() {
             let (parts, host) = native_fixture_seams(
                 &fixture,
                 seams(
+                    &settings,
                     SharedHost::new(),
                     Arc::new(ScriptedRunner::scripted([common::passes()])),
                     Arc::new(TestClock::new()),
@@ -9281,7 +9341,7 @@ fn browser_goal_restart_cut_points_replay_one_record() {
 fn browser_goal_revocation_before_the_permit_is_forbidden() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let pause = daemon.onboarding_pause();
     let authorizer = daemon.floor_session_authorizer().expect("Floor sessions");
     let addr = daemon.floor_addr().expect("Floor address");
@@ -9376,7 +9436,7 @@ fn browser_goal_expiry_waiting_on_registry_lock_is_forbidden() {
             pty_host: Box::new(duded::ports::ClosedPtyHost),
             predicates: Arc::new(ScriptedRunner::default()),
             clock: Arc::clone(&clock),
-            rng: FakeRng::new(),
+            rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
             resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
             adapters: [Box::new(StubAdapter) as Box<dyn Adapter>]
                 .into_iter()
@@ -9446,7 +9506,7 @@ fn browser_goal_expiry_waiting_on_registry_lock_is_forbidden() {
 fn browser_goal_uncertain_local_write_fences_fresh_requests_and_serves_durable_retries() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let failure = daemon.onboarding_failure();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -9504,7 +9564,7 @@ fn browser_goal_uncertain_local_write_fences_fresh_requests_and_serves_durable_r
 fn browser_goal_bounds_and_json_shape_refuse_before_effect() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (agent, goal) = paused_with_goal(&running, &fixture);
@@ -9643,7 +9703,7 @@ fn browser_goal_is_absent_when_not_enabled() {
         let fixture = Fixture::new();
         let mut settings = goal_settings(&fixture, false);
         settings.floor_control = control;
-        let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+        let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
         let (agent, goal) = paused_with_goal(&running, &fixture);
@@ -9751,13 +9811,15 @@ fn browser_goal_on_attached_agent_writes_no_pty_or_hook_reply() {
     };
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let mut running = common::start(boot(&settings, fake_seams()).expect("boot the setup run"));
+    let parts = fake_seams(&settings);
+    let tokens = parts.rng.tokens();
+    let mut running = common::start(boot(&settings, parts).expect("boot the setup run"));
     let agent = common::hire(&running.handle, fixture.state.path());
     common::set_goal(
         &running.handle,
         common::goal_params(agent, &[true_program()]),
     );
-    let token = minted_token(&fixture, agent);
+    let token = minted_token(&fixture, &tokens, agent);
     let turn = newest_turn(&fixture, agent);
     running.handle.ask(Ask::Pause(agent)).expect("local pause");
     end_turn(&running.handle, turn, Some(Usd::from_cents(1)));
@@ -9779,6 +9841,7 @@ fn browser_goal_on_attached_agent_writes_no_pty_or_hook_reply() {
     let daemon = boot(
         &settings,
         seams_with(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -9855,7 +9918,8 @@ fn browser_goal_on_attached_agent_writes_no_pty_or_hook_reply() {
         .last()
         .map(|(lsn, _)| *lsn)
         .expect("seeded");
-    let mut running = common::start(boot(&settings, fake_seams()).expect("boot after detach"));
+    let mut running =
+        common::start(boot(&settings, fake_seams(&settings)).expect("boot after detach"));
     let task = fixture.await_record("the first turn after the detach", |record| match record {
         Record::TurnIssued {
             agent: who,
@@ -9877,6 +9941,21 @@ fn browser_goal_on_attached_agent_writes_no_pty_or_hook_reply() {
         "no turn was issued before the detach"
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+fn raw_mixed_goal_attribution_refusal_seams()
+-> Seams<SharedHost, ScriptedRunner, TestClock, FakeRng> {
+    Seams {
+        host: SharedHost::new(),
+        pty_host: Box::new(duded::ports::ClosedPtyHost),
+        predicates: Arc::new(ScriptedRunner::default()),
+        clock: Arc::new(TestClock::new()),
+        rng: FakeRng::new(),
+        resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
+        adapters: Adapters::new([Box::new(ClaudeAdapter::default()) as Box<dyn Adapter>]),
+        children: ChildEnds::new(),
+        witness: Witness::default(),
+    }
 }
 
 /// Only the two browser commands construct an attribution, each its own, so the goal index
@@ -9960,15 +10039,19 @@ fn browser_goal_index_refuses_a_goal_set_with_both_attributions() {
                 },
             ],
         );
-        let booted = boot(&settings, fake_seams());
         if both {
+            let before = fixture.records();
+            let booted = boot(&settings, raw_mixed_goal_attribution_refusal_seams());
             let error = format!("{:#}", booted.err().expect("replay refused"));
             assert!(
                 error.contains("mixed replacement attributions"),
                 "the goal index refused it: {error}"
             );
+            assert_eq!(fixture.records(), before, "refusal appends no records");
         } else {
-            let mut running = common::start(booted.expect("control: one attribution replays"));
+            let daemon =
+                boot(&settings, fake_seams(&settings)).expect("control: one attribution replays");
+            let mut running = common::start(daemon);
             assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
         }
     }
@@ -10161,6 +10244,7 @@ fn boot_reload(
     let daemon = boot(
         settings,
         seams(
+            settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -10632,17 +10716,16 @@ fn enrollment_reload_is_operator_only() {
     );
     let settings = reload_settings(&fixture, &reload_config(&[("repo_1", &repo_1)]));
     let column = common::ScriptedColumn::new(dudes_rpc::auth::PeerProvenance::NoRecordedAgent);
-    let daemon = boot(
+    let parts = seams_with(
         &settings,
-        seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
-        ),
-    )
-    .expect("boot Floor");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
+    );
+    let tokens = parts.rng.tokens();
+    let daemon = boot(&settings, parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -10654,7 +10737,7 @@ fn enrollment_reload_is_operator_only() {
         Record::HookTokenMinted { token_hash, .. } => Some(token_hash.clone()),
         _ => None,
     });
-    let token = common::token_of(&token_hash);
+    let token = tokens.token_of(&token_hash);
     running.handle.doctor().unwrap();
     let sha = rewrite(
         &settings,
@@ -10807,9 +10890,10 @@ impl Adapter for ProgramAdapter {
 /// The real host launching [`ProgramAdapter`]`(program)`, with `goals` passing predicates.
 #[cfg(unix)]
 fn program_seams(
+    settings: &duded::Settings,
     program: OsString,
     goals: usize,
-) -> Seams<RealHost, ScriptedRunner, TestClock, FakeRng> {
+) -> Seams<RealHost, ScriptedRunner, TestClock, common::FixtureRng> {
     let children = ChildEnds::new();
     Seams {
         host: RealHost::watching(Arc::new(HostStreams(Arc::clone(&children)))),
@@ -10818,7 +10902,7 @@ fn program_seams(
             std::iter::repeat_with(common::passes).take(goals),
         )),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(ProgramAdapter(program)) as Box<dyn Adapter>]
             .into_iter()
@@ -10906,7 +10990,11 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
         ),
         EnvVar::new("HOME", home.path()),
     ];
-    let daemon = boot(&settings, program_seams(OsString::from("prog"), 3)).expect("boot");
+    let daemon = boot(
+        &settings,
+        program_seams(&settings, OsString::from("prog"), 3),
+    )
+    .expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -11105,7 +11193,11 @@ fn browser_daemon_view_agrees_with_the_launch_on_each_path_shape() {
         let fixture = Fixture::new();
         let mut settings = with_floor(fixture.settings());
         settings.daemon_env = vec![EnvVar::new("PATH", &shape.path)];
-        let daemon = boot(&settings, program_seams(shape.program.clone(), 1)).expect("boot");
+        let daemon = boot(
+            &settings,
+            program_seams(&settings, shape.program.clone(), 1),
+        )
+        .expect("boot");
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
         let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -11153,6 +11245,7 @@ fn default_floor(
     let daemon = boot(
         settings,
         seams(
+            settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -11373,6 +11466,7 @@ fn browser_daemon_and_settings_siblings_join_on_the_connection_thread() {
         let daemon = duded::boot::boot_with_floor_faults(
             &settings,
             seams(
+                &settings,
                 SharedHost::new(),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),
@@ -11564,7 +11658,9 @@ fn browser_retire_is_finite_attributed_and_ends_the_agent() {
             })
             .count()
     };
-    let daemon = boot(&settings, real_stub_seams()).expect("boot Floor");
+    let parts = real_stub_seams(&settings);
+    let tokens = parts.rng.tokens();
+    let daemon = boot(&settings, parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -11578,7 +11674,7 @@ fn browser_retire_is_finite_attributed_and_ends_the_agent() {
         } if *who == agent => Some(*turn),
         _ => None,
     });
-    let token = common::hook_shim::minted_token(&fixture, agent);
+    let token = common::hook_shim::minted_token(&fixture, &tokens, agent);
     let ping = || {
         dudes_rpc::Client::connect(settings.socket())
             .expect("connect")
@@ -11714,6 +11810,7 @@ fn browser_retire_is_finite_attributed_and_ends_the_agent() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -11746,6 +11843,7 @@ fn browser_retire_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -11851,6 +11949,7 @@ fn browser_retire_refuses_absent_halted_and_unknown_liveness() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -11910,7 +12009,7 @@ fn browser_retire_refuses_absent_halted_and_unknown_liveness() {
 fn browser_retire_replayed_body_has_no_effect() {
     let fixture = Fixture::new();
     let settings = retire_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -11940,7 +12039,7 @@ fn browser_retire_replayed_body_has_no_effect() {
 fn browser_retire_same_key_retry_returns_original_and_changed_payload_conflicts() {
     let fixture = Fixture::new();
     let settings = retire_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -11961,7 +12060,7 @@ fn browser_retire_same_key_retry_returns_original_and_changed_payload_conflicts(
     assert_eq!(fixture.records(), later, "no retry appended anything");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
-    let daemon = boot(&settings, fake_seams()).expect("restart");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("restart");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -11982,7 +12081,7 @@ fn browser_retire_same_key_retry_returns_original_and_changed_payload_conflicts(
 fn browser_retire_concurrent_same_key_is_pending_and_two_keys_yield_one_record() {
     let fixture = Fixture::new();
     let settings = retire_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let pause = daemon.onboarding_pause();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -12041,7 +12140,7 @@ fn browser_retire_concurrent_same_key_is_pending_and_two_keys_yield_one_record()
 fn browser_retire_local_winner_is_never_repeated() {
     let fixture = Fixture::new();
     let settings = retire_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let append_failure = daemon.append_failure();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -12099,6 +12198,7 @@ fn browser_retire_restart_cut_points_replay_one_record() {
             boot(
                 &settings,
                 seams(
+                    &settings,
                     host.clone(),
                     Arc::new(ScriptedRunner::default()),
                     Arc::new(TestClock::new()),
@@ -12211,7 +12311,7 @@ fn browser_retire_expiry_waiting_on_registry_lock_is_forbidden() {
             pty_host: Box::new(duded::ports::ClosedPtyHost),
             predicates: Arc::new(ScriptedRunner::default()),
             clock: Arc::clone(&clock),
-            rng: FakeRng::new(),
+            rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
             resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
             adapters: [Box::new(StubAdapter) as Box<dyn Adapter>]
                 .into_iter()
@@ -12277,7 +12377,7 @@ fn browser_retire_expiry_waiting_on_registry_lock_is_forbidden() {
 fn browser_retire_uncertain_local_write_fences_fresh_requests_and_serves_durable_retries() {
     let fixture = Fixture::new();
     let settings = retire_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let failure = daemon.onboarding_failure();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -12319,7 +12419,7 @@ fn browser_retire_uncertain_local_write_fences_fresh_requests_and_serves_durable
     assert_eq!(fixture.records(), on_disk, "nothing appended while fenced");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
-    let daemon = boot(&settings, fake_seams()).expect("restart");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("restart");
     assert!(daemon.world().agents[&fenced_agent].retired);
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -12340,7 +12440,7 @@ fn browser_retire_uncertain_local_write_fences_fresh_requests_and_serves_durable
 fn browser_retire_bounds_and_json_shape_refuse_before_effect() {
     let fixture = Fixture::new();
     let settings = retire_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -12439,7 +12539,7 @@ fn browser_retire_is_absent_when_not_enabled() {
         let fixture = Fixture::new();
         let mut settings = retire_settings(&fixture, false);
         settings.floor_control = control;
-        let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+        let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
         let agent = common::hire(&running.handle, fixture.state.path());
@@ -12546,6 +12646,7 @@ fn browser_hire_unknown_appearance_is_refused_before_append() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -12711,7 +12812,7 @@ fn look_title_room(mut candidate: duded::floor::AgentSnapshot) -> usize {
 fn browser_look_updates_live_and_archive_and_refuses_stale_edits() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).unwrap();
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -12775,7 +12876,7 @@ fn browser_look_updates_live_and_archive_and_refuses_stale_edits() {
     assert_eq!(view["projection"]["retired_agents"][0]["accent"], "sky");
     assert_eq!(post_look(addr, &cookie, &csrf, &body).1, original);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    let daemon = boot(&settings, fake_seams()).unwrap();
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -12799,7 +12900,7 @@ fn browser_look_updates_live_and_archive_and_refuses_stale_edits() {
 fn browser_look_revision_refuses_aba_even_when_display_fields_match_again() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).unwrap();
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -12843,7 +12944,7 @@ fn browser_look_revision_refuses_aba_even_when_display_fields_match_again() {
     assert_eq!(refused["reason"], "stale_look");
     assert_eq!(fixture.records(), before);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    let daemon = boot(&settings, fake_seams()).unwrap();
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -12861,7 +12962,7 @@ fn browser_look_revision_refuses_aba_even_when_display_fields_match_again() {
 fn browser_look_revocation_and_uncertain_fsync_replay() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).unwrap();
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let pause = daemon.onboarding_pause();
     let failure = daemon.onboarding_failure();
     let authorizer = daemon.floor_session_authorizer().unwrap();
@@ -12904,7 +13005,7 @@ fn browser_look_revocation_and_uncertain_fsync_replay() {
         1
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    let daemon = boot(&settings, fake_seams()).unwrap();
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -12950,7 +13051,7 @@ fn browser_look_switch_and_strict_body_append_nothing() {
         let fixture = Fixture::new();
         let mut settings = goal_settings(&fixture, false);
         settings.floor_control = control;
-        let daemon = boot(&settings, fake_seams()).unwrap();
+        let daemon = boot(&settings, fake_seams(&settings)).unwrap();
         let addr = daemon.floor_addr().unwrap();
         let mut running = common::start(daemon);
         let agent = common::hire(&running.handle, fixture.state.path());
@@ -13032,7 +13133,7 @@ fn a_card_sized_before_chat_was_always_on_replays_and_blocks_only_look_edits() {
     let fixture = Fixture::new();
     seed(&fixture, [hired, legacy_card]);
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).unwrap();
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -13091,7 +13192,7 @@ fn browser_and_local_look_reserve_the_complete_floor_frame() {
         *title = "x".repeat(room + over_by);
         seed(&fixture, [hired.clone(), near_cap_card]);
         let settings = goal_settings(&fixture, true);
-        let daemon = boot(&settings, fake_seams()).unwrap();
+        let daemon = boot(&settings, fake_seams(&settings)).unwrap();
         let addr = daemon.floor_addr().unwrap();
         let mut running = common::start(daemon);
         let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -13126,7 +13227,7 @@ fn browser_and_local_look_reserve_the_complete_floor_frame() {
         if over_by == 1 {
             let mut disabled = settings.clone();
             disabled.floor = None;
-            let daemon = boot(&disabled, fake_seams()).unwrap();
+            let daemon = boot(&disabled, fake_seams(&disabled)).unwrap();
             let mut running = common::start(daemon);
             let before = fixture.records();
             let local = running
@@ -13176,7 +13277,7 @@ fn untouched_two_agent_replay_omits_look_revisions_and_first_edit_reserves_them(
     let fixture = Fixture::new();
     seed(&fixture, [first, second, card]);
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).unwrap();
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -13200,7 +13301,7 @@ fn untouched_two_agent_replay_omits_look_revisions_and_first_edit_reserves_them(
 fn browser_rename_preserves_identity_activity_and_original_retry_after_retirement_and_replay() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).unwrap();
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -13275,7 +13376,7 @@ fn browser_rename_preserves_identity_activity_and_original_retry_after_retiremen
     assert_eq!(refusal["reason"], "agent_absent");
     assert_eq!(fixture.records(), retired);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    let daemon = boot(&settings, fake_seams()).unwrap();
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -13298,7 +13399,7 @@ fn browser_rename_route_off_missing_agent_and_name_bounds_append_nothing() {
         let fixture = Fixture::new();
         let mut settings = goal_settings(&fixture, false);
         settings.floor_control = control;
-        let daemon = boot(&settings, fake_seams()).unwrap();
+        let daemon = boot(&settings, fake_seams(&settings)).unwrap();
         let addr = daemon.floor_addr().unwrap();
         let mut running = common::start(daemon);
         let agent = common::hire(&running.handle, fixture.state.path());
@@ -13340,7 +13441,7 @@ fn browser_rename_route_off_missing_agent_and_name_bounds_append_nothing() {
 fn browser_rename_revocation_before_append_and_uncertain_fsync_replay() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
-    let daemon = boot(&settings, fake_seams()).unwrap();
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let pause = daemon.onboarding_pause();
     let failure = daemon.onboarding_failure();
     let authorizer = daemon.floor_session_authorizer().unwrap();
@@ -13384,7 +13485,7 @@ fn browser_rename_revocation_before_append_and_uncertain_fsync_replay() {
         1
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    let daemon = boot(&settings, fake_seams()).unwrap();
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -13409,17 +13510,16 @@ fn rename_is_operator_only_and_refused_local_names_append_nothing() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
     let column = common::ScriptedColumn::new(dudes_proto::PeerProvenance::NoRecordedAgent);
-    let daemon = boot(
+    let parts = seams_with(
         &settings,
-        seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
-        ),
-    )
-    .unwrap();
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
+    );
+    let tokens = parts.rng.tokens();
+    let daemon = boot(&settings, parts).unwrap();
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     common::set_goal(
@@ -13430,7 +13530,7 @@ fn rename_is_operator_only_and_refused_local_names_append_nothing() {
         Record::HookTokenMinted { token_hash, .. } => Some(token_hash.clone()),
         _ => None,
     });
-    let token = common::token_of(&hash);
+    let token = tokens.token_of(&hash);
     running.handle.doctor().unwrap();
     column.set(dudes_proto::PeerProvenance::Agent(agent));
     let before = fixture.records();
@@ -13491,7 +13591,7 @@ fn rename_is_operator_only_and_refused_local_names_append_nothing() {
 fn browser_resume_clears_an_automatic_hold_and_fences_a_later_episode() {
     let fixture = Fixture::new();
     let settings = control_settings(&fixture, true);
-    let mut setup = common::start(boot(&settings, fake_seams()).expect("setup"));
+    let mut setup = common::start(boot(&settings, fake_seams(&settings)).expect("setup"));
     let agent = common::hire(&setup.handle, fixture.state.path());
     setup.stop(ExitCause::Ended);
     let hold = || Record::AgentHeld {
@@ -13507,7 +13607,7 @@ fn browser_resume_clears_an_automatic_hold_and_fences_a_later_episode() {
         .iter()
         .find_map(|(lsn, e)| matches!(e.record, Record::AgentHeld { .. }).then_some(*lsn))
         .unwrap();
-    let daemon = boot(&settings, fake_seams()).expect("held run");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("held run");
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -13547,7 +13647,7 @@ fn browser_resume_clears_an_automatic_hold_and_fences_a_later_episode() {
         .find_map(|(lsn, e)| matches!(e.record, Record::AgentHeld { .. }).then_some(*lsn))
         .unwrap();
     assert!(second_hold > first_hold);
-    let daemon = boot(&settings, fake_seams()).expect("later held run");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("later held run");
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -13724,7 +13824,7 @@ fn the_git_tab_is_a_sibling_and_a_route_only_when_enabled() {
         let fixture = Fixture::new();
         let mut settings = control_settings(&fixture, false);
         settings.floor_git_enabled = enabled;
-        let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+        let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
         let agent = common::hire(&running.handle, fixture.state.path());
@@ -14058,7 +14158,7 @@ fn browser_renew_funds_an_exhausted_goal_from_its_workspace() {
     std::fs::write(&cost, "2.0").expect("the first turn's cost");
     let daemon = boot(
         &settings,
-        real_stub_seams_with(ScriptedRunner::scripted([common::fails()])),
+        real_stub_seams_with(&settings, ScriptedRunner::scripted([common::fails()])),
     )
     .expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
@@ -14240,7 +14340,7 @@ fn browser_renew_funds_an_exhausted_goal_from_its_workspace() {
         &renew_config(&renew_entry("repo_1", &repo, 7, Some("1"), None)),
     );
     assert_eq!(edited.enrollment.profiles[0].hop_cap, 7);
-    let daemon = boot(&edited, fake_seams()).expect("replay boot");
+    let daemon = boot(&edited, fake_seams(&edited)).expect("replay boot");
     assert_eq!(daemon.world().agents[&agent].goal, Some(g2));
     assert_eq!(
         daemon.world().goals[&g2].goal.hop_cap,
@@ -14273,7 +14373,7 @@ fn browser_renew_funds_an_exhausted_goal_from_its_workspace() {
 fn browser_renew_refuses_a_goal_with_anything_left() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams(&settings));
     let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -14370,7 +14470,7 @@ fn browser_renew_with_no_ceilings_is_bounded_by_the_hop_cap() {
         &renew_config(&renew_entry("repo_1", &repo, 3, None, None)),
     );
     settings.floor_usd_per_day = None;
-    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams(&settings));
     let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -14436,7 +14536,7 @@ fn browser_renew_goal_token_ceiling_binds_the_renewed_goal() {
         &fixture,
         &renew_config(&renew_entry("repo_1", &repo, 3, None, Some(1_000))),
     );
-    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams(&settings));
     let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -14538,6 +14638,7 @@ fn renewal_waits_for_the_next_day(
     let (native_parts, native_host) = native_fixture_seams(
         fixture,
         seams(
+            settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -14678,14 +14779,14 @@ fn browser_renew_refuses_under_the_billing_guard() {
     let dollars_only = renew_config(&renew_entry("repo_1", &repo, 3, Some("1"), None));
     let mut settings = renew_settings(&fixture, &tokens);
     stand_in_engine(&fixture, "codex");
-    let codex_seams = || Seams {
+    let codex_seams = |settings: &duded::Settings| Seams {
         adapters: Adapters::new([
             Box::new(ClaudeAdapter::default()) as Box<dyn Adapter>,
             Box::new(CodexAdapter::default()),
         ]),
-        ..fake_seams()
+        ..fake_seams(settings)
     };
-    let (native_parts, native_host) = native_fixture_seams(&fixture, codex_seams());
+    let (native_parts, native_host) = native_fixture_seams(&fixture, codex_seams(&settings));
     let mut running = common::start(boot(&settings, native_parts).expect("boot without a key"));
     let hire = dudes_proto::rpc::agent::HireParams {
         provider: Provider::Codex,
@@ -14717,7 +14818,7 @@ fn browser_renew_refuses_under_the_billing_guard() {
         "OPENAI_API_KEY",
         "fixture-value-not-a-credential",
     ));
-    let daemon = boot(&settings, codex_seams()).expect("boot with a key");
+    let daemon = boot(&settings, codex_seams(&settings)).expect("boot with a key");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let sha = rewrite(&settings, &dollars_only);
@@ -14818,17 +14919,7 @@ fn browser_renew_refuses_unenrolled_moved_and_changed_workspaces() {
             },
         ],
     );
-    let mut rng = FakeRng::new();
-    for _ in 0..64 {
-        let _ = dudes_supervisor::Rng::ulid(&mut rng);
-    }
-    let (native_parts, native_host) = native_fixture_seams(
-        &fixture,
-        Seams {
-            rng,
-            ..fake_seams()
-        },
-    );
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams(&settings));
     let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -14907,6 +14998,7 @@ fn browser_renew_restarts_a_done_goal_at_its_cap() {
     let (native_parts, native_host) = native_fixture_seams(
         &fixture,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::scripted([
                 common::passes(),
@@ -14971,6 +15063,7 @@ fn browser_renew_restart_cut_points_replay_one_record() {
             let (parts, host) = native_fixture_seams(
                 &fixture,
                 seams(
+                    &settings,
                     SharedHost::new(),
                     Arc::new(ScriptedRunner::default()),
                     Arc::new(TestClock::new()),
@@ -15100,6 +15193,7 @@ fn browser_renew_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     let (native_parts, native_host) = native_fixture_seams(
         &fixture,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -15200,6 +15294,7 @@ fn browser_renew_refuses_absent_halted_stale_and_open_turn() {
     let host = common::UnconfirmedHost::with_native_evidence(true, fixture.journal_dir());
     let native_host = host.shared();
     let native_parts = seams(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -15303,7 +15398,7 @@ fn browser_renew_refuses_absent_halted_stale_and_open_turn() {
 fn browser_renew_same_key_retry_returns_original_and_other_payloads_conflict() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams(&settings));
     let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -15369,7 +15464,7 @@ fn browser_renew_same_key_retry_returns_original_and_other_payloads_conflict() {
     assert_eq!(fixture.records(), later, "no retry appended anything");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
-    let daemon = boot(&settings, fake_seams()).expect("restart");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("restart");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -15390,7 +15485,7 @@ fn browser_renew_same_key_retry_returns_original_and_other_payloads_conflict() {
 fn browser_renew_concurrent_same_key_is_pending_and_two_keys_yield_one_record() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams(&settings));
     let daemon = boot(&settings, native_parts).expect("boot Floor");
     let pause = daemon.onboarding_pause();
     let addr = daemon.floor_addr().expect("Floor address");
@@ -15457,7 +15552,7 @@ fn browser_renew_concurrent_same_key_is_pending_and_two_keys_yield_one_record() 
 fn browser_renew_local_winner_is_never_overwritten() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams(&settings));
     let daemon = boot(&settings, native_parts).expect("boot Floor");
     let append_failure = daemon.append_failure();
     let addr = daemon.floor_addr().expect("Floor address");
@@ -15510,7 +15605,7 @@ fn browser_renew_local_winner_is_never_overwritten() {
 fn browser_renew_revocation_before_the_permit_is_forbidden() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams(&settings));
     let daemon = boot(&settings, native_parts).expect("boot Floor");
     let pause = daemon.onboarding_pause();
     let authorizer = daemon.floor_session_authorizer().expect("Floor sessions");
@@ -15611,7 +15706,7 @@ fn browser_renew_expiry_waiting_on_registry_lock_is_forbidden() {
             pty_host: Box::new(duded::ports::ClosedPtyHost),
             predicates: Arc::new(ScriptedRunner::default()),
             clock: Arc::clone(&clock),
-            rng: FakeRng::new(),
+            rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
             resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
             adapters: [Box::new(StubAdapter) as Box<dyn Adapter>]
                 .into_iter()
@@ -15686,7 +15781,7 @@ fn browser_renew_expiry_waiting_on_registry_lock_is_forbidden() {
 fn browser_renew_uncertain_local_write_fences_fresh_requests_and_serves_durable_retries() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams(&settings));
     let daemon = boot(&settings, native_parts).expect("boot Floor");
     let failure = daemon.onboarding_failure();
     let addr = daemon.floor_addr().expect("Floor address");
@@ -15750,7 +15845,7 @@ fn browser_renew_uncertain_local_write_fences_fresh_requests_and_serves_durable_
 fn browser_renew_bounds_and_json_shape_refuse_before_effect() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams(&settings));
     let daemon = boot(&settings, native_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
@@ -15916,7 +16011,7 @@ fn browser_renew_bounds_and_json_shape_refuse_before_effect() {
 fn browser_renew_on_attached_agent_writes_no_pty() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
-    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+    let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams(&settings));
     let mut running = common::start(boot(&settings, native_parts).expect("boot the setup run"));
     let native = NativeTurnFixture {
         running: &running,
@@ -15934,7 +16029,7 @@ fn browser_renew_on_attached_agent_writes_no_pty() {
             provenance: None,
         }],
     );
-    let daemon = boot(&settings, fake_seams()).expect("boot Floor");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     running
@@ -15987,7 +16082,7 @@ fn browser_renew_is_absent_when_not_enabled() {
                 renew: false,
             };
         }
-        let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams());
+        let (native_parts, native_host) = native_fixture_seams(&fixture, fake_seams(&settings));
         let daemon = boot(&settings, native_parts).expect("boot Floor");
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
@@ -16294,6 +16389,7 @@ fn browser_onboard_refuses_a_passing_check_before_hire() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -16343,6 +16439,7 @@ fn browser_onboard_records_the_chosen_check() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -16483,6 +16580,7 @@ fn browser_onboard_partial_retry_reruns_the_baseline() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             BaselineRunner::new(),
             Arc::clone(&clock),
@@ -16515,6 +16613,7 @@ fn browser_onboard_partial_retry_reruns_the_baseline() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -16577,6 +16676,7 @@ fn browser_goal_change_keeps_or_names_a_check() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -16730,10 +16830,12 @@ impl Drop for ReleaseInstructionClock {
 }
 
 fn held_instruction_seams(
+    settings: &duded::Settings,
     runner: &Arc<BaselineRunner>,
     clock: &Arc<HeldInstructionClock>,
-) -> Seams<SharedHost, BaselineRunner, HeldInstructionClock, FakeRng> {
+) -> Seams<SharedHost, BaselineRunner, HeldInstructionClock, common::FixtureRng> {
     let parts = seams(
+        settings,
         SharedHost::new(),
         Arc::clone(runner),
         Arc::new(TestClock::new()),
@@ -16876,7 +16978,8 @@ fn pending_instruction_check_blocks(route: PendingCheckRoute) {
     }
     let runner = BaselineRunner::new();
     let clock = HeldInstructionClock::new();
-    let daemon = boot(&settings, held_instruction_seams(&runner, &clock)).expect("boot");
+    let fixture_parts = held_instruction_seams(&settings, &runner, &clock);
+    let daemon = boot(&settings, fixture_parts).expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -16989,7 +17092,8 @@ fn legacy_goal_set_keeps_its_bypass_and_browser_current_goal_check_rules() {
     let settings = checks_settings(&fixture);
     let runner = BaselineRunner::new();
     let clock = HeldInstructionClock::new();
-    let daemon = boot(&settings, held_instruction_seams(&runner, &clock)).expect("boot");
+    let fixture_parts = held_instruction_seams(&settings, &runner, &clock);
+    let daemon = boot(&settings, fixture_parts).expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -17012,10 +17116,8 @@ fn legacy_goal_set_keeps_its_bypass_and_browser_current_goal_check_rules() {
     let release = clock.hold();
     end_turn(&running.handle, turn, None);
     clock.wait_held();
-    let legacy = common::set_goal(
-        &running.handle,
-        common::goal_params(agent, &[true_program(), "regression"]),
-    );
+    let params = common::goal_params(agent, &[true_program(), "regression"]);
+    let legacy = common::set_goal(&running.handle, params);
     assert_ne!(legacy, old_goal);
     assert!(
         runner.ran().is_empty(),
@@ -17101,6 +17203,7 @@ fn browser_baselines_are_limited_per_agent_and_session() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::clone(&runner),
             Arc::new(TestClock::new()),
@@ -17193,7 +17296,7 @@ fn browser_baselines_are_limited_per_agent_and_session() {
 fn checks_sibling_is_bounded_and_safe() {
     let fixture = Fixture::new();
     let settings = checks_settings(&fixture);
-    let daemon = boot(&settings, fake_seams()).expect("boot");
+    let daemon = boot(&settings, fake_seams(&settings)).expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
@@ -17231,7 +17334,7 @@ fn checks_sibling_is_bounded_and_safe() {
     let quiet = Fixture::new();
     let mut off = enrolled_settings(&quiet);
     off.floor_hire_enabled = false;
-    let daemon = boot(&off, fake_seams()).expect("boot");
+    let daemon = boot(&off, fake_seams(&off)).expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (cookie, csrf) = exchange(addr, &issue(&off).bootstrap);
@@ -17351,16 +17454,14 @@ fn browser_renew_keeps_or_names_a_check() {
     );
     let settings = renew_settings(&fixture, &renew_config(&entries));
     let runner = BaselineRunner::new();
-    let daemon = boot(
+    let fixture_parts = seams(
         &settings,
-        seams(
-            SharedHost::new(),
-            Arc::clone(&runner),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot Floor");
+        SharedHost::new(),
+        Arc::clone(&runner),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    let daemon = boot(&settings, fixture_parts).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, &repo);

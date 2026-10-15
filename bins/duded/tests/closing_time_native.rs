@@ -467,7 +467,7 @@ exec '{}' --exact the_helper_entry_point --quiet --nocapture
         pty_host: Box::new(ptys.clone()),
         predicates: Arc::new(ScriptedRunner::scripted([common::fails()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver,
         adapters,
         children,

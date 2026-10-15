@@ -59,6 +59,7 @@ fn local_hires_record_only_unique_exact_enrollment_matches() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

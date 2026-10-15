@@ -15,7 +15,6 @@ use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::floor::{SESSION_BOOTSTRAP_LEN, SessionIssueResult};
 use dudes_proto::rpc::{CurrentMethod, ErrorCode, Method, RpcError};
 use dudes_rpc::Client;
-use dudes_supervisor::testing::FakeRng;
 
 mod common;
 
@@ -196,6 +195,7 @@ fn bootstrap_exchange_is_single_use_origin_bound_and_expiring() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -308,6 +308,7 @@ fn bootstrap_exchange_is_single_use_origin_bound_and_expiring() {
     let second = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             clock,
@@ -438,6 +439,7 @@ fn recover_cookie_only_reaches_snapshot() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
@@ -538,6 +540,7 @@ fn unattached_browser_close_appends_no_domain_record() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
@@ -640,12 +643,13 @@ fn unattached_browser_close_appends_no_domain_record() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-type TestDaemon = duded::Daemon<SharedHost, ScriptedRunner, TestClock, FakeRng>;
+type TestDaemon = duded::Daemon<SharedHost, ScriptedRunner, TestClock, common::FixtureRng>;
 
 fn boot_floor(settings: &duded::Settings) -> anyhow::Result<TestDaemon> {
     boot(
         settings,
         seams(
+            settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -771,6 +775,7 @@ fn carry_daemon(
     boot(
         settings,
         common::seams_with(
+            settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(clock),

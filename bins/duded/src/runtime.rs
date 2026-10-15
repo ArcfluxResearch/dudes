@@ -8353,9 +8353,11 @@ mod floor_shutdown_tests {
     #[test]
     fn the_shutdown_drain_drops_git_replies_instead_of_answering_unknown() {
         let fixture = common::Fixture::new();
+        let settings = fixture.settings();
         let mut daemon = crate::boot(
-            &fixture.settings(),
+            &settings,
             common::seams(
+                &settings,
                 common::SharedHost::new(),
                 Arc::new(common::ScriptedRunner::default()),
                 Arc::new(common::TestClock::new()),
@@ -8405,6 +8407,7 @@ mod work_refresh_tests {
         let mut daemon = crate::boot(
             &settings,
             common::seams_with(
+                &settings,
                 common::SharedHost::new(),
                 Arc::new(common::ScriptedRunner::default()),
                 Arc::new(common::TestClock::new()),
@@ -8492,6 +8495,7 @@ mod work_refresh_tests {
         let mut daemon = crate::boot(
             &settings,
             common::seams(
+                &settings,
                 common::SharedHost::new(),
                 Arc::new(common::ScriptedRunner::default()),
                 Arc::new(common::TestClock::new()),
@@ -8560,6 +8564,7 @@ mod work_refresh_tests {
         let mut daemon = crate::boot(
             &settings,
             common::seams_with(
+                &settings,
                 common::SharedHost::new(),
                 Arc::new(common::ScriptedRunner::default()),
                 Arc::new(common::TestClock::new()),
@@ -8607,11 +8612,11 @@ mod mail_wake_fence_tests {
     use super::work_test_support as common;
     use super::*;
     use dudes_proto::{Evidence, ExitStatus, LoopDecision, MailWakePurpose, TurnOutcome};
-    use dudes_supervisor::testing::{FakeHost, FakeRng, journal_with_issued_turn};
+    use dudes_supervisor::testing::{FakeHost, journal_with_issued_turn};
     use dudes_types::{MailId, MailState, Provenance, Usage, Usd};
 
     type TestDaemon =
-        Daemon<common::SharedHost, common::ScriptedRunner, common::TestClock, FakeRng>;
+        Daemon<common::SharedHost, common::ScriptedRunner, common::TestClock, common::FixtureRng>;
 
     struct Owned {
         daemon: TestDaemon,
@@ -8647,6 +8652,7 @@ mod mail_wake_fence_tests {
             let daemon = crate::boot(
                 &settings,
                 common::seams_with(
+                    &settings,
                     host.clone(),
                     Arc::new(common::ScriptedRunner::default()),
                     Arc::clone(&clock),

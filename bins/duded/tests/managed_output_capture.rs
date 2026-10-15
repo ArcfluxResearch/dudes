@@ -321,6 +321,7 @@ fn text(state: &OutputState) -> String {
 #[test]
 fn real_short_child_eof_before_registration_keeps_durably_bound_ended_text() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let dir = fixture.state.path().join("short");
     std::fs::create_dir(&dir).expect("short child work directory");
     let children = ChildEnds::new();
@@ -336,7 +337,7 @@ fn real_short_child_eof_before_registration_keeps_durably_bound_ended_text() {
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(LocalAdapter) as Box<dyn Adapter>]
             .into_iter()
@@ -399,6 +400,7 @@ fn real_short_child_eof_before_registration_keeps_durably_bound_ended_text() {
 #[test]
 fn real_no_init_and_rejected_init_end_as_empty_without_unconfirmed_text() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let children = ChildEnds::new();
     let output = children.output();
     let fired = Arc::new(AtomicUsize::new(0));
@@ -412,7 +414,7 @@ fn real_no_init_and_rejected_init_end_as_empty_without_unconfirmed_text() {
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(LocalAdapter) as Box<dyn Adapter>]
             .into_iter()
@@ -493,6 +495,7 @@ fn real_no_init_and_rejected_init_end_as_empty_without_unconfirmed_text() {
 #[test]
 fn real_durable_overcap_session_acknowledges_empty_live_view_before_end() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let dir = fixture.state.path().join("overcap-live");
     std::fs::create_dir(&dir).expect("held child work directory");
     let children = ChildEnds::new();
@@ -502,7 +505,7 @@ fn real_durable_overcap_session_acknowledges_empty_live_view_before_end() {
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(LocalAdapter) as Box<dyn Adapter>]
             .into_iter()
@@ -570,6 +573,7 @@ fn real_durable_overcap_session_acknowledges_empty_live_view_before_end() {
 #[allow(clippy::too_many_lines)]
 fn capture_attributed_assistant_text_in_bounded_run_registry() {
     let fixture = Fixture::new();
+    let settings = fixture.settings();
     let children = ChildEnds::new();
     let output = children.output();
     let seams = Seams {
@@ -577,7 +581,7 @@ fn capture_attributed_assistant_text_in_bounded_run_registry() {
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(LocalAdapter) as Box<dyn Adapter>]
             .into_iter()
@@ -811,7 +815,7 @@ fn capture_attributed_assistant_text_in_bounded_run_registry() {
             pty_host: Box::new(duded::ports::ClosedPtyHost),
             predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
             clock: Arc::new(TestClock::new()),
-            rng: FakeRng::new(),
+            rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
             resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
             adapters: [Box::new(LocalAdapter) as Box<dyn Adapter>]
                 .into_iter()

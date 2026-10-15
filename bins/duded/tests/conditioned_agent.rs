@@ -37,6 +37,7 @@ fn credential_of(settings: &duded::Settings) -> OperatorCredential {
 
 fn token_after_mint_pump(
     fixture: &Fixture,
+    tokens: &dudes_supervisor::testing::FakeTokens,
     handle: &duded::Handle,
     agent: dudes_types::AgentId,
 ) -> dudes_proto::rpc::hook::HookToken {
@@ -58,7 +59,7 @@ fn token_after_mint_pump(
             _ => None,
         })
         .expect("the exact durable mint position");
-    let token = common::token_of(&hash);
+    let token = tokens.token_of(&hash);
     let completed = handle
         .doctor()
         .expect("read after the mint's existing pump");
@@ -76,20 +77,20 @@ fn hire_on_authorized_connection(
     Arc<ScriptedColumn>,
     SocketClient,
     dudes_types::AgentId,
+    dudes_supervisor::testing::FakeTokens,
 ) {
     let settings = fixture.settings();
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
-    let daemon = boot(
+    let parts = common::seams_with(
         &settings,
-        common::seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>,
-        ),
-    )
-    .expect("boot");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>,
+    );
+    let tokens = parts.rng.tokens();
+    let daemon = boot(&settings, parts).expect("boot");
     let running = common::start(daemon);
     let mut operator = Client::connect(settings.socket()).expect("connect before hire");
     let response = operator
@@ -105,10 +106,11 @@ fn hire_on_authorized_connection(
     assert!(response.error.is_none(), "agent.hire: {response:?}");
     let hired: HireResult =
         serde_json::from_value(response.result.expect("hire result")).expect("typed hire result");
-    (settings, running, column, operator, hired.agent)
+    (settings, running, column, operator, hired.agent, tokens)
 }
 
 struct MutationReady {
+    tokens: dudes_supervisor::testing::FakeTokens,
     settings: duded::Settings,
     running: common::Running,
     column: Arc<ScriptedColumn>,
@@ -122,17 +124,16 @@ struct MutationReady {
 fn ready_with_mutation(fixture: &Fixture) -> MutationReady {
     let settings = fixture.settings();
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
-    let daemon = boot(
+    let parts = common::seams_with(
         &settings,
-        common::seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>,
-        ),
-    )
-    .expect("boot");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>,
+    );
+    let tokens = parts.rng.tokens();
+    let daemon = boot(&settings, parts).expect("boot");
     let authority = Arc::clone(daemon.operator_authority());
     let connection = AuthorityMutationConnection::acquire(&authority, PeerProvenance::Unresolvable)
         .expect("the mutation connection acquires in the pre-agent epoch");
@@ -161,6 +162,7 @@ fn ready_with_mutation(fixture: &Fixture) -> MutationReady {
     let hired: HireResult =
         serde_json::from_value(response.result.expect("hire result")).expect("typed hire result");
     MutationReady {
+        tokens,
         settings,
         running,
         column,
@@ -190,13 +192,13 @@ fn mutation_call(ready: &MutationReady, method: Method, text: &str) -> dudes_pro
 #[test]
 fn operator_answer_applies_after_fsync_and_clears_waiting() {
     let fixture = Fixture::new();
-    let (settings, mut running, column, mut operator, agent) =
+    let (settings, mut running, column, mut operator, agent, tokens) =
         hire_on_authorized_connection(&fixture);
     common::set_goal(
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    let token = token_after_mint_pump(&fixture, &running.handle, agent);
+    let token = token_after_mint_pump(&fixture, &tokens, &running.handle, agent);
     column.set(PeerProvenance::Agent(agent));
     let mut asker = Client::connect(settings.socket()).expect("agent connection");
     let ask = |client: &mut Client<_, _>, text: &str| {
@@ -246,7 +248,7 @@ fn answer_provenance_rejection_is_durable_and_preserves_waiting() {
         &ready.running.handle,
         common::goal_params(ready.agent, &["/usr/bin/true"]),
     );
-    let token = token_after_mint_pump(&fixture, &ready.running.handle, ready.agent);
+    let token = token_after_mint_pump(&fixture, &ready.tokens, &ready.running.handle, ready.agent);
     ready.column.set(PeerProvenance::Agent(ready.agent));
     let mut asker = Client::connect(ready.settings.socket()).expect("agent connection");
     let first = asker
@@ -304,7 +306,7 @@ fn answer_provenance_rejection_is_durable_and_preserves_waiting() {
 #[test]
 fn local_answer_without_an_open_question_is_refused_before_append() {
     let fixture = Fixture::new();
-    let (settings, mut running, column, mut operator, agent) =
+    let (settings, mut running, column, mut operator, agent, tokens) =
         hire_on_authorized_connection(&fixture);
     let answer = |client: &mut SocketClient, who: dudes_types::AgentId, text: &str| {
         client
@@ -335,7 +337,7 @@ fn local_answer_without_an_open_question_is_refused_before_append() {
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    let token = token_after_mint_pump(&fixture, &running.handle, agent);
+    let token = token_after_mint_pump(&fixture, &tokens, &running.handle, agent);
     column.set(PeerProvenance::Agent(agent));
     let mut asker = Client::connect(settings.socket()).expect("agent connection");
     let question = asker
@@ -372,7 +374,8 @@ fn waiting_on_authorized_connection(
     SocketClient,
     dudes_types::AgentId,
 ) {
-    let (settings, running, _column, operator, agent) = hire_on_authorized_connection(fixture);
+    let (settings, running, _column, operator, agent, _tokens) =
+        hire_on_authorized_connection(fixture);
     running
         .handle
         .ask(Ask::Ask {
@@ -519,7 +522,7 @@ fn clean_answer_after_a_refused_nul_answer_issues_its_turn() {
 #[test]
 fn operator_steer_applies_after_fsync_and_reaches_the_next_event() {
     let fixture = Fixture::new();
-    let (settings, mut running, _column, mut operator, agent) =
+    let (settings, mut running, _column, mut operator, agent, _tokens) =
         hire_on_authorized_connection(&fixture);
     let steered = operator
         .call_as_operator(

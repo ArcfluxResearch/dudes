@@ -197,16 +197,14 @@ fn explicit_limits_reach_first_and_reissued_launch() {
     let settings = fixture.settings();
 
     let first_host = LoggingHost::new(true);
-    let daemon = boot(
+    let fixture_parts = seams(
         &settings,
-        seams(
-            first_host.clone(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot");
+        first_host.clone(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    let daemon = boot(&settings, fixture_parts).expect("boot");
     let mut running = common::start(daemon);
     let mut client = Client::connect(settings.socket()).expect("connect to the daemon");
 
@@ -260,6 +258,7 @@ fn explicit_limits_reach_first_and_reissued_launch() {
     // Run two: the same journal, a different `[providers.claude]` table.
     let second_host = LoggingHost::new(false);
     let mut seams = seams(
+        &settings,
         second_host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::ticking(1_787_394_700_000, 1)),
@@ -365,6 +364,7 @@ fn absent_zero_and_invalid_limits_remain_distinct_before_the_journal() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

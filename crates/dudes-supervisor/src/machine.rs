@@ -656,6 +656,13 @@ pub struct Supervisor<C: Clock, R: Rng> {
     pending: Vec<Effect>,
 }
 
+#[cfg(any(test, feature = "testing"))]
+impl<C: Clock> Supervisor<C, crate::testing::FakeRng> {
+    pub(crate) fn test_rng_drawn(&self) -> u128 {
+        self.rng.drawn()
+    }
+}
+
 impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// Mint a board card id from the daemon's configured random source.
     pub fn mint_card_id(&mut self) -> CardId {

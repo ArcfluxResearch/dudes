@@ -3411,7 +3411,6 @@ mod tests {
         predicate: dudes_proto::Predicate,
     ) {
         let (mut harness, agent, goal) = ended_no_callback_goal(predicate);
-        let prior_draws = harness.supervisor.rng.drawn();
         harness.restart();
         assert!(
             !harness.supervisor.instructions.recovering(),
@@ -3420,9 +3419,6 @@ mod tests {
         harness.drive(Input::Command(Command::GoalClear { agent, goal }));
         assert!(harness.supervisor.world().goals[&goal].cleared);
         assert_eq!(harness.supervisor.world().agents[&agent].goal, None);
-        while harness.supervisor.rng.drawn() < prior_draws {
-            let _ = harness.supervisor.rng.ulid();
-        }
         let successor = harness.set_goal(agent, &["/usr/bin/false"]);
         assert_ne!(successor, goal);
         let turn = harness

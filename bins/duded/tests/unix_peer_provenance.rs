@@ -726,7 +726,7 @@ fn start_real_with(
         pty_host,
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(settings, FakeRng::new()),
         resolver,
         adapters,
         children,
@@ -764,7 +764,11 @@ fn questions(fixture: &Fixture) -> Vec<(AgentId, String)> {
         .collect()
 }
 
-fn mint_for(fixture: &Fixture, agent: AgentId) -> HookToken {
+fn mint_for(
+    fixture: &Fixture,
+    tokens: &dudes_supervisor::testing::FakeTokens,
+    agent: AgentId,
+) -> HookToken {
     let hash = fixture.await_record("HookTokenMinted", |record| match record {
         Record::HookTokenMinted {
             agent: who,
@@ -772,7 +776,7 @@ fn mint_for(fixture: &Fixture, agent: AgentId) -> HookToken {
         } if *who == agent => Some(token_hash.clone()),
         _ => None,
     });
-    common::token_of(&hash)
+    tokens.token_of(&hash)
 }
 
 #[test]
@@ -1497,7 +1501,7 @@ fn dispatch_negative_with_resolver(label: &str, resolver: Resolver, expected: Ne
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::default()),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver,
         adapters: [Box::new(HelperAdapter) as Box<dyn Adapter>]
             .into_iter()
@@ -1709,7 +1713,7 @@ fn sibling_escape_unreadable_and_absent_identity_are_refused() {
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver,
         adapters: [Box::new(HelperAdapter) as Box<dyn Adapter>]
             .into_iter()
@@ -1717,6 +1721,7 @@ fn sibling_escape_unreadable_and_absent_identity_are_refused() {
         children,
         witness: Witness::default(),
     };
+    let tokens = seams.rng.tokens();
     let mut running = common::start(boot(&settings, seams).expect("boot production resolver"));
     let agent = common::hire(&running.handle, fixture.state.path());
     common::set_goal(
@@ -1726,7 +1731,7 @@ fn sibling_escape_unreadable_and_absent_identity_are_refused() {
     fixture.await_record("TurnSpawned", |record| {
         matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent).then_some(())
     });
-    let token = mint_for(&fixture, agent);
+    let token = mint_for(&fixture, &tokens, agent);
 
     let params = serde_json::to_value(AskParams {
         token,

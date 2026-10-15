@@ -127,23 +127,22 @@ fn seed(fixture: &Fixture, records: Vec<Record>) -> duded::Settings {
 }
 
 fn seams(
-    fixture: &Fixture,
-) -> duded::settings::Seams<SharedHost, ScriptedRunner, TestClock, dudes_supervisor::testing::FakeRng>
-{
-    let mut seams = common::seams(
+    settings: &duded::Settings,
+) -> duded::settings::Seams<SharedHost, ScriptedRunner, TestClock, common::FixtureRng> {
+    common::seams(
+        settings,
         SharedHost::new(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
         Witness::default(),
-    );
-    for _ in 0..fixture.records().len() * 8 + 64 {
-        dudes_supervisor::Rng::ulid(&mut seams.rng);
-    }
-    seams
+    )
 }
 
 fn boot_error(fixture: &Fixture, settings: &duded::Settings) -> String {
-    match boot(settings, seams(fixture)) {
+    let before = fixture.records();
+    let result = boot(settings, seams(settings));
+    assert_eq!(fixture.records(), before, "refused replay appends nothing");
+    match result {
         Ok(_) => panic!("a forged ticket start was admitted"),
         Err(error) => format!("{error:#}"),
     }
@@ -234,7 +233,7 @@ fn a_start_that_reuses_a_goal_id_stops_replay() {
 fn the_start_the_daemon_writes_replays_to_a_working_ticket() {
     let fixture = Fixture::new();
     let settings = seed(&fixture, story(honest_goal()));
-    let daemon = boot(&settings, seams(&fixture)).expect("an honest start replays");
+    let daemon = boot(&settings, seams(&settings)).expect("an honest start replays");
     let mut running = common::start(daemon);
     let credential = dudes_proto::rpc::cred::OperatorCredential::new(
         std::fs::read_to_string(

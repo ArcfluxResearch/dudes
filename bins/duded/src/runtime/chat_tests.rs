@@ -208,10 +208,12 @@ fn send(handle: &Handle, identity: &SessionIdentity, agent: AgentId, text: &str,
 }
 
 fn with_owned_program<H: dudes_supervisor::ProcessHost, P: crate::predicate::PredicateRunner>(
+    settings: &crate::Settings,
     host: H,
     predicates: Arc<P>,
-) -> crate::Seams<H, P, common::TestClock, dudes_supervisor::testing::FakeRng> {
+) -> crate::Seams<H, P, common::TestClock, common::FixtureRng> {
     let mut seams = common::seams(
+        settings,
         host,
         predicates,
         Arc::new(common::TestClock::new()),
@@ -227,11 +229,12 @@ fn with_owned_program<H: dudes_supervisor::ProcessHost, P: crate::predicate::Pre
 }
 
 fn with_native_program<H: dudes_supervisor::ProcessHost, P: crate::predicate::PredicateRunner>(
+    settings: &crate::Settings,
     host: H,
     native: &common::SharedHost,
     predicates: Arc<P>,
-) -> crate::Seams<H, P, common::TestClock, dudes_supervisor::testing::FakeRng> {
-    let seams = with_owned_program(host, predicates);
+) -> crate::Seams<H, P, common::TestClock, common::FixtureRng> {
+    let seams = with_owned_program(settings, host, predicates);
     native.bind_child_ends(Arc::clone(&seams.children));
     seams
 }
@@ -490,7 +493,9 @@ fn attached_browser_context_uses_authenticated_hook_fifo_without_reply_history()
     let fixture = common::Fixture::new();
     let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
     let resolver = common::ScriptedColumn::new(dudes_proto::PeerProvenance::NoRecordedAgent);
+    let settings = fixture.settings();
     let mut seams = with_native_program(
+        &settings,
         host.clone(),
         &host,
         Arc::new(common::ScriptedRunner::default()),
@@ -498,7 +503,8 @@ fn attached_browser_context_uses_authenticated_hook_fifo_without_reply_history()
     seams.resolver =
         crate::classify::Resolver::fixed(Arc::clone(&resolver) as Arc<dyn dudes_rpc::PeerResolver>);
     seams.pty_host = Box::new(common::SharedPtyHost::new(fixture.journal_dir()));
-    let daemon = boot_with_options(&fixture.settings(), seams, RunOptions::default()).unwrap();
+    let tokens = seams.rng.tokens();
+    let daemon = boot_with_options(&settings, seams, RunOptions::default()).unwrap();
     let socket = daemon.socket().to_path_buf();
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -509,7 +515,7 @@ fn attached_browser_context_uses_authenticated_hook_fifo_without_reply_history()
     let ordinary = fixture.await_turn();
     attach_managed_agent(&running, &fixture, &host, agent, ordinary);
     resolver.set(dudes_proto::PeerProvenance::Agent(agent));
-    let token = common::hook_shim::minted_token(&fixture, agent);
+    let token = common::hook_shim::minted_token(&fixture, &tokens, agent);
     running
         .handle
         .ask(crate::ports::Ask::Steer {
@@ -570,9 +576,14 @@ fn attached_browser_context_uses_authenticated_hook_fifo_without_reply_history()
 fn cancellation_completes_while_preparation_is_held_and_late_readiness_is_inert() {
     let fixture = common::Fixture::new();
     let host = common::SharedHost::new();
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
-        with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default())),
+        &settings,
+        with_owned_program(
+            &settings,
+            host.clone(),
+            Arc::new(common::ScriptedRunner::default()),
+        ),
         RunOptions::default(),
     )
     .expect("boot");
@@ -687,9 +698,10 @@ fn ordinary_done_precedes_note_only_and_note_end_never_judges_again() {
             timed_out: false,
         },
     ]));
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
-        with_native_program(host.clone(), &host, Arc::clone(&predicates)),
+        &settings,
+        with_native_program(&settings, host.clone(), &host, Arc::clone(&predicates)),
         RunOptions::default(),
     )
     .expect("boot");
@@ -779,9 +791,10 @@ fn completed_note_preserves_original_budget_question_and_accounts_hops() {
         let fixture = common::Fixture::new();
         let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
         let predicates = Arc::new(common::ScriptedRunner::scripted([common::passes()]));
+        let settings = fixture.settings();
         let daemon = boot_with_options(
-            &fixture.settings(),
-            with_native_program(host.clone(), &host, Arc::clone(&predicates)),
+            &settings,
+            with_native_program(&settings, host.clone(), &host, Arc::clone(&predicates)),
             RunOptions::default(),
         )
         .unwrap();
@@ -879,9 +892,11 @@ fn completed_note_preserves_original_budget_question_and_accounts_hops() {
 fn completed_note_replay_keeps_the_latest_inferred_end_gate() {
     let fixture = common::Fixture::new();
     let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
+        &settings,
         with_native_program(
+            &settings,
             host.clone(),
             &host,
             Arc::new(common::ScriptedRunner::scripted([common::passes()])),
@@ -934,9 +949,14 @@ fn completed_note_replay_keeps_the_latest_inferred_end_gate() {
         .unwrap();
     drop(writer);
     let host = common::SharedHost::new();
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
-        with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default())),
+        &settings,
+        with_owned_program(
+            &settings,
+            host.clone(),
+            Arc::new(common::ScriptedRunner::default()),
+        ),
         RunOptions::default(),
     )
     .unwrap();
@@ -971,9 +991,10 @@ fn failed_note_only_turns_keep_rapid_failure_protection_without_predicates() {
     let fixture = common::Fixture::new();
     let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
     let predicates = Arc::new(common::ScriptedRunner::scripted([common::passes()]));
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
-        with_native_program(host.clone(), &host, Arc::clone(&predicates)),
+        &settings,
+        with_native_program(&settings, host.clone(), &host, Arc::clone(&predicates)),
         RunOptions::default(),
     )
     .unwrap();
@@ -1056,9 +1077,11 @@ fn failed_note_only_turns_keep_rapid_failure_protection_without_predicates() {
 fn note_lifecycle_keeps_an_unresolved_ordinary_board_predicate_fence() {
     let fixture = common::Fixture::new();
     let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
+        &settings,
         with_native_program(
+            &settings,
             host.clone(),
             &host,
             Arc::new(common::ScriptedRunner::scripted([common::passes()])),
@@ -1142,9 +1165,10 @@ fn completed_question_answer_closes_without_trigger_or_delivery() {
             timed_out: false,
         },
     ]));
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
-        with_native_program(host.clone(), &host, predicates),
+        &settings,
+        with_native_program(&settings, host.clone(), &host, predicates),
         RunOptions::default(),
     )
     .expect("boot");
@@ -1259,9 +1283,11 @@ fn completed_question_answer_closes_without_trigger_or_delivery() {
 #[test]
 fn expired_writer_session_cannot_read_a_durable_chat_receipt() {
     let fixture = common::Fixture::new();
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
+        &settings,
         with_owned_program(
+            &settings,
             common::SharedHost::new(),
             Arc::new(common::ScriptedRunner::default()),
         ),
@@ -1312,9 +1338,14 @@ fn expired_writer_session_cannot_read_a_durable_chat_receipt() {
 fn refused_append_permit_releases_only_the_uncommitted_cancellation_claim() {
     let fixture = common::Fixture::new();
     let host = common::SharedHost::new();
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
-        with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default())),
+        &settings,
+        with_owned_program(
+            &settings,
+            host.clone(),
+            Arc::new(common::ScriptedRunner::default()),
+        ),
         RunOptions::default(),
     )
     .expect("boot");
@@ -1363,9 +1394,11 @@ fn refused_append_permit_releases_only_the_uncommitted_cancellation_claim() {
 fn ordinary_note_reserves_multibyte_task_and_consumes_only_carried_answers() {
     let fixture = common::Fixture::new();
     let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
+        &settings,
         with_native_program(
+            &settings,
             host.clone(),
             &host,
             Arc::new(common::ScriptedRunner::default()),
@@ -1434,9 +1467,11 @@ fn ordinary_note_reserves_multibyte_task_and_consumes_only_carried_answers() {
 fn actual_host_entry_wins_before_any_durable_spawn_receipt() {
     let fixture = common::Fixture::new();
     let host = BoundaryHost::with_native_evidence(fixture.journal_dir());
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
+        &settings,
         with_native_program(
+            &settings,
             host.clone(),
             &host.inner,
             Arc::new(common::ScriptedRunner::default()),
@@ -1500,9 +1535,11 @@ fn actual_host_entry_wins_before_any_durable_spawn_receipt() {
 fn historical_intent_stays_ambiguous_when_new_preparation_never_dispatches() {
     let fixture = common::Fixture::new();
     let host = BoundaryHost::with_native_evidence(fixture.journal_dir());
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
+        &settings,
         with_native_program(
+            &settings,
             host.clone(),
             &host.inner,
             Arc::new(common::ScriptedRunner::default()),
@@ -1562,9 +1599,11 @@ fn historical_intent_stays_ambiguous_when_new_preparation_never_dispatches() {
     let pause = crate::BrowserLaunchPause::default();
     pause.arm();
     let restarted_host = common::SharedHost::new();
+    let settings = fixture.settings();
     let daemon = crate::boot::boot_with_preparation_pause(
-        &fixture.settings(),
+        &settings,
         with_owned_program(
+            &settings,
             restarted_host.clone(),
             Arc::new(common::ScriptedRunner::default()),
         ),
@@ -1642,9 +1681,11 @@ impl HistoricalReplay {
     fn recorded(halted: bool) -> Self {
         let fixture = common::Fixture::new();
         let host = BoundaryHost::with_native_evidence(fixture.journal_dir());
+        let settings = fixture.settings();
         let daemon = boot_with_options(
-            &fixture.settings(),
+            &settings,
             with_native_program(
+                &settings,
                 host.clone(),
                 &host.inner,
                 Arc::new(common::ScriptedRunner::default()),
@@ -1719,7 +1760,9 @@ fn assert_failed_replay_preserves_history(failure: &str) {
         fail_spawn: (failure == "host").then_some(std::io::ErrorKind::NotFound),
         ..dudes_supervisor::testing::FakeHost::wall_clock_anchored()
     });
-    let mut seams = with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default()));
+    let settings = history.fixture.settings();
+    let predicates = Arc::new(common::ScriptedRunner::default());
+    let mut seams = with_owned_program(&settings, host.clone(), predicates);
     seams.adapters = Adapters::new([Box::new(ClaudeAdapter::new(ClaudeConfig {
         command: if failure == "resolution" {
             history
@@ -1741,7 +1784,7 @@ fn assert_failed_replay_preserves_history(failure: &str) {
         pause.arm();
     }
     let daemon = crate::boot::boot_with_preparation_pause(
-        &history.fixture.settings(),
+        &settings,
         seams,
         RunOptions::default(),
         pause.clone(),
@@ -1795,14 +1838,12 @@ fn assert_failed_replay_preserves_history(failure: &str) {
     assert!(matches!(outcome, ChatOutcome::ReissueCancelled { .. }));
     assert!(host.spawned().is_empty());
     restarted.stop(ExitCause::Ended);
-    let projection = dudes_journal::Projections::open(
-        &history
-            .fixture
-            .state
-            .path()
-            .join(crate::boot::PROJECTION_FILE),
-    )
-    .unwrap();
+    let projection_path = history
+        .fixture
+        .state
+        .path()
+        .join(crate::boot::PROJECTION_FILE);
+    let projection = dudes_journal::Projections::open(&projection_path).unwrap();
     let day = dudes_types::Timestamp::from_unix_millis(1_787_394_600_000).utc_day();
     assert_eq!(
         format!(
@@ -1831,7 +1872,7 @@ fn historical_failed_host_keeps_dispatch_uncertainty() {
 }
 
 type PreparationDaemon<H = common::SharedHost> =
-    super::Daemon<H, common::ScriptedRunner, common::TestClock, dudes_supervisor::testing::FakeRng>;
+    super::Daemon<H, common::ScriptedRunner, common::TestClock, common::FixtureRng>;
 
 fn drive_preparation_pause<H: dudes_supervisor::ProcessHost>(
     daemon: &mut PreparationDaemon<H>,
@@ -2078,9 +2119,14 @@ fn actual_late_preparation_and_proposed_ack_keep_uncertainty_through_resume() {
     let host = BoundaryHost::new();
     let pause = crate::BrowserLaunchPause::default();
     pause.arm();
+    let settings = history.fixture.settings();
     let mut daemon = crate::boot::boot_with_preparation_pause(
-        &history.fixture.settings(),
-        with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default())),
+        &settings,
+        with_owned_program(
+            &settings,
+            host.clone(),
+            Arc::new(common::ScriptedRunner::default()),
+        ),
         RunOptions::default(),
         pause.clone(),
     )
@@ -2159,9 +2205,11 @@ fn actual_late_preparation_and_proposed_ack_keep_uncertainty_through_resume() {
 }
 
 fn start_finite_nonlaunch_chat(fixture: &common::Fixture, host: &BoundaryHost) -> common::Running {
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
+        &settings,
         with_native_program(
+            &settings,
             host.clone(),
             &host.inner,
             Arc::new(common::ScriptedRunner::default()),
@@ -2271,9 +2319,14 @@ fn finite_nonlaunch_preserves_confirmed_session_and_holds_follow_up() {
 fn a_goal_free_open_turn_blocks_replacement_after_a_goal_is_set() {
     let fixture = common::Fixture::new();
     let host = BoundaryHost::new();
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
-        with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default())),
+        &settings,
+        with_owned_program(
+            &settings,
+            host.clone(),
+            Arc::new(common::ScriptedRunner::default()),
+        ),
         RunOptions::default(),
     )
     .unwrap();
@@ -2350,12 +2403,18 @@ fn first_browser_attempt_known_nonlaunch_keeps_existing_failure_accounting() {
         }
         let host = BoundaryHost::with_native_evidence(fixture.journal_dir());
         let predicates = Arc::new(common::ScriptedRunner::scripted([common::passes()]));
-        let mut seams = with_native_program(host.clone(), &host.inner, Arc::clone(&predicates));
+        let settings = fixture.settings();
+        let mut seams = with_native_program(
+            &settings,
+            host.clone(),
+            &host.inner,
+            Arc::clone(&predicates),
+        );
         seams.adapters = Adapters::new([Box::new(ClaudeAdapter::new(ClaudeConfig {
             command: program.clone().into_os_string(),
             ..ClaudeConfig::default()
         })) as Box<dyn Adapter>]);
-        let daemon = boot_with_options(&fixture.settings(), seams, RunOptions::default()).unwrap();
+        let daemon = boot_with_options(&settings, seams, RunOptions::default()).unwrap();
         let mut running = common::start(daemon);
         let agent = common::hire(&running.handle, fixture.state.path());
         let goal = common::set_goal(
@@ -2414,9 +2473,14 @@ fn assert_mcp_edit_after_known_browser_end(fixture: &common::Fixture, agent: Age
     )
     .unwrap();
     let host = common::SharedHost::new();
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
-        with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default())),
+        &settings,
+        with_owned_program(
+            &settings,
+            host.clone(),
+            Arc::new(common::ScriptedRunner::default()),
+        ),
         RunOptions::default().with_mcp_servers(definitions),
     )
     .unwrap();
@@ -2486,9 +2550,11 @@ fn chat_capacity_history(fixture: &common::Fixture, agent: AgentId) {
 #[test]
 fn existing_browser_and_operator_look_admission_preserves_chat_reservation() {
     let fixture = common::Fixture::new();
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
+        &settings,
         with_owned_program(
+            &settings,
             common::SharedHost::new(),
             Arc::new(common::ScriptedRunner::default()),
         ),
@@ -2499,9 +2565,11 @@ fn existing_browser_and_operator_look_admission_preserves_chat_reservation() {
     let agent = common::hire(&initial.handle, fixture.state.path());
     initial.stop(ExitCause::Ended);
     chat_capacity_history(&fixture, agent);
+    let settings = fixture.settings();
     let daemon = boot_with_options(
-        &fixture.settings(),
+        &settings,
         with_owned_program(
+            &settings,
             common::SharedHost::new(),
             Arc::new(common::ScriptedRunner::default()),
         ),
@@ -2552,12 +2620,12 @@ fn owned_managed_child_receives_note_only_stdin_and_journals_exact_reply() {
             timed_out: false,
         },
     ]));
-    let mut seams = with_owned_program(host, predicates);
+    let settings = fixture.settings();
+    let mut seams = with_owned_program(&settings, host, predicates);
     seams.children = children;
     seams.adapters =
         Adapters::new([Box::new(EchoEngine(std::env::current_exe().unwrap())) as Box<dyn Adapter>]);
-    let daemon =
-        boot_with_options(&fixture.settings(), seams, RunOptions::default()).expect("owned daemon");
+    let daemon = boot_with_options(&settings, seams, RunOptions::default()).expect("owned daemon");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     let goal = common::set_goal(
@@ -2637,9 +2705,11 @@ fn owned_managed_child_receives_note_only_stdin_and_journals_exact_reply() {
 #[test]
 fn the_exit_sequence_closes_browser_delivery() {
     let fixture = common::Fixture::new();
+    let settings = fixture.settings();
     let mut daemon = boot_with_options(
-        &fixture.settings(),
+        &settings,
         with_owned_program(
+            &settings,
             common::SharedHost::new(),
             Arc::new(common::ScriptedRunner::default()),
         ),
@@ -2715,9 +2785,14 @@ fn mcp_first_edit_waits_for_ungranted_browser_preparation_and_later_edits_keep_t
             .unwrap(),
         )
         .unwrap();
+        let settings = fixture.settings();
         let daemon = crate::boot::boot_with_preparation_pause(
-            &fixture.settings(),
-            with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default())),
+            &settings,
+            with_owned_program(
+                &settings,
+                host.clone(),
+                Arc::new(common::ScriptedRunner::default()),
+            ),
             RunOptions::default().with_mcp_servers(definitions),
             pause.clone(),
         )
@@ -2805,9 +2880,14 @@ fn mcp_first_edit_waits_for_a_historical_ungranted_dispatch_held_across_restart(
     )
     .unwrap();
     let host = common::SharedHost::new();
+    let settings = history.fixture.settings();
     let daemon = boot_with_options(
-        &history.fixture.settings(),
-        with_owned_program(host.clone(), Arc::new(common::ScriptedRunner::default())),
+        &settings,
+        with_owned_program(
+            &settings,
+            host.clone(),
+            Arc::new(common::ScriptedRunner::default()),
+        ),
         RunOptions::default().with_mcp_servers(definitions),
     )
     .unwrap();

@@ -67,6 +67,7 @@ fn observe(squat: bool) -> Run {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -198,6 +199,7 @@ fn the_identity_of_a_running_daemons_socket_reads_same_until_it_is_replaced() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

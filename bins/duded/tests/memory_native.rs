@@ -456,7 +456,7 @@ fn native_with_rng(
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(common::ScriptedRunner::scripted(predicates)),
         clock: Arc::new(common::TestClock::new()),
-        rng,
+        rng: common::FixtureRng::from_rng(&settings, rng),
         resolver,
         adapters: [Box::new(Helper) as Box<dyn Adapter>].into_iter().collect(),
         children,
@@ -555,10 +555,6 @@ fn native_overbound_memory_condense_reaches_the_child_and_replays_raw_pages() {
 
 fn assert_restarted_memory_launch(fixture: &common::Fixture, agent: AgentId, work: &Path) {
     std::fs::remove_file(work.join("carried")).unwrap();
-    let mut rng = FakeRng::new();
-    for _ in fixture.entries() {
-        dudes_supervisor::host::Rng::ulid(&mut rng);
-    }
     let Native {
         running: mut restarted,
         ..
@@ -566,7 +562,7 @@ fn assert_restarted_memory_launch(fixture: &common::Fixture, agent: AgentId, wor
         fixture,
         vec![common::passes()],
         dudes_journal::MemoryCondenseConfig::default(),
-        rng,
+        FakeRng::new(),
     );
     let goal = common::set_goal(
         &restarted.handle,
@@ -777,7 +773,7 @@ fn a_detected_durable_summary_invalidation_fences_later_local_work() {
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(common::ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(common::TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver,
         adapters: [Box::new(Helper) as Box<dyn Adapter>].into_iter().collect(),
         children,

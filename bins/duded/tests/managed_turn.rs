@@ -255,7 +255,7 @@ fn one_managed_turn(role: &str) -> Record {
         // one while the assertions are being read.
         predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(std::sync::Arc::new(duded::classify::NoWalk)),
         // Collected rather than built from a table: this test's provider is a helper, not a
         // configured one, and the registry keys it on what it says it serves.
@@ -371,7 +371,7 @@ fn two_managed_turns_resume_the_session_the_vendor_confirmed() {
             common::passes(),
         ])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(ClaudeAdapter::new(ClaudeConfig {
             command: command.into_os_string(),

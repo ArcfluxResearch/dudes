@@ -75,6 +75,7 @@ fn floor_with(fixture: &Fixture, terminal: bool, control: FloorControl) -> Floor
     let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let clock = Arc::new(TestClock::new());
     let mut seams = common::seams(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::scripted([common::passes()])),
         Arc::clone(&clock),

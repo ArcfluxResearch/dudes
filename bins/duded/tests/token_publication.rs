@@ -228,7 +228,12 @@ fn assert_goal_fold(fixture: &Fixture, agent: AgentId, goal: dudes_types::GoalId
     assert_eq!(world.goal_of(agent).unwrap().goal.id, goal);
 }
 
-fn await_minted_setup(fixture: &Fixture, handle: &duded::Handle, agent: AgentId) -> HookToken {
+fn await_minted_setup(
+    fixture: &Fixture,
+    tokens: &dudes_supervisor::testing::FakeTokens,
+    handle: &duded::Handle,
+    agent: AgentId,
+) -> HookToken {
     let hash = fixture.await_record("the exact setup mint", |record| match record {
         Record::HookTokenMinted {
             agent: owner,
@@ -262,7 +267,7 @@ fn await_minted_setup(fixture: &Fixture, handle: &duded::Handle, agent: AgentId)
             .lsn
             >= minted
     );
-    common::token_of(&hash)
+    tokens.token_of(&hash)
 }
 
 /// Return copied entries for the required initial snapshot and for one later fold-free pump.
@@ -273,6 +278,7 @@ fn publication_work(mintings: usize) -> (usize, usize) {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -325,6 +331,7 @@ fn changed_token_projection_is_published_before_answer() {
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let seams = common::seams_with(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -332,6 +339,7 @@ fn changed_token_projection_is_published_before_answer() {
         Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
     );
     host.bind_child_ends(Arc::clone(&seams.children));
+    let tokens = seams.rng.tokens();
     let daemon = boot(&settings, seams).expect("boot");
     let mut running = common::start(daemon);
     let sentinel = HookToken::new(RETAINED_TOKEN).unwrap();
@@ -366,12 +374,12 @@ fn changed_token_projection_is_published_before_answer() {
         })
     {
         assert_eq!(
-            ping_code(&mut client, &common::token_of(&hash)),
+            ping_code(&mut client, &tokens.token_of(&hash)),
             Some(ErrorCode::Unauthorized.code()),
             "a mint present in the immediate suffix is already published"
         );
     }
-    let token = await_minted_setup(&fixture, &running.handle, agent);
+    let token = await_minted_setup(&fixture, &tokens, &running.handle, agent);
     let turn = await_native_spawn(&fixture, &running.handle, &host, agent);
 
     assert_eq!(
@@ -427,6 +435,7 @@ fn failed_retirement_stays_refused_after_the_next_quiet_pump() {
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
     let host = GoneOnKillHost::with_native_evidence(fixture.journal_dir());
     let seams = common::seams_with(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -518,6 +527,7 @@ fn failed_retirement_refuses_the_same_connection_before_another_pump() {
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
     let host = GoneOnKillHost::with_native_evidence(fixture.journal_dir());
     let seams = common::seams_with(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),

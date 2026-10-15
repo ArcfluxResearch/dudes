@@ -22,13 +22,15 @@ type TestDaemon = crate::Daemon<
     common::SharedHost,
     common::ScriptedRunner,
     common::TestClock,
-    dudes_supervisor::testing::FakeRng,
+    common::FixtureRng,
 >;
 
 fn boot_daemon(fixture: &common::Fixture) -> TestDaemon {
+    let settings = settings(fixture);
     crate::boot(
-        &settings(fixture),
+        &settings,
         common::seams(
+            &settings,
             common::SharedHost::new(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::new()),
@@ -98,6 +100,7 @@ fn a_deferred_cut_failure_keeps_its_initiating_error_and_abandons_output() {
     let mut daemon = crate::boot(
         &settings,
         common::seams(
+            &settings,
             common::SharedHost::new(),
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::new()),
@@ -482,9 +485,11 @@ fn saving_memory_behind_a_policy_cut_drains_in_durable_order() {
 #[test]
 fn attached_writes_during_closing_publish_both_audit_cuts_without_replaying_bytes() {
     let fixture = common::Fixture::new();
+    let settings = settings(&fixture);
     let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
     let ptys = common::SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let mut seams = common::seams(
+        &settings,
         host.clone(),
         Arc::new(common::ScriptedRunner::default()),
         Arc::new(common::TestClock::new()),
@@ -493,7 +498,7 @@ fn attached_writes_during_closing_publish_both_audit_cuts_without_replaying_byte
     seams.pty_host = Box::new(ptys.clone());
     seams.resolver = common::native_resolver(&ptys);
     host.bind_child_ends(Arc::clone(&seams.children));
-    let mut daemon = crate::boot(&settings(&fixture), seams).unwrap();
+    let mut daemon = crate::boot(&settings, seams).unwrap();
     let hired = hire_open(&mut daemon, &fixture);
     let turn = daemon.sup.world().agents[&hired.agent].open_turn.unwrap();
     let session = daemon.sup.world().turns[&turn].session.clone().unwrap();
@@ -692,10 +697,12 @@ fn remap_seed_references(record: &mut Record, positions: &BTreeMap<Lsn, Lsn>) {
 #[test]
 fn restored_boot_snapshot_has_durable_counts_and_zero_monotonic_time_before_completion() {
     let fixture = common::Fixture::new();
+    let settings = settings(&fixture);
     let host = seed_closing(&fixture, false);
     let daemon = crate::boot(
-        &settings(&fixture),
+        &settings,
         common::seams(
+            &settings,
             host,
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::new()),
@@ -734,10 +741,12 @@ fn restored_boot_snapshot_has_durable_counts_and_zero_monotonic_time_before_comp
 #[test]
 fn historical_complete_boot_snapshot_has_no_closing_phase_or_progress() {
     let fixture = common::Fixture::new();
+    let settings = settings(&fixture);
     let host = seed_closing(&fixture, true);
     let daemon = crate::boot(
-        &settings(&fixture),
+        &settings,
         common::seams(
+            &settings,
             host,
             Arc::new(common::ScriptedRunner::default()),
             Arc::new(common::TestClock::new()),

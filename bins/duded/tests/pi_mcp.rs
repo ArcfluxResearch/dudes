@@ -102,6 +102,7 @@ fn boot_case(output: &[u8], timed_out: bool, truncated: bool) -> PiCase {
         EnvVar::new("DUDES_MAILBOX", "/scratch/mailbox"),
     ]);
     let mut seams = common::seams(
+        &settings,
         common::SharedHost::new(),
         runner.clone(),
         Arc::new(common::TestClock::new()),
@@ -347,6 +348,7 @@ struct GatedCase {
 impl GatedCase {
     fn new() -> Self {
         let fixture = common::Fixture::new();
+        let settings = fixture.settings();
         let program = fixture.state.path().join("pi");
         std::fs::write(&program, "not executed by the injected runner").unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -357,6 +359,7 @@ impl GatedCase {
             release: Mutex::new(release),
         });
         let mut seams = common::seams(
+            &settings,
             common::SharedHost::new(),
             runner,
             Arc::new(common::TestClock::new()),

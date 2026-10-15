@@ -270,6 +270,7 @@ fn boot_with(
     fault.use_local_days(day.source());
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let parts = seams(
+        &settings,
         host.clone(),
         Arc::clone(runner),
         Arc::clone(clock),

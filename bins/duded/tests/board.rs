@@ -40,20 +40,20 @@ fn start(
     common::Running,
     Arc<ScriptedColumn>,
     Socket,
+    dudes_supervisor::testing::FakeTokens,
 ) {
     let settings = fixture.settings();
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
-    let daemon = duded::boot(
+    let parts = common::seams_with(
         &settings,
-        common::seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
-        ),
-    )
-    .unwrap();
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
+    );
+    let tokens = parts.rng.tokens();
+    let daemon = duded::boot(&settings, parts).unwrap();
     let running = common::start(daemon);
     let mut operator = Client::connect(settings.socket()).unwrap();
     assert!(
@@ -61,7 +61,7 @@ fn start(
             .error
             .is_none()
     );
-    (settings, running, column, operator)
+    (settings, running, column, operator, tokens)
 }
 
 fn operator_call(
@@ -94,6 +94,7 @@ fn list(client: &mut Socket, settings: &duded::Settings) -> Vec<CardView> {
 
 fn minted(
     fixture: &Fixture,
+    tokens: &dudes_supervisor::testing::FakeTokens,
     settings: &duded::Settings,
     column: &ScriptedColumn,
     agent: AgentId,
@@ -105,7 +106,7 @@ fn minted(
         } if *owner == agent => Some(token_hash.clone()),
         _ => None,
     });
-    let token = common::token_of(&hash);
+    let token = tokens.token_of(&hash);
     column.set(PeerProvenance::Agent(agent));
     let mut client = Client::connect(settings.socket()).expect("token publication connection");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -132,14 +133,14 @@ fn minted(
 #[test]
 fn agent_calls_cannot_create_list_or_move_another_agents_card() {
     let fixture = Fixture::new();
-    let (settings, running, column, mut operator) = start(&fixture);
+    let (settings, running, column, mut operator, tokens) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     let other = common::hire(&running.handle, fixture.state.path());
     common::set_goal(
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    let token = minted(&fixture, &settings, &column, agent);
+    let token = minted(&fixture, &tokens, &settings, &column, agent);
     let held = create(&mut operator, &settings, "infra");
     let own = create(&mut operator, &settings, "infra");
     assert!(
@@ -236,7 +237,7 @@ fn agent_calls_cannot_create_list_or_move_another_agents_card() {
 #[test]
 fn stale_sequences_append_nothing_and_restart_rebuilds_the_board() {
     let fixture = Fixture::new();
-    let (settings, mut running, _, mut operator) = start(&fixture);
+    let (settings, mut running, _, mut operator, _) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     let card = create(&mut operator, &settings, "infra");
     assert!(
@@ -276,7 +277,7 @@ fn stale_sequences_append_nothing_and_restart_rebuilds_the_board() {
     assert_eq!(expected[0].status, CardStatus::Claimed);
     drop(operator);
     running.stop(duded::ExitCause::ShutdownRpc);
-    let (settings, _running, _column, mut operator) = start(&fixture);
+    let (settings, _running, _column, mut operator, _) = start(&fixture);
     assert_eq!(list(&mut operator, &settings), expected);
 }
 
@@ -298,7 +299,7 @@ fn claim(
 #[test]
 fn retirement_releases_claims_and_requeues_unfinished_cards() {
     let fixture = Fixture::new();
-    let (settings, mut running, _, mut operator) = start(&fixture);
+    let (settings, mut running, _, mut operator, _) = start(&fixture);
     let retired = common::hire(&running.handle, fixture.state.path());
     let replacement = common::hire(&running.handle, fixture.state.path());
     let mut cards = Vec::new();
@@ -379,7 +380,7 @@ fn retirement_releases_claims_and_requeues_unfinished_cards() {
     assert_eq!(list(&mut operator, &settings), released);
     drop(operator);
     running.stop(duded::ExitCause::ShutdownRpc);
-    let (settings, _running, _, mut operator) = start(&fixture);
+    let (settings, _running, _, mut operator, _) = start(&fixture);
     assert_eq!(list(&mut operator, &settings), released);
     for card in &cards[..4] {
         let now = released.iter().find(|view| view.id == *card).unwrap();
@@ -405,7 +406,7 @@ fn retirement_releases_claims_and_requeues_unfinished_cards() {
 fn a_holder_and_a_legacy_todo_watcher(
     fixture: &Fixture,
 ) -> (AgentId, AgentId, CardId, GoalId, Record) {
-    let (settings, mut running, _, mut operator) = start(fixture);
+    let (settings, mut running, _, mut operator, _) = start(fixture);
     let holder = common::hire(&running.handle, fixture.state.path());
     let watcher = common::hire(&running.handle, fixture.state.path());
     let card = create(&mut operator, &settings, "infra");
@@ -515,7 +516,7 @@ fn retiring_a_holder_does_not_complete_another_agents_todo_goal() {
     let fixture = Fixture::new();
     let (holder, watcher, card, goal, legacy) = a_holder_and_a_legacy_todo_watcher(&fixture);
     append(&fixture, [legacy]);
-    let (settings, running, _, mut operator) = start(&fixture);
+    let (settings, running, _, mut operator, _) = start(&fixture);
     assert!(
         operator_call(
             &mut operator,
@@ -550,7 +551,7 @@ fn a_replayed_retirement_does_not_complete_a_legacy_todo_goal() {
             },
         ],
     );
-    let (_, running, _, _) = start(&fixture);
+    let (_, running, _, _, _) = start(&fixture);
     assert!(
         !todo_verdict(&fixture, goal, card),
         "a replayed retirement completed a legacy goal"
@@ -561,7 +562,7 @@ fn a_replayed_retirement_does_not_complete_a_legacy_todo_goal() {
 #[test]
 fn claims_require_the_department_and_completed_dependencies() {
     let fixture = Fixture::new();
-    let (settings, running, _, mut operator) = start(&fixture);
+    let (settings, running, _, mut operator, _) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     let foreign = create(&mut operator, &settings, "engineering");
     let dependency = create(&mut operator, &settings, "infra");
@@ -619,7 +620,7 @@ fn claims_require_the_department_and_completed_dependencies() {
 #[test]
 fn board_predicate_journals_a_failure_for_the_judged_agents_status() {
     let fixture = Fixture::new();
-    let (settings, running, column, mut operator) = start(&fixture);
+    let (settings, running, column, mut operator, tokens) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     let card = create(&mut operator, &settings, "infra");
     let mut goal = common::goal_params(agent, &["/usr/bin/true"]);
@@ -629,7 +630,7 @@ fn board_predicate_journals_a_failure_for_the_judged_agents_status() {
     };
     goal.hop_cap = 1;
     let goal = common::set_goal(&running.handle, goal);
-    let token = minted(&fixture, &settings, &column, agent);
+    let token = minted(&fixture, &tokens, &settings, &column, agent);
     column.set(PeerProvenance::Agent(agent));
     let mut client = Client::connect(settings.socket()).unwrap();
     assert!(
@@ -744,7 +745,7 @@ fn await_observed_verdict_without_new_turn(
 #[test]
 fn agents_moving_each_others_cards_to_done_complete_neither_goal() {
     let fixture = Fixture::new();
-    let (settings, running, column, mut operator) = start(&fixture);
+    let (settings, running, column, mut operator, tokens) = start(&fixture);
     let first = common::hire(&running.handle, fixture.state.path());
     let second = common::hire(&running.handle, fixture.state.path());
     for (n, sender, recipient) in [(1, first, second), (2, second, first)] {
@@ -783,7 +784,7 @@ fn agents_moving_each_others_cards_to_done_complete_neither_goal() {
     }
     for (mover, card) in [(first, second_card), (second, first_card)] {
         column.set(PeerProvenance::Agent(mover));
-        let token = minted(&fixture, &settings, &column, mover);
+        let token = minted(&fixture, &tokens, &settings, &column, mover);
         let mut client = Client::connect(settings.socket()).unwrap();
         for (method, params) in [
             (
@@ -819,7 +820,7 @@ fn agents_moving_each_others_cards_to_done_complete_neither_goal() {
 #[test]
 fn an_operators_transition_completes_the_goal() {
     let fixture = Fixture::new();
-    let (settings, running, _, mut operator) = start(&fixture);
+    let (settings, running, _, mut operator, _) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     let card = create(&mut operator, &settings, "infra");
     let goal = common::set_goal(&running.handle, card_done_goal(agent, card));
@@ -860,7 +861,7 @@ fn an_operators_transition_completes_the_goal() {
 #[test]
 fn operator_approval_completes_an_exhausted_goal_without_another_turn() {
     let fixture = Fixture::new();
-    let (settings, running, _, mut operator) = start(&fixture);
+    let (settings, running, _, mut operator, _) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     let card = create(&mut operator, &settings, "infra");
     let goal = common::set_goal(&running.handle, card_done_goal(agent, card));
@@ -898,13 +899,13 @@ fn operator_approval_completes_an_exhausted_goal_without_another_turn() {
 #[test]
 fn an_agent_cannot_rewrite_done_but_an_operator_can_reapprove_and_reopen_it() {
     let fixture = Fixture::new();
-    let (settings, running, column, mut operator) = start(&fixture);
+    let (settings, running, column, mut operator, tokens) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     common::set_goal(
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    let token = minted(&fixture, &settings, &column, agent);
+    let token = minted(&fixture, &tokens, &settings, &column, agent);
     let card = create(&mut operator, &settings, "infra");
     assert!(
         operator_call(
@@ -986,7 +987,7 @@ fn an_agent_cannot_rewrite_done_but_an_operator_can_reapprove_and_reopen_it() {
 #[test]
 fn reopening_a_card_refreshes_an_open_turns_pass_but_keeps_a_latched_done() {
     let fixture = Fixture::new();
-    let (settings, running, _, mut operator) = start(&fixture);
+    let (settings, running, _, mut operator, _) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     let card = create(&mut operator, &settings, "infra");
     let goal = common::set_goal(&running.handle, card_done_goal(agent, card));
@@ -1076,7 +1077,7 @@ fn reopening_a_card_refreshes_an_open_turns_pass_but_keeps_a_latched_done() {
 #[test]
 fn startup_judges_a_durable_transition_without_issuing_a_fresh_turn() {
     let fixture = Fixture::new();
-    let (settings, mut running, _, mut operator) = start(&fixture);
+    let (settings, mut running, _, mut operator, _) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     let card = create(&mut operator, &settings, "infra");
     let goal = common::set_goal(&running.handle, card_done_goal(agent, card));
@@ -1116,7 +1117,7 @@ fn startup_judges_a_durable_transition_without_issuing_a_fresh_turn() {
         .unwrap();
     drop(writer);
     let before = fixture.records().len();
-    let (_, mut running, _, _) = start(&fixture);
+    let (_, mut running, _, _, _) = start(&fixture);
     fixture.await_record("recovered Done", |record| {
         matches!(record, Record::LoopDecided { agent: who, decision: LoopDecision::Done, .. }
             if *who == agent)
@@ -1135,7 +1136,7 @@ fn startup_judges_a_durable_transition_without_issuing_a_fresh_turn() {
 #[test]
 fn startup_with_an_absent_card_holds_later_wakes_until_an_explicit_new_goal() {
     let fixture = Fixture::new();
-    let (settings, mut running, _, _) = start(&fixture);
+    let (settings, mut running, _, _, _) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     running.handle.ask(duded::ports::Ask::Pause(agent)).unwrap();
     common::set_goal(&running.handle, card_done_goal(agent, CardId::NIL));
@@ -1143,16 +1144,14 @@ fn startup_with_an_absent_card_holds_later_wakes_until_an_explicit_new_goal() {
         running.stop(duded::ExitCause::ShutdownRpc),
         duded::ExitCause::ShutdownRpc
     );
-    let mut restarted = common::seams_with(
+    let restarted = common::seams_with(
+        &settings,
         SharedHost::new(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
         Witness::default(),
         ScriptedColumn::new(PeerProvenance::NoRecordedAgent),
     );
-    for _ in 0..4 {
-        let _ = dudes_supervisor::Rng::ulid(&mut restarted.rng);
-    }
     let running = common::start(duded::boot(&settings, restarted).unwrap());
     running
         .handle
@@ -1202,7 +1201,7 @@ fn startup_with_an_absent_card_holds_later_wakes_until_an_explicit_new_goal() {
 #[test]
 fn goal_set_refuses_claimed_and_todo_board_predicates_before_append() {
     let fixture = Fixture::new();
-    let (settings, running, _, mut operator) = start(&fixture);
+    let (settings, running, _, mut operator, _) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     let card = create(&mut operator, &settings, "infra");
     let before = fixture.entries().len();
@@ -1235,7 +1234,7 @@ fn goal_set_refuses_claimed_and_todo_board_predicates_before_append() {
 #[test]
 fn a_board_near_the_snapshot_budget_refuses_the_next_card_before_append() {
     let fixture = Fixture::new();
-    let (settings, running, _, mut operator) = start(&fixture);
+    let (settings, running, _, mut operator, _) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     let response = operator_call(
         &mut operator,
@@ -1286,7 +1285,7 @@ fn a_board_near_the_snapshot_budget_refuses_the_next_card_before_append() {
 #[test]
 fn issued_work_uses_live_dependents_peers_and_memory_without_replacing_the_goal() {
     let fixture = Fixture::new();
-    let (settings, mut running, column, mut operator) = start(&fixture);
+    let (settings, mut running, column, mut operator, tokens) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     let card = create(&mut operator, &settings, "infra");
     assert!(
@@ -1304,7 +1303,7 @@ fn issued_work_uses_live_dependents_peers_and_memory_without_replacing_the_goal(
         common::goal_params(agent, &["/usr/bin/false"]),
     );
     let first = fixture.await_turn();
-    let token = minted(&fixture, &settings, &column, agent);
+    let token = minted(&fixture, &tokens, &settings, &column, agent);
     column.set(PeerProvenance::Agent(agent));
     let mut owner = Client::connect(settings.socket()).unwrap();
     assert!(
@@ -1366,7 +1365,7 @@ fn issued_work_uses_live_dependents_peers_and_memory_without_replacing_the_goal(
 #[test]
 fn a_claim_refresh_changes_the_exhausted_digest_once() {
     let fixture = Fixture::new();
-    let (settings, mut running, _, mut operator) = start(&fixture);
+    let (settings, mut running, _, mut operator, _) = start(&fixture);
     let agent = common::hire(&running.handle, fixture.state.path());
     let card = create(&mut operator, &settings, "infra");
     let mut params = card_done_goal(agent, card);

@@ -55,6 +55,7 @@ fn configured_inherit_refuses_a_canonical_alias_of_a_live_owned_peers_folder() {
         ..fixture.settings()
     };
     let mut injected = seams(
+        &settings,
         RealHost::with_grace(Duration::from_millis(300)),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -135,7 +136,9 @@ fn launch_refusal_peers(
     fixture: &Fixture,
     host: &common::SharedHost,
 ) -> (common::Running, dudes_types::AgentId, dudes_types::AgentId) {
+    let settings = fixture.settings();
     let seams = seams(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),

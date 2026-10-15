@@ -47,6 +47,7 @@ fn a_declared_hire_launches_with_project_sources_and_an_undeclared_one_does_not(
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -136,6 +137,7 @@ fn a_declaration_for_a_provider_without_a_trusted_mode_is_refused_and_journals_n
     let fixture = Fixture::new();
     let settings = fixture.settings();
     let mut seams = seams(
+        &settings,
         SharedHost::new(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),

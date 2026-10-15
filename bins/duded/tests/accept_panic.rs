@@ -70,6 +70,7 @@ fn an_unarmed_accept_loop_stops_for_the_cause_it_was_asked_to() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -113,6 +114,7 @@ fn a_panicking_accept_loop_stops_the_daemon_with_a_named_cause() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

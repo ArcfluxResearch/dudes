@@ -74,6 +74,7 @@ fn append(client: &mut SocketClient, token: &str, text: &str) -> dudes_proto::rp
 
 fn token_after_mint_pump(
     fixture: &Fixture,
+    tokens: &dudes_supervisor::testing::FakeTokens,
     handle: &duded::Handle,
     agent: AgentId,
 ) -> dudes_proto::rpc::hook::HookToken {
@@ -95,7 +96,7 @@ fn token_after_mint_pump(
             _ => None,
         })
         .expect("the exact durable mint position");
-    let token = common::token_of(&hash);
+    let token = tokens.token_of(&hash);
     let completed = handle.doctor().expect("read after the setup mint's pump");
     assert!(completed.lsn >= minted);
     token
@@ -324,6 +325,7 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let runtime_seams = common::seams_with(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -331,6 +333,7 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
         Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>,
     );
     host.bind_child_ends(Arc::clone(&runtime_seams.children));
+    let tokens = runtime_seams.rng.tokens();
     let daemon = boot(&settings, runtime_seams).expect("boot");
     let mut running = common::start(daemon);
 
@@ -341,7 +344,7 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
         common::goal_params(agent, &["/usr/bin/false"]),
     );
     let first_turn = fixture.await_turn();
-    let token = token_after_mint_pump(&fixture, &running.handle, agent);
+    let token = token_after_mint_pump(&fixture, &tokens, &running.handle, agent);
 
     let mut tail = client_with_timeout(&settings.socket());
     tail.send_presenting(
@@ -517,6 +520,7 @@ fn owner_applies_and_non_owner_is_digest_only_across_every_consumer_and_restart(
 
     let restart_host = SharedHost::with_native_evidence(fixture.journal_dir());
     let runtime_seams = common::seams(
+        &settings,
         restart_host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -566,6 +570,7 @@ fn daemon_writes_all_presence_cases_and_quarantines_cap_plus_one() {
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
     let first_host = SharedHost::with_native_evidence(fixture.journal_dir());
     let runtime_seams = common::seams_with(
+        &settings,
         first_host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -573,6 +578,7 @@ fn daemon_writes_all_presence_cases_and_quarantines_cap_plus_one() {
         Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>,
     );
     first_host.bind_child_ends(Arc::clone(&runtime_seams.children));
+    let tokens = runtime_seams.rng.tokens();
     let daemon = boot(&settings, runtime_seams).expect("boot");
     let mut running = common::start(daemon);
     let mut operator = client_with_timeout(&settings.socket());
@@ -580,7 +586,7 @@ fn daemon_writes_all_presence_cases_and_quarantines_cap_plus_one() {
     let goal = common::goal_params(agent, &["/usr/bin/false"]);
     let goal_text = goal.text.clone();
     common::set_goal(&running.handle, goal);
-    let token = token_after_mint_pump(&fixture, &running.handle, agent);
+    let token = token_after_mint_pump(&fixture, &tokens, &running.handle, agent);
     let first_turn = fixture.await_turn();
 
     let mut tail = client_with_timeout(&settings.socket());
@@ -714,6 +720,7 @@ fn daemon_writes_all_presence_cases_and_quarantines_cap_plus_one() {
 
     let restart_host = SharedHost::with_native_evidence(fixture.journal_dir());
     let runtime_seams = common::seams(
+        &settings,
         restart_host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -769,6 +776,7 @@ fn own_connection(
     let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let runtime_seams = common::seams_with(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -776,6 +784,7 @@ fn own_connection(
         Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>,
     );
     host.bind_child_ends(Arc::clone(&runtime_seams.children));
+    let tokens = runtime_seams.rng.tokens();
     let daemon = boot(&settings, runtime_seams).expect("boot");
     let running = common::start(daemon);
     let mut operator = client_with_timeout(&settings.socket());
@@ -790,7 +799,7 @@ fn own_connection(
         } if *who == agent => Some(*turn),
         _ => None,
     });
-    let token = token_after_mint_pump(fixture, &running.handle, agent);
+    let token = token_after_mint_pump(fixture, &tokens, &running.handle, agent);
     column.set(PeerProvenance::Agent(agent));
     let owner = client_with_timeout(&settings.socket());
     let token = token.expose().to_owned();

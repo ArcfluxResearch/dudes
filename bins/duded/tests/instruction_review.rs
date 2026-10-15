@@ -258,6 +258,7 @@ fn start_review_daemon(
     };
     let children = duded::ChildEnds::new();
     let mut seams = common::seams(
+        settings,
         RealHost::watching_with_grace(
             Arc::new(HostStreams(Arc::clone(&children))),
             Duration::from_millis(300),

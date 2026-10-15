@@ -373,6 +373,7 @@ fn credential_of(settings: &duded::Settings) -> OperatorCredential {
 
 fn token_after_mint_pump(
     fixture: &Fixture,
+    tokens: &dudes_supervisor::testing::FakeTokens,
     handle: &duded::Handle,
     agent: AgentId,
 ) -> (Lsn, HookToken) {
@@ -387,7 +388,7 @@ fn token_after_mint_pump(
         matches!(record,
         Record::HookTokenMinted { agent: owner, token_hash } if *owner == agent && *token_hash == hash)
     });
-    let token = common::token_of(&hash);
+    let token = tokens.token_of(&hash);
     let completed = handle
         .doctor()
         .expect("read after the mint's existing pump");
@@ -740,24 +741,23 @@ struct Ready {
 fn ready(fixture: &Fixture) -> Ready {
     let settings = fixture.settings();
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
-    let daemon = boot(
+    let parts = common::seams_with(
         &settings,
-        common::seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
-        ),
-    )
-    .expect("boot");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
+    );
+    let tokens = parts.rng.tokens();
+    let daemon = boot(&settings, parts).expect("boot");
     let running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     common::set_goal(
         &running.handle,
         common::goal_params(agent, &["/usr/bin/true"]),
     );
-    let (_, token) = token_after_mint_pump(fixture, &running.handle, agent);
+    let (_, token) = token_after_mint_pump(fixture, &tokens, &running.handle, agent);
     Ready {
         settings,
         running,
@@ -799,7 +799,7 @@ fn managed_child_reaches_agent_ask_and_four_agent_wait_arm() {
             common::passes(),
         ])),
         clock: Arc::new(TestClock::new()),
-        rng: FakeRng::new(),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
         resolver,
         adapters: [Box::new(ManagedAskAdapter {
             marker: marker.clone(),
@@ -812,6 +812,7 @@ fn managed_child_reaches_agent_ask_and_four_agent_wait_arm() {
         children,
         witness: Witness::default(),
     };
+    let tokens = seams.rng.tokens();
     let daemon = boot(&settings, seams).expect("boot");
     let mut running = common::start(daemon);
 
@@ -838,7 +839,7 @@ fn managed_child_reaches_agent_ask_and_four_agent_wait_arm() {
         } if *agent == a => Some(token_hash.clone()),
         _ => None,
     });
-    let token = common::token_of(&token_hash);
+    let token = tokens.token_of(&token_hash);
     *stolen_token
         .lock()
         .expect("stolen-token test state is not poisoned") = Some(token.expose().to_owned());
@@ -1356,17 +1357,16 @@ fn every_ask_variant_preserves_publication_before_reply() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
-    let daemon = boot(
+    let parts = common::seams_with(
         &settings,
-        common::seams_with(
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
-        ),
-    )
-    .expect("boot");
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
+    );
+    let tokens = parts.rng.tokens();
+    let daemon = boot(&settings, parts).expect("boot");
     let mut running = common::start(daemon);
 
     // A live token whose owner is not changed by the cases below makes the publication assertion
@@ -1376,7 +1376,7 @@ fn every_ask_variant_preserves_publication_before_reply() {
         &running.handle,
         common::goal_params(sentinel, &["/usr/bin/true"]),
     );
-    let (_, sentinel_token) = token_after_mint_pump(&fixture, &running.handle, sentinel);
+    let (_, sentinel_token) = token_after_mint_pump(&fixture, &tokens, &running.handle, sentinel);
     assert_token_owner_is_published(&settings, &column, sentinel, &sentinel_token, true, "setup");
 
     // This match is deliberately inside the named test and has no wildcard. Adding an `Ask`
@@ -1552,10 +1552,10 @@ fn every_ask_variant_preserves_publication_before_reply() {
         } if *who == agent => Some(token_hash.clone()),
         _ => None,
     }) {
-        let token = common::token_of(&agent_hash);
+        let token = tokens.token_of(&agent_hash);
         assert_token_owner_is_published(&settings, &column, agent, &token, true, variant);
     }
-    let (minted, agent_token) = token_after_mint_pump(&fixture, &running.handle, agent);
+    let (minted, agent_token) = token_after_mint_pump(&fixture, &tokens, &running.handle, agent);
     let entries = fixture.entries();
     let (issued, turn) = entries
         .iter()
@@ -1862,6 +1862,7 @@ fn local_loop_control_refuses_an_absent_agent_and_appends_nothing() {
     let daemon = boot(
         &settings,
         common::seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),

@@ -33,6 +33,7 @@ fn legacy_announce_answers_strict_empty_and_journals_announcement() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -74,6 +75,7 @@ fn a_durable_unfolded_announcement_fences_later_goal_mutation() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -125,6 +127,7 @@ fn a_closing_short_write_keeps_the_initiating_error_and_stops_later_mutation() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -184,6 +187,7 @@ fn a_poisoned_writer_during_an_active_closure_admits_no_further_mutation() {
     let mut daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -289,8 +293,10 @@ type SeedRecords = Vec<(Lsn, Entry)>;
 
 fn saving_source(fixture: &Fixture) -> (AgentId, SeedRecords, SeedRecords, Entry) {
     let source = Fixture::new();
+    let settings = source.settings();
     let host = SharedHost::with_native_evidence(source.journal_dir());
     let seams = seams(
+        &settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -523,6 +529,7 @@ fn assert_replayed_saving(fixture: &Fixture, announcement: Lsn, saving: TurnId, 
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -636,6 +643,7 @@ fn a_restarted_closure_whose_only_participant_finished_done_reports_it_settled()
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -669,6 +677,7 @@ fn a_completed_closure_is_historical_on_a_later_normal_boot() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -706,6 +715,7 @@ fn a_completed_closure_is_historical_on_a_later_normal_boot() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -743,6 +753,7 @@ fn final_report_loss_does_not_rewrite_durable_completion_or_the_hard_receipt() {
     let mut daemon = boot(
         &settings,
         seams(
+            &settings,
             host.clone(),
             Arc::new(ScriptedRunner::default()),
             Arc::new(TestClock::new()),
@@ -800,6 +811,7 @@ fn announce_retries_keep_the_snapshot_and_original_clock_bound() {
     let daemon = boot(
         &settings,
         seams(
+            &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
             Arc::clone(&clock),
@@ -883,6 +895,7 @@ mod before_spawn_crash {
         let daemon = boot(
             &settings,
             seams(
+                &settings,
                 duded::fault::StallBeforeSpawn::new(SharedHost::new(), 1, marker.into()),
                 Arc::new(ScriptedRunner::default()),
                 Arc::new(TestClock::new()),

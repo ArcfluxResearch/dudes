@@ -168,12 +168,22 @@ fn daemon_scratch_child() {
     let settings = common::settings_at(Path::new(&state), Path::new(&runtime));
     let daemon = boot(
         &settings,
-        common::seams(
-            common::SharedHost::new(),
-            Arc::new(common::ScriptedRunner::default()),
-            Arc::new(common::TestClock::new()),
-            Witness::default(),
-        ),
+        duded::Seams {
+            host: common::SharedHost::new(),
+            pty_host: Box::new(duded::ports::ClosedPtyHost),
+            predicates: Arc::new(common::ScriptedRunner::default()),
+            clock: Arc::new(common::TestClock::new()),
+            rng: dudes_supervisor::testing::FakeRng::new(),
+            resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
+            adapters: dudes_providers::registry::Adapters::new([Box::new(
+                dudes_providers::claude::ClaudeAdapter::new(
+                    dudes_providers::claude::config::ClaudeConfig::default(),
+                ),
+            )
+                as Box<dyn dudes_providers::adapter::Adapter>]),
+            children: duded::ChildEnds::new(),
+            witness: Witness::default(),
+        },
     )
     .expect("boot validates completed history in its state directory");
     let mut running = common::start(daemon);
