@@ -38,28 +38,25 @@ fn call(settings: &duded::Settings, method: Method, params: Value) -> Response {
 
 fn start(fixture: &Fixture) -> (duded::Settings, common::Running) {
     let settings = fixture.settings();
-    let daemon = boot(&settings, replay_seams(fixture)).unwrap();
+    let daemon = boot(&settings, replay_seams(&settings)).unwrap();
     (settings, common::start(daemon))
 }
 
 fn replay_seams(
-    fixture: &Fixture,
+    settings: &duded::Settings,
 ) -> duded::settings::Seams<SharedHost, ScriptedRunner, TestClock, common::FixtureRng> {
-    let mut seams = common::seams(
-        &settings,
+    common::seams(
+        settings,
         SharedHost::new(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
         Witness::default(),
-    );
-    for _ in 0..fixture.records().len() * 8 {
-        dudes_supervisor::Rng::ulid(&mut seams.rng);
-    }
-    seams
+    )
 }
 
 fn native_goal_seams<P: duded::predicate::PredicateRunner>(
     fixture: &Fixture,
+    settings: &duded::Settings,
     runner: Arc<P>,
 ) -> (
     duded::settings::Seams<SharedHost, P, TestClock, common::FixtureRng>,
@@ -67,7 +64,7 @@ fn native_goal_seams<P: duded::predicate::PredicateRunner>(
 ) {
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let parts = common::seams(
-        &settings,
+        settings,
         host.clone(),
         runner,
         Arc::new(TestClock::new()),
@@ -433,15 +430,26 @@ fn invalid_record_cannot_bypass_startup_validation_through_cached_projections() 
     )
     .unwrap();
     drop(projections);
+    let before_refusal = fixture.entries();
     let result = boot(
         &settings,
-        common::seams(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
+        duded::Seams {
+            host: SharedHost::new(),
+            pty_host: Box::new(duded::ports::ClosedPtyHost),
+            predicates: Arc::new(ScriptedRunner::default()),
+            clock: Arc::new(TestClock::new()),
+            rng: dudes_supervisor::testing::FakeRng::new(),
+            resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
+            adapters: dudes_providers::registry::Adapters::from_config(
+                &dudes_providers::registry::ProvidersConfig {
+                    claude: Some(dudes_providers::claude::config::ClaudeConfig::default()),
+                },
+                &[],
+            )
+            .unwrap(),
+            children: duded::ChildEnds::new(),
+            witness: Witness::default(),
+        },
     );
     let error = match result {
         Ok(_) => panic!("malformed history admitted"),
@@ -451,6 +459,7 @@ fn invalid_record_cannot_bypass_startup_validation_through_cached_projections() 
         error.contains("GoalSet check revision does not match its content"),
         "{error}"
     );
+    assert_eq!(fixture.entries(), before_refusal);
     assert!(std::os::unix::net::UnixStream::connect(settings.socket()).is_err());
 }
 
@@ -725,7 +734,7 @@ fn known_no_effect_append_failure_can_retry_without_spending_or_replenishing() {
 fn post_fold_continuation_failure_replays_one_atomic_replacement() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
-    let seams = replay_seams(&fixture);
+    let seams = replay_seams(&settings);
     let host = seams.host.clone();
     let daemon = boot(&settings, seams).unwrap();
     let failure = daemon.append_failure();
@@ -1054,18 +1063,16 @@ fn uncertain_journal_never_allows_a_hook_or_delivers_new_context() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
     let column = common::ScriptedColumn::new(dudes_rpc::auth::PeerProvenance::NoRecordedAgent);
-    let daemon = boot(
+    let parts = common::seams_with(
         &settings,
-        common::seams_with(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-            column.clone(),
-        ),
-    )
-    .unwrap();
+        SharedHost::new(),
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        column.clone(),
+    );
+    let tokens = parts.rng.tokens();
+    let daemon = boot(&settings, parts).unwrap();
     let failure = daemon.onboarding_failure();
     let mut running = common::start(daemon);
     let (agent, goal) = paused_goal(&fixture, &settings, &running);
@@ -1082,7 +1089,7 @@ fn uncertain_journal_never_allows_a_hook_or_delivers_new_context() {
         }
         _ => None,
     });
-    let token = common::token_of(&hash);
+    let token = tokens.token_of(&hash);
     let hook = || {
         column.set(dudes_rpc::auth::PeerProvenance::Agent(worker));
         let response = Client::connect(settings.socket()).unwrap().call(
@@ -1186,7 +1193,7 @@ fn a_new_billing_mode_applies_existing_conditional_cap_rules_without_changing_du
     let fixture = Fixture::new();
     let mut settings = fixture.settings();
     settings.floor_usd_per_day = None;
-    let boot_owned = |settings: &duded::Settings| boot(settings, replay_seams(&fixture)).unwrap();
+    let boot_owned = |settings: &duded::Settings| boot(settings, replay_seams(settings)).unwrap();
     let mut running = common::start(boot_owned(&settings));
     let mut hire = common::hire_params(fixture.state.path());
     hire.budget = dudes_proto::AgentBudget {
@@ -1329,6 +1336,7 @@ fn replacement_during_closing_preserves_the_frozen_participants_and_issue_fence(
     let settings = fixture.settings();
     let (parts, host) = native_goal_seams(
         &fixture,
+        &settings,
         Arc::new(ScriptedRunner::scripted([common::passes()])),
     );
     let daemon = boot(&settings, parts).unwrap();
@@ -1665,6 +1673,7 @@ fn unconfirmed_instruction_attempt(
 }
 
 fn replay_sample_seams(
+    settings: &duded::Settings,
     host: common::UnconfirmedHost,
     clock: &Arc<ReplaySampleClock>,
 ) -> duded::settings::Seams<
@@ -1674,7 +1683,7 @@ fn replay_sample_seams(
     common::FixtureRng,
 > {
     let parts = common::seams(
-        &settings,
+        settings,
         host,
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -1750,7 +1759,11 @@ fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_go
     let reissue = common::UnconfirmedHost::new(true);
     let clock = ReplaySampleClock::new();
     let early_release = clock.hold();
-    let daemon = boot(&settings, replay_sample_seams(reissue.clone(), &clock)).unwrap();
+    let daemon = boot(
+        &settings,
+        replay_sample_seams(&settings, reissue.clone(), &clock),
+    )
+    .unwrap();
     let mut restarted = common::start(daemon);
     let release = early_release;
     clock.wait_held();
@@ -1810,7 +1823,7 @@ fn queued_old_check_completion_is_settled_by_the_writer_before_admission() {
             end,
             ..HeldCheck::default()
         });
-        let (parts, host) = native_goal_seams(&fixture, Arc::clone(&runner));
+        let (parts, host) = native_goal_seams(&fixture, &settings, Arc::clone(&runner));
         let daemon = boot(&settings, parts).unwrap();
         let pause = daemon.onboarding_pause();
         let mut running = common::start(daemon);
@@ -2255,7 +2268,7 @@ fn replay_keeps_recorded_check_and_allowance_after_reserve_and_enrollment_change
             mark: None,
         }],
     };
-    let daemon = boot(&settings, replay_seams(&fixture)).unwrap();
+    let daemon = boot(&settings, replay_seams(&settings)).unwrap();
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     let mut source = common::goal_params(agent, &["/usr/bin/false"]);
@@ -2299,7 +2312,7 @@ fn replay_keeps_recorded_check_and_allowance_after_reserve_and_enrollment_change
         work_tokens: Tokens::new(20_000),
     };
     settings.enrollment = Enrollment::default();
-    let daemon = boot(&settings, replay_seams(&fixture)).unwrap();
+    let daemon = boot(&settings, replay_seams(&settings)).unwrap();
     let mut restarted = common::start(daemon);
     assert_eq!(replace(&settings, &proposal), result);
     assert_eq!(

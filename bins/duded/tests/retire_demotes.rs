@@ -88,6 +88,7 @@ fn code(response: &Response) -> i32 {
 /// agent and the plaintext of the token the journal now carries a hash of.
 fn an_agent_holding_a_live_token(
     fixture: &Fixture,
+    tokens: &dudes_supervisor::testing::FakeTokens,
     running: &common::Running,
 ) -> (dudes_types::AgentId, HookToken) {
     let agent = common::hire(&running.handle, fixture.state.path());
@@ -109,7 +110,7 @@ fn an_agent_holding_a_live_token(
         .handle
         .doctor()
         .expect("finish the retirement subject's setup pump");
-    (agent, common::token_of(&hash))
+    (agent, tokens.token_of(&hash))
 }
 
 /// Retire `agent`, wait for the record to reach the disk, then call over `client` until the answer
@@ -173,6 +174,7 @@ fn on_an_injected_column(
     HookToken,
     SharedHost,
 ) {
+    let settings = fixture.settings();
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let seams = common::seams_with(
@@ -184,9 +186,10 @@ fn on_an_injected_column(
         Arc::clone(&column) as Arc<dyn dudes_rpc::auth::PeerResolver>,
     );
     host.bind_child_ends(Arc::clone(&seams.children));
-    let daemon = boot(&fixture.settings(), seams).expect("boot");
+    let tokens = seams.rng.tokens();
+    let daemon = boot(&settings, seams).expect("boot");
     let running = common::start(daemon);
-    let (agent, token) = an_agent_holding_a_live_token(fixture, &running);
+    let (agent, token) = an_agent_holding_a_live_token(fixture, &tokens, &running);
     column.set(PeerProvenance::Agent(agent));
     (column, running, agent, token, host)
 }
@@ -214,9 +217,10 @@ fn retire_demotes_a_live_connection_under_the_production_pair() {
         Witness::default(),
     );
     host.bind_child_ends(Arc::clone(&seams.children));
+    let tokens = seams.rng.tokens();
     let daemon = boot(&settings, seams).expect("boot");
     let mut running = common::start(daemon);
-    let (agent, token) = an_agent_holding_a_live_token(&fixture, &running);
+    let (agent, token) = an_agent_holding_a_live_token(&fixture, &tokens, &running);
 
     let mut client = Client::connect(settings.socket()).expect("connect to the daemon");
     let before = client

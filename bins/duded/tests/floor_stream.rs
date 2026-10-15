@@ -749,10 +749,14 @@ fn start_closing_cut(
     fixture: &Fixture,
     settings: &duded::Settings,
     column: &Arc<common::ScriptedColumn>,
-) -> (common::Running, SocketAddr) {
+) -> (
+    common::Running,
+    SocketAddr,
+    dudes_supervisor::testing::FakeTokens,
+) {
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let parts = common::seams_with(
-        &settings,
+        settings,
         host.clone(),
         Arc::new(ScriptedRunner::default()),
         Arc::new(TestClock::new()),
@@ -760,6 +764,7 @@ fn start_closing_cut(
         column.clone(),
     );
     host.bind_child_ends(Arc::clone(&parts.children));
+    let tokens = parts.rng.tokens();
     let daemon = duded::boot::boot_with_floor_faults(
         settings,
         parts,
@@ -768,7 +773,7 @@ fn start_closing_cut(
     )
     .unwrap();
     let addr = daemon.floor_addr().unwrap();
-    (common::start(daemon), addr)
+    (common::start(daemon), addr, tokens)
 }
 
 fn closing_participant_spawned(fixture: &Fixture, goal: dudes_types::GoalId) {
@@ -789,7 +794,7 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
     let fixture = Fixture::new();
     let settings = settings(&fixture, free_port());
     let column = common::ScriptedColumn::new(dudes_proto::PeerProvenance::NoRecordedAgent);
-    let (mut running, addr) = start_closing_cut(&fixture, &settings, &column);
+    let (mut running, addr, tokens) = start_closing_cut(&fixture, &settings, &column);
     let agent = common::hire(&running.handle, fixture.state.path());
     let goal = common::set_goal(&running.handle, goal_params(agent, &["/usr/bin/true"]));
     closing_participant_spawned(&fixture, goal);
@@ -826,7 +831,7 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
         answer.result.as_ref().unwrap()["announcement"]
     );
     let announcement = answer.result.as_ref().unwrap()["announcement"].clone();
-    let token = agent_token(&fixture, agent);
+    let token = agent_token(&fixture, &tokens, agent);
     let ack = serde_json::json!({ "action": "ack", "lsn": announcement, "token": token.expose() });
     column.set(dudes_proto::PeerProvenance::Agent(agent));
     let mut caller = Client::connect(settings.socket()).unwrap();
@@ -873,6 +878,7 @@ fn first_closing_frame_uses_the_durable_participant_cut() {
 
 fn agent_token(
     fixture: &Fixture,
+    tokens: &dudes_supervisor::testing::FakeTokens,
     agent: dudes_types::AgentId,
 ) -> dudes_proto::rpc::hook::HookToken {
     fixture
@@ -882,7 +888,7 @@ fn agent_token(
             dudes_proto::Record::HookTokenMinted {
                 agent: owner,
                 token_hash,
-            } if *owner == agent => Some(common::token_of(token_hash)),
+            } if *owner == agent => Some(tokens.token_of(token_hash)),
             _ => None,
         })
         .unwrap()

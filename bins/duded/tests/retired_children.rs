@@ -143,6 +143,7 @@ impl ExternalChild for AttachedChild {
 
 /// The owner connection is accepted before the first hire, which a local `agent.attach` needs.
 struct Daemon {
+    tokens: dudes_supervisor::testing::FakeTokens,
     fixture: Fixture,
     settings: duded::Settings,
     running: common::Running,
@@ -217,6 +218,7 @@ impl Daemon {
             witness: Witness::default(),
         };
         host.bind_child_ends(Arc::clone(&seams.children));
+        let tokens = seams.rng.tokens();
         let daemon = duded::boot(&settings, seams).expect("boot");
         let append_failure = daemon.append_failure();
         let post_fsync_failure = daemon.onboarding_failure();
@@ -226,6 +228,7 @@ impl Daemon {
         let ping = owner.call(Method::SystemPing, None).expect("accepted");
         assert!(ping.error.is_none(), "the owner was not accepted: {ping:?}");
         Self {
+            tokens,
             fixture,
             settings,
             running,
@@ -281,7 +284,11 @@ impl Daemon {
                 } if *seen == agent => Some(*turn),
                 _ => None,
             });
-        (agent, minted_token(&self.fixture, agent), turn)
+        (
+            agent,
+            minted_token(&self.fixture, &self.tokens, agent),
+            turn,
+        )
     }
 
     fn working_child(&self) -> (AgentId, HookToken, AdoptionKey) {
