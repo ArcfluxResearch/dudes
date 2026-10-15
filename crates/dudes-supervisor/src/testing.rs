@@ -54,7 +54,6 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use dudes_policy::BreakerConfig;
 use dudes_proto::goal::Predicate;
 use dudes_proto::reply::HookReply;
-use dudes_proto::rpc::hook::{HOOK_TOKEN_LEN, HookToken};
 use dudes_proto::{AgentBudget, Entry, Goal, GoalBudget, Record, RecordKind, Spend};
 use dudes_providers::adapter::{Adapter, ManagedInstall};
 use dudes_providers::claude::ClaudeAdapter;
@@ -72,6 +71,9 @@ use crate::host::{
 };
 use crate::input::{ClientId, Command, HookId, Input, PersistToken};
 use crate::machine::{Config, Supervisor};
+
+mod rng;
+pub use rng::{FakeRng, FakeTokens};
 
 /// A clock that moves only when the test says so.
 #[derive(Clone, Debug)]
@@ -116,39 +118,6 @@ impl Clock for FakeClock {
     fn now(&self) -> Timestamp {
         let now = self.at.fetch_add(self.step, Ordering::Relaxed);
         Timestamp::from_unix_millis(now)
-    }
-}
-
-/// A counter dressed as randomness: the nth id and the nth token are always the same bytes.
-#[derive(Clone, Debug, Default)]
-pub struct FakeRng {
-    counter: u128,
-}
-
-impl FakeRng {
-    /// A generator that has minted nothing yet.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { counter: 0 }
-    }
-
-    /// How many values have been drawn.
-    #[must_use]
-    pub const fn drawn(&self) -> u128 {
-        self.counter
-    }
-}
-
-impl Rng for FakeRng {
-    fn ulid(&mut self) -> Ulid {
-        self.counter += 1;
-        Ulid::from_parts(0, self.counter)
-    }
-
-    fn agent_token(&mut self) -> HookToken {
-        self.counter += 1;
-        let text = format!("{:A>width$}", self.counter, width = HOOK_TOKEN_LEN);
-        HookToken::new(text).expect("a counter padded with 'A' is base64url")
     }
 }
 
@@ -1236,6 +1205,7 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dudes_proto::rpc::hook::HOOK_TOKEN_LEN;
 
     fn first_loaded_prefix_append(missing_worktrees: bool) -> (Lsn, Lsn) {
         let (entries, _, _) = journal_with_issued_turn(None, "make the tests pass");
