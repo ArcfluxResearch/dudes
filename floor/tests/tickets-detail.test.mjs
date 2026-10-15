@@ -315,7 +315,7 @@ test('instruction paths and gaps precede an accessible disclosure of protocol de
   await open({ instruction_review: instructionReview() });
   const html = panel();
   const known = html.indexOf('<h5>Known changed paths</h5>');
-  const gaps = html.indexOf('<h5>Coverage gaps</h5>');
+  const gaps = html.indexOf('<h5>Why this needs your review</h5>');
   const trace = html.indexOf('<details');
   assert.ok(known >= 0 && gaps > known && trace > gaps, html);
   assert.match(html, /<summary>Observation details<\/summary>/);
@@ -348,22 +348,74 @@ test('unshared project evidence passes the decoder and is shown with its establi
   assert.equal(detail.getDetailState().detail.instruction_review.changed_paths[0].context.kind, 'unshared_project');
 });
 
-test('gap evidence uses current participant names and keeps unavailable identities inside observation details', async () => {
+test('gap evidence names only agents that were not working on the ticket and keeps every identity inside observation details', async () => {
   const review = instructionReview();
   review.gaps.push({ ...review.gaps[0], agent: GRACE });
+  review.gaps.push({ ...review.gaps[0], reason: 'configuration_unknown', context: { kind: 'unresolved' }, agent: GRACE,
+    path: null, display: null });
   await open({ instruction_review: review });
   const html = panel();
   const start = html.indexOf('<section aria-label="Instruction review">');
   const disclosure = html.indexOf('<details', start);
   const visible = html.slice(start, disclosure);
-  assert.match(visible, /Participant Ada\./);
-  assert.match(visible, /Recorded participant\./);
+  assert.match(visible, /Dudes could not read unix:2fff\./);
+  assert.equal(visible.split('Dudes could not read unix:2fff.').length, 2, 'the same sentence is listed once');
+  assert.match(visible, /Other agents: a recorded agent\./);
+  assert.ok(!visible.includes('Participant Ada') && !visible.includes('configuration unknown'), visible);
   assert.ok(!visible.includes(ADA) && !visible.includes(GRACE), visible);
   const trace = html.slice(disclosure, html.indexOf('</details>', disclosure));
   assert.ok(trace.includes(`<code>${ADA}</code>`), trace);
   assert.ok(trace.includes(`<code>${GRACE}</code>`), trace);
-  assert.match(trace, /Coverage gap 2/);
+  assert.match(trace, /Coverage gap 3\. configuration unknown\. Unresolved context\./);
   assert.match(visible, /do not identify an exclusive writer/);
+});
+
+test('every gap kind reads as a plain sentence and the review says what to do next', async () => {
+  const kinds = {
+    configuration_unknown: 'Dudes cannot see the settings the engine loads from its home folder.',
+    plugin_unknown: 'Dudes cannot see the engine&#x27;s plugins.',
+    policy_unknown: 'Dudes cannot see the engine&#x27;s managed policy.',
+    root_marker_unknown: 'Dudes cannot see which root markers the engine uses to find the project folder.',
+    fallback_unknown: 'Dudes cannot see which fallback file names the engine reads.',
+    profile_unknown: 'Dudes cannot see the engine&#x27;s profile settings.',
+    declaration_missing: 'Dudes found no instruction file it knows how to read for this engine.',
+    path_unresolved: 'Dudes could not look up the project folder or a path it needed.',
+    read_failed: 'Dudes could not read an instruction file.',
+    changed_during_read: 'A file changed while Dudes was reading it.',
+    import_unresolved: 'Dudes could not find a file that an instruction file imports.',
+    import_cycle: 'Instruction files import each other in a loop, so Dudes stopped following them.',
+    participant_changed: 'An agent started or stopped working in this folder during the ticket, so Dudes cannot tell who changed what.',
+    declaration_changed: 'The instruction files an agent reads changed during the ticket.',
+    uninventoried_member: 'An instruction file is new and Dudes has no earlier copy to compare it with.',
+    input_limit: 'Dudes stopped sampling at its file limit.',
+    participant_coverage_unknown: 'Another agent was working in this folder, so Dudes cannot tell who changed what.',
+    participant_limit: 'More agents share this folder than Dudes checks, so some were not checked.',
+    ancestor_limit: 'Dudes stopped looking through parent folders at its limit.',
+    descendant_limit: 'Dudes stopped looking through subfolders at its limit.',
+    import_limit: 'Dudes stopped following imports at its limit.',
+    symlink_limit: 'Dudes stopped following links at its limit.',
+    source_bytes_limit: 'Dudes stopped reading at its size limit for instruction files.',
+    deadline: 'Dudes ran out of time while sampling.',
+    metadata_limit: 'There were too many findings to keep, so this list is incomplete.',
+    missing_baseline: 'Dudes has no copy of the instructions from when this work started, so it cannot compare.',
+    unrecorded_launch_boundary: 'Dudes cannot tell whether the agent started before the starting copy was recorded.',
+    cleanup_unconfirmed: 'Dudes could not confirm that the agent&#x27;s process had fully stopped.',
+    attached_turn_start_missing: 'Dudes did not see this attached turn begin.',
+    ending_boundary_missing: 'Dudes did not see the agent&#x27;s process end after the daemon restarted.',
+  };
+  const gaps = Object.keys(kinds).map((reason) => ({ reason, context: { kind: 'unresolved' }, agent: null,
+    path: null, display: null, display_truncated: false }));
+  await open({ instruction_review: instructionReview({ gaps }) });
+  const html = panel();
+  const start = html.indexOf('<section aria-label="Instruction review">');
+  const visible = html.slice(start, html.indexOf('<details', start));
+  for (const [reason, sentence] of Object.entries(kinds)) assert.ok(visible.includes(sentence), `${reason}: ${sentence}`);
+  assert.match(visible, /Look at the changed files above or the paths named here, then Accept if the work is fine\./);
+  assert.match(visible, /Accept records that you reviewed it despite these gaps\. If it is not fine, choose Ask for changes\./);
+  const named = instructionReview({ gaps: [{ reason: 'changed_during_read', context: { kind: 'shared_project' }, agent: null,
+    path: { encoding: 'utf8', value: '/p/AGENTS.md' }, display: '/p/AGENTS.md', display_truncated: false }] });
+  await open({ instruction_review: named });
+  assert.match(panel(), /\/p\/AGENTS\.md changed while Dudes was reading it\./);
 });
 
 test('an issued turn with a missing sampled start shows launch uncertainty without an invented baseline or end', async () => {
@@ -410,7 +462,7 @@ test('an unobserved recovered ending boundary preserves the recorded baseline an
   });
   assert.equal(detail.getDetailState().phase, 'ready');
   const html = panel();
-  assert.match(html, /The provider process ending boundary was not observed after restart/);
+  assert.match(html, /Dudes did not see the agent&#x27;s process end after the daemon restarted\./);
   assert.match(html, /Baseline record 11/);
   assert.match(html, /No recorded end boundary/);
   assert.match(html, /No ending sample/);

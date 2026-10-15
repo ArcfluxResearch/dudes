@@ -42,9 +42,11 @@ import {
  * Said when the link this page was opened with, or one pasted into it, was
  * refused. Without it the page looks as it did, which reads as the link having
  * worked. It names no part of the link: the secret stays out of the page. The
- * daemon does not say why it refused a first link, so the page gives the usual
- * reason, a link that was already used or expired, and the one other it can
- * name. A page opened with no link, as a copied address is because a browser
+ * daemon does not say why it refused a first link, so the page names both
+ * causes, a link that was already used or expired and a full set of four Floor
+ * sessions, with a way out of each. A closed tab frees its place only once its
+ * sign-in lapses after 30 minutes without use. A page opened with no link, as a
+ * copied address is because a browser
  * scrubs the secret as soon as it signs in, is told its sign-in has expired.
  */
 export function PastedLinkNotice() {
@@ -54,9 +56,10 @@ export function PastedLinkNotice() {
   if (first === 'refused') {
     return (
       <p className="link-refused" role="alert">
-        This sign-in link was already used or has expired. Each link works once, in one browser. Run{' '}
-        <code>dudes floor open</code> and paste the new link here within 60 seconds. The daemon also refuses a link
-        while four Floor sessions are open.
+        This sign-in link was refused. Either it was already used or has expired, or four Floor tabs are already signed in.
+        Each link works once, in one browser. If you have a Floor tab open that you no longer use, close it, wait for its
+        sign-in to lapse after 30 minutes without use, and run <code>dudes floor open</code> again. If no other tab is open,
+        run <code>dudes floor open</code> for a fresh link and paste it here within 60 seconds.
       </p>
     );
   }

@@ -22,7 +22,7 @@ import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
 import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, reasonSentence, stateName } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
-import { coverageText, instructionContextText } from './instructions.ts';
+import { coverageText, groupGaps, instructionContextText } from './instructions.ts';
 import type { InstructionReview } from './instructions.ts';
 
 const TRUNCATED_LABEL: Readonly<Record<TruncatedTicketField, string>> = Object.freeze({
@@ -85,29 +85,31 @@ function InstructionEvidence({ floor, review }: {
       : <ul className="ticket-files">{review.changed_paths.map((row, at) => <li key={at}>
         <span className="git-path data">{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>{' '}({instructionContextText(row.context)})
       </li>)}</ul>}
-    <h5>Coverage gaps</h5>
+    <h5>Why this needs your review</h5>
     {review.gaps.length === 0 ? <p>No coverage gaps were recorded.</p>
-      : <ul>{review.gaps.map((row, at) => {
-        const participant = agentRow(floor, row.agent);
-        return <li key={at}>
-          {row.reason === 'ending_boundary_missing'
-            ? 'The provider process ending boundary was not observed after restart' : row.reason.replaceAll('_', ' ')}. {instructionContextText(row.context)}.
-          {row.agent === null ? null : <> {typeof participant?.name === 'string' && participant.name !== ''
-            ? `Participant ${participant.name}` : 'Recorded participant'}.</>}
-          {row.display === null ? null : <> <span className="git-path data">{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>.</>}
-        </li>;
-      })}</ul>}
+      : <ul>{groupGaps(review).map((group, at) => <li key={at}>
+        {group.sentence}
+        {group.others.length === 0 ? null : <> Other agents: {group.others.map((id) => {
+          const name = agentRow(floor, id)?.name;
+          return typeof name === 'string' && name !== '' ? name : 'a recorded agent';
+        }).join(', ')}.</>}
+      </li>)}</ul>}
+    <p>Look at the changed files above{review.gaps.length === 0 ? '' : ' or the paths named here'}, then Accept if the work is fine.
+      {review.gaps.length === 0 ? ' Accept records that you reviewed the change.'
+        : ' Accept records that you reviewed it despite these gaps.'} If it is not fine, choose Ask for changes.</p>
     <p>These observations compare sampled endpoints. They do not identify an exclusive writer or prove that instructions were unchanged between samples.</p>
     {review.pending_comparison ? <p role="status">The instruction comparison is still pending. Review actions are unavailable.</p> : null}
     <details><summary>Observation details</summary>
       <p>Review through record {review.watermark.through_lsn}.</p>
       <p>Review digest <code>{review.watermark.set_digest}</code>.</p>
-      {review.gaps.some((row) => row.agent !== null) ? <>
-        <h5>Gap participants</h5>
-        <ul>{review.gaps.map((row, at) => row.agent === null ? null : <li key={at}>
-          Coverage gap {at + 1}. Participant <code>{row.agent}</code>.
+      {review.gaps.length === 0 ? null : <>
+        <h5>Gap details</h5>
+        <ul>{review.gaps.map((row, at) => <li key={at}>
+          Coverage gap {at + 1}. {row.reason.replaceAll('_', ' ')}. {instructionContextText(row.context)}.
+          {row.agent === null ? null : <> Participant <code>{row.agent}</code>.</>}
+          {row.display === null ? null : <> <span className="git-path data">{row.display}{row.display_truncated ? ' [display truncated]' : ''}</span>.</>}
         </li>)}</ul>
-      </> : null}
+      </>}
       <h5>Observed intervals</h5>
       <ul>{review.intervals.map((row, at) => <li key={at}>
         {row.kind.replaceAll('_', ' ')} for agent <code>{row.agent}</code>
