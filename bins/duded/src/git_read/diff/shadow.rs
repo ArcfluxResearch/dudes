@@ -1056,6 +1056,9 @@ impl ContentShadow {
         &self.index_digest
     }
 
+    pub(super) fn tracked_names(&self) -> &std::collections::BTreeSet<Vec<u8>> {
+        &self.index_summary.names
+    }
     pub(super) fn has_gitlinks(&self) -> bool {
         self.index_summary.has_gitlinks
     }

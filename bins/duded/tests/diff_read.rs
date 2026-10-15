@@ -62,10 +62,16 @@ impl PredicateRunner for Real {
                         && spec
                             .argv
                             .get(3)
-                            .is_some_and(|command| command == "ls-files")
+                            .is_some_and(|command| command == "diff-index")
                     {
-                        if let Some(end) = stdout.iter().position(|byte| *byte == 0) {
-                            stdout.truncate(end + 1);
+                        let end = stdout
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, byte)| **byte == 0)
+                            .nth(1)
+                            .map(|(position, _)| position + 1);
+                        if let Some(end) = end {
+                            stdout.truncate(end);
                         }
                         truncated = true;
                     }
@@ -123,6 +129,9 @@ impl Lab {
         lab.git(&["commit", "--quiet", "-m", "initial"]);
         lab
     }
+    fn head(&self) -> String {
+        self.git(&["rev-parse", "HEAD"]).trim().to_owned()
+    }
     fn repo(&self) -> PathBuf {
         self.root.path().join("repo")
     }
@@ -154,7 +163,7 @@ impl Lab {
             cwd: self.repo(),
             stdin: LaunchInput::Null,
         };
-        match self.real.run(&spec, Duration::from_secs(20)).unwrap() {
+        match self.real.run(&spec, Duration::from_secs(120)).unwrap() {
             PredicateOutcome::Finished {
                 exit, output_tail, ..
             } => (exit, output_tail),
@@ -394,9 +403,47 @@ fn vector(name: &str, plant: impl FnOnce(&Lab), plain: &[&str]) {
     commands.dedup();
     assert_eq!(
         commands,
-        ["cat-file", "ls-files", "ls-tree"],
+        ["cat-file", "diff-files", "diff-index"],
         "each new protected argv ran under the live control"
     );
+    for argv in lab.real.argv.lock().unwrap().iter() {
+        let words = argv
+            .iter()
+            .filter_map(|word| word.to_str())
+            .collect::<Vec<_>>();
+        match words.get(3).copied() {
+            Some("diff-index") => assert_eq!(
+                words[1..],
+                [
+                    "--no-pager",
+                    "--no-optional-locks",
+                    "diff-index",
+                    "--cached",
+                    "--raw",
+                    "-z",
+                    "--no-renames",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    lab.head().as_str()
+                ]
+            ),
+            Some("diff-files") => assert_eq!(
+                words[1..],
+                [
+                    "--no-pager",
+                    "--no-optional-locks",
+                    "diff-files",
+                    "--raw",
+                    "-z",
+                    "--no-renames",
+                    "--ignore-submodules=all",
+                    "--no-ext-diff",
+                    "--no-textconv"
+                ]
+            ),
+            _ => {}
+        }
+    }
     assert!(lab.baseline().preexisting_tracked);
     assert_eq!(lab.log(), "", "baseline metadata executed {name}");
 }
@@ -531,8 +578,16 @@ fn object_redirection_controls_are_live_and_refused_without_other_repository_con
     ));
 }
 
+fn candidates(capture: &duded::git_read::diff::ReviewCapture) -> Vec<&str> {
+    capture
+        .candidates
+        .iter()
+        .map(|candidate| candidate.entry.path.as_str())
+        .collect()
+}
+
 #[test]
-fn the_review_cap_counts_eligible_pairs_and_reports_a_change_after_its_prefix() {
+fn a_change_after_the_256th_tracked_path_is_still_a_candidate() {
     let lab = Lab::new();
     for n in 0..300 {
         lab.write(&format!("{n:04}.txt"), &format!("small {n}\n"));
@@ -541,23 +596,71 @@ fn the_review_cap_counts_eligible_pairs_and_reports_a_change_after_its_prefix() 
     lab.git(&["commit", "--quiet", "-m", "many files"]);
     let baseline = lab.baseline();
     assert!(!baseline.preexisting_tracked);
-    lab.write("a.txt", "changed after the prefix\n");
+    lab.write("0299.txt", "changed after the prefix\n");
+    lab.real.commands.store(0, Ordering::Relaxed);
     let capture = lab
         .reader
         .capture_review(&lab.tree(), &baseline, cancel())
         .unwrap();
+    assert_eq!(candidates(&capture), ["0299.txt"]);
     assert_eq!(
         (
-            capture.candidates.len(),
             capture.omitted,
             capture.omitted_lower_bound,
             capture.complete
         ),
-        (0, 46, false, false)
+        (0, false, true)
     );
-    assert!(
-        lab.baseline().preexisting_tracked,
-        "baseline dirty observation must scan beyond the review-stamp prefix"
+    assert_eq!(lab.real.commands.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn more_changed_files_than_the_cap_are_counted_as_omitted() {
+    let lab = Lab::new();
+    let baseline = lab.baseline();
+    for n in 0..260 {
+        lab.write(&format!("{n:04}.txt"), &format!("new {n}\n"));
+    }
+    lab.git(&["add", "-A"]);
+    let capture = lab
+        .reader
+        .capture_review(&lab.tree(), &baseline, cancel())
+        .unwrap();
+    assert_eq!(capture.candidates.len(), 256);
+    assert_eq!(
+        (
+            capture.omitted,
+            capture.omitted_lower_bound,
+            capture.complete
+        ),
+        (4, false, false)
+    );
+}
+
+#[test]
+fn review_cost_follows_the_change_count_not_the_tracked_file_count() {
+    let lab = Lab::new();
+    for n in 0..5000 {
+        lab.write(&format!("{n:04}.txt"), &format!("small {n}\n"));
+    }
+    lab.git(&["add", "-A"]);
+    lab.git(&["commit", "--quiet", "-m", "many files"]);
+    lab.git(&["repack", "-a", "-d", "-q"]);
+    let baseline = lab.baseline();
+    lab.write("0001.txt", "changed 1\n");
+    lab.write("2500.txt", "changed 2\n");
+    lab.write("4999.txt", "changed 3\n");
+    lab.real.commands.store(0, Ordering::Relaxed);
+    let capture = lab
+        .reader
+        .capture_review(&lab.tree(), &baseline, cancel())
+        .unwrap();
+    assert_eq!(candidates(&capture), ["0001.txt", "2500.txt", "4999.txt"]);
+    assert!(capture.complete);
+    assert_eq!(
+        lab.real.commands.load(Ordering::Relaxed),
+        2 + 3,
+        "diff-index, diff-files and one cat-file per changed candidate"
     );
 }
 
@@ -770,20 +873,22 @@ fn content_reclamation_does_not_adopt_metadata_scratch_entries() {
 }
 
 #[test]
-fn a_cut_tracked_catalog_never_counts_unknown_tracked_names_as_untracked() {
+fn a_cut_diff_listing_never_turns_unknown_membership_into_an_added_file() {
     let lab = Lab::new();
     let baseline = lab.baseline();
-    lab.write("z-staged.txt", "new tracked\n");
-    lab.git(&["add", "z-staged.txt"]);
+    lab.write("y.txt", "first staged\n");
+    lab.write("z.txt", "second staged\n");
+    lab.git(&["add", "y.txt", "z.txt"]);
     lab.real.cut_listing.store(true, Ordering::Relaxed);
     let capture = lab
         .reader
         .capture_review(&lab.tree(), &baseline, cancel())
         .unwrap();
+    assert_eq!(candidates(&capture), ["y.txt"]);
     assert_eq!(
         (
             capture.untracked,
-            capture.untracked_lower_bound,
+            capture.omitted_lower_bound,
             capture.complete
         ),
         (0, true, false)
@@ -826,7 +931,7 @@ fn a_full_read_and_its_cleanup_leave_no_descriptor_open() {
 }
 
 #[test]
-fn a_cut_baseline_catalog_never_turns_unknown_membership_into_an_added_file() {
+fn long_unchanged_names_neither_hide_nor_invent_a_changed_file() {
     let lab = Lab::new();
     for n in 0..431 {
         lab.write(&format!("{n:03}{}", "x".repeat(247)), "long name\n");
@@ -840,12 +945,13 @@ fn a_cut_baseline_catalog_never_turns_unknown_membership_into_an_added_file() {
         .reader
         .capture_review(&lab.tree(), &baseline, cancel())
         .unwrap();
-    assert!(
-        capture
-            .candidates
-            .iter()
-            .all(|c| c.path.as_str() != "z.txt")
+    assert_eq!(candidates(&capture), ["z.txt"]);
+    assert_eq!(
+        (
+            capture.omitted,
+            capture.omitted_lower_bound,
+            capture.complete
+        ),
+        (0, false, true)
     );
-    assert!(capture.omitted_lower_bound && !capture.complete);
-    assert_eq!(capture.omitted, 434);
 }

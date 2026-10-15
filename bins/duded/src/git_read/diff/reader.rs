@@ -38,74 +38,70 @@ pub(super) struct TrackedObject {
     mode: u32,
 }
 
-struct Listing {
-    files: BTreeMap<RepoPath, TrackedObject>,
-    tracked: BTreeSet<Vec<u8>>,
-    omitted: u32,
+type Sides = (Option<TrackedObject>, Option<TrackedObject>);
+
+struct Changes {
+    files: BTreeMap<RepoPath, Sides>,
+    invalid: BTreeSet<Vec<u8>>,
     cut: bool,
 }
 
-fn listing(output: &[u8], index: bool, cut: bool) -> Result<Listing, DiffRefusal> {
-    let mut parsed = Listing {
+fn side(mode: &[u8], id: &[u8], unmerged: bool) -> Result<Option<TrackedObject>, DiffRefusal> {
+    if mode.len() != 6 || !mode.iter().all(|byte| matches!(byte, b'0'..=b'7')) {
+        return Err(DiffRefusal::Unreadable);
+    }
+    let mode = u32::from_str_radix(
+        std::str::from_utf8(mode).map_err(|_| DiffRefusal::Unreadable)?,
+        8,
+    )
+    .map_err(|_| DiffRefusal::Unreadable)?;
+    let id = ObjectId::parse(id).ok_or(DiffRefusal::Unreadable)?;
+    Ok((mode != 0 || unmerged).then_some(TrackedObject { id, mode }))
+}
+
+/// Parse raw `-z` diff records. With `worktree`, a record describes the index side only, because
+/// the worktree side of that comparison is read separately through held descriptors.
+fn changes(output: &[u8], cut: bool, worktree: bool) -> Result<Changes, DiffRefusal> {
+    let mut parsed = Changes {
         files: BTreeMap::new(),
-        tracked: BTreeSet::new(),
-        omitted: 0,
+        invalid: BTreeSet::new(),
         cut,
     };
-    let mut records = output.split(|byte| *byte == 0).collect::<Vec<_>>();
-    let last = records.pop().ok_or(DiffRefusal::Unreadable)?;
+    let mut chunks = output.split(|byte| *byte == 0).collect::<Vec<_>>();
+    let last = chunks.pop().ok_or(DiffRefusal::Unreadable)?;
     if !cut && !last.is_empty() {
         return Err(DiffRefusal::Unreadable);
     }
-    for record in records {
-        let tab = record
-            .iter()
-            .position(|byte| *byte == b'\t')
-            .ok_or(DiffRefusal::Unreadable)?;
-        let header = record[..tab]
+    let mut chunks = chunks.into_iter();
+    while let Some(header) = chunks.next() {
+        let Some(path) = chunks.next() else {
+            if cut {
+                break;
+            }
+            return Err(DiffRefusal::Unreadable);
+        };
+        let header = header
+            .strip_prefix(b":")
+            .ok_or(DiffRefusal::Unreadable)?
             .split(|byte| *byte == b' ')
             .collect::<Vec<_>>();
-        if header.len() != 3
-            || header[0].len() != 6
-            || !header[0].iter().all(|byte| matches!(byte, b'0'..=b'7'))
-        {
+        if header.len() != 5 || header[4].len() != 1 || !header[4][0].is_ascii_uppercase() {
             return Err(DiffRefusal::Unreadable);
         }
-        let mut mode = u32::from_str_radix(
-            std::str::from_utf8(header[0]).map_err(|_| DiffRefusal::Unreadable)?,
-            8,
-        )
-        .map_err(|_| DiffRefusal::Unreadable)?;
-        let id =
-            ObjectId::parse(header[if index { 1 } else { 2 }]).ok_or(DiffRefusal::Unreadable)?;
-        if index {
-            if !matches!(header[2], b"0" | b"1" | b"2" | b"3") {
-                return Err(DiffRefusal::Unreadable);
-            }
-            if header[2] != b"0" {
-                mode = 0;
-            }
-        } else if !matches!(header[1], b"blob" | b"commit" | b"tree") {
-            return Err(DiffRefusal::Unreadable);
-        }
-        let name = &record[tab + 1..];
-        parsed.tracked.insert(name.to_vec());
-        let Some(path) = RepoPath::from_bytes(name) else {
-            parsed.omitted = parsed.omitted.saturating_add(1);
-            continue;
+        let unmerged = header[4] == b"U";
+        let old = side(header[0], header[2], unmerged)?;
+        let current = if worktree {
+            old.clone()
+        } else {
+            side(header[1], header[3], unmerged)?
         };
-        let entry = TrackedObject { id, mode };
-        if let Some(previous) = parsed.files.insert(path.clone(), entry.clone()) {
-            if !index || mode != 0 {
-                return Err(DiffRefusal::Unreadable);
+        match RepoPath::from_bytes(path) {
+            Some(path) => {
+                parsed.files.insert(path, (old, current));
             }
-            parsed.files.insert(
-                path,
-                TrackedObject {
-                    mode: 0,
-                    ..previous
-                },
-            );
+            None => {
+                parsed.invalid.insert(path.to_vec());
+            }
         }
     }
     Ok(parsed)
@@ -309,7 +305,7 @@ impl DiffReader {
         {
             let budget = Budget::new(cancelled);
             let shadow = self.shadow(tree, Some(baseline.root), &budget)?;
-            self.observe(&shadow, baseline, &budget)
+            self.observe(tree, &shadow, baseline, &budget)
         }
         #[cfg(not(unix))]
         {
@@ -405,6 +401,29 @@ impl DiffReader {
         content: &ContentShadow,
         budget: &Budget,
     ) -> Result<bool, DiffRefusal> {
+        let status = self.metadata_run(
+            tree,
+            content,
+            &["status", "--porcelain=v1", "-z", "--ignore-submodules=all"],
+            budget,
+        )?;
+        let dirty = status_dirty(&status.bytes, status.cut, status.exit == Some(0))?;
+        if !dirty && (content.has_gitlinks() || content.has_hidden_entries()) {
+            return Err(DiffRefusal::BaselineUnavailable);
+        }
+        Ok(dirty)
+    }
+
+    /// Run one protected read-only command against the live worktree in the metadata scratch
+    /// subtree, after proving it sees the same head and index as the content shadow.
+    #[cfg(unix)]
+    fn metadata_run(
+        &self,
+        tree: &super::super::Tree,
+        content: &ContentShadow,
+        args: &[&str],
+        budget: &Budget,
+    ) -> Result<Output, DiffRefusal> {
         content.verify(budget)?;
         let metadata = self.git.shadow(tree).map_err(|_| DiffRefusal::Unreadable)?;
         if metadata_head(&metadata, budget)? != content.head() {
@@ -422,12 +441,7 @@ impl DiffReader {
                 budget.remaining()?.min(super::super::COMMAND_DEADLINE),
             )
             .map_err(|_| DiffRefusal::GitUnavailable)?;
-        let spec = super::super::launch(
-            &self.git,
-            &program,
-            &metadata,
-            &["status", "--porcelain=v1", "-z", "--ignore-submodules=all"],
-        );
+        let spec = super::super::launch(&self.git, &program, &metadata, args);
         let result = self
             .git
             .runner
@@ -438,22 +452,22 @@ impl DiffReader {
             )
             .map_err(|_| DiffRefusal::GitUnavailable)?;
         content.verify(budget)?;
-        let dirty = match result {
+        match result {
             PredicateCaptured::Finished {
                 timed_out: true, ..
-            } => return Err(DiffRefusal::TimedOut),
+            } => Err(DiffRefusal::TimedOut),
             PredicateCaptured::Finished {
                 exit,
                 stdout,
                 truncated,
                 ..
-            } => status_dirty(&stdout, truncated, exit == Some(0))?,
-            PredicateCaptured::Swept => return Err(DiffRefusal::Unreadable),
-        };
-        if !dirty && (content.has_gitlinks() || content.has_hidden_entries()) {
-            return Err(DiffRefusal::BaselineUnavailable);
+            } => Ok(Output {
+                exit,
+                bytes: stdout,
+                cut: truncated,
+            }),
+            PredicateCaptured::Swept => Err(DiffRefusal::Unreadable),
         }
-        Ok(dirty)
     }
 
     #[cfg(unix)]
@@ -600,70 +614,60 @@ impl DiffReader {
     #[cfg(unix)]
     fn observe(
         &self,
+        tree: &super::super::Tree,
         shadow: &ContentShadow,
         baseline: &BaselineCapture,
         budget: &Budget,
     ) -> Result<ReviewCapture, DiffRefusal> {
         let base = baseline.head.to_string();
-        let old = self.run(
+        let staged = self.run(
             shadow,
-            &["ls-tree", "-r", "-z", &base],
+            &[
+                "diff-index",
+                "--cached",
+                "--raw",
+                "-z",
+                "--no-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+                &base,
+            ],
             budget,
             super::super::STDOUT_CAP,
         )?;
-        if old.exit != Some(0) && !old.cut {
+        if staged.exit != Some(0) && !staged.cut {
             return Err(DiffRefusal::BaselineUnavailable);
         }
-        let current = self.run(
+        let unstaged = self.metadata_run(
+            tree,
             shadow,
-            &["ls-files", "--stage", "-z"],
+            &[
+                "diff-files",
+                "--raw",
+                "-z",
+                "--no-renames",
+                "--ignore-submodules=all",
+                "--no-ext-diff",
+                "--no-textconv",
+            ],
             budget,
-            super::super::STDOUT_CAP,
         )?;
-        if current.exit != Some(0) && !current.cut {
+        if unstaged.exit != Some(0) && !unstaged.cut {
             return Err(DiffRefusal::Unreadable);
         }
-        let old = listing(&old.bytes, false, old.cut)?;
-        let current = listing(&current.bytes, true, current.cut)?;
-        let tracked = old
-            .tracked
-            .union(&current.tracked)
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let mut paths = old
-            .files
-            .keys()
-            .chain(current.files.keys())
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        // A cut baseline listing cannot prove a path is new, so it is counted as omitted.
-        let unknown_baseline = if old.cut {
-            let before = paths.len();
-            paths.retain(|path| old.files.contains_key(path));
-            before - paths.len()
-        } else {
-            0
-        };
-        let invalid = tracked
-            .iter()
-            .filter(|path| RepoPath::from_bytes(path).is_none())
-            .count();
-        let omitted = u32::try_from(
-            invalid
-                .saturating_add(unknown_baseline)
-                .saturating_add(paths.len().saturating_sub(MAX_DIFF_CANDIDATES)),
-        )
-        .unwrap_or(u32::MAX);
-        let cut = old.cut || current.cut;
-        let (untracked, untracked_lower_bound) = if cut {
-            (0, true)
-        } else {
-            shadow.root().untracked(&tracked, budget)?
-        };
+        let staged = changes(&staged.bytes, staged.cut, false)?;
+        let unstaged = changes(&unstaged.bytes, unstaged.cut, true)?;
+        let cut = staged.cut || unstaged.cut;
+        let mut paths = unstaged.files;
+        paths.extend(staged.files);
+        let invalid = staged.invalid.union(&unstaged.invalid).count();
+        let omitted =
+            u32::try_from(invalid.saturating_add(paths.len().saturating_sub(MAX_DIFF_CANDIDATES)))
+                .unwrap_or(u32::MAX);
+        let (untracked, untracked_lower_bound) =
+            shadow.root().untracked(shadow.tracked_names(), budget)?;
         let mut samples = Vec::new();
-        for path in paths.into_iter().take(MAX_DIFF_CANDIDATES) {
-            let old = old.files.get(&path).cloned();
-            let current = current.files.get(&path).cloned();
+        for (path, (old, current)) in paths.into_iter().take(MAX_DIFF_CANDIDATES) {
             let kind = if old.as_ref().is_some_and(|file| !regular(file.mode))
                 || current.as_ref().is_some_and(|file| !regular(file.mode))
             {
@@ -691,7 +695,10 @@ impl DiffReader {
         let mut review = ReviewCapture {
             candidates: Vec::new(),
             digest: String::new(),
-            complete: omitted == 0 && !cut && !untracked_lower_bound,
+            complete: omitted == 0
+                && !cut
+                && !untracked_lower_bound
+                && !shadow.has_hidden_entries(),
             omitted,
             omitted_lower_bound: cut,
             untracked,
@@ -966,42 +973,46 @@ mod tests {
     }
 
     #[test]
-    fn tree_and_index_metadata_keep_typed_modes_and_private_raw_names() {
-        let tree = format!(
-            "100644 blob {ID}\tsrc/main.rs\0{0} blob {ID}\t.env\0",
-            "120000"
+    fn raw_diff_records_keep_typed_modes_and_private_raw_names() {
+        let zeros = "0".repeat(40);
+        let staged = format!(
+            ":000000 100755 {zeros} {ID} A\0new.rs\0:100644 120000 {ID} {ID} T\0link\0\
+             :100644 000000 {ID} {zeros} D\0gone\0:100644 100644 {ID} {ID} M\0../outside\0"
         );
-        let parsed = listing(tree.as_bytes(), false, false).unwrap();
+        let parsed = changes(staged.as_bytes(), false, false).unwrap();
+        let new = &parsed.files[&RepoPath::from_bytes(b"new.rs").unwrap()];
         assert_eq!(
-            parsed.files[&RepoPath::from_bytes(b"src/main.rs").unwrap()].mode,
-            0o100_644
+            (new.0.is_none(), new.1.as_ref().map(|file| file.mode)),
+            (true, Some(0o100_755))
         );
+        let gone = &parsed.files[&RepoPath::from_bytes(b"gone").unwrap()];
+        assert_eq!((gone.0.is_some(), gone.1.is_none()), (true, true));
         assert_eq!(
-            (parsed.files.len(), parsed.omitted, parsed.cut),
-            (2, 0, false)
+            (parsed.files.len(), parsed.invalid.len(), parsed.cut),
+            (3, 1, false)
         );
-        let index = format!("100755 {ID} 0\tnew.rs\0");
-        assert_eq!(
-            listing(index.as_bytes(), true, false).unwrap().files
-                [&RepoPath::from_bytes(b"new.rs").unwrap()]
-                .mode,
-            0o100_755
-        );
-        let hostile = format!("100644 {ID} 0\t../outside\0");
-        let parsed = listing(hostile.as_bytes(), true, false).unwrap();
-        assert_eq!(
-            (parsed.files.len(), parsed.omitted, parsed.tracked.len()),
-            (0, 1, 1)
-        );
+        let unstaged = format!(":100644 100644 {ID} {zeros} M\0a.txt\0");
+        let parsed = changes(unstaged.as_bytes(), false, true).unwrap();
+        let sides = &parsed.files[&RepoPath::from_bytes(b"a.txt").unwrap()];
+        assert_eq!(sides.0, sides.1);
     }
 
     #[test]
-    fn partial_or_malformed_metadata_never_becomes_a_complete_candidate() {
-        let output = format!("100644 blob {ID}\tok\0partial");
-        let parsed = listing(output.as_bytes(), false, true).unwrap();
+    fn partial_or_malformed_diff_output_never_becomes_a_complete_candidate() {
+        let output = format!(":100644 100644 {ID} {ID} M\0ok\0:100644 100644 {ID} {ID} M\0par");
+        let parsed = changes(output.as_bytes(), true, false).unwrap();
         assert_eq!((parsed.files.len(), parsed.cut), (1, true));
-        assert!(listing(output.as_bytes(), false, false).is_err());
-        assert!(listing(b"100644 blob HEAD\tok\0", false, false).is_err());
+        assert!(changes(output.as_bytes(), false, false).is_err());
+        assert!(changes(b":100644 100644 HEAD HEAD M\0ok\0", false, false).is_err());
+        let headless = format!(":100644 100644 {ID} {ID} M\0");
+        assert_eq!(
+            changes(headless.as_bytes(), true, false)
+                .unwrap()
+                .files
+                .len(),
+            0
+        );
+        assert!(changes(headless.as_bytes(), false, false).is_err());
     }
 
     #[test]
