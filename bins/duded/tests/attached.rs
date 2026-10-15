@@ -1127,6 +1127,187 @@ fn hired_with_resolver(
     }
 }
 
+#[test]
+fn direct_daemon_attachments_after_two_reboots_reserve_token_only_history() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let Hired {
+        settings,
+        mut running,
+        agent,
+        owner,
+        sibling,
+        ..
+    } = hired(&fixture, &ptys, fixture.settings());
+    running.handle.ask(duded::ports::Ask::Pause(agent)).unwrap();
+    drop((owner, sibling));
+    assert_eq!(
+        running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+
+    let (second_hash, second_token) = reboot_and_attach_directly(&fixture, &settings, agent);
+    let (third_hash, third_token) = reboot_and_attach_directly(&fixture, &settings, agent);
+    assert_ne!(second_hash, third_hash);
+    assert_ne!(second_token.expose(), third_token.expose());
+}
+
+fn journaled_ulids(
+    entries: &[(dudes_types::Lsn, dudes_proto::Entry)],
+) -> std::collections::BTreeSet<ulid::Ulid> {
+    use serde_json::Value;
+
+    let mut pending = vec![serde_json::to_value(entries).unwrap()];
+    let mut ids = std::collections::BTreeSet::new();
+    while let Some(value) = pending.pop() {
+        match value {
+            Value::String(text) => {
+                if let Ok(id) = ulid::Ulid::from_string(&text)
+                    && id.to_string() == text
+                {
+                    ids.insert(id);
+                }
+            }
+            Value::Array(values) => pending.extend(values),
+            Value::Object(values) => pending.extend(
+                values
+                    .into_iter()
+                    .flat_map(|(key, value)| [Value::String(key), value]),
+            ),
+            _ => {}
+        }
+    }
+    ids
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one boot keeps its prefix, mint observer, native PTY, and socket barriers together"
+)]
+fn reboot_and_attach_directly(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    agent: AgentId,
+) -> (String, dudes_proto::rpc::hook::HookToken) {
+    use duded::ports::{Answered, Ask};
+
+    let prefix = fixture.entries();
+    let ids_before = journaled_ulids(&prefix);
+    assert!(ids_before.iter().all(|id| id.timestamp_ms() == 0));
+    let highest_id = u128::from(*ids_before.last().unwrap());
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut parts = common::seams(
+        settings,
+        host,
+        Arc::new(ScriptedRunner::default()),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+    );
+    parts.pty_host = Box::new(ptys.clone());
+    parts.resolver = common::native_resolver(&ptys);
+    let tokens = parts.rng.tokens();
+    let daemon = duded::boot(settings, parts).expect("replay the confirmed, paused session");
+    assert!(
+        daemon.operator_authority().is_sealed(),
+        "recorded agents seal new socket effect authority; this test uses direct daemon input"
+    );
+    let mut running = common::start(daemon);
+    let mut client = Client::connect(settings.socket()).expect("a real rebooted socket");
+    assert!(
+        client
+            .call(Method::SystemPing, None)
+            .unwrap()
+            .error
+            .is_none()
+    );
+    let Answered::Attached(pty) = running
+        .handle
+        .ask(Ask::Attach {
+            agent,
+            by: Actor::System,
+            provenance: PeerProvenance::NoRecordedAgent,
+            cols: 101,
+            rows: 37,
+        })
+        .expect("the existing confirmed session attaches")
+    else {
+        panic!("the direct daemon command did not attach")
+    };
+    let attached = fixture.entries();
+    assert_eq!(journaled_ulids(&attached), ids_before);
+    let tail = &attached[prefix.len()..];
+    let mints: Vec<_> = tail
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_, entry))| match &entry.record {
+            Record::HookTokenMinted {
+                agent: seen,
+                token_hash,
+            } if *seen == agent => Some((index, token_hash.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(mints.len(), 1);
+    let (mint_at, hash) = &mints[0];
+    assert!(
+        tail[..*mint_at].iter().all(|(_, entry)| matches!(
+            &entry.record,
+            Record::Attached { agent: seen, .. }
+                | Record::LoopDecided {
+                    agent: seen,
+                    decision: dudes_proto::LoopDecision::Hold { .. },
+                    ..
+                } if *seen == agent
+        )),
+        "no new identity-bearing record precedes the token mint: {tail:?}"
+    );
+    let token = tokens.token_of(hash);
+    let token_counter: u128 = token.expose().trim_start_matches('A').parse().unwrap();
+    assert!(token_counter > highest_id);
+    let opens = ptys.opens();
+    assert_eq!(opens.len(), 1);
+    assert!(opens[0].0.env.iter().any(|variable| {
+        variable.name() == "DUDES_TOKEN" && variable.expose_value() == token.expose()
+    }));
+    assert!(matches!(
+        running
+            .handle
+            .ask(Ask::Detach {
+                agent,
+                pty,
+                by: Actor::System,
+                provenance: PeerProvenance::NoRecordedAgent,
+            })
+            .unwrap(),
+        Answered::PtyClosed(dudes_proto::PtyCloseOutcome::Closed)
+    ));
+    let detached = fixture.entries();
+    assert_eq!(journaled_ulids(&detached), ids_before);
+    assert!(detached[prefix.len()..].iter().any(|(_, entry)| {
+        matches!(entry.record, Record::Detached { agent: seen, .. } if seen == agent)
+    }));
+    assert_eq!(ptys.closes(), vec![pty]);
+    assert!(ptys.native_acknowledged(pty));
+    let response = client
+        .call_as_operator(Method::AgentList, None, credential_of(settings))
+        .expect("the rebooted socket answers an authenticated status request");
+    assert!(response.error.is_none(), "{response:?}");
+    let agents: Vec<dudes_proto::projection::AgentView> =
+        serde_json::from_value(response.result.unwrap()).unwrap();
+    assert_eq!(
+        agents.iter().map(|agent| agent.id).collect::<Vec<_>>(),
+        vec![agent]
+    );
+    drop(client);
+    assert_eq!(
+        running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+    assert_eq!(journaled_ulids(&fixture.entries()), ids_before);
+    (hash.clone(), token)
+}
+
 /// A hook command the daemon cannot name in the CLI's settings refuses the attach,
 /// and the daemon keeps serving. Claude Code treats a hook it cannot run as a non-blocking error,
 /// so a CLI launched with one would run ungoverned.
