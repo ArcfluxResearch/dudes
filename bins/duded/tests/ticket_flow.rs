@@ -2844,6 +2844,12 @@ fn remove_clears_an_unfinished_goal_first_and_refuses_a_working_ticket() {
     assert!(matches!(&appended[1], Record::TicketRemoved { .. }));
     assert!(flow.board().iter().all(|view| view.id != one));
     flow.await_status(two, CardStatus::Doing);
+    // The start is visible before its baseline and first turn are appended: count records only
+    // once the round has launched, when its running turn's comparison is what refuses Remove.
+    let (turn, ..) = Flow::await_turn_number(&fixture, 2);
+    fixture.await_record("the second ticket's turn spawned", |record| {
+        matches!(record, Record::TurnSpawned { turn: owned, .. } if *owned == turn).then_some(())
+    });
 
     let before = fixture.records().len();
     let seq = flow.card(two).seq;
@@ -2851,8 +2857,12 @@ fn remove_clears_an_unfinished_goal_first_and_refuses_a_working_ticket() {
         dudes_proto::rpc::Method::TicketRemove,
         json!({"card": two, "expected_seq": seq}),
     );
-    assert_eq!(refusal_reason(&refused), TicketRefusal::WrongState.code());
+    assert_eq!(
+        refusal_reason(&refused),
+        TicketRefusal::InstructionComparisonPending.code()
+    );
     assert_eq!(fixture.records().len(), before);
+    assert_eq!(flow.card(two).status, CardStatus::Doing);
     flow.stop();
 }
 
