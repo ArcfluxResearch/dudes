@@ -420,3 +420,23 @@ fn a_capture_waits_for_one_floor_read_in_flight_and_no_later_one_overtakes_it() 
     capture.join().unwrap();
     assert!(slot.floor().is_ok(), "the capture released it");
 }
+
+#[test]
+fn any_changed_file_the_reader_cannot_show_makes_the_stamp_incomplete() {
+    let lab = Lab::new();
+    let baseline = lab.baseline();
+    lab.write("a.txt", "agent edit\n");
+    assert!(
+        sampled(&lab.stamp(&baseline)).0,
+        "control: a text edit is complete"
+    );
+    std::fs::write(lab.repo().join("a.txt"), [0_u8, 1, 2, 3]).unwrap();
+    assert!(!sampled(&lab.stamp(&baseline)).0, "a binary change");
+    lab.write("a.txt", &"x".repeat(20_000));
+    assert!(!sampled(&lab.stamp(&baseline)).0, "an oversize change");
+    lab.write("a.txt", "agent edit\n");
+    assert!(
+        sampled(&lab.stamp(&baseline)).0,
+        "complete again once the file is readable"
+    );
+}

@@ -7,7 +7,7 @@ import { sameDiffBinding } from './diff.ts';
 import './diff.css';
 
 const BADGE: Readonly<Record<DiffFreshness, string>> = {
-  matches_review_sample: 'Matches the check',
+  matches_review_sample: 'Unchanged since the check',
   changed_after_check: 'Changed since the check',
   unknown: 'Unknown',
 };
@@ -178,20 +178,23 @@ export function DiffPanel({ card, expectedSeq, transport }: {
   const currentOwner = useRef(owner);
   currentOwner.current = owner;
   const latest = useRef(0);
+  const inflight = useRef<number | null>(null);
   const [state, setState] = useState<PanelState>({ owner, phase: 'closed' });
-  useEffect(() => () => { latest.current += 1; }, [owner]);
+  useEffect(() => () => { latest.current += 1; inflight.current = null; }, [owner]);
   const mine = state.owner === owner;
   const closed = !mine || state.phase === 'closed';
   const loading = mine && state.phase === 'loading';
   const review = mine && (state.phase === 'ready' || state.phase === 'loading') ? state.review : null;
 
   async function read(request: DiffRequest, previous: DiffReviewState | null, opened: string | null = null): Promise<void> {
-    if (loading) return;
+    if (inflight.current !== null) return;
     const ticket = ++latest.current;
+    inflight.current = ticket;
     const generation = transport.generation();
     setState({ owner, phase: 'loading', review: previous });
     let outcome: DiffOutcome;
     try { outcome = await transport.request(request); } catch { outcome = { kind: 'unavailable' }; }
+    if (inflight.current === ticket) inflight.current = null;
     if (ticket !== latest.current || currentOwner.current !== owner) return;
     if (generation !== transport.generation()) { setState({ owner, phase: 'closed' }); return; }
     if (outcome.kind !== 'response') { setState({ owner, phase: 'refused', reason: outcome.kind }); return; }
@@ -233,7 +236,7 @@ export function DiffPanel({ card, expectedSeq, transport }: {
     </> : <>
       <div className="diff-actions">
         <button type="button" disabled={loading} onClick={refresh}>Refresh</button>
-        <button type="button" onClick={() => { latest.current += 1; setState({ owner, phase: 'closed' }); }}>Hide changes</button>
+        <button type="button" onClick={() => { latest.current += 1; inflight.current = null; setState({ owner, phase: 'closed' }); }}>Hide changes</button>
       </div>
       <p className="diff-status" role="status">{loading ? 'Reading the checkout…' : state.phase === 'refused' ? failureText(state.reason) : ''}</p>
       {review === null ? null : <DiffReview review={review} loading={loading} onOpen={open}

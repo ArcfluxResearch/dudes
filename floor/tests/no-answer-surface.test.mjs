@@ -1238,7 +1238,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   const diff = await readFile(resolve(floor, DIFF_PANEL), 'utf8');
   assert.deepEqual(clicksIn(diff), [
     '() => { onOpen(entry); }', 'onPage', 'refresh', 'refresh',
-    "() => { latest.current += 1; setState({ owner, phase: 'closed' }); }",
+    "() => { latest.current += 1; inflight.current = null; setState({ owner, phase: 'closed' }); }",
   ]);
   assert.match(diff, /onPage=\{\(\) => \{ if \(review\.page\.next_cursor !== null\) void read\(\{ mode: 'page', manifest_id: review\.page\.manifest_id, cursor: review\.page\.next_cursor \}, review\); \}\}/);
   assert.match(diff, /const refresh = \(\) => \{ void read\(\{ mode: 'manifest', card, expected_seq: expectedSeq \}, null\); \};/);

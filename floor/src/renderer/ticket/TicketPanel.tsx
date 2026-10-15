@@ -5,13 +5,14 @@ import type { FormEvent } from 'react';
 
 import type { CardRow } from '../board.ts';
 import { browserControlDeps } from '../control/control.ts';
+import type { ControlDeps } from '../control/control.ts';
 import { DiffPanel } from '../diff/DiffPanel.tsx';
 import { browserDiffTransport } from '../diff/transport.ts';
 import { getFloorState } from '../floor/store.ts';
 import type { FloorState } from '../floor/store.ts';
 import { handFocusOnLeave } from '../focus.ts';
 import { recordedTime } from '../format.ts';
-import { getGitState, loadGit, needsRead, refusalText, subscribeToGit } from '../git/git.ts';
+import { getGitState, loadGit, refusalText, subscribeToGit } from '../git/git.ts';
 import type { GitChangeKind } from '../git/git.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
@@ -45,20 +46,39 @@ function focusHeading(node: HTMLHeadingElement | null): (() => void) | void {
   return handFocusOnLeave(node);
 }
 
+/** The ticket whose Git reading the drawer may show: the Git read is kept per agent, so it alone cannot say. */
+let shownFor: string | null = null;
+const readingKey = (card: CardRow): string => `${card.id}:${card.seq}`;
+
+/** Read the checkout for `card`, and remember that the reading on screen belongs to it once it is a real one. */
+export async function loadChangedFiles(card: CardRow, deps: ControlDeps = browserControlDeps): Promise<void> {
+  const agent = card.claimed_by;
+  if (agent === null) return;
+  await loadGit(agent, deps);
+  const now = getGitState();
+  if (now.agent === agent && now.phase === 'ready' && !now.busy && now.view?.state === 'ok') shownFor = readingKey(card);
+}
+
+/** Forget which ticket the reading belongs to. For tests. */
+export function resetChangedFiles(): void { shownFor = null; }
+
 /** The changed files, from the Git read the Git tab uses, or one plain line saying how to turn it on. */
 function ChangedFiles({ floor, card }: { readonly floor: FloorState; readonly card: CardRow }) {
   const git = useSyncExternalStore(subscribeToGit, getGitState, getGitState);
+  const [, redraw] = useState(0);
   const agent = card.claimed_by;
+  const look = () => { void loadChangedFiles(card).then(() => { redraw((count) => count + 1); }); };
   useEffect(() => {
-    if (floor.git && agent !== null && needsRead(getGitState(), agent, true)) void loadGit(agent, browserControlDeps);
-  }, [floor.git, agent]);
+    if (floor.git && agent !== null) look();
+  }, [floor.git, agent, card.id, card.seq]);
   if (!floor.git) {
     return <section aria-label="Changed files"><h4>Changed files</h4>
       <p className="ticket-hint">The Git tab is off, so changed files are not shown. Turn it on with <code>dudes config set floor.git on</code> and restart the daemon.</p>
     </section>;
   }
   const mine = agent !== null && git.agent === agent;
-  const view = mine ? git.view : null;
+  const belongs = mine && shownFor === readingKey(card);
+  const view = belongs ? git.view : null;
   const problem = mine ? refusalText(view, git.failure, git.busy) : null;
   const rows = view === null || view.state !== 'ok' ? [] : [
     ...view.committed.items.map((file) => ({ kind: KIND_LABEL[file.kind], path: file.path, cut: file.cut })),
@@ -73,7 +93,7 @@ function ChangedFiles({ floor, card }: { readonly floor: FloorState; readonly ca
         <span className="git-kind">{file.kind}</span>{' '}<span className="git-path data">{file.path}{file.cut ? '…' : ''}</span>
       </li>)}</ul>) : null}
     {agent === null ? null : <button type="button" className="ticket-look" disabled={loading}
-      onClick={() => { void loadGit(agent, browserControlDeps); }}>Look again</button>}
+      onClick={look}>Look again</button>}
   </section>;
 }
 
@@ -287,6 +307,7 @@ export function TicketPanel({ floor, card, onHire }: {
   // The ticket moved, so the form that was open for its old state no longer fits it.
   useEffect(() => { setMode('none'); }, [card.id, card.status, card.seq]);
   const actions = open ? actionsOf(card) : [];
+  const changesView = floor.diff && (card.status === 'review' || card.status === 'blocked');
   const loaded = detail.card === card.id ? detail.detail : null;
   const editable = editableDetail(detail, card);
   const ordinary = actions.filter((action) => action !== 'remove' && action !== 'stop');
@@ -335,8 +356,8 @@ export function TicketPanel({ floor, card, onHire }: {
     </div> : null}
     {loaded?.coverage != null && loaded.coverage.limits.length > 0
       ? <section aria-label="What Dudes could not see"><h4>What Dudes could not see</h4><p>{coverageText(loaded.coverage)}</p></section> : null}
-    {card.status === 'review' ? <ChangedFiles floor={floor} card={card} /> : null}
-    {floor.diff && (card.status === 'review' || card.status === 'blocked')
+    {card.status === 'review' && !changesView ? <ChangedFiles floor={floor} card={card} /> : null}
+    {changesView
       ? <DiffPanel card={card.id} expectedSeq={card.seq} transport={browserDiffTransport} /> : null}
     {loaded?.result == null ? null : <section aria-label="Check result"><h4>Check result</h4>
       <p>{loaded.result.pass ? 'The check passed' : 'The check failed'}

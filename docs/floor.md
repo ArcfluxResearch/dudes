@@ -79,10 +79,11 @@ Set a spending limit when your account bills per use.
   It lists the tracked files that differ from where the agent's round began, and opens one file's
   old and current text side by side. Files that are binary, too large, or look like they hold
   secrets are listed without their text, and new files that Git does not track yet are only
-  counted. A label says whether the checkout still matches what Dudes sampled just after the
-  ticket's check ran. It says "unknown" whenever that sample is missing or incomplete, and
-  "unknown" is not a pass. Nothing is refreshed on its own: Refresh makes a new listing. The view
-  is off unless you turn it on, and each session can read about one mebibyte in all.
+  counted. A label says "Unchanged since the check" or "Changed since the check" by comparing the
+  checkout with what Dudes sampled just after the ticket's check ran. It says "Unknown" whenever
+  that sample is missing or incomplete, and "Unknown" is not a pass. Nothing is refreshed on its
+  own: Refresh makes a new listing. The view is off unless you turn it on, and each session can
+  read about one mebibyte in all. When it is shown, it replaces the Changed files list above.
 - **Actions.** Give to agent, Edit and Remove for a ticket nobody has started. Stop for one that is
   Working. Accept, Ask for changes and Remove for one that is Ready for you. Try again, Stop and
   Remove for one in Needs you. Remove for one that is Done, to clear it off the board. Accept is your verdict that the work is what you asked for. The check

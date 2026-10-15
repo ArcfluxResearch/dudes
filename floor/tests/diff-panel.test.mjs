@@ -78,6 +78,17 @@ test('nothing is read until the operator asks, and each action is one request', 
   } finally { await app.close(); }
 });
 
+test('two clicks in one frame send one request', async () => {
+  const app = await mount();
+  try {
+    const found = button(app, 'Show changes');
+    await act(async () => { press(found); press(found); });
+    assert.equal(app.seen.length, 1);
+    await app.click('Refresh');
+    assert.equal(app.seen.length, 2, 'the guard lets the next read through once the first has ended');
+  } finally { await app.close(); }
+});
+
 test('an open file shows its old and current text side by side, and closes again', async () => {
   const app = await mount((request) => response(request.mode === 'content' ? diffContent() : diffPage()));
   try {
@@ -101,7 +112,7 @@ const html = (page, extra = {}) => renderToStaticMarkup(createElement(DiffReview
 
 test('each freshness label says what it means and never reads as fresh or as a pass', () => {
   const matches = html(diffPage({ freshness: 'matches_review_sample' }));
-  assert.match(matches, /<span class="diff-badge" data-freshness="matches_review_sample">Matches the check<\/span>/);
+  assert.match(matches, /<span class="diff-badge" data-freshness="matches_review_sample">Unchanged since the check<\/span>/);
   assert.match(matches, /does not show that the check passed on these changes/);
 
   const changed = html(diffPage({ freshness: 'changed_after_check' }));
@@ -113,7 +124,7 @@ test('each freshness label says what it means and never reads as fresh or as a p
   assert.match(unknown, /Dudes cannot tell whether this is what the check saw\./);
   assert.match(unknown, /leaving out any one file makes a sample incomplete/);
   assert.match(unknown, /Unknown does not mean fresh\./);
-  assert.doesNotMatch(unknown, /Matches the check|Changed since|passed the check|is unchanged/);
+  assert.doesNotMatch(unknown, /Unchanged since|Changed since|passed the check|is unchanged/);
   for (const page of [matches, changed, unknown]) assert.match(page, /Files Git does not track yet, files left out, and changes the bounded read cannot see\s+are outside this comparison/);
 });
 

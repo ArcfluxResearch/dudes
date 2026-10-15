@@ -31,6 +31,8 @@ let detail;
 let gitModule;
 let ticket;
 let TicketPanel;
+let loadChangedFiles;
+let resetChangedFiles;
 
 before(async () => {
   server = await createServer({ root, cacheDir: resolve(root, 'node_modules/.vite-tickets-detail'),
@@ -39,7 +41,7 @@ before(async () => {
   detail = await server.ssrLoadModule('/src/renderer/ticket/detail.ts');
   gitModule = await server.ssrLoadModule('/src/renderer/git/git.ts');
   ticket = await server.ssrLoadModule('/src/renderer/ticket/ticket.ts');
-  ({ TicketPanel } = await server.ssrLoadModule('/src/renderer/ticket/TicketPanel.tsx'));
+  ({ TicketPanel, loadChangedFiles, resetChangedFiles } = await server.ssrLoadModule('/src/renderer/ticket/TicketPanel.tsx'));
 });
 after(async () => { await server?.close(); });
 beforeEach(() => {
@@ -47,6 +49,7 @@ beforeEach(() => {
   detail.resetDetail();
   gitModule.resetGit();
   ticket.resetTicket();
+  resetChangedFiles();
 });
 
 /** A read reply in the shape the daemon sends it. */
@@ -229,7 +232,7 @@ test('the changed files come from the Git read, or one plain line says how to tu
   });
   const git = daemon(() => json(200, view()));
   git.deps.csrf = deps.csrf;
-  await gitModule.loadGit(ADA, git.deps);
+  await loadChangedFiles(store.getFloorState().cards[0], git.deps);
   const on = panel();
   assert.match(on, /<ul class="ticket-files"><li><span class="git-kind">Added<\/span> <span class="git-path data">src\/new\.rs<\/span><\/li><li><span class="git-kind">Modified<\/span> <span class="git-path data">src\/main\.rs<\/span><\/li><\/ul>/);
   assert.match(on, /Look again/);
@@ -237,9 +240,40 @@ test('the changed files come from the Git read, or one plain line says how to tu
 
   const busy = daemon(() => json(200, view({ state: 'busy', head: null, committed: { items: [], truncated: false, dropped: 0 },
     changes: { items: [], truncated: false, dropped: 0 } })));
-  await gitModule.loadGit(ADA, busy.deps);
+  await loadChangedFiles(store.getFloorState().cards[0], busy.deps);
   assert.match(panel(), /Another read is running, or this page read a moment ago\. Try again in a few seconds\./);
   assert.match(panel(), /Look again/);
+});
+
+test('another ticket of the same agent never shows an earlier ticket\'s files', async () => {
+  subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'review', { claimed_by: ADA }), ticketCard(2, 'review', { claimed_by: ADA })], git: true });
+  const view = (path) => ({
+    state: 'ok', read_at: 1_787_394_600_000,
+    head: { branch: 'agent/feature', id: 'aaaaaaaaaaaa', ahead: 0, behind: 0, against: 'remote_default_branch', untracked: 0, untracked_cut: false },
+    branches: { items: [], truncated: false, dropped: 0 }, commits: { items: [], truncated: false, dropped: 0 },
+    committed: { items: [], truncated: false, dropped: 0 },
+    changes: { items: [{ path, cut: false, kind: 'modified', staged: false }], truncated: false, dropped: 0 },
+  });
+  const [first, second] = store.getFloorState().cards;
+  const drawn = (card) => renderToStaticMarkup(createElement(TicketPanel, { floor: store.getFloorState(), card }));
+  await loadChangedFiles(first, daemon(() => json(200, view('first-ticket.rs'))).deps);
+  assert.match(drawn(first), /first-ticket\.rs/);
+  assert.ok(!/first-ticket\.rs/.test(drawn(second)), 'the second ticket has not been read');
+  await loadChangedFiles(second, daemon(() => json(200, { state: 'busy', read_at: 1, head: null, branches: { items: [], truncated: false, dropped: 0 }, commits: { items: [], truncated: false, dropped: 0 }, committed: { items: [], truncated: false, dropped: 0 }, changes: { items: [], truncated: false, dropped: 0 } })).deps);
+  assert.ok(!/first-ticket\.rs/.test(drawn(second)), 'a busy answer keeps the earlier reading off the second ticket');
+  await loadChangedFiles(second, daemon(() => json(200, view('second-ticket.rs'))).deps);
+  assert.match(drawn(second), /second-ticket\.rs/);
+  assert.ok(!/first-ticket\.rs/.test(drawn(second)));
+});
+
+test('with the Changes view shown the older changed files list is gone, and it stays when the signal is absent', async () => {
+  for (const [diff, status, older] of [[true, 'review', false], [false, 'review', true], [true, 'blocked', false]]) {
+    store.resetFloorStore();
+    subscribe(store, { agents: [agent()], cards: [ticketCard(1, status, { claimed_by: ADA })], git: true, diff });
+    const out = panel();
+    assert.equal(out.includes('<h4>Changed files</h4>'), older && status === 'review', `diff=${diff} status=${status}`);
+    assert.equal(out.includes('<h4>Changes</h4>'), diff, `diff=${diff} status=${status}`);
+  }
 });
 
 test('instruction review renders known paths, independent uncertainty and physical intervals together', async () => {
