@@ -484,6 +484,7 @@ mod tests {
                 boot: None,
                 session: Some(session),
                 reissued: true,
+                mcp_grant: None,
             },
         }])
         .unwrap();
