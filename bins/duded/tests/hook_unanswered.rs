@@ -434,7 +434,7 @@ fn a_durable_token_mint_alone_does_not_make_the_hook_subject_ready() {
         provenance: Mutex::new(PeerProvenance::Unresolvable),
         refuse: AtomicBool::new(false),
     });
-    let original = seams_with(
+    let parts = seams_with(
         &settings,
         SharedHost::new(),
         Arc::new(ScriptedRunner::default()),
@@ -442,19 +442,19 @@ fn a_durable_token_mint_alone_does_not_make_the_hook_subject_ready() {
         Witness::default(),
         Arc::clone(&resolver) as Arc<dyn PeerResolver>,
     );
-    let tokens = original.rng.tokens();
+    let tokens = parts.rng.tokens();
     let daemon = boot(
         &settings,
         duded::Seams {
-            host: original.host,
-            pty_host: original.pty_host,
-            predicates: original.predicates,
+            host: parts.host,
+            pty_host: parts.pty_host,
+            predicates: parts.predicates,
             clock: Arc::clone(&clock),
-            rng: original.rng,
-            resolver: original.resolver,
-            adapters: original.adapters,
-            children: original.children,
-            witness: original.witness,
+            rng: parts.rng,
+            resolver: parts.resolver,
+            adapters: parts.adapters,
+            children: parts.children,
+            witness: parts.witness,
         },
     )
     .unwrap();
