@@ -208,7 +208,7 @@ where
     if let Some(note) = &read.ticket.coverage
         && !note.limits.is_empty()
     {
-        writeln!(out, "What Dudes could not see: {}", note.sentence())?;
+        writeln!(out, "Coverage: {}", note.sentence())?;
     }
     if read.ticket.round > 0 {
         writeln!(out, "Open the Floor to see the changed files.")?;

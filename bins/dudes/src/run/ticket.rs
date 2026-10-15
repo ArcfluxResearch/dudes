@@ -436,11 +436,13 @@ mod instruction_tests {
     }
 
     #[test]
-    fn a_ready_ticket_names_what_dudes_could_not_see_and_a_held_one_does_not() {
+    fn a_ready_or_held_ticket_names_what_dudes_could_not_see() {
         assert!(shown("review").contains(
             "Coverage: Dudes cannot see Codex's settings in its home folder or root markers. It saw no change to the instruction and settings files it can read.\n"
         ));
-        assert!(!shown("blocked").contains("Coverage:"));
+        assert!(shown("blocked").contains(
+            "Coverage: Dudes cannot see Codex's settings in its home folder or root markers."
+        ));
     }
 
     #[test]
