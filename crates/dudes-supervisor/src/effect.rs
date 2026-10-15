@@ -145,6 +145,43 @@ pub enum Effect {
         /// What to run.
         predicate: Predicate,
     },
+    /// Observe the recorded checkout of a ticket round's claimant before the round's first turn
+    /// is issued, and answer with [`Input::BaselineCaptured`](crate::Input::BaselineCaptured).
+    ///
+    /// **Always answered.** A read that cannot finish answers with an unavailable baseline, not
+    /// silence, because the round's first turn waits for the answer. Reads no file text into the
+    /// answer and appends nothing.
+    CaptureBaseline {
+        /// The claimant.
+        agent: AgentId,
+        /// The ticket.
+        card: dudes_types::CardId,
+        /// The installed round.
+        round: u32,
+        /// The round's goal.
+        goal: GoalId,
+    },
+    /// Sample the review scope of a ticket round after its predicate result at `check_lsn` was
+    /// appended, and answer with [`Input::StampCaptured`](crate::Input::StampCaptured).
+    ///
+    /// **Always answered**, for the same reason as [`Effect::CaptureBaseline`]: the decision that
+    /// follows the predicate result waits for the answer.
+    CaptureStamp {
+        /// The claimant.
+        agent: AgentId,
+        /// The ticket.
+        card: dudes_types::CardId,
+        /// The installed round.
+        round: u32,
+        /// The round's goal.
+        goal: GoalId,
+        /// Position of the baseline record being compared against.
+        baseline_lsn: Lsn,
+        /// That baseline.
+        baseline: dudes_proto::diff_stamp::BaselinePayload,
+        /// Position of the predicate result this sample follows.
+        check_lsn: Lsn,
+    },
     /// Answer a hook call.
     Reply {
         /// Which call.
@@ -230,6 +267,10 @@ impl fmt::Debug for Effect {
     /// `tests/agent_token.rs` pins this impl against a real token, with the env *key* asserted
     /// present as the control — so the test cannot pass by the environment having been dropped
     /// from the output altogether.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match prints every effect without its secrets"
+    )]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ResolveInstructionRecoveryTicket {
@@ -276,6 +317,35 @@ impl fmt::Debug for Effect {
                 .field("generation", generation)
                 .field("spec", spec)
                 .finish(),
+            Self::CaptureBaseline {
+                agent,
+                card,
+                round,
+                goal,
+            } => f
+                .debug_struct("CaptureBaseline")
+                .field("agent", agent)
+                .field("card", card)
+                .field("round", round)
+                .field("goal", goal)
+                .finish(),
+            Self::CaptureStamp {
+                agent,
+                card,
+                round,
+                goal,
+                baseline_lsn,
+                check_lsn,
+                ..
+            } => f
+                .debug_struct("CaptureStamp")
+                .field("agent", agent)
+                .field("card", card)
+                .field("round", round)
+                .field("goal", goal)
+                .field("baseline_lsn", baseline_lsn)
+                .field("check_lsn", check_lsn)
+                .finish_non_exhaustive(),
             Self::Kill { agent, turn, key } => f
                 .debug_struct("Kill")
                 .field("agent", agent)
@@ -374,6 +444,8 @@ impl Effect {
             Self::Kill { .. } => "Kill",
             Self::Probe { .. } => "Probe",
             Self::RunPredicate { .. } => "RunPredicate",
+            Self::CaptureBaseline { .. } => "CaptureBaseline",
+            Self::CaptureStamp { .. } => "CaptureStamp",
             Self::Reply { .. } => "Reply",
             Self::Notify { .. } => "Notify",
             Self::OpenPty { .. } => "OpenPty",

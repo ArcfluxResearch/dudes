@@ -395,6 +395,22 @@ pub enum Input {
         /// What it rested on.
         evidence: Evidence,
     },
+    /// The answer to [`Effect::CaptureBaseline`](crate::Effect::CaptureBaseline).
+    BaselineCaptured {
+        /// The round's goal.
+        goal: GoalId,
+        /// The observation, possibly an unavailable one.
+        baseline: dudes_proto::diff_stamp::BaselinePayload,
+    },
+    /// The answer to [`Effect::CaptureStamp`](crate::Effect::CaptureStamp).
+    StampCaptured {
+        /// The round's goal.
+        goal: GoalId,
+        /// The predicate-result position the sample followed.
+        check_lsn: Lsn,
+        /// The sample, possibly an unavailable one.
+        stamp: dudes_proto::diff_stamp::StampPayload,
+    },
     /// An attached PTY exited; the keyboard comes back to the loop.
     PtyExited {
         /// The agent.

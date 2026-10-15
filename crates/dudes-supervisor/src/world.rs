@@ -443,6 +443,8 @@ pub struct World {
     pub goals: BTreeMap<GoalId, GoalRow>,
     observed_predicates: BTreeMap<GoalId, ObservedPredicateResult>,
     ticket_reviews: BTreeMap<GoalId, TicketReview>,
+    ticket_goals: BTreeMap<GoalId, (CardId, u32)>,
+    ticket_rounds: BTreeMap<CardId, u32>,
     /// Turns by id.
     pub turns: BTreeMap<TurnId, TurnRow>,
     mcp_grants: BTreeMap<Lsn, McpGrant>,
@@ -816,6 +818,11 @@ impl World {
                 row.pending_launch_failure = None;
                 row.exhausted = None;
             }
+        }
+        if let Record::TicketStarted { card, goal, .. } = &entry.record {
+            let round = self.ticket_rounds.entry(*card).or_insert(0);
+            *round = round.saturating_add(1);
+            self.ticket_goals.insert(goal.id, (*card, *round));
         }
         match &entry.record {
             Record::ConversationDispatchUncertain {
@@ -2499,10 +2506,18 @@ impl World {
         self.ticket_reviews.get(&goal)
     }
 
+    /// The card and round a ticket start installed `goal` for; `None` for any other goal.
+    #[must_use]
+    pub fn ticket_goal(&self, goal: GoalId) -> Option<(CardId, u32)> {
+        self.ticket_goals.get(&goal).copied()
+    }
+
     /// Whether any turn was ever issued for `goal`.
     #[must_use]
     pub fn goal_has_turn(&self, goal: GoalId) -> bool {
-        self.turns.values().any(|turn| turn.goal == Some(goal))
+        self.goals
+            .get(&goal)
+            .is_some_and(|row| row.last_turn.is_some() || row.turns_on_goal > 0)
     }
 
     /// The first baseline for a goal wins, and only when it names the card, goal and claimant

@@ -120,6 +120,7 @@ mod shared_folder;
 mod shared_folder_tests;
 #[cfg(all(test, unix))]
 mod shutdown_ownership_tests;
+mod ticket_capture;
 use crate::predicate::{self, PredicateRunner};
 use crate::startup::{TeardownStep, Witness};
 
@@ -965,6 +966,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) local_days: crate::local_day::LocalDays,
     pub(crate) predicate_env: Vec<EnvVar>,
     pub(crate) predicate_path: Option<OsString>,
+    /// Observes a ticket round's checkout for its baseline and stamp records.
+    pub(crate) ticket_capture: Arc<crate::diff_capture::DiffCapture>,
     /// Where a managed child's standard output ends up. Held here so the executor can register
     /// which turn each spawned child serves; the watcher threads hold the other share.
     pub(crate) children: Arc<crate::children::ChildEnds>,
@@ -7467,6 +7470,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 cwd,
                 predicate,
             } => self.run_predicate(*goal, cwd.clone(), predicate, queue),
+            Effect::CaptureBaseline { .. } | Effect::CaptureStamp { .. } => {
+                self.execute_ticket_capture(effect, sup, queue);
+            }
             Effect::Reply { hook, reply } => self.deliver_hook_reply(*hook, reply),
             Effect::Notify { client, .. } => {
                 tracing::debug!(

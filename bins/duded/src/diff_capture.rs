@@ -5,13 +5,13 @@
 //! reuses one across tickets, or writes a record: the caller appends the payload and decides
 //! what a failed append means.
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use dudes_proto::DiffRefusal;
 use dudes_proto::diff_stamp::{
-    BaselineOutcome, BaselinePayload, CaptureInterval, DigestHex, SamplerVersions, StampOutcome,
-    StampPayload, StampPayloadError, TicketBinding,
+    BaselineOutcome, BaselinePayload, CaptureInterval, DigestHex, STAMP_PAYLOAD_VERSION,
+    SamplerVersions, StampOutcome, StampPayload, StampPayloadError, TicketBinding,
 };
 use dudes_types::{Lsn, Timestamp};
 
@@ -23,6 +23,7 @@ use crate::git_read::diff::{
 /// Samples a recorded checkout and describes the result as bounded payloads.
 pub struct DiffCapture {
     reader: Arc<DiffReader>,
+    serial: Mutex<()>,
     clock: Box<dyn Fn() -> Timestamp + Send + Sync>,
 }
 
@@ -30,7 +31,11 @@ impl DiffCapture {
     /// Use `reader` for observations and `clock` for the capture interval.
     #[must_use]
     pub fn new(reader: Arc<DiffReader>, clock: Box<dyn Fn() -> Timestamp + Send + Sync>) -> Self {
-        Self { reader, clock }
+        Self {
+            reader,
+            serial: Mutex::new(()),
+            clock,
+        }
     }
 
     /// Observe the round-start state of `tree` for `binding`.
@@ -43,6 +48,7 @@ impl DiffCapture {
         binding: TicketBinding,
         cancelled: Arc<AtomicBool>,
     ) -> Result<BaselinePayload, StampPayloadError> {
+        let _one_at_a_time = self.serial.lock().unwrap_or_else(PoisonError::into_inner);
         let started_at = (self.clock)();
         let outcome = match self.reader.capture_baseline(tree, cancelled) {
             Ok(capture) => BaselineOutcome::Captured {
@@ -70,6 +76,7 @@ impl DiffCapture {
         check_lsn: Lsn,
         cancelled: Arc<AtomicBool>,
     ) -> Result<StampPayload, StampPayloadError> {
+        let _one_at_a_time = self.serial.lock().unwrap_or_else(PoisonError::into_inner);
         let started_at = (self.clock)();
         let outcome = match self.sample(tree, baseline, binding, cancelled) {
             Ok(capture) => sampled(&capture),
@@ -83,6 +90,52 @@ impl DiffCapture {
             versions(),
             outcome,
         )
+    }
+
+    /// A baseline for a round whose checkout cannot be read at all. Built directly: its fields
+    /// are fixed-width, so no size check can fail.
+    #[must_use]
+    pub fn baseline_unavailable(
+        &self,
+        binding: TicketBinding,
+        reason: DiffRefusal,
+    ) -> BaselinePayload {
+        let at = (self.clock)();
+        BaselinePayload {
+            v: STAMP_PAYLOAD_VERSION,
+            binding,
+            interval: CaptureInterval {
+                started_at: at,
+                ended_at: at,
+            },
+            versions: versions(),
+            outcome: BaselineOutcome::Unavailable { reason },
+        }
+    }
+
+    /// A stamp for a round whose checkout cannot be read at all, built directly like
+    /// [`Self::baseline_unavailable`].
+    #[must_use]
+    pub fn stamp_unavailable(
+        &self,
+        binding: TicketBinding,
+        baseline_lsn: Lsn,
+        check_lsn: Lsn,
+        reason: DiffRefusal,
+    ) -> StampPayload {
+        let at = (self.clock)();
+        StampPayload {
+            v: STAMP_PAYLOAD_VERSION,
+            binding,
+            baseline_lsn,
+            check_lsn,
+            interval: CaptureInterval {
+                started_at: at,
+                ended_at: at,
+            },
+            versions: versions(),
+            outcome: StampOutcome::Unavailable { reason },
+        }
     }
 
     fn sample(

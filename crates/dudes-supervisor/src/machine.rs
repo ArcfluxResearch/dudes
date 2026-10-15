@@ -54,6 +54,7 @@ mod conversations;
 mod instruction_observations;
 pub use instruction_observations::InstructionSource;
 mod mail_wakes;
+mod ticket_review;
 #[cfg(test)]
 mod ticket_start;
 use browser_notes::BrowserLaunchPhase;
@@ -260,6 +261,12 @@ enum Then {
     /// Re-decide for this agent.
     Decide {
         agent: AgentId,
+    },
+    /// A predicate result landed for a ticket goal with a baseline: sample the review scope, then
+    /// run `then`.
+    TicketStamp {
+        goal: GoalId,
+        then: Box<Then>,
     },
     /// A standing cause was lifted: re-run crash rule (2) for this agent's turns that are still
     /// waiting for a process, then decide. `Resume` lifts a halt, a pause or an automatic hold, and
@@ -519,6 +526,7 @@ pub struct Supervisor<C: Clock, R: Rng> {
     /// entry gets `WorkInput::default()`, which is the goal text alone.
     work: BTreeMap<AgentId, WorkInput>,
     goals_awaiting_board_result: BTreeSet<GoalId>,
+    ticket_review: ticket_review::State,
     children: BTreeMap<TurnId, Child>,
     mcp_attempts: BTreeMap<TurnId, McpAttempt>,
     /// Turns this machine emitted a `Kill` for, so their end is `Killed{by}` and not whatever the
@@ -692,6 +700,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             next_mail_request: 0,
             work: BTreeMap::new(),
             goals_awaiting_board_result: BTreeSet::new(),
+            ticket_review: ticket_review::State::default(),
             children: BTreeMap::new(),
             mcp_attempts: BTreeMap::new(),
             kills: BTreeMap::new(),
@@ -1193,6 +1202,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Input::PredicateEndedWithoutVerdict { goal } => {
                 self.predicate_ended_without_verdict(goal);
             }
+            Input::BaselineCaptured { goal, baseline } => self.on_baseline_captured(goal, baseline),
+            Input::StampCaptured {
+                goal,
+                check_lsn,
+                stamp,
+            } => self.on_stamp_captured(goal, check_lsn, stamp),
             Input::PtyExited { agent } => {
                 self.persist(
                     Record::Detached {
@@ -1738,6 +1753,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.persist_held_reissue_confirmation(agent, turn);
             }
             Then::Decide { agent } => self.decide(agent),
+            Then::TicketStamp { goal, then } => self.request_stamp(goal, *then, lsn),
             Then::ClearedCause { agent } => self.on_cause_cleared(agent),
             Then::LaunchAdmissionHeld {
                 agent,
@@ -2471,6 +2487,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return;
         }
         if self.protection_pending(agent) {
+            return;
+        }
+        if self.hold_for_ticket_baseline(agent) {
             return;
         }
         if self
@@ -3466,6 +3485,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         } else {
             Then::Decide { agent }
         };
+        let then = self.after_predicate_result(goal, then);
         self.persist(
             Record::PredicateResult {
                 goal,

@@ -1675,7 +1675,11 @@ fn a_ticket_start_and_a_goal_set_replay_to_the_same_world() {
                 )
             })
             .collect();
-        worlds.push((flow.agent(agent), who, goal_id, task, common_board));
+        // A ticket start also takes a baseline before its first turn, so the fixture clock has
+        // ticked further by the time the turn starts; the sample time is the only difference.
+        let mut agent_view = flow.agent(agent);
+        agent_view.live_activity = None;
+        worlds.push((agent_view, who, goal_id, task, common_board));
         flow.stop();
     }
     assert_eq!(worlds[0], worlds[1]);

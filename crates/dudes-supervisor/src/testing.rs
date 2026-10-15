@@ -384,6 +384,34 @@ pub enum Seen {
         /// The goal judged.
         goal: GoalId,
     },
+    /// A baseline observation request for a ticket round.
+    CaptureBaseline {
+        /// The claimant.
+        agent: AgentId,
+        /// The ticket.
+        card: dudes_types::CardId,
+        /// The installed round.
+        round: u32,
+        /// The round's goal.
+        goal: GoalId,
+    },
+    /// A post-check sample request for a ticket round.
+    CaptureStamp {
+        /// The claimant.
+        agent: AgentId,
+        /// The ticket.
+        card: dudes_types::CardId,
+        /// The installed round.
+        round: u32,
+        /// The round's goal.
+        goal: GoalId,
+        /// Position of the baseline record.
+        baseline_lsn: Lsn,
+        /// The baseline compared against.
+        baseline: dudes_proto::diff_stamp::BaselinePayload,
+        /// Position of the predicate result.
+        check_lsn: Lsn,
+    },
     /// A hook answer.
     Reply {
         /// Which call.
@@ -445,6 +473,10 @@ pub enum Seen {
 impl Seen {
     /// Reduce one effect.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match reduces every effect"
+    )]
     pub fn of(effect: &Effect) -> Self {
         match effect {
             Effect::ResolveInstructionRecoveryTicket {
@@ -514,6 +546,34 @@ impl Seen {
             },
             Effect::Probe { turn, .. } => Self::Probe { turn: *turn },
             Effect::RunPredicate { goal, .. } => Self::RunPredicate { goal: *goal },
+            Effect::CaptureBaseline {
+                agent,
+                card,
+                round,
+                goal,
+            } => Self::CaptureBaseline {
+                agent: *agent,
+                card: *card,
+                round: *round,
+                goal: *goal,
+            },
+            Effect::CaptureStamp {
+                agent,
+                card,
+                round,
+                goal,
+                baseline_lsn,
+                baseline,
+                check_lsn,
+            } => Self::CaptureStamp {
+                agent: *agent,
+                card: *card,
+                round: *round,
+                goal: *goal,
+                baseline_lsn: *baseline_lsn,
+                baseline: *baseline,
+                check_lsn: *check_lsn,
+            },
             Effect::Reply { hook, reply } => Self::Reply {
                 hook: *hook,
                 reply: reply.clone(),
@@ -556,6 +616,8 @@ impl Seen {
             Self::Kill { .. } => "Kill",
             Self::Probe { .. } => "Probe",
             Self::RunPredicate { .. } => "RunPredicate",
+            Self::CaptureBaseline { .. } => "CaptureBaseline",
+            Self::CaptureStamp { .. } => "CaptureStamp",
             Self::Reply { .. } => "Reply",
             Self::Notify { .. } => "Notify",
             Self::OpenPty { .. } => "OpenPty",
@@ -570,6 +632,10 @@ impl Seen {
 /// [`FakeHost`] and its result fed back, until nothing more is produced. The three flags open the
 /// windows a crash test needs — turn `fsync` off and every `Persist` goes unacknowledged, which is
 /// exactly the gap invariant 2 is about.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag opens one independent crash window"
+)]
 pub struct Harness {
     /// The machine under test.
     pub supervisor: Supervisor<FakeClock, FakeRng>,
@@ -586,6 +652,8 @@ pub struct Harness {
     pub unfsynced: BTreeSet<RecordKind>,
     /// When false, a `Spawn` is never executed: the other crash window.
     pub launch: bool,
+    /// When false, a `CaptureBaseline` or `CaptureStamp` is never answered.
+    pub answer_captures: bool,
     /// When false, a `Probe` is never answered.
     pub probe: bool,
     next_lsn: u64,
@@ -670,6 +738,7 @@ impl Harness {
             fsync: true,
             unfsynced: BTreeSet::new(),
             launch: true,
+            answer_captures: true,
             probe: true,
             next_lsn: 0,
             adapter: Box::new(adapter),
@@ -767,6 +836,10 @@ impl Harness {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match executes every effect the flags allow"
+    )]
     fn follow_up(&mut self, seen: Seen) -> Option<Input> {
         match seen {
             Seen::ResolveInstructionRecoveryTicket {
@@ -841,6 +914,26 @@ impl Harness {
                     SpawnResult::CleanupUnconfirmed { .. } => None,
                 }
             }
+            Seen::CaptureBaseline {
+                agent,
+                card,
+                round,
+                goal,
+            } if self.answer_captures => Some(Input::BaselineCaptured {
+                goal,
+                baseline: unavailable_baseline(agent, card, round, goal),
+            }),
+            Seen::CaptureStamp {
+                goal,
+                baseline_lsn,
+                baseline,
+                check_lsn,
+                ..
+            } if self.answer_captures => Some(Input::StampCaptured {
+                goal,
+                check_lsn,
+                stamp: unavailable_stamp(&baseline, baseline_lsn, check_lsn),
+            }),
             Seen::Probe { turn } if self.probe => {
                 let key = self.key_of(turn)?;
                 Some(Input::Liveness {
@@ -1061,6 +1154,63 @@ impl Harness {
     pub fn open_turn(&self, agent: AgentId) -> Option<TurnId> {
         self.supervisor.world().agents.get(&agent)?.open_turn
     }
+}
+
+/// The baseline the harness answers a capture request with: an unavailable observation.
+#[must_use]
+pub fn unavailable_baseline(
+    claimant: AgentId,
+    card: dudes_types::CardId,
+    round: u32,
+    goal: GoalId,
+) -> dudes_proto::diff_stamp::BaselinePayload {
+    use dudes_proto::diff_stamp::{
+        BaselineOutcome, BaselinePayload, CaptureInterval, SamplerVersions, TicketBinding,
+    };
+    BaselinePayload::new(
+        TicketBinding {
+            card,
+            round,
+            goal,
+            claimant,
+        },
+        CaptureInterval {
+            started_at: Timestamp::UNIX_EPOCH,
+            ended_at: Timestamp::UNIX_EPOCH,
+        },
+        SamplerVersions {
+            sampler: 1,
+            policy: 1,
+        },
+        BaselineOutcome::Unavailable {
+            reason: dudes_proto::DiffRefusal::Unreadable,
+        },
+    )
+    .expect("a fixed-width payload fits")
+}
+
+/// The stamp the harness answers a capture request with: an unavailable sample.
+#[must_use]
+pub fn unavailable_stamp(
+    baseline: &dudes_proto::diff_stamp::BaselinePayload,
+    baseline_lsn: Lsn,
+    check_lsn: Lsn,
+) -> dudes_proto::diff_stamp::StampPayload {
+    use dudes_proto::diff_stamp::{CaptureInterval, StampOutcome, StampPayload};
+    StampPayload::new(
+        baseline.binding,
+        baseline_lsn,
+        check_lsn,
+        CaptureInterval {
+            started_at: Timestamp::UNIX_EPOCH,
+            ended_at: Timestamp::UNIX_EPOCH,
+        },
+        baseline.versions,
+        StampOutcome::Unavailable {
+            reason: dudes_proto::DiffRefusal::TimedOut,
+        },
+    )
+    .expect("a fixed-width payload fits")
 }
 
 /// Distinct, ordered stamps for a hand-built journal.

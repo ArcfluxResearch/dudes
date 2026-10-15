@@ -629,6 +629,7 @@ where
             live_ptys: BTreeMap::new(),
             cleanup_ptys: BTreeMap::new(),
             revoked_local_ptys: BTreeSet::new(),
+            ticket_capture: ticket_capture(settings, &predicates, &clock),
             predicates,
             subscribers: Arc::clone(&subscribers),
             last_lsn: Arc::clone(&last_lsn),
@@ -940,6 +941,31 @@ struct Door {
     provider_check: crate::provider_check::ProviderCheck,
     sign_in: crate::sign_in::SignInCheck,
     mailbox_report: Arc<std::sync::Mutex<system::MailboxReport>>,
+}
+
+/// The observer behind a ticket round's baseline and stamp records: the daemon's runner and
+/// `PATH`, a scratch directory under the runtime directory that no agent can reach, and whatever
+/// a crashed run left there reclaimed.
+fn ticket_capture<P, C>(
+    settings: &Settings,
+    predicates: &Arc<P>,
+    clock: &Arc<C>,
+) -> Arc<crate::diff_capture::DiffCapture>
+where
+    P: PredicateRunner,
+    C: Clock + Send + Sync + 'static,
+{
+    let reader = crate::git_read::diff::DiffReader::new(
+        Arc::clone(predicates) as Arc<dyn PredicateRunner>,
+        settings.predicate_path.clone(),
+        &settings.runtime_dir.join("diff-read"),
+    );
+    let _ = reader.reclaim_scratch(Arc::default());
+    let clock = Arc::clone(clock);
+    Arc::new(crate::diff_capture::DiffCapture::new(
+        Arc::new(reader),
+        Box::new(move || clock.now()),
+    ))
 }
 
 /// The Floor's Git read: the daemon's runner and `PATH`, a scratch directory under the runtime
