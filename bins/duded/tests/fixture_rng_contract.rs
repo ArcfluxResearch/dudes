@@ -276,11 +276,11 @@ fn unprepared_rng_fields(source: &str) -> Vec<(String, usize, String)> {
             depth += i32::try_from(code.matches('{').count()).unwrap();
             depth -= i32::try_from(code.matches('}').count()).unwrap();
             if body {
-                if let Some(value) = code.strip_prefix("rng:") {
+                if let Some((_, value)) = code.split_once("rng:") {
                     let value = value.trim();
                     if !value.starts_with("common::FixtureRng::from_rng(")
                         && !value.starts_with("FixtureRng::from_rng(")
-                        && value != "parts.rng,"
+                        && !value.starts_with("parts.rng,")
                     {
                         found.push((function.to_owned(), index + 1, value.to_owned()));
                     }
