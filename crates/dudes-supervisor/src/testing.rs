@@ -23,7 +23,7 @@
 //! the base64url alphabet; `A` and the digits satisfy both. So what comes out is a fully
 //! well-formed agent token with no distinguishable test shape, drawn from a space — the decimal
 //! integers, padded — that an attacker enumerates from 1 upward. [`crate::machine::Supervisor`] is
-//! generic over [`Rng`], so before the gate existed a daemon reached that mint with one `use`
+//! generic over [`crate::Rng`], so before the gate existed a daemon reached that mint with one `use`
 //! statement, no manifest edit and no warning: the real mint (`crate::token`, private) draws from
 //! whatever `Rng` it is handed, hashes it, journals the hash, and hands the plaintext to the child.
 //!
@@ -62,12 +62,11 @@ use dudes_providers::launch::{EnvVar, LaunchSpec};
 use dudes_types::{
     AgentId, GoalId, Lsn, Mode, Provider, SessionId, Timestamp, Tokens, TurnId, Usd,
 };
-use ulid::Ulid;
 
 use crate::effect::Effect;
 use crate::host::{
-    AdoptionKey, Clock, HostBoot, KillOutcome, Liveness, ProbeAnswer, ProcessHost, Rng,
-    SpawnResult, liveness,
+    AdoptionKey, Clock, HostBoot, KillOutcome, Liveness, ProbeAnswer, ProcessHost, SpawnResult,
+    liveness,
 };
 use crate::input::{ClientId, Command, HookId, Input, PersistToken};
 use crate::machine::{Config, Supervisor};
@@ -664,7 +663,7 @@ impl Harness {
         adapter: impl Fn() -> Box<dyn Adapter> + Send + 'static,
     ) -> Self {
         Self {
-            supervisor: Self::machine(config.clone(), clock, adapter()),
+            supervisor: Self::machine(config.clone(), clock, adapter(), FakeRng::new()),
             host,
             journal: Vec::new(),
             trace: Vec::new(),
@@ -708,55 +707,41 @@ impl Harness {
         config: Config,
         clock: FakeClock,
         adapter: Box<dyn Adapter>,
+        rng: FakeRng,
     ) -> Supervisor<FakeClock, FakeRng> {
-        Supervisor::new(config, clock, FakeRng::new())
-            .with_adapters([adapter].into_iter().collect())
+        Supervisor::new(config, clock, rng).with_adapters([adapter].into_iter().collect())
     }
 
-    /// A second daemon run over the entries that reached the disk: a fresh machine, the journal
-    /// replayed through `Input::Replayed`, then `Input::Started`.
-    ///
-    /// The fresh `FakeRng` is the point — a restart mints new ids and a new agent token, exactly
-    /// as a real one does, so nothing a test asserts about re-issue can come from remembered
-    /// state.
+    /// Rebuild a fresh machine from the durable prefix, retaining only entropy progress.
     pub fn restart(&mut self) {
-        let entries = self.journal.clone();
-        self.next_lsn = u64::try_from(entries.len()).expect("the harness prefix fits an LSN");
-        self.supervisor = Self::machine(
-            self.config.clone(),
-            FakeClock::ticking(1_787_394_700_000, 1),
-            (self.adapter)(),
-        );
-        // The harness journal is the log: `follow_up` pushes an entry and hands out the next
-        // `Lsn` in the same breath, so its first entry was acknowledged at `Lsn(1)` and the
-        // n-th at `Lsn(n)`. Replaying at those same positions is what makes this second run a
-        // replay of the first rather than a differently-numbered one.
-        for (entry, position) in entries.into_iter().zip(1u64..) {
-            let _ = self.supervisor.handle(Input::Replayed {
-                lsn: Lsn(position),
-                entry,
-            });
-        }
-        self.drive(Input::Started);
+        self.rebuild(None);
     }
 
-    /// [`Harness::restart`], with the daemon having found `missing` agents' worktrees gone before
-    /// `Input::Started`.
+    /// [`Harness::restart`], with the specified worktrees missing before startup.
     pub fn restart_with_missing_worktrees(&mut self, missing: Vec<AgentId>) {
-        let entries = self.journal.clone();
-        self.next_lsn = u64::try_from(entries.len()).expect("the harness prefix fits an LSN");
+        self.rebuild(Some(missing));
+    }
+
+    fn rebuild(&mut self, missing: Option<Vec<AgentId>>) {
+        let mut rng = FakeRng::after_draws(self.supervisor.test_rng_drawn());
+        rng.reserve_entries(&self.journal)
+            .expect("harness entries serialize");
+        self.next_lsn = u64::try_from(self.journal.len()).expect("the harness prefix fits an LSN");
         self.supervisor = Self::machine(
             self.config.clone(),
             FakeClock::ticking(1_787_394_700_000, 1),
             (self.adapter)(),
+            rng,
         );
-        for (entry, position) in entries.into_iter().zip(1u64..) {
+        for (entry, position) in self.journal.iter().cloned().zip(1u64..) {
             let _ = self.supervisor.handle(Input::Replayed {
                 lsn: Lsn(position),
                 entry,
             });
         }
-        self.drive(Input::MissingWorktrees(missing));
+        if let Some(missing) = missing {
+            self.drive(Input::MissingWorktrees(missing));
+        }
         self.drive(Input::Started);
     }
 
@@ -1205,6 +1190,7 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Rng;
     use dudes_proto::rpc::hook::HOOK_TOKEN_LEN;
 
     fn first_loaded_prefix_append(missing_worktrees: bool) -> (Lsn, Lsn) {

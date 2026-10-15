@@ -31,7 +31,7 @@ impl fmt::Debug for FakeRng {
 
 /// An observer of the tokens actually minted by one fixture's generator.
 #[derive(Clone, Default)]
-pub struct FakeTokens(Arc<Mutex<BTreeMap<String, HookToken>>>);
+pub struct FakeTokens(Arc<Mutex<BTreeMap<String, String>>>);
 
 impl fmt::Debug for FakeTokens {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -49,15 +49,15 @@ impl FakeTokens {
     /// Panics if this observer has not seen the hash being minted.
     #[must_use]
     pub fn token_of(&self, hash: &str) -> HookToken {
-        let token = self
+        let text = self
             .0
             .lock()
             .expect("fixture token book")
             .get(hash)
             .cloned()
             .expect("the fixture minted this token hash");
-        assert_eq!(blake3_hex(token.expose().as_bytes()), hash);
-        token
+        assert_eq!(blake3_hex(text.as_bytes()), hash);
+        HookToken::new(text).expect("the fixture recorded a well-formed token")
     }
 }
 
@@ -96,6 +96,13 @@ impl FakeRng {
         }
         self.reserve_text(occupied);
         Ok(())
+    }
+
+    pub(super) fn after_draws(counter: u128) -> Self {
+        Self {
+            counter,
+            ..Self::new()
+        }
     }
 
     fn reserve_text(&mut self, occupied: BTreeSet<String>) {
@@ -149,7 +156,7 @@ impl Rng for FakeRng {
                 .0
                 .lock()
                 .expect("fixture token book")
-                .insert(hash, token.clone());
+                .insert(hash, token.expose().to_owned());
             return token;
         }
     }
