@@ -259,6 +259,7 @@ fn assert_written(layout: &Layout, floor_on: &[Key], label: &str) {
         (Key::Board, switch(Key::Board)),
         (Key::Terminal, switch(Key::Terminal)),
         (Key::Git, "off"),
+        (Key::Diff, "off"),
         (Key::FloorUsdPerDay, "none"),
         (Key::PerTurnUsd, "0.25"),
         (Key::PerTurnTokens, "20000"),
