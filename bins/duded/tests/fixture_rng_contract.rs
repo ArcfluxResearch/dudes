@@ -325,7 +325,7 @@ fn the_function_name_guard_rejects_a_planted_raw_rng_field() {
 }
 
 #[test]
-fn daemon_and_cli_fixture_rng_fields_have_only_the_named_refusal_exceptions() {
+fn daemon_and_cli_fixture_rng_fields_have_only_the_named_boundary_exceptions() {
     let bins = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut sources = Vec::new();
     rust_sources(&bins.join("duded/tests"), &mut sources);
@@ -374,6 +374,7 @@ fn daemon_and_cli_fixture_rng_fields_have_only_the_named_refusal_exceptions() {
                 "duded/tests/goal_replace.rs",
                 "invalid_record_cannot_bypass_startup_validation_through_cached_projections"
             ),
+            ("duded/tests/validation_scratch.rs", "daemon_scratch_child"),
         ],
         "RNG fields are checked within named source functions, not by a Rust parser: {raw:?}"
     );
