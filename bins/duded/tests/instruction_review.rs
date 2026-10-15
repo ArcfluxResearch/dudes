@@ -277,21 +277,8 @@ fn start_review_daemon(
 }
 
 fn hire_shared_peers(running: &common::Running, project: &std::path::Path) -> dudes_types::AgentId {
-    let hire = || match running
-        .handle
-        .ask(duded::ports::Ask::Hire(Box::new(
-            dudes_proto::rpc::agent::HireParams {
-                trusted: true,
-                ..common::hire_params(project)
-            },
-        )))
-        .unwrap()
-    {
-        duded::ports::Answered::Hired(result) => result.agent,
-        other => panic!("unexpected hire answer: {other:?}"),
-    };
-    let peer = hire();
-    let agent = hire();
+    let peer = hire_lone_agent(running, project);
+    let agent = hire_lone_agent(running, project);
     assert_ne!(
         peer, agent,
         "an idle recorded peer makes this project shared"
@@ -706,4 +693,100 @@ fn editing_claudes_project_settings_holds_the_ticket() {
 #[test]
 fn editing_claudes_local_project_settings_holds_the_ticket() {
     settings_edit_in_a_shared_project(".claude/settings.local.json");
+}
+
+/// A lone agent finishes a passing ticket without touching any instruction file. Every gap left
+/// is a standing engine limit, so the ticket reaches review rather than holding.
+fn lone_agent_ticket() {
+    let fixture = common::Fixture::new();
+    let project = fixture.state.path().join("project");
+    let work = fixture.state.path().join("child");
+    let home = fixture.state.path().join("owned-home");
+    for path in [&project, &work, &home] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let project = project.canonicalize().unwrap();
+    let instruction = project.join("CLAUDE.md");
+    std::fs::write(&instruction, "initial project instruction\n").unwrap();
+    let command = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/two-roles/bin/claude")
+        .canonicalize()
+        .unwrap();
+    let settings = owned_settings(&fixture, &project, &work, &home, true, false);
+    let (mut running, _) = start_review_daemon(&settings, command, true, false);
+    let agent = hire_lone_agent(&running, &project);
+    let mut socket = Client::connect(settings.socket()).unwrap();
+    let credential = || {
+        OperatorCredential::new(
+            std::fs::read_to_string(
+                settings
+                    .runtime_dir
+                    .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let mut call = |method, params| {
+        socket
+            .call_as_operator(method, Some(params), credential())
+            .unwrap()
+    };
+    let (card, turn) = start_ticket(&fixture, &mut call, agent);
+    let started_lsn = assert_sampled_start(&fixture, turn, &instruction);
+    std::fs::write(work.join("release.1"), "").unwrap();
+    assert_finished_boundary(&fixture, turn, started_lsn);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let read: TicketReadResult = loop {
+        let read: TicketReadResult =
+            serde_json::from_value(success(call(Method::TicketRead, json!({"card":card}))))
+                .unwrap();
+        if read.card.status == CardStatus::Review {
+            break read;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a lone agent's passing ticket reaches review; status {:?}, reason {:?}, gaps {:?}",
+            read.card.status,
+            read.ticket.reason,
+            read.ticket
+                .instruction_review
+                .as_ref()
+                .map(|review| &review.gaps),
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    if let Some(review) = &read.ticket.instruction_review {
+        assert!(
+            !review
+                .gaps
+                .iter()
+                .any(dudes_proto::InstructionCoverageGap::holds),
+            "only standing limits remain: {:?}",
+            review.gaps
+        );
+    }
+    drop(socket);
+    running.stop(duded::ExitCause::ShutdownRpc);
+}
+
+fn hire_lone_agent(running: &common::Running, project: &std::path::Path) -> dudes_types::AgentId {
+    match running
+        .handle
+        .ask(duded::ports::Ask::Hire(Box::new(
+            dudes_proto::rpc::agent::HireParams {
+                trusted: true,
+                ..common::hire_params(project)
+            },
+        )))
+        .unwrap()
+    {
+        duded::ports::Answered::Hired(result) => result.agent,
+        other => panic!("unexpected hire answer: {other:?}"),
+    }
+}
+
+#[test]
+fn a_lone_agents_passing_ticket_reaches_review_past_engine_limits() {
+    lone_agent_ticket();
 }

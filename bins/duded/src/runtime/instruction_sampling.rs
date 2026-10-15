@@ -14,10 +14,13 @@ use dudes_supervisor::input::InstructionRequest;
 use dudes_supervisor::{AdoptionKey, Effect, Input, InstructionSource};
 use dudes_types::{AgentId, Mode, ModelSelection, Timestamp, WorktreeId};
 
+use dudes_supervisor::host::{MAX_OWNED_TARGET_QUERY_ROWS, OwnedTargetState};
+
 use super::instruction_plan::{
     InstructionEvidenceDigests, InstructionPlanFacts, ProjectInstructionContext,
     instruction_participant,
 };
+use super::native_boundaries::same_key;
 use crate::instruction_sample::{self, SAMPLE_DEADLINE, digest};
 use crate::ports::Handle;
 
@@ -216,6 +219,7 @@ fn current_recorded_census(
     owner: InstructionObservationOwner,
     baseline: Option<&InstructionSnapshot>,
     actual_cwd: Option<&Path>,
+    absent: &[AdoptionKey],
 ) -> CurrentCensus {
     let mut census = CurrentCensus::default();
     let candidate = owner_agent(owner);
@@ -268,7 +272,7 @@ fn current_recorded_census(
             let _ = census.snapshot(attempt.owner, attempt.snapshot.as_ref(), true);
         }
     }
-    add_native_receipts(&mut census, world);
+    add_native_receipts(&mut census, world, absent);
     add_open_turn_owners(&mut census, world);
     for (_, attempt) in world.instructions.unfinished() {
         if census.room().is_err() {
@@ -290,7 +294,11 @@ fn current_recorded_census(
     census
 }
 
-fn add_native_receipts(census: &mut CurrentCensus, world: &dudes_supervisor::World) {
+fn add_native_receipts(
+    census: &mut CurrentCensus,
+    world: &dudes_supervisor::World,
+    absent: &[AdoptionKey],
+) {
     for (started, receipt) in world.managed_native_spawn_receipts() {
         if census.room().is_err() {
             break;
@@ -301,19 +309,24 @@ fn add_native_receipts(census: &mut CurrentCensus, world: &dudes_supervisor::Wor
             census.membership_unknown = true;
             continue;
         };
-        let retained = attempt.finished.is_some()
-            || world
-                .agents
-                .get(&owner_agent(receipt.owner))
-                .is_none_or(|row| row.retired)
-            || match receipt.owner {
-                InstructionObservationOwner::Managed { turn, .. } => {
-                    world.turns.get(&turn).is_none_or(|row| {
-                        !row.is_open_child() || row.spawn_lsn != Some(receipt.spawn_lsn)
-                    })
-                }
-                _ => true,
-            };
+        // A child the host already proves gone is not a lingering process even when its
+        // settlement record has not been appended yet. Without this the census depends on
+        // whether the settlement ran before the sample.
+        let gone = absent.iter().any(|key| same_key(key, &receipt.key));
+        let retained = !gone
+            && (attempt.finished.is_some()
+                || world
+                    .agents
+                    .get(&owner_agent(receipt.owner))
+                    .is_none_or(|row| row.retired)
+                || match receipt.owner {
+                    InstructionObservationOwner::Managed { turn, .. } => {
+                        world.turns.get(&turn).is_none_or(|row| {
+                            !row.is_open_child() || row.spawn_lsn != Some(receipt.spawn_lsn)
+                        })
+                    }
+                    _ => true,
+                });
         census.native_snapshot(
             receipt.owner,
             attempt.snapshot.as_ref(),
@@ -831,6 +844,19 @@ fn merge_baseline(snapshot: &mut InstructionSnapshot, baseline: Option<&Instruct
 }
 
 impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::Ctx<H, P, C> {
+    fn absent_native_targets(&self, world: &dudes_supervisor::World) -> Vec<AdoptionKey> {
+        if world.managed_native_spawn_receipts().next().is_none() {
+            return Vec::new();
+        }
+        self.host
+            .owned_targets(MAX_OWNED_TARGET_QUERY_ROWS)
+            .targets
+            .into_iter()
+            .filter(|target| target.state == OwnedTargetState::NativeBoundaryAbsent)
+            .filter_map(|target| target.key)
+            .collect()
+    }
+
     fn current_instruction_census(
         &self,
         world: &dudes_supervisor::World,
@@ -838,7 +864,8 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
         baseline: Option<&InstructionSnapshot>,
         actual_cwd: Option<&Path>,
     ) -> CurrentCensus {
-        let mut census = current_recorded_census(world, owner, baseline, actual_cwd);
+        let absent = self.absent_native_targets(world);
+        let mut census = current_recorded_census(world, owner, baseline, actual_cwd, &absent);
         let managed_receipts: Result<(), ()> = self.children.visit_owned(|turn, key, cwd| {
             census.room()?;
             let Some(row) = world.turns.get(&turn) else {
@@ -1400,6 +1427,7 @@ mod tests {
             managed(agent),
             Some(&before),
             Some(Path::new("/actual-folder")),
+            &[],
         );
         assert_eq!(census.members[0].cwd, Path::new("/actual-folder"));
         assert_eq!(census.members[0].lease, None);
@@ -1426,6 +1454,7 @@ mod tests {
             managed(agent),
             None,
             Some(Path::new("/recorded-folder")),
+            &[],
         );
         assert!(!matching.candidate_context_unknown);
     }
@@ -1482,7 +1511,7 @@ mod tests {
             agent,
             attachment_lsn: Lsn(1),
         };
-        let census = current_recorded_census(&world, owner, Some(&before), None);
+        let census = current_recorded_census(&world, owner, Some(&before), None, &[]);
         assert_eq!(census.members[0].cwd, path);
         assert_eq!(census.members[0].mode, Mode::Attached);
         assert_eq!(census.members[0].lease, None);
@@ -1571,7 +1600,7 @@ mod tests {
             1041,
             hired(candidate, Path::new("/current-folder")),
         );
-        let census = current_recorded_census(&world, managed(candidate), None, None);
+        let census = current_recorded_census(&world, managed(candidate), None, None, &[]);
         assert_eq!(world.agents.len(), 521);
         assert_eq!(census.members.len(), 1);
         assert_eq!(census.members[0].agent, candidate);
@@ -1803,7 +1832,7 @@ mod tests {
                 .finished
                 .is_some()
         );
-        let census = current_recorded_census(&world, managed(candidate), None, None);
+        let census = current_recorded_census(&world, managed(candidate), None, None, &[]);
         assert!(!census.membership_unknown);
         assert_eq!(census.members[0].agent, candidate);
         assert!(census.members.iter().any(|member| member.agent == peer
@@ -1852,7 +1881,7 @@ mod tests {
             hired(candidate, Path::new("/current-folder")),
         );
         assert_eq!(world.open_turn_owner_ids().len(), 1);
-        let census = current_recorded_census(&world, managed(candidate), None, None);
+        let census = current_recorded_census(&world, managed(candidate), None, None, &[]);
         assert!(census.membership_unknown);
         assert_eq!(census.members[0].agent, candidate);
         assert!(
