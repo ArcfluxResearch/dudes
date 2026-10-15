@@ -1219,12 +1219,11 @@ impl TicketCoverageNote {
         note
     }
 
-    /// Fold an interval's note into a ticket's slot. An interval with no limits of its own only
-    /// withdraws the claim of no change from a note that already exists.
+    /// Fold an interval's note into a ticket's slot. A held interval's note is kept even with no
+    /// limits, so a later clean interval cannot restore the claim of no change.
     pub fn absorb(slot: &mut Option<Self>, note: Self) {
         match slot {
             Some(held) => held.merge(note),
-            None if note.limits.is_empty() => {}
             None => *slot = Some(note),
         }
     }

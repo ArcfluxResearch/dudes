@@ -206,6 +206,7 @@ where
         instruction_evidence(out, review, zone)?;
     } else if read.card.status == CardStatus::Review
         && let Some(note) = &read.ticket.coverage
+        && !note.limits.is_empty()
     {
         writeln!(out, "Coverage: {}", note.sentence())?;
     }

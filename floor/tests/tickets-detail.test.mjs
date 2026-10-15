@@ -191,6 +191,11 @@ test('a Pi note reads in plain words and an unknown limit falls back instead of 
   assert.match(panel(), /Dudes cannot see Pi&#x27;s other inputs\./);
 });
 
+test('a held round keeps its withdrawn note but shows no coverage section', async () => {
+  await open({ coverage: { provider: 'codex', limits: [], saw_no_change: false } });
+  assert.ok(!/What Dudes could not see/.test(panel()));
+});
+
 test('the decoder refuses a coverage note it does not know', () => {
   const decode = (coverage) => detail.decodeDetail(reply({ coverage }), NEW);
   assert.ok(decode({ provider: 'pi', limits: ['configuration_unknown'], saw_no_change: true }));

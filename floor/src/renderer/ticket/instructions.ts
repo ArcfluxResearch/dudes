@@ -214,9 +214,10 @@ export interface CoverageNote {
 }
 
 export function decodeCoverageNote(value: unknown): CoverageNote | null {
-  if (!object(value) || !Array.isArray(value.limits) || value.limits.length === 0 || value.limits.length > 8
+  if (!object(value) || !Array.isArray(value.limits) || value.limits.length > 8
     || !value.limits.every((limit) => typeof limit === 'string' && limit.length > 0 && limit.length <= 64)
-    || new Set(value.limits).size !== value.limits.length || typeof value.saw_no_change !== 'boolean') return null;
+    || new Set(value.limits).size !== value.limits.length || typeof value.saw_no_change !== 'boolean'
+    || (value.limits.length === 0 && value.saw_no_change)) return null;
   const provider = value.provider ?? null;
   if (provider !== null && typeof provider !== 'string') return null;
   return Object.freeze({ provider, limits: Object.freeze([...value.limits]) as readonly string[], saw_no_change: value.saw_no_change });

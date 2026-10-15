@@ -1718,12 +1718,26 @@ mod tests {
         let note = slot.unwrap();
         assert!(!note.saw_no_change);
         assert_eq!(note.limits, [InstructionGapKind::PluginUnknown]);
-        let mut empty = None;
-        TicketCoverageNote::absorb(&mut empty, TicketCoverageNote::withdrawn(None, None));
-        assert!(
-            empty.is_none(),
-            "no note appears from a held interval alone"
+        let mut alone = None;
+        TicketCoverageNote::absorb(&mut alone, TicketCoverageNote::withdrawn(None, None));
+        let alone = alone.expect("a held interval alone keeps its withdrawal");
+        assert!(alone.limits.is_empty() && !alone.saw_no_change);
+    }
+
+    #[test]
+    fn a_held_interval_before_a_clean_one_keeps_the_claim_of_no_change_withdrawn() {
+        use crate::instruction::InstructionGapOrigin::{Declared, Observed};
+        let mut slot = None;
+        let (_, held) = finish_ticket(vec![gap_of(Observed, InstructionGapKind::ReadFailed)]);
+        TicketCoverageNote::absorb(
+            &mut slot,
+            held.coverage_note.expect("a held interval reports").1,
         );
+        let (_, clean) = finish_ticket(vec![gap_of(Declared, InstructionGapKind::PluginUnknown)]);
+        TicketCoverageNote::absorb(&mut slot, clean.coverage_note.unwrap().1);
+        let note = slot.expect("the clean interval's limits are kept");
+        assert!(!note.saw_no_change);
+        assert_eq!(note.limits, [InstructionGapKind::PluginUnknown]);
     }
 
     #[test]
