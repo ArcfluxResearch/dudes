@@ -114,13 +114,21 @@ impl Board {
         repo: PathBuf,
         answers: Vec<duded::predicate::PredicateOutcome>,
     ) -> Self {
+        Self::boot_with(settings, repo, Arc::new(ScriptedRunner::scripted(answers)))
+    }
+
+    fn boot_with<P: duded::predicate::PredicateRunner>(
+        settings: duded::Settings,
+        repo: PathBuf,
+        runner: Arc<P>,
+    ) -> Self {
         let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
         let host =
             SharedHost::with_native_evidence(settings.state_dir.join(duded::boot::JOURNAL_DIR));
         let seams = common::seams_with(
             &settings,
             host.clone(),
-            Arc::new(ScriptedRunner::scripted(answers)),
+            runner,
             Arc::new(TestClock::new()),
             Witness::default(),
             column as Arc<dyn dudes_rpc::auth::PeerResolver>,
@@ -1285,4 +1293,481 @@ fn the_page_words_match_the_daemon_words() {
     .expect("the page's ticket module");
     assert!(queued.contains("`Queued for ${agent}, ${placeInLine(start.position)}. "));
     assert!(source.contains("if (position <= 1) return 'next in line';"));
+}
+
+// ---- the ticket diff route -------------------------------------------------------------------
+
+/// The check answers from a script; the captured reads the diff route and the ticket captures
+/// make run for real.
+struct Hybrid {
+    scripted: ScriptedRunner,
+    real: dudes_host::OneShot,
+}
+
+impl duded::predicate::PredicateRunner for Hybrid {
+    fn run(
+        &self,
+        spec: &dudes_providers::launch::LaunchSpec,
+        timeout: Duration,
+    ) -> std::io::Result<duded::predicate::PredicateOutcome> {
+        self.scripted.run(spec, timeout)
+    }
+
+    fn run_captured(
+        &self,
+        spec: &dudes_providers::launch::LaunchSpec,
+        timeout: Duration,
+        cap: usize,
+    ) -> std::io::Result<duded::predicate::PredicateCaptured> {
+        use duded::predicate::PredicateCaptured;
+        use dudes_host::CapturedOutcome;
+        self.real
+            .run_captured(spec, timeout, cap)
+            .map(|outcome| match outcome {
+                CapturedOutcome::Finished {
+                    exit,
+                    stdout,
+                    truncated,
+                    timed_out,
+                } => PredicateCaptured::Finished {
+                    exit,
+                    stdout,
+                    truncated,
+                    timed_out,
+                },
+                CapturedOutcome::Swept => PredicateCaptured::Swept,
+            })
+    }
+
+    fn sweep(&self) {
+        self.scripted.sweep();
+    }
+}
+
+fn run_git(repo: &Path, args: &[&str]) {
+    use dudes_providers::launch::{EnvVar, LaunchInput, LaunchSpec};
+    let path = std::env::var_os("PATH").expect("PATH");
+    let program = std::env::split_paths(&path)
+        .map(|bin| bin.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("git on PATH");
+    let mut command = vec![program.into_os_string()];
+    command.extend(args.iter().map(std::ffi::OsString::from));
+    let spec = LaunchSpec {
+        argv: command,
+        env: vec![
+            EnvVar::new("PATH", path),
+            EnvVar::new("HOME", repo),
+            EnvVar::new("GIT_CONFIG_NOSYSTEM", "1"),
+            EnvVar::new("GIT_CONFIG_GLOBAL", "/dev/null"),
+            EnvVar::new("GIT_CONFIG_COUNT", "1"),
+            EnvVar::new("GIT_CONFIG_KEY_0", "maintenance.auto"),
+            EnvVar::new("GIT_CONFIG_VALUE_0", "false"),
+            EnvVar::new("GIT_AUTHOR_NAME", "Lab"),
+            EnvVar::new("GIT_AUTHOR_EMAIL", "lab@example.invalid"),
+            EnvVar::new("GIT_COMMITTER_NAME", "Lab"),
+            EnvVar::new("GIT_COMMITTER_EMAIL", "lab@example.invalid"),
+        ],
+        cwd: repo.to_path_buf(),
+        stdin: LaunchInput::Null,
+    };
+    match dudes_host::OneShot::new()
+        .run(&spec, Duration::from_secs(60))
+        .expect("git runs")
+    {
+        dudes_host::OneShotOutcome::Finished { exit: Some(0), .. } => {}
+        other => panic!("git {args:?}: {other:?}"),
+    }
+}
+
+/// Settings over a real repository holding `a.txt`, with the Git tab and the diff route switched
+/// as asked.
+fn diff_settings(fixture: &Fixture, git: bool, diff: bool) -> (duded::Settings, PathBuf) {
+    let (mut settings, _) = settings(fixture, true);
+    let repo = fixture.state.path().canonicalize().unwrap().join("real");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "--quiet", "-b", "main"]);
+    std::fs::write(repo.join("a.txt"), "old a\n").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "--quiet", "-m", "initial"]);
+    settings.enrollment.profiles[0].cwd.clone_from(&repo);
+    settings.enrollment.profiles[0]
+        .written_cwd
+        .clone_from(&repo);
+    settings.floor_git_enabled = git;
+    settings.floor_diff_enabled = diff;
+    settings.predicate_path = std::env::var_os("PATH");
+    (settings, repo)
+}
+
+fn hybrid(answers: Vec<duded::predicate::PredicateOutcome>) -> Arc<Hybrid> {
+    Arc::new(Hybrid {
+        scripted: ScriptedRunner::scripted(answers),
+        real: dudes_host::OneShot::new(),
+    })
+}
+
+fn manifest_body(card: &str, seq: u64) -> Value {
+    json!({"mode": "manifest", "card": card, "expected_seq": seq})
+}
+
+fn refusal_body(reason: &str) -> Value {
+    json!({"mode": "refused", "reason": reason})
+}
+
+/// `[floor.diff]` is off unless written, has one key, and does not need the Git tab to load
+/// (the route needs both at run time).
+#[test]
+fn the_diff_switch_is_off_by_default_and_closed() {
+    assert!(!config_with("").unwrap().diff_enabled);
+    assert!(
+        !config_with("[floor.diff]\nenabled = false\n")
+            .unwrap()
+            .diff_enabled
+    );
+    let on = config_with("[floor.diff]\nenabled = true\n").unwrap();
+    assert!(on.diff_enabled && !on.git_enabled);
+    let both = config_with("[floor.git]\nenabled = true\n[floor.diff]\nenabled = true\n").unwrap();
+    assert!(both.diff_enabled && both.git_enabled);
+    assert!(config_with("[floor.diff]\nenabled = true\nextra = 1\n").is_err());
+}
+
+/// The route exists only with both switches on. With either off, a POST to it answers exactly as
+/// a path that was never routed, and a snapshot advertises nothing.
+#[test]
+fn the_diff_route_needs_both_the_git_and_the_diff_switch() {
+    for (git, diff) in [(false, false), (true, false), (false, true), (true, true)] {
+        let fixture = Fixture::new();
+        let (settings, repo) = diff_settings(&fixture, git, diff);
+        let board = Board::boot(settings, repo, vec![common::passes()]);
+        let page = board.page();
+        let unrouted = page.post("/floor/unrouted", &manifest_body("none", 0));
+        let answer = page.post(
+            "/floor/diff",
+            &manifest_body("01J00000000000000000000000", 0),
+        );
+        if git && diff {
+            assert_eq!(answer.status, 200, "{}", answer.head);
+            assert_eq!(answer.json(), refusal_body("stale_ticket"));
+            assert!(
+                answer.head.contains("Cache-Control: no-store"),
+                "{}",
+                answer.head
+            );
+            assert!(
+                answer.head.contains("Content-Type: application/json"),
+                "{}",
+                answer.head
+            );
+        } else {
+            assert_eq!(
+                (answer.status, &answer.body),
+                (unrouted.status, &unrouted.body),
+                "git={git} diff={diff}"
+            );
+            assert!(!answer.head.contains("application/json"), "{}", answer.head);
+        }
+        let (view, _) = page.snapshot();
+        assert!(view.get("diff").is_none(), "nothing is advertised");
+        board.stop();
+    }
+}
+
+/// Every transport rule refuses with the uniform `403` and an empty body before the route reads
+/// anything or touches the journal.
+#[test]
+fn the_diff_route_refuses_transport_failures_with_the_uniform_forbidden() {
+    let fixture = Fixture::new();
+    let (settings, repo) = diff_settings(&fixture, true, true);
+    let board = Board::boot(settings, repo, vec![common::passes()]);
+    let page = board.page();
+    let before = fixture.records();
+    let body = serde_json::to_vec(&manifest_body("01J00000000000000000000000", 0)).unwrap();
+    let host = page.addr.to_string();
+    let cookie = format!("dudes_floor_session={}", page.cookie);
+    let origin = format!("http://{host}");
+    let cases: Vec<(&str, Vec<(&str, &str)>)> = vec![
+        (
+            "wrong origin",
+            vec![
+                ("Host", host.as_str()),
+                ("Origin", "http://evil.example"),
+                ("Cookie", cookie.as_str()),
+                ("X-Dudes-CSRF", page.csrf.as_str()),
+                ("Content-Type", "application/json"),
+            ],
+        ),
+        (
+            "no origin",
+            vec![
+                ("Host", host.as_str()),
+                ("Cookie", cookie.as_str()),
+                ("X-Dudes-CSRF", page.csrf.as_str()),
+                ("Content-Type", "application/json"),
+            ],
+        ),
+        (
+            "wrong host",
+            vec![
+                ("Host", "evil.example"),
+                ("Origin", origin.as_str()),
+                ("Cookie", cookie.as_str()),
+                ("X-Dudes-CSRF", page.csrf.as_str()),
+                ("Content-Type", "application/json"),
+            ],
+        ),
+        (
+            "bad csrf",
+            vec![
+                ("Host", host.as_str()),
+                ("Origin", origin.as_str()),
+                ("Cookie", cookie.as_str()),
+                (
+                    "X-Dudes-CSRF",
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                ),
+                ("Content-Type", "application/json"),
+            ],
+        ),
+        (
+            "no csrf",
+            vec![
+                ("Host", host.as_str()),
+                ("Origin", origin.as_str()),
+                ("Cookie", cookie.as_str()),
+                ("Content-Type", "application/json"),
+            ],
+        ),
+        (
+            "no cookie",
+            vec![
+                ("Host", host.as_str()),
+                ("Origin", origin.as_str()),
+                ("X-Dudes-CSRF", page.csrf.as_str()),
+                ("Content-Type", "application/json"),
+            ],
+        ),
+        (
+            "an unknown session",
+            vec![
+                ("Host", host.as_str()),
+                ("Origin", origin.as_str()),
+                (
+                    "Cookie",
+                    "dudes_floor_session=0123456789abcdef0123456789abcdef",
+                ),
+                ("X-Dudes-CSRF", page.csrf.as_str()),
+                ("Content-Type", "application/json"),
+            ],
+        ),
+    ];
+    for (name, headers) in cases {
+        let answer = page.raw("/floor/diff", &headers, &body);
+        assert_eq!(answer.status, 403, "{name}: {}", answer.head);
+        assert!(answer.body.is_empty(), "{name}");
+    }
+    assert_eq!(fixture.records(), before);
+    let ok = page.post(
+        "/floor/diff",
+        &manifest_body("01J00000000000000000000000", 0),
+    );
+    assert_eq!(
+        ok.status, 200,
+        "none of the refusals took the session's turn: {}",
+        ok.head
+    );
+    board.stop();
+}
+
+/// A body that is not one flat closed object, or that is over a kilobyte, is a plain `400` or
+/// `413` and does not start the session's interval.
+#[test]
+fn the_diff_route_refuses_malformed_bodies_before_reading_anything() {
+    let fixture = Fixture::new();
+    let (settings, repo) = diff_settings(&fixture, true, true);
+    let board = Board::boot(settings, repo, vec![common::passes()]);
+    let page = board.page();
+    let id = "a".repeat(32);
+    for (body, status) in [
+        ("{}".to_owned(), 400),
+        ("[]".to_owned(), 400),
+        (
+            json!({"mode": "manifest", "card": "01J00000000000000000000000", "expected_seq": 0, "path": "/etc/passwd"})
+                .to_string(),
+            400,
+        ),
+        (
+            json!({"mode": "manifest", "card": "01J00000000000000000000000", "expected_seq": 0, "revision": "HEAD~1"})
+                .to_string(),
+            400,
+        ),
+        (
+            json!({"mode": "content", "manifest_id": id, "entries": []}).to_string(),
+            400,
+        ),
+        (" ".repeat(1025), 413),
+    ] {
+        let answer = page.post_bytes("/floor/diff", body.as_bytes());
+        assert_eq!(answer.status, status, "{body:?}: {}", answer.head);
+    }
+    let ok = page.post(
+        "/floor/diff",
+        &manifest_body("01J00000000000000000000000", 0),
+    );
+    assert_eq!(
+        ok.json(),
+        refusal_body("stale_ticket"),
+        "no refusal took the interval"
+    );
+    board.stop();
+}
+
+/// A ticket on a real checkout, over HTTP: the manifest names what the agent changed, the stamp
+/// the daemon recorded after the check decides the freshness words, a content request returns the
+/// files whole, a later edit is named, and a stop makes the old ids stale.
+#[test]
+fn a_ticket_diff_is_served_from_the_recorded_baseline_and_stamp() {
+    let fixture = Fixture::new();
+    let (settings, repo) = diff_settings(&fixture, true, true);
+    let board = Board::boot_with(settings, repo.clone(), hybrid(vec![common::fails()]));
+    let agent = board.hire("Cody");
+    let setup = board.page();
+    let card = make(&setup, "Fix the parser");
+    setup.give(&card, agent, None).ok();
+    let first = fixture.await_turn();
+
+    std::fs::write(repo.join("a.txt"), "agent edit\n").unwrap();
+    std::fs::write(repo.join("scratch.log"), "untracked and never listed\n").unwrap();
+    board.end_turn(&fixture, first, Some("tried"));
+    let check_lsn = fixture.await_record("the stamp", |record| match record {
+        Record::TicketReviewStamped { stamp, .. } => Some(stamp.check_lsn),
+        _ => None,
+    });
+    let goal = fixture.await_record("the start", |record| match record {
+        Record::TicketStarted { goal, .. } => Some(goal.id),
+        _ => None,
+    });
+
+    let reader = board.page();
+    let seq = reader.seq(&card);
+    let answer = reader.post("/floor/diff", &manifest_body(&card, seq));
+    assert_eq!(answer.status, 200, "{}", answer.head);
+    assert!(
+        answer.head.contains("Cache-Control: no-store"),
+        "{}",
+        answer.head
+    );
+    let wire = String::from_utf8_lossy(&answer.body).into_owned();
+    assert!(
+        !wire.contains(repo.to_str().unwrap())
+            && !wire.contains("scratch.log")
+            && !wire.contains("lab@example"),
+        "no directory, untracked name or identity in {wire}"
+    );
+    let page = answer.json();
+    assert_eq!(page["mode"], "manifest");
+    assert_eq!(page["freshness"], "matches_review_sample");
+    assert_eq!(page["untracked"], 1);
+    assert_eq!(page["binding"]["card"], card);
+    assert_eq!(page["binding"]["seq"], seq);
+    assert_eq!(page["binding"]["round"], 1);
+    assert_eq!(page["binding"]["goal"], goal.to_string());
+    assert_eq!(page["binding"]["claimant"], agent.to_string());
+    assert_eq!(page["binding"]["check_lsn"], check_lsn.0.to_string());
+    assert_eq!(page["entries"][0]["path"], "a.txt");
+    assert_eq!(page["entries"][0]["kind"], "modified");
+    let entry = page["entries"][0]["entry_id"].as_str().unwrap().to_owned();
+    let manifest_id = page["manifest_id"].as_str().unwrap().to_owned();
+    let content_request =
+        json!({"mode": "content", "manifest_id": manifest_id, "entries": [entry]});
+
+    let early = reader.post("/floor/diff", &content_request);
+    assert_eq!(
+        early.json(),
+        refusal_body("busy"),
+        "the interval has not passed"
+    );
+    std::thread::sleep(Duration::from_millis(2100));
+    let body = reader.post("/floor/diff", &content_request).ok();
+    assert_eq!(body["files"][0]["old"], "old a\n");
+    assert_eq!(body["files"][0]["current"], "agent edit\n");
+    assert_eq!(body["freshness"], "unknown");
+
+    std::fs::write(repo.join("a.txt"), "edited after the check\n").unwrap();
+    let later = board.page();
+    let changed = later.post("/floor/diff", &manifest_body(&card, seq)).ok();
+    assert_eq!(changed["freshness"], "changed_after_check");
+    assert_eq!(changed["binding"]["check_lsn"], check_lsn.0.to_string());
+
+    std::thread::sleep(Duration::from_millis(2100));
+    let stop = reader.act("stop", &card);
+    assert_eq!(stop.status, 200, "{}", stop.head);
+    std::thread::sleep(Duration::from_millis(2100));
+    let stale = reader.post("/floor/diff", &content_request);
+    assert_eq!(
+        stale.json(),
+        refusal_body("stale_ticket"),
+        "a stop ends the claim"
+    );
+    board.stop();
+}
+
+/// The session's interval and allowance follow the cookie, so rotating the CSRF token, which is
+/// what a reload does, does not start them over.
+#[test]
+fn the_diff_limits_follow_the_session_through_csrf_rotation() {
+    let fixture = Fixture::new();
+    let (settings, repo) = diff_settings(&fixture, true, true);
+    let board = Board::boot(settings, repo, vec![common::passes()]);
+    let page = board.page();
+    let body = manifest_body("01J00000000000000000000000", 0);
+    assert_eq!(
+        page.post("/floor/diff", &body).json(),
+        refusal_body("stale_ticket")
+    );
+
+    let host = page.addr.to_string();
+    let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("timeout");
+    let request = format!(
+        "POST /floor/session/recover HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        page.cookie
+    );
+    stream.write_all(request.as_bytes()).expect("recover");
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    let (head, recovered) = response.split_once("\r\n\r\n").expect("a response");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    let rotated = Page {
+        csrf: serde_json::from_str::<Value>(recovered).unwrap()["csrf"]
+            .as_str()
+            .expect("a new token")
+            .to_owned(),
+        ..page.clone()
+    };
+    assert_ne!(rotated.csrf, page.csrf);
+
+    assert_eq!(page.post("/floor/diff", &body).status, 403, "the old token");
+    assert_eq!(
+        rotated.post("/floor/diff", &body).json(),
+        refusal_body("busy"),
+        "the rotated token is the same session, still inside its interval"
+    );
+    board.stop();
+}
+
+/// A ticket the daemon has no baseline for has no diff.
+#[test]
+fn a_ticket_that_never_started_has_no_baseline_to_diff() {
+    let fixture = Fixture::new();
+    let (settings, repo) = diff_settings(&fixture, true, true);
+    let board = Board::boot_with(settings, repo, hybrid(vec![common::passes()]));
+    let page = board.page();
+    let card = make(&page, "Not started");
+    let seq = page.seq(&card);
+    let answer = page.post("/floor/diff", &manifest_body(&card, seq));
+    assert_eq!(answer.json(), refusal_body("baseline_unavailable"));
+    board.stop();
 }
