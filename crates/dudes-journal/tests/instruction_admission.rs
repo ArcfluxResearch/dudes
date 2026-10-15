@@ -1,5 +1,3 @@
-//! Live instruction admission reports the unappended record without changing durable state.
-
 use std::path::Path;
 
 use dudes_journal::segment::{list_segments, segment_path};

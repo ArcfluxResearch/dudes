@@ -708,8 +708,8 @@ impl Projections {
                 instructions::facts(&agents, &board, &goals, entry)?,
                 instructions::hash,
             )
-            .map_err(|reason| Error::Instruction {
-                lsn: self.last_applied,
+            .map_err(|reason| Error::InstructionAdmission {
+                kind: entry.record.kind(),
                 reason,
             })
     }
