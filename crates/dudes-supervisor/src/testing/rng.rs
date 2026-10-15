@@ -344,6 +344,40 @@ mod tests {
         assert_eq!(once.drawn(), 801);
     }
 
+    #[test]
+    fn a_later_serialization_error_leaves_earlier_reservations_unapplied() {
+        use dudes_proto::{ExhaustedReason, LoopDecision, Record};
+        use dudes_types::Timestamp;
+        let mut rng = FakeRng::new();
+        let known = rng.ulid();
+        let before = rng.drawn();
+        let entries = [
+            Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: Record::GoalCleared {
+                    agent: AgentId::NIL,
+                    goal: dudes_types::GoalId::from_parts(0, 900),
+                },
+            },
+            Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: Record::LoopDecided {
+                    agent: AgentId::NIL,
+                    input_digest: String::new(),
+                    decision: LoopDecision::Exhausted {
+                        reason: ExhaustedReason::MailWakeLimit,
+                    },
+                    gate_trace: Vec::new(),
+                },
+            },
+        ];
+        assert!(rng.reserve_entries(&entries).is_err());
+        assert_eq!(rng.drawn(), before);
+        assert_eq!(rng.occupied.len(), 3);
+        assert!(rng.occupied.contains(&known.to_string()));
+        assert_eq!(rng.ulid(), Ulid::from_parts(0, 2));
+    }
+
     fn assert_record_floor(record: dudes_proto::Record) {
         let mut rng = FakeRng::new();
         rng.reserve_entries(&[Entry {
