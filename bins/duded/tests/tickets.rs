@@ -673,6 +673,12 @@ fn a_working_ticket_can_be_neither_edited_nor_removed() {
             TicketRefusal::WrongState
         };
         assert_refused(&response, reason, CardStatus::Doing);
+        if method == Method::TicketEdit {
+            assert_eq!(
+                response.error.as_ref().unwrap().message,
+                "You can't do that to a ticket that is Working."
+            );
+        }
     }
     assert_eq!(fixture.records().len(), before, "a refusal appends nothing");
     assert_eq!(daemon.read(card).card.title, "In progress");
