@@ -564,6 +564,8 @@ fn names_a_position(key: &str) -> bool {
 /// pointing at nothing, and this panics rather than recording it. `Lsn::ZERO` is the crate's
 /// documented sentinel for "before any record" and resolves to `None`, which is still compared
 /// between the runs — a mutation that put a real position where `ZERO` was still shows up.
+/// An absent nullable `session_lsn` stays in the row without a source-map entry, so it differs
+/// from numeric `ZERO`, which contributes `(path, None)`.
 fn resolve_positions(
     v: &mut Value,
     log: &BTreeMap<Lsn, Entry>,
@@ -575,6 +577,9 @@ fn resolve_positions(
             for (key, child) in map.iter_mut() {
                 let here = format!("{path}.{key}");
                 if names_a_position(key) {
+                    if key == "session_lsn" && child.is_null() {
+                        continue;
+                    }
                     let raw = child
                         .as_u64()
                         .unwrap_or_else(|| panic!("{here} is not a number: {child}"));
@@ -608,6 +613,71 @@ fn resolve_positions(
 }
 
 // ---- the tests ----------------------------------------------------------------------------
+
+#[test]
+fn nullable_position_resolution_keeps_absence_zero_and_sources_distinct() {
+    let source = samples::record(RecordKind::SessionLearned);
+    let at = Lsn(7);
+    let log = BTreeMap::from([(
+        at,
+        Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: source.clone(),
+        },
+    )]);
+    let resolve = |key: &str, position: Value| {
+        let mut row = serde_json::json!({});
+        row[key] = position;
+        let mut sources = Vec::new();
+        resolve_positions(&mut row, &log, "", &mut sources);
+        (row, sources)
+    };
+    let absent = resolve("session_lsn", serde_json::to_value(None::<Lsn>).unwrap());
+    let zero = resolve(
+        "session_lsn",
+        serde_json::to_value(Some(Lsn::ZERO)).unwrap(),
+    );
+    let present = resolve("session_lsn", serde_json::to_value(Some(at)).unwrap());
+    assert_eq!(absent.0, zero.0);
+    assert_eq!(zero.0, present.0);
+    assert!(absent.1.is_empty());
+    assert_eq!(zero.1, vec![(".session_lsn".into(), None)]);
+    assert_eq!(
+        present.1,
+        vec![(".session_lsn".into(), Some(source.clone()))]
+    );
+    assert_ne!(absent, zero);
+    assert_ne!(zero, present);
+    assert_ne!(absent, present);
+
+    for key in [
+        "lsn",
+        "lsn_issued",
+        "hired_lsn",
+        "installed_lsn",
+        "future_lsn",
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| resolve(key, Value::Null)).is_err(),
+            "{key} accepted mandatory null"
+        );
+        let (_, sources) = resolve(key, serde_json::to_value(at).unwrap());
+        assert_eq!(sources, vec![(format!(".{key}"), Some(source.clone()))]);
+    }
+    for malformed in [
+        serde_json::json!("not a position"),
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!(true),
+        serde_json::json!({}),
+        serde_json::json!(999),
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| resolve("session_lsn", malformed)).is_err(),
+            "accepted a malformed or dangling optional position"
+        );
+    }
+}
 
 #[test]
 fn checkpointing_changes_no_projection() {
