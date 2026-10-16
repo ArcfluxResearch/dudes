@@ -154,7 +154,7 @@ impl RecoveryCurrent<'_> {
         {
             return Err(RecoveryStateError::Binding);
         }
-        self.validate_hire(requested, history)?;
+        Self::validate_hire(requested, history)?;
         self.validate_goal(requested, history)?;
         self.validate_issue(requested, history)?;
         self.validate_lease(requested)?;
@@ -173,7 +173,6 @@ impl RecoveryCurrent<'_> {
     }
 
     fn validate_hire(
-        &self,
         requested: &RecoveryBinding,
         history: &RecoveryHistory,
     ) -> Result<(), RecoveryStateError> {

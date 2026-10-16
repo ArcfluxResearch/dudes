@@ -512,7 +512,9 @@ fn marker_owner(kind: RecordKind, owner: RecoveryWitnessOwner) -> bool {
                 RecordKind::CardCreated
                     | RecordKind::CardTransition
                     | RecordKind::Claim
-                    | RecordKind::TicketCreated,
+                    | RecordKind::TicketCreated
+                    | RecordKind::TicketRemoved
+                    | RecordKind::TicketInstructionReviewed,
                 RecoveryWitnessOwner::Card(_)
             )
             | (
@@ -522,10 +524,6 @@ fn marker_owner(kind: RecordKind, owner: RecoveryWitnessOwner) -> bool {
             | (
                 RecordKind::WorktreeRemoved,
                 RecoveryWitnessOwner::Worktree(_)
-            )
-            | (
-                RecordKind::TicketRemoved | RecordKind::TicketInstructionReviewed,
-                RecoveryWitnessOwner::Card(_)
             )
             | (
                 RecordKind::BrowserNoteIssuedCancelled | RecordKind::BrowserNoteReissueCancelled,
