@@ -227,10 +227,10 @@ mod tests {
                         }
                     }
                     dudes_proto::recovery::RecoveryBoundary::Paused { end_lsn } => {
-                        refs.push(end_lsn)
+                        refs.push(end_lsn);
                     }
                     dudes_proto::recovery::RecoveryBoundary::Vanished { spawn_lsn, end_lsn } => {
-                        refs.extend([spawn_lsn, end_lsn])
+                        refs.extend([spawn_lsn, end_lsn]);
                     }
                     dudes_proto::recovery::RecoveryBoundary::Unconfirmed {
                         spawn_lsn,

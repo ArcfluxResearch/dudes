@@ -430,7 +430,7 @@ fn coherent_recovery_subtree_deletion_refuses_canonical_recertification() {
 #[test]
 fn recovery_cached_validation_rechecks_same_length_rewrite_and_bad_suffix() {
     for rewrite in [false, true] {
-        let (mut fixture, mut authorization, at) = fresh(0);
+        let (fixture, mut authorization, at) = fresh(0);
         let path = crate::segment::segment_path(fixture.writer.reader().dir(), at.segment());
         let (reader, _) = crate::Reader::open(fixture.writer.reader().dir()).unwrap();
         let mut bytes = std::fs::read(&path).unwrap();

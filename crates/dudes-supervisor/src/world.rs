@@ -941,7 +941,7 @@ impl World {
                 ..
             } => {
                 let Some(row) = self.agents.get_mut(agent) else {
-                    return;
+                    return Ok(());
                 };
                 if row.question_lsn != Some(*question_lsn)
                     || row.conversation_question != Some(*origin)
@@ -951,7 +951,7 @@ impl World {
                     || matches!(authority, dudes_proto::ConversationAnswerAuthority::Browser { browser } if browser.question_lsn != *question_lsn)
                     || dudes_proto::normalized_chat_text(text) != Some(text.as_str())
                 {
-                    return;
+                    return Ok(());
                 }
                 row.open_question = None;
                 row.question_lsn = None;
@@ -1079,7 +1079,7 @@ impl World {
                     destination,
                     BrowserNoteDestination::ManagedConversation { .. }
                 ) {
-                    return;
+                    return Ok(());
                 }
                 self.browser_notes
                     .entry(lsn)
@@ -1175,7 +1175,7 @@ impl World {
                             .last()
                             .is_some_and(|prior| !issue.uncertain_dispatches.contains(prior))
                     {
-                        return;
+                        return Ok(());
                     }
                     issue.dispatch_intents.push(lsn);
                 }
@@ -1480,14 +1480,14 @@ impl World {
                         Some(BrowserIssueCancellation::Clean { .. })
                     )
                 }) {
-                    return;
+                    return Ok(());
                 }
                 if self
                     .browser_issues
                     .get(turn)
                     .is_some_and(|issue| issue.agent != *agent || issue.dispatch_intents.is_empty())
                 {
-                    return;
+                    return Ok(());
                 }
                 if let Some((started_lsn, attempt)) = self.instructions.current_for_turn(*turn)
                     && matches!(attempt.owner, InstructionObservationOwner::Managed { agent: owner, turn: owned_turn, .. } if owner == *agent && owned_turn == *turn)
@@ -1602,7 +1602,7 @@ impl World {
                         Some(BrowserIssueCancellation::Clean { .. })
                     )
                 }) {
-                    return;
+                    return Ok(());
                 }
                 if let Some(issue) = self.browser_issues.get_mut(turn)
                     && issue.agent == *agent
