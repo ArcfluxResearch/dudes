@@ -1,5 +1,3 @@
-//! Recovery facts read existing fold owners and immutable source witnesses at one cut.
-
 use dudes_proto::recovery::RecoveryBinding;
 use dudes_proto::recovery_state::admission::{
     RecoveryAgentCurrent, RecoveryCurrent, RecoveryGoalCurrent, RecoveryLeaseCurrent,

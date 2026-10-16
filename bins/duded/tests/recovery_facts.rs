@@ -1,5 +1,3 @@
-//! Equal factual recovery inputs from one actual ordinary journal prefix.
-
 use dudes_journal::{Error, Fsync, JournalOptions, Projections, Writer};
 use dudes_proto::diff_stamp::TicketBinding;
 use dudes_proto::record::samples;
