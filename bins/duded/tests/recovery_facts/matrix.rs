@@ -207,6 +207,7 @@ fn observe_collision(same_agent: bool, collision: bool) -> (Refusals, Preservati
         prefix.world.recovery_projection().unwrap(),
         (&recovery.0, &recovery.1)
     );
+    let original_goal = authorization.binding.work.goal;
     let entry = Entry {
         at: Timestamp::UNIX_EPOCH,
         record: Record::RecoveryAuthorized(Box::new(authorization)),
@@ -249,7 +250,7 @@ fn observe_collision(same_agent: bool, collision: bool) -> (Refusals, Preservati
         prefix.world.last_applied_lsn == frontier,
         old_same,
         (
-            prefix.world.goals[&agent()].turns_on_goal,
+            prefix.world.goals[&original_goal].turns_on_goal,
             prefix.world.goals[&old.goal].turns_on_goal,
         ) == accounting,
     );
