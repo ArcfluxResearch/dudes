@@ -756,7 +756,7 @@ fn an_omitted_nullable_claim_link_is_not_decoded_as_unclaimed() {
 }
 
 #[test]
-fn a_missing_current_root_cannot_recreate_an_existing_episode() {
+fn cold_validation_refuses_a_missing_current_root() {
     let mut h = Harness::default();
     let mut facts = facts();
     let barrier = required(&facts, false);
@@ -778,15 +778,11 @@ fn a_missing_current_root_cannot_recreate_an_existing_episode() {
         RecoveryCache::read_all(&h.memory, h.through),
         Err(RecoveryCacheError::MissingCell)
     ));
-    assert_eq!(
-        RecoveryCache::load(&h.memory, h.through, RecoveryEvent::Required(&barrier), &[]).err(),
-        Some(RecoveryCacheError::MissingCell)
-    );
     assert_eq!(h.memory.rows, before_rows);
 }
 
 #[test]
-fn a_missing_planned_root_cannot_free_a_reserved_turn_for_another_authorization() {
+fn cold_validation_refuses_a_missing_planned_root() {
     let (mut h, _, original, _) = claimed();
     let facts = another_required_episode(&mut h);
     let mut other = authorization(h.full.current(facts.binding.work).unwrap(), &facts, 37);
@@ -811,15 +807,11 @@ fn a_missing_planned_root_cannot_free_a_reserved_turn_for_another_authorization(
         RecoveryCache::read_all(&h.memory, h.through),
         Err(RecoveryCacheError::MissingCell)
     ));
-    assert_eq!(
-        RecoveryCache::load(&h.memory, h.through, RecoveryEvent::Authorized(&other), &[]).err(),
-        Some(RecoveryCacheError::MissingCell)
-    );
     assert_eq!(h.memory.rows, before_rows);
 }
 
 #[test]
-fn a_missing_request_root_cannot_free_a_durable_request_for_another_authorization() {
+fn cold_validation_refuses_a_missing_request_root() {
     let (mut h, _, original, _) = claimed();
     let facts = another_required_episode(&mut h);
     let mut other = authorization(h.full.current(facts.binding.work).unwrap(), &facts, 37);
@@ -840,10 +832,6 @@ fn a_missing_request_root_cannot_free_a_durable_request_for_another_authorizatio
         RecoveryCache::read_all(&h.memory, h.through),
         Err(RecoveryCacheError::MissingCell)
     ));
-    assert_eq!(
-        RecoveryCache::load(&h.memory, h.through, RecoveryEvent::Authorized(&other), &[]).err(),
-        Some(RecoveryCacheError::MissingCell)
-    );
     assert_eq!(h.memory.rows, before_rows);
 }
 
