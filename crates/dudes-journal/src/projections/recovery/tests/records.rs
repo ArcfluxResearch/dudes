@@ -1,5 +1,7 @@
 //! Actual required-frame prefixes at the certified journal boundary.
 
+mod carriers;
+
 use super::*;
 use dudes_proto::recovery::{
     RecoveryAttribution, RecoveryAuthorized, RecoveryBoundary, RecoveryContext, RecoveryEpisodeId,
