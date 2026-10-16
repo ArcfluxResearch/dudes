@@ -3,9 +3,12 @@ use dudes_proto::recovery_state::admission::{
     RecoveryAgentCurrent, RecoveryCurrent, RecoveryGoalCurrent, RecoveryLeaseCurrent,
 };
 use dudes_proto::recovery_state::history::{
-    RecoveryPriorControl, RecoveryWitness, RecoveryWitnessContext, task_digest,
+    RecoveryAttemptContext, RecoveryPriorControl, RecoveryWitness, RecoveryWitnessContext,
+    task_digest,
 };
-use dudes_proto::recovery_state::{RecoveryFacts, RecoveryStateError};
+use dudes_proto::recovery_state::{
+    RecoveryAttempt, RecoveryAttemptFacts, RecoveryFacts, RecoveryStateError,
+};
 use dudes_proto::{Entry, Record};
 use dudes_types::{Lsn, Mode};
 
@@ -98,10 +101,79 @@ impl World {
             },
             issue,
             mode: Mode::Managed,
+            attempt: RecoveryAttempt {
+                spawn_lsn: turn.spawn_lsn,
+                end_lsn: turn.end_lsn,
+                confirmation_lsn: turn.confirmation_lsn,
+            },
             ticket,
             lease,
         }
         .bind(binding, &self.recovery_history)
+    }
+
+    /// Refuse an unregistered typed transition before any mutable world fold.
+    /// This historical preparation cannot authenticate a command or grant dispatch.
+    pub fn prepare_recovery(
+        &self,
+        transition: dudes_proto::recovery_state::transition::RecoveryTransition<'_>,
+    ) -> Result<(), RecoveryStateError> {
+        if self.recovery_history_error.is_some() {
+            return Err(RecoveryStateError::Binding);
+        }
+        if let dudes_proto::recovery_state::transition::RecoveryTransition::Invalidated(record) =
+            transition
+        {
+            let through = self.last_applied_lsn.ok_or(RecoveryStateError::Position)?;
+            return self.recovery_state.validate_invalidation(
+                record,
+                through,
+                &self.recovery_history,
+            );
+        }
+        if let dudes_proto::recovery_state::transition::RecoveryTransition::Consumed {
+            claim,
+            issue,
+            evidence,
+        } = transition
+        {
+            let through = self.last_applied_lsn.ok_or(RecoveryStateError::Position)?;
+            let row = self
+                .turns
+                .get(&issue.issued.work.turn)
+                .ok_or(RecoveryStateError::Binding)?;
+            let recorded = self
+                .recovery_history
+                .at(row.issue_lsn)
+                .map_err(|_| RecoveryStateError::Binding)?
+                .issue()
+                .ok_or(RecoveryStateError::Binding)?;
+            if row.agent != issue.issued.work.agent
+                || row.goal != Some(issue.issued.work.goal)
+                || row.model_selection != issue.issued.model_selection
+                || row.answers != issue.issued.answers
+                || task_digest(&row.task, &hash) != issue.issued.task_digest
+                || recorded != *issue
+            {
+                return Err(RecoveryStateError::Binding);
+            }
+            let facts = RecoveryAttemptFacts {
+                through,
+                issue: recorded,
+                attempt: RecoveryAttempt {
+                    spawn_lsn: row.spawn_lsn,
+                    end_lsn: row.end_lsn,
+                    confirmation_lsn: row.confirmation_lsn,
+                },
+            };
+            return self
+                .recovery_state
+                .validate_consumed(claim, issue, evidence, &facts);
+        }
+        let binding = transition.binding(&self.recovery_state)?;
+        let facts = self.recovery_facts(&binding)?;
+        self.recovery_state
+            .validate_transition(transition, &facts, &self.recovery_history)
     }
 
     /// Read retained source evidence without interpreting it as a recovery permission.
@@ -125,7 +197,42 @@ impl World {
             | Record::AgentHeld { agent, .. } => Some(*agent),
             _ => None,
         };
+        let attempt = match &entry.record {
+            Record::TurnSpawned { agent, turn, .. }
+            | Record::SessionLearned { agent, turn, .. }
+            | Record::TurnEnded { agent, turn, .. } => self
+                .turns
+                .get(turn)
+                .filter(|row| row.agent == *agent)
+                .map(|row| RecoveryAttemptContext {
+                    issue_lsn: row.issue_lsn,
+                    previous_spawn_lsn: row.spawn_lsn,
+                    previous_end_lsn: row.end_lsn,
+                    confirmed_session_lsn: self
+                        .agents
+                        .get(agent)
+                        .and_then(|owner| owner.session_lsn),
+                }),
+            _ => None,
+        };
+        let qualified_completion = match &entry.record {
+            Record::PredicateResult { goal, .. } => self
+                .goals
+                .get(goal)
+                .filter(|row| !row.cleared && !self.completed_goals.contains_key(goal))
+                .and_then(|row| {
+                    dudes_proto::recovery_state::history::qualified_completion(
+                        row.agent,
+                        row.goal.id,
+                        &row.goal.predicate,
+                        &entry.record,
+                    )
+                }),
+            _ => None,
+        };
         RecoveryWitnessContext {
+            qualified_completion,
+            attempt,
             previous_control: agent.and_then(|agent| {
                 self.agents.get(&agent).map(|row| RecoveryPriorControl {
                     agent,

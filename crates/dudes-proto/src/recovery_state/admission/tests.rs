@@ -121,6 +121,7 @@ impl Fixture {
             },
             issue: self.issue.clone(),
             mode: Mode::Managed,
+            attempt: crate::recovery_state::RecoveryAttempt::default(),
             ticket: None,
             lease: None,
         }

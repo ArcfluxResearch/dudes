@@ -49,6 +49,7 @@ fn facts() -> RecoveryFacts {
         turn: TurnId::from_parts(21, 3),
     };
     RecoveryFacts {
+        attempt: crate::recovery_state::RecoveryAttempt::default(),
         through: Lsn(100),
         binding: RecoveryBinding {
             work,
@@ -91,6 +92,11 @@ fn required(facts: &RecoveryFacts, missing_spawn: bool) -> RecoveryRequired {
         } else {
             RecoveryReason::HeldOrPausedFailure
         },
+        boundary: if missing_spawn {
+            crate::recovery::RecoveryBoundary::MissingSpawn
+        } else {
+            crate::recovery::RecoveryBoundary::Paused { end_lsn: Lsn(80) }
+        },
         predecessor: None,
     }
 }
@@ -105,6 +111,7 @@ fn authorization(
         binding: episode.binding.clone(),
         request_id: Hex32::new([request; 32]),
         request_digest: Hex32::new([request + 1; 32]),
+        attribution: crate::recovery::RecoveryAttribution::LocalOperator { pid: 42, uid: None },
         expected_control: facts.control_lsn,
         resulting_control: facts.control_lsn,
         resume_lsn: None,
@@ -121,6 +128,7 @@ fn authorization(
                     recap: RecoveryRecap {
                         text: "Earlier effects are unknown.".into(),
                         sources: vec![facts.source_issue.lsn],
+                        delivered_answers: Vec::new(),
                     },
                 },
             }
@@ -323,7 +331,10 @@ fn authorization_intent_and_episode_intent_are_not_rewritten_by_claim_updates() 
         400,
         RecoveryEvent::Invalidated {
             claim,
-            evidence_lsn: Lsn(350),
+            evidence: crate::recovery::RecoveryInvalidationEvidence::RecordedChange {
+                reason: crate::recovery::RecoveryInvalidationReason::ControlChanged,
+                lsn: Lsn(350),
+            },
         },
         &facts,
     );
@@ -350,7 +361,10 @@ fn authorization_intent_and_episode_intent_are_not_rewritten_by_claim_updates() 
             .state,
         &RecoveryClaimState::Invalidated {
             invalidation_lsn: Lsn(400),
-            evidence_lsn: Lsn(350)
+            evidence: crate::recovery::RecoveryInvalidationEvidence::RecordedChange {
+                reason: crate::recovery::RecoveryInvalidationReason::ControlChanged,
+                lsn: Lsn(350)
+            }
         }
     );
 }
@@ -596,7 +610,10 @@ fn unrelated_terminal_history_does_not_expand_receipt_reads_or_updates() {
                 episode: other.episode,
                 authorization_lsn: Lsn(500),
             },
-            evidence_lsn: Lsn(550),
+            evidence: crate::recovery::RecoveryInvalidationEvidence::RecordedChange {
+                reason: crate::recovery::RecoveryInvalidationReason::ControlChanged,
+                lsn: Lsn(550),
+            },
         },
         &facts,
     );
@@ -822,4 +839,49 @@ fn a_missing_request_root_cannot_free_a_durable_request_for_another_authorizatio
         Some(RecoveryCacheError::MissingCell)
     );
     assert_eq!(h.memory.rows, before_rows);
+}
+
+#[test]
+fn browser_unavailability_keeps_its_tag_through_scoped_and_cold_receipts() {
+    let mut h = Harness::default();
+    let mut facts = facts();
+    let barrier = required(&facts, false);
+    h.step(200, RecoveryEvent::Required(&barrier), &facts);
+    facts.through = h.through;
+    let mut auth = authorization(h.full.current(facts.binding.work).unwrap(), &facts, 7);
+    let digest = Hex32::new([11; 32]);
+    auth.attribution = crate::recovery::RecoveryAttribution::BrowserSession {
+        session_digest: digest,
+    };
+    h.step(300, RecoveryEvent::Authorized(&auth), &facts);
+    facts.through = h.through;
+    let claim = RecoveryClaimRef {
+        episode: auth.episode,
+        authorization_lsn: Lsn(300),
+    };
+    let evidence = crate::recovery::RecoveryInvalidationEvidence::BrowserAuthorityUnavailable {
+        session_digest: digest,
+    };
+    h.step(400, RecoveryEvent::Invalidated { claim, evidence }, &facts);
+    let before = h.memory.rows.clone();
+    let scoped = RecoveryCache::load_receipt(&h.memory, h.through, auth.request_id).unwrap();
+    let receipt = scoped
+        .state()
+        .receipt(auth.request_id, auth.request_digest)
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.claim, claim);
+    assert_eq!(
+        receipt.state,
+        &RecoveryClaimState::Invalidated {
+            invalidation_lsn: Lsn(400),
+            evidence
+        }
+    );
+    assert!(scoped.updates().unwrap().is_empty());
+    assert_eq!(h.memory.rows, before);
+    assert_eq!(
+        RecoveryCache::read_all(&h.memory, h.through).unwrap().0,
+        h.full
+    );
 }

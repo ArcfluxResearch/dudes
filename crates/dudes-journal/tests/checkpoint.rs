@@ -575,7 +575,17 @@ fn resolve_positions(
             for (key, child) in map.iter_mut() {
                 let here = format!("{path}.{key}");
                 if names_a_position(key) {
-                    if key == "session_lsn" && child.is_null() {
+                    if matches!(
+                        key.as_str(),
+                        "session_lsn"
+                            | "spawn_lsn"
+                            | "end_lsn"
+                            | "confirmation_lsn"
+                            | "previous_spawn_lsn"
+                            | "previous_end_lsn"
+                            | "confirmed_session_lsn"
+                    ) && child.is_null()
+                    {
                         continue;
                     }
                     let raw = child

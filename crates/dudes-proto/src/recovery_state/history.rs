@@ -102,6 +102,12 @@ pub enum RecoveryIssueCarrier {
 /// Fixed outcome class without provider error or response text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecoveryEndClass {
+    /// Stream reached a recorded completed outcome.
+    Completed,
+    /// Stream reached the provider turn cap.
+    MaxTurns,
+    /// Stream reached the provider budget cap.
+    BudgetExhausted,
     /// A recorded `Failed` outcome; failure text stays in the original record.
     Failed,
     /// A recorded `NoResult` outcome.
@@ -265,10 +271,72 @@ pub struct RecoveryPriorControl {
     pub lsn: Option<Lsn>,
 }
 
+/// Immutable relationship captured from the existing turn and agent rows before an attempt record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryAttemptContext {
+    /// Actual issue that owns the physical turn.
+    pub issue_lsn: Lsn,
+    /// Latest preceding physical spawn, if any.
+    #[serde(deserialize_with = "crate::chat::required_nullable")]
+    pub previous_spawn_lsn: Option<Lsn>,
+    /// Latest preceding terminal source, if any.
+    #[serde(deserialize_with = "crate::chat::required_nullable")]
+    pub previous_end_lsn: Option<Lsn>,
+    /// Agent's confirmed conversation before this record, not a permission or history guarantee.
+    #[serde(deserialize_with = "crate::chat::required_nullable")]
+    pub confirmed_session_lsn: Option<Lsn>,
+}
+
+/// Exact existing goal qualified by its unchanged predicate rule at the source record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryGoalTarget {
+    /// Existing owner before the result.
+    pub agent: AgentId,
+    /// Existing goal identity.
+    pub goal: GoalId,
+}
+
+/// Qualify only the supplied existing goal's result; this does not fold goal lifecycle.
+#[must_use]
+pub fn qualified_completion(
+    agent: AgentId,
+    goal: GoalId,
+    predicate: &crate::Predicate,
+    record: &Record,
+) -> Option<RecoveryGoalTarget> {
+    let Record::PredicateResult {
+        goal: seen,
+        provenance,
+        pass,
+        evidence,
+        ..
+    } = record
+    else {
+        return None;
+    };
+    let card = match evidence {
+        crate::Evidence::Card { card, status, by } => Some((*card, *status, by)),
+        _ => None,
+    };
+    (*seen == goal
+        && *pass
+        && provenance.is_observed()
+        && crate::goal::predicate_card_evidence_eligible(predicate, card))
+    .then_some(RecoveryGoalTarget { agent, goal })
+}
+
 /// Narrow before-record context supplied by the existing validated folds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryWitnessContext {
+    /// Existing predicate qualification at this actual result, without changing goal policy.
+    #[serde(deserialize_with = "crate::chat::required_nullable")]
+    pub qualified_completion: Option<RecoveryGoalTarget>,
+    /// Existing row relationships, absent when no turn row was available.
+    #[serde(deserialize_with = "crate::chat::required_nullable")]
+    pub attempt: Option<RecoveryAttemptContext>,
     /// Present only when the existing agent row supplied the preceding control.
     #[serde(deserialize_with = "crate::chat::required_nullable")]
     pub previous_control: Option<RecoveryPriorControl>,
@@ -324,6 +392,24 @@ impl RecoveryWitness {
         if self.reference.lsn == Lsn::ZERO {
             return Err(RecoveryHistoryError::Position);
         }
+        if let Some(attempt) = self.context.attempt
+            && (!matches!(
+                self.reference.kind,
+                K::TurnSpawned | K::SessionLearned | K::TurnEnded
+            ) || !matches!(self.reference.owner, O::Turn { .. })
+                || attempt.issue_lsn == Lsn::ZERO
+                || attempt.issue_lsn >= self.reference.lsn
+                || [
+                    attempt.previous_spawn_lsn,
+                    attempt.previous_end_lsn,
+                    attempt.confirmed_session_lsn,
+                ]
+                .into_iter()
+                .flatten()
+                .any(|at| at == Lsn::ZERO || at >= self.reference.lsn))
+        {
+            return Err(RecoveryHistoryError::Identity);
+        }
         if let Some(previous) = self.context.previous_control
             && (self.reference.owner != O::Agent(previous.agent)
                 || !matches!(
@@ -333,6 +419,20 @@ impl RecoveryWitness {
                 || previous
                     .lsn
                     .is_some_and(|at| at == Lsn::ZERO || at >= self.reference.lsn))
+        {
+            return Err(RecoveryHistoryError::Identity);
+        }
+        if let Some(target) = self.context.qualified_completion
+            && (self.reference.kind != K::PredicateResult
+                || !matches!(self.reference.owner, O::Predicate { goal, .. } if goal == target.goal)
+                || !matches!(
+                    self.evidence,
+                    E::Predicate {
+                        provenance: Provenance::Observed,
+                        reported_pass: true,
+                        ..
+                    }
+                ))
         {
             return Err(RecoveryHistoryError::Identity);
         }
@@ -1015,6 +1115,9 @@ fn source_evidence(
 
 fn end_class(value: Option<&TurnOutcome>) -> RecoveryEndClass {
     match value {
+        Some(TurnOutcome::Completed) => RecoveryEndClass::Completed,
+        Some(TurnOutcome::MaxTurns) => RecoveryEndClass::MaxTurns,
+        Some(TurnOutcome::BudgetExhausted) => RecoveryEndClass::BudgetExhausted,
         Some(TurnOutcome::Failed { .. }) => RecoveryEndClass::Failed,
         Some(TurnOutcome::NoResult) => RecoveryEndClass::NoResult,
         Some(TurnOutcome::Vanished) => RecoveryEndClass::Vanished,

@@ -5,7 +5,7 @@ use dudes_types::{AgentId, GoalId, Lsn, Mode, Provider, SessionId, TurnId, Workt
 use super::history::{
     RecoveryEvidence, RecoveryHistory, RecoveryIssueCarrier, RecoveryWitnessOwner,
 };
-use super::{RecoveryFacts, RecoveryStateError};
+use super::{RecoveryAttempt, RecoveryFacts, RecoveryStateError};
 use crate::diff_stamp::TicketBinding;
 use crate::recovery::{RecoveryBinding, RecoveryIssue};
 use crate::{Predicate, RecordKind, WorktreeRemoval};
@@ -91,6 +91,8 @@ pub struct RecoveryCurrent<'a> {
     pub issue: RecoveryIssue,
     /// Recorded source mode.
     pub mode: Mode,
+    /// Actual latest attempt positions from the existing turn fold.
+    pub attempt: RecoveryAttempt,
     /// Current active card association and original round.
     pub ticket: Option<TicketBinding>,
     /// Current original lease row, if any.
@@ -106,6 +108,9 @@ impl RecoveryCurrent<'_> {
             self.goal.installed_lsn,
             self.issue.lsn,
         ];
+        sources.extend(self.attempt.spawn_lsn);
+        sources.extend(self.attempt.end_lsn);
+        sources.extend(self.attempt.confirmation_lsn);
         sources.extend(self.agent.control_lsn);
         sources.extend(self.agent.session_lsn);
         sources.extend(self.goal.result_lsn);
@@ -167,6 +172,7 @@ impl RecoveryCurrent<'_> {
             through: self.through,
             binding: requested.clone(),
             source_issue: self.issue.clone(),
+            attempt: self.attempt,
             control_lsn: current.control_lsn,
             confirmed_session: current.session.clone(),
         })

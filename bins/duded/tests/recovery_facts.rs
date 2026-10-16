@@ -887,3 +887,131 @@ fn clearing_an_owed_goal_keeps_the_original_issue_task_answers_and_hop() {
     );
     prefix.assert_replay(&binding);
 }
+
+#[test]
+fn latest_attempt_sources_and_before_attempt_context_agree_across_reissue() {
+    let (mut prefix, binding) = ordinary(command());
+    let mut spawned = samples::record(RecordKind::TurnSpawned);
+    if let Record::TurnSpawned {
+        agent: owner,
+        turn: actual,
+        session,
+        reissued,
+        ..
+    } = &mut spawned
+    {
+        *owner = agent();
+        *actual = turn();
+        *session = None;
+        *reissued = false;
+    }
+    let first = prefix.append(spawned.clone());
+    let session = dudes_types::SessionId::new("confirmed-attempt");
+    let confirmed = prefix.append(Record::SessionLearned {
+        agent: agent(),
+        turn: turn(),
+        session,
+    });
+    let mut ended = samples::record(RecordKind::TurnEnded);
+    if let Record::TurnEnded {
+        agent: owner,
+        turn: actual,
+        mode,
+        provenance,
+        outcome,
+        ..
+    } = &mut ended
+    {
+        *owner = agent();
+        *actual = turn();
+        *mode = Mode::Managed;
+        *provenance = Provenance::Observed;
+        *outcome = Some(dudes_proto::TurnOutcome::NoResult);
+    }
+    let end = prefix.append(ended);
+    let first_facts = prefix.facts(&binding).unwrap();
+    assert_eq!(
+        first_facts.attempt,
+        dudes_proto::recovery_state::RecoveryAttempt {
+            spawn_lsn: Some(first),
+            end_lsn: Some(end),
+            confirmation_lsn: Some(confirmed)
+        }
+    );
+    if let Record::TurnSpawned { reissued, .. } = &mut spawned {
+        *reissued = true;
+    }
+    let second = prefix.append(spawned);
+    let facts = prefix.facts(&binding).unwrap();
+    assert_eq!(
+        facts.attempt,
+        dudes_proto::recovery_state::RecoveryAttempt {
+            spawn_lsn: Some(second),
+            end_lsn: Some(end),
+            confirmation_lsn: None
+        }
+    );
+    let before = prefix.persistent.export().unwrap();
+    let source = prefix
+        .writer
+        .checked_recovery(&mut prefix.persistent)
+        .unwrap()
+        .witness(second)
+        .unwrap();
+    assert_eq!(&source, prefix.world.recovery_witness(second).unwrap());
+    let context = source.context().attempt.unwrap();
+    assert_eq!(context.issue_lsn, binding.issue_lsn);
+    assert_eq!(context.previous_spawn_lsn, Some(first));
+    assert_eq!(context.previous_end_lsn, Some(end));
+    assert_eq!(context.confirmed_session_lsn, Some(confirmed));
+    assert_eq!(prefix.persistent.export().unwrap(), before);
+    prefix.assert_replay(&binding);
+}
+
+#[test]
+fn unregistered_typed_preparation_refuses_before_any_ordinary_fold_or_append() {
+    use dudes_proto::recovery::{
+        RecoveryBoundary, RecoveryOrigin, RecoveryReason, RecoveryRequired,
+    };
+    use dudes_proto::recovery_state::transition::RecoveryTransition;
+    let (mut prefix, binding) = ordinary(command());
+    let mut required = RecoveryRequired {
+        binding: binding.clone(),
+        origin: RecoveryOrigin::ThisBarrier,
+        reason: RecoveryReason::MissingSpawn,
+        boundary: RecoveryBoundary::MissingSpawn,
+        predecessor: None,
+    };
+    let before = prefix.persistent.export().unwrap();
+    let bytes = journal_bytes(&prefix.dir.path().join("journal"));
+    let gateway = prefix
+        .writer
+        .checked_recovery(&mut prefix.persistent)
+        .unwrap();
+    assert!(
+        gateway
+            .prepare_transition(RecoveryTransition::Required(&required))
+            .is_ok()
+    );
+    assert_eq!(
+        prefix
+            .world
+            .prepare_recovery(RecoveryTransition::Required(&required)),
+        Ok(())
+    );
+    required.reason = RecoveryReason::Vanished;
+    assert!(matches!(
+        gateway.prepare_transition(RecoveryTransition::Required(&required)),
+        Err(Error::RecoveryState(RecoveryStateError::Binding))
+    ));
+    assert_eq!(
+        prefix
+            .world
+            .prepare_recovery(RecoveryTransition::Required(&required)),
+        Err(RecoveryStateError::Binding)
+    );
+    assert_eq!(prefix.persistent.export().unwrap(), before);
+    assert_eq!(journal_bytes(&prefix.dir.path().join("journal")), bytes);
+    assert!(prefix.world.recovery_facts(&binding).is_ok());
+    prefix.assert_replay(&binding);
+}

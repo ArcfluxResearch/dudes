@@ -60,6 +60,8 @@ use crate::writer::Fsync;
 /// is added**, or **when what a fold computes changes**; the store is then rebuilt from the
 /// journal.
 ///
+/// `50`: recovery attempt positions and immutable before-attempt context require replay.
+///
 /// `49`: recovery source context and exact binding positions require replay of older caches.
 ///
 /// `48`: recovery source witnesses have a separate keyed table. Older caches must replay
@@ -245,7 +247,7 @@ use crate::writer::Fsync;
 /// `2` was the previous bump: the rows became at-derived and `turns.status` gained
 /// a *reachable* `Killed`, so a v1 row saying `Ended` for a killed turn was wrong. Half-right is
 /// worse than rebuilt.
-pub const PROJECTION_VERSION: u64 = 49;
+pub const PROJECTION_VERSION: u64 = 50;
 /// Entries applied per write transaction during replay.
 pub const BATCH: usize = 1000;
 
@@ -1118,7 +1120,7 @@ fn fold_batch<'a>(
             if lsn <= last {
                 return Err(Error::NonMonotone { last, got: lsn });
             }
-            let mut recovery_context = recovery::capture_before(&agents, entry)?;
+            let mut recovery_context = recovery::capture_before(&agents, &turns, &goals, entry)?;
             // Owner, then goal, then turn, then money. Only the last step is *ordered*, and
             // it is ordered by the type system rather than by this comment: `budget::apply`
             // takes the `EndedTurn` that `turns::apply` returns, because `TurnEnded` names
@@ -2188,7 +2190,7 @@ pub(crate) mod tests {
     /// cannot tell whether the constant was bumped when the rows changed meaning. This can.
     #[test]
     fn a_version_17_store_rebuilds_the_activity_window() {
-        assert_eq!(PROJECTION_VERSION, 49);
+        assert_eq!(PROJECTION_VERSION, 50);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let records = [
@@ -2222,7 +2224,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_24_store_rebuilds_the_current_live_kind() {
-        assert_eq!(PROJECTION_VERSION, 49);
+        assert_eq!(PROJECTION_VERSION, 50);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let entries = [
@@ -2260,7 +2262,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_25_store_rebuilds_retired_appearance() {
-        assert_eq!(PROJECTION_VERSION, 49);
+        assert_eq!(PROJECTION_VERSION, 50);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let mut hire = hired();
@@ -2372,7 +2374,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_8_store_is_rebuilt_for_per_turn_confirmation() {
         const LATCHED: u64 = 8;
-        assert_eq!(PROJECTION_VERSION, 49);
+        assert_eq!(PROJECTION_VERSION, 50);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2409,7 +2411,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_7_store_is_rebuilt_for_launch_refused_session_clear() {
         const LATCHED: u64 = 7;
-        assert_eq!(PROJECTION_VERSION, 49);
+        assert_eq!(PROJECTION_VERSION, 50);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2479,7 +2481,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 4;
         assert_eq!(
-            PROJECTION_VERSION, 49,
+            PROJECTION_VERSION, 50,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -3343,7 +3345,7 @@ pub(crate) mod tests {
     fn unread_mail_is_rebuilt_from_latest_mail_state() {
         const LATCHED: u64 = 10;
         assert_eq!(
-            PROJECTION_VERSION, 49,
+            PROJECTION_VERSION, 50,
             "this new table owns the 10 -> 11 bump; re-derive the latched store if the current \
              version moves"
         );
@@ -3810,7 +3812,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_11_budget_store_is_rebuilt_for_unknown_ends() {
-        assert_eq!(PROJECTION_VERSION, 49);
+        assert_eq!(PROJECTION_VERSION, 50);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let day = day_of(MIDNIGHT_MS);
@@ -3962,7 +3964,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 5;
         assert_eq!(
-            PROJECTION_VERSION, 49,
+            PROJECTION_VERSION, 50,
             "if this moves, re-derive LATCHED above it — a merge past another bump must move \
              both, or this test passes with this repair's own bump dropped"
         );
@@ -5053,7 +5055,7 @@ pub(crate) mod tests {
     fn a_version_13_store_is_rebuilt_for_question_identity() {
         const LATCHED: u64 = 13;
         assert_eq!(
-            PROJECTION_VERSION, 49,
+            PROJECTION_VERSION, 50,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5155,7 +5157,7 @@ pub(crate) mod tests {
     fn a_version_14_store_is_rebuilt_for_control_identity() {
         const LATCHED: u64 = 14;
         assert_eq!(
-            PROJECTION_VERSION, 49,
+            PROJECTION_VERSION, 50,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5262,7 +5264,7 @@ pub(crate) mod tests {
     fn a_version_15_store_counts_the_reset_unknown_end() {
         const LATCHED: u64 = 15;
         assert_eq!(
-            PROJECTION_VERSION, 49,
+            PROJECTION_VERSION, 50,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -5535,7 +5537,7 @@ pub(crate) mod tests {
 
         #[test]
         fn a_version_38_store_rebuilds_the_first_completion_facts() {
-            assert_eq!(PROJECTION_VERSION, 49);
+            assert_eq!(PROJECTION_VERSION, 50);
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("state.redb");
             let history = [

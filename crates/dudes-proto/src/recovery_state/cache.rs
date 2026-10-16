@@ -110,6 +110,16 @@ impl RecoveryCache {
         Ok(loader.finish())
     }
 
+    /// Load only the typed transition's claim dependencies, without validating its evidence.
+    /// The caller still needs a certified complete store and strict historical interpretation.
+    pub fn load_transition<R: RecoveryCacheReader>(
+        reader: &R,
+        through: Lsn,
+        transition: super::transition::RecoveryTransition<'_>,
+    ) -> Result<Self, R::Error> {
+        Self::load(reader, through, transition.event(), &[])
+    }
+
     /// Load an actual source position before retaining its immutable witness.
     pub fn load_history<R: RecoveryCacheReader>(
         reader: &R,
@@ -834,14 +844,25 @@ fn validate_claim(
         }
         RecoveryClaimState::Invalidated {
             invalidation_lsn,
-            evidence_lsn,
+            evidence,
         } => {
-            if !matches!(authorization.plan, RecoveryPlan::New { .. })
-                || !after(*evidence_lsn)
-                || *invalidation_lsn <= *evidence_lsn
-                || *invalidation_lsn > through
+            if !matches!(authorization.plan, RecoveryPlan::New { .. }) || !after(*invalidation_lsn)
             {
                 return Err(RecoveryCacheError::Identity);
+            }
+            match evidence {
+                crate::recovery::RecoveryInvalidationEvidence::RecordedChange {
+                    lsn: at, ..
+                } if !after(*at) || *invalidation_lsn <= *at => {
+                    return Err(RecoveryCacheError::Position);
+                }
+                crate::recovery::RecoveryInvalidationEvidence::BrowserAuthorityUnavailable {
+                    session_digest,
+                } if !matches!(authorization.attribution, crate::recovery::RecoveryAttribution::BrowserSession { session_digest: original } if original == *session_digest) =>
+                {
+                    return Err(RecoveryCacheError::Identity);
+                }
+                _ => {}
             }
         }
         RecoveryClaimState::Superseded {

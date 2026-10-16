@@ -283,6 +283,10 @@ pub struct TurnRow {
     pub boot: Option<String>,
     /// Latest physical spawn receipt position, absent before a child was recorded.
     pub spawn_lsn: Option<Lsn>,
+    /// Latest terminal source, including an end before a subsequent physical spawn.
+    pub end_lsn: Option<Lsn>,
+    /// Accepted confirmation source for the current physical attempt.
+    pub confirmation_lsn: Option<Lsn>,
     /// Immutable grant paired with the latest physical spawn receipt.
     pub mcp_grant: Option<Lsn>,
 }
@@ -437,6 +441,7 @@ fn qualifying_unconfirmed_resume_end(outcome: Option<&TurnOutcome>) -> bool {
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct World {
+    recovery_state: dudes_proto::recovery_state::RecoveryState,
     recovery_history: dudes_proto::recovery_state::history::RecoveryHistory,
     recovery_history_error: Option<dudes_proto::recovery_state::history::RecoveryHistoryError>,
     recovery_card_changes: BTreeMap<CardId, Lsn>,
@@ -1412,6 +1417,8 @@ impl World {
                         start_time: None,
                         boot: None,
                         spawn_lsn: None,
+                        end_lsn: None,
+                        confirmation_lsn: None,
                         mcp_grant: None,
                     },
                 );
@@ -1436,6 +1443,8 @@ impl World {
                             start_time: None,
                             boot: None,
                             spawn_lsn: None,
+                            end_lsn: None,
+                            confirmation_lsn: None,
                             mcp_grant: None,
                         },
                     );
@@ -1508,6 +1517,7 @@ impl World {
                     // only after this carrier is durable.
                     if *reissued {
                         row.session_confirmed = false;
+                        row.confirmation_lsn = None;
                     }
                 }
                 if let Some(grant) = mcp_grant.and_then(|grant| self.mcp_grants.get_mut(&grant)) {
@@ -1553,6 +1563,7 @@ impl World {
                 if let Some(row) = self.turns.get_mut(turn) {
                     row.session = Some(session.clone());
                     row.session_confirmed = true;
+                    row.confirmation_lsn = Some(lsn);
                 }
                 if let Some(row) = self.agents.get_mut(agent) {
                     row.session = Some(session.clone());
@@ -1662,6 +1673,7 @@ impl World {
                             })
                     });
                 if let Some(row) = self.turns.get_mut(turn) {
+                    row.end_lsn = Some(lsn);
                     row.status = if matches!(outcome, Some(dudes_proto::TurnOutcome::Killed { .. }))
                     {
                         TurnStatus::Killed
@@ -2360,6 +2372,8 @@ impl World {
                 start_time: None,
                 boot: None,
                 spawn_lsn: None,
+                end_lsn: None,
+                confirmation_lsn: None,
                 mcp_grant: None,
             },
         );

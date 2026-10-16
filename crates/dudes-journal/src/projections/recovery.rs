@@ -10,9 +10,13 @@ use dudes_proto::recovery_state::admission::{
 };
 use dudes_proto::recovery_state::cache::{RecoveryCache, RecoveryCacheReader, RecoveryCacheRow};
 use dudes_proto::recovery_state::history::{
-    RecoveryPriorControl, RecoveryWitness, RecoveryWitnessContext, RecoveryWitnessOwner,
+    RecoveryAttemptContext, RecoveryPriorControl, RecoveryWitness, RecoveryWitnessContext,
+    RecoveryWitnessOwner,
 };
-use dudes_proto::recovery_state::{RecoveryClaimState, RecoveryFacts, RecoveryStateError};
+use dudes_proto::recovery_state::transition::RecoveryTransition;
+use dudes_proto::recovery_state::{
+    RecoveryAttempt, RecoveryAttemptFacts, RecoveryClaimState, RecoveryFacts, RecoveryStateError,
+};
 use dudes_proto::{Entry, Record};
 use dudes_types::{GoalStatus, Lsn};
 use redb::{ReadableDatabase, ReadableTable};
@@ -68,92 +72,40 @@ impl<'a> CheckedRecoveryStore<'a> {
         check(self.writer, self.projections)?;
         let txn = self.projections.db.begin_read()?;
         check_metadata(self.projections, &txn)?;
-        let through = self.projections.last_applied;
-        let agent = super::get_row::<super::AgentRow>(
-            &txn.open_table(super::AGENTS)?,
-            &binding.work.agent.to_bytes(),
-        )?
-        .ok_or(RecoveryStateError::Binding)?;
-        let goal = super::get_row::<super::GoalRow>(
-            &txn.open_table(super::GOALS)?,
-            &binding.work.goal.to_bytes(),
-        )?
-        .ok_or(RecoveryStateError::Binding)?;
-        let turn = super::get_row::<super::TurnRow>(
-            &txn.open_table(super::TURNS)?,
-            &binding.work.turn.to_bytes(),
-        )?
-        .ok_or(RecoveryStateError::Binding)?;
-        let table = txn.open_table(RECOVERY)?;
-        let initial = RecoveryCache::load_sources(
-            &CacheReader(&table),
-            through,
-            &[turn.lsn_issued, goal.installed_lsn],
-        )?;
-        let mut issue = initial
-            .history()
-            .at(turn.lsn_issued)
-            .map_err(|_| RecoveryStateError::Binding)?
-            .issue()
-            .ok_or(RecoveryStateError::Binding)?;
-        issue.issued.work.agent = turn.agent;
-        issue.issued.work.goal = turn.goal.ok_or(RecoveryStateError::Binding)?;
-        issue
-            .issued
-            .model_selection
-            .clone_from(&turn.model_selection);
-        let ticket = current_ticket(&txn, &goal, initial.history())?;
-        let lease = agent
-            .worktree
-            .map(|id| {
-                let row = super::get_row::<super::WorktreeRow>(
-                    &txn.open_table(super::WORKTREES)?,
-                    &id.to_bytes(),
-                )?
-                .ok_or(RecoveryStateError::Binding)?;
-                Ok::<_, Error>(RecoveryLeaseCurrent {
-                    worktree: id,
-                    agent: row.agent,
-                    removed: row.removed,
-                })
-            })
-            .transpose()?;
-        let current = RecoveryCurrent {
-            through,
-            agent: current_agent(&agent),
-            goal: RecoveryGoalCurrent {
-                goal: goal.id,
-                agent: goal.agent,
-                installed_lsn: goal.installed_lsn,
-                last_turn: goal.last_turn,
-                cleared: goal.status == GoalStatus::Abandoned,
-                done: goal.status == GoalStatus::Achieved,
-                predicate: &goal.predicate,
-                result_lsn: goal.last_result.map(|result| result.lsn),
-                card_change_lsn: match goal.predicate {
-                    dudes_proto::Predicate::BoardState { card, .. } => {
-                        let row = super::get_row::<super::board::BoardRow>(
-                            &txn.open_table(super::BOARD)?,
-                            &card.to_bytes(),
-                        )?
-                        .ok_or(RecoveryStateError::Binding)?;
-                        Some(row.recovery_change_lsn)
-                    }
-                    _ => None,
-                },
-                retired_lsn: txn
-                    .open_table(META)?
-                    .get(LAST_RETIREMENT)?
-                    .map(|value| Lsn(value.value())),
+        facts_at(
+            &FactTables {
+                agents: &txn.open_table(super::AGENTS)?,
+                goals: &txn.open_table(super::GOALS)?,
+                turns: &txn.open_table(super::TURNS)?,
+                board: &txn.open_table(super::BOARD)?,
+                leases: &txn.open_table(super::WORKTREES)?,
+                recovery: &txn.open_table(RECOVERY)?,
+                meta: &txn.open_table(META)?,
             },
-            issue,
-            mode: turn.mode,
-            ticket,
-            lease,
-        };
-        let sources =
-            RecoveryCache::load_sources(&CacheReader(&table), through, &current.sources())?;
-        Ok(current.bind(binding, sources.history())?)
+            self.projections.last_applied,
+            binding,
+        )
+    }
+
+    /// Refuse an unregistered typed recovery transition without changing rows or the journal.
+    /// This preparation is not authenticated command admission and cannot release work.
+    pub fn prepare_transition(&self, transition: RecoveryTransition<'_>) -> Result<()> {
+        check(self.writer, self.projections)?;
+        let txn = self.projections.db.begin_read()?;
+        check_metadata(self.projections, &txn)?;
+        prepare_at(
+            &FactTables {
+                agents: &txn.open_table(super::AGENTS)?,
+                goals: &txn.open_table(super::GOALS)?,
+                turns: &txn.open_table(super::TURNS)?,
+                board: &txn.open_table(super::BOARD)?,
+                leases: &txn.open_table(super::WORKTREES)?,
+                recovery: &txn.open_table(RECOVERY)?,
+                meta: &txn.open_table(META)?,
+            },
+            self.projections.last_applied,
+            transition,
+        )
     }
 
     /// Read one actual source at the same checked cut, without interpreting permission.
@@ -313,6 +265,193 @@ impl<'a> CheckedRecoveryStore<'a> {
     }
 }
 
+/// Tables borrowed from the same transaction and its actual before-record cut.
+pub(super) struct FactTables<'a, Rows, Sources, Meta> {
+    pub agents: &'a Rows,
+    pub goals: &'a Rows,
+    pub turns: &'a Rows,
+    pub board: &'a Rows,
+    pub leases: &'a Rows,
+    pub recovery: &'a Sources,
+    pub meta: &'a Meta,
+}
+
+pub(super) fn facts_at<Rows, Sources, Meta>(
+    tables: &FactTables<'_, Rows, Sources, Meta>,
+    through: Lsn,
+    binding: &RecoveryBinding,
+) -> Result<RecoveryFacts>
+where
+    Rows: ReadableTable<&'static [u8; 16], &'static [u8]>,
+    Sources: ReadableTable<&'static [u8], &'static [u8]>,
+    Meta: ReadableTable<&'static str, u64>,
+{
+    let agent = super::get_row::<super::AgentRow>(tables.agents, &binding.work.agent.to_bytes())?
+        .ok_or(RecoveryStateError::Binding)?;
+    let goal = super::get_row::<super::GoalRow>(tables.goals, &binding.work.goal.to_bytes())?
+        .ok_or(RecoveryStateError::Binding)?;
+    let turn = super::get_row::<super::TurnRow>(tables.turns, &binding.work.turn.to_bytes())?
+        .ok_or(RecoveryStateError::Binding)?;
+    let table = tables.recovery;
+    let initial = RecoveryCache::load_sources(
+        &CacheReader(table),
+        through,
+        &[turn.lsn_issued, goal.installed_lsn],
+    )?;
+    let mut issue = initial
+        .history()
+        .at(turn.lsn_issued)
+        .map_err(|_| RecoveryStateError::Binding)?
+        .issue()
+        .ok_or(RecoveryStateError::Binding)?;
+    issue.issued.work.agent = turn.agent;
+    issue.issued.work.goal = turn.goal.ok_or(RecoveryStateError::Binding)?;
+    issue
+        .issued
+        .model_selection
+        .clone_from(&turn.model_selection);
+    let ticket = current_ticket(tables.board, &goal, initial.history())?;
+    let lease = agent
+        .worktree
+        .map(|id| {
+            let row = super::get_row::<super::WorktreeRow>(tables.leases, &id.to_bytes())?
+                .ok_or(RecoveryStateError::Binding)?;
+            Ok::<_, Error>(RecoveryLeaseCurrent {
+                worktree: id,
+                agent: row.agent,
+                removed: row.removed,
+            })
+        })
+        .transpose()?;
+    let current = RecoveryCurrent {
+        through,
+        agent: current_agent(&agent),
+        goal: RecoveryGoalCurrent {
+            goal: goal.id,
+            agent: goal.agent,
+            installed_lsn: goal.installed_lsn,
+            last_turn: goal.last_turn,
+            cleared: goal.status == GoalStatus::Abandoned,
+            done: goal.status == GoalStatus::Achieved,
+            predicate: &goal.predicate,
+            result_lsn: goal.last_result.map(|result| result.lsn),
+            card_change_lsn: match goal.predicate {
+                dudes_proto::Predicate::BoardState { card, .. } => {
+                    let row =
+                        super::get_row::<super::board::BoardRow>(tables.board, &card.to_bytes())?
+                            .ok_or(RecoveryStateError::Binding)?;
+                    Some(row.recovery_change_lsn)
+                }
+                _ => None,
+            },
+            retired_lsn: tables
+                .meta
+                .get(LAST_RETIREMENT)?
+                .map(|value| Lsn(value.value())),
+        },
+        issue,
+        mode: turn.mode,
+        attempt: RecoveryAttempt {
+            spawn_lsn: turn.spawn_lsn,
+            end_lsn: turn.end_lsn,
+            confirmation_lsn: turn.confirmation_lsn,
+        },
+        ticket,
+        lease,
+    };
+    let sources = RecoveryCache::load_sources(&CacheReader(table), through, &current.sources())?;
+    Ok(current.bind(binding, sources.history())?)
+}
+
+pub(super) fn prepare_at<Rows, Sources, Meta>(
+    tables: &FactTables<'_, Rows, Sources, Meta>,
+    through: Lsn,
+    transition: RecoveryTransition<'_>,
+) -> Result<()>
+where
+    Rows: ReadableTable<&'static [u8; 16], &'static [u8]>,
+    Sources: ReadableTable<&'static [u8], &'static [u8]>,
+    Meta: ReadableTable<&'static str, u64>,
+{
+    let scoped =
+        RecoveryCache::load_transition(&CacheReader(tables.recovery), through, transition)?;
+    if let RecoveryTransition::Invalidated(record) = transition {
+        let positions = match record.evidence {
+            dudes_proto::recovery::RecoveryInvalidationEvidence::RecordedChange { lsn, .. } => {
+                vec![lsn]
+            }
+            dudes_proto::recovery::RecoveryInvalidationEvidence::BrowserAuthorityUnavailable {
+                ..
+            } => Vec::new(),
+        };
+        let sources =
+            RecoveryCache::load_sources(&CacheReader(tables.recovery), through, &positions)?;
+        return Ok(scoped
+            .state()
+            .validate_invalidation(record, through, sources.history())?);
+    }
+    if let RecoveryTransition::Consumed {
+        claim,
+        issue,
+        evidence,
+    } = transition
+    {
+        let facts = attempt_at(tables, through, issue)?;
+        return Ok(scoped
+            .state()
+            .validate_consumed(claim, issue, evidence, &facts)?);
+    }
+    let binding = transition.binding(scoped.state())?;
+    let facts = facts_at(tables, through, &binding)?;
+    let sources = RecoveryCache::load_sources(
+        &CacheReader(tables.recovery),
+        through,
+        &transition.sources(&facts),
+    )?;
+    Ok(scoped
+        .state()
+        .validate_transition(transition, &facts, sources.history())?)
+}
+
+fn attempt_at<Rows, Sources, Meta>(
+    tables: &FactTables<'_, Rows, Sources, Meta>,
+    through: Lsn,
+    issue: &dudes_proto::recovery::RecoveryIssue,
+) -> Result<RecoveryAttemptFacts>
+where
+    Rows: ReadableTable<&'static [u8; 16], &'static [u8]>,
+    Sources: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let row = super::get_row::<super::TurnRow>(tables.turns, &issue.issued.work.turn.to_bytes())?
+        .ok_or(RecoveryStateError::Binding)?;
+    let sources =
+        RecoveryCache::load_sources(&CacheReader(tables.recovery), through, &[row.lsn_issued])?;
+    let recorded = sources
+        .history()
+        .at(row.lsn_issued)
+        .map_err(|_| RecoveryStateError::Binding)?
+        .issue()
+        .ok_or(RecoveryStateError::Binding)?;
+    if row.mode != dudes_types::Mode::Managed
+        || row.turn != issue.issued.work.turn
+        || row.agent != issue.issued.work.agent
+        || row.goal != Some(issue.issued.work.goal)
+        || row.model_selection != issue.issued.model_selection
+        || recorded != *issue
+    {
+        return Err(RecoveryStateError::Binding.into());
+    }
+    Ok(RecoveryAttemptFacts {
+        through,
+        issue: recorded,
+        attempt: RecoveryAttempt {
+            spawn_lsn: row.spawn_lsn,
+            end_lsn: row.end_lsn,
+            confirmation_lsn: row.confirmation_lsn,
+        },
+    })
+}
+
 fn current_agent(agent: &super::AgentRow) -> RecoveryAgentCurrent {
     RecoveryAgentCurrent {
         agent: agent.id,
@@ -330,7 +469,7 @@ fn current_agent(agent: &super::AgentRow) -> RecoveryAgentCurrent {
 }
 
 fn current_ticket(
-    txn: &redb::ReadTransaction,
+    board: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
     goal: &super::GoalRow,
     history: &dudes_proto::recovery_state::history::RecoveryHistory,
 ) -> Result<Option<dudes_proto::diff_stamp::TicketBinding>> {
@@ -340,9 +479,8 @@ fn current_ticket(
     let RecoveryWitnessOwner::Ticket { card, .. } = source.reference().owner else {
         return Ok(None);
     };
-    let row =
-        super::get_row::<super::board::BoardRow>(&txn.open_table(super::BOARD)?, &card.to_bytes())?
-            .ok_or(RecoveryStateError::Binding)?;
+    let row = super::get_row::<super::board::BoardRow>(board, &card.to_bytes())?
+        .ok_or(RecoveryStateError::Binding)?;
     let ticket = row.ticket.ok_or(RecoveryStateError::Binding)?;
     if ticket.goal != Some(goal.id) || row.view.claimed_by != Some(goal.agent) {
         return Err(RecoveryStateError::Binding.into());
@@ -495,6 +633,8 @@ pub(super) fn observe(
 
 pub(super) fn capture_before(
     agents: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
+    turns: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
+    goals: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
     entry: &Entry,
 ) -> Result<RecoveryWitnessContext> {
     let agent = match &entry.record {
@@ -517,7 +657,40 @@ pub(super) fn capture_before(
         })
         .transpose()?
         .flatten();
+    let attempt = match &entry.record {
+        Record::TurnSpawned { agent, turn, .. }
+        | Record::SessionLearned { agent, turn, .. }
+        | Record::TurnEnded { agent, turn, .. } => {
+            let row = super::get_row::<super::TurnRow>(turns, &turn.to_bytes())?;
+            let owner = super::get_row::<super::AgentRow>(agents, &agent.to_bytes())?;
+            row.filter(|row| row.agent == *agent)
+                .map(|row| RecoveryAttemptContext {
+                    issue_lsn: row.lsn_issued,
+                    previous_spawn_lsn: row.spawn_lsn,
+                    previous_end_lsn: row.end_lsn,
+                    confirmed_session_lsn: owner.and_then(|owner| owner.session_lsn),
+                })
+        }
+        _ => None,
+    };
+    let qualified_completion = match &entry.record {
+        Record::PredicateResult { goal, .. } => {
+            super::get_row::<super::GoalRow>(goals, &goal.to_bytes())?
+                .filter(|row| !matches!(row.status, GoalStatus::Abandoned | GoalStatus::Achieved))
+                .and_then(|row| {
+                    dudes_proto::recovery_state::history::qualified_completion(
+                        row.agent,
+                        row.id,
+                        &row.predicate,
+                        &entry.record,
+                    )
+                })
+        }
+        _ => None,
+    };
     Ok(RecoveryWitnessContext {
+        qualified_completion,
+        attempt,
         previous_control,
         cleared_goal: None,
     })

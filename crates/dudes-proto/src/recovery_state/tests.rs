@@ -15,6 +15,7 @@ fn facts() -> RecoveryFacts {
     let work = work();
     let selection = Some(ModelSelection::named("recorded-model"));
     RecoveryFacts {
+        attempt: super::RecoveryAttempt::default(),
         through: Lsn(100),
         binding: RecoveryBinding {
             work,
@@ -54,6 +55,21 @@ fn required(facts: &RecoveryFacts, reason: RecoveryReason) -> RecoveryRequired {
             RecoveryOrigin::ThisBarrier
         },
         reason,
+        boundary: match reason {
+            RecoveryReason::HeldOrPausedFailure => {
+                crate::recovery::RecoveryBoundary::Paused { end_lsn: Lsn(80) }
+            }
+            RecoveryReason::Vanished => crate::recovery::RecoveryBoundary::Vanished {
+                spawn_lsn: Lsn(60),
+                end_lsn: Lsn(80),
+            },
+            RecoveryReason::UnconfirmedContext => crate::recovery::RecoveryBoundary::Unconfirmed {
+                spawn_lsn: Lsn(60),
+                end_lsn: Lsn(80),
+                requested_confirmation_lsn: Lsn(50),
+            },
+            RecoveryReason::MissingSpawn => crate::recovery::RecoveryBoundary::MissingSpawn,
+        },
         predecessor: None,
     }
 }
@@ -64,6 +80,7 @@ fn new_authorization(episode: &RecoveryEpisode, facts: &RecoveryFacts) -> Recove
         binding: episode.binding.clone(),
         request_id: Hex32::new([7; 32]),
         request_digest: Hex32::new([8; 32]),
+        attribution: crate::recovery::RecoveryAttribution::LocalOperator { pid: 42, uid: None },
         expected_control: facts.control_lsn,
         resulting_control: facts.control_lsn,
         resume_lsn: None,
@@ -80,6 +97,7 @@ fn new_authorization(episode: &RecoveryEpisode, facts: &RecoveryFacts) -> Recove
                     recap: RecoveryRecap {
                         text: "Observed failure; earlier task effects are unknown.".into(),
                         sources: vec![Lsn(20), Lsn(80)],
+                        delivered_answers: Vec::new(),
                     },
                 },
             }
@@ -594,7 +612,10 @@ fn invalidation_keeps_the_old_planned_turn_unusable_and_never_rearms_its_episode
             Lsn(400),
             RecoveryEvent::Invalidated {
                 claim,
-                evidence_lsn: Lsn(350),
+                evidence: crate::recovery::RecoveryInvalidationEvidence::RecordedChange {
+                    reason: crate::recovery::RecoveryInvalidationReason::ControlChanged,
+                    lsn: Lsn(350),
+                },
             },
             &facts,
         )
@@ -646,7 +667,10 @@ fn invalidation_keeps_the_old_planned_turn_unusable_and_never_rearms_its_episode
             .state,
         &RecoveryClaimState::Invalidated {
             invalidation_lsn: Lsn(400),
-            evidence_lsn: Lsn(350)
+            evidence: crate::recovery::RecoveryInvalidationEvidence::RecordedChange {
+                reason: crate::recovery::RecoveryInvalidationReason::ControlChanged,
+                lsn: Lsn(350)
+            }
         }
     );
 }

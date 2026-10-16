@@ -813,3 +813,242 @@ fn changed_card_invalidation_position_fails_canonical_equality() {
         .unwrap();
     assert_eq!(reason(&error), RecoveryStoreError::CanonicalMismatch);
 }
+
+fn goal_entries() -> (Entry, Entry, RecoveryBinding) {
+    let hired = entry(RecordKind::AgentHired);
+    let Record::AgentHired { id, provider, .. } = hired.record else {
+        unreachable!()
+    };
+    let mut installed = entry(RecordKind::GoalSet);
+    let Record::GoalSet { agent, goal, .. } = &mut installed.record else {
+        unreachable!()
+    };
+    *agent = id;
+    let work = dudes_proto::recovery::RecoveryWork {
+        agent: id,
+        goal: goal.id,
+        turn: dudes_types::TurnId::from_parts(71, 3),
+    };
+    let issued = Entry {
+        at: Timestamp::UNIX_EPOCH,
+        record: Record::TurnIssued {
+            agent: id,
+            goal: work.goal,
+            turn: work.turn,
+            mode: dudes_types::Mode::Managed,
+            lsn_of_decision: Lsn::ZERO,
+            task: "immutable issued goal task".into(),
+            session: None,
+            model_selection: Some(dudes_types::ModelSelection::provider_default()),
+            answers: Vec::new(),
+        },
+    };
+    (
+        installed,
+        issued,
+        RecoveryBinding {
+            work,
+            issue_lsn: Lsn::ZERO,
+            hired_lsn: Lsn::ZERO,
+            ticket: None,
+            worktree: None,
+            provider,
+            model_selection: Some(dudes_types::ModelSelection::provider_default()),
+        },
+    )
+}
+
+fn decision_for(issue: &Entry) -> Entry {
+    let Record::TurnIssued { agent, task, .. } = &issue.record else {
+        unreachable!()
+    };
+    let mut decided = entry(RecordKind::LoopDecided);
+    if let Record::LoopDecided {
+        agent: owner,
+        decision,
+        ..
+    } = &mut decided.record
+    {
+        *owner = *agent;
+        *decision = dudes_proto::LoopDecision::Continue { task: task.clone() };
+    }
+    decided
+}
+
+#[test]
+fn before_record_facts_use_prior_entries_in_the_same_uncommitted_transaction() {
+    use dudes_proto::recovery::{
+        RecoveryBoundary, RecoveryOrigin, RecoveryReason, RecoveryRequired,
+    };
+    let mut fixture = Fixture::new(0);
+    let (installed, mut issued, mut binding) = goal_entries();
+    binding.hired_lsn = fixture.projections.last_applied;
+    let installed_position = fixture.writer.append_witnessed(&installed).unwrap();
+    let decision = decision_for(&issued);
+    let decision_position = fixture.writer.append_witnessed(&decision).unwrap();
+    if let Record::TurnIssued {
+        lsn_of_decision, ..
+    } = &mut issued.record
+    {
+        *lsn_of_decision = decision_position.0;
+    }
+    let issued_position = fixture.writer.append_witnessed(&issued).unwrap();
+    binding.issue_lsn = issued_position.0;
+    let txn = fixture.projections.db.begin_write().unwrap();
+    let folded = super::super::fold_batch(
+        &txn,
+        fixture.projections.last_applied,
+        [
+            (installed_position.0, installed_position.1, &installed),
+            (decision_position.0, decision_position.1, &decision),
+            (issued_position.0, issued_position.1, &issued),
+        ],
+    )
+    .unwrap();
+    assert_eq!(folded.last, binding.issue_lsn);
+    let tables = FactTables {
+        agents: &txn.open_table(super::super::AGENTS).unwrap(),
+        goals: &txn.open_table(super::super::GOALS).unwrap(),
+        turns: &txn.open_table(super::super::TURNS).unwrap(),
+        board: &txn.open_table(super::super::BOARD).unwrap(),
+        leases: &txn.open_table(super::super::WORKTREES).unwrap(),
+        recovery: &txn.open_table(RECOVERY).unwrap(),
+        meta: &txn.open_table(META).unwrap(),
+    };
+    let facts = facts_at(&tables, folded.last, &binding).unwrap();
+    assert_eq!(facts.through, issued_position.0);
+    assert_eq!(facts.source_issue.lsn, issued_position.0);
+    let required = RecoveryRequired {
+        binding: binding.clone(),
+        origin: RecoveryOrigin::ThisBarrier,
+        reason: RecoveryReason::MissingSpawn,
+        boundary: RecoveryBoundary::MissingSpawn,
+        predecessor: None,
+    };
+    prepare_at(
+        &tables,
+        folded.last,
+        RecoveryTransition::Required(&required),
+    )
+    .unwrap();
+    let committed = fixture.projections.db.begin_read().unwrap();
+    assert!(
+        super::super::get_row::<super::super::TurnRow>(
+            &committed.open_table(super::super::TURNS).unwrap(),
+            &binding.work.turn.to_bytes()
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(fixture.projections.last_applied, binding.hired_lsn);
+}
+
+fn erase_version_49_attempt_fields(path: &std::path::Path, turn: dudes_types::TurnId) {
+    let db = redb::Database::create(path).unwrap();
+    let txn = db.begin_write().unwrap();
+    txn.open_table(META)
+        .unwrap()
+        .insert(SCHEMA_VERSION, &49u64)
+        .unwrap();
+    let mut turns = txn.open_table(super::super::TURNS).unwrap();
+    let key = turn.to_bytes();
+    let bytes = turns.get(&key).unwrap().unwrap().value().to_vec();
+    let mut old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    for field in ["spawn_lsn", "end_lsn", "confirmation_lsn"] {
+        old.as_object_mut().unwrap().remove(field);
+    }
+    turns
+        .insert(&key, serde_json::to_vec(&old).unwrap().as_slice())
+        .unwrap();
+    drop(turns);
+    txn.commit().unwrap();
+}
+
+#[test]
+fn literal_version_49_cache_rebuilds_latest_attempt_positions_and_context() {
+    let mut fixture = Fixture::new(0);
+    let (installed, mut issued, mut binding) = goal_entries();
+    binding.hired_lsn = fixture.projections.last_applied;
+    let mut gateway = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap();
+    gateway.append(&installed).unwrap();
+    let decision = gateway.append(&decision_for(&issued)).unwrap();
+    if let Record::TurnIssued {
+        lsn_of_decision, ..
+    } = &mut issued.record
+    {
+        *lsn_of_decision = decision;
+    }
+    binding.issue_lsn = gateway.append(&issued).unwrap();
+    let mut spawned = entry(RecordKind::TurnSpawned);
+    if let Record::TurnSpawned {
+        agent,
+        turn,
+        session,
+        reissued,
+        ..
+    } = &mut spawned.record
+    {
+        *agent = binding.work.agent;
+        *turn = binding.work.turn;
+        *session = None;
+        *reissued = false;
+    }
+    let spawn = gateway.append(&spawned).unwrap();
+    let session = dudes_types::SessionId::new("confirmed-attempt");
+    let confirmed = gateway
+        .append(&Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: Record::SessionLearned {
+                agent: binding.work.agent,
+                turn: binding.work.turn,
+                session,
+            },
+        })
+        .unwrap();
+    let mut ended = entry(RecordKind::TurnEnded);
+    if let Record::TurnEnded {
+        agent,
+        turn,
+        mode,
+        provenance,
+        outcome,
+        ..
+    } = &mut ended.record
+    {
+        *agent = binding.work.agent;
+        *turn = binding.work.turn;
+        *mode = dudes_types::Mode::Managed;
+        *provenance = dudes_types::Provenance::Observed;
+        *outcome = Some(dudes_proto::TurnOutcome::NoResult);
+    }
+    let end = gateway.append(&ended).unwrap();
+    let expected = fixture.projections.export().unwrap();
+    let path = fixture.dir.path().join("state.redb");
+    drop(fixture.projections);
+    erase_version_49_attempt_fields(&path, binding.work.turn);
+    let mut reopened = Projections::open_with(&path, Fsync::None).unwrap();
+    assert_eq!(reopened.last_applied_lsn(), Lsn::ZERO);
+    crate::replay(&fixture.writer.reader(), &mut reopened).unwrap();
+    assert_eq!(reopened.export().unwrap(), expected);
+    let gateway = fixture.writer.checked_recovery(&mut reopened).unwrap();
+    assert_eq!(
+        gateway.facts(&binding).unwrap().attempt,
+        RecoveryAttempt {
+            spawn_lsn: Some(spawn),
+            end_lsn: Some(end),
+            confirmation_lsn: Some(confirmed)
+        }
+    );
+    let source = gateway.witness(end).unwrap();
+    assert_eq!(
+        source.context().attempt.unwrap().issue_lsn,
+        binding.issue_lsn
+    );
+    assert_eq!(
+        source.context().attempt.unwrap().previous_spawn_lsn,
+        Some(spawn)
+    );
+}

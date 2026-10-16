@@ -3,6 +3,7 @@
 pub mod admission;
 pub mod cache;
 pub mod history;
+pub mod transition;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -13,12 +14,34 @@ use serde::{Deserialize, Serialize};
 use crate::record::Hex32;
 use crate::recovery::{
     MAX_RECOVERY_RECAP_BYTES, RecoveryAuthorized, RecoveryBinding, RecoveryClaimRef,
-    RecoveryContext, RecoveryEpisodeId, RecoveryIssue, RecoveryIssued, RecoveryOrigin,
-    RecoveryPlan, RecoveryReason, RecoveryRequired, RecoveryWork,
+    RecoveryContext, RecoveryEpisodeId, RecoveryInvalidationEvidence, RecoveryIssue,
+    RecoveryIssued, RecoveryOrigin, RecoveryPlan, RecoveryReason, RecoveryRequired, RecoveryWork,
 };
 
 #[cfg(test)]
 mod tests;
+
+/// Actual positions retained by the existing turn fold, without a liveness conclusion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecoveryAttempt {
+    /// Latest physical spawn, absent when no spawn was recorded.
+    pub spawn_lsn: Option<Lsn>,
+    /// Latest terminal record, which may precede a later spawn.
+    pub end_lsn: Option<Lsn>,
+    /// Accepted confirmation for the current attempt, absent after an unconfirmed reissue.
+    pub confirmation_lsn: Option<Lsn>,
+}
+
+/// Existing turn-row facts for settling a physical receipt, without requiring a current goal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryAttemptFacts {
+    /// Actual before-record prefix.
+    pub through: Lsn,
+    /// Immutable issue joined to the existing turn, independent of later goal changes.
+    pub issue: RecoveryIssue,
+    /// Actual preceding physical-attempt positions.
+    pub attempt: RecoveryAttempt,
+}
 
 /// Facts from the same committed journal cut, before the proposed transition.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,6 +52,8 @@ pub struct RecoveryFacts {
     pub binding: RecoveryBinding,
     /// Exact source issue, including its immutable task witness and answers.
     pub source_issue: RecoveryIssue,
+    /// Latest physical attempt positions, read from the existing turn owner.
+    pub attempt: RecoveryAttempt,
     /// Current control identity.
     pub control_lsn: Option<Lsn>,
     /// Exact still-confirmed conversation, when selectable.
@@ -68,8 +93,8 @@ pub enum RecoveryClaimState {
     Invalidated {
         /// Actual required invalidation position.
         invalidation_lsn: Lsn,
-        /// Exact preceding invalidating record.
-        evidence_lsn: Lsn,
+        /// Actual preceding change or the durable observation made by this invalidation.
+        evidence: RecoveryInvalidationEvidence,
     },
     /// A new missing-Spawn episode closed the old context consent atomically.
     Superseded {
@@ -120,8 +145,8 @@ pub enum RecoveryEvent<'a> {
     Invalidated {
         /// Exact owning authorization.
         claim: RecoveryClaimRef,
-        /// Exact preceding invalidating evidence.
-        evidence_lsn: Lsn,
+        /// Actual preceding change or durable authority observation.
+        evidence: RecoveryInvalidationEvidence,
     },
 }
 
@@ -284,15 +309,12 @@ impl RecoveryState {
                     },
                 );
             }
-            RecoveryEvent::Invalidated {
-                claim,
-                evidence_lsn,
-            } => {
+            RecoveryEvent::Invalidated { claim, evidence } => {
                 self.claims.insert(
                     claim.authorization_lsn,
                     RecoveryClaimState::Invalidated {
                         invalidation_lsn: lsn,
-                        evidence_lsn,
+                        evidence,
                     },
                 );
             }
@@ -361,20 +383,34 @@ impl RecoveryState {
                     return Err(RecoveryStateError::Context);
                 }
             }
-            RecoveryEvent::Invalidated {
-                claim,
-                evidence_lsn,
-            } => {
-                let (_, state) = self.claim(claim)?;
-                if !matches!(state, RecoveryClaimState::Pending)
-                    || !prior(evidence_lsn)
-                    || evidence_lsn <= claim.authorization_lsn
-                {
-                    return Err(RecoveryStateError::Lifecycle);
-                }
+            RecoveryEvent::Invalidated { claim, evidence } => {
+                self.validate_invalidation_claim(claim, evidence, facts.through)?;
             }
         }
         Ok(())
+    }
+
+    fn validate_invalidation_claim(
+        &self,
+        claim: RecoveryClaimRef,
+        evidence: RecoveryInvalidationEvidence,
+        through: Lsn,
+    ) -> Result<(), RecoveryStateError> {
+        let (authorization, state) = self.claim(claim)?;
+        if through < self.last_applied || !matches!(state, RecoveryClaimState::Pending) {
+            return Err(RecoveryStateError::Lifecycle);
+        }
+        match evidence {
+            RecoveryInvalidationEvidence::RecordedChange { lsn, .. }
+                if lsn <= claim.authorization_lsn || lsn > through =>
+            {
+                Err(RecoveryStateError::Position)
+            }
+            RecoveryInvalidationEvidence::BrowserAuthorityUnavailable { session_digest } if !matches!(authorization.attribution, crate::recovery::RecoveryAttribution::BrowserSession { session_digest: original } if original == session_digest) => {
+                Err(RecoveryStateError::Binding)
+            }
+            _ => Ok(()),
+        }
     }
 
     fn validate_required(
