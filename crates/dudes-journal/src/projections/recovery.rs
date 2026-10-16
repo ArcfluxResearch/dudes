@@ -61,8 +61,8 @@ pub struct RecoveryReceipt {
 
 /// Exclusive access to the actual writer and its canonically checked projection generation.
 ///
-/// This library boundary is not wired into daemon commands yet. No recovery records are
-/// registered by this module; ordinary-prefix checks cannot prove healthy recovery prefixes.
+/// Registered recovery records use this checked boundary. Daemon command wiring,
+/// authenticated admission and dispatch remain outside this library boundary.
 pub struct CheckedRecoveryStore<'a> {
     writer: &'a mut Writer,
     projections: &'a mut Projections,
@@ -90,7 +90,7 @@ impl<'a> CheckedRecoveryStore<'a> {
         )
     }
 
-    /// Validate an unregistered typed recovery transition without changing rows or the journal.
+    /// Validate a typed recovery transition without changing rows or the journal.
     /// This preparation is not authenticated command admission and cannot release work.
     pub fn prepare_transition(&self, transition: RecoveryTransition<'_>) -> Result<()> {
         check(self.writer, self.projections)?;

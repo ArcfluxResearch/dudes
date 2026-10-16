@@ -131,7 +131,7 @@ impl World {
         .bind(binding, &self.recovery_history)
     }
 
-    /// Validate an unregistered typed transition before any mutable world fold.
+    /// Validate a typed transition before any mutable world fold.
     /// This historical preparation cannot authenticate a command or grant dispatch.
     pub fn prepare_recovery(
         &self,
