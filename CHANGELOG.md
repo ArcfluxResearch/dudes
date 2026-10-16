@@ -11,6 +11,17 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.88.0] - 2026-10-16
+
+### Highlights
+
+- **Review ticket changes in the Floor.** For tickets in Ready for you or Needs you, the optional Changes view shows a tracked file's old and current text side by side. The comparison uses the commit recorded when the round started, so earlier uncommitted edits can appear. Enable `floor.git` and `floor.diff` with `dudes config set floor.git on floor.diff on`, then restart Dudes. Both switches are off by default. (#84)
+
+### Changes
+
+- Show bounded tracked text with reasons for omitted files. Count untracked files without showing their names or contents. The comparison requires a usable recorded baseline and is available on macOS and Linux. (#84)
+- Show whether the current bounded sample is unchanged, changed, or unknown compared with the sample taken after the check. A match does not prove that the check passed on the displayed changes. Use Refresh to request a new sample. (#84)
+
 ## [0.87.2] - 2026-10-16
 
 ### Changes
@@ -180,7 +191,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.2...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.88.0...HEAD
+[0.88.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.2...v0.88.0
 [0.87.2]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.1...v0.87.2
 [0.87.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.0...v0.87.1
 [0.87.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.86.0...v0.87.0
