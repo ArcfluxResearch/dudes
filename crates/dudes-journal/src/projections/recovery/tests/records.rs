@@ -419,6 +419,8 @@ fn coherent_recovery_subtree_deletion_refuses_canonical_recertification() {
     txn.commit().unwrap();
     fixture.projections.recovery_certification = None;
     let before = cells(&fixture);
+    let export = fixture.projections.export().unwrap();
+    let bytes = journal_inventory(&fixture);
     let result = fixture
         .writer
         .checked_recovery(&mut fixture.projections)
@@ -426,6 +428,8 @@ fn coherent_recovery_subtree_deletion_refuses_canonical_recertification() {
         .unwrap();
     assert_eq!(reason(&result), RecoveryStoreError::CanonicalMismatch);
     assert_eq!(cells(&fixture), before);
+    assert_eq!(fixture.projections.export().unwrap(), export);
+    assert_eq!(journal_inventory(&fixture), bytes);
 }
 
 #[test]
@@ -671,6 +675,47 @@ fn journal_inventory(fixture: &Fixture) -> Vec<(u32, Vec<u8>)> {
         .collect()
 }
 
+fn assert_repeated_receipt_reads(
+    fixture: &mut Fixture,
+    claims: &[RecoveryClaimRef],
+    barriers: &[Lsn],
+    requests: &[(Hex32, Hex32)],
+    issue: &dudes_proto::recovery::RecoveryIssue,
+    evidence_lsn: Lsn,
+) {
+    let export = fixture.projections.export().unwrap();
+    let bytes = journal_inventory(fixture);
+    {
+        let gateway = fixture
+            .writer
+            .checked_recovery(&mut fixture.projections)
+            .unwrap();
+        let before_counts = crate::reader::validation_counts();
+        for _ in 0..3 {
+            for (index, (request, digest)) in requests.iter().enumerate() {
+                let receipt = gateway.receipt(*request, *digest).unwrap().unwrap();
+                assert_eq!(receipt.claim, claims[index]);
+                let expected = if index + 1 == requests.len() {
+                    RecoveryClaimState::Consumed {
+                        issue: issue.clone(),
+                        evidence_lsn,
+                    }
+                } else {
+                    RecoveryClaimState::Superseded {
+                        issue: issue.clone(),
+                        successor: claims[index + 1].episode,
+                        barrier_lsn: barriers[index + 1],
+                    }
+                };
+                assert_eq!(receipt.state, expected);
+            }
+        }
+        assert_eq!(crate::reader::validation_counts(), before_counts);
+    }
+    assert_eq!(fixture.projections.export().unwrap(), export);
+    assert_eq!(journal_inventory(fixture), bytes);
+}
+
 #[test]
 fn repeated_missing_spawn_supersession_keeps_each_receipt_and_the_one_owed_issue() {
     let (mut fixture, binding) = original(1);
@@ -735,29 +780,14 @@ fn repeated_missing_spawn_supersession_keeps_each_receipt_and_the_one_owed_issue
         assert_canonical(&mut fixture);
     }
     let evidence_lsn = append(&mut fixture, spawn(&binding, binding.work.turn, true));
-    let gateway = fixture
-        .writer
-        .checked_recovery(&mut fixture.projections)
-        .unwrap();
-    let before_counts = crate::reader::validation_counts();
-    for (index, (request, digest)) in requests.iter().enumerate() {
-        let receipt = gateway.receipt(*request, *digest).unwrap().unwrap();
-        assert_eq!(receipt.claim, claims[index]);
-        let expected = if index + 1 == requests.len() {
-            RecoveryClaimState::Consumed {
-                issue: issue.clone(),
-                evidence_lsn,
-            }
-        } else {
-            RecoveryClaimState::Superseded {
-                issue: issue.clone(),
-                successor: claims[index + 1].episode,
-                barrier_lsn: barriers[index + 1],
-            }
-        };
-        assert_eq!(receipt.state, expected);
-    }
-    assert_eq!(crate::reader::validation_counts(), before_counts);
+    assert_repeated_receipt_reads(
+        &mut fixture,
+        &claims,
+        &barriers,
+        &requests,
+        &issue,
+        evidence_lsn,
+    );
     let after = fixture
         .projections
         .turn(binding.work.turn)

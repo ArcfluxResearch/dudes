@@ -126,6 +126,92 @@ fn recovery_original_json_rejects_unknown_omitted_and_malformed_authority() {
     }
 }
 
+fn assert_original_decode_refusal(kind: RecordKind, body: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = segment_path(dir.path(), 1);
+    let bytes = raw(2, kind.tag(), body.as_bytes());
+    fs::write(&path, &bytes).unwrap();
+    assert!(
+        matches!(Reader::open(dir.path()), Err(Error::Decode { lsn, .. }) if lsn == Lsn::from_parts(1, 0).unwrap()),
+        "{body}"
+    );
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn duplicate_request_identity_members_refuse_in_the_original_authorization() {
+    let kind = RecordKind::RecoveryAuthorized;
+    let encoded = payload(kind);
+    let value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    for request in [
+        value["request_id"].clone(),
+        serde_json::to_value(dudes_proto::record::Hex32::new([77; 32])).unwrap(),
+    ] {
+        let duplicate = format!("{{\"request_id\":{request},");
+        let body = encoded.replacen('{', &duplicate, 1);
+        assert_original_decode_refusal(kind, &body);
+    }
+}
+
+#[test]
+fn non_null_recovery_ticket_members_are_strict_before_historical_interpretation() {
+    let kind = RecordKind::RecoveryAuthorized;
+    let mut value: serde_json::Value = serde_json::from_str(&payload(kind)).unwrap();
+    let ticket = serde_json::json!({
+        "card": dudes_types::CardId::from_parts(77, 1),
+        "round": 1,
+        "goal": value["binding"]["work"]["goal"],
+        "claimant": value["binding"]["work"]["agent"],
+    });
+    value["binding"]["ticket"] = ticket.clone();
+    let encoded = serde_json::to_string(&value).unwrap();
+    assert!(serde_json::from_str::<Entry>(&encoded).is_ok());
+    let ticket_encoded = serde_json::to_string(&ticket).unwrap();
+    assert!(encoded.contains(&ticket_encoded));
+    let mut malformed = Vec::new();
+    let mut omitted = ticket.clone();
+    omitted.as_object_mut().unwrap().remove("goal");
+    malformed.push(omitted);
+    let mut unknown = ticket.clone();
+    unknown["unknown"] = serde_json::json!(true);
+    malformed.push(unknown);
+    for field in ["card", "round", "claimant"] {
+        let mut null = ticket.clone();
+        null[field] = serde_json::Value::Null;
+        malformed.push(null);
+    }
+    for ticket in malformed {
+        let body = encoded.replacen(&ticket_encoded, &serde_json::to_string(&ticket).unwrap(), 1);
+        assert_ne!(body, encoded);
+        assert_original_decode_refusal(kind, &body);
+    }
+    for card in [
+        ticket["card"].clone(),
+        serde_json::to_value(dudes_types::CardId::from_parts(77, 2)).unwrap(),
+    ] {
+        let duplicate = ticket_encoded.replacen('{', &format!("{{\"card\":{card},"), 1);
+        let body = encoded.replacen(&ticket_encoded, &duplicate, 1);
+        assert_original_decode_refusal(kind, &body);
+    }
+}
+
+#[test]
+fn invalidation_claim_and_evidence_cannot_be_omitted_or_null_in_original_json() {
+    let kind = RecordKind::RecoveryInvalidated;
+    let value: serde_json::Value = serde_json::from_str(&payload(kind)).unwrap();
+    for field in ["claim", "evidence"] {
+        for omitted in [false, true] {
+            let mut malformed = value.clone();
+            if omitted {
+                malformed.as_object_mut().unwrap().remove(field);
+            } else {
+                malformed[field] = serde_json::Value::Null;
+            }
+            assert_original_decode_refusal(kind, &serde_json::to_string(&malformed).unwrap());
+        }
+    }
+}
+
 #[test]
 fn unrelated_unknown_compatible_bytes_keep_their_skip_contract() {
     for body in [

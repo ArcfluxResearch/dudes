@@ -1,4 +1,4 @@
-//! Equal factual recovery inputs from one actual ordinary journal prefix.
+//! Recovery journal facts and transitions agree between persistent and World folds.
 
 #[path = "recovery_facts/carriers.rs"]
 mod carriers;
@@ -90,8 +90,18 @@ impl Prefix {
             .unwrap()
             .append(&entry)
             .unwrap();
-        self.world.apply_checked(lsn, &entry).unwrap();
-        assert_eq!(self.world.last_applied_lsn, Some(lsn));
+        let through = self.world.last_applied_lsn.unwrap_or(Lsn::ZERO);
+        let reader = self.writer.reader();
+        for frame in reader.iter_from(through).unwrap() {
+            let (actual, entry) = frame.unwrap();
+            if actual > through {
+                self.world.apply_checked(actual, &entry).unwrap();
+            }
+        }
+        assert_eq!(
+            self.world.last_applied_lsn,
+            Some(self.persistent.last_applied_lsn())
+        );
         lsn
     }
 

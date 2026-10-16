@@ -70,7 +70,7 @@ enum Placement {
 }
 
 const RECOVERY_PREFIX_PLACEMENT: Placement = Placement::Out(
-    "recovery authority requires exact before-record sources; recovery_records and recovery gateway tests compare joined prefixes across automatic checkpoints",
+    "joined recovery sources are covered by recovery_facts::matrix::invalidation_story_survives_automatic_checkpoints_rotation_and_physical_reopen at actual required/source positions",
 );
 
 /// Every kind, placed. **The match has no wildcard**, so a kind added to the contract does not
