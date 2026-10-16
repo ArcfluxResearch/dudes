@@ -2,7 +2,7 @@ use super::super::RecoveryAttempt;
 use super::super::history::{RecoveryAttemptContext, RecoveryPriorControl, RecoveryWitnessContext};
 use super::*;
 use crate::record::{BrowserControl, Hex32, samples};
-use crate::recovery::{RecoveryAnswerDelivery, RecoveryEpisodeId, RecoveryIssued, RecoveryRecap};
+use crate::recovery::{RecoveryAnswerDelivery, RecoveryIssued, RecoveryRecap};
 use crate::{AutomaticHold, Entry, Record, TurnOutcome};
 use dudes_types::{AgentId, GoalId, ModelSelection, Provider, SessionId, Timestamp, TurnId};
 
@@ -231,6 +231,7 @@ impl Fixture {
                 &self.history,
             )
             .unwrap();
+        let expected_control = self.facts.control_lsn;
         self.observe(
             80,
             Record::Resume {
@@ -240,7 +241,7 @@ impl Fixture {
             RecoveryWitnessContext {
                 previous_control: Some(RecoveryPriorControl {
                     agent: self.facts.binding.work.agent,
-                    lsn: Some(Lsn(50)),
+                    lsn: expected_control,
                 }),
                 ..RecoveryWitnessContext::default()
             },
@@ -248,10 +249,7 @@ impl Fixture {
         self.facts.through = Lsn(80);
         self.facts.control_lsn = Some(Lsn(80));
         RecoveryAuthorized {
-            episode: RecoveryEpisodeId {
-                work: self.facts.binding.work,
-                origin: Lsn(50),
-            },
+            episode: self.state.current(self.facts.binding.work).unwrap().id,
             binding: self.facts.binding.clone(),
             request_id: Hex32::new([7; 32]),
             request_digest: Hex32::new([8; 32]),
@@ -259,7 +257,7 @@ impl Fixture {
                 pid: 42,
                 uid: Some(501),
             },
-            expected_control: Some(Lsn(50)),
+            expected_control,
             resulting_control: Some(Lsn(80)),
             resume_lsn: Some(Lsn(80)),
             plan: RecoveryPlan::New {
@@ -997,4 +995,634 @@ fn issued_work_consumes_only_its_own_physical_attempt_and_keeps_the_original_rec
             evidence_lsn: Lsn(110)
         }
     );
+}
+
+#[derive(Clone, Copy)]
+enum StandingControl {
+    Halted,
+    PausedHalt,
+    UnknownHeld,
+    UnknownUnchanged,
+}
+
+fn control_source(fixture: &mut Fixture, at: u64, record: Record) {
+    fixture.observe(
+        at,
+        record,
+        RecoveryWitnessContext {
+            previous_control: Some(RecoveryPriorControl {
+                agent: fixture.facts.binding.work.agent,
+                lsn: fixture.facts.control_lsn,
+            }),
+            ..RecoveryWitnessContext::default()
+        },
+    );
+    fixture.facts.through = Lsn(at);
+    fixture.facts.control_lsn = Some(Lsn(at));
+}
+
+fn control_authorization(case: StandingControl) -> (Fixture, RecoveryAuthorized) {
+    let mut fixture = Fixture::new();
+    let mut authorization = fixture.authorize();
+    let agent = fixture.facts.binding.work.agent;
+    let cause = match case {
+        StandingControl::Halted | StandingControl::PausedHalt => Record::Halt { agent, text: None },
+        StandingControl::UnknownHeld | StandingControl::UnknownUnchanged => Record::AgentHeld {
+            agent,
+            provenance: Provenance::Observed,
+            cause: AutomaticHold::Unknown,
+        },
+    };
+    control_source(&mut fixture, 85, cause);
+    if !matches!(case, StandingControl::Halted) {
+        control_source(
+            &mut fixture,
+            86,
+            Record::Pause {
+                agent,
+                browser: None,
+            },
+        );
+    }
+    authorization.expected_control = fixture.facts.control_lsn;
+    if matches!(case, StandingControl::UnknownUnchanged) {
+        authorization.resume_lsn = None;
+    } else {
+        control_source(
+            &mut fixture,
+            90,
+            Record::Resume {
+                agent,
+                browser: None,
+            },
+        );
+        authorization.resume_lsn = Some(Lsn(90));
+    }
+    authorization.resulting_control = fixture.facts.control_lsn;
+    (fixture, authorization)
+}
+
+#[test]
+fn recovery_authorization_refuses_standing_halt_and_unknown_causes() {
+    let cases = [
+        ("halt then own resume", StandingControl::Halted),
+        (
+            "halt then pause then own resume",
+            StandingControl::PausedHalt,
+        ),
+        (
+            "unknown then pause then own resume",
+            StandingControl::UnknownHeld,
+        ),
+        (
+            "unknown then pause without own resume",
+            StandingControl::UnknownUnchanged,
+        ),
+    ];
+    let results = cases.map(|(name, case)| {
+        let (fixture, authorization) = control_authorization(case);
+        (
+            name,
+            fixture.check(RecoveryTransition::Authorized(&authorization)),
+        )
+    });
+    let expected = cases.map(|(name, _)| (name, Err(RecoveryStateError::Control)));
+    assert_eq!(results, expected);
+}
+
+fn failure_end(work: RecoveryWork, outcome: Option<TurnOutcome>) -> Record {
+    let no_launch = matches!(
+        outcome,
+        Some(TurnOutcome::NotLaunched { .. } | TurnOutcome::LaunchRefused { .. })
+    );
+    let mut record = samples::record(RecordKind::TurnEnded);
+    if let Record::TurnEnded {
+        agent,
+        turn,
+        mode,
+        provenance,
+        exit,
+        elapsed_ms,
+        usage,
+        model_usage,
+        outcome: actual,
+        ..
+    } = &mut record
+    {
+        *agent = work.agent;
+        *turn = work.turn;
+        *mode = Mode::Managed;
+        *provenance = Provenance::Observed;
+        *exit = if no_launch {
+            crate::ExitStatus::UNKNOWN
+        } else {
+            crate::ExitStatus {
+                code: Some(1),
+                signal: None,
+            }
+        };
+        *elapsed_ms = (!no_launch).then_some(5_000);
+        *usage = (!no_launch).then_some(dudes_types::Usage::ZERO);
+        model_usage.clear();
+        *actual = outcome;
+    }
+    record
+}
+
+fn issued_source(fixture: &mut Fixture, at: u64, decision_at: u64, work: RecoveryWork, task: &str) {
+    let mut decided = samples::record(RecordKind::LoopDecided);
+    if let Record::LoopDecided {
+        agent, decision, ..
+    } = &mut decided
+    {
+        *agent = work.agent;
+        *decision = crate::LoopDecision::Continue { task: task.into() };
+    }
+    fixture.observe(decision_at, decided, RecoveryWitnessContext::default());
+    fixture.observe(
+        at,
+        Record::TurnIssued {
+            agent: work.agent,
+            turn: work.turn,
+            goal: work.goal,
+            mode: Mode::Managed,
+            lsn_of_decision: Lsn(decision_at),
+            task: task.into(),
+            session: None,
+            model_selection: fixture.facts.binding.model_selection.clone(),
+            answers: Vec::new(),
+        },
+        RecoveryWitnessContext::default(),
+    );
+}
+
+fn held_fixture(cause: AutomaticHold, first_end: Option<Record>, latest_end: Record) -> Fixture {
+    let mut fixture = Fixture::new();
+    let work = fixture.facts.binding.work;
+    let first = RecoveryWork {
+        turn: TurnId::from_parts(61, 9),
+        ..work
+    };
+    let retained = [Lsn(10), Lsn(15)].map(|at| fixture.history.at(at).unwrap().clone());
+    fixture.history = RecoveryHistory::default();
+    for witness in retained {
+        fixture.history.insert(witness).unwrap();
+    }
+    if let Some(end) = first_end {
+        issued_source(&mut fixture, 17, 16, first, "first failure task");
+        fixture.spawn(18, first, 17, None, false, None);
+        fixture.observe(
+            19,
+            end,
+            RecoveryWitnessContext {
+                attempt: Some(RecoveryAttemptContext {
+                    issue_lsn: Lsn(17),
+                    previous_spawn_lsn: Some(Lsn(18)),
+                    previous_end_lsn: None,
+                    confirmed_session_lsn: None,
+                }),
+                ..RecoveryWitnessContext::default()
+            },
+        );
+    }
+    issued_source(&mut fixture, 22, 21, work, "original task");
+    let repeated = matches!(cause, AutomaticHold::RepeatedFastFailure { .. });
+    if repeated {
+        fixture.spawn(30, work, 22, None, false, None);
+    }
+    fixture.observe(
+        40,
+        latest_end,
+        RecoveryWitnessContext {
+            attempt: Some(RecoveryAttemptContext {
+                issue_lsn: Lsn(22),
+                previous_spawn_lsn: repeated.then_some(Lsn(30)),
+                previous_end_lsn: None,
+                confirmed_session_lsn: None,
+            }),
+            ..RecoveryWitnessContext::default()
+        },
+    );
+    fixture.facts.binding.issue_lsn = Lsn(22);
+    fixture.facts.source_issue = fixture.history.at(Lsn(22)).unwrap().issue().unwrap();
+    fixture.facts.attempt.spawn_lsn = repeated.then_some(Lsn(30));
+    fixture.facts.control_lsn = None;
+    control_source(
+        &mut fixture,
+        55,
+        Record::AgentHeld {
+            agent: work.agent,
+            provenance: Provenance::Observed,
+            cause,
+        },
+    );
+    fixture.required.binding = fixture.facts.binding.clone();
+    fixture.required.origin = RecoveryOrigin::Existing { lsn: Lsn(55) };
+    fixture.required.boundary = RecoveryBoundary::Held {
+        end_lsn: Lsn(40),
+        first: repeated.then_some(crate::recovery::RecoveryFailure {
+            issue_lsn: Lsn(17),
+            end_lsn: Lsn(19),
+        }),
+    };
+    fixture
+}
+
+#[test]
+fn separate_resume_and_eligible_hold_clearing_preserve_recovery_consent() {
+    let (fixture, mut authorization) = control_authorization(StandingControl::PausedHalt);
+    authorization.resume_lsn = None;
+    authorization.expected_control = fixture.facts.control_lsn;
+    let mut results = vec![(
+        "separate ordinary resume",
+        fixture.check(RecoveryTransition::Authorized(&authorization)),
+    )];
+    let work = fixture.facts.binding.work;
+    let first = RecoveryWork {
+        turn: TurnId::from_parts(61, 9),
+        ..work
+    };
+    let causes = [
+        (
+            "repeated failure",
+            AutomaticHold::RepeatedFastFailure {
+                first: first.turn,
+                latest: work.turn,
+            },
+            Some(TurnOutcome::NoResult),
+        ),
+        (
+            "launch failed",
+            AutomaticHold::LaunchFailed {
+                reason: "host failure".into(),
+            },
+            Some(TurnOutcome::NotLaunched {
+                reason: "host failure".into(),
+            }),
+        ),
+        (
+            "launch refused",
+            AutomaticHold::LaunchRefused {
+                reason: "adapter refusal".into(),
+            },
+            Some(TurnOutcome::LaunchRefused {
+                reason: "adapter refusal".into(),
+            }),
+        ),
+    ];
+    for (name, cause, outcome) in causes {
+        let first_end = matches!(cause, AutomaticHold::RepeatedFastFailure { .. })
+            .then(|| failure_end(first, Some(TurnOutcome::NoResult)));
+        let mut fixture = held_fixture(cause, first_end, failure_end(work, outcome));
+        let authorization = fixture.authorize();
+        results.push((
+            name,
+            fixture.check(RecoveryTransition::Authorized(&authorization)),
+        ));
+    }
+    assert_eq!(
+        results,
+        vec![
+            ("separate ordinary resume", Ok(())),
+            ("repeated failure", Ok(())),
+            ("launch failed", Ok(())),
+            ("launch refused", Ok(()))
+        ]
+    );
+}
+
+#[derive(Clone, Copy)]
+enum FailureDefect {
+    ZeroExit,
+    UnknownDuration,
+    LongDuration,
+    AggregateTokens,
+    AggregateCost,
+    ModelTokens,
+    ModelCost,
+    Killed,
+    NotLaunched,
+    LaunchRefused,
+    SampledData,
+}
+
+fn spoil_failure(record: &mut Record, defect: FailureDefect) {
+    let Record::TurnEnded {
+        exit,
+        elapsed_ms,
+        usage,
+        model_usage,
+        outcome,
+        ..
+    } = record
+    else {
+        unreachable!()
+    };
+    match defect {
+        FailureDefect::ZeroExit => exit.code = Some(0),
+        FailureDefect::UnknownDuration => *elapsed_ms = None,
+        FailureDefect::LongDuration => *elapsed_ms = Some(5_001),
+        FailureDefect::AggregateTokens => {
+            *usage = Some(dudes_types::Usage {
+                input: dudes_types::Tokens::new(1),
+                ..dudes_types::Usage::ZERO
+            });
+        }
+        FailureDefect::AggregateCost => {
+            *usage = Some(dudes_types::Usage {
+                usd: Some(dudes_types::Usd::from_micros(1)),
+                ..dudes_types::Usage::ZERO
+            });
+        }
+        FailureDefect::ModelTokens => {
+            model_usage.insert(
+                "model".into(),
+                dudes_types::Usage {
+                    output: dudes_types::Tokens::new(1),
+                    ..dudes_types::Usage::ZERO
+                },
+            );
+        }
+        FailureDefect::ModelCost => {
+            model_usage.insert(
+                "model".into(),
+                dudes_types::Usage {
+                    usd: Some(dudes_types::Usd::from_micros(1)),
+                    ..dudes_types::Usage::ZERO
+                },
+            );
+        }
+        FailureDefect::Killed => {
+            *outcome = Some(TurnOutcome::Killed {
+                by: crate::KillReason::Halt,
+            });
+        }
+        FailureDefect::NotLaunched => {
+            *outcome = Some(TurnOutcome::NotLaunched {
+                reason: "not launched".into(),
+            });
+        }
+        FailureDefect::LaunchRefused => {
+            *outcome = Some(TurnOutcome::LaunchRefused {
+                reason: "not launched".into(),
+            });
+        }
+        FailureDefect::SampledData => {
+            let Record::TurnEnded {
+                exit: sampled_exit,
+                elapsed_ms: sampled_elapsed,
+                usage: sampled_usage,
+                model_usage: sampled_models,
+                ..
+            } = samples::record(RecordKind::TurnEnded)
+            else {
+                unreachable!()
+            };
+            *exit = sampled_exit;
+            *elapsed_ms = sampled_elapsed;
+            *usage = sampled_usage;
+            *model_usage = sampled_models;
+        }
+    }
+}
+
+fn repeated_hold(first: RecoveryWork, latest: RecoveryWork) -> AutomaticHold {
+    AutomaticHold::RepeatedFastFailure {
+        first: first.turn,
+        latest: latest.turn,
+    }
+}
+
+#[test]
+fn unqualified_named_failure_ends_refuse_the_recovery_hold_boundary() {
+    let work = Fixture::new().facts.binding.work;
+    let first = RecoveryWork {
+        turn: TurnId::from_parts(61, 9),
+        ..work
+    };
+    let defects = [
+        ("zero exit", FailureDefect::ZeroExit),
+        ("unknown duration", FailureDefect::UnknownDuration),
+        ("long duration", FailureDefect::LongDuration),
+        ("positive aggregate tokens", FailureDefect::AggregateTokens),
+        ("positive aggregate cost", FailureDefect::AggregateCost),
+        ("positive model tokens", FailureDefect::ModelTokens),
+        ("positive model cost", FailureDefect::ModelCost),
+        ("killed", FailureDefect::Killed),
+        ("not launched", FailureDefect::NotLaunched),
+        ("launch refused", FailureDefect::LaunchRefused),
+        ("original sampled data", FailureDefect::SampledData),
+    ];
+    let mut results = Vec::new();
+    for (name, defect) in defects {
+        for side in ["first", "latest"] {
+            let mut first_end = failure_end(first, Some(TurnOutcome::NoResult));
+            let mut latest_end = failure_end(work, Some(TurnOutcome::NoResult));
+            if side == "first" {
+                spoil_failure(&mut first_end, defect);
+            } else {
+                spoil_failure(&mut latest_end, defect);
+            }
+            let fixture = held_fixture(repeated_hold(first, work), Some(first_end), latest_end);
+            results.push((
+                format!("{side}: {name}"),
+                fixture.check(RecoveryTransition::Required(&fixture.required)),
+            ));
+        }
+    }
+    let expected = results
+        .iter()
+        .map(|(name, _)| (name.clone(), Err(RecoveryStateError::Binding)))
+        .collect::<Vec<_>>();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn qualified_named_failure_ends_preserve_completed_and_older_outcomes() {
+    let work = Fixture::new().facts.binding.work;
+    let first = RecoveryWork {
+        turn: TurnId::from_parts(61, 9),
+        ..work
+    };
+    let cases = [
+        (
+            "failed",
+            Some(TurnOutcome::Failed {
+                reason: "failure".into(),
+            }),
+        ),
+        ("no result", Some(TurnOutcome::NoResult)),
+        ("completed with nonzero exit", Some(TurnOutcome::Completed)),
+        ("older unrecorded outcome", None),
+    ];
+    let results = cases.map(|(name, outcome)| {
+        let fixture = held_fixture(
+            repeated_hold(first, work),
+            Some(failure_end(first, outcome.clone())),
+            failure_end(work, outcome),
+        );
+        (
+            name,
+            fixture.check(RecoveryTransition::Required(&fixture.required)),
+        )
+    });
+    assert_eq!(
+        results,
+        [
+            ("failed", Ok(())),
+            ("no result", Ok(())),
+            ("completed with nonzero exit", Ok(())),
+            ("older unrecorded outcome", Ok(()))
+        ]
+    );
+}
+
+fn ticket_authorization() -> (Fixture, RecoveryAuthorized, RecoveryClaimRef) {
+    let mut fixture = Fixture::new();
+    let work = fixture.facts.binding.work;
+    let card = dudes_types::CardId::from_parts(61, 10);
+    let retained = [10, 20, 30, 40, 50].map(|at| fixture.history.at(Lsn(at)).unwrap().clone());
+    fixture.history = RecoveryHistory::default();
+    for witness in retained {
+        fixture.history.insert(witness).unwrap();
+    }
+    let mut created = samples::record(RecordKind::TicketCreated);
+    if let Record::TicketCreated { card: actual, .. } = &mut created {
+        *actual = card;
+    }
+    fixture.observe(11, created, RecoveryWitnessContext::default());
+    fixture.observe(
+        12,
+        Record::TicketAssigned {
+            card,
+            agent: work.agent,
+            by: crate::Actor::Peer {
+                pid: 42,
+                uid: Some(501),
+            },
+            message: None,
+            expected_seq: dudes_types::Seq::ZERO,
+        },
+        RecoveryWitnessContext::default(),
+    );
+    let Record::GoalSet { mut goal, .. } = samples::record(RecordKind::GoalSet) else {
+        unreachable!()
+    };
+    goal.id = work.goal;
+    fixture.observe(
+        15,
+        Record::TicketStarted {
+            card,
+            agent: work.agent,
+            goal,
+            expected_seq: dudes_types::Seq(1),
+        },
+        RecoveryWitnessContext::default(),
+    );
+    fixture.facts.binding.ticket = Some(crate::diff_stamp::TicketBinding {
+        card,
+        round: 1,
+        goal: work.goal,
+        claimant: work.agent,
+    });
+    fixture.required.binding = fixture.facts.binding.clone();
+    let authorization = fixture.authorize();
+    fixture
+        .state
+        .apply_transition(
+            Lsn(90),
+            RecoveryTransition::Authorized(&authorization),
+            &fixture.facts,
+            &fixture.history,
+        )
+        .unwrap();
+    fixture.facts.through = Lsn(90);
+    let claim = RecoveryClaimRef {
+        episode: authorization.episode,
+        authorization_lsn: Lsn(90),
+    };
+    (fixture, authorization, claim)
+}
+
+#[test]
+fn same_agent_ticket_assignment_supplies_the_original_binding_invalidation() {
+    use crate::recovery::{
+        RecoveryInvalidated, RecoveryInvalidationEvidence, RecoveryInvalidationReason,
+    };
+    let (mut fixture, authorization, claim) = ticket_authorization();
+    let card = authorization.binding.ticket.unwrap().card;
+    let other = dudes_types::CardId::from_parts(61, 11);
+    let mut created = samples::record(RecordKind::TicketCreated);
+    if let Record::TicketCreated { card, .. } = &mut created {
+        *card = other;
+    }
+    fixture.observe(94, created, RecoveryWitnessContext::default());
+    let cases = [
+        (
+            "same agent and card",
+            95,
+            card,
+            authorization.binding.work.agent,
+            dudes_types::Seq(2),
+            Ok(()),
+        ),
+        (
+            "different agent same card",
+            96,
+            card,
+            AgentId::from_parts(61, 12),
+            dudes_types::Seq(3),
+            Ok(()),
+        ),
+        (
+            "unrelated card",
+            97,
+            other,
+            authorization.binding.work.agent,
+            dudes_types::Seq::ZERO,
+            Err(RecoveryStateError::Binding),
+        ),
+    ];
+    let mut results = Vec::new();
+    let mut expected = Vec::new();
+    for (name, at, card, agent, expected_seq, wanted) in cases {
+        fixture.observe(
+            at,
+            Record::TicketAssigned {
+                card,
+                agent,
+                by: crate::Actor::Peer {
+                    pid: 42,
+                    uid: Some(501),
+                },
+                message: None,
+                expected_seq,
+            },
+            RecoveryWitnessContext::default(),
+        );
+        let invalidation = RecoveryInvalidated {
+            claim,
+            evidence: RecoveryInvalidationEvidence::RecordedChange {
+                reason: RecoveryInvalidationReason::TicketChanged,
+                lsn: Lsn(at),
+            },
+        };
+        results.push((
+            name,
+            fixture
+                .state
+                .validate_invalidation(&invalidation, Lsn(at), &fixture.history),
+        ));
+        expected.push((name, wanted));
+    }
+    assert_eq!(results, expected);
+    assert!(matches!(
+        fixture
+            .state
+            .receipt(authorization.request_id, authorization.request_digest)
+            .unwrap()
+            .unwrap()
+            .state,
+        super::super::RecoveryClaimState::Pending
+    ));
 }
