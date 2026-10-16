@@ -3,7 +3,6 @@ use crate::writer::{Fault, Fsync, JournalOptions};
 use dudes_proto::RecordKind;
 use dudes_proto::record::samples;
 use dudes_types::Timestamp;
-use redb::StorageBackend as _;
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -50,11 +49,11 @@ fn digest() -> Hex32 {
     Hex32::new([8; 32])
 }
 
-fn reason(error: Error) -> RecoveryStoreError {
+fn reason(error: &Error) -> RecoveryStoreError {
     let Error::RecoveryStore(reason) = error else {
         panic!("expected fixed checked-store refusal: {error}");
     };
-    reason
+    *reason
 }
 
 #[test]
@@ -70,7 +69,6 @@ fn ordinary_prefix_receipt_reads_are_inert_and_do_not_resurvey_history() {
         assert_eq!(gateway.receipt(request(), digest()).unwrap(), None);
     }
     assert_eq!(crate::reader::validation_counts(), counts);
-    drop(gateway);
     assert_eq!(fixture.projections.export().unwrap(), before);
 }
 
@@ -83,7 +81,6 @@ fn checked_append_and_canonical_ordinary_replay_have_identical_exports() {
         .unwrap();
     let appended = gateway.append(&entry(RecordKind::Pause)).unwrap();
     assert_eq!(gateway.receipt(request(), digest()).unwrap(), None);
-    drop(gateway);
     assert_eq!(fixture.projections.last_applied_lsn(), appended);
     let mut rebuilt = Projections::in_memory().unwrap();
     crate::replay(&fixture.writer.reader(), &mut rebuilt).unwrap();
@@ -102,7 +99,6 @@ fn checked_append_projects_the_actual_automatic_checkpoint_too() {
         .unwrap();
     let main = gateway.append(&entry(RecordKind::Pause)).unwrap();
     assert_eq!(gateway.receipt(request(), digest()).unwrap(), None);
-    drop(gateway);
     let frames: Vec<_> = fixture
         .writer
         .reader()
@@ -122,30 +118,26 @@ fn checked_append_projects_the_actual_automatic_checkpoint_too() {
 #[test]
 fn raw_journal_advance_cannot_turn_a_stale_cut_into_a_not_found_receipt() {
     let mut fixture = Fixture::new(0);
-    drop(
-        fixture
-            .writer
-            .checked_recovery(&mut fixture.projections)
-            .unwrap(),
-    );
+    fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap();
     fixture.writer.append(&entry(RecordKind::Pause)).unwrap();
     let error = fixture
         .writer
         .checked_recovery(&mut fixture.projections)
         .err()
         .unwrap();
-    assert_eq!(reason(error), RecoveryStoreError::JournalAdvanced);
+    assert_eq!(reason(&error), RecoveryStoreError::JournalAdvanced);
 }
 
 #[test]
 fn raw_projection_mutation_revokes_the_certificate_and_requires_canonical_equality() {
     let mut fixture = Fixture::new(0);
-    drop(
-        fixture
-            .writer
-            .checked_recovery(&mut fixture.projections)
-            .unwrap(),
-    );
+    fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap();
     let fake = Lsn::from_parts(2, 0).unwrap();
     fixture
         .projections
@@ -157,18 +149,16 @@ fn raw_projection_mutation_revokes_the_certificate_and_requires_canonical_equali
         .checked_recovery(&mut fixture.projections)
         .err()
         .unwrap();
-    assert_eq!(reason(error), RecoveryStoreError::CanonicalMismatch);
+    assert_eq!(reason(&error), RecoveryStoreError::CanonicalMismatch);
 }
 
 #[test]
 fn a_failed_raw_projection_batch_also_revokes_certification() {
     let mut fixture = Fixture::new(0);
-    drop(
-        fixture
-            .writer
-            .checked_recovery(&mut fixture.projections)
-            .unwrap(),
-    );
+    fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap();
     let record = entry(RecordKind::Pause);
     let first = Lsn::from_parts(2, 10).unwrap();
     let second = Lsn::from_parts(2, 0).unwrap();
@@ -200,10 +190,9 @@ fn a_failed_main_write_leaves_projection_rows_unchanged_and_receipts_unavailable
         .unwrap();
     assert!(gateway.append(&entry(RecordKind::Pause)).is_err());
     assert_eq!(
-        reason(gateway.receipt(request(), digest()).unwrap_err()),
+        reason(&gateway.receipt(request(), digest()).unwrap_err()),
         RecoveryStoreError::JournalUncertain
     );
-    drop(gateway);
     assert_eq!(fixture.projections.export().unwrap(), before);
     assert!(fixture.projections.recovery_certification.is_none());
 }
@@ -219,14 +208,13 @@ fn an_ok_main_append_with_a_poisoned_checkpoint_cannot_certify_a_receipt() {
         .checked_recovery(&mut fixture.projections)
         .unwrap();
     assert_eq!(
-        reason(gateway.append(&entry(RecordKind::Pause)).unwrap_err()),
+        reason(&gateway.append(&entry(RecordKind::Pause)).unwrap_err()),
         RecoveryStoreError::JournalUncertain
     );
     assert_eq!(
-        reason(gateway.receipt(request(), digest()).unwrap_err()),
+        reason(&gateway.receipt(request(), digest()).unwrap_err()),
         RecoveryStoreError::JournalUncertain
     );
-    drop(gateway);
     let first = fixture
         .writer
         .reader()
@@ -259,7 +247,7 @@ fn a_coherently_deleted_ordinary_witness_subtree_requires_canonical_comparison()
         .checked_recovery(&mut fixture.projections)
         .err()
         .unwrap();
-    assert_eq!(reason(error), RecoveryStoreError::CanonicalMismatch);
+    assert_eq!(reason(&error), RecoveryStoreError::CanonicalMismatch);
 }
 
 #[test]
@@ -289,34 +277,30 @@ fn full_board_rows_are_compared_even_when_the_public_card_view_is_unchanged() {
         .checked_recovery(&mut fixture.projections)
         .err()
         .unwrap();
-    assert_eq!(reason(error), RecoveryStoreError::CanonicalMismatch);
+    assert_eq!(reason(&error), RecoveryStoreError::CanonicalMismatch);
 }
 
 #[test]
 fn a_certificate_cannot_be_transferred_to_another_owned_store_generation() {
     let mut fixture = Fixture::new(0);
-    drop(
-        fixture
-            .writer
-            .checked_recovery(&mut fixture.projections)
-            .unwrap(),
-    );
+    fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap();
     let mut other = Projections::in_memory().unwrap();
     crate::replay(&fixture.writer.reader(), &mut other).unwrap();
     other.recovery_certification = fixture.projections.recovery_certification.take();
     let error = fixture.writer.checked_recovery(&mut other).err().unwrap();
-    assert_eq!(reason(error), RecoveryStoreError::Uncertified);
+    assert_eq!(reason(&error), RecoveryStoreError::Uncertified);
 }
 
 #[test]
 fn reopen_discards_certification_and_rechecks_the_actual_prefix() {
     let mut fixture = Fixture::new(0);
-    drop(
-        fixture
-            .writer
-            .checked_recovery(&mut fixture.projections)
-            .unwrap(),
-    );
+    fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap();
     let path = fixture.dir.path().join("state.redb");
     drop(fixture.projections);
     let mut reopened = Projections::open_with(&path, Fsync::None).unwrap();
@@ -351,12 +335,10 @@ fn literal_version_47_cache_rebuilds_the_new_recovery_witness_table() {
 #[test]
 fn altered_metadata_cannot_reuse_an_existing_certification() {
     let mut fixture = Fixture::new(0);
-    drop(
-        fixture
-            .writer
-            .checked_recovery(&mut fixture.projections)
-            .unwrap(),
-    );
+    fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap();
     let txn = fixture.projections.db.begin_write().unwrap();
     txn.open_table(META)
         .unwrap()
@@ -368,7 +350,7 @@ fn altered_metadata_cannot_reuse_an_existing_certification() {
         .checked_recovery(&mut fixture.projections)
         .err()
         .unwrap();
-    assert_eq!(reason(error), RecoveryStoreError::Metadata);
+    assert_eq!(reason(&error), RecoveryStoreError::Metadata);
     assert!(fixture.projections.recovery_certification.is_none());
 }
 
@@ -402,7 +384,6 @@ fn mail_wake_preappend_refusal_has_no_durable_position_and_changes_no_bytes() {
     };
     assert_eq!(kind, RecordKind::MailWakeTurnDecided);
     assert_eq!(reason, dudes_proto::mail_wake::MailWakeError::Completion);
-    drop(gateway);
     assert_eq!(fixture.writer.next_lsn().unwrap(), end);
     assert_eq!(fixture.writer.poisoned(), None);
     assert!(!fixture.writer.recovery_fenced);
@@ -480,7 +461,7 @@ fn checked_append_window_refuses_empty_early_eof_and_truncated_checkpoints() {
             .unwrap()
             .collect::<Result<Vec<_>>>()
             .unwrap();
-        assert_eq!(live.len(), if tail == "empty" { 0 } else { 1 });
+        assert_eq!(live.len(), usize::from(tail != "empty"));
         if let Some((_, actual)) = live.first() {
             assert_eq!(actual, &attempted);
         }
@@ -648,11 +629,11 @@ fn record_pause_through_failed_projection_commit(
     let after = std::fs::read(&fault.journal).unwrap();
     assert!(after.starts_with(&before));
     assert_eq!(
-        reason(gateway.receipt(request(), digest()).unwrap_err()),
+        reason(&gateway.receipt(request(), digest()).unwrap_err()),
         RecoveryStoreError::JournalUncertain
     );
     assert_eq!(
-        reason(gateway.append(&attempted).unwrap_err()),
+        reason(&gateway.append(&attempted).unwrap_err()),
         RecoveryStoreError::JournalUncertain
     );
     assert_eq!(std::fs::read(&fault.journal).unwrap(), after);
