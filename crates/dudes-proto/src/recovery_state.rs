@@ -313,7 +313,8 @@ impl RecoveryState {
                 valid_binding(&required.binding, facts)?;
                 if !prior(required.binding.issue_lsn)
                     || !prior(required.binding.hired_lsn)
-                    || matches!(required.origin, RecoveryOrigin::Existing { lsn } if !prior(lsn))
+                    || required.binding.hired_lsn >= required.binding.issue_lsn
+                    || matches!(required.origin, RecoveryOrigin::Existing { lsn } if !prior(lsn) || lsn <= required.binding.issue_lsn)
                 {
                     return Err(RecoveryStateError::Position);
                 }
@@ -323,6 +324,17 @@ impl RecoveryState {
                     return Err(RecoveryStateError::Binding);
                 }
                 let incumbent = self.current(required.binding.work);
+                if incumbent.is_none()
+                    && self
+                        .planned_turns
+                        .get(&required.binding.work.turn)
+                        .is_some_and(|owner| {
+                            required.predecessor.map(|claim| claim.authorization_lsn)
+                                != Some(*owner)
+                        })
+                {
+                    return Err(RecoveryStateError::Binding);
+                }
                 if let Some(previous) = required.predecessor {
                     let (_, state) = self.claim(previous)?;
                     let old = &self.episodes[&previous.episode];
@@ -391,10 +403,20 @@ impl RecoveryState {
                 if !prior(episode.barrier_lsn) {
                     return Err(RecoveryStateError::Position);
                 }
+                if [
+                    authorization.expected_control,
+                    authorization.resulting_control,
+                    authorization.resume_lsn,
+                ]
+                .into_iter()
+                .flatten()
+                .any(|lsn| !prior(lsn))
+                {
+                    return Err(RecoveryStateError::Position);
+                }
                 match authorization.resume_lsn {
                     Some(resume) => {
                         if authorization.resulting_control != Some(resume)
-                            || !prior(resume)
                             || resume <= episode.barrier_lsn
                             || authorization
                                 .expected_control
@@ -465,6 +487,15 @@ impl RecoveryState {
                     return Err(RecoveryStateError::Binding);
                 }
                 valid_binding(&authorization.binding, facts)?;
+                if authorization.resulting_control != facts.control_lsn {
+                    return Err(RecoveryStateError::Control);
+                }
+                if matches!(&authorization.plan,
+                    RecoveryPlan::New { context: RecoveryContext::TryRecorded { session }, .. }
+                    if facts.confirmed_session.as_ref() != Some(session))
+                {
+                    return Err(RecoveryStateError::Context);
+                }
             }
             RecoveryEvent::Consumed {
                 claim,

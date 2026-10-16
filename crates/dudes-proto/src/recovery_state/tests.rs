@@ -525,6 +525,30 @@ fn a_missing_spawn_atomically_supersedes_old_context_consent_and_keeps_owed_work
         RecoveryStateError::Lifecycle,
     );
     assert_eq!(facts.source_issue.issued.answers, vec![Lsn(15), Lsn(18)]);
+    let repeat_claim = RecoveryClaimRef {
+        episode: repeat.episode,
+        authorization_lsn: Lsn(600),
+    };
+    let mut again = required(&facts, RecoveryReason::MissingSpawn);
+    again.predecessor = Some(repeat_claim);
+    state
+        .apply(Lsn(700), RecoveryEvent::Required(&again), &facts)
+        .unwrap();
+    let successor = state.current(facts.binding.work).unwrap();
+    assert_eq!(successor.id.origin, Lsn(700));
+    assert_eq!(successor.binding.issue_lsn, Lsn(400));
+    assert_eq!(
+        state
+            .receipt(repeat.request_id, repeat.request_digest)
+            .unwrap()
+            .unwrap()
+            .state,
+        &RecoveryClaimState::Superseded {
+            issue: facts.source_issue.clone(),
+            successor: successor.id,
+            barrier_lsn: Lsn(700),
+        }
+    );
 }
 
 #[test]
