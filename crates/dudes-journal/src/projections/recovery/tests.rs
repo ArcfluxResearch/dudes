@@ -435,3 +435,53 @@ fn recorded_mail_wake_history_refusal_keeps_its_actual_position() {
     assert_eq!(lsn, actual);
     assert_eq!(reason, dudes_proto::mail_wake::MailWakeError::Completion);
 }
+
+#[test]
+fn checked_append_window_refuses_empty_early_eof_and_truncated_checkpoints() {
+    for tail in ["empty", "clean_eof", "partial_header", "partial_payload"] {
+        let mut fixture = Fixture::new(1);
+        let attempted = entry(RecordKind::Pause);
+        let (start, crc) = fixture.writer.append_witnessed(&attempted).unwrap();
+        let end = fixture.writer.next_lsn().unwrap();
+        let frames = fixture
+            .writer
+            .reader()
+            .witnessed_from(start)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(frames.len(), 2);
+        let checkpoint = frames[1].0;
+        assert_eq!(start.segment(), end.segment());
+        let length = match tail {
+            "empty" => start.offset(),
+            "clean_eof" => checkpoint.offset(),
+            "partial_header" => {
+                checkpoint.offset() + u64::try_from(crate::frame::HEADER_LEN).unwrap() - 1
+            }
+            "partial_payload" => end.offset() - 1,
+            _ => unreachable!(),
+        };
+        let path =
+            crate::segment::segment_path(&fixture.dir.path().join("journal"), start.segment());
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_len(length)
+            .unwrap();
+        let strict = written_interval(&fixture.writer, start, crc, &attempted, end);
+        assert!(strict.is_err(), "{tail} was accepted: {strict:?}");
+        let live = fixture
+            .writer
+            .reader()
+            .iter_from(start)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(live.len(), if tail == "empty" { 0 } else { 1 });
+        if let Some((_, actual)) = live.first() {
+            assert_eq!(actual, &attempted);
+        }
+    }
+}

@@ -970,7 +970,7 @@ impl Reader {
             next: 0,
             current: None,
             start_offset: start.offset(),
-            stop_at: Some(end),
+            boundary: ReadBoundary::Exact(end),
             done: false,
             buf: Vec::new(),
         })
@@ -990,7 +990,7 @@ impl Reader {
             next: start,
             current: None,
             start_offset: offset,
-            stop_at: self.stop_at,
+            boundary: ReadBoundary::Live(self.stop_at),
             done: false,
             buf: Vec::new(),
         })
@@ -1022,6 +1022,27 @@ impl Iterator for Iter {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ReadBoundary {
+    Live(Option<Lsn>),
+    Exact(Lsn),
+}
+
+impl ReadBoundary {
+    const fn end(self) -> Option<Lsn> {
+        match self {
+            Self::Live(end) => end,
+            Self::Exact(end) => Some(end),
+        }
+    }
+    const fn exact_end(self) -> Option<Lsn> {
+        match self {
+            Self::Live(_) => None,
+            Self::Exact(end) => Some(end),
+        }
+    }
+}
+
 /// [`Iter`] with each entry's frame checksum: what [`Reader::witnessed_from`] returns.
 #[derive(Debug)]
 pub(crate) struct Witnessed {
@@ -1030,8 +1051,7 @@ pub(crate) struct Witnessed {
     next: usize,
     current: Option<OpenSegment>,
     start_offset: u64,
-    /// See [`Reader::stop_at`]: the position of a torn tail this reader must not read into.
-    stop_at: Option<Lsn>,
+    boundary: ReadBoundary,
     done: bool,
     buf: Vec<u8>,
 }
@@ -1047,7 +1067,7 @@ impl Witnessed {
         let lsn = lsn_at(segment, offset)?;
         let file_len = file.metadata()?.len();
         let another_segment_follows = self.next + 1 < self.segments.len();
-        if self.stop_at.is_none_or(|stop| lsn < stop)
+        if self.boundary.end().is_none_or(|stop| lsn < stop)
             && (offset > file_len || (offset == file_len && another_segment_follows))
         {
             return Err(frame_error(lsn, FrameError::Short { need: HEADER_LEN }));
@@ -1072,16 +1092,43 @@ impl Witnessed {
             Ok(lsn) => lsn,
             Err(e) => return Some(Err(e)),
         };
-        // The bytes of a torn tail are bytes no `append` ever returned for: the writer's open
-        // drops them, and a reader that cannot write stops before them instead.
-        if self.stop_at.is_some_and(|stop| lsn >= stop) {
+        if self.boundary.end().is_some_and(|stop| lsn >= stop) {
+            if self.boundary.exact_end().is_some_and(|end| lsn > end) {
+                return Some(Err(Error::RecoveryStore(
+                    crate::error::RecoveryStoreError::AppendMismatch,
+                )));
+            }
             return None;
         }
         let last = self.next == self.segments.len();
         match read_next_frame(&mut current.reader, current.offset, &mut self.buf) {
-            Ok(Next::End) => None,
+            Ok(Next::End) => {
+                if last
+                    && self.boundary.exact_end().is_some_and(|end| {
+                        end != lsn
+                            && !(end.offset() == 0
+                                && current.segment.checked_add(1) == Some(end.segment()))
+                    })
+                {
+                    return Some(Err(Error::RecoveryStore(
+                        crate::error::RecoveryStoreError::AppendMismatch,
+                    )));
+                }
+                None
+            }
             Ok(Next::Frame(header)) => {
                 current.offset += header.frame_len() as u64;
+                if let Some(end) = self.boundary.exact_end() {
+                    match lsn_at(current.segment, current.offset) {
+                        Ok(after) if after > end => {
+                            return Some(Err(Error::RecoveryStore(
+                                crate::error::RecoveryStoreError::AppendMismatch,
+                            )));
+                        }
+                        Err(error) => return Some(Err(error)),
+                        _ => {}
+                    }
+                }
                 Some(Ok((lsn, header)))
             }
             // Unreachable for a journal `survey` has already passed (`Reader::open`, or
@@ -1092,9 +1139,11 @@ impl Witnessed {
                 lsn,
                 kind: header.kind,
             })),
-            // A short tail in the last segment is the writer mid-append; anywhere else it is
-            // bytes the open-time walk did not accept.
-            Ok(Next::Failed(FrameError::Short { .. }, _)) if last => None,
+            Ok(Next::Failed(FrameError::Short { .. }, _))
+                if last && self.boundary.exact_end().is_none() =>
+            {
+                None
+            }
             Ok(Next::Failed(error, _)) => Some(Err(frame_error(lsn, error))),
             Err(e) => Some(Err(e.into())),
         }
@@ -1121,6 +1170,11 @@ impl Witnessed {
             if RecordKind::from_tag(header.kind).is_none()
                 && !completed_contract_payload(header, &self.buf)
             {
+                if self.boundary.exact_end().is_some() {
+                    return Some(Err(Error::RecoveryStore(
+                        crate::error::RecoveryStoreError::AppendMismatch,
+                    )));
+                }
                 tracing::debug!(target: "journal", lsn = %lsn, kind = header.kind, "journal.skip_unknown_kind");
                 continue;
             }
@@ -1758,7 +1812,7 @@ mod tests {
         let interval = Reader::new(&absent).witnessed_between(start, end).unwrap();
         assert_eq!(interval.segments, vec![41, 42]);
         assert_eq!(interval.start_offset, 7);
-        assert_eq!(interval.stop_at, Some(end));
+        assert_eq!(interval.boundary.exact_end(), Some(end));
         let too_wide = Lsn::from_parts(43, 23).unwrap();
         assert!(
             Reader::new(&absent)
@@ -1801,5 +1855,85 @@ mod tests {
         assert_eq!(entries[1].0, second);
         assert_eq!(entries[0].2, record);
         assert_eq!(entries[1].2, record);
+    }
+
+    #[test]
+    fn checked_append_interval_accepts_a_complete_same_segment_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = Writer::start(
+            dir.path(),
+            1,
+            JournalOptions {
+                fsync: Fsync::None,
+                rotate_at: segment::DEFAULT_ROTATE_AT,
+                checkpoint_every: 0,
+            },
+        )
+        .unwrap();
+        let entry = Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: Record::Pause {
+                agent: AgentId::from_parts(19, 1),
+                browser: None,
+            },
+        };
+        let start = writer.append(&entry).unwrap();
+        let end = writer.next_lsn().unwrap();
+        let frames = writer
+            .reader()
+            .witnessed_between(start, end)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].2, entry);
+    }
+
+    #[test]
+    fn checked_append_interval_refuses_an_empty_final_segment_while_live_tail_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = Writer::start(
+            dir.path(),
+            1,
+            JournalOptions {
+                fsync: Fsync::None,
+                rotate_at: 1,
+                checkpoint_every: 1,
+            },
+        )
+        .unwrap();
+        let entry = Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: Record::Pause {
+                agent: AgentId::from_parts(19, 1),
+                browser: None,
+            },
+        };
+        let start = writer.append(&entry).unwrap();
+        let end = writer.next_lsn().unwrap();
+        assert_ne!(start.segment(), end.segment());
+        File::options()
+            .write(true)
+            .open(segment_path(dir.path(), end.segment()))
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+        let strict = writer
+            .reader()
+            .witnessed_between(start, end)
+            .unwrap()
+            .collect::<Result<Vec<_>>>();
+        assert!(
+            strict.is_err(),
+            "strict interval accepted an unconsumed end: {strict:?}"
+        );
+        let live = writer
+            .reader()
+            .iter_from(start)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].1, entry);
     }
 }

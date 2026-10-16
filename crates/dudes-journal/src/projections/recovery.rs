@@ -253,7 +253,7 @@ fn written_interval(
     for frame in writer.reader().witnessed_between(lsn, end)? {
         let frame = frame?;
         if frame.0 >= end {
-            break;
+            return refused(RecoveryStoreError::AppendMismatch);
         }
         if frames.len() == 2 {
             return refused(RecoveryStoreError::AppendMismatch);
