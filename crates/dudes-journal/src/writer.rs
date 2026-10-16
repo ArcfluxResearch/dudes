@@ -118,7 +118,6 @@ pub(crate) enum Fault {
     Sync,
 }
 
-/// Bytes and position staged by this writer before the checked projection transaction.
 pub(crate) struct PreparedAppend<'a> {
     entry: &'a Entry,
     bytes: Vec<u8>,

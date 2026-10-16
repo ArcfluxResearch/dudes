@@ -103,6 +103,14 @@ pub enum Error {
         /// The unrecognized kind tag.
         kind: u16,
     },
+    /// A mail-wake record was refused against committed history before append.
+    #[error("journal mail-wake record {kind:?} refused before append: {reason}")]
+    MailWakeAdmission {
+        /// Attempted record kind, without an invented durable position.
+        kind: dudes_proto::RecordKind,
+        /// Fixed failed relationship.
+        reason: dudes_proto::mail_wake::MailWakeError,
+    },
     /// Required mail authority failed its full canonical prefix join.
     #[error("journal mail-wake record at {lsn}: {reason}")]
     MailWake {
@@ -382,7 +390,7 @@ pub enum RecoveryStoreError {
     /// A required canonical prefix is unavailable.
     #[error("complete journal prefix is unavailable")]
     IncompletePrefix,
-    /// The newly read durable frames do not match the prepared append.
-    #[error("durable append interval differs from its prepared entry")]
+    /// Frames read back after the configured sync policy do not match the prepared append.
+    #[error("recorded append interval differs from its prepared entry")]
     AppendMismatch,
 }

@@ -370,3 +370,68 @@ fn altered_metadata_cannot_reuse_an_existing_certification() {
     assert_eq!(reason(error), RecoveryStoreError::Metadata);
     assert!(fixture.projections.recovery_certification.is_none());
 }
+
+fn journal_bytes(
+    directory: &std::path::Path,
+) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
+    std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (entry.file_name(), std::fs::read(entry.path()).unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn mail_wake_preappend_refusal_has_no_durable_position_and_changes_no_bytes() {
+    let mut fixture = Fixture::new(0);
+    let attempted = mail_wake_missing_completion(&fixture.projections);
+    let end = fixture.writer.next_lsn().unwrap();
+    let journal = fixture.dir.path().join("journal");
+    let before_journal = journal_bytes(&journal);
+    let before_cache = fixture.projections.export().unwrap();
+    let mut gateway = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap();
+    let error = gateway.append(&attempted).unwrap_err();
+    let Error::MailWakeAdmission { kind, reason } = error else {
+        panic!("expected preappend refusal: {error}");
+    };
+    assert_eq!(kind, RecordKind::MailWakeTurnDecided);
+    assert_eq!(reason, dudes_proto::mail_wake::MailWakeError::Completion);
+    drop(gateway);
+    assert_eq!(fixture.writer.next_lsn().unwrap(), end);
+    assert_eq!(fixture.writer.poisoned(), None);
+    assert!(!fixture.writer.recovery_fenced);
+    assert_eq!(journal_bytes(&journal), before_journal);
+    assert_eq!(fixture.projections.export().unwrap(), before_cache);
+}
+
+fn mail_wake_missing_completion(projections: &Projections) -> Entry {
+    let mut attempted = entry(RecordKind::MailWakeTurnDecided);
+    let Record::MailWakeTurnDecided(decision) = &mut attempted.record else {
+        unreachable!()
+    };
+    decision.completion_lsn = projections.last_applied_lsn();
+    attempted
+}
+
+#[test]
+fn recorded_mail_wake_history_refusal_keeps_its_actual_position() {
+    let mut fixture = Fixture::new(0);
+    let attempted = mail_wake_missing_completion(&fixture.projections);
+    let actual = fixture.writer.append(&attempted).unwrap();
+    let error = fixture
+        .writer
+        .reader()
+        .validate_completed_contracts()
+        .err()
+        .unwrap();
+    let Error::MailWake { lsn, reason } = error else {
+        panic!("expected recorded history refusal: {error}");
+    };
+    assert_eq!(lsn, actual);
+    assert_eq!(reason, dudes_proto::mail_wake::MailWakeError::Completion);
+}

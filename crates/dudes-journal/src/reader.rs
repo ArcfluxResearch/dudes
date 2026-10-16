@@ -947,12 +947,35 @@ impl Reader {
         Ok(Iter(self.witnessed_from(lsn)?))
     }
 
-    /// [`Reader::iter_from`], pairing each entry with the `crc32c` of the frame it was decoded
-    /// from — the witness the projection stores beside its cursor.
-    ///
-    /// Projection replay and the checked append window use the actual decoded checksum to
-    /// commit it beside the matching cursor. The frame header is already decoded here, so the
-    /// witness costs no second read. Public entry iteration uses [`Iter`], which drops it.
+    pub(crate) fn witnessed_between(&self, start: Lsn, end: Lsn) -> Result<Witnessed> {
+        if start.segment() < FIRST_SEGMENT
+            || end <= start
+            || end
+                .segment()
+                .checked_sub(start.segment())
+                .is_none_or(|distance| distance > 1)
+            || self.stop_at.is_some_and(|bound| end > bound)
+        {
+            return Err(Error::RecoveryStore(
+                crate::error::RecoveryStoreError::AppendMismatch,
+            ));
+        }
+        let mut segments = vec![start.segment()];
+        if end.segment() != start.segment() && end.offset() != 0 {
+            segments.push(end.segment());
+        }
+        Ok(Witnessed {
+            dir: self.dir.clone(),
+            segments,
+            next: 0,
+            current: None,
+            start_offset: start.offset(),
+            stop_at: Some(end),
+            done: false,
+            buf: Vec::new(),
+        })
+    }
+
     pub(crate) fn witnessed_from(&self, lsn: Lsn) -> Result<Witnessed> {
         let segments = list_segments(&self.dir)?;
         let start = segments.partition_point(|no| *no < lsn.segment());
@@ -1724,5 +1747,59 @@ mod tests {
             back.into_iter().map(|(_, e)| e).collect::<Vec<_>>(),
             entries
         );
+    }
+
+    #[test]
+    fn checked_append_interval_selects_segments_without_directory_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let absent = dir.path().join("absent");
+        let start = Lsn::from_parts(41, 7).unwrap();
+        let end = Lsn::from_parts(42, 23).unwrap();
+        let interval = Reader::new(&absent).witnessed_between(start, end).unwrap();
+        assert_eq!(interval.segments, vec![41, 42]);
+        assert_eq!(interval.start_offset, 7);
+        assert_eq!(interval.stop_at, Some(end));
+        let too_wide = Lsn::from_parts(43, 23).unwrap();
+        assert!(
+            Reader::new(&absent)
+                .witnessed_between(start, too_wide)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn checked_append_interval_reads_only_its_two_real_segments_after_long_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = Writer::start(
+            dir.path(),
+            1,
+            JournalOptions {
+                fsync: Fsync::None,
+                rotate_at: 1,
+                checkpoint_every: 0,
+            },
+        )
+        .unwrap();
+        let record = Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: Record::Pause {
+                agent: AgentId::from_parts(19, 1),
+                browser: None,
+            },
+        };
+        for _ in 0..20 {
+            writer.append(&record).unwrap();
+        }
+        let start = writer.append(&record).unwrap();
+        let second = writer.append(&record).unwrap();
+        let end = writer.next_lsn().unwrap();
+        let interval = writer.reader().witnessed_between(start, end).unwrap();
+        assert_eq!(interval.segments, vec![start.segment(), second.segment()]);
+        let entries = interval.collect::<Result<Vec<_>>>().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, start);
+        assert_eq!(entries[1].0, second);
+        assert_eq!(entries[0].2, record);
+        assert_eq!(entries[1].2, record);
     }
 }

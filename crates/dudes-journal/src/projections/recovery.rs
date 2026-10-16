@@ -38,7 +38,7 @@ pub struct RecoveryReceipt {
     pub claim: RecoveryClaimRef,
     /// Unchanged request and context intent.
     pub authorization: RecoveryAuthorized,
-    /// Durable claim outcome at the checked cut.
+    /// Committed claim outcome at the checked cut, under the configured sync policy.
     pub state: RecoveryClaimState,
 }
 
@@ -108,9 +108,9 @@ impl<'a> CheckedRecoveryStore<'a> {
             }))
     }
 
-    /// Validate projection folds, durably append that same entry, and commit its rows together.
+    /// Validate folds, append that same entry under the configured sync policy, and commit its rows.
     ///
-    /// A failure after append may leave the entry durable. It fences this writer and requires
+    /// A failure after append may leave the entry recorded. It fences this writer and requires
     /// reopening/reconstruction before another checked receipt can be read. Existing daemon
     /// authority checks remain required when this boundary is wired into the append path.
     pub fn append(&mut self, entry: &Entry) -> Result<Lsn> {
@@ -131,7 +131,8 @@ impl<'a> CheckedRecoveryStore<'a> {
             &txn,
             self.projections.last_applied,
             [(prepared.lsn(), prepared.crc(), prepared.entry())],
-        )?;
+        )
+        .map_err(|error| preappend_error(entry, error))?;
         if first.applied != 1 {
             return refused(RecoveryStoreError::AppendMismatch);
         }
@@ -176,6 +177,16 @@ impl<'a> CheckedRecoveryStore<'a> {
             self.writer.recovery_fenced = true;
         }
         result
+    }
+}
+
+fn preappend_error(entry: &Entry, error: Error) -> Error {
+    match error {
+        Error::MailWake { reason, .. } => Error::MailWakeAdmission {
+            kind: entry.record.kind(),
+            reason,
+        },
+        error => error,
     }
 }
 
@@ -239,7 +250,7 @@ fn written_interval(
     end: Lsn,
 ) -> Result<Vec<(Lsn, u32, Entry)>> {
     let mut frames = Vec::with_capacity(2);
-    for frame in writer.reader().witnessed_from(lsn)? {
+    for frame in writer.reader().witnessed_between(lsn, end)? {
         let frame = frame?;
         if frame.0 >= end {
             break;
@@ -329,7 +340,6 @@ fn authority_rows(projections: &Projections) -> Result<Vec<String>> {
         format!("schema {PROJECTION_VERSION}"),
         projections.export_at(&txn)?,
     ];
-    // The public export deliberately presents card views; admission also needs the full row.
     super::export_rows::<16, super::board::BoardRow>(
         &mut rows,
         "board_authority",
