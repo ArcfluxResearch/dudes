@@ -988,7 +988,7 @@ fn control_source(fixture: &mut Fixture, at: u64, record: Record) {
         Record::Pause { .. } => next.paused = true,
         Record::Halt { .. } => next.halted = true,
         Record::AgentHeld { cause, .. } => {
-            next.hold = Some(super::super::history::RecoveryHoldWitness::from(cause))
+            next.hold = Some(super::super::history::RecoveryHoldWitness::from(cause));
         }
         Record::Resume { .. } => next = RecoveryStandingControl::default(),
         _ => unreachable!(),

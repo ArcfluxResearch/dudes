@@ -499,6 +499,11 @@ fn explicitly_requested_source_witnesses_do_not_default_when_absent_or_misowned(
         kind: crate::RecordKind::TurnIssued,
         owner: super::super::history::RecoveryWitnessOwner::Work(facts.binding.work),
     };
+    let unboxed = h.history.get(reference).unwrap();
+    let expected = serde_json::json!({ "kind": "witness", "value": unboxed });
+    let stored: serde_json::Value =
+        serde_json::from_slice(&h.memory.rows[&Key::Witness(reference.lsn).bytes()]).unwrap();
+    assert_eq!(stored, expected);
     let barrier = required(&facts, false);
     let cache = RecoveryCache::load(
         &h.memory,

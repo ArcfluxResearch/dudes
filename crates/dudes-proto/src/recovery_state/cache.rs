@@ -331,7 +331,7 @@ enum Cell {
         authorization: Lsn,
     },
     Witness {
-        value: RecoveryWitness,
+        value: Box<RecoveryWitness>,
     },
 }
 
@@ -447,7 +447,7 @@ fn cells(
     }
     for value in history.witnesses.values() {
         push(Cell::Witness {
-            value: value.clone(),
+            value: Box::new(value.clone()),
         })?;
     }
     Ok(rows)
@@ -592,7 +592,7 @@ impl<'a, R: RecoveryCacheReader> Loader<'a, R> {
             }
             Cell::Witness { value } => self
                 .history
-                .insert(value.clone())
+                .insert(value.as_ref().clone())
                 .map_err(RecoveryCacheError::from)?,
         }
         Ok(())
