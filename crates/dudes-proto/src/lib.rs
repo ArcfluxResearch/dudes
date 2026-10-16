@@ -37,6 +37,8 @@ pub mod projection;
 pub mod providers;
 pub mod question_history;
 pub mod record;
+pub mod recovery;
+pub mod recovery_state;
 pub mod reply;
 pub mod rpc;
 pub mod schema;
