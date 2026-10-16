@@ -1615,14 +1615,6 @@
         }
       ]
     },
-    "ExplicitNullable_uint32": {
-      "format": "uint32",
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
-    },
     "Gate": {
       "description": "The seven gates of `decide()`, in the order they are consulted (invariant 5).",
       "oneOf": [
@@ -5419,8 +5411,13 @@
               "type": "integer"
             },
             "uid": {
-              "$ref": "#/$defs/ExplicitNullable_uint32",
-              "description": "Transport-resolved user identity, when available."
+              "description": "Transport-resolved user identity, when available.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             }
           },
           "required": [

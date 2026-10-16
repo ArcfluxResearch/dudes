@@ -7972,14 +7972,6 @@
         }
       ]
     },
-    "ExplicitNullable_uint32": {
-      "format": "uint32",
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
-    },
     "ExportedSession": {
       "description": "One Floor sign-in as the exporting run held it.",
       "properties": {
@@ -15311,8 +15303,13 @@
               "type": "integer"
             },
             "uid": {
-              "$ref": "#/$defs/ExplicitNullable_uint32",
-              "description": "Transport-resolved user identity, when available."
+              "description": "Transport-resolved user identity, when available.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             }
           },
           "required": [
