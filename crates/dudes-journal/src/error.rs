@@ -13,6 +13,15 @@ use crate::frame::FrameError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// A recovery projection cell is malformed or misses a required dependency.
+    #[error("projection recovery: {0}")]
+    RecoveryCache(#[from] dudes_proto::recovery_state::cache::RecoveryCacheError),
+    /// The checked recovery store cannot establish its owned journal cut.
+    #[error("recovery store: {0}")]
+    RecoveryStore(RecoveryStoreError),
+    /// A recovery relationship was refused, without exposing request or task contents.
+    #[error("recovery relationship: {0}")]
+    RecoveryState(#[from] dudes_proto::recovery_state::RecoveryStateError),
     /// A keyed instruction projection cell is malformed or missing its referenced attempt.
     #[error("projection instructions: {0}")]
     InstructionCache(#[from] dudes_proto::instruction_state::cache::InstructionCacheError),
@@ -351,3 +360,29 @@ store_errors!(
 
 /// `Result` with the journal's error.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// Fixed reasons that a store cannot safely answer a recovery lookup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RecoveryStoreError {
+    /// The owned store or writer generation has no matching certification.
+    #[error("store generation is not certified")]
+    Uncertified,
+    /// The journal advanced outside the checked projection operation.
+    #[error("journal and projection cuts differ")]
+    JournalAdvanced,
+    /// A write may have reached the journal without a certain committed boundary.
+    #[error("journal writer is uncertain")]
+    JournalUncertain,
+    /// Projection metadata no longer matches its owning certification.
+    #[error("projection metadata differs from its certified cut")]
+    Metadata,
+    /// Canonical journal reconstruction and the stored authority rows differ.
+    #[error("projection differs from its canonical journal prefix")]
+    CanonicalMismatch,
+    /// A required canonical prefix is unavailable.
+    #[error("complete journal prefix is unavailable")]
+    IncompletePrefix,
+    /// The newly read durable frames do not match the prepared append.
+    #[error("durable append interval differs from its prepared entry")]
+    AppendMismatch,
+}

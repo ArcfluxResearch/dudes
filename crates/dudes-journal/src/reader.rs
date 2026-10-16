@@ -569,6 +569,16 @@ fn survey_with_bound(
     validated: Option<&ValidatedPrefix>,
     validation_scratch: Option<&Path>,
 ) -> Result<(OpenReport, Layout)> {
+    survey_with_projection(dir, stop_at, validated, validation_scratch, None)
+}
+
+fn survey_with_projection(
+    dir: &Path,
+    stop_at: Option<Lsn>,
+    validated: Option<&ValidatedPrefix>,
+    validation_scratch: Option<&Path>,
+    canonical: Option<&mut Option<crate::Projections>>,
+) -> Result<(OpenReport, Layout)> {
     #[cfg(test)]
     VALIDATION_PASSES.with(|count| {
         let (scans, folds) = count.get();
@@ -634,32 +644,29 @@ fn survey_with_bound(
         first_segment: segments.first().copied(),
         fingerprint: *fingerprint.finalize().as_bytes(),
     };
-    if has_completed_contract
-        && segments.first() == Some(&FIRST_SEGMENT)
-        && validated != Some(&prefix)
+    if canonical.is_some()
+        && segments
+            .first()
+            .is_some_and(|first| *first != FIRST_SEGMENT)
+    {
+        return Err(Error::RecoveryStore(
+            crate::error::RecoveryStoreError::IncompletePrefix,
+        ));
+    }
+    if canonical.is_some()
+        || (has_completed_contract
+            && segments.first() == Some(&FIRST_SEGMENT)
+            && validated != Some(&prefix))
     {
         #[cfg(test)]
         VALIDATION_PASSES.with(|count| {
             let (scans, folds) = count.get();
             count.set((scans, folds + 1));
         });
-        let reader = Reader {
-            dir: dir.to_path_buf(),
-            stop_at: Some(report.end),
-            validated: None,
-            validation_scratch: validation_scratch.map(Path::to_path_buf),
-        };
-        let scratch = validation_scratch.map_or_else(std::env::temp_dir, Path::to_path_buf);
-        let mut projections = validation_projection(dir, &scratch)?;
-        let mut batch = Vec::with_capacity(crate::projections::BATCH);
-        for frame in reader.witnessed_from(Lsn::ZERO)? {
-            batch.push(frame?);
-            if batch.len() == crate::projections::BATCH {
-                apply_validation_batch(&mut projections, &batch, &scratch)?;
-                batch.clear();
-            }
+        let projections = fold_validation_prefix(dir, report.end, validation_scratch)?;
+        if let Some(output) = canonical {
+            *output = Some(projections);
         }
-        apply_validation_batch(&mut projections, &batch, &scratch)?;
     }
     Ok((
         report,
@@ -669,6 +676,31 @@ fn survey_with_bound(
             validated: prefix,
         },
     ))
+}
+
+fn fold_validation_prefix(
+    dir: &Path,
+    end: Lsn,
+    validation_scratch: Option<&Path>,
+) -> Result<crate::Projections> {
+    let reader = Reader {
+        dir: dir.to_path_buf(),
+        stop_at: Some(end),
+        validated: None,
+        validation_scratch: validation_scratch.map(Path::to_path_buf),
+    };
+    let scratch = validation_scratch.map_or_else(std::env::temp_dir, Path::to_path_buf);
+    let mut projections = validation_projection(dir, &scratch)?;
+    let mut batch = Vec::with_capacity(crate::projections::BATCH);
+    for frame in reader.witnessed_from(Lsn::ZERO)? {
+        batch.push(frame?);
+        if batch.len() == crate::projections::BATCH {
+            apply_validation_batch(&mut projections, &batch, &scratch)?;
+            batch.clear();
+        }
+    }
+    apply_validation_batch(&mut projections, &batch, &scratch)?;
+    Ok(projections)
 }
 
 /// Drop the torn tail [`survey`] reported: truncate its segment to the frame boundary before it,
@@ -748,7 +780,34 @@ pub struct Reader {
     pub(crate) validation_scratch: Option<PathBuf>,
 }
 
+#[cfg(test)]
+pub(crate) fn validation_counts() -> (u64, u64) {
+    VALIDATION_PASSES.with(std::cell::Cell::get)
+}
+
 impl Reader {
+    pub(crate) fn canonical_recovery_projection(
+        &self,
+    ) -> Result<(ValidatedPrefix, crate::Projections)> {
+        let mut canonical = None;
+        let (report, layout) = survey_with_projection(
+            &self.dir,
+            self.stop_at,
+            self.validated.as_ref(),
+            self.validation_scratch.as_deref(),
+            Some(&mut canonical),
+        )?;
+        if report.torn.is_some() {
+            return Err(Error::RecoveryStore(
+                crate::error::RecoveryStoreError::JournalUncertain,
+            ));
+        }
+        let projections = canonical.ok_or(Error::RecoveryStore(
+            crate::error::RecoveryStoreError::Uncertified,
+        ))?;
+        Ok((layout.validated, projections))
+    }
+
     pub(crate) fn validate_completed_contracts(&self) -> Result<Self> {
         let (report, layout) = survey_with_bound(
             &self.dir,
@@ -891,10 +950,9 @@ impl Reader {
     /// [`Reader::iter_from`], pairing each entry with the `crc32c` of the frame it was decoded
     /// from — the witness the projection stores beside its cursor.
     ///
-    /// Crate-private because [`replay`](crate::replay) is the only caller that has a use for
-    /// the checksum: it must write, in the same commit that moves `last_applied_lsn`, the
-    /// checksum of the frame that lsn names. The frame header is already decoded here, so the
-    /// witness costs no second read. Everyone else reads [`Iter`], which drops it.
+    /// Projection replay and the checked append window use the actual decoded checksum to
+    /// commit it beside the matching cursor. The frame header is already decoded here, so the
+    /// witness costs no second read. Public entry iteration uses [`Iter`], which drops it.
     pub(crate) fn witnessed_from(&self, lsn: Lsn) -> Result<Witnessed> {
         let segments = list_segments(&self.dir)?;
         let start = segments.partition_point(|no| *no < lsn.segment());

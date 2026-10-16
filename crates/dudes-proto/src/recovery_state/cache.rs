@@ -47,7 +47,10 @@ impl From<RecoveryHistoryError> for RecoveryCacheError {
 /// One structural key and its encoded typed value.
 pub type RecoveryCacheRow = (Vec<u8>, Vec<u8>);
 
-/// Read cells from one committed projection cut.
+/// Read deterministic cells from one committed projection cut.
+///
+/// This codec interface does not certify completeness or truthful absence of optional roots.
+/// Production recovery authority requires the journal-owned checked-store boundary.
 pub trait RecoveryCacheReader {
     /// Storage errors preserve their origin as well as cache errors.
     type Error: From<RecoveryCacheError>;
@@ -75,6 +78,9 @@ pub struct RecoveryCache {
 
 impl RecoveryCache {
     /// Load one contract transition and explicitly requested immutable witness references.
+    ///
+    /// The caller supplies a complete store certified by the journal gateway; this raw loader
+    /// validates only the dependency closure it reads.
     pub fn load<R: RecoveryCacheReader>(
         reader: &R,
         through: Lsn,
@@ -101,6 +107,8 @@ impl RecoveryCache {
     }
 
     /// Load only a historical receipt and its fixed relationships, without following current work.
+    ///
+    /// An absent request is truthful only when the caller owns a checked complete store.
     pub fn load_receipt<R: RecoveryCacheReader>(
         reader: &R,
         through: Lsn,
