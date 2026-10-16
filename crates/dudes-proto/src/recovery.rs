@@ -177,6 +177,10 @@ pub struct RecoveryRecap {
 /// Proof that an answer was carried for this goal by a child that was durably recorded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "lsn suffixes distinguish journal source positions from answer, issue and spawn payloads"
+)]
 pub struct RecoveryAnswerDelivery {
     /// Exact historical answer.
     pub answer_lsn: Lsn,

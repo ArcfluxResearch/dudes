@@ -728,10 +728,10 @@ fn validate_recap(
             (RecordKind::AgentLookChanged, RecoveryWitnessOwner::Agent(agent)) => {
                 agent == work.agent
             }
-            (RecordKind::GoalSet, RecoveryWitnessOwner::Goal { agent, goal })
-            | (RecordKind::BrowserNoteQueued, RecoveryWitnessOwner::Goal { agent, goal }) => {
-                agent == work.agent && goal == work.goal
-            }
+            (
+                RecordKind::GoalSet | RecordKind::BrowserNoteQueued,
+                RecoveryWitnessOwner::Goal { agent, goal },
+            ) => agent == work.agent && goal == work.goal,
             (RecordKind::TicketStarted, RecoveryWitnessOwner::Ticket { agent, goal, card }) => {
                 agent == work.agent
                     && goal == work.goal

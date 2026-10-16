@@ -274,6 +274,10 @@ pub struct RecoveryPriorControl {
 /// Immutable relationship captured from the existing turn and agent rows before an attempt record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "lsn suffixes identify serialized journal positions for source-position normalization"
+)]
 pub struct RecoveryAttemptContext {
     /// Actual issue that owns the physical turn.
     pub issue_lsn: Lsn,

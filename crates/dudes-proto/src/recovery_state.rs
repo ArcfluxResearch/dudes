@@ -23,6 +23,10 @@ mod tests;
 
 /// Actual positions retained by the existing turn fold, without a liveness conclusion.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "lsn suffixes distinguish journal positions from physical receipts and session identities"
+)]
 pub struct RecoveryAttempt {
     /// Latest physical spawn, absent when no spawn was recorded.
     pub spawn_lsn: Option<Lsn>,

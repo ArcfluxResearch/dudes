@@ -1,9 +1,9 @@
 use super::super::RecoveryAttempt;
 use super::super::history::{RecoveryAttemptContext, RecoveryPriorControl, RecoveryWitnessContext};
 use super::*;
-use crate::record::{Hex32, samples};
+use crate::record::{BrowserControl, Hex32, samples};
 use crate::recovery::{RecoveryAnswerDelivery, RecoveryEpisodeId, RecoveryIssued, RecoveryRecap};
-use crate::{AutomaticHold, BrowserControl, Entry, Record, TurnOutcome};
+use crate::{AutomaticHold, Entry, Record, TurnOutcome};
 use dudes_types::{AgentId, GoalId, ModelSelection, Provider, SessionId, Timestamp, TurnId};
 
 fn hash(bytes: &[u8]) -> Hex32 {
