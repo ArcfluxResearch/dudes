@@ -1202,13 +1202,14 @@ where
             }
             Ok(_) => {}
         }
-        #[cfg(any(test, feature = "testing"))]
-        if let Some(reason) = witness.take_replay_fold_refusal(lsn) {
-            return Err(
-                dudes_supervisor::input::DurableInputError::Recovery { lsn, reason }.into(),
-            );
-        }
-        let handled = sup.handle(Input::Replayed { lsn, entry })?;
+        let replayed = || {
+            #[cfg(any(test, feature = "testing"))]
+            if let Some(reason) = witness.take_replay_fold_refusal(lsn) {
+                return Err(dudes_supervisor::input::DurableInputError::Recovery { lsn, reason });
+            }
+            sup.handle(Input::Replayed { lsn, entry })
+        };
+        let handled = replayed()?;
         anyhow::ensure!(
             handled.folded_through() == Some(lsn),
             "replay did not report its actual frame"

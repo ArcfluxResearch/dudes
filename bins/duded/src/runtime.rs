@@ -840,9 +840,6 @@ impl AcceptPanic {
     }
 }
 
-/// Everything the executor acts through. Separate from the supervisor so that the two can be
-/// borrowed independently while checked handling reports its owned outcome and the executor
-/// consumes the machine's effects.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each is an independent `[floor.*]` operator switch, fixed for the run"

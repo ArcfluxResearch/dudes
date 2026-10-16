@@ -1643,11 +1643,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         token: PersistToken,
         lsn: Lsn,
     ) -> Result<Handled, DurableInputError> {
-        let Some(parked) = self.ledger.remove(&token) else {
+        let Some(entry) = self.ledger.get(&token).map(|parked| parked.entry.clone()) else {
             return Ok(Handled::default());
         };
-        let reconcile = self.mail_event_recipients(&parked.entry.record);
-        self.apply_entry(lsn, &parked.entry)?;
+        let reconcile = self.mail_event_recipients(&entry.record);
+        self.apply_entry(lsn, &entry)?;
+        let parked = self
+            .ledger
+            .remove(&token)
+            .expect("checked folding retains the parked acknowledgment");
         // The mint's plaintext becomes usable **here and not when it was drawn**: until this
         // acknowledgement the hash is not on the disk, and a child armed with an unjournaled
         // credential is a child nothing can resolve. This is the crate's
@@ -5302,7 +5306,7 @@ mod tests {
             let recovery = (state.clone(), history.clone());
             let statuses = harness.supervisor.status.clone();
             let lsn = dudes_types::Lsn(1_000);
-            let input = if persisted {
+            let (input, retained) = if persisted {
                 harness.supervisor.persist(
                     entry.record.clone(),
                     super::Then::Reply {
@@ -5311,12 +5315,15 @@ mod tests {
                     },
                 );
                 let effects = harness.supervisor.take_effects();
-                let [super::Effect::Persist { token, .. }] = effects.as_slice() else {
+                let [super::Effect::Persist { token, entry }] = effects.as_slice() else {
                     panic!("one genuinely parked append")
                 };
-                Input::Persisted { token: *token, lsn }
+                (
+                    Input::Persisted { token: *token, lsn },
+                    Some((*token, entry.clone())),
+                )
             } else {
-                Input::Replayed { lsn, entry }
+                (Input::Replayed { lsn, entry }, None)
             };
             assert_eq!(
                 harness.supervisor.handle(input),
@@ -5329,6 +5336,21 @@ mod tests {
             let (state, history) = harness.supervisor.world().recovery_projection().unwrap();
             assert_eq!((state, history), (&recovery.0, &recovery.1));
             assert_eq!(harness.supervisor.status, statuses);
+            if let Some((token, entry)) = retained {
+                let parked = harness
+                    .supervisor
+                    .ledger
+                    .get(&token)
+                    .expect("failed fold retains correlation");
+                assert_eq!(parked.entry, entry);
+                assert!(matches!(
+                    &parked.then,
+                    super::Then::Reply {
+                        hook: crate::input::HookId(900),
+                        ..
+                    }
+                ));
+            }
             assert!(harness.supervisor.effects().is_empty());
         }
     }
@@ -5374,9 +5396,23 @@ mod tests {
                 );
                 assert_eq!(harness.supervisor.world().last_applied_lsn, before);
                 assert!(harness.supervisor.tokens.live(agent).is_none());
+                let parked = harness
+                    .supervisor
+                    .ledger
+                    .get(token)
+                    .expect("failed mint fold retains correlation");
+                assert_eq!(&parked.entry, entry);
+                assert!(matches!(
+                    &parked.then,
+                    super::Then::Reply {
+                        hook: crate::input::HookId(901),
+                        ..
+                    }
+                ));
                 assert!(harness.supervisor.effects().is_empty());
             } else {
                 assert_eq!(result.unwrap().folded_through(), Some(lsn));
+                assert!(!harness.supervisor.ledger.contains_key(token));
                 assert!(harness.supervisor.tokens.live(agent).is_some());
                 assert!(matches!(
                     harness.supervisor.effects(),
