@@ -76,6 +76,7 @@ pub struct RecoveryCache {
     before: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
+#[derive(Clone, Copy)]
 enum Dependencies<'a> {
     Required(&'a RecoveryRequired),
     Authorized(&'a RecoveryAuthorized),

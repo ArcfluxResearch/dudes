@@ -46,7 +46,7 @@ pub enum RecoveryTransition<'a> {
     },
 }
 
-impl<'a> RecoveryTransition<'a> {
+impl RecoveryTransition<'_> {
     /// Target needed by the current existing folds, without changing the original authorization.
     pub fn binding(self, state: &RecoveryState) -> Result<RecoveryBinding, RecoveryStateError> {
         match self {

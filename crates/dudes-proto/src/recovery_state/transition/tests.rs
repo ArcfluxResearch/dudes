@@ -1021,11 +1021,11 @@ fn control_source(fixture: &mut Fixture, at: u64, record: Record) {
     fixture.facts.control_lsn = Some(Lsn(at));
 }
 
-fn control_authorization(case: StandingControl) -> (Fixture, RecoveryAuthorized) {
+fn control_authorization(standing: StandingControl) -> (Fixture, RecoveryAuthorized) {
     let mut fixture = Fixture::new();
     let mut authorization = fixture.authorize();
     let agent = fixture.facts.binding.work.agent;
-    let cause = match case {
+    let cause = match standing {
         StandingControl::Halted | StandingControl::PausedHalt => Record::Halt { agent, text: None },
         StandingControl::UnknownHeld | StandingControl::UnknownUnchanged => Record::AgentHeld {
             agent,
@@ -1034,7 +1034,7 @@ fn control_authorization(case: StandingControl) -> (Fixture, RecoveryAuthorized)
         },
     };
     control_source(&mut fixture, 85, cause);
-    if !matches!(case, StandingControl::Halted) {
+    if !matches!(standing, StandingControl::Halted) {
         control_source(
             &mut fixture,
             86,
@@ -1045,7 +1045,7 @@ fn control_authorization(case: StandingControl) -> (Fixture, RecoveryAuthorized)
         );
     }
     authorization.expected_control = fixture.facts.control_lsn;
-    if matches!(case, StandingControl::UnknownUnchanged) {
+    if matches!(standing, StandingControl::UnknownUnchanged) {
         authorization.resume_lsn = None;
     } else {
         control_source(
