@@ -373,7 +373,7 @@ impl Writer {
     /// it beside their wildcards, and `budget::apply` matches no record at all, returning before
     /// any record arm unless `turns::apply` handed it an ended turn.
     ///
-    /// This is not checkpoint-based recovery: the record attests is that the writer reached this position under this `PROJECTION_VERSION`,
+    /// This is not checkpoint-based recovery: the record attests that the writer reached this position under this `PROJECTION_VERSION`,
     /// and **nothing about what any projection has applied**. Starting a replay from one, and
     /// archiving the segments before one, are both the follow-up: replay starting from the
     /// latest usable `Checkpoint` needs the `crc32c` that `Record::Checkpoint` is to gain,

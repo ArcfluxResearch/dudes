@@ -284,7 +284,6 @@ fn an_unknown_persist_token_does_nothing() {
     harness.hire_with_goal(&["npm", "test"]);
     let before = harness.trace.len();
 
-    // Deliberately pair an emitted entry with a token this fixture never issued.
     let seen = harness.step(Input::Persisted {
         token: PersistToken(9_999),
         append: dudes_supervisor::input::RecordedAppend::try_new(

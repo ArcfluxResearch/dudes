@@ -2654,7 +2654,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// returns its original result even while fenced, and a durable different digest conflicts;
     /// neither reads the live world. **Then the fence**, before anything that does. **Then the
     /// world**, on the supervisor's own fold: the first of `agent_retired`, `agent_attached` and
-    /// `question_closed` that holds. **Then the append**, whose permit `write_frame` takes after
+    /// `question_closed` that holds. **Then the append**, whose permit `append_checked` takes after
     /// the world check and releases after the fsync, before fold, decide or Spawn.
     fn browser_answer(
         &mut self,
@@ -2742,7 +2742,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// **Index truth first**, even while fenced: a durable same key returns its original result,
     /// and a durable different digest conflicts. **Then the fence**, before anything that reads
     /// the world. **Then the world**, on the supervisor's own fold (the refusal reasons, in order). **Then
-    /// the append**, through the existing command with the attribution beside it; `write_frame`
+    /// the append**, through the existing command with the attribution beside it; `append_checked`
     /// takes the permit after the world check and releases it after the fsync, before fold,
     /// decide or Spawn. A local command that reached this thread first moved the control identity,
     /// so the request is refused rather than laid over it.
@@ -3066,7 +3066,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// to have nothing left and takes its workspace's enrolled numbers; a named check must be
     /// enrolled for the agent's workspace at the revision the page read. Its caller appends in the
     /// same job, with nothing between these reads and the append, through the existing
-    /// `Command::GoalSet`; `write_frame` takes the permit and releases it after the fsync, before
+    /// `Command::GoalSet`; `append_checked` takes the permit and releases it after the fsync, before
     /// fold, decide or Spawn.
     fn browser_goal_admission(
         &self,
@@ -3692,7 +3692,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     ///
     /// **Index truth first**, even while fenced. **Then the fence**, before anything that reads
     /// the world. **Then the world** (the refusal reasons, in order). **Then the append**, through the
-    /// existing `Command::Retire` with the attribution beside it; `write_frame` takes the permit
+    /// existing `Command::Retire` with the attribution beside it; `append_checked` takes the permit
     /// and releases it after the fsync, before the fold and the kill. **Then the agent's
     /// terminal**, in this same job and only once the retirement has folded, so a request that
     /// lost its permit, or whose append failed, closes nothing.
@@ -7773,7 +7773,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             self.fence_journal();
             return Err(error.context("invalid live goal replacement"));
         }
-        let committed = self.write_frame(entry)?;
+        let committed = self.append_checked(entry)?;
         let lsn = committed.lsn();
         let through = committed.through();
         let output = self.children.output();
@@ -7944,8 +7944,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .context("indexing durable browser retire record")
     }
 
-    /// Hold any browser permit only across the checked journal commit.
-    fn write_frame(&mut self, entry: &Entry) -> Result<CheckedAppend> {
+    fn append_checked(&mut self, entry: &Entry) -> Result<CheckedAppend> {
         self.ensure_memory_ready()?;
         self.ensure_journal_ready()?;
         if self.append_failure.take() {
