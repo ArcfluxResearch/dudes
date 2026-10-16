@@ -100,28 +100,28 @@ impl World {
             }));
         }
         match &entry.record {
-            Record::TurnIssued {
-                turn,
-                mode: Mode::Managed,
-                ..
-            }
-            | Record::TurnIssuedWithBrowserNote { turn, .. } => {
+            Record::TurnIssued { turn, .. }
+            | Record::TurnIssuedWithBrowserNote { turn, .. }
+            | Record::ConversationTurnIssued { turn, .. }
+            | Record::NoteOnlyTurnIssued { turn, .. }
+            | Record::TaughtNoteOnlyTurnIssued { turn, .. }
+            | Record::MailWakeOnlyTurnIssued(dudes_proto::MailWakeIssue { turn, .. }) => {
                 let Some(claim) = self.recovery_state.planned_claim(*turn) else {
                     return Ok(None);
                 };
-                let evidence = self.recovery_entry_source(lsn, entry)?;
-                let issue = evidence.issue().ok_or(RecoveryStateError::Binding)?;
-                let transition = RecoveryTransition::Issued {
-                    claim,
-                    issue: &issue,
-                };
-                let binding = transition.binding(&self.recovery_state)?;
-                let facts = self.recovery_facts(&binding)?;
-                self.recovery_state.validate_transition(
-                    transition,
-                    &facts,
-                    &self.recovery_history,
-                )?;
+                if !matches!(
+                    &entry.record,
+                    Record::TurnIssued {
+                        mode: Mode::Managed,
+                        ..
+                    } | Record::TurnIssuedWithBrowserNote {
+                        mode: Mode::Managed,
+                        ..
+                    }
+                ) {
+                    return Err(RecoveryStateError::Binding);
+                }
+                let (issue, facts) = self.recovery_issued_facts(lsn, entry, claim)?;
                 Ok(Some(PreparedRecovery::Issued {
                     claim,
                     issue,
@@ -173,6 +173,25 @@ impl World {
             }
             _ => Ok(None),
         }
+    }
+
+    fn recovery_issued_facts(
+        &self,
+        lsn: Lsn,
+        entry: &Entry,
+        claim: RecoveryClaimRef,
+    ) -> Result<(RecoveryIssue, RecoveryFacts), RecoveryStateError> {
+        let evidence = self.recovery_entry_source(lsn, entry)?;
+        let issue = evidence.issue().ok_or(RecoveryStateError::Binding)?;
+        let transition = RecoveryTransition::Issued {
+            claim,
+            issue: &issue,
+        };
+        let binding = transition.binding(&self.recovery_state)?;
+        let facts = self.recovery_facts(&binding)?;
+        self.recovery_state
+            .validate_transition(transition, &facts, &self.recovery_history)?;
+        Ok((issue, facts))
     }
 
     fn recovery_entry_source(

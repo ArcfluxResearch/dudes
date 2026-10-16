@@ -110,6 +110,18 @@ impl<'a> From<super::transition::RecoveryTransition<'a>> for Dependencies<'a> {
 }
 
 impl RecoveryCache {
+    /// Load one global planned-turn reservation and its existing claim dependencies.
+    /// Absence is authoritative only at the journal-owned checked boundary.
+    pub fn load_planned<R: RecoveryCacheReader>(
+        reader: &R,
+        through: Lsn,
+        turn: TurnId,
+    ) -> Result<Self, R::Error> {
+        let mut loader = Loader::new(reader, through)?;
+        loader.planned(turn, false)?;
+        Ok(loader.finish())
+    }
+
     /// Load only current work and its original planned-turn reservation from a certified store.
     /// Absence is authoritative only at the journal-owned checked boundary.
     pub fn load_work<R: RecoveryCacheReader>(
