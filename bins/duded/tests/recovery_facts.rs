@@ -301,7 +301,7 @@ fn one_actual_prefix_has_equal_inert_facts_and_exact_binding_refusals() {
             4 => target.work.turn = TurnId::from_parts(51, 99),
             5 => target.provider = Provider::Claude,
             6 => target.model_selection = None,
-            7 => target.worktree = Some(WorktreeId::from_parts(51, 99)),
+            7 => target.worktree = Some(WorktreeId::from_bytes([0x99; 16])),
             8 => {
                 target.ticket = Some(TicketBinding {
                     card: card(),
@@ -490,7 +490,7 @@ fn qualified_board_evidence_and_exact_invalidation_guards_agree() {
 
 #[test]
 fn current_ticket_round_and_original_lease_cannot_be_redirected() {
-    let lease = WorktreeId::from_parts(51, 8);
+    let lease = WorktreeId::from_bytes([0x51; 16]);
     let (mut prefix, mut binding) = ticket_prefix(Some(lease));
     binding.issue_lsn = prefix.issue(Vec::new());
     prefix.facts(&binding).unwrap();
