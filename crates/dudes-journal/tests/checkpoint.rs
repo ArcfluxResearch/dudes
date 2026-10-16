@@ -564,8 +564,6 @@ fn names_a_position(key: &str) -> bool {
 /// pointing at nothing, and this panics rather than recording it. `Lsn::ZERO` is the crate's
 /// documented sentinel for "before any record" and resolves to `None`, which is still compared
 /// between the runs — a mutation that put a real position where `ZERO` was still shows up.
-/// An absent nullable `session_lsn` stays in the row without a source-map entry, so it differs
-/// from numeric `ZERO`, which contributes `(path, None)`.
 fn resolve_positions(
     v: &mut Value,
     log: &BTreeMap<Lsn, Entry>,
