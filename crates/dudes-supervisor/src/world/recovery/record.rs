@@ -14,7 +14,7 @@ use crate::World;
 pub(in crate::world) enum PreparedRecovery<'a> {
     Current {
         transition: RecoveryTransition<'a>,
-        facts: RecoveryFacts,
+        facts: Box<RecoveryFacts>,
     },
     Invalidated {
         record: &'a RecoveryInvalidated,
@@ -23,13 +23,13 @@ pub(in crate::world) enum PreparedRecovery<'a> {
     Issued {
         claim: RecoveryClaimRef,
         issue: RecoveryIssue,
-        facts: RecoveryFacts,
+        facts: Box<RecoveryFacts>,
     },
     Consumed {
         claim: RecoveryClaimRef,
         issue: RecoveryIssue,
-        evidence: RecoveryWitness,
-        facts: RecoveryAttemptFacts,
+        evidence: Box<RecoveryWitness>,
+        facts: Box<RecoveryAttemptFacts>,
     },
 }
 
@@ -42,7 +42,7 @@ impl PreparedRecovery<'_> {
     ) -> Result<(), RecoveryStateError> {
         match self {
             Self::Current { transition, facts } => {
-                state.apply_transition(lsn, transition, &facts, history)
+                state.apply_transition(lsn, transition, facts.as_ref(), history)
             }
             Self::Invalidated { record, through } => {
                 state.apply_invalidation(lsn, record, through, history)
@@ -57,7 +57,7 @@ impl PreparedRecovery<'_> {
                     claim,
                     issue: &issue,
                 },
-                &facts,
+                facts.as_ref(),
                 history,
             ),
             Self::Consumed {
@@ -65,7 +65,7 @@ impl PreparedRecovery<'_> {
                 issue,
                 evidence,
                 facts,
-            } => state.apply_consumed(lsn, claim, &issue, &evidence, &facts),
+            } => state.apply_consumed(lsn, claim, &issue, evidence.as_ref(), facts.as_ref()),
         }
     }
 }
@@ -94,7 +94,10 @@ impl World {
             let facts = self.recovery_facts(&binding)?;
             self.recovery_state
                 .validate_transition(transition, &facts, &self.recovery_history)?;
-            return Ok(Some(PreparedRecovery::Current { transition, facts }));
+            return Ok(Some(PreparedRecovery::Current {
+                transition,
+                facts: Box::new(facts),
+            }));
         }
         match &entry.record {
             Record::TurnIssued {
@@ -122,7 +125,7 @@ impl World {
                 Ok(Some(PreparedRecovery::Issued {
                     claim,
                     issue,
-                    facts,
+                    facts: Box::new(facts),
                 }))
             }
             Record::TurnSpawned { turn, .. } | Record::TurnEnded { turn, .. } => {
@@ -164,8 +167,8 @@ impl World {
                 Ok(Some(PreparedRecovery::Consumed {
                     claim,
                     issue: issue.clone(),
-                    evidence,
-                    facts,
+                    evidence: Box::new(evidence),
+                    facts: Box::new(facts),
                 }))
             }
             _ => Ok(None),
