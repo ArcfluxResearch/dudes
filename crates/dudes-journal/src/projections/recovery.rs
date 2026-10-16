@@ -10,8 +10,8 @@ use dudes_proto::recovery_state::admission::{
 };
 use dudes_proto::recovery_state::cache::{RecoveryCache, RecoveryCacheReader, RecoveryCacheRow};
 use dudes_proto::recovery_state::history::{
-    RecoveryAttemptContext, RecoveryPriorControl, RecoveryWitness, RecoveryWitnessContext,
-    RecoveryWitnessOwner,
+    RecoveryAttemptContext, RecoveryHoldWitness, RecoveryPriorControl, RecoveryStandingControl,
+    RecoveryWitness, RecoveryWitnessContext, RecoveryWitnessOwner,
 };
 use dudes_proto::recovery_state::transition::RecoveryTransition;
 use dudes_proto::recovery_state::{
@@ -451,6 +451,14 @@ where
     })
 }
 
+fn standing_control(agent: &super::AgentRow) -> RecoveryStandingControl {
+    RecoveryStandingControl {
+        paused: agent.paused,
+        halted: agent.halted,
+        hold: agent.automatic_hold.as_ref().map(RecoveryHoldWitness::from),
+    }
+}
+
 fn current_agent(agent: &super::AgentRow) -> RecoveryAgentCurrent {
     RecoveryAgentCurrent {
         agent: agent.id,
@@ -459,7 +467,7 @@ fn current_agent(agent: &super::AgentRow) -> RecoveryAgentCurrent {
         worktree: agent.worktree,
         mode: agent.mode,
         retired: false,
-        halted: agent.halted,
+        control: standing_control(agent),
         goal: agent.goal,
         control_lsn: agent.control_lsn,
         session: agent.session.clone(),
@@ -650,6 +658,7 @@ pub(super) fn capture_before(
                     RecoveryPriorControl {
                         agent,
                         lsn: row.control_lsn,
+                        standing: standing_control(&row),
                     }
                 }),
             )

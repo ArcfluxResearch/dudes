@@ -1052,3 +1052,175 @@ fn literal_version_49_cache_rebuilds_latest_attempt_positions_and_context() {
         Some(spawn)
     );
 }
+
+fn write_literal_version_50_witnesses(path: &std::path::Path) {
+    let db = redb::Database::create(path).unwrap();
+    let txn = db.begin_write().unwrap();
+    txn.open_table(META)
+        .unwrap()
+        .insert(SCHEMA_VERSION, &50u64)
+        .unwrap();
+    {
+        let mut table = txn.open_table(RECOVERY).unwrap();
+        let rows = table
+            .iter()
+            .unwrap()
+            .map(|row| {
+                let (key, value) = row.unwrap();
+                (key.value().to_vec(), value.value().to_vec())
+            })
+            .collect::<Vec<_>>();
+        let mut standing_removed = 0;
+        let mut failures_removed = 0;
+        for (key, bytes) in rows {
+            let mut cell: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            if let Some(witness) = cell.get_mut("value") {
+                if let Some(previous) = witness
+                    .get_mut("context")
+                    .and_then(|context| context.get_mut("previous_control"))
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    standing_removed += usize::from(previous.remove("standing").is_some());
+                }
+                if let Some(end) = witness
+                    .get_mut("evidence")
+                    .and_then(|evidence| evidence.get_mut("End"))
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    failures_removed += usize::from(end.remove("fast_failure").is_some());
+                }
+            }
+            table
+                .insert(
+                    key.as_slice(),
+                    serde_json::to_vec(&cell).unwrap().as_slice(),
+                )
+                .unwrap();
+        }
+        assert!(standing_removed > 0 && failures_removed > 0);
+    }
+    txn.commit().unwrap();
+}
+
+fn append_qualified_end(
+    gateway: &mut CheckedRecoveryStore<'_>,
+    work: dudes_proto::recovery::RecoveryWork,
+) -> Lsn {
+    let mut spawned = entry(RecordKind::TurnSpawned);
+    if let Record::TurnSpawned {
+        agent,
+        turn,
+        session,
+        ..
+    } = &mut spawned.record
+    {
+        *agent = work.agent;
+        *turn = work.turn;
+        *session = None;
+    }
+    gateway.append(&spawned).unwrap();
+    let mut ended = entry(RecordKind::TurnEnded);
+    if let Record::TurnEnded {
+        agent,
+        turn,
+        mode,
+        provenance,
+        exit,
+        elapsed_ms,
+        usage,
+        model_usage,
+        outcome,
+        ..
+    } = &mut ended.record
+    {
+        *agent = work.agent;
+        *turn = work.turn;
+        *mode = dudes_types::Mode::Managed;
+        *provenance = dudes_types::Provenance::Observed;
+        *exit = dudes_proto::ExitStatus {
+            code: Some(1),
+            signal: None,
+        };
+        *elapsed_ms = Some(5_000);
+        *usage = None;
+        model_usage.clear();
+        *outcome = Some(dudes_proto::TurnOutcome::Completed);
+    }
+    gateway.append(&ended).unwrap()
+}
+
+#[test]
+fn literal_version_50_cache_rebuilds_standing_control_and_failure_classification() {
+    let mut fixture = Fixture::new(0);
+    let (installed, mut issued, mut binding) = goal_entries();
+    binding.hired_lsn = fixture.projections.last_applied;
+    let mut gateway = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap();
+    gateway.append(&installed).unwrap();
+    let decision = gateway.append(&decision_for(&issued)).unwrap();
+    if let Record::TurnIssued {
+        lsn_of_decision, ..
+    } = &mut issued.record
+    {
+        *lsn_of_decision = decision;
+    }
+    binding.issue_lsn = gateway.append(&issued).unwrap();
+    let end = append_qualified_end(&mut gateway, binding.work);
+    gateway
+        .append(&Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: Record::Halt {
+                agent: binding.work.agent,
+                text: None,
+            },
+        })
+        .unwrap();
+    gateway
+        .append(&Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: Record::Pause {
+                agent: binding.work.agent,
+                browser: None,
+            },
+        })
+        .unwrap();
+    let resumed = gateway
+        .append(&Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: Record::Resume {
+                agent: binding.work.agent,
+                browser: None,
+            },
+        })
+        .unwrap();
+    let expected = fixture.projections.export().unwrap();
+    let path = fixture.dir.path().join("state.redb");
+    drop(fixture.projections);
+    write_literal_version_50_witnesses(&path);
+    let mut reopened = Projections::open_with(&path, Fsync::None).unwrap();
+    assert_eq!(reopened.last_applied_lsn(), Lsn::ZERO);
+    crate::replay(&fixture.writer.reader(), &mut reopened).unwrap();
+    assert_eq!(reopened.export().unwrap(), expected);
+    let gateway = fixture.writer.checked_recovery(&mut reopened).unwrap();
+    assert!(matches!(
+        gateway.witness(end).unwrap().evidence(),
+        dudes_proto::recovery_state::history::RecoveryEvidence::End {
+            fast_failure: true,
+            ..
+        }
+    ));
+    let standing = gateway
+        .witness(resumed)
+        .unwrap()
+        .context()
+        .previous_control
+        .unwrap()
+        .standing;
+    assert!(standing.halted && standing.paused);
+    assert_eq!(
+        gateway.facts(&binding).unwrap().control,
+        RecoveryStandingControl::default()
+    );
+}

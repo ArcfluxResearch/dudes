@@ -3,8 +3,8 @@ use dudes_proto::recovery_state::admission::{
     RecoveryAgentCurrent, RecoveryCurrent, RecoveryGoalCurrent, RecoveryLeaseCurrent,
 };
 use dudes_proto::recovery_state::history::{
-    RecoveryAttemptContext, RecoveryPriorControl, RecoveryWitness, RecoveryWitnessContext,
-    task_digest,
+    RecoveryAttemptContext, RecoveryHoldWitness, RecoveryPriorControl, RecoveryStandingControl,
+    RecoveryWitness, RecoveryWitnessContext, task_digest,
 };
 use dudes_proto::recovery_state::{
     RecoveryAttempt, RecoveryAttemptFacts, RecoveryFacts, RecoveryStateError,
@@ -237,6 +237,7 @@ impl World {
                 self.agents.get(&agent).map(|row| RecoveryPriorControl {
                     agent,
                     lsn: row.control_lsn,
+                    standing: standing_control(row),
                 })
             }),
             cleared_goal: None,
@@ -269,6 +270,14 @@ pub(super) fn hash(bytes: &[u8]) -> dudes_proto::record::Hex32 {
     dudes_proto::record::Hex32::new(*blake3::hash(bytes).as_bytes())
 }
 
+fn standing_control(agent: &super::AgentRow) -> RecoveryStandingControl {
+    RecoveryStandingControl {
+        paused: agent.paused,
+        halted: agent.halted,
+        hold: agent.automatic_hold.as_ref().map(RecoveryHoldWitness::from),
+    }
+}
+
 fn current_agent(id: dudes_types::AgentId, agent: &super::AgentRow) -> RecoveryAgentCurrent {
     RecoveryAgentCurrent {
         agent: id,
@@ -281,7 +290,7 @@ fn current_agent(id: dudes_types::AgentId, agent: &super::AgentRow) -> RecoveryA
             Mode::Managed
         },
         retired: agent.retired,
-        halted: agent.halted,
+        control: standing_control(agent),
         goal: agent.goal,
         control_lsn: agent.control_lsn,
         session: agent.session.clone(),

@@ -101,7 +101,7 @@ impl Fixture {
                 worktree: None,
                 mode: Mode::Managed,
                 retired: false,
-                halted: false,
+                control: RecoveryStandingControl::default(),
                 goal: Some(self.binding.work.goal),
                 control_lsn: None,
                 session: None,

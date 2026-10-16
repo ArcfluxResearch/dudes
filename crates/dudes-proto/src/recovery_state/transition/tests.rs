@@ -1,5 +1,7 @@
 use super::super::RecoveryAttempt;
-use super::super::history::{RecoveryAttemptContext, RecoveryPriorControl, RecoveryWitnessContext};
+use super::super::history::{
+    RecoveryAttemptContext, RecoveryPriorControl, RecoveryStandingControl, RecoveryWitnessContext,
+};
 use super::*;
 use crate::record::{BrowserControl, Hex32, samples};
 use crate::recovery::{RecoveryAnswerDelivery, RecoveryIssued, RecoveryRecap};
@@ -59,6 +61,10 @@ impl Fixture {
                     confirmation_lsn: None,
                 },
                 control_lsn: Some(Lsn(50)),
+                control: RecoveryStandingControl {
+                    paused: true,
+                    ..RecoveryStandingControl::default()
+                },
                 confirmed_session: None,
             },
             required: RecoveryRequired {
@@ -128,6 +134,7 @@ impl Fixture {
             },
             RecoveryWitnessContext {
                 previous_control: Some(RecoveryPriorControl {
+                    standing: RecoveryStandingControl::default(),
                     agent: work.agent,
                     lsn: None,
                 }),
@@ -240,6 +247,7 @@ impl Fixture {
             },
             RecoveryWitnessContext {
                 previous_control: Some(RecoveryPriorControl {
+                    standing: self.facts.control,
                     agent: self.facts.binding.work.agent,
                     lsn: expected_control,
                 }),
@@ -248,6 +256,7 @@ impl Fixture {
         );
         self.facts.through = Lsn(80);
         self.facts.control_lsn = Some(Lsn(80));
+        self.facts.control = RecoveryStandingControl::default();
         RecoveryAuthorized {
             episode: self.state.current(self.facts.binding.work).unwrap().id,
             binding: self.facts.binding.clone(),
@@ -423,55 +432,21 @@ fn typed_unconfirmed_context_joins_the_actual_requested_confirmation() {
 
 #[test]
 fn typed_holds_join_exact_cause_and_named_failure_sources() {
-    let mut fixture = Fixture::new();
-    let work = fixture.facts.binding.work;
+    let work = Fixture::new().facts.binding.work;
     let first = RecoveryWork {
         turn: TurnId::from_parts(61, 9),
         ..work
     };
-    fixture.observe(
-        17,
-        Record::TurnIssued {
-            agent: work.agent,
-            goal: work.goal,
-            turn: first.turn,
-            mode: Mode::Managed,
-            lsn_of_decision: Lsn(16),
-            task: "first attempt".into(),
-            session: None,
-            model_selection: fixture.facts.binding.model_selection.clone(),
-            answers: Vec::new(),
-        },
-        RecoveryWitnessContext::default(),
-    );
-    fixture.end(19, first, 17, None, TurnOutcome::NoResult);
-    fixture.observe(
-        55,
-        Record::AgentHeld {
-            agent: work.agent,
-            provenance: Provenance::Observed,
-            cause: AutomaticHold::RepeatedFastFailure {
-                first: first.turn,
-                latest: work.turn,
-            },
-        },
-        RecoveryWitnessContext {
-            previous_control: Some(RecoveryPriorControl {
-                agent: work.agent,
-                lsn: Some(Lsn(50)),
+    let mut fixture = held_fixture(
+        repeated_hold(first, work),
+        Some(failure_end(first, Some(TurnOutcome::NoResult))),
+        failure_end(
+            work,
+            Some(TurnOutcome::Failed {
+                reason: "failure".into(),
             }),
-            ..RecoveryWitnessContext::default()
-        },
+        ),
     );
-    fixture.facts.control_lsn = Some(Lsn(55));
-    fixture.required.origin = RecoveryOrigin::Existing { lsn: Lsn(55) };
-    fixture.required.boundary = RecoveryBoundary::Held {
-        end_lsn: Lsn(40),
-        first: Some(crate::recovery::RecoveryFailure {
-            issue_lsn: Lsn(17),
-            end_lsn: Lsn(19),
-        }),
-    };
     assert_eq!(
         fixture.check(RecoveryTransition::Required(&fixture.required)),
         Ok(())
@@ -540,6 +515,7 @@ fn typed_browser_resume_requires_same_session_request_and_control() {
         },
         RecoveryWitnessContext {
             previous_control: Some(RecoveryPriorControl {
+                standing: RecoveryStandingControl::default(),
                 agent: fixture.facts.binding.work.agent,
                 lsn: Some(Lsn(80)),
             }),
@@ -1006,11 +982,23 @@ enum StandingControl {
 }
 
 fn control_source(fixture: &mut Fixture, at: u64, record: Record) {
+    let previous = fixture.facts.control;
+    let mut next = previous;
+    match &record {
+        Record::Pause { .. } => next.paused = true,
+        Record::Halt { .. } => next.halted = true,
+        Record::AgentHeld { cause, .. } => {
+            next.hold = Some(super::super::history::RecoveryHoldWitness::from(cause))
+        }
+        Record::Resume { .. } => next = RecoveryStandingControl::default(),
+        _ => unreachable!(),
+    }
     fixture.observe(
         at,
         record,
         RecoveryWitnessContext {
             previous_control: Some(RecoveryPriorControl {
+                standing: previous,
                 agent: fixture.facts.binding.work.agent,
                 lsn: fixture.facts.control_lsn,
             }),
@@ -1019,6 +1007,7 @@ fn control_source(fixture: &mut Fixture, at: u64, record: Record) {
     );
     fixture.facts.through = Lsn(at);
     fixture.facts.control_lsn = Some(Lsn(at));
+    fixture.facts.control = next;
 }
 
 fn control_authorization(standing: StandingControl) -> (Fixture, RecoveryAuthorized) {
@@ -1207,6 +1196,7 @@ fn held_fixture(cause: AutomaticHold, first_end: Option<Record>, latest_end: Rec
     fixture.facts.source_issue = fixture.history.at(Lsn(22)).unwrap().issue().unwrap();
     fixture.facts.attempt.spawn_lsn = repeated.then_some(Lsn(30));
     fixture.facts.control_lsn = None;
+    fixture.facts.control = RecoveryStandingControl::default();
     control_source(
         &mut fixture,
         55,

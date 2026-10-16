@@ -1580,9 +1580,6 @@ impl World {
                 session,
                 usage,
                 session_usage,
-                elapsed_ms,
-                exit,
-                model_usage,
                 ..
             } => {
                 if self.browser_issues.get(turn).is_some_and(|issue| {
@@ -1610,20 +1607,7 @@ impl World {
                         .get(agent)
                         .is_some_and(|row| row.goal == turn_row.goal)
                 });
-                let qualifies = *mode == dudes_types::Mode::Managed
-                    && *provenance == Provenance::Observed
-                    && exit.code.is_some_and(|code| code != 0)
-                    && elapsed_ms.is_some_and(|elapsed| elapsed <= 5_000)
-                    && !matches!(
-                        outcome,
-                        Some(
-                            TurnOutcome::Killed { .. }
-                                | TurnOutcome::NotLaunched { .. }
-                                | TurnOutcome::LaunchRefused { .. }
-                        )
-                    )
-                    && usage.as_ref().is_none_or(no_positive_usage)
-                    && model_usage.values().all(no_positive_usage);
+                let qualifies = dudes_proto::decision::is_fast_failure(&entry.record);
                 if current_goal_end && let Some(row) = self.agents.get_mut(agent) {
                     row.pending_launch_failure = match outcome {
                         Some(TurnOutcome::NotLaunched { reason }) => {
@@ -2866,10 +2850,6 @@ pub enum MintedFor {
     Live(AgentId),
     /// The retired-agent row: the agent is retired and still has a recorded child.
     RetiredWithChild(AgentId),
-}
-
-fn no_positive_usage(usage: &Usage) -> bool {
-    usage.total_tokens().count() == 0 && usage.usd.is_none_or(|usd| usd.micros() == 0)
 }
 
 fn launch_failed_reason(reason: &str) -> String {

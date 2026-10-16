@@ -3,7 +3,8 @@
 use dudes_types::{AgentId, GoalId, Lsn, Mode, Provider, SessionId, TurnId, WorktreeId};
 
 use super::history::{
-    RecoveryEvidence, RecoveryHistory, RecoveryIssueCarrier, RecoveryWitnessOwner,
+    RecoveryEvidence, RecoveryHistory, RecoveryIssueCarrier, RecoveryStandingControl,
+    RecoveryWitnessOwner,
 };
 use super::{RecoveryAttempt, RecoveryFacts, RecoveryStateError};
 use crate::diff_stamp::TicketBinding;
@@ -28,8 +29,8 @@ pub struct RecoveryAgentCurrent {
     pub mode: Mode,
     /// Retirement is standing.
     pub retired: bool,
-    /// Halt is standing, distinct from a releasable pause or automatic hold.
-    pub halted: bool,
+    /// Existing standing causes, separate from their latest control identity.
+    pub control: RecoveryStandingControl,
     /// Current goal pointer.
     pub goal: Option<GoalId>,
     /// Current control source, if any.
@@ -149,7 +150,7 @@ impl RecoveryCurrent<'_> {
             || current.worktree != requested.worktree
             || current.mode != Mode::Managed
             || current.retired
-            || current.halted
+            || current.control.halted
             || current.goal != Some(requested.work.goal)
             || goal.goal != requested.work.goal
             || goal.agent != current.agent
@@ -174,6 +175,7 @@ impl RecoveryCurrent<'_> {
             source_issue: self.issue.clone(),
             attempt: self.attempt,
             control_lsn: current.control_lsn,
+            control: current.control,
             confirmed_session: current.session.clone(),
         })
     }

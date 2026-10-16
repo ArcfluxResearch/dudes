@@ -209,6 +209,8 @@ pub enum RecoveryEvidence {
     },
     /// Recorded terminal facts, not a derived no-effect or completion verdict.
     End {
+        /// Exact result of the existing recorded-end value rule, without asserting a hold.
+        fast_failure: bool,
         /// Recorded mode.
         mode: Mode,
         /// Recorded observer.
@@ -260,10 +262,25 @@ pub enum RecoveryEvidence {
     Marker,
 }
 
+/// Standing values copied from the existing agent fold, without granting operator permission.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryStandingControl {
+    /// An ordinary pause is standing.
+    pub paused: bool,
+    /// Halt remains standing even when a later pause changed the control identity.
+    pub halted: bool,
+    /// Exact current automatic cause, including an unreadable future cause.
+    #[serde(deserialize_with = "crate::chat::required_nullable")]
+    pub hold: Option<RecoveryHoldWitness>,
+}
+
 /// The preceding control read from the existing agent fold before this record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryPriorControl {
+    /// Actual standing values before the named control record.
+    pub standing: RecoveryStandingControl,
     /// Actual affected agent.
     pub agent: AgentId,
     /// Previous control identity; explicit absence differs from unavailable context.
@@ -928,6 +945,7 @@ fn attempt_evidence(record: &Record) -> Option<(RecoveryWitnessOwner, RecoveryEv
                 turn: *turn,
             },
             E::End {
+                fast_failure: crate::decision::is_fast_failure(record),
                 mode: *mode,
                 provenance: *provenance,
                 outcome: end_class(outcome.as_ref()),
@@ -941,7 +959,7 @@ fn attempt_evidence(record: &Record) -> Option<(RecoveryWitnessOwner, RecoveryEv
             O::Agent(*agent),
             E::Hold {
                 provenance: *provenance,
-                cause: hold(cause),
+                cause: RecoveryHoldWitness::from(cause),
             },
         )),
         Record::Pause { agent, browser } | Record::Resume { agent, browser } => Some((
@@ -1132,19 +1150,17 @@ fn end_class(value: Option<&TurnOutcome>) -> RecoveryEndClass {
     }
 }
 
-fn hold(value: &AutomaticHold) -> RecoveryHoldWitness {
-    match value {
-        AutomaticHold::RepeatedFastFailure { first, latest } => {
-            RecoveryHoldWitness::RepeatedFastFailure {
+impl From<&AutomaticHold> for RecoveryHoldWitness {
+    fn from(value: &AutomaticHold) -> Self {
+        match value {
+            AutomaticHold::RepeatedFastFailure { first, latest } => Self::RepeatedFastFailure {
                 first: *first,
                 latest: *latest,
-            }
+            },
+            AutomaticHold::LaunchRefused { .. } => Self::LaunchRefused,
+            AutomaticHold::LaunchFailed { .. } => Self::LaunchFailed,
+            AutomaticHold::WorktreeMissing { worktree } => Self::WorktreeMissing(*worktree),
+            AutomaticHold::Unknown => Self::Unknown,
         }
-        AutomaticHold::LaunchRefused { .. } => RecoveryHoldWitness::LaunchRefused,
-        AutomaticHold::LaunchFailed { .. } => RecoveryHoldWitness::LaunchFailed,
-        AutomaticHold::WorktreeMissing { worktree } => {
-            RecoveryHoldWitness::WorktreeMissing(*worktree)
-        }
-        AutomaticHold::Unknown => RecoveryHoldWitness::Unknown,
     }
 }

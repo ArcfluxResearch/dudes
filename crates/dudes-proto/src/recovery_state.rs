@@ -60,6 +60,8 @@ pub struct RecoveryFacts {
     pub attempt: RecoveryAttempt,
     /// Current control identity.
     pub control_lsn: Option<Lsn>,
+    /// Actual current standing causes, copied from the existing owner.
+    pub control: history::RecoveryStandingControl,
     /// Exact still-confirmed conversation, when selectable.
     pub confirmed_session: Option<SessionId>,
 }

@@ -3,8 +3,8 @@
 use dudes_types::{Lsn, Mode, Provenance};
 
 use super::history::{
-    RecoveryEndClass, RecoveryEvidence, RecoveryHistory, RecoveryHoldWitness, RecoveryWitness,
-    RecoveryWitnessOwner,
+    RecoveryEndClass, RecoveryEvidence, RecoveryHistory, RecoveryHoldWitness,
+    RecoveryStandingControl, RecoveryWitness, RecoveryWitnessOwner,
 };
 use super::{
     RecoveryAttemptFacts, RecoveryEvent, RecoveryFacts, RecoveryState, RecoveryStateError,
@@ -370,10 +370,7 @@ fn validate_change(
             .is_some_and(|target| target.agent == work.agent && target.goal == work.goal),
         R::TicketChanged => binding.ticket.is_some_and(|ticket| {
             match (reference.kind, reference.owner, source.evidence()) {
-                (K::TicketRemoved, O::Card(card), _) => card == ticket.card,
-                (K::TicketAssigned, O::Card(card), RecoveryEvidence::Assigned { agent }) => {
-                    card == ticket.card && *agent != work.agent
-                }
+                (K::TicketRemoved | K::TicketAssigned, O::Card(card), _) => card == ticket.card,
                 (K::TicketStarted, O::Ticket { agent, goal, card }, _) => {
                     card == ticket.card && (agent != work.agent || goal != work.goal)
                 }
@@ -432,6 +429,7 @@ fn observed_end(source: &RecoveryWitness) -> Result<RecoveryEndClass, RecoverySt
             mode: Mode::Managed,
             provenance: Provenance::Observed,
             outcome,
+            ..
         } if source.reference().kind == RecordKind::TurnEnded => Ok(*outcome),
         _ => Err(RecoveryStateError::Binding),
     }
@@ -605,7 +603,19 @@ fn validate_hold(
             let first_issue = first_source.issue().ok_or(RecoveryStateError::Binding)?;
             let first_end = prior(history, facts, first.end_lsn)?;
             observed_end(first_end)?;
-            if *latest != record.binding.work.turn
+            if !matches!(
+                first_end.evidence(),
+                RecoveryEvidence::End {
+                    fast_failure: true,
+                    ..
+                }
+            ) || !matches!(
+                end.evidence(),
+                RecoveryEvidence::End {
+                    fast_failure: true,
+                    ..
+                }
+            ) || *latest != record.binding.work.turn
                 || first_issue.issued.work.turn != *first_turn
                 || first_issue.issued.work.agent != record.binding.work.agent
                 || first_issue.issued.work.goal != record.binding.work.goal
@@ -646,15 +656,20 @@ fn validate_authorized(
     if let RecoveryAttribution::LocalOperator { pid: 0, .. } = record.attribution {
         return Err(RecoveryStateError::Binding);
     }
+    if !valid_recovery_control(facts.control, &record.binding) {
+        return Err(RecoveryStateError::Control);
+    }
     if let Some(at) = record.resume_lsn {
         let resume = prior(history, facts, at)?;
+        let previous = resume
+            .context()
+            .previous_control
+            .ok_or(RecoveryStateError::Control)?;
         if resume.reference().kind != RecordKind::Resume
             || resume.reference().owner != RecoveryWitnessOwner::Agent(record.binding.work.agent)
-            || resume.context().previous_control
-                != Some(super::history::RecoveryPriorControl {
-                    agent: record.binding.work.agent,
-                    lsn: record.expected_control,
-                })
+            || previous.agent != record.binding.work.agent
+            || previous.lsn != record.expected_control
+            || !valid_recovery_control(previous.standing, &record.binding)
         {
             return Err(RecoveryStateError::Control);
         }
@@ -683,6 +698,17 @@ fn validate_authorized(
         validate_recap(record, recap, facts, history)?;
     }
     Ok(())
+}
+
+fn valid_recovery_control(control: RecoveryStandingControl, binding: &RecoveryBinding) -> bool {
+    !control.halted
+        && match control.hold {
+            Some(RecoveryHoldWitness::Unknown) => false,
+            Some(RecoveryHoldWitness::WorktreeMissing(worktree)) => {
+                binding.worktree == Some(worktree)
+            }
+            _ => true,
+        }
 }
 
 fn validate_recap(
@@ -789,6 +815,7 @@ fn validate_consumption(
             mode: Mode::Managed,
             provenance: Provenance::Observed,
             outcome: RecoveryEndClass::NotLaunched | RecoveryEndClass::LaunchRefused,
+            ..
         } if source.reference().kind == RecordKind::TurnEnded
             && context.previous_spawn_lsn.is_none() =>
         {

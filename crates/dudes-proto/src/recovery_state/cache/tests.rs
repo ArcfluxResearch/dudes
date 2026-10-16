@@ -71,6 +71,7 @@ fn facts() -> RecoveryFacts {
             },
         },
         control_lsn: Some(Lsn(90)),
+        control: crate::recovery_state::history::RecoveryStandingControl::default(),
         confirmed_session: None,
     }
 }

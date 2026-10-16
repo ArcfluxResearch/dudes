@@ -1015,3 +1015,198 @@ fn unregistered_typed_preparation_refuses_before_any_ordinary_fold_or_append() {
     assert!(prefix.world.recovery_facts(&binding).is_ok());
     prefix.assert_replay(&binding);
 }
+
+fn source(prefix: &mut Prefix, at: Lsn) -> dudes_proto::recovery_state::history::RecoveryWitness {
+    let before = prefix.persistent.export().unwrap();
+    let source = prefix
+        .writer
+        .checked_recovery(&mut prefix.persistent)
+        .unwrap()
+        .witness(at)
+        .unwrap();
+    assert_eq!(&source, prefix.world.recovery_witness(at).unwrap());
+    assert_eq!(prefix.persistent.export().unwrap(), before);
+    source
+}
+
+#[test]
+fn standing_control_keeps_halt_and_unknown_across_pause_until_ordinary_resume() {
+    use dudes_proto::recovery_state::history::{RecoveryHoldWitness, RecoveryStandingControl};
+    let (mut prefix, binding) = ordinary(command());
+    prefix.append(Record::Halt {
+        agent: agent(),
+        text: None,
+    });
+    let paused = prefix.append(Record::Pause {
+        agent: agent(),
+        browser: None,
+    });
+    let before_pause = source(&mut prefix, paused)
+        .context()
+        .previous_control
+        .unwrap()
+        .standing;
+    assert!(before_pause.halted && !before_pause.paused);
+    assert!(prefix.world.agents[&agent()].halted && prefix.world.agents[&agent()].paused);
+    assert_eq!(prefix.facts(&binding), Err(RecoveryStateError::Binding));
+    let resumed = prefix.append(Record::Resume {
+        agent: agent(),
+        browser: None,
+    });
+    let before_resume = source(&mut prefix, resumed)
+        .context()
+        .previous_control
+        .unwrap()
+        .standing;
+    assert!(before_resume.halted && before_resume.paused);
+    assert_eq!(
+        prefix.facts(&binding).unwrap().control,
+        RecoveryStandingControl::default()
+    );
+    prefix.assert_replay(&binding);
+    prefix.append(Record::AgentHeld {
+        agent: agent(),
+        provenance: Provenance::Observed,
+        cause: dudes_proto::AutomaticHold::Unknown,
+    });
+    let unknown_pause = prefix.append(Record::Pause {
+        agent: agent(),
+        browser: None,
+    });
+    let unknown = prefix.facts(&binding).unwrap().control;
+    assert_eq!(
+        unknown,
+        RecoveryStandingControl {
+            halted: false,
+            paused: true,
+            hold: Some(RecoveryHoldWitness::Unknown)
+        }
+    );
+    assert_eq!(
+        source(&mut prefix, unknown_pause)
+            .context()
+            .previous_control
+            .unwrap()
+            .standing
+            .hold,
+        Some(RecoveryHoldWitness::Unknown)
+    );
+    prefix.assert_replay(&binding);
+    let resumed = prefix.append(Record::Resume {
+        agent: agent(),
+        browser: None,
+    });
+    assert_eq!(
+        source(&mut prefix, resumed)
+            .context()
+            .previous_control
+            .unwrap()
+            .standing,
+        unknown
+    );
+    assert_eq!(
+        prefix.facts(&binding).unwrap().control,
+        RecoveryStandingControl::default()
+    );
+    prefix.assert_replay(&binding);
+}
+
+fn qualified_end() -> Record {
+    let mut ended = samples::record(RecordKind::TurnEnded);
+    if let Record::TurnEnded {
+        agent: owner,
+        turn: actual,
+        mode,
+        provenance,
+        exit,
+        elapsed_ms,
+        usage,
+        model_usage,
+        outcome,
+        ..
+    } = &mut ended
+    {
+        *owner = agent();
+        *actual = turn();
+        *mode = Mode::Managed;
+        *provenance = Provenance::Observed;
+        *exit = dudes_proto::ExitStatus {
+            code: Some(1),
+            signal: None,
+        };
+        *elapsed_ms = Some(5_000);
+        *usage = Some(dudes_types::Usage::ZERO);
+        model_usage.clear();
+        *outcome = Some(dudes_proto::TurnOutcome::Completed);
+    }
+    ended
+}
+
+#[test]
+fn end_classification_and_existing_world_fast_failures_agree_on_actual_records() {
+    use dudes_proto::recovery_state::history::RecoveryEvidence;
+    let (mut prefix, binding) = ordinary(command());
+    let mut spawned = samples::record(RecordKind::TurnSpawned);
+    if let Record::TurnSpawned {
+        agent: owner,
+        turn: actual,
+        ..
+    } = &mut spawned
+    {
+        *owner = agent();
+        *actual = turn();
+    }
+    prefix.append(spawned);
+    let mut cases = vec![("completed nonzero", qualified_end(), true)];
+    let mut older = qualified_end();
+    if let Record::TurnEnded { outcome, .. } = &mut older {
+        *outcome = None;
+    }
+    cases.push(("older outcome", older, true));
+    let mut zero = qualified_end();
+    if let Record::TurnEnded { exit, .. } = &mut zero {
+        exit.code = Some(0);
+    }
+    cases.push(("zero exit", zero, false));
+    let mut slow = qualified_end();
+    if let Record::TurnEnded { elapsed_ms, .. } = &mut slow {
+        *elapsed_ms = Some(5_001);
+    }
+    cases.push(("too slow", slow, false));
+    let mut billed = qualified_end();
+    if let Record::TurnEnded { model_usage, .. } = &mut billed {
+        model_usage.insert(
+            "model".into(),
+            dudes_types::Usage {
+                usd: Some(dudes_types::Usd::from_micros(1)),
+                ..dudes_types::Usage::ZERO
+            },
+        );
+    }
+    cases.push(("positive model cost", billed, false));
+    let mut killed = qualified_end();
+    if let Record::TurnEnded { outcome, .. } = &mut killed {
+        *outcome = Some(dudes_proto::TurnOutcome::Killed {
+            by: dudes_proto::KillReason::Halt,
+        });
+    }
+    cases.push(("excluded killed", killed, false));
+    let mut results = Vec::new();
+    for (name, record, expected) in cases {
+        let at = prefix.append(record);
+        let witness = source(&mut prefix, at);
+        let RecoveryEvidence::End { fast_failure, .. } = witness.evidence() else {
+            panic!("end witness missing");
+        };
+        results.push((
+            name,
+            *fast_failure,
+            prefix.world.agents[&agent()].fast_failures.is_some(),
+            expected,
+        ));
+    }
+    for (name, recorded, live, expected) in results {
+        assert_eq!((recorded, live), (expected, expected), "{name}");
+    }
+    prefix.assert_replay(&binding);
+}
