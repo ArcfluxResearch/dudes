@@ -715,6 +715,51 @@ mod tests {
                     .persisted_append(*token, Lsn(u64::try_from(self.h.journal.len()).unwrap())),
             })
         }
+        fn checkpointed_input(&mut self, effects: &[Seen]) -> Input {
+            let [Seen::Persist { token, entry }] = effects else {
+                panic!("one actual emitted mail append");
+            };
+            self.h.journal.push(entry.clone());
+            let main = Lsn(u64::try_from(self.h.journal.len()).unwrap());
+            let through = Lsn(main.0 + 1);
+            let checkpoint = Entry {
+                at: entry.at,
+                record: Record::Checkpoint {
+                    projection_version: 1,
+                    segment: through.segment(),
+                    offset: through.offset(),
+                },
+            };
+            self.h.journal.push(checkpoint.clone());
+            Input::Persisted {
+                token: *token,
+                append: RecordedAppend::try_new(
+                    through,
+                    (main, entry.clone()),
+                    Some((through, checkpoint)),
+                )
+                .unwrap(),
+            }
+        }
+
+        fn pending_issue(&mut self) -> Vec<Seen> {
+            let decision = self.final_decision();
+            let check = self.ack(&decision);
+            let issued = self.refresh(&check, at(5_000), SpendView::default());
+            let issued = self.instruction_phases(issued);
+            assert!(matches!(
+                issued.as_slice(),
+                [Seen::Persist {
+                    entry: Entry {
+                        record: Record::MailWakeOnlyTurnIssued(_),
+                        ..
+                    },
+                    ..
+                }]
+            ));
+            issued
+        }
+
         fn instruction_phases(&mut self, mut effects: Vec<Seen>) -> Vec<Seen> {
             for _ in 0..32 {
                 if let [
@@ -1039,6 +1084,223 @@ mod tests {
                     .is_none()
             );
             decision
+        }
+    }
+
+    #[test]
+    fn checkpointed_mail_issue_status_matches_physical_replay_without_another_launch() {
+        let mut outcomes = Vec::new();
+        for checkpoint in [false, true] {
+            let mut f = Flow::completed();
+            let issued = f.pending_issue();
+            let turn = match &issued[0] {
+                Seen::Persist {
+                    entry:
+                        Entry {
+                            record: Record::MailWakeOnlyTurnIssued(issue),
+                            ..
+                        },
+                    ..
+                } => issue.turn,
+                _ => unreachable!(),
+            };
+            let next = if checkpoint {
+                let input = f.checkpointed_input(&issued);
+                f.h.step(input)
+            } else {
+                f.ack(&issued)
+            };
+            let replay = f.restarted(&f.h.journal);
+            outcomes.push((
+                checkpoint,
+                f.h.supervisor.status_of(f.agent),
+                replay.h.supervisor.status_of(f.agent),
+            ));
+            assert_eq!(f.h.supervisor.world.agents[&f.agent].open_turn, Some(turn));
+            assert_eq!(
+                f.h.journal
+                    .iter()
+                    .filter(|entry| matches!(entry.record, Record::MailWakeOnlyTurnIssued(_)))
+                    .count(),
+                1
+            );
+            assert!(f.h.host.spawned.is_empty());
+            assert_eq!(
+                next.iter()
+                    .filter(|seen| matches!(seen, Seen::Spawn { .. }))
+                    .count(),
+                0
+            );
+        }
+        assert_eq!(
+            outcomes,
+            [
+                (
+                    false,
+                    dudes_types::AgentStatus::Running,
+                    dudes_types::AgentStatus::Running
+                ),
+                (
+                    true,
+                    dudes_types::AgentStatus::Running,
+                    dudes_types::AgentStatus::Running
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn checkpointed_exhausted_mail_decision_keeps_the_budget_recovery_retry() {
+        let mut outcomes = Vec::new();
+        for checkpoint in [false, true] {
+            let mut f = Flow::completed();
+            let decision = f.final_decision();
+            let check = f.ack(&decision);
+            let spend = SpendView {
+                goal: Spend {
+                    usd: Usd::from_dollars(6),
+                    ..Spend::default()
+                },
+                ..SpendView::default()
+            };
+            let refused = f.refresh(&check, at(2), spend);
+            assert!(matches!(
+                refused.as_slice(),
+                [Seen::Persist {
+                    entry: Entry {
+                        record: Record::MailWakeTurnDecided(MailWakeDecision {
+                            decision: MailWakeAdmission::Exhausted { .. },
+                            ..
+                        }),
+                        ..
+                    },
+                    ..
+                }]
+            ));
+            let next = if checkpoint {
+                let input = f.checkpointed_input(&refused);
+                f.h.step(input)
+            } else {
+                f.ack(&refused)
+            };
+            assert!(next.is_empty());
+            let status = f.h.supervisor.status_of(f.agent);
+            let replay = f.restarted(&f.h.journal);
+            let replay_status = replay.h.supervisor.status_of(f.agent);
+            assert!(
+                f.h.step(Input::Spend {
+                    agent: f.agent,
+                    view: SpendView::default()
+                })
+                .is_empty()
+            );
+            f.h.supervisor.re_examine_exhausted();
+            let retry: Vec<_> = f.h.supervisor.effects().iter().map(Seen::of).collect();
+            let requested = matches!(retry.as_slice(), [Seen::MailWakeRefresh { agent, .. }] if *agent == f.agent);
+            let issued_again = if requested {
+                let refreshed = f.refresh(&retry, at(3), SpendView::default());
+                matches!(
+                    refreshed.as_slice(),
+                    [Seen::Persist {
+                        entry: Entry {
+                            record: Record::MailWakeTurnDecided(MailWakeDecision {
+                                decision: MailWakeAdmission::Issue { .. },
+                                ..
+                            }),
+                            ..
+                        },
+                        ..
+                    }]
+                )
+            } else {
+                false
+            };
+            outcomes.push((checkpoint, status, replay_status, requested, issued_again));
+            assert!(f.h.host.spawned.is_empty());
+            assert!(
+                f.h.journal
+                    .iter()
+                    .all(|entry| !matches!(entry.record, Record::MailWakeOnlyTurnIssued(_)))
+            );
+        }
+        assert_eq!(
+            outcomes,
+            [
+                (
+                    false,
+                    dudes_types::AgentStatus::Exhausted,
+                    dudes_types::AgentStatus::Exhausted,
+                    true,
+                    true
+                ),
+                (
+                    true,
+                    dudes_types::AgentStatus::Exhausted,
+                    dudes_types::AgentStatus::Exhausted,
+                    true,
+                    true
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_refused_mail_checkpoint_defers_status_and_continuation_after_the_main_prefix() {
+        for fault in [false, true] {
+            let mut f = Flow::completed();
+            let issued = f.pending_issue();
+            let input = f.checkpointed_input(&issued);
+            let Input::Persisted { token, append } = &input else {
+                unreachable!()
+            };
+            let token = *token;
+            let main = (append.lsn(), append.entry().clone());
+            let through = append.through();
+            let status = f.h.supervisor.status_of(f.agent);
+            let mut prefix = f.h.supervisor.world.clone();
+            prefix.apply_checked(main.0, &main.1).unwrap();
+            if fault {
+                f.h.supervisor.refuse_fold_once(
+                    through,
+                    dudes_proto::recovery_state::RecoveryStateError::Binding,
+                );
+            }
+            let result = f.h.supervisor.handle(input);
+            if fault {
+                assert_eq!(
+                    result,
+                    Err(DurableInputError::Recovery {
+                        lsn: through,
+                        reason: dudes_proto::recovery_state::RecoveryStateError::Binding,
+                    })
+                );
+                assert_eq!(format!("{:?}", f.h.supervisor.world), format!("{prefix:?}"));
+                assert_eq!(f.h.supervisor.status_of(f.agent), status);
+                assert_eq!(f.h.supervisor.ledger[&token].entry, main.1);
+                assert!(f.h.supervisor.effects().is_empty());
+            } else {
+                assert_eq!(result.unwrap().folded_through(), Some(through));
+                assert_eq!(f.h.supervisor.world.last_applied_lsn, Some(through));
+                assert!(!f.h.supervisor.ledger.contains_key(&token));
+                assert!(matches!(
+                    f.h.supervisor.effects(),
+                    [crate::Effect::Persist {
+                        entry: Entry {
+                            record: Record::HookTokenMinted { .. },
+                            ..
+                        },
+                        ..
+                    }]
+                ));
+            }
+            assert!(f.h.host.spawned.is_empty());
+            assert_eq!(
+                f.h.journal
+                    .iter()
+                    .filter(|entry| matches!(entry.record, Record::MailWakeOnlyTurnIssued(_)))
+                    .count(),
+                1
+            );
         }
     }
 
