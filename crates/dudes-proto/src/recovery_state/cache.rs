@@ -11,7 +11,7 @@ use super::{RecoveryClaimState, RecoveryEpisode, RecoveryEvent, RecoveryState};
 use crate::record::Hex32;
 use crate::recovery::{
     MAX_RECOVERY_RECAP_BYTES, RecoveryAuthorized, RecoveryBinding, RecoveryContext,
-    RecoveryEpisodeId, RecoveryIssue, RecoveryPlan, RecoveryReason, RecoveryWork,
+    RecoveryEpisodeId, RecoveryIssue, RecoveryPlan, RecoveryReason, RecoveryRequired, RecoveryWork,
 };
 
 #[cfg(test)]
@@ -76,6 +76,38 @@ pub struct RecoveryCache {
     before: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
+enum Dependencies<'a> {
+    Required(&'a RecoveryRequired),
+    Authorized(&'a RecoveryAuthorized),
+    Claim(Lsn),
+}
+
+impl<'a> From<RecoveryEvent<'a>> for Dependencies<'a> {
+    fn from(event: RecoveryEvent<'a>) -> Self {
+        match event {
+            RecoveryEvent::Required(record) => Self::Required(record),
+            RecoveryEvent::Authorized(record) => Self::Authorized(record),
+            RecoveryEvent::Issued { claim, .. }
+            | RecoveryEvent::Consumed { claim, .. }
+            | RecoveryEvent::Invalidated { claim, .. } => Self::Claim(claim.authorization_lsn),
+        }
+    }
+}
+
+impl<'a> From<super::transition::RecoveryTransition<'a>> for Dependencies<'a> {
+    fn from(transition: super::transition::RecoveryTransition<'a>) -> Self {
+        use super::transition::RecoveryTransition as T;
+        match transition {
+            T::Required(record) => Self::Required(record),
+            T::Authorized(record) => Self::Authorized(record),
+            T::Issued { claim, .. } | T::Consumed { claim, .. } => {
+                Self::Claim(claim.authorization_lsn)
+            }
+            T::Invalidated(record) => Self::Claim(record.claim.authorization_lsn),
+        }
+    }
+}
+
 impl RecoveryCache {
     /// Load only required actual source positions from a caller-owned certified prefix.
     ///
@@ -103,7 +135,7 @@ impl RecoveryCache {
         witnesses: &[RecoveryWitnessRef],
     ) -> Result<Self, R::Error> {
         let mut loader = Loader::new(reader, through)?;
-        loader.event(event)?;
+        loader.dependencies(event.into())?;
         for reference in witnesses {
             loader.witness(*reference)?;
         }
@@ -117,7 +149,9 @@ impl RecoveryCache {
         through: Lsn,
         transition: super::transition::RecoveryTransition<'_>,
     ) -> Result<Self, R::Error> {
-        Self::load(reader, through, transition.event(), &[])
+        let mut loader = Loader::new(reader, through)?;
+        loader.dependencies(transition.into())?;
+        Ok(loader.finish())
     }
 
     /// Load an actual source position before retaining its immutable witness.
@@ -563,9 +597,9 @@ impl<'a, R: RecoveryCacheReader> Loader<'a, R> {
         Ok(())
     }
 
-    fn event(&mut self, event: RecoveryEvent<'_>) -> Result<(), R::Error> {
-        match event {
-            RecoveryEvent::Required(value) => {
+    fn dependencies(&mut self, scope: Dependencies<'_>) -> Result<(), R::Error> {
+        match scope {
+            Dependencies::Required(value) => {
                 if self.current(value.binding.work)?.is_none() {
                     self.planned(value.binding.work.turn, false)?;
                 }
@@ -574,17 +608,15 @@ impl<'a, R: RecoveryCacheReader> Loader<'a, R> {
                     self.current(previous.episode.work)?;
                 }
             }
-            RecoveryEvent::Authorized(value) => {
+            Dependencies::Authorized(value) => {
                 self.request(value.request_id, false)?;
                 self.current(value.episode.work)?;
                 if let RecoveryPlan::New { turn, .. } = value.plan {
                     self.planned(turn, false)?;
                 }
             }
-            RecoveryEvent::Issued { claim, .. }
-            | RecoveryEvent::Consumed { claim, .. }
-            | RecoveryEvent::Invalidated { claim, .. } => {
-                self.authorization(claim.authorization_lsn, true)?;
+            Dependencies::Claim(authorization) => {
+                self.authorization(authorization, true)?;
             }
         }
         Ok(())

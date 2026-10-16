@@ -125,28 +125,6 @@ impl<'a> RecoveryTransition<'a> {
         positions.dedup();
         positions
     }
-
-    // Dependency selection for the raw scoped loader; consumption validation supplies the
-    // selected session from the stored authorization, never this placeholder.
-    pub(super) fn event(self) -> RecoveryEvent<'a> {
-        match self {
-            Self::Required(record) => RecoveryEvent::Required(record),
-            Self::Authorized(record) => RecoveryEvent::Authorized(record),
-            Self::Invalidated(record) => RecoveryEvent::Invalidated {
-                claim: record.claim,
-                evidence: record.evidence,
-            },
-            Self::Issued { claim, issue } => RecoveryEvent::Issued {
-                claim,
-                issued: &issue.issued,
-            },
-            Self::Consumed { claim, issue, .. } => RecoveryEvent::Consumed {
-                claim,
-                issue,
-                session: None,
-            },
-        }
-    }
 }
 
 impl RecoveryState {
@@ -158,13 +136,19 @@ impl RecoveryState {
         facts: &RecoveryFacts,
         history: &RecoveryHistory,
     ) -> Result<(), RecoveryStateError> {
-        match transition {
-            RecoveryTransition::Required(record) => validate_required(record, facts, history)?,
-            RecoveryTransition::Authorized(record) => validate_authorized(record, facts, history)?,
+        let event = match transition {
+            RecoveryTransition::Required(record) => {
+                validate_required(record, facts, history)?;
+                RecoveryEvent::Required(record)
+            }
+            RecoveryTransition::Authorized(record) => {
+                validate_authorized(record, facts, history)?;
+                RecoveryEvent::Authorized(record)
+            }
             RecoveryTransition::Invalidated(record) => {
                 return self.validate_invalidation(record, facts.through, history);
             }
-            RecoveryTransition::Issued { issue, .. } => {
+            RecoveryTransition::Issued { claim, issue } => {
                 if issue.lsn <= facts.through {
                     return Err(RecoveryStateError::Position);
                 }
@@ -176,6 +160,10 @@ impl RecoveryState {
                     {
                         return Err(RecoveryStateError::Binding);
                     }
+                }
+                RecoveryEvent::Issued {
+                    claim,
+                    issued: &issue.issued,
                 }
             }
             RecoveryTransition::Consumed {
@@ -194,8 +182,8 @@ impl RecoveryState {
                     },
                 );
             }
-        }
-        self.validate_next(transition.event(), facts)
+        };
+        self.validate_next(event, facts)
     }
 
     /// Apply a source-validated typed event at its actual position. No record is registered here.
@@ -209,13 +197,23 @@ impl RecoveryState {
         if lsn <= self.last_applied {
             return Ok(());
         }
-        if let RecoveryTransition::Invalidated(record) = transition {
-            return self.apply_invalidation(lsn, record, facts.through, history);
+        if !matches!(transition, RecoveryTransition::Invalidated(_)) {
+            self.validate_transition(transition, facts, history)?;
         }
-        self.validate_transition(transition, facts, history)?;
         let event = match transition {
-            RecoveryTransition::Issued { issue, .. } if issue.lsn != lsn => {
-                return Err(RecoveryStateError::Position);
+            RecoveryTransition::Required(record) => RecoveryEvent::Required(record),
+            RecoveryTransition::Authorized(record) => RecoveryEvent::Authorized(record),
+            RecoveryTransition::Issued { claim, issue } => {
+                if issue.lsn != lsn {
+                    return Err(RecoveryStateError::Position);
+                }
+                RecoveryEvent::Issued {
+                    claim,
+                    issued: &issue.issued,
+                }
+            }
+            RecoveryTransition::Invalidated(record) => {
+                return self.apply_invalidation(lsn, record, facts.through, history);
             }
             RecoveryTransition::Consumed {
                 claim,
@@ -234,7 +232,6 @@ impl RecoveryState {
                     },
                 );
             }
-            _ => transition.event(),
         };
         self.apply(lsn, event, facts)
     }

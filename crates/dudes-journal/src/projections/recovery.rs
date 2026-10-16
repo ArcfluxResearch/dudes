@@ -87,7 +87,7 @@ impl<'a> CheckedRecoveryStore<'a> {
         )
     }
 
-    /// Refuse an unregistered typed recovery transition without changing rows or the journal.
+    /// Validate an unregistered typed recovery transition without changing rows or the journal.
     /// This preparation is not authenticated command admission and cannot release work.
     pub fn prepare_transition(&self, transition: RecoveryTransition<'_>) -> Result<()> {
         check(self.writer, self.projections)?;
@@ -265,7 +265,6 @@ impl<'a> CheckedRecoveryStore<'a> {
     }
 }
 
-/// Tables borrowed from the same transaction and its actual before-record cut.
 pub(super) struct FactTables<'a, Rows, Sources, Meta> {
     pub agents: &'a Rows,
     pub goals: &'a Rows,
