@@ -656,7 +656,7 @@ fn validate_authorized(
     if let RecoveryAttribution::LocalOperator { pid: 0, .. } = record.attribution {
         return Err(RecoveryStateError::Binding);
     }
-    if !valid_recovery_control(facts.control, &record.binding) {
+    if facts.control.halted || facts.control.paused || facts.control.hold.is_some() {
         return Err(RecoveryStateError::Control);
     }
     if let Some(at) = record.resume_lsn {
@@ -669,7 +669,7 @@ fn validate_authorized(
             || resume.reference().owner != RecoveryWitnessOwner::Agent(record.binding.work.agent)
             || previous.agent != record.binding.work.agent
             || previous.lsn != record.expected_control
-            || !valid_recovery_control(previous.standing, &record.binding)
+            || !releasable_control(previous.standing, &record.binding)
         {
             return Err(RecoveryStateError::Control);
         }
@@ -700,7 +700,7 @@ fn validate_authorized(
     Ok(())
 }
 
-fn valid_recovery_control(control: RecoveryStandingControl, binding: &RecoveryBinding) -> bool {
+fn releasable_control(control: RecoveryStandingControl, binding: &RecoveryBinding) -> bool {
     !control.halted
         && match control.hold {
             Some(RecoveryHoldWitness::Unknown) => false,
