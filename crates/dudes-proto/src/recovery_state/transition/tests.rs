@@ -257,6 +257,14 @@ impl Fixture {
         self.facts.through = Lsn(80);
         self.facts.control_lsn = Some(Lsn(80));
         self.facts.control = RecoveryStandingControl::default();
+        self.authorization(expected_control, Some(Lsn(80)))
+    }
+
+    fn authorization(
+        &self,
+        expected_control: Option<Lsn>,
+        resume_lsn: Option<Lsn>,
+    ) -> RecoveryAuthorized {
         RecoveryAuthorized {
             episode: self.state.current(self.facts.binding.work).unwrap().id,
             binding: self.facts.binding.clone(),
@@ -267,8 +275,8 @@ impl Fixture {
                 uid: Some(501),
             },
             expected_control,
-            resulting_control: Some(Lsn(80)),
-            resume_lsn: Some(Lsn(80)),
+            resulting_control: self.facts.control_lsn,
+            resume_lsn,
             plan: RecoveryPlan::New {
                 turn: TurnId::from_parts(61, 4),
                 context: RecoveryContext::Fresh {
@@ -1615,4 +1623,80 @@ fn same_agent_ticket_assignment_supplies_the_original_binding_invalidation() {
             .state,
         super::super::RecoveryClaimState::Pending
     ));
+}
+
+#[test]
+fn authorization_without_own_resume_refuses_uncleared_pause_and_known_holds() {
+    let paused = Fixture::new();
+    let work = paused.facts.binding.work;
+    let first = RecoveryWork {
+        turn: TurnId::from_parts(61, 9),
+        ..work
+    };
+    let repeated = held_fixture(
+        repeated_hold(first, work),
+        Some(failure_end(first, Some(TurnOutcome::NoResult))),
+        failure_end(work, Some(TurnOutcome::NoResult)),
+    );
+    let launch_failed = held_fixture(
+        AutomaticHold::LaunchFailed {
+            reason: "host failure".into(),
+        },
+        None,
+        failure_end(
+            work,
+            Some(TurnOutcome::NotLaunched {
+                reason: "host failure".into(),
+            }),
+        ),
+    );
+    let launch_refused = held_fixture(
+        AutomaticHold::LaunchRefused {
+            reason: "adapter refusal".into(),
+        },
+        None,
+        failure_end(
+            work,
+            Some(TurnOutcome::LaunchRefused {
+                reason: "adapter refusal".into(),
+            }),
+        ),
+    );
+    let cases = [
+        ("paused", paused),
+        ("repeated failure", repeated),
+        ("launch failed", launch_failed),
+        ("launch refused", launch_refused),
+    ];
+    let mut results = Vec::new();
+    for (name, mut fixture) in cases {
+        fixture
+            .state
+            .apply_transition(
+                Lsn(70),
+                RecoveryTransition::Required(&fixture.required),
+                &fixture.facts,
+                &fixture.history,
+            )
+            .unwrap();
+        fixture.facts.through = Lsn(70);
+        let authorization = fixture.authorization(fixture.facts.control_lsn, None);
+        let before = fixture.state.clone();
+        let result = fixture.state.apply_transition(
+            Lsn(80),
+            RecoveryTransition::Authorized(&authorization),
+            &fixture.facts,
+            &fixture.history,
+        );
+        results.push((name, result, fixture.state == before));
+    }
+    assert_eq!(
+        results,
+        vec![
+            ("paused", Err(RecoveryStateError::Control), true),
+            ("repeated failure", Err(RecoveryStateError::Control), true),
+            ("launch failed", Err(RecoveryStateError::Control), true),
+            ("launch refused", Err(RecoveryStateError::Control), true)
+        ]
+    );
 }
