@@ -1,3 +1,5 @@
+//! Equal factual recovery inputs from one actual ordinary journal prefix.
+
 use dudes_journal::{Error, Fsync, JournalOptions, Projections, Writer};
 use dudes_proto::diff_stamp::TicketBinding;
 use dudes_proto::record::samples;
@@ -308,7 +310,7 @@ fn one_actual_prefix_has_equal_inert_facts_and_exact_binding_refusals() {
                     round: 1,
                     goal: goal(),
                     claimant: agent(),
-                })
+                });
             }
             _ => unreachable!(),
         }
