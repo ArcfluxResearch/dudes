@@ -424,9 +424,8 @@ fn a_labelled_post_reader_fold_fault_stops_before_replay_completion() {
             ),
         );
         if fault {
-            let failure = match result {
-                Ok(_) => panic!("the labelled fold fault must stop boot"),
-                Err(error) => error,
+            let Err(failure) = result else {
+                panic!("the labelled fold fault must stop boot");
             };
             assert_eq!(
                 failure.downcast_ref::<dudes_supervisor::input::DurableInputError>(),
