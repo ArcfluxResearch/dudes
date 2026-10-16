@@ -180,6 +180,7 @@ fn failure_serializing_the_last_folded_patch_keeps_its_original_context() {
         },
     };
     let append = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let through = append.through();
     let (main, checkpoint) = append.into_parts();
     let inputs = std::iter::once(main)
         .chain(checkpoint)
@@ -202,7 +203,7 @@ fn failure_serializing_the_last_folded_patch_keeps_its_original_context() {
         failure.root_cause().to_string(),
         "Floor browser event exceeds 1 MiB"
     );
-    assert_eq!(daemon.sup.world().last_applied_lsn, Some(lsn));
+    assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
     assert!(daemon.ctx.pending_floor.is_empty());
     assert!(daemon.ctx.pending_floor_base.is_none());
     assert!(matches!(

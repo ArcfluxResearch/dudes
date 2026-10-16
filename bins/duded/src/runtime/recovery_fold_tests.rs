@@ -432,16 +432,14 @@ fn checkpointed_live_and_direct_boundaries_reach_the_actual_final_cut() {
         Some(daemon.ctx.projections.last_applied_lsn())
     );
     let close = daemon
-        .ctx
-        .append_instruction_boundary(
-            &mut daemon.sup,
+        .append_pty_entry(
             Record::PtyCloseRequested {
                 pty: PtyId(905),
                 actor: Actor::System,
                 provenance: None,
                 reason: "checkpointed boundary".into(),
             },
-            &mut daemon.closing,
+            "record checkpointed PTY close",
         )
         .unwrap();
     let through = daemon.ctx.projections.last_applied_lsn();
