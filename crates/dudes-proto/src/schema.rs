@@ -1444,6 +1444,46 @@ mod recovery_schema_tests {
     use dudes_types::Timestamp;
 
     #[test]
+    fn recovery_local_operator_uid_requires_a_nullable_unsigned_integer() {
+        let schema = super::schema_for::<Entry>().to_value();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let entry = Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: samples::record(RecordKind::RecoveryAuthorized),
+        };
+        let value = serde_json::to_value(entry).unwrap();
+        assert_eq!(value["attribution"]["kind"], "local_operator");
+        for uid in [
+            serde_json::Value::Null,
+            serde_json::json!(0),
+            serde_json::json!(u32::MAX),
+        ] {
+            let mut accepted = value.clone();
+            accepted["attribution"]["uid"] = uid;
+            assert!(validator.is_valid(&accepted), "{accepted}");
+            let decoded = serde_json::from_value::<Entry>(accepted.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), accepted);
+        }
+        let mut omitted = value.clone();
+        omitted["attribution"]
+            .as_object_mut()
+            .unwrap()
+            .remove("uid");
+        assert!(!validator.is_valid(&omitted));
+        assert!(serde_json::from_value::<Entry>(omitted).is_err());
+        for uid in [
+            serde_json::json!(-1),
+            serde_json::json!("501"),
+            serde_json::json!(false),
+        ] {
+            let mut refused = value.clone();
+            refused["attribution"]["uid"] = uid;
+            assert!(!validator.is_valid(&refused), "{refused}");
+            assert!(serde_json::from_value::<Entry>(refused).is_err());
+        }
+    }
+
+    #[test]
     fn recovery_nullable_intent_is_present_in_schema_and_original_decode() {
         let schema = super::schema_for::<Entry>().to_value();
         let validator = jsonschema::validator_for(&schema).unwrap();

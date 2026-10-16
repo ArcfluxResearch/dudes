@@ -434,6 +434,7 @@ fn recovery_cached_validation_rechecks_same_length_rewrite_and_bad_suffix() {
         let path = crate::segment::segment_path(fixture.writer.reader().dir(), at.segment());
         let (reader, _) = crate::Reader::open(fixture.writer.reader().dir()).unwrap();
         let mut bytes = std::fs::read(&path).unwrap();
+        let suffix = Lsn::from_parts(at.segment(), u64::try_from(bytes.len()).unwrap()).unwrap();
         authorization.episode.origin = Lsn(authorization.episode.origin.0 - 1);
         let entry = Entry {
             at: Timestamp::UNIX_EPOCH,
@@ -443,26 +444,23 @@ fn recovery_cached_validation_rechecks_same_length_rewrite_and_bad_suffix() {
         let mut frame = Vec::new();
         crate::frame::encode_required(RecordKind::RecoveryAuthorized, &payload, &mut frame)
             .unwrap();
-        if rewrite {
+        let (bad_lsn, expected_reason) = if rewrite {
             let offset = usize::try_from(at.offset()).unwrap();
             assert_eq!(bytes.len() - offset, frame.len());
             bytes[offset..].copy_from_slice(&frame);
+            (at, RecoveryStateError::Binding)
         } else {
             bytes.extend(frame);
-        }
+            (suffix, RecoveryStateError::DuplicateRequest)
+        };
         std::fs::write(&path, &bytes).unwrap();
         let before = cells(&fixture);
         let error = crate::replay(&reader, &mut Projections::in_memory().unwrap()).unwrap_err();
-        assert!(
-            matches!(
-                error,
-                Error::RecoveryRecord {
-                    reason: RecoveryStateError::Binding,
-                    ..
-                }
-            ),
-            "{error}"
-        );
+        let actual = match &error {
+            Error::RecoveryRecord { lsn, reason } => Some((*lsn, *reason)),
+            _ => None,
+        };
+        assert_eq!(actual, Some((bad_lsn, expected_reason)), "{error}");
         assert_eq!(std::fs::read(path).unwrap(), bytes);
         assert_eq!(cells(&fixture), before);
     }
