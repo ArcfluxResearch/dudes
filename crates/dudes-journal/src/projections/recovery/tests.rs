@@ -3,6 +3,7 @@ use crate::writer::{Fault, Fsync, JournalOptions};
 use dudes_proto::RecordKind;
 use dudes_proto::record::samples;
 use dudes_types::Timestamp;
+use redb::StorageBackend as _;
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -484,4 +485,215 @@ fn checked_append_window_refuses_empty_early_eof_and_truncated_checkpoints() {
             assert_eq!(actual, &attempted);
         }
     }
+}
+
+#[derive(Debug)]
+struct CommitSyncFault {
+    armed: std::sync::atomic::AtomicBool,
+    fired: std::sync::atomic::AtomicUsize,
+    observed_journal_advance: std::sync::atomic::AtomicBool,
+    journal: std::path::PathBuf,
+    before_len: u64,
+}
+
+#[derive(Debug)]
+struct FailingProjectionSync {
+    inner: redb::backends::FileBackend,
+    fault: Arc<CommitSyncFault>,
+}
+
+impl redb::StorageBackend for FailingProjectionSync {
+    fn len(&self) -> std::io::Result<u64> {
+        self.inner.len()
+    }
+    fn read(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()> {
+        self.inner.read(offset, out)
+    }
+    fn set_len(&self, len: u64) -> std::io::Result<()> {
+        self.inner.set_len(len)
+    }
+    fn write(&self, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.write(offset, bytes)
+    }
+    fn close(&self) -> std::io::Result<()> {
+        self.inner.close()
+    }
+    fn sync_data(&self) -> std::io::Result<()> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.fault.armed.load(SeqCst)
+            && std::fs::metadata(&self.fault.journal)?.len() > self.fault.before_len
+            && self
+                .fault
+                .armed
+                .compare_exchange(true, false, SeqCst, SeqCst)
+                .is_ok()
+        {
+            self.fault.fired.fetch_add(1, SeqCst);
+            self.fault.observed_journal_advance.store(true, SeqCst);
+            return Err(std::io::Error::other(
+                "injected projection commit sync failure",
+            ));
+        }
+        self.inner.sync_data()
+    }
+    fn try_lock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<bool, redb::BackendError> {
+        self.inner.try_lock_range(start, end)
+    }
+    fn try_lock_shared_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<bool, redb::BackendError> {
+        self.inner.try_lock_shared_range(start, end)
+    }
+    fn lock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<(), redb::BackendError> {
+        self.inner.lock_range(start, end)
+    }
+    fn lock_shared_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<(), redb::BackendError> {
+        self.inner.lock_shared_range(start, end)
+    }
+    fn unlock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<(), redb::BackendError> {
+        self.inner.unlock_range(start, end)
+    }
+    fn query_lock_range(
+        &self,
+        start: std::ops::Bound<u64>,
+        end: std::ops::Bound<u64>,
+    ) -> Result<bool, redb::BackendError> {
+        self.inner.query_lock_range(start, end)
+    }
+}
+
+fn fault_backed_projection(
+    dir: &std::path::Path,
+    writer: &Writer,
+) -> (Projections, Arc<CommitSyncFault>) {
+    let journal = crate::segment::segment_path(&dir.join("journal"), writer.segment());
+    let fault = Arc::new(CommitSyncFault {
+        armed: std::sync::atomic::AtomicBool::new(false),
+        fired: std::sync::atomic::AtomicUsize::new(0),
+        observed_journal_advance: std::sync::atomic::AtomicBool::new(false),
+        before_len: std::fs::metadata(&journal).unwrap().len(),
+        journal,
+    });
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(dir.join("state.redb"))
+        .unwrap();
+    let backend = FailingProjectionSync {
+        inner: redb::backends::FileBackend::new(file).unwrap(),
+        fault: Arc::clone(&fault),
+    };
+    let db = redb::Database::builder()
+        .create_with_backend(backend)
+        .unwrap();
+    let projections = Projections::init(db, redb::Durability::Immediate).unwrap();
+    (projections, fault)
+}
+
+fn record_pause_through_failed_projection_commit(
+    writer: &mut Writer,
+    projections: &mut Projections,
+    fault: &CommitSyncFault,
+) -> Vec<String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    let old_cut = projections.last_applied_lsn();
+    let old_crc = projections.last_applied_crc();
+    let start = writer.next_lsn().unwrap();
+    let before = std::fs::read(&fault.journal).unwrap();
+    let attempted = entry(RecordKind::Pause);
+    let mut gateway = writer.checked_recovery(projections).unwrap();
+    fault.armed.store(true, SeqCst);
+    let error = gateway.append(&attempted).unwrap_err();
+    assert!(
+        matches!(&error, Error::Store(redb::Error::Io(_))),
+        "unexpected failure: {error}"
+    );
+    assert_eq!(fault.fired.load(SeqCst), 1);
+    assert!(fault.observed_journal_advance.load(SeqCst));
+    assert_eq!(gateway.projections.last_applied_lsn(), old_cut);
+    assert_eq!(gateway.projections.last_applied_crc(), old_crc);
+    assert!(gateway.projections.recovery_certification.is_none());
+    assert!(gateway.writer.recovery_fenced);
+    assert_eq!(gateway.writer.poisoned(), None);
+    let end = gateway.writer.next_lsn().unwrap();
+    let frames = gateway
+        .writer
+        .reader()
+        .witnessed_between(start, end)
+        .unwrap()
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].0, start);
+    assert_eq!(frames[0].2, attempted);
+    let after = std::fs::read(&fault.journal).unwrap();
+    assert!(after.starts_with(&before));
+    assert_eq!(
+        reason(gateway.receipt(request(), digest()).unwrap_err()),
+        RecoveryStoreError::JournalUncertain
+    );
+    assert_eq!(
+        reason(gateway.append(&attempted).unwrap_err()),
+        RecoveryStoreError::JournalUncertain
+    );
+    assert_eq!(std::fs::read(&fault.journal).unwrap(), after);
+    let mut canonical = Projections::in_memory().unwrap();
+    crate::replay(&gateway.writer.reader(), &mut canonical).unwrap();
+    assert_eq!(canonical.last_applied_lsn(), start);
+    assert_eq!(canonical.last_applied_crc(), Some(u64::from(frames[0].1)));
+    authority_rows(&canonical).unwrap()
+}
+
+#[test]
+fn real_redb_commit_sync_failure_fences_then_reopens_atomically_and_replays() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let dir = tempfile::tempdir().unwrap();
+    let journal = dir.path().join("journal");
+    let options = JournalOptions {
+        fsync: Fsync::Full,
+        rotate_at: 16 * 1024 * 1024,
+        checkpoint_every: 0,
+    };
+    let (mut writer, _) = crate::open(&journal, options).unwrap();
+    writer.append(&entry(RecordKind::AgentHired)).unwrap();
+    let (mut projections, fault) = fault_backed_projection(dir.path(), &writer);
+    crate::replay(&writer.reader(), &mut projections).unwrap();
+    let old = authority_rows(&projections).unwrap();
+    let canonical_new =
+        record_pause_through_failed_projection_commit(&mut writer, &mut projections, &fault);
+    drop(projections);
+    drop(writer);
+    fault.armed.store(false, SeqCst);
+    let (mut writer, _) = crate::open(&journal, options).unwrap();
+    let mut reopened = Projections::open(&dir.path().join("state.redb")).unwrap();
+    assert!(reopened.recovery_certification.is_none());
+    let actual = authority_rows(&reopened).unwrap();
+    assert!(
+        actual == old || actual == canonical_new,
+        "commit exposed mixed projection rows/cursor/witness"
+    );
+    crate::replay(&writer.reader(), &mut reopened).unwrap();
+    assert_eq!(authority_rows(&reopened).unwrap(), canonical_new);
+    let gateway = writer.checked_recovery(&mut reopened).unwrap();
+    assert_eq!(gateway.receipt(request(), digest()).unwrap(), None);
+    assert_eq!(fault.fired.load(SeqCst), 1);
 }
