@@ -368,14 +368,11 @@ pub struct RecoveryInvalidated {
 pub fn validate_record_shape(
     record: &crate::Record,
 ) -> Result<(), crate::recovery_state::RecoveryStateError> {
-    if let crate::Record::RecoveryAuthorized(RecoveryAuthorized {
-        plan:
-            RecoveryPlan::New {
-                context: RecoveryContext::Fresh { recap, .. },
-                ..
-            },
-        ..
-    }) = record
+    if let crate::Record::RecoveryAuthorized(authorization) = record
+        && let RecoveryPlan::New {
+            context: RecoveryContext::Fresh { recap, .. },
+            ..
+        } = &authorization.plan
         && recap.text.len() > MAX_RECOVERY_RECAP_BYTES
     {
         return Err(crate::recovery_state::RecoveryStateError::Context);

@@ -1804,7 +1804,7 @@ pub enum Record {
     /// An exact interrupted-work boundary requiring explicit recovery consent.
     RecoveryRequired(crate::recovery::RecoveryRequired),
     /// Immutable operator consent for one canonical recovery episode.
-    RecoveryAuthorized(crate::recovery::RecoveryAuthorized),
+    RecoveryAuthorized(Box<crate::recovery::RecoveryAuthorized>),
     /// Durable closure of unused recovery consent on exact evidence.
     RecoveryInvalidated(crate::recovery::RecoveryInvalidated),
 }
@@ -3237,7 +3237,9 @@ pub mod samples {
                 .unwrap(),
             },
             RecordKind::RecoveryRequired => Record::RecoveryRequired(recovery_required()),
-            RecordKind::RecoveryAuthorized => Record::RecoveryAuthorized(recovery_authorized()),
+            RecordKind::RecoveryAuthorized => {
+                Record::RecoveryAuthorized(Box::new(recovery_authorized()))
+            }
             RecordKind::RecoveryInvalidated => {
                 Record::RecoveryInvalidated(crate::recovery::RecoveryInvalidated {
                     claim: crate::recovery::RecoveryClaimRef {

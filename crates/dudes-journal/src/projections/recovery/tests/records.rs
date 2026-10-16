@@ -145,7 +145,7 @@ fn fresh(checkpoints: u64) -> (Fixture, RecoveryAuthorized, Lsn) {
     };
     let at = append(
         &mut fixture,
-        Record::RecoveryAuthorized(authorization.clone()),
+        Record::RecoveryAuthorized(Box::new(authorization.clone())),
     );
     (fixture, authorization, at)
 }
@@ -260,7 +260,10 @@ fn required_repeat_preserves_the_original_issue_and_supersedes_only_consent() {
             session: None,
         },
     };
-    append(&mut fixture, Record::RecoveryAuthorized(authorization));
+    append(
+        &mut fixture,
+        Record::RecoveryAuthorized(Box::new(authorization)),
+    );
     assert_eq!(
         receipt(&mut fixture).state,
         RecoveryClaimState::IssueBound(issue.clone())
@@ -335,7 +338,7 @@ fn damaged_root(kind: &str) {
         (fixture, Record::RecoveryRequired(required))
     } else {
         let (fixture, authorization, _) = fresh(0);
-        (fixture, Record::RecoveryAuthorized(authorization))
+        (fixture, Record::RecoveryAuthorized(Box::new(authorization)))
     };
     if kind != "current" {
         assert_eq!(receipt(&mut fixture).state, RecoveryClaimState::Pending);
@@ -434,7 +437,7 @@ fn recovery_cached_validation_rechecks_same_length_rewrite_and_bad_suffix() {
         authorization.episode.origin = Lsn(authorization.episode.origin.0 - 1);
         let entry = Entry {
             at: Timestamp::UNIX_EPOCH,
-            record: Record::RecoveryAuthorized(authorization),
+            record: Record::RecoveryAuthorized(Box::new(authorization)),
         };
         let payload = serde_json::to_vec(&entry).unwrap();
         let mut frame = Vec::new();
@@ -716,7 +719,10 @@ fn repeated_missing_spawn_supersession_keeps_each_receipt_and_the_one_owed_issue
                 session: None,
             },
         };
-        let authorization_lsn = append(&mut fixture, Record::RecoveryAuthorized(authorization));
+        let authorization_lsn = append(
+            &mut fixture,
+            Record::RecoveryAuthorized(Box::new(authorization)),
+        );
         let claim = RecoveryClaimRef {
             episode: RecoveryEpisodeId {
                 work: binding.work,
@@ -793,7 +799,7 @@ fn actual_paused_authorization_without_a_clearing_resume_refuses_before_append()
     let bytes = journal_inventory(&fixture);
     let attempted = Entry {
         at: Timestamp::UNIX_EPOCH,
-        record: Record::RecoveryAuthorized(authorization),
+        record: Record::RecoveryAuthorized(Box::new(authorization)),
     };
     let result = fixture
         .writer

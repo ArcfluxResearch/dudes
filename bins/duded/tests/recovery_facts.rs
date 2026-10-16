@@ -1358,7 +1358,7 @@ fn recovery_new_prefix() -> (Prefix, dudes_proto::recovery::RecoveryAuthorized, 
             },
         },
     };
-    let at = prefix.recovery_append(Record::RecoveryAuthorized(authorization.clone()));
+    let at = prefix.recovery_append(Record::RecoveryAuthorized(Box::new(authorization.clone())));
     (prefix, authorization, at)
 }
 
@@ -1432,7 +1432,7 @@ fn actual_required_repeat_keeps_original_task_answers_and_used_hop() {
         boundary: RecoveryBoundary::MissingSpawn,
         predecessor: None,
     }));
-    prefix.recovery_append(Record::RecoveryAuthorized(RecoveryAuthorized {
+    prefix.recovery_append(Record::RecoveryAuthorized(Box::new(RecoveryAuthorized {
         episode: RecoveryEpisodeId {
             work: binding.work,
             origin,
@@ -1451,7 +1451,7 @@ fn actual_required_repeat_keeps_original_task_answers_and_used_hop() {
             issue,
             session: None,
         },
-    }));
+    })));
     prefix.recovery_append(recovery_spawn(&binding, binding.work.turn, true));
     let after = prefix.world.turns.get(&binding.work.turn).unwrap();
     assert_eq!(after.issue_lsn, original_turn.issue_lsn);
