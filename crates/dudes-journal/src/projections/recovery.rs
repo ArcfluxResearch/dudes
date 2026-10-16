@@ -410,9 +410,23 @@ where
         through,
         &transition.sources(&facts),
     )?;
-    Ok(scoped
+    scoped
         .state()
-        .validate_transition(transition, &facts, sources.history())?)
+        .validate_transition(transition, &facts, sources.history())?;
+    validate_new_turn(tables.turns, transition)
+}
+
+fn validate_new_turn<Rows>(turns: &Rows, transition: RecoveryTransition<'_>) -> Result<()>
+where
+    Rows: ReadableTable<&'static [u8; 16], &'static [u8]>,
+{
+    if let RecoveryTransition::Authorized(record) = transition
+        && let dudes_proto::recovery::RecoveryPlan::New { turn, .. } = &record.plan
+        && turns.get(&turn.to_bytes())?.is_some()
+    {
+        return Err(RecoveryStateError::Binding.into());
+    }
+    Ok(())
 }
 
 fn attempt_at<Rows, Sources, Meta>(

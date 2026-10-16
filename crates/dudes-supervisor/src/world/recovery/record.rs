@@ -94,6 +94,7 @@ impl World {
             let facts = self.recovery_facts(&binding)?;
             self.recovery_state
                 .validate_transition(transition, &facts, &self.recovery_history)?;
+            self.validate_recovery_new_turn(transition)?;
             return Ok(Some(PreparedRecovery::Current {
                 transition,
                 facts: Box::new(facts),

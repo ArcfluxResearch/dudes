@@ -164,7 +164,22 @@ impl World {
         let binding = transition.binding(&self.recovery_state)?;
         let facts = self.recovery_facts(&binding)?;
         self.recovery_state
-            .validate_transition(transition, &facts, &self.recovery_history)
+            .validate_transition(transition, &facts, &self.recovery_history)?;
+        self.validate_recovery_new_turn(transition)
+    }
+
+    fn validate_recovery_new_turn(
+        &self,
+        transition: dudes_proto::recovery_state::transition::RecoveryTransition<'_>,
+    ) -> Result<(), RecoveryStateError> {
+        if let dudes_proto::recovery_state::transition::RecoveryTransition::Authorized(record) =
+            transition
+            && let dudes_proto::recovery::RecoveryPlan::New { turn, .. } = &record.plan
+            && self.turns.contains_key(turn)
+        {
+            return Err(RecoveryStateError::Binding);
+        }
+        Ok(())
     }
 
     fn recovery_attempt_facts(

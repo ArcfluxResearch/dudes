@@ -173,6 +173,7 @@ where
             cache
                 .state_mut()
                 .apply_transition(lsn, transition, &facts, sources.history())?;
+            super::validate_new_turn(tables.turns, transition)?;
         }
     }
     Ok(cache.updates()?)
