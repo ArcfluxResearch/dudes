@@ -632,36 +632,42 @@ fn a_nonzero_contract_cut_cannot_stand_in_for_missing_episode_intent() {
 
 #[test]
 fn corrupted_stored_authorization_intent_is_not_deserialized_into_authority() {
+    struct AuthorizationCorruption {
+        name: &'static str,
+        edit: fn(&mut RecoveryAuthorized),
+        expected: RecoveryCacheError,
+    }
+
     let (h, _, auth, _) = claimed();
-    let cases: [(&str, fn(&mut RecoveryAuthorized), RecoveryCacheError); 5] = [
-        (
-            "resulting_control",
-            |value| value.resulting_control = None,
-            RecoveryCacheError::Identity,
-        ),
-        (
-            "resume",
-            |value| value.resume_lsn = Some(Lsn(250)),
-            RecoveryCacheError::Identity,
-        ),
-        (
-            "provider",
-            |value| value.binding.provider = Provider::Claude,
-            RecoveryCacheError::Identity,
-        ),
-        (
-            "original_turn",
-            |value| {
+    let cases = [
+        AuthorizationCorruption {
+            name: "resulting_control",
+            edit: |value| value.resulting_control = None,
+            expected: RecoveryCacheError::Identity,
+        },
+        AuthorizationCorruption {
+            name: "resume",
+            edit: |value| value.resume_lsn = Some(Lsn(250)),
+            expected: RecoveryCacheError::Identity,
+        },
+        AuthorizationCorruption {
+            name: "provider",
+            edit: |value| value.binding.provider = Provider::Claude,
+            expected: RecoveryCacheError::Identity,
+        },
+        AuthorizationCorruption {
+            name: "original_turn",
+            edit: |value| {
                 let RecoveryPlan::New { turn, .. } = &mut value.plan else {
                     unreachable!()
                 };
                 *turn = value.episode.work.turn;
             },
-            RecoveryCacheError::MissingCell,
-        ),
-        (
-            "future_recap_source",
-            |value| {
+            expected: RecoveryCacheError::MissingCell,
+        },
+        AuthorizationCorruption {
+            name: "future_recap_source",
+            edit: |value| {
                 let RecoveryPlan::New {
                     context: RecoveryContext::Fresh { recap, .. },
                     ..
@@ -671,10 +677,15 @@ fn corrupted_stored_authorization_intent_is_not_deserialized_into_authority() {
                 };
                 recap.sources = vec![Lsn(301)];
             },
-            RecoveryCacheError::Identity,
-        ),
+            expected: RecoveryCacheError::Identity,
+        },
     ];
-    for (name, edit, expected) in cases {
+    for AuthorizationCorruption {
+        name,
+        edit,
+        expected,
+    } in cases
+    {
         let mut memory = h.memory.clone();
         let mut changed = auth.clone();
         edit(&mut changed);
@@ -686,7 +697,7 @@ fn corrupted_stored_authorization_intent_is_not_deserialized_into_authority() {
         }
         let cell = Cell::Authorization {
             lsn: Lsn(300),
-            value: changed,
+            value: Box::new(changed),
         };
         memory
             .rows

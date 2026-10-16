@@ -102,15 +102,15 @@ pub enum RecoveryIssueCarrier {
 /// Fixed outcome class without provider error or response text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecoveryEndClass {
-    /// A recorded Failed outcome; failure text stays in the original record.
+    /// A recorded `Failed` outcome; failure text stays in the original record.
     Failed,
-    /// A recorded NoResult outcome.
+    /// A recorded `NoResult` outcome.
     NoResult,
-    /// A recorded Vanished outcome.
+    /// A recorded `Vanished` outcome.
     Vanished,
-    /// A recorded NotLaunched outcome.
+    /// A recorded `NotLaunched` outcome.
     NotLaunched,
-    /// A recorded LaunchRefused outcome.
+    /// A recorded `LaunchRefused` outcome.
     LaunchRefused,
     /// Another known outcome, not interchangeable with those above.
     Other,
@@ -179,7 +179,7 @@ pub enum RecoveryEvidence {
         /// Exact carrier references.
         carrier: RecoveryIssueCarrier,
     },
-    /// Goal-free finite issue, never assigned an invented GoalId.
+    /// Goal-free finite issue, never assigned an invented `GoalId`.
     FiniteIssue {
         /// Digest of the original task bytes.
         task_digest: Hex32,

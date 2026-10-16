@@ -256,7 +256,7 @@ enum Cell {
     },
     Authorization {
         lsn: Lsn,
-        value: RecoveryAuthorized,
+        value: Box<RecoveryAuthorized>,
     },
     Claim {
         authorization: Lsn,
@@ -364,7 +364,7 @@ fn cells(
     for (lsn, value) in &state.authorizations {
         push(Cell::Authorization {
             lsn: *lsn,
-            value: value.clone(),
+            value: Box::new(value.clone()),
         })?;
     }
     for (authorization, value) in &state.claims {
@@ -508,7 +508,9 @@ impl<'a, R: RecoveryCacheReader> Loader<'a, R> {
                 self.state.current.insert(*work, *episode);
             }
             Cell::Authorization { lsn, value } => {
-                self.state.authorizations.insert(*lsn, value.clone());
+                self.state
+                    .authorizations
+                    .insert(*lsn, value.as_ref().clone());
             }
             Cell::Claim {
                 authorization,
@@ -557,7 +559,7 @@ impl<'a, R: RecoveryCacheReader> Loader<'a, R> {
             RecoveryEvent::Issued { claim, .. }
             | RecoveryEvent::Consumed { claim, .. }
             | RecoveryEvent::Invalidated { claim, .. } => {
-                self.authorization(claim.authorization_lsn, true)?
+                self.authorization(claim.authorization_lsn, true)?;
             }
         }
         Ok(())
@@ -582,12 +584,13 @@ impl<'a, R: RecoveryCacheReader> Loader<'a, R> {
     fn episode(&mut self, id: RecoveryEpisodeId, follow_claim: bool) -> Result<(), R::Error> {
         self.read(Key::Episode(id), true)?;
         self.read(Key::EpisodeClaim(id), true)?;
-        if follow_claim && self.expanded_episodes.insert(id) {
-            if let Some(authorization) = self.state.episodes[&id].authorization_lsn {
-                self.authorization(authorization, true)?;
-                if self.state.authorizations[&authorization].episode != id {
-                    return Err(RecoveryCacheError::Identity.into());
-                }
+        if follow_claim
+            && self.expanded_episodes.insert(id)
+            && let Some(authorization) = self.state.episodes[&id].authorization_lsn
+        {
+            self.authorization(authorization, true)?;
+            if self.state.authorizations[&authorization].episode != id {
+                return Err(RecoveryCacheError::Identity.into());
             }
         }
         Ok(())
@@ -803,7 +806,7 @@ fn validate_claim(
             }
         }
         RecoveryClaimState::IssueBound(issue) => {
-            validate_issue(lsn, authorization, issue, through)?
+            validate_issue(lsn, authorization, issue, through)?;
         }
         RecoveryClaimState::Consumed {
             issue,
