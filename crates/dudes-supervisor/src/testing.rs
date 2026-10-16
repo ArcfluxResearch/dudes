@@ -803,10 +803,12 @@ impl Harness {
             rng,
         );
         for (entry, position) in self.journal.iter().cloned().zip(1u64..) {
-            let _ = self.supervisor.handle(Input::Replayed {
-                lsn: Lsn(position),
-                entry,
-            });
+            self.supervisor
+                .handle(Input::Replayed {
+                    lsn: Lsn(position),
+                    entry,
+                })
+                .expect("the durable harness prefix folds");
         }
         if let Some(missing) = missing {
             self.drive(Input::MissingWorktrees(missing));
@@ -816,7 +818,10 @@ impl Harness {
 
     /// One `handle()` call. The effects go into [`Harness::trace`] and nothing is answered.
     pub fn step(&mut self, input: Input) -> Vec<Seen> {
-        let seen: Vec<Seen> = self.supervisor.handle(input).iter().map(Seen::of).collect();
+        self.supervisor
+            .handle(input)
+            .expect("the harness input folds");
+        let seen: Vec<Seen> = self.supervisor.effects().iter().map(Seen::of).collect();
         for record in seen.iter().filter_map(Seen::record) {
             assert_refusal(record);
         }

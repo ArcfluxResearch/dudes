@@ -283,7 +283,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             self.writer.poisoned().is_none(),
             "browser dispatch journal stopped after its append"
         );
-        sup.handle(Input::Persisted { token: *token, lsn });
+        let handled = sup
+            .handle(Input::Persisted { token: *token, lsn })
+            .inspect_err(|_| self.fence_journal())?;
+        self.require_handled_through(sup.world(), &handled, lsn)?;
         self.tokens.mark_folded();
         self.publish_folded_floor(sup.world(), closing)?;
         let effects = sup.take_effects();

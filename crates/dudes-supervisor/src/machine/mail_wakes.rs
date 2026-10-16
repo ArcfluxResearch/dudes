@@ -2,7 +2,7 @@ use super::{
     AgentId, BreakerSignal, Clock, Effect, Entry, GoalId, Lsn, ManagedLaunch, Mode, Provenance,
     Record, Rng, SpendView, Supervisor, Then, Timestamp, TurnId,
 };
-use crate::input::{MailWakeRefreshFailure, MailWakeRequest};
+use crate::input::{DurableInputError, Handled, MailWakeRefreshFailure, MailWakeRequest};
 use dudes_policy::{
     BudgetState, Ceilings, CompletedNoteState, Control, MailWakeFacts, MailWakeInput, MailWakeWork,
 };
@@ -144,20 +144,25 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
     }
 
-    pub(super) fn mail_journaled(&mut self, lsn: Lsn, entry: &Entry) {
+    pub(super) fn mail_journaled(
+        &mut self,
+        lsn: Lsn,
+        entry: &Entry,
+    ) -> Result<Handled, DurableInputError> {
         if !matches!(entry.record, Record::Mail { .. } | Record::MailState { .. })
             || self
                 .world
                 .last_applied_lsn
                 .is_some_and(|previous| lsn <= previous)
         {
-            return;
+            return Ok(Handled::default());
         }
         let agents = self.mail_event_recipients(&entry.record);
-        self.apply_entry(lsn, entry);
+        self.apply_entry(lsn, entry)?;
         for agent in agents {
             self.request_mail_wake(agent);
         }
+        Ok(Handled::folded(lsn))
     }
 
     fn mail_wake_input_for(

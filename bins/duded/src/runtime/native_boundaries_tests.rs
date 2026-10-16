@@ -268,7 +268,7 @@ impl Owned {
             let Some(input) = queue.pop_front() else {
                 break;
             };
-            self.daemon.sup.handle(input);
+            self.daemon.sup.handle(input).unwrap();
             self.daemon
                 .ctx
                 .retire_recorded_native_launches(self.daemon.sup.world());
@@ -328,7 +328,7 @@ impl Owned {
                 .iter()
                 .any(|(written, stamped)| { written == lsn && stamped.record == entry.record })
         );
-        self.daemon.sup.handle(input);
+        self.daemon.sup.handle(input).unwrap();
         self.daemon
             .ctx
             .retire_recorded_native_launches(self.daemon.sup.world());
@@ -397,7 +397,7 @@ fn prepared(daemon: &mut TestDaemon, agent: AgentId) -> Effect {
                 _ => panic!("bounded preparation awaits the actual worker input"),
             }
         });
-        daemon.sup.handle(input);
+        daemon.sup.handle(input).unwrap();
         for effect in daemon.sup.take_effects() {
             if matches!(effect, Effect::Spawn { .. }) {
                 return effect;

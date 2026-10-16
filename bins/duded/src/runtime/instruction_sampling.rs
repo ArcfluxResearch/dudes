@@ -1237,13 +1237,16 @@ mod tests {
         sample.membership_unknown = incomplete;
         for ordinal in 1..=participants {
             let agent = AgentId::from_parts(1, ordinal as u128);
-            harness.supervisor.handle(Input::Replayed {
-                lsn: Lsn(u64::try_from(ordinal).unwrap()),
-                entry: Entry {
-                    at: Timestamp::UNIX_EPOCH,
-                    record: hired(agent, path),
-                },
-            });
+            harness
+                .supervisor
+                .handle(Input::Replayed {
+                    lsn: Lsn(u64::try_from(ordinal).unwrap()),
+                    entry: Entry {
+                        at: Timestamp::UNIX_EPOCH,
+                        record: hired(agent, path),
+                    },
+                })
+                .unwrap();
             sample
                 .sources
                 .push(harness.supervisor.instruction_source(agent).unwrap());

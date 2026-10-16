@@ -179,7 +179,7 @@ fn failure_serializing_the_last_folded_patch_keeps_its_original_context() {
             &mut PumpReport::Discard,
             PumpOrigin::Ordinary,
             VecDeque::from([Input::Replayed { lsn, entry }]),
-            |_| Ok(()),
+            |_| Ok(Handled::default()),
         )
         .unwrap_err();
     assert_eq!(
@@ -420,10 +420,13 @@ fn saving_memory_behind_a_policy_cut_drains_in_durable_order() {
         .unwrap()
         .subscribe()
         .unwrap();
-    let _ = daemon.sup.handle(Input::Command(Command::Pause {
-        agent: hired.agent,
-        browser: None,
-    }));
+    let _ = daemon
+        .sup
+        .handle(Input::Command(Command::Pause {
+            agent: hired.agent,
+            browser: None,
+        }))
+        .unwrap();
     let mut effects = daemon.sup.take_effects();
     assert_eq!(effects.len(), 1);
     let Effect::Persist { token, entry } = effects.pop().unwrap() else {

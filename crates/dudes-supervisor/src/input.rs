@@ -1,8 +1,8 @@
-//! What reaches the machine.
+//! Machine inputs and the durable progress made while handling them.
 //!
-//! Everything here is a *value the runtime already has* — a parsed command, an acknowledged
-//! append, an observation from the process host. Nothing in this module is JSON, and nothing in
-//! it is read from the world: the runtime parses and observes, the machine decides.
+//! Inputs carry values the runtime already has: parsed commands, acknowledged appends and process
+//! observations. The handling outcome names only an actual folded position. These values contain
+//! no JSON parsing or World access; the runtime observes and the machine decides.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -25,6 +25,39 @@ use dudes_types::{
 };
 
 use crate::host::{AdoptionKey, Liveness};
+
+/// The durable progress made by one successfully handled input.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Handled {
+    folded_through: Option<Lsn>,
+}
+
+impl Handled {
+    pub(crate) const fn folded(through: Lsn) -> Self {
+        Self {
+            folded_through: Some(through),
+        }
+    }
+
+    /// The actual last frame folded by this input, or no new durable fold.
+    #[must_use]
+    pub const fn folded_through(&self) -> Option<Lsn> {
+        self.folded_through
+    }
+}
+
+/// A durable input refused before its continuation may run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum DurableInputError {
+    /// The checked World fold refused this actual journal position.
+    #[error("recovery history at {lsn:?}: {reason}")]
+    Recovery {
+        /// The actual durable frame position.
+        lsn: Lsn,
+        /// The fixed relationship refusal.
+        reason: dudes_proto::recovery_state::RecoveryStateError,
+    },
+}
 
 /// The persist-before-spawn ledger's correlation id.
 ///

@@ -48,7 +48,7 @@ fn prepared(daemon: &mut TestDaemon, agent: AgentId) -> Effect {
             queue.push_back(*input);
         }
         let input = queue.pop_front().expect("launch preparation continues");
-        daemon.sup.handle(input);
+        daemon.sup.handle(input).unwrap();
         for effect in daemon.sup.take_effects() {
             if let Effect::SampleInstructions { request, .. } = &effect {
                 sample_request = Some(*request);

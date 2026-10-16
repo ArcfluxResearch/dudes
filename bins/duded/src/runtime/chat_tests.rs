@@ -1958,7 +1958,8 @@ fn pump_proposed_dispatch(
             turn,
             generation,
             prepared,
-        });
+        })
+        .unwrap();
     let effects = daemon.sup.take_effects();
     let [effect @ dudes_supervisor::Effect::Persist { token, entry }] = effects.as_slice() else {
         panic!("the actual prepared retry requests its one dispatch intent");
@@ -2937,4 +2938,98 @@ fn mcp_first_edit_waits_for_a_historical_ungranted_dispatch_held_across_restart(
     ));
     assert!(host.spawned().is_empty(), "the edit never resumes the halt");
     running.stop(ExitCause::Ended);
+}
+
+#[test]
+fn an_injected_direct_browser_ack_fault_stops_before_host_dispatch() {
+    for fault in [false, true] {
+        let history = HistoricalReplay::new();
+        let host = BoundaryHost::new();
+        let pause = crate::BrowserLaunchPause::default();
+        pause.arm();
+        let settings = history.fixture.settings();
+        let mut daemon = crate::boot::boot_with_preparation_pause(
+            &settings,
+            with_owned_program(
+                &settings,
+                host.clone(),
+                Arc::new(common::ScriptedRunner::default()),
+            ),
+            RunOptions::default(),
+            pause.clone(),
+        )
+        .unwrap();
+        let parked = drive_preparation_pause(&mut daemon, &pause);
+        assert!(pause.wait(Duration::from_secs(5)));
+        pause.release();
+        assert!(pause.wait_returned(1, Duration::from_secs(5)));
+        let input = parked.unwrap_or_else(|| actual_preparation(&mut daemon));
+        let dudes_supervisor::Input::BrowserLaunchReady {
+            turn,
+            generation,
+            prepared,
+        } = input
+        else {
+            panic!("actual prepared browser launch")
+        };
+        daemon.ctx.resolved_browser_turn = Some((turn, generation));
+        daemon
+            .sup
+            .handle(dudes_supervisor::Input::BrowserLaunchReady {
+                turn,
+                generation,
+                prepared,
+            })
+            .unwrap();
+        let effects = daemon.sup.take_effects();
+        let [effect @ dudes_supervisor::Effect::Persist { entry, .. }] = effects.as_slice() else {
+            panic!("the actual dispatch intent is parked")
+        };
+        assert!(
+            matches!(entry.record, Record::BrowserNoteDispatchIntent { turn: issued, .. } if issued == turn)
+        );
+        let before = daemon.sup.world().last_applied_lsn;
+        let lsn = daemon.ctx.writer.next_lsn().unwrap();
+        assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+        if fault {
+            daemon.sup.refuse_fold_once(
+                lsn,
+                dudes_proto::recovery_state::RecoveryStateError::Binding,
+            );
+        }
+        let mut queue = std::collections::VecDeque::new();
+        let result = daemon.ctx.dispatch_browser_intent(
+            effect,
+            &mut queue,
+            &mut daemon.sup,
+            &mut daemon.closing,
+        );
+        daemon.ctx.resolved_browser_turn = None;
+        if fault {
+            let failure = result.unwrap_err();
+            assert_eq!(
+                failure.downcast_ref::<dudes_supervisor::input::DurableInputError>(),
+                Some(&dudes_supervisor::input::DurableInputError::Recovery {
+                    lsn,
+                    reason: dudes_proto::recovery_state::RecoveryStateError::Binding
+                })
+            );
+            assert_eq!(daemon.sup.world().last_applied_lsn, before);
+            assert!(daemon.ctx.journal_writes_stopped());
+            assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+            assert!(queue.is_empty());
+            assert!(daemon.sup.effects().is_empty());
+        } else {
+            result.unwrap();
+            assert_eq!(host.calls.load(Ordering::SeqCst), 1);
+            assert!(
+                matches!(queue.front(), Some(dudes_supervisor::Input::Spawned { turn: issued, .. }) if *issued == turn)
+            );
+            for input in queue {
+                daemon.pump_runtime_input(input).unwrap();
+            }
+        }
+        let mut running = common::start(daemon);
+        running.stop(ExitCause::Ended);
+    }
 }

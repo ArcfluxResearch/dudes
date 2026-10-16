@@ -247,7 +247,8 @@ fn a_replayed_turn_without_a_session_is_selected_as_issued_not_spawned() {
             .handle(dudes_supervisor::Input::Replayed {
                 lsn: dudes_types::Lsn(position),
                 entry,
-            });
+            })
+            .unwrap();
     }
     let selected: Vec<TurnId> = harness
         .supervisor

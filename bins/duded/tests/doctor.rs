@@ -249,10 +249,12 @@ fn replayed_sessions(
     );
     let mut projections = Projections::in_memory().expect("fresh redb projection");
     for (lsn, entry) in entries {
-        let _ = supervisor.handle(Input::Replayed {
-            lsn: *lsn,
-            entry: entry.clone(),
-        });
+        supervisor
+            .handle(Input::Replayed {
+                lsn: *lsn,
+                entry: entry.clone(),
+            })
+            .expect("the recorded doctor fixture folds");
         projections
             .apply(*lsn, 1, entry)
             .expect("the entry folds into redb");
@@ -279,10 +281,12 @@ fn replayed_session_states(
     );
     let mut projections = Projections::in_memory().expect("fresh redb projection");
     for (lsn, entry) in entries {
-        let _ = supervisor.handle(Input::Replayed {
-            lsn: *lsn,
-            entry: entry.clone(),
-        });
+        supervisor
+            .handle(Input::Replayed {
+                lsn: *lsn,
+                entry: entry.clone(),
+            })
+            .expect("the recorded doctor fixture folds");
         projections.apply(*lsn, 1, entry).expect("fold entry");
     }
     let world_turn = &supervisor.world().turns[&turn];

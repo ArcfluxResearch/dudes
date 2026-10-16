@@ -3,7 +3,7 @@ use super::{
     GoalId, LoopDecision, Lsn, Mode, ModelSelection, Path, PathBuf, PreparedLaunch, Provenance,
     Provider, Record, Rng, Supervisor, Then, TurnId, Usd, WorktreeId,
 };
-use crate::input::InstructionRequest;
+use crate::input::{DurableInputError, Handled, InstructionRequest};
 use dudes_proto::instruction::{
     InstructionBaselineRef, InstructionComparison, InstructionCoverageGap, InstructionEndBoundary,
     InstructionGapKind, InstructionIssueAssociation, InstructionObservationOwner,
@@ -249,7 +249,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             if self.world.goals.get(&goal).is_some_and(|row| row.agent == agent))
     }
 
-    pub(super) fn instruction_journaled(&mut self, lsn: Lsn, entry: &Entry) {
+    pub(super) fn instruction_journaled(
+        &mut self,
+        lsn: Lsn,
+        entry: &Entry,
+    ) -> Result<Handled, DurableInputError> {
         if lsn == Lsn::ZERO
             || self.world.last_applied_lsn.is_some_and(|last| lsn <= last)
             || !matches!(
@@ -262,9 +266,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     | Record::PtyCloseCompleted { .. }
             )
         {
-            return;
+            return Ok(Handled::default());
         }
-        self.apply_entry(lsn, entry);
+        self.apply_entry(lsn, entry)?;
+        Ok(Handled::folded(lsn))
     }
 
     pub(super) fn recover_instruction_observations(&mut self) -> bool {

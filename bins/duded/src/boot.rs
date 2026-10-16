@@ -1202,16 +1202,31 @@ where
             }
             Ok(_) => {}
         }
-        let effects = sup.handle(Input::Replayed { lsn, entry });
-        debug_assert!(effects.is_empty(), "replay emits no effects");
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(reason) = witness.take_replay_fold_refusal(lsn) {
+            return Err(
+                dudes_supervisor::input::DurableInputError::Recovery { lsn, reason }.into(),
+            );
+        }
+        let handled = sup.handle(Input::Replayed { lsn, entry })?;
+        anyhow::ensure!(
+            handled.folded_through() == Some(lsn),
+            "replay did not report its actual frame"
+        );
+        anyhow::ensure!(
+            sup.world().last_applied_lsn == Some(lsn),
+            "replay did not reach its exact cut"
+        );
+        debug_assert!(sup.effects().is_empty(), "replay emits no effects");
         folded += 1;
     }
     let applied = replay(&reader, &mut projections).context("replaying into the projections")?;
     for (agent, view) in crate::work::compose(&projections, &memory, |agent| sup.work_input(agent))?
     {
-        let effects = sup.handle(Input::Work { agent, view });
+        let handled = sup.handle(Input::Work { agent, view })?;
+        debug_assert!(handled.folded_through().is_none());
         debug_assert!(
-            effects.is_empty(),
+            sup.effects().is_empty(),
             "work projection refresh emits no effects"
         );
     }
