@@ -69,7 +69,10 @@ pub use git::{
     MAX_GIT_HEAD_BYTES, MAX_GIT_NAME_BYTES, MAX_GIT_PARENTS, MAX_GIT_PATH_BYTES,
     MAX_GIT_SUBJECT_BYTES, MAX_GIT_VIEW_BYTES,
 };
-pub use goal::{CheckBaseline, CheckBaselineKind, CompletionCheckRef, Evidence, Goal, Predicate};
+pub use goal::{
+    CheckBaseline, CheckBaselineKind, CompletionCheckRef, Evidence, Goal, Predicate,
+    predicate_evidence_eligible,
+};
 pub use instruction::{
     InstructionAcceptCompletion, InstructionActivation, InstructionAncestorStop,
     InstructionBaselineRef, InstructionBootIdentity, InstructionBoundaryAbsenceProof,

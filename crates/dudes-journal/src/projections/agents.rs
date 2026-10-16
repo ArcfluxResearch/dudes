@@ -33,6 +33,8 @@ pub struct AgentRow {
     pub accent: Option<dudes_types::AccentColour>,
     /// Recorded hire time.
     pub hired_at: Timestamp,
+    /// Actual immutable hire position.
+    pub hired_lsn: Lsn,
     /// Role text.
     pub role: String,
     /// Newest appearance edit, absent before the first edit.
@@ -71,6 +73,8 @@ pub struct AgentRow {
     /// id the daemon minted does not confirm it, so this stays `None` until the vendor speaks.
     /// The id a turn *announced* is `TurnRow::session`, which is not this and is not resumable.
     pub session: Option<SessionId>,
+    /// Actual confirmation that established the current session.
+    pub session_lsn: Option<Lsn>,
     /// The open human question, if any.
     pub question: Option<String>,
     /// Where the `HumanQuestion` that opened [`AgentRow::question`] sits in the journal — the
@@ -130,6 +134,7 @@ impl Default for AgentRow {
             character: None,
             accent: None,
             hired_at: Timestamp::UNIX_EPOCH,
+            hired_lsn: Lsn::ZERO,
             role: String::new(),
             look_lsn: None,
             department: String::new(),
@@ -146,6 +151,7 @@ impl Default for AgentRow {
             context_lsn: Lsn::ZERO,
             conversation_context_loss: None,
             session: None,
+            session_lsn: None,
             question: None,
             question_lsn: None,
             conversation_question: None,
@@ -234,6 +240,7 @@ pub(crate) fn apply(
                 id: *id,
                 name: name.clone(),
                 hired_at: entry.at,
+                hired_lsn: lsn,
                 context_lsn: lsn,
                 role: role.clone(),
                 look_lsn: None,
@@ -369,6 +376,7 @@ fn apply_flow(
             update(table, lsn, *agent, record, |a| {
                 if *reissued {
                     a.session = None;
+                    a.session_lsn = None;
                     if finite {
                         a.context_lsn = lsn;
                     }
@@ -391,6 +399,7 @@ fn apply_flow(
         }),
         Record::SessionLearned { agent, session, .. } => update(table, lsn, *agent, record, |a| {
             a.session = Some(session.clone());
+            a.session_lsn = Some(lsn);
             a.conversation_context_loss = None;
         }),
         // `TurnEnded.session` is the id the turn ran on, and repeating an id is not the vendor
@@ -437,6 +446,7 @@ fn apply_flow(
                 if invalidates_resume || matches!(outcome, Some(TurnOutcome::LaunchRefused { .. }))
                 {
                     a.session = None;
+                    a.session_lsn = None;
                 }
                 if finite_loss {
                     a.context_lsn = lsn;

@@ -678,3 +678,138 @@ fn real_redb_commit_sync_failure_fences_then_reopens_atomically_and_replays() {
     assert_eq!(gateway.receipt(request(), digest()).unwrap(), None);
     assert_eq!(fault.fired.load(SeqCst), 1);
 }
+
+#[test]
+fn literal_version_48_cache_rebuilds_factual_positions_and_source_context() {
+    let mut fixture = Fixture::new(0);
+    let paused = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap()
+        .append(&entry(RecordKind::Pause))
+        .unwrap();
+    let resumed = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap()
+        .append(&entry(RecordKind::Resume))
+        .unwrap();
+    let expected = fixture.projections.export().unwrap();
+    let path = fixture.dir.path().join("state.redb");
+    drop(fixture.projections);
+    {
+        let db = redb::Database::create(&path).unwrap();
+        let txn = db.begin_write().unwrap();
+        txn.open_table(META)
+            .unwrap()
+            .insert(SCHEMA_VERSION, &48u64)
+            .unwrap();
+        {
+            let mut agents = txn.open_table(super::super::AGENTS).unwrap();
+            let rows = agents
+                .iter()
+                .unwrap()
+                .map(|row| {
+                    let (key, value) = row.unwrap();
+                    (key.value().to_owned(), value.value().to_vec())
+                })
+                .collect::<Vec<_>>();
+            for (key, value) in rows {
+                let mut old: serde_json::Value = serde_json::from_slice(&value).unwrap();
+                old.as_object_mut().unwrap().remove("hired_lsn");
+                old.as_object_mut().unwrap().remove("session_lsn");
+                agents
+                    .insert(&key, serde_json::to_vec(&old).unwrap().as_slice())
+                    .unwrap();
+            }
+        }
+        {
+            let mut recovery = txn.open_table(RECOVERY).unwrap();
+            let rows = recovery
+                .iter()
+                .unwrap()
+                .map(|row| {
+                    let (key, value) = row.unwrap();
+                    (key.value().to_vec(), value.value().to_vec())
+                })
+                .collect::<Vec<_>>();
+            for (key, value) in rows {
+                let mut old: serde_json::Value = serde_json::from_slice(&value).unwrap();
+                old["value"].as_object_mut().unwrap().remove("context");
+                recovery
+                    .insert(key.as_slice(), serde_json::to_vec(&old).unwrap().as_slice())
+                    .unwrap();
+            }
+        }
+        txn.commit().unwrap();
+    }
+    let mut reopened = Projections::open_with(&path, Fsync::None).unwrap();
+    assert_eq!(reopened.last_applied_lsn(), Lsn::ZERO);
+    assert!(reopened.recovery_certification.is_none());
+    crate::replay(&fixture.writer.reader(), &mut reopened).unwrap();
+    assert_eq!(reopened.export().unwrap(), expected);
+    let source = fixture
+        .writer
+        .checked_recovery(&mut reopened)
+        .unwrap()
+        .witness(resumed)
+        .unwrap();
+    assert_eq!(source.context().previous_control.unwrap().lsn, Some(paused));
+    assert!(reopened.agents().unwrap()[0].hired_lsn > Lsn::ZERO);
+}
+
+#[test]
+fn changed_retirement_metadata_cannot_reuse_an_existing_certificate() {
+    let mut fixture = Fixture::new(0);
+    fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap();
+    let txn = fixture.projections.db.begin_write().unwrap();
+    txn.open_table(META)
+        .unwrap()
+        .insert(LAST_RETIREMENT, &17u64)
+        .unwrap();
+    txn.commit().unwrap();
+    let error = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .err()
+        .unwrap();
+    assert_eq!(reason(&error), RecoveryStoreError::Metadata);
+    assert!(fixture.projections.recovery_certification.is_none());
+    let error = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .err()
+        .unwrap();
+    assert_eq!(reason(&error), RecoveryStoreError::CanonicalMismatch);
+}
+
+#[test]
+fn changed_card_invalidation_position_fails_canonical_equality() {
+    let mut fixture = Fixture::new(0);
+    let created = entry(RecordKind::CardCreated);
+    let (lsn, crc) = fixture.writer.append_witnessed(&created).unwrap();
+    fixture.projections.apply(lsn, crc, &created).unwrap();
+    let Record::CardCreated { card, .. } = created.record else {
+        unreachable!()
+    };
+    let txn = fixture.projections.db.begin_write().unwrap();
+    {
+        let mut board = txn.open_table(super::super::BOARD).unwrap();
+        let mut row =
+            super::super::get_row::<super::super::board::BoardRow>(&board, &card.to_bytes())
+                .unwrap()
+                .unwrap();
+        row.recovery_change_lsn = Lsn(17);
+        super::super::put_row(&mut board, &card.to_bytes(), &row).unwrap();
+    }
+    txn.commit().unwrap();
+    let error = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .err()
+        .unwrap();
+    assert_eq!(reason(&error), RecoveryStoreError::CanonicalMismatch);
+}

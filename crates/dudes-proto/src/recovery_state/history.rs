@@ -254,15 +254,45 @@ pub enum RecoveryEvidence {
     Marker,
 }
 
+/// The preceding control read from the existing agent fold before this record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryPriorControl {
+    /// Actual affected agent.
+    pub agent: AgentId,
+    /// Previous control identity; explicit absence differs from unavailable context.
+    #[serde(deserialize_with = "crate::chat::required_nullable")]
+    pub lsn: Option<Lsn>,
+}
+
+/// Narrow before-record context supplied by the existing validated folds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryWitnessContext {
+    /// Present only when the existing agent row supplied the preceding control.
+    #[serde(deserialize_with = "crate::chat::required_nullable")]
+    pub previous_control: Option<RecoveryPriorControl>,
+    /// Only the instruction fold's validated derived goal clear, never a raw action label.
+    #[serde(deserialize_with = "crate::chat::required_nullable")]
+    pub cleared_goal: Option<crate::instruction::InstructionGoalClear>,
+}
+
 /// One immutable projection of an actual journal record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryWitness {
     pub(super) reference: RecoveryWitnessRef,
     pub(super) evidence: RecoveryEvidence,
+    context: RecoveryWitnessContext,
 }
 
 impl RecoveryWitness {
+    /// Actual before-record context, absent when it was not supplied by a fold.
+    #[must_use]
+    pub const fn context(&self) -> RecoveryWitnessContext {
+        self.context
+    }
+
     /// Exact position, kind and owner.
     #[must_use]
     pub const fn reference(&self) -> RecoveryWitnessRef {
@@ -293,6 +323,23 @@ impl RecoveryWitness {
         use RecoveryWitnessOwner as O;
         if self.reference.lsn == Lsn::ZERO {
             return Err(RecoveryHistoryError::Position);
+        }
+        if let Some(previous) = self.context.previous_control
+            && (self.reference.owner != O::Agent(previous.agent)
+                || !matches!(
+                    self.reference.kind,
+                    K::Pause | K::Resume | K::Halt | K::AgentHeld
+                )
+                || previous
+                    .lsn
+                    .is_some_and(|at| at == Lsn::ZERO || at >= self.reference.lsn))
+        {
+            return Err(RecoveryHistoryError::Identity);
+        }
+        if self.context.cleared_goal.is_some()
+            && self.reference.kind != K::TicketInstructionReviewed
+        {
+            return Err(RecoveryHistoryError::Identity);
         }
         let valid = match (&self.evidence, self.reference.owner) {
             (E::Hire { .. }, O::Agent(_)) => self.reference.kind == K::AgentHired,
@@ -356,6 +403,13 @@ pub struct RecoveryHistory {
 }
 
 impl RecoveryHistory {
+    /// Read one actual source position; its kind and owner still require the caller's join.
+    pub fn at(&self, lsn: Lsn) -> Result<&RecoveryWitness, RecoveryHistoryError> {
+        self.witnesses
+            .get(&lsn)
+            .ok_or(RecoveryHistoryError::MissingWitness)
+    }
+
     /// Retain narrow source evidence at its actual position. Repeated equal observations are inert.
     pub fn observe(
         &mut self,
@@ -363,7 +417,19 @@ impl RecoveryHistory {
         entry: &Entry,
         hash: impl Fn(&[u8]) -> Hex32,
     ) -> Result<(), RecoveryHistoryError> {
-        if let Some(witness) = witness(lsn, &entry.record, hash)? {
+        self.observe_with_context(lsn, entry, RecoveryWitnessContext::default(), hash)
+    }
+
+    /// Retain actual fold context with the source; this operation supplies no certification.
+    pub fn observe_with_context(
+        &mut self,
+        lsn: Lsn,
+        entry: &Entry,
+        context: RecoveryWitnessContext,
+        hash: impl Fn(&[u8]) -> Hex32,
+    ) -> Result<(), RecoveryHistoryError> {
+        if let Some(mut witness) = witness(lsn, &entry.record, hash)? {
+            witness.context = context;
             self.insert(witness)?;
         } else if lsn == Lsn::ZERO {
             return Err(RecoveryHistoryError::Position);
@@ -443,6 +509,13 @@ fn marker_owner(kind: RecordKind, owner: RecoveryWitnessOwner) -> bool {
         (kind, owner),
         (RecordKind::GoalCleared, RecoveryWitnessOwner::Goal { .. })
             | (
+                RecordKind::CardCreated
+                    | RecordKind::CardTransition
+                    | RecordKind::Claim
+                    | RecordKind::TicketCreated,
+                RecoveryWitnessOwner::Card(_)
+            )
+            | (
                 RecordKind::AgentRetired | RecordKind::Attached | RecordKind::Detached,
                 RecoveryWitnessOwner::Agent(_)
             )
@@ -467,7 +540,9 @@ fn text_digest(text: &str, hash: &impl Fn(&[u8]) -> Hex32) -> Hex32 {
     hash(&bytes)
 }
 
-fn task_digest(task: &str, hash: &impl Fn(&[u8]) -> Hex32) -> Hex32 {
+/// Hash the exact issued task bytes using the recovery witness domain.
+#[must_use]
+pub fn task_digest(task: &str, hash: &impl Fn(&[u8]) -> Hex32) -> Hex32 {
     let mut bytes = b"dudes.recovery.task.v1\0".to_vec();
     bytes.extend_from_slice(task.as_bytes());
     hash(&bytes)
@@ -508,6 +583,7 @@ pub(super) fn witness(
             owner,
         },
         evidence,
+        context: RecoveryWitnessContext::default(),
     }))
 }
 
@@ -841,6 +917,10 @@ fn target_evidence(
             Some((O::Agent(*agent), E::Marker))
         }
         Record::WorktreeRemoved { worktree, .. } => Some((O::Worktree(*worktree), E::Marker)),
+        Record::CardCreated { card, .. }
+        | Record::CardTransition { card, .. }
+        | Record::Claim { card, .. }
+        | Record::TicketCreated { card, .. } => Some((O::Card(*card), E::Marker)),
         _ => None,
     }
 }

@@ -66,6 +66,8 @@ pub(super) fn has_fault(
 pub struct GoalRow {
     /// The goal.
     pub id: GoalId,
+    /// Actual goal installation position.
+    pub installed_lsn: Lsn,
     /// Who pursues it now; moved by `GoalReassigned`, never by anything else.
     pub agent: AgentId,
     /// The goal as the model reads it.
@@ -85,6 +87,8 @@ pub struct GoalRow {
     /// Managed `TurnIssued` records for this goal. Goal-scoped, so
     /// it carries over a `GoalReassigned` — the row moves owner, the counter does not reset.
     pub turns_on_goal: u32,
+    /// Latest managed issue for this goal, retained after its end.
+    pub last_turn: Option<dudes_types::TurnId>,
     /// The latest `PredicateResult`, when one has run.
     pub last_result: Option<PredicateOutcome>,
     /// The first observed completion. Set once and never rewritten: reassignment,
@@ -96,6 +100,7 @@ impl Default for GoalRow {
     fn default() -> Self {
         Self {
             id: GoalId::NIL,
+            installed_lsn: Lsn::ZERO,
             agent: AgentId::NIL,
             text: String::new(),
             // Never observed: a row is only ever written from a `GoalSet`, which carries a real
@@ -119,6 +124,7 @@ impl Default for GoalRow {
             hop_cap: 0,
             status: GoalStatus::Set,
             turns_on_goal: 0,
+            last_turn: None,
             last_result: None,
             first_done: None,
         }
@@ -167,6 +173,7 @@ pub(crate) fn apply(
     if let Some((agent, goal)) = record.goal_install() {
         let row = GoalRow {
             id: goal.id,
+            installed_lsn: lsn,
             agent,
             text: goal.text.clone(),
             predicate: goal.predicate.clone(),
@@ -194,25 +201,30 @@ pub(crate) fn apply(
         // is separate; this is the count the hop cap needs and nothing more.
         Record::TurnIssued {
             goal,
+            turn,
             mode: Mode::Managed,
             ..
         }
         | Record::NoteOnlyTurnIssued {
             goal,
+            turn,
             mode: Mode::Managed,
             ..
         }
         | Record::TaughtNoteOnlyTurnIssued {
             goal,
+            turn,
             mode: Mode::Managed,
             ..
         }
         | Record::TurnIssuedWithBrowserNote {
             goal,
+            turn,
             mode: Mode::Managed,
             ..
         } => update(table, lsn, *goal, record, |g| {
             g.turns_on_goal = g.turns_on_goal.saturating_add(1);
+            g.last_turn = Some(*turn);
             if g.status == GoalStatus::Set {
                 g.status = GoalStatus::InProgress;
             }

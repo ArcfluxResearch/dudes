@@ -3,11 +3,18 @@
 use std::sync::Arc;
 
 use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryBinding;
 use dudes_proto::recovery::{RecoveryAuthorized, RecoveryClaimRef};
-use dudes_proto::recovery_state::RecoveryClaimState;
+use dudes_proto::recovery_state::admission::{
+    RecoveryAgentCurrent, RecoveryCurrent, RecoveryGoalCurrent, RecoveryLeaseCurrent,
+};
 use dudes_proto::recovery_state::cache::{RecoveryCache, RecoveryCacheReader, RecoveryCacheRow};
+use dudes_proto::recovery_state::history::{
+    RecoveryPriorControl, RecoveryWitness, RecoveryWitnessContext, RecoveryWitnessOwner,
+};
+use dudes_proto::recovery_state::{RecoveryClaimState, RecoveryFacts, RecoveryStateError};
 use dudes_proto::{Entry, Record};
-use dudes_types::Lsn;
+use dudes_types::{GoalStatus, Lsn};
 use redb::{ReadableDatabase, ReadableTable};
 
 use super::{
@@ -17,6 +24,8 @@ use super::{
 use crate::error::{Error, RecoveryStoreError, Result};
 use crate::reader::ValidatedPrefix;
 use crate::writer::Writer;
+
+pub(super) const LAST_RETIREMENT: &str = "recovery_last_retirement_lsn";
 
 #[cfg(test)]
 mod tests;
@@ -29,6 +38,7 @@ pub(super) struct Certification {
     frontier: Lsn,
     cut: Lsn,
     crc: Option<u64>,
+    retirement: Option<u64>,
 }
 
 /// An owned historical receipt. Reading it never submits or releases work.
@@ -52,6 +62,118 @@ pub struct CheckedRecoveryStore<'a> {
 }
 
 impl<'a> CheckedRecoveryStore<'a> {
+    /// Bind a target to current rows and exact sources in this owned, certified prefix.
+    /// This factual result grants no operator permission and releases no work.
+    pub fn facts(&self, binding: &RecoveryBinding) -> Result<RecoveryFacts> {
+        check(self.writer, self.projections)?;
+        let txn = self.projections.db.begin_read()?;
+        check_metadata(self.projections, &txn)?;
+        let through = self.projections.last_applied;
+        let agent = super::get_row::<super::AgentRow>(
+            &txn.open_table(super::AGENTS)?,
+            &binding.work.agent.to_bytes(),
+        )?
+        .ok_or(RecoveryStateError::Binding)?;
+        let goal = super::get_row::<super::GoalRow>(
+            &txn.open_table(super::GOALS)?,
+            &binding.work.goal.to_bytes(),
+        )?
+        .ok_or(RecoveryStateError::Binding)?;
+        let turn = super::get_row::<super::TurnRow>(
+            &txn.open_table(super::TURNS)?,
+            &binding.work.turn.to_bytes(),
+        )?
+        .ok_or(RecoveryStateError::Binding)?;
+        let table = txn.open_table(RECOVERY)?;
+        let initial = RecoveryCache::load_sources(
+            &CacheReader(&table),
+            through,
+            &[turn.lsn_issued, goal.installed_lsn],
+        )?;
+        let mut issue = initial
+            .history()
+            .at(turn.lsn_issued)
+            .map_err(|_| RecoveryStateError::Binding)?
+            .issue()
+            .ok_or(RecoveryStateError::Binding)?;
+        issue.issued.work.agent = turn.agent;
+        issue.issued.work.goal = turn.goal.ok_or(RecoveryStateError::Binding)?;
+        issue
+            .issued
+            .model_selection
+            .clone_from(&turn.model_selection);
+        let ticket = current_ticket(&txn, &goal, initial.history())?;
+        let lease = agent
+            .worktree
+            .map(|id| {
+                let row = super::get_row::<super::WorktreeRow>(
+                    &txn.open_table(super::WORKTREES)?,
+                    &id.to_bytes(),
+                )?
+                .ok_or(RecoveryStateError::Binding)?;
+                Ok::<_, Error>(RecoveryLeaseCurrent {
+                    worktree: id,
+                    agent: row.agent,
+                    removed: row.removed,
+                })
+            })
+            .transpose()?;
+        let current = RecoveryCurrent {
+            through,
+            agent: current_agent(&agent),
+            goal: RecoveryGoalCurrent {
+                goal: goal.id,
+                agent: goal.agent,
+                installed_lsn: goal.installed_lsn,
+                last_turn: goal.last_turn,
+                cleared: goal.status == GoalStatus::Abandoned,
+                done: goal.status == GoalStatus::Achieved,
+                predicate: &goal.predicate,
+                result_lsn: goal.last_result.map(|result| result.lsn),
+                card_change_lsn: match goal.predicate {
+                    dudes_proto::Predicate::BoardState { card, .. } => {
+                        let row = super::get_row::<super::board::BoardRow>(
+                            &txn.open_table(super::BOARD)?,
+                            &card.to_bytes(),
+                        )?
+                        .ok_or(RecoveryStateError::Binding)?;
+                        Some(row.recovery_change_lsn)
+                    }
+                    _ => None,
+                },
+                retired_lsn: txn
+                    .open_table(META)?
+                    .get(LAST_RETIREMENT)?
+                    .map(|value| Lsn(value.value())),
+            },
+            issue,
+            mode: turn.mode,
+            ticket,
+            lease,
+        };
+        let sources =
+            RecoveryCache::load_sources(&CacheReader(&table), through, &current.sources())?;
+        Ok(current.bind(binding, sources.history())?)
+    }
+
+    /// Read one actual source at the same checked cut, without interpreting permission.
+    pub fn witness(&self, lsn: Lsn) -> Result<RecoveryWitness> {
+        check(self.writer, self.projections)?;
+        let txn = self.projections.db.begin_read()?;
+        check_metadata(self.projections, &txn)?;
+        let table = txn.open_table(RECOVERY)?;
+        let source = RecoveryCache::load_sources(
+            &CacheReader(&table),
+            self.projections.last_applied,
+            &[lsn],
+        )?;
+        Ok(source
+            .history()
+            .at(lsn)
+            .map_err(|_| RecoveryStateError::Binding)?
+            .clone())
+    }
+
     pub(crate) fn open(writer: &'a mut Writer, projections: &'a mut Projections) -> Result<Self> {
         if let Err(error) = certain(writer) {
             projections.recovery_certification = None;
@@ -79,6 +201,12 @@ impl<'a> CheckedRecoveryStore<'a> {
                 frontier,
                 cut: projections.last_applied,
                 crc: projections.last_applied_crc,
+                retirement: projections
+                    .db
+                    .begin_read()?
+                    .open_table(META)?
+                    .get(LAST_RETIREMENT)?
+                    .map(|value| value.value()),
             });
         }
         Ok(Self {
@@ -161,6 +289,10 @@ impl<'a> CheckedRecoveryStore<'a> {
             } else {
                 first
             };
+            let retirement = txn
+                .open_table(META)?
+                .get(LAST_RETIREMENT)?
+                .map(|value| value.value());
             txn.commit()?;
             self.projections.publish_batch(&last);
             self.projections.recovery_certification = Some(Certification {
@@ -170,6 +302,7 @@ impl<'a> CheckedRecoveryStore<'a> {
                 frontier,
                 cut: self.projections.last_applied,
                 crc: self.projections.last_applied_crc,
+                retirement,
             });
             Ok(lsn)
         })();
@@ -178,6 +311,48 @@ impl<'a> CheckedRecoveryStore<'a> {
         }
         result
     }
+}
+
+fn current_agent(agent: &super::AgentRow) -> RecoveryAgentCurrent {
+    RecoveryAgentCurrent {
+        agent: agent.id,
+        hired_lsn: agent.hired_lsn,
+        provider: agent.provider,
+        worktree: agent.worktree,
+        mode: agent.mode,
+        retired: false,
+        halted: agent.halted,
+        goal: agent.goal,
+        control_lsn: agent.control_lsn,
+        session: agent.session.clone(),
+        session_lsn: agent.session_lsn,
+    }
+}
+
+fn current_ticket(
+    txn: &redb::ReadTransaction,
+    goal: &super::GoalRow,
+    history: &dudes_proto::recovery_state::history::RecoveryHistory,
+) -> Result<Option<dudes_proto::diff_stamp::TicketBinding>> {
+    let source = history
+        .at(goal.installed_lsn)
+        .map_err(|_| RecoveryStateError::Binding)?;
+    let RecoveryWitnessOwner::Ticket { card, .. } = source.reference().owner else {
+        return Ok(None);
+    };
+    let row =
+        super::get_row::<super::board::BoardRow>(&txn.open_table(super::BOARD)?, &card.to_bytes())?
+            .ok_or(RecoveryStateError::Binding)?;
+    let ticket = row.ticket.ok_or(RecoveryStateError::Binding)?;
+    if ticket.goal != Some(goal.id) || row.view.claimed_by != Some(goal.agent) {
+        return Err(RecoveryStateError::Binding.into());
+    }
+    Ok(Some(dudes_proto::diff_stamp::TicketBinding {
+        card,
+        round: ticket.round,
+        goal: goal.id,
+        claimant: goal.agent,
+    }))
 }
 
 fn preappend_error(entry: &Entry, error: Error) -> Error {
@@ -234,6 +409,7 @@ fn check_metadata_table(
     if meta.get(SCHEMA_VERSION)?.map(|value| value.value()) != Some(PROJECTION_VERSION)
         || meta.get(LAST_APPLIED_LSN)?.map(|value| value.value()) != Some(certification.cut.0)
         || meta.get(LAST_APPLIED_CRC)?.map(|value| value.value()) != certification.crc
+        || meta.get(LAST_RETIREMENT)?.map(|value| value.value()) != certification.retirement
         || projections.last_applied != certification.cut
         || projections.last_applied_crc != certification.crc
     {
@@ -297,11 +473,12 @@ pub(super) fn observe(
     through: Lsn,
     lsn: Lsn,
     entry: &Entry,
+    context: RecoveryWitnessContext,
 ) -> Result<()> {
     let mut cache = RecoveryCache::load_history(&CacheReader(table), through, lsn)?;
     cache
         .history_mut()
-        .observe(lsn, entry, super::instructions::hash)
+        .observe_with_context(lsn, entry, context, super::instructions::hash)
         .map_err(dudes_proto::recovery_state::cache::RecoveryCacheError::from)?;
     for update in cache.updates()? {
         match update.value {
@@ -314,6 +491,36 @@ pub(super) fn observe(
         }
     }
     Ok(())
+}
+
+pub(super) fn capture_before(
+    agents: &impl ReadableTable<&'static [u8; 16], &'static [u8]>,
+    entry: &Entry,
+) -> Result<RecoveryWitnessContext> {
+    let agent = match &entry.record {
+        Record::Pause { agent, .. }
+        | Record::Resume { agent, .. }
+        | Record::Halt { agent, .. }
+        | Record::AgentHeld { agent, .. } => Some(*agent),
+        _ => None,
+    };
+    let previous_control = agent
+        .map(|agent| {
+            Ok::<_, Error>(
+                super::get_row::<super::AgentRow>(agents, &agent.to_bytes())?.map(|row| {
+                    RecoveryPriorControl {
+                        agent,
+                        lsn: row.control_lsn,
+                    }
+                }),
+            )
+        })
+        .transpose()?
+        .flatten();
+    Ok(RecoveryWitnessContext {
+        previous_control,
+        cleared_goal: None,
+    })
 }
 
 fn authority_rows(projections: &Projections) -> Result<Vec<String>> {
@@ -338,6 +545,10 @@ fn authority_rows(projections: &Projections) -> Result<Vec<String>> {
     )?;
     let mut rows = vec![
         format!("schema {PROJECTION_VERSION}"),
+        format!(
+            "recovery_last_retirement {:?}",
+            meta.get(LAST_RETIREMENT)?.map(|value| value.value())
+        ),
         projections.export_at(&txn)?,
     ];
     super::export_rows::<16, super::board::BoardRow>(

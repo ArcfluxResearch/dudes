@@ -77,6 +77,21 @@ pub struct RecoveryCache {
 }
 
 impl RecoveryCache {
+    /// Load only required actual source positions from a caller-owned certified prefix.
+    ///
+    /// This codec validates present cells; it cannot certify the underlying store.
+    pub fn load_sources<R: RecoveryCacheReader>(
+        reader: &R,
+        through: Lsn,
+        sources: &[Lsn],
+    ) -> Result<Self, R::Error> {
+        let mut loader = Loader::new(reader, through)?;
+        for lsn in sources {
+            loader.read(Key::Witness(*lsn), true)?;
+        }
+        Ok(loader.finish())
+    }
+
     /// Load one contract transition and explicitly requested immutable witness references.
     ///
     /// The caller supplies a complete store certified by the journal gateway; this raw loader

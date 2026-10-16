@@ -13,6 +13,8 @@ use crate::error::Result;
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct BoardRow {
+    #[serde(default)]
+    pub(super) recovery_change_lsn: Lsn,
     #[serde(flatten)]
     pub(super) view: CardView,
     #[serde(default)]
@@ -55,6 +57,7 @@ pub(super) fn apply(
             table,
             &card.to_bytes(),
             &BoardRow {
+                recovery_change_lsn: lsn,
                 view: CardView {
                     id: *card,
                     title: title.clone(),
@@ -226,6 +229,7 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
                 coverage: None,
             };
             let row = BoardRow {
+                recovery_change_lsn: lsn,
                 view,
                 claimed_lsn: None,
                 ticket: Some(ticket),
@@ -262,6 +266,28 @@ fn apply_ticket(table: &mut RowTable<'_>, lsn: Lsn, record: &Record) -> Result<(
         Record::TicketRemoved { card, .. } => remove_ticket(table, lsn, *card),
         _ => Ok(()),
     }
+}
+
+pub(super) fn capture_recovery_change(
+    table: &mut RowTable<'_>,
+    lsn: Lsn,
+    entry: &Entry,
+) -> Result<()> {
+    let card = match &entry.record {
+        Record::CardCreated { card, .. }
+        | Record::CardTransition { card, .. }
+        | Record::Claim { card, .. }
+        | Record::TicketCreated { card, .. }
+        | Record::TicketAssigned { card, .. }
+        | Record::TicketStarted { card, .. }
+        | Record::TicketRemoved { card, .. } => *card,
+        _ => return Ok(()),
+    };
+    if let Some(mut row) = get_row::<BoardRow>(table, &card.to_bytes())? {
+        row.recovery_change_lsn = lsn;
+        put_row(table, &card.to_bytes(), &row)?;
+    }
+    Ok(())
 }
 
 pub(super) fn apply_instruction(

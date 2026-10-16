@@ -1,5 +1,6 @@
 //! Pure episode exclusivity and permanent recovery receipt history.
 
+pub mod admission;
 pub mod cache;
 pub mod history;
 
