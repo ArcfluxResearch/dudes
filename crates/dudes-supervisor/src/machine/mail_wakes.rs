@@ -1,6 +1,6 @@
 use super::{
-    AgentId, BreakerSignal, Clock, Effect, Entry, GoalId, Lsn, ManagedLaunch, Mode, Provenance,
-    Record, Rng, SpendView, Supervisor, Then, Timestamp, TurnId,
+    AgentId, BreakerSignal, Clock, Effect, GoalId, Lsn, ManagedLaunch, Mode, Provenance, Record,
+    Rng, SpendView, Supervisor, Then, Timestamp, TurnId,
 };
 use crate::input::{
     DurableInputError, Handled, MailWakeRefreshFailure, MailWakeRequest, RecordedAppend,
@@ -545,7 +545,7 @@ mod tests {
     use crate::host::{ProcessHost as _, SpawnResult};
     use crate::testing::{FakeClock, Harness, Seen, journal_with_issued_turn};
     use dudes_proto::Evidence;
-    use dudes_proto::{ExitStatus, LoopDecision, Spend, TurnOutcome};
+    use dudes_proto::{Entry, ExitStatus, LoopDecision, Spend, TurnOutcome};
     use dudes_types::{BreakerRung, MailId, MailState, Usage, Usd};
     use std::collections::BTreeMap;
 

@@ -283,8 +283,10 @@ impl<'a> CheckedRecoveryStore<'a> {
         ) {
             Ok(append) => Ok(append.lsn()),
             Err(GuardedAppendError::Journal(error)) => Err(error),
-            Err(GuardedAppendError::Acquire(never))
-            | Err(GuardedAppendError::AfterFsync { source: never, .. }) => match never {},
+            Err(
+                GuardedAppendError::Acquire(never)
+                | GuardedAppendError::AfterFsync { source: never, .. },
+            ) => match never {},
         }
     }
 
