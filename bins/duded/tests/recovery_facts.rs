@@ -2,6 +2,8 @@
 
 #[path = "recovery_facts/carriers.rs"]
 mod carriers;
+#[path = "recovery_facts/matrix.rs"]
+mod matrix;
 
 use dudes_journal::{Error, Fsync, JournalOptions, Projections, Writer};
 use dudes_proto::diff_stamp::TicketBinding;
