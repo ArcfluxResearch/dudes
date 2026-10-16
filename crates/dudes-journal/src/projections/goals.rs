@@ -96,6 +96,16 @@ pub struct GoalRow {
     pub first_done: Option<FirstDone>,
 }
 
+impl GoalRow {
+    fn note_managed_issue(&mut self, turn: dudes_types::TurnId) {
+        self.turns_on_goal = self.turns_on_goal.saturating_add(1);
+        self.last_turn = Some(turn);
+        if self.status == GoalStatus::Set {
+            self.status = GoalStatus::InProgress;
+        }
+    }
+}
+
 impl Default for GoalRow {
     fn default() -> Self {
         Self {
@@ -222,13 +232,7 @@ pub(crate) fn apply(
             turn,
             mode: Mode::Managed,
             ..
-        } => update(table, lsn, *goal, record, |g| {
-            g.turns_on_goal = g.turns_on_goal.saturating_add(1);
-            g.last_turn = Some(*turn);
-            if g.status == GoalStatus::Set {
-                g.status = GoalStatus::InProgress;
-            }
-        }),
+        } => update(table, lsn, *goal, record, |g| g.note_managed_issue(*turn)),
         Record::PredicateResult {
             goal,
             provenance,
