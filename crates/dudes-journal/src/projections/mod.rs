@@ -1123,6 +1123,21 @@ fn fold_batch<'a>(
                 return Err(Error::NonMonotone { last, got: lsn });
             }
             let mut recovery_context = recovery::capture_before(&agents, &turns, &goals, entry)?;
+            let recovery_updates = recovery::prepare_record(
+                &recovery::FactTables {
+                    agents: &agents,
+                    goals: &goals,
+                    turns: &turns,
+                    board: &board,
+                    leases: &leases,
+                    recovery: &recovery_rows,
+                    meta: &meta,
+                },
+                last,
+                lsn,
+                entry,
+                recovery_context,
+            )?;
             // Owner, then goal, then turn, then money. Only the last step is *ordered*, and
             // it is ordered by the type system rather than by this comment: `budget::apply`
             // takes the `EndedTurn` that `turns::apply` returns, because `TurnEnded` names
@@ -1161,6 +1176,7 @@ fn fold_batch<'a>(
             )?;
             recovery_context.cleared_goal = instruction_fold.cleared_goal;
             recovery::observe(&mut recovery_rows, last, lsn, entry, recovery_context)?;
+            recovery::write_updates(&mut recovery_rows, recovery_updates)?;
             if let Some(clear) = instruction_fold.cleared_goal {
                 let cleared = Entry {
                     at: entry.at,

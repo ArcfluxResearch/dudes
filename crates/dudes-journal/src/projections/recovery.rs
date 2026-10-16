@@ -31,6 +31,9 @@ use crate::writer::Writer;
 
 pub(super) const LAST_RETIREMENT: &str = "recovery_last_retirement_lsn";
 
+mod fold;
+pub(super) use fold::prepare_record;
+
 #[cfg(test)]
 mod tests;
 
@@ -502,6 +505,10 @@ fn current_ticket(
 
 fn preappend_error(entry: &Entry, error: Error) -> Error {
     match error {
+        Error::RecoveryRecord { reason, .. } => Error::RecoveryAdmission {
+            kind: entry.record.kind(),
+            reason,
+        },
         Error::MailWake { reason, .. } => Error::MailWakeAdmission {
             kind: entry.record.kind(),
             reason,
@@ -626,6 +633,23 @@ pub(super) fn observe(
         .observe_with_context(lsn, entry, context, super::instructions::hash)
         .map_err(dudes_proto::recovery_state::cache::RecoveryCacheError::from)?;
     for update in cache.updates()? {
+        match update.value {
+            Some(value) => {
+                table.insert(update.key.as_slice(), value.as_slice())?;
+            }
+            None => {
+                table.remove(update.key.as_slice())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn write_updates(
+    table: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
+    updates: Vec<dudes_proto::recovery_state::cache::RecoveryCacheUpdate>,
+) -> Result<()> {
+    for update in updates {
         match update.value {
             Some(value) => {
                 table.insert(update.key.as_slice(), value.as_slice())?;

@@ -50,14 +50,17 @@ pub struct RecoveryBinding {
     pub hired_lsn: Lsn,
     /// Original ticket association, absent for a non-ticket goal.
     #[serde(deserialize_with = "strict_ticket")]
+    #[schemars(with = "crate::chat::ExplicitNullable<RecoveryTicketFields>")]
     pub ticket: Option<TicketBinding>,
     /// Exact daemon-owned checkout lease, absent for an unleased checkout.
     #[serde(deserialize_with = "required_option")]
+    #[schemars(with = "crate::chat::ExplicitNullable<WorktreeId>")]
     pub worktree: Option<WorktreeId>,
     /// Recorded provider.
     pub provider: Provider,
     /// Original explicit model choice, or an older issue with no recorded choice.
     #[serde(deserialize_with = "strict_model")]
+    #[schemars(with = "crate::chat::ExplicitNullable<RecoveryModelFields>")]
     pub model_selection: Option<ModelSelection>,
 }
 
@@ -108,6 +111,7 @@ pub enum RecoveryBoundary {
         end_lsn: Lsn,
         /// First failure named by a repeated-failure hold, absent for launch holds.
         #[serde(deserialize_with = "required_option")]
+        #[schemars(with = "crate::chat::ExplicitNullable<RecoveryFailure>")]
         first: Option<RecoveryFailure>,
     },
     /// Current operator pause after an observed failed or no-result turn.
@@ -149,6 +153,7 @@ pub struct RecoveryRequired {
     pub boundary: RecoveryBoundary,
     /// Exact prior claim whose closed episode is replaced or whose issue-bound consent is superseded.
     #[serde(deserialize_with = "required_option")]
+    #[schemars(with = "crate::chat::ExplicitNullable<RecoveryClaimRef>")]
     pub predecessor: Option<RecoveryClaimRef>,
 }
 
@@ -200,6 +205,7 @@ pub enum RecoveryAttribution {
         pid: u32,
         /// Transport-resolved user identity, when available.
         #[serde(deserialize_with = "required_option")]
+        #[schemars(with = "crate::chat::ExplicitNullable<u32>")]
         uid: Option<u32>,
     },
     /// Browser session attribution captured by live session admission.
@@ -222,6 +228,7 @@ pub enum RecoveryContext {
     Fresh {
         /// Daemon-minted identifier, or vendor-assigned context.
         #[serde(deserialize_with = "required_option")]
+        #[schemars(with = "crate::chat::ExplicitNullable<SessionId>")]
         session: Option<SessionId>,
         /// Historical recap intent, packed only after mandatory task sections.
         recap: RecoveryRecap,
@@ -240,9 +247,11 @@ pub struct RecoveryIssued {
     pub answers: Vec<Lsn>,
     /// Original explicit model selection.
     #[serde(deserialize_with = "strict_model")]
+    #[schemars(with = "crate::chat::ExplicitNullable<RecoveryModelFields>")]
     pub model_selection: Option<ModelSelection>,
     /// Session announced for this new issue, without a provider-history claim.
     #[serde(deserialize_with = "required_option")]
+    #[schemars(with = "crate::chat::ExplicitNullable<SessionId>")]
     pub session: Option<SessionId>,
 }
 
@@ -273,6 +282,7 @@ pub enum RecoveryPlan {
         issue: RecoveryIssue,
         /// Fresh launch announcement, independent of the original issue's announcement.
         #[serde(deserialize_with = "required_option")]
+        #[schemars(with = "crate::chat::ExplicitNullable<SessionId>")]
         session: Option<SessionId>,
     },
 }
@@ -293,12 +303,15 @@ pub struct RecoveryAuthorized {
     pub attribution: RecoveryAttribution,
     /// Control identity the operator reviewed.
     #[serde(deserialize_with = "required_option")]
+    #[schemars(with = "crate::chat::ExplicitNullable<Lsn>")]
     pub expected_control: Option<Lsn>,
     /// Control identity after this command's optional attributed Resume.
     #[serde(deserialize_with = "required_option")]
+    #[schemars(with = "crate::chat::ExplicitNullable<Lsn>")]
     pub resulting_control: Option<Lsn>,
     /// Exact own Resume, absent when no control transition was needed.
     #[serde(deserialize_with = "required_option")]
+    #[schemars(with = "crate::chat::ExplicitNullable<Lsn>")]
     pub resume_lsn: Option<Lsn>,
     /// New work intent or an immutable owed issue.
     pub plan: RecoveryPlan,
@@ -350,6 +363,26 @@ pub struct RecoveryInvalidated {
     pub evidence: RecoveryInvalidationEvidence,
 }
 
+/// Check position-independent recovery payload bounds before staging or historical folding.
+/// This does not establish historical relationships or authenticate a caller.
+pub fn validate_record_shape(
+    record: &crate::Record,
+) -> Result<(), crate::recovery_state::RecoveryStateError> {
+    if let crate::Record::RecoveryAuthorized(RecoveryAuthorized {
+        plan:
+            RecoveryPlan::New {
+                context: RecoveryContext::Fresh { recap, .. },
+                ..
+            },
+        ..
+    }) = record
+        && recap.text.len() > MAX_RECOVERY_RECAP_BYTES
+    {
+        return Err(crate::recovery_state::RecoveryStateError::Context);
+    }
+    Ok(())
+}
+
 fn required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
@@ -362,15 +395,7 @@ fn strict_ticket<'de, D>(deserializer: D) -> Result<Option<TicketBinding>, D::Er
 where
     D: Deserializer<'de>,
 {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Fields {
-        card: CardId,
-        round: u32,
-        goal: GoalId,
-        claimant: AgentId,
-    }
-    Option::<Fields>::deserialize(deserializer).map(|value| {
+    Option::<RecoveryTicketFields>::deserialize(deserializer).map(|value| {
         value.map(|fields| TicketBinding {
             card: fields.card,
             round: fields.round,
@@ -384,15 +409,25 @@ fn strict_model<'de, D>(deserializer: D) -> Result<Option<ModelSelection>, D::Er
 where
     D: Deserializer<'de>,
 {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Fields {
-        #[serde(default)]
-        selector: Option<String>,
-    }
-    Option::<Fields>::deserialize(deserializer).map(|value| {
+    Option::<RecoveryModelFields>::deserialize(deserializer).map(|value| {
         value.map(|fields| ModelSelection {
             selector: fields.selector,
         })
     })
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RecoveryTicketFields {
+    card: CardId,
+    round: u32,
+    goal: GoalId,
+    claimant: AgentId,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RecoveryModelFields {
+    #[serde(default)]
+    selector: Option<String>,
 }

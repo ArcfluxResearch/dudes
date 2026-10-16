@@ -1,3 +1,5 @@
+mod records;
+
 use super::*;
 use crate::writer::{Fault, Fsync, JournalOptions};
 use dudes_proto::RecordKind;

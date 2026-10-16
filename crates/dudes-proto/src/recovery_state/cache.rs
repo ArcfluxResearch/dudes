@@ -110,6 +110,19 @@ impl<'a> From<super::transition::RecoveryTransition<'a>> for Dependencies<'a> {
 }
 
 impl RecoveryCache {
+    /// Load only current work and its original planned-turn reservation from a certified store.
+    /// Absence is authoritative only at the journal-owned checked boundary.
+    pub fn load_work<R: RecoveryCacheReader>(
+        reader: &R,
+        through: Lsn,
+        work: RecoveryWork,
+    ) -> Result<Self, R::Error> {
+        let mut loader = Loader::new(reader, through)?;
+        loader.current(work)?;
+        loader.planned(work.turn, false)?;
+        Ok(loader.finish())
+    }
+
     /// Load only required actual source positions from a caller-owned certified prefix.
     ///
     /// This codec validates present cells; it cannot certify the underlying store.

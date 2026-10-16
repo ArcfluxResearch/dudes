@@ -424,6 +424,12 @@ impl Writer {
     /// emitter has to encode, ask whether that position survives the rotation check, and encode
     /// again when it does not.
     fn stage(entry: &Entry, required: bool) -> Result<Vec<u8>> {
+        dudes_proto::recovery::validate_record_shape(&entry.record).map_err(|reason| {
+            Error::RecoveryAdmission {
+                kind: entry.record.kind(),
+                reason,
+            }
+        })?;
         dudes_proto::validate_instruction_record(&entry.record).map_err(|reason| {
             Error::Instruction {
                 lsn: Lsn::ZERO,

@@ -196,6 +196,11 @@ fn placement(kind: RecordKind) -> Placement {
         | RecordKind::InstructionAttemptBoundarySettled => Placement::Out(
             "instruction authority needs exact joined issue, spawn, end and review positions; standalone samples do not supply those joins",
         ),
+        RecordKind::RecoveryRequired
+        | RecordKind::RecoveryAuthorized
+        | RecordKind::RecoveryInvalidated => Placement::Out(
+            "recovery authority requires exact before-record sources; recovery_records and recovery gateway tests compare joined prefixes across automatic checkpoints",
+        ),
         RecordKind::AgentMcpServersChanged | RecordKind::McpLaunchGranted => Placement::Out(
             "MCP authority requires its edited policy and physical joins; required frame and cache rebuild tests cover those records separately",
         ),

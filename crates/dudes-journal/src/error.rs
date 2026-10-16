@@ -22,6 +22,36 @@ pub enum Error {
     /// A recovery relationship was refused, without exposing request or task contents.
     #[error("recovery relationship: {0}")]
     RecoveryState(#[from] dudes_proto::recovery_state::RecoveryStateError),
+    /// A durable recovery transition disagrees with its actual preceding history.
+    #[error("journal recovery record at {lsn}: {reason}")]
+    RecoveryRecord {
+        /// Actual offending frame position.
+        lsn: Lsn,
+        /// Fixed relationship failure, without task or request contents.
+        reason: dudes_proto::recovery_state::RecoveryStateError,
+    },
+    /// A recovery relationship was refused before any frame was written.
+    #[error("journal recovery record {kind:?} refused before append: {reason}")]
+    RecoveryAdmission {
+        /// Attempted record kind.
+        kind: dudes_proto::RecordKind,
+        /// Fixed relationship failure.
+        reason: dudes_proto::recovery_state::RecoveryStateError,
+    },
+    /// Recovery authority must use its exact required frame kind and version.
+    #[error(
+        "journal recovery header at {lsn} has kind {kind} version {version}, expected kind {expected_kind} version 2"
+    )]
+    RecoveryFrame {
+        /// Actual offending frame position.
+        lsn: Lsn,
+        /// Actual header kind.
+        kind: u16,
+        /// Actual header version.
+        version: u16,
+        /// Kind carried by the decoded payload.
+        expected_kind: u16,
+    },
     /// A keyed instruction projection cell is malformed or missing its referenced attempt.
     #[error("projection instructions: {0}")]
     InstructionCache(#[from] dudes_proto::instruction_state::cache::InstructionCacheError),

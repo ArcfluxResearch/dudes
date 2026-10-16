@@ -34,6 +34,8 @@ use crate::error::{Error, Result};
 use crate::frame::{self, FrameError, HEADER_LEN, Header, MAX_PAYLOAD};
 use crate::segment::{FIRST_SEGMENT, list_segments, lsn_at, segment_path, sync_dir};
 
+mod recovery;
+
 #[cfg(test)]
 std::thread_local! {
     static VALIDATION_PASSES: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
@@ -213,6 +215,7 @@ pub(crate) struct DetailedScan {
     pub(crate) good_end: u64,
     pub(crate) stop: Option<ScanStop>,
     pub(crate) has_completed_contract: bool,
+    has_recovery_contract: bool,
     fingerprint: [u8; 32],
 }
 
@@ -221,19 +224,21 @@ fn completed_contract_payload(header: Header, payload: &[u8]) -> bool {
     struct Tag {
         t: String,
     }
-    if matches!(
-        RecordKind::from_tag(header.kind),
-        Some(
-            RecordKind::TaughtNoteTurnDecided
-                | RecordKind::TaughtNoteOnlyTurnIssued
-                | RecordKind::MailWakeTurnDecided
-                | RecordKind::MailWakeOnlyTurnIssued
-                | RecordKind::InstructionObservationStarted
-                | RecordKind::InstructionObservationFinished
-                | RecordKind::TicketInstructionReviewed
-                | RecordKind::InstructionAttemptBoundarySettled
+    if recovery::payload(header, payload)
+        || matches!(
+            RecordKind::from_tag(header.kind),
+            Some(
+                RecordKind::TaughtNoteTurnDecided
+                    | RecordKind::TaughtNoteOnlyTurnIssued
+                    | RecordKind::MailWakeTurnDecided
+                    | RecordKind::MailWakeOnlyTurnIssued
+                    | RecordKind::InstructionObservationStarted
+                    | RecordKind::InstructionObservationFinished
+                    | RecordKind::TicketInstructionReviewed
+                    | RecordKind::InstructionAttemptBoundarySettled
+            )
         )
-    ) {
+    {
         return true;
     }
     serde_json::from_slice::<Tag>(payload).is_ok_and(|tag| {
@@ -262,6 +267,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
     let mut offset = 0u64;
     let mut frames = 0u64;
     let mut has_completed_contract = false;
+    let mut has_recovery_contract = false;
     let mut fingerprint = blake3::Hasher::new();
     loop {
         match read_next_frame(r, offset, buf)? {
@@ -271,6 +277,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
                     good_end: offset,
                     stop: None,
                     has_completed_contract,
+                    has_recovery_contract,
                     fingerprint: *fingerprint.finalize().as_bytes(),
                 });
             }
@@ -278,6 +285,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
                 fingerprint.update(&header.to_bytes());
                 fingerprint.update(buf);
                 has_completed_contract |= completed_contract_payload(header, buf);
+                has_recovery_contract |= recovery::payload(header, buf);
                 offset += header.frame_len() as u64;
                 frames += 1;
             }
@@ -290,6 +298,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
                         kind: header.kind,
                     }),
                     has_completed_contract,
+                    has_recovery_contract,
                     fingerprint: *fingerprint.finalize().as_bytes(),
                 });
             }
@@ -303,6 +312,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
                         claimed_end,
                     })),
                     has_completed_contract,
+                    has_recovery_contract,
                     fingerprint: *fingerprint.finalize().as_bytes(),
                 });
             }
@@ -592,6 +602,7 @@ fn survey_with_projection(
     let mut last_len = 0;
     let mut buf = Vec::new();
     let mut has_completed_contract = false;
+    let mut has_recovery_contract = false;
     let mut fingerprint = blake3::Hasher::new();
     for (i, &no) in segments.iter().enumerate() {
         let path = segment_path(dir, no);
@@ -606,6 +617,7 @@ fn survey_with_projection(
             scan_reader_detailed(&mut (&mut reader).take(file_len), &mut buf)?
         };
         has_completed_contract |= scan.has_completed_contract;
+        has_recovery_contract |= scan.has_recovery_contract;
         if scan.frames != 0 {
             fingerprint.update(&no.to_le_bytes());
             fingerprint.update(&scan.good_end.to_le_bytes());
@@ -644,7 +656,7 @@ fn survey_with_projection(
         first_segment: segments.first().copied(),
         fingerprint: *fingerprint.finalize().as_bytes(),
     };
-    if canonical.is_some()
+    if (canonical.is_some() || has_recovery_contract)
         && segments
             .first()
             .is_some_and(|first| *first != FIRST_SEGMENT)
@@ -1189,10 +1201,22 @@ impl Witnessed {
                             },
                         )?;
                         let contract = completed_contract_payload(header, &self.buf);
+                        dudes_proto::recovery::validate_record_shape(&entry.record)
+                            .map_err(|reason| Error::RecoveryRecord { lsn, reason })?;
                         if contract
                             && (header.ver != frame::REQUIRED_VERSION
                                 || header.kind != entry.record.kind().tag())
                         {
+                            if recovery::is_kind(entry.record.kind())
+                                || RecordKind::from_tag(header.kind).is_some_and(recovery::is_kind)
+                            {
+                                return Err(Error::RecoveryFrame {
+                                    lsn,
+                                    kind: header.kind,
+                                    version: header.ver,
+                                    expected_kind: entry.record.kind().tag(),
+                                });
+                            }
                             if is_instruction_kind(entry.record.kind())
                                 || RecordKind::from_tag(header.kind)
                                     .is_some_and(is_instruction_kind)

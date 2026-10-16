@@ -208,6 +208,46 @@ impl RecoveryState {
         self.episodes.get(self.current.get(&work)?)
     }
 
+    /// Original reservation for an actual new issue, without admitting that issue.
+    #[must_use]
+    pub fn planned_claim(&self, turn: TurnId) -> Option<RecoveryClaimRef> {
+        self.planned_turns.get(&turn).map(|lsn| RecoveryClaimRef {
+            episode: self.authorizations[lsn].episode,
+            authorization_lsn: *lsn,
+        })
+    }
+
+    /// Latest consent for this physical work, following repeat supersession before reservation.
+    /// An existing unclaimed boundary refuses rather than reviving an older claim.
+    pub fn work_claim(
+        &self,
+        work: RecoveryWork,
+    ) -> Result<Option<RecoveryClaimRef>, RecoveryStateError> {
+        if let Some(episode) = self.current(work) {
+            return Ok(Some(RecoveryClaimRef {
+                episode: episode.id,
+                authorization_lsn: episode
+                    .authorization_lsn
+                    .ok_or(RecoveryStateError::Lifecycle)?,
+            }));
+        }
+        Ok(self.planned_claim(work.turn))
+    }
+
+    /// Immutable intent and committed outcome for an already identified claim.
+    /// This lookup confers no permission to issue or launch work.
+    pub fn claim_receipt(
+        &self,
+        claim: RecoveryClaimRef,
+    ) -> Result<RecoveryReceipt<'_>, RecoveryStateError> {
+        let (authorization, state) = self.claim(claim)?;
+        Ok(RecoveryReceipt {
+            claim,
+            authorization,
+            state,
+        })
+    }
+
     /// Read an original receipt without changing authority or submitting work.
     pub fn receipt(
         &self,

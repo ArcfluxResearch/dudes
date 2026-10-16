@@ -1437,3 +1437,37 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod recovery_schema_tests {
+    use crate::{Entry, RecordKind, record::samples};
+    use dudes_types::Timestamp;
+
+    #[test]
+    fn recovery_nullable_intent_is_present_in_schema_and_original_decode() {
+        let schema = super::schema_for::<Entry>().to_value();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for kind in [RecordKind::RecoveryRequired, RecordKind::RecoveryAuthorized] {
+            let entry = Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: samples::record(kind),
+            };
+            let value = serde_json::to_value(&entry).unwrap();
+            assert!(validator.is_valid(&value));
+            for field in ["ticket", "worktree", "model_selection"] {
+                let mut omitted = value.clone();
+                omitted["binding"].as_object_mut().unwrap().remove(field);
+                assert!(!validator.is_valid(&omitted), "{kind:?} {field}");
+                assert!(serde_json::from_value::<Entry>(omitted).is_err());
+            }
+            if kind == RecordKind::RecoveryAuthorized {
+                for field in ["expected_control", "resulting_control", "resume_lsn"] {
+                    let mut omitted = value.clone();
+                    omitted.as_object_mut().unwrap().remove(field);
+                    assert!(!validator.is_valid(&omitted), "{field}");
+                    assert!(serde_json::from_value::<Entry>(omitted).is_err());
+                }
+            }
+        }
+    }
+}

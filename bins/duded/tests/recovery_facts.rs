@@ -79,9 +79,13 @@ impl Prefix {
             at: Timestamp::UNIX_EPOCH,
             record,
         };
-        let (lsn, crc) = self.writer.append_witnessed(&entry).unwrap();
-        self.persistent.apply(lsn, crc, &entry).unwrap();
-        self.world.apply(lsn, &entry);
+        let lsn = self
+            .writer
+            .checked_recovery(&mut self.persistent)
+            .unwrap()
+            .append(&entry)
+            .unwrap();
+        self.world.apply_checked(lsn, &entry).unwrap();
         assert_eq!(self.world.last_applied_lsn, Some(lsn));
         lsn
     }
@@ -156,7 +160,7 @@ impl Prefix {
         let mut world = World::default();
         for entry in self.writer.reader().iter_from(Lsn::ZERO).unwrap() {
             let (lsn, entry) = entry.unwrap();
-            world.apply(lsn, &entry);
+            world.apply_checked(lsn, &entry).unwrap();
         }
         assert_eq!(self.persistent.export().unwrap(), rebuilt.export().unwrap());
         let persistent = self
@@ -1209,4 +1213,321 @@ fn end_classification_and_existing_world_fast_failures_agree_on_actual_records()
         assert_eq!((recorded, live), (expected, expected), "{name}");
     }
     prefix.assert_replay(&binding);
+}
+
+struct ExportedRecovery(std::collections::BTreeMap<Vec<u8>, Vec<u8>>);
+
+impl dudes_proto::recovery_state::cache::RecoveryCacheReader for ExportedRecovery {
+    type Error = dudes_proto::recovery_state::cache::RecoveryCacheError;
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        Ok(self.0.get(key).cloned())
+    }
+    fn prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Self::Error> {
+        Ok(self
+            .0
+            .iter()
+            .filter(|(key, _)| key.starts_with(prefix))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect())
+    }
+}
+
+impl Prefix {
+    fn assert_recovery_folds(&mut self) {
+        let export = self.persistent.export().unwrap();
+        let mut cells = std::collections::BTreeMap::new();
+        for line in export
+            .lines()
+            .filter_map(|line| line.strip_prefix("recovery "))
+        {
+            let (key, value) = line.split_once(' ').unwrap();
+            let key = key
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect();
+            cells.insert(key, value.as_bytes().to_vec());
+        }
+        let (state, history) = dudes_proto::recovery_state::cache::RecoveryCache::read_all(
+            &ExportedRecovery(cells),
+            self.persistent.last_applied_lsn(),
+        )
+        .unwrap();
+        assert_eq!(
+            self.world.recovery_projection().unwrap(),
+            (&state, &history)
+        );
+        let mut rebuilt = Projections::in_memory().unwrap();
+        dudes_journal::replay(&self.writer.reader(), &mut rebuilt).unwrap();
+        assert_eq!(export, rebuilt.export().unwrap());
+        let mut world = World::default();
+        for frame in self.writer.reader().iter_from(Lsn::ZERO).unwrap() {
+            let (lsn, entry) = frame.unwrap();
+            world.apply_checked(lsn, &entry).unwrap();
+        }
+        assert_eq!(world.recovery_projection().unwrap(), (&state, &history));
+    }
+
+    fn recovery_append(&mut self, record: Record) -> Lsn {
+        let lsn = self.append(record);
+        self.assert_recovery_folds();
+        lsn
+    }
+}
+
+fn recovery_spawn(binding: &RecoveryBinding, turn: TurnId, reissued: bool) -> Record {
+    Record::TurnSpawned {
+        agent: binding.work.agent,
+        turn,
+        pid: 42,
+        start_time: 10,
+        boot: None,
+        session: None,
+        reissued,
+        mcp_grant: None,
+    }
+}
+
+fn recovery_new_prefix() -> (Prefix, dudes_proto::recovery::RecoveryAuthorized, Lsn) {
+    use dudes_proto::recovery::{
+        RecoveryAttribution, RecoveryAuthorized, RecoveryBoundary, RecoveryContext,
+        RecoveryEpisodeId, RecoveryOrigin, RecoveryPlan, RecoveryReason, RecoveryRecap,
+        RecoveryRequired,
+    };
+    let (mut prefix, binding) = ordinary(command());
+    prefix.recovery_append(recovery_spawn(&binding, binding.work.turn, false));
+    let mut ended = samples::record(RecordKind::TurnEnded);
+    let Record::TurnEnded {
+        agent,
+        turn,
+        mode,
+        provenance,
+        outcome,
+        session,
+        session_usage,
+        ..
+    } = &mut ended
+    else {
+        unreachable!()
+    };
+    *agent = binding.work.agent;
+    *turn = binding.work.turn;
+    *mode = Mode::Managed;
+    *provenance = Provenance::Observed;
+    *outcome = Some(dudes_proto::TurnOutcome::NoResult);
+    *session = None;
+    *session_usage = None;
+    let end_lsn = prefix.recovery_append(ended);
+    let origin = prefix.recovery_append(Record::Pause {
+        agent: binding.work.agent,
+        browser: None,
+    });
+    prefix.recovery_append(Record::RecoveryRequired(RecoveryRequired {
+        binding: binding.clone(),
+        origin: RecoveryOrigin::Existing { lsn: origin },
+        reason: RecoveryReason::HeldOrPausedFailure,
+        boundary: RecoveryBoundary::Paused { end_lsn },
+        predecessor: None,
+    }));
+    let resumed = prefix.recovery_append(Record::Resume {
+        agent: binding.work.agent,
+        browser: None,
+    });
+    let authorization = RecoveryAuthorized {
+        episode: RecoveryEpisodeId {
+            work: binding.work,
+            origin,
+        },
+        binding,
+        request_id: dudes_proto::record::Hex32::new([7; 32]),
+        request_digest: dudes_proto::record::Hex32::new([8; 32]),
+        attribution: RecoveryAttribution::LocalOperator {
+            pid: 42,
+            uid: Some(501),
+        },
+        expected_control: Some(origin),
+        resulting_control: Some(resumed),
+        resume_lsn: Some(resumed),
+        plan: RecoveryPlan::New {
+            turn: TurnId::from_parts(51, 5),
+            context: RecoveryContext::Fresh {
+                session: None,
+                recap: RecoveryRecap::default(),
+            },
+        },
+    };
+    let at = prefix.recovery_append(Record::RecoveryAuthorized(authorization.clone()));
+    (prefix, authorization, at)
+}
+
+#[test]
+fn actual_required_new_authority_issue_and_spawn_have_four_equal_folds() {
+    use dudes_proto::recovery::RecoveryPlan;
+    let (mut prefix, authorization, _) = recovery_new_prefix();
+    let RecoveryPlan::New { turn, .. } = authorization.plan else {
+        unreachable!()
+    };
+    let mut decision = samples::record(RecordKind::LoopDecided);
+    let Record::LoopDecided {
+        agent,
+        decision: action,
+        ..
+    } = &mut decision
+    else {
+        unreachable!()
+    };
+    *agent = authorization.binding.work.agent;
+    *action = LoopDecision::Continue {
+        task: "fresh recovery task".into(),
+    };
+    let decided = prefix.recovery_append(decision);
+    prefix.recovery_append(Record::TurnIssued {
+        agent: authorization.binding.work.agent,
+        goal: authorization.binding.work.goal,
+        turn,
+        mode: Mode::Managed,
+        lsn_of_decision: decided,
+        task: "fresh recovery task".into(),
+        session: None,
+        model_selection: authorization.binding.model_selection.clone(),
+        answers: Vec::new(),
+    });
+    prefix.recovery_append(recovery_spawn(&authorization.binding, turn, false));
+    let receipt = prefix
+        .writer
+        .checked_recovery(&mut prefix.persistent)
+        .unwrap()
+        .receipt(authorization.request_id, authorization.request_digest)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        receipt.state,
+        dudes_proto::recovery_state::RecoveryClaimState::Consumed { .. }
+    ));
+}
+
+#[test]
+fn actual_required_repeat_keeps_original_task_answers_and_used_hop() {
+    use dudes_proto::recovery::{
+        RecoveryAttribution, RecoveryAuthorized, RecoveryBoundary, RecoveryEpisodeId,
+        RecoveryOrigin, RecoveryPlan, RecoveryReason, RecoveryRequired,
+    };
+    let (mut prefix, binding) = ordinary(command());
+    let original_turn = prefix.world.turns.get(&binding.work.turn).unwrap().clone();
+    let original_goal = prefix.world.goals.get(&binding.work.goal).unwrap().clone();
+    let issue = prefix
+        .writer
+        .checked_recovery(&mut prefix.persistent)
+        .unwrap()
+        .witness(binding.issue_lsn)
+        .unwrap()
+        .issue()
+        .unwrap();
+    let origin = prefix.recovery_append(Record::RecoveryRequired(RecoveryRequired {
+        binding: binding.clone(),
+        origin: RecoveryOrigin::ThisBarrier,
+        reason: RecoveryReason::MissingSpawn,
+        boundary: RecoveryBoundary::MissingSpawn,
+        predecessor: None,
+    }));
+    prefix.recovery_append(Record::RecoveryAuthorized(RecoveryAuthorized {
+        episode: RecoveryEpisodeId {
+            work: binding.work,
+            origin,
+        },
+        binding: binding.clone(),
+        request_id: dudes_proto::record::Hex32::new([7; 32]),
+        request_digest: dudes_proto::record::Hex32::new([8; 32]),
+        attribution: RecoveryAttribution::LocalOperator {
+            pid: 42,
+            uid: Some(501),
+        },
+        expected_control: None,
+        resulting_control: None,
+        resume_lsn: None,
+        plan: RecoveryPlan::RepeatIssued {
+            issue,
+            session: None,
+        },
+    }));
+    prefix.recovery_append(recovery_spawn(&binding, binding.work.turn, true));
+    let after = prefix.world.turns.get(&binding.work.turn).unwrap();
+    assert_eq!(after.issue_lsn, original_turn.issue_lsn);
+    assert_eq!(after.task, original_turn.task);
+    assert_eq!(after.answers, original_turn.answers);
+    assert_eq!(after.model_selection, original_turn.model_selection);
+    assert_eq!(
+        prefix
+            .world
+            .goals
+            .get(&binding.work.goal)
+            .unwrap()
+            .turns_on_goal,
+        original_goal.turns_on_goal
+    );
+}
+
+#[test]
+fn actual_required_pending_invalidation_refuses_wrong_evidence_without_world_mutation() {
+    use dudes_proto::recovery::{
+        RecoveryClaimRef, RecoveryInvalidated, RecoveryInvalidationEvidence,
+        RecoveryInvalidationReason,
+    };
+    let (mut prefix, authorization, at) = recovery_new_prefix();
+    let changed = prefix.recovery_append(Record::GoalCleared {
+        agent: authorization.binding.work.agent,
+        goal: authorization.binding.work.goal,
+    });
+    let claim = RecoveryClaimRef {
+        episode: authorization.episode,
+        authorization_lsn: at,
+    };
+    let bad = Entry {
+        at: Timestamp::UNIX_EPOCH,
+        record: Record::RecoveryInvalidated(RecoveryInvalidated {
+            claim,
+            evidence: RecoveryInvalidationEvidence::RecordedChange {
+                reason: RecoveryInvalidationReason::ControlChanged,
+                lsn: changed,
+            },
+        }),
+    };
+    let before = prefix.persistent.export().unwrap();
+    let bytes = journal_bytes(&prefix.dir.path().join("journal"));
+    let world_before = prefix
+        .world
+        .recovery_projection()
+        .map(|(state, history)| (state.clone(), history.clone()))
+        .unwrap();
+    let frontier = prefix.world.last_applied_lsn;
+    let attempted = prefix.writer.next_lsn().unwrap();
+    assert!(matches!(
+        prefix
+            .writer
+            .checked_recovery(&mut prefix.persistent)
+            .unwrap()
+            .append(&bad),
+        Err(Error::RecoveryAdmission {
+            reason: RecoveryStateError::Binding,
+            ..
+        })
+    ));
+    assert_eq!(
+        prefix.world.apply_checked(attempted, &bad),
+        Err(RecoveryStateError::Binding)
+    );
+    assert_eq!(
+        prefix.world.recovery_projection().unwrap(),
+        (&world_before.0, &world_before.1)
+    );
+    assert_eq!(prefix.world.last_applied_lsn, frontier);
+    assert_eq!(prefix.persistent.export().unwrap(), before);
+    assert_eq!(journal_bytes(&prefix.dir.path().join("journal")), bytes);
+    prefix.recovery_append(Record::RecoveryInvalidated(RecoveryInvalidated {
+        claim,
+        evidence: RecoveryInvalidationEvidence::RecordedChange {
+            reason: RecoveryInvalidationReason::GoalChanged,
+            lsn: changed,
+        },
+    }));
 }

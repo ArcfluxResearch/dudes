@@ -1,3 +1,5 @@
+mod record;
+
 use dudes_proto::recovery::RecoveryBinding;
 use dudes_proto::recovery_state::admission::{
     RecoveryAgentCurrent, RecoveryCurrent, RecoveryGoalCurrent, RecoveryLeaseCurrent,
@@ -15,6 +17,23 @@ use dudes_types::{Lsn, Mode};
 use super::World;
 
 impl World {
+    /// Complete journal-derived recovery state and source evidence for comparison or inspection.
+    /// The immutable view supplies neither store certification nor permission to dispatch work.
+    pub fn recovery_projection(
+        &self,
+    ) -> Result<
+        (
+            &dudes_proto::recovery_state::RecoveryState,
+            &dudes_proto::recovery_state::history::RecoveryHistory,
+        ),
+        RecoveryStateError,
+    > {
+        if self.recovery_history_error.is_some() {
+            return Err(RecoveryStateError::Binding);
+        }
+        Ok((&self.recovery_state, &self.recovery_history))
+    }
+
     /// Join one target to this confirmed prefix. This result is not operator permission.
     pub fn recovery_facts(
         &self,
@@ -137,35 +156,7 @@ impl World {
             evidence,
         } = transition
         {
-            let through = self.last_applied_lsn.ok_or(RecoveryStateError::Position)?;
-            let row = self
-                .turns
-                .get(&issue.issued.work.turn)
-                .ok_or(RecoveryStateError::Binding)?;
-            let recorded = self
-                .recovery_history
-                .at(row.issue_lsn)
-                .map_err(|_| RecoveryStateError::Binding)?
-                .issue()
-                .ok_or(RecoveryStateError::Binding)?;
-            if row.agent != issue.issued.work.agent
-                || row.goal != Some(issue.issued.work.goal)
-                || row.model_selection != issue.issued.model_selection
-                || row.answers != issue.issued.answers
-                || task_digest(&row.task, &hash) != issue.issued.task_digest
-                || recorded != *issue
-            {
-                return Err(RecoveryStateError::Binding);
-            }
-            let facts = RecoveryAttemptFacts {
-                through,
-                issue: recorded,
-                attempt: RecoveryAttempt {
-                    spawn_lsn: row.spawn_lsn,
-                    end_lsn: row.end_lsn,
-                    confirmation_lsn: row.confirmation_lsn,
-                },
-            };
+            let facts = self.recovery_attempt_facts(issue)?;
             return self
                 .recovery_state
                 .validate_consumed(claim, issue, evidence, &facts);
@@ -174,6 +165,41 @@ impl World {
         let facts = self.recovery_facts(&binding)?;
         self.recovery_state
             .validate_transition(transition, &facts, &self.recovery_history)
+    }
+
+    fn recovery_attempt_facts(
+        &self,
+        issue: &dudes_proto::recovery::RecoveryIssue,
+    ) -> Result<RecoveryAttemptFacts, RecoveryStateError> {
+        let through = self.last_applied_lsn.ok_or(RecoveryStateError::Position)?;
+        let row = self
+            .turns
+            .get(&issue.issued.work.turn)
+            .ok_or(RecoveryStateError::Binding)?;
+        let recorded = self
+            .recovery_history
+            .at(row.issue_lsn)
+            .map_err(|_| RecoveryStateError::Binding)?
+            .issue()
+            .ok_or(RecoveryStateError::Binding)?;
+        if row.agent != issue.issued.work.agent
+            || row.goal != Some(issue.issued.work.goal)
+            || row.model_selection != issue.issued.model_selection
+            || row.answers != issue.issued.answers
+            || task_digest(&row.task, &hash) != issue.issued.task_digest
+            || recorded != *issue
+        {
+            return Err(RecoveryStateError::Binding);
+        }
+        Ok(RecoveryAttemptFacts {
+            through,
+            issue: recorded,
+            attempt: RecoveryAttempt {
+                spawn_lsn: row.spawn_lsn,
+                end_lsn: row.end_lsn,
+                confirmation_lsn: row.confirmation_lsn,
+            },
+        })
     }
 
     /// Read retained source evidence without interpreting it as a recovery permission.

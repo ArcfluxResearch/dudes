@@ -736,18 +736,32 @@ impl World {
     /// carry (`dudes_proto::Entry` is `at` plus the record). Both callers hold it — replay reads
     /// it from the log and the live path is acknowledged with it — so the two folds agree on the
     /// position of every entry, which is what lets a record be named by where it sits.
-    #[allow(clippy::too_many_lines, clippy::match_same_arms)]
     pub fn apply(&mut self, lsn: Lsn, entry: &Entry) {
-        if self.validate_record_authority(entry).is_err() {
-            return;
-        }
+        let _ = self.apply_checked(lsn, entry);
+    }
+
+    /// Fold an entry only after its recovery relationships pass at the preceding cut.
+    /// Callers must propagate refusal; successful historical folding grants no dispatch permission.
+    #[allow(clippy::too_many_lines, clippy::match_same_arms)]
+    pub fn apply_checked(
+        &mut self,
+        lsn: Lsn,
+        entry: &Entry,
+    ) -> Result<(), dudes_proto::recovery_state::RecoveryStateError> {
+        use dudes_proto::recovery_state::RecoveryStateError;
+        self.validate_record_authority(entry)
+            .map_err(|_| RecoveryStateError::Binding)?;
+        let prepared_recovery = self.prepare_recovery_record(lsn, entry)?;
         let mut recovery_context = self.recovery_before(entry);
         let attached_end = self.capture_attached_turn_end(lsn, entry);
         let Ok(instruction_fold) = self.instructions.apply_validated(lsn, entry, |bytes| {
             dudes_proto::record::Hex32::new(*blake3::hash(bytes).as_bytes())
         }) else {
-            return;
+            return Err(RecoveryStateError::Binding);
         };
+        if let Some(prepared) = prepared_recovery {
+            prepared.apply(lsn, &mut self.recovery_state, &self.recovery_history)?;
+        }
         recovery_context.cleared_goal = instruction_fold.cleared_goal;
         if let Err(error) =
             self.recovery_history
@@ -1980,7 +1994,11 @@ impl World {
             Record::ClosingTime { .. } => {}
             Record::LiveActivityObserved { .. } => {}
             Record::Checkpoint { .. } => {} // the writer's own record
+            Record::RecoveryRequired(_)
+            | Record::RecoveryAuthorized(_)
+            | Record::RecoveryInvalidated(_) => {}
         }
+        Ok(())
     }
 
     /// The durable ordinary completion of the agent's current uncleared goal.
