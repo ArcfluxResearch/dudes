@@ -47,10 +47,9 @@ impl Handled {
 }
 
 /// A durable input refused before its continuation may run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DurableInputError {
     /// The checked World fold refused this actual journal position.
-    #[error("recovery history at {lsn:?}: {reason}")]
     Recovery {
         /// The actual durable frame position.
         lsn: Lsn,
@@ -58,6 +57,16 @@ pub enum DurableInputError {
         reason: dudes_proto::recovery_state::RecoveryStateError,
     },
 }
+
+impl std::fmt::Display for DurableInputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Recovery { lsn, reason } => write!(f, "recovery history at {lsn:?}: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for DurableInputError {}
 
 /// The persist-before-spawn ledger's correlation id.
 ///

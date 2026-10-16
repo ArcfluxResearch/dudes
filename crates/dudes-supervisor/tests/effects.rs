@@ -67,8 +67,8 @@ fn a_new_attached_record_omits_the_legacy_hook_port() {
     );
 }
 
-/// `handle(Input) -> &[Effect]` emits `Persist`, `Spawn`, `Kill`, `Probe`,
-/// `RunPredicate`, `Reply`, `Notify` and `OpenPty`. The old `ClosePty` effect remains a public
+/// Checked input handling exposes `Persist`, `Spawn`, `Kill`, `Probe`, `RunPredicate`, `Reply`,
+/// `Notify` and `OpenPty` through effects accessors. The old `ClosePty` effect remains a public
 /// variant but has no producer now that confirmed-close superseded startup guessing.
 ///
 /// One run of the machine reaches all eight active effects. Nothing is constructed by hand: each name in the
