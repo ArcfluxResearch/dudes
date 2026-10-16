@@ -972,7 +972,7 @@ fn held_vanished_and_unconfirmed_required_records_use_actual_sources_in_all_fold
             RecoveryBoundary::Held { end_lsn, .. }
             | RecoveryBoundary::Vanished { end_lsn, .. }
             | RecoveryBoundary::Unconfirmed { end_lsn, .. } => {
-                *end_lsn = required.binding.issue_lsn
+                *end_lsn = required.binding.issue_lsn;
             }
             _ => unreachable!(),
         }
