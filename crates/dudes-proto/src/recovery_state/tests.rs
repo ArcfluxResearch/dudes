@@ -685,6 +685,13 @@ fn context_choice_requires_current_confirmation_and_bounded_ordered_recap_source
             state.validate_next(RecoveryEvent::Authorized(&authorization), &facts),
             Ok(())
         );
+        let RecoveryPlan::New {
+            context: RecoveryContext::Fresh { recap, .. },
+            ..
+        } = &mut authorization.plan
+        else {
+            unreachable!()
+        };
         recap.text.push('x');
         reject(
             &mut state.clone(),
