@@ -528,6 +528,39 @@ fn a_missing_spawn_atomically_supersedes_old_context_consent_and_keeps_owed_work
 }
 
 #[test]
+fn missing_predecessor_cannot_open_a_second_episode_for_a_recovery_issue() {
+    let (mut state, mut facts, authorization) = barrier(RecoveryReason::HeldOrPausedFailure);
+    let claim = authorize(&mut state, &mut facts, &authorization);
+    let mut issued = facts.source_issue.issued.clone();
+    issued.work.turn = TurnId::from_parts(1, 9);
+    state
+        .apply(
+            Lsn(400),
+            RecoveryEvent::Issued {
+                claim,
+                issued: &issued,
+            },
+            &facts,
+        )
+        .unwrap();
+    facts.through = Lsn(400);
+    facts.binding.work = issued.work;
+    facts.binding.issue_lsn = Lsn(400);
+    facts.source_issue = RecoveryIssue {
+        lsn: Lsn(400),
+        issued,
+    };
+    let next = required(&facts, RecoveryReason::MissingSpawn);
+    reject(
+        &mut state,
+        &facts,
+        500,
+        RecoveryEvent::Required(&next),
+        RecoveryStateError::Binding,
+    );
+}
+
+#[test]
 fn invalidation_keeps_the_old_planned_turn_unusable_and_never_rearms_its_episode() {
     let (mut state, mut facts, authorization) = barrier(RecoveryReason::HeldOrPausedFailure);
     let claim = authorize(&mut state, &mut facts, &authorization);
@@ -767,4 +800,54 @@ fn a_stale_prefix_or_nonincreasing_actual_position_cannot_add_authority() {
         Err(RecoveryStateError::Position)
     );
     assert_eq!(state, before);
+}
+
+#[test]
+fn a_control_boundary_cannot_precede_the_interrupted_issue() {
+    let mut state = RecoveryState::default();
+    let facts = facts();
+    let mut required = required(&facts, RecoveryReason::HeldOrPausedFailure);
+    required.origin = RecoveryOrigin::Existing { lsn: Lsn(15) };
+    reject(
+        &mut state,
+        &facts,
+        200,
+        RecoveryEvent::Required(&required),
+        RecoveryStateError::Position,
+    );
+}
+
+#[test]
+fn the_recorded_hire_must_precede_the_original_issue() {
+    let mut state = RecoveryState::default();
+    let mut facts = facts();
+    facts.binding.hired_lsn = Lsn(30);
+    let required = required(&facts, RecoveryReason::HeldOrPausedFailure);
+    reject(
+        &mut state,
+        &facts,
+        200,
+        RecoveryEvent::Required(&required),
+        RecoveryStateError::Position,
+    );
+}
+
+#[test]
+fn authorization_control_references_must_be_within_the_committed_prefix() {
+    let (state, facts, authorization) = barrier(RecoveryReason::HeldOrPausedFailure);
+    for invalid in [Lsn(999), Lsn::ZERO] {
+        let mut state = state.clone();
+        let mut facts = facts.clone();
+        let mut authorization = authorization.clone();
+        facts.control_lsn = Some(invalid);
+        authorization.expected_control = Some(invalid);
+        authorization.resulting_control = Some(invalid);
+        reject(
+            &mut state,
+            &facts,
+            300,
+            RecoveryEvent::Authorized(&authorization),
+            RecoveryStateError::Position,
+        );
+    }
 }
