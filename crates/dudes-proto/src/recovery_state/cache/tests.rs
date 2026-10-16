@@ -716,10 +716,10 @@ fn a_missing_current_root_cannot_recreate_an_existing_episode() {
         RecoveryCache::read_all(&h.memory, h.through),
         Err(RecoveryCacheError::MissingCell)
     ));
-    assert!(matches!(
-        RecoveryCache::load(&h.memory, h.through, RecoveryEvent::Required(&barrier), &[]),
-        Err(RecoveryCacheError::MissingCell)
-    ));
+    assert_eq!(
+        RecoveryCache::load(&h.memory, h.through, RecoveryEvent::Required(&barrier), &[]).err(),
+        Some(RecoveryCacheError::MissingCell)
+    );
     assert_eq!(h.memory.rows, before_rows);
 }
 
@@ -749,10 +749,10 @@ fn a_missing_planned_root_cannot_free_a_reserved_turn_for_another_authorization(
         RecoveryCache::read_all(&h.memory, h.through),
         Err(RecoveryCacheError::MissingCell)
     ));
-    assert!(matches!(
-        RecoveryCache::load(&h.memory, h.through, RecoveryEvent::Authorized(&other), &[]),
-        Err(RecoveryCacheError::MissingCell)
-    ));
+    assert_eq!(
+        RecoveryCache::load(&h.memory, h.through, RecoveryEvent::Authorized(&other), &[]).err(),
+        Some(RecoveryCacheError::MissingCell)
+    );
     assert_eq!(h.memory.rows, before_rows);
 }
 
@@ -778,9 +778,9 @@ fn a_missing_request_root_cannot_free_a_durable_request_for_another_authorizatio
         RecoveryCache::read_all(&h.memory, h.through),
         Err(RecoveryCacheError::MissingCell)
     ));
-    assert!(matches!(
-        RecoveryCache::load(&h.memory, h.through, RecoveryEvent::Authorized(&other), &[]),
-        Err(RecoveryCacheError::MissingCell)
-    ));
+    assert_eq!(
+        RecoveryCache::load(&h.memory, h.through, RecoveryEvent::Authorized(&other), &[]).err(),
+        Some(RecoveryCacheError::MissingCell)
+    );
     assert_eq!(h.memory.rows, before_rows);
 }
