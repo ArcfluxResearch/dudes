@@ -130,7 +130,7 @@ fn reject(
     expected: RecoveryStateError,
 ) {
     let before = state.clone();
-    assert_eq!(state.validate_next(event.clone(), facts), Err(expected));
+    assert_eq!(state.validate_next(event, facts), Err(expected));
     assert_eq!(state.apply(Lsn(at), event, facts), Err(expected));
     assert_eq!(*state, before);
 }

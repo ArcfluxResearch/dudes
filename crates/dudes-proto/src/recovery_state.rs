@@ -90,7 +90,7 @@ pub struct RecoveryReceipt<'a> {
 }
 
 /// Detached pure inputs. Journal registration and historical evidence validation are separate.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryEvent<'a> {
     /// Create a canonical barrier, possibly superseding one issue-bound claim.
     Required(&'a RecoveryRequired),
@@ -215,23 +215,22 @@ impl RecoveryState {
         if lsn <= self.last_applied {
             return Ok(());
         }
-        self.validate(event.clone(), facts, Some(lsn))?;
+        self.validate(event, facts, Some(lsn))?;
         match event {
             RecoveryEvent::Required(required) => {
                 let id = episode_id(required, lsn);
-                if let Some(previous) = required.predecessor {
-                    if let RecoveryClaimState::IssueBound(issue) =
+                if let Some(previous) = required.predecessor
+                    && let RecoveryClaimState::IssueBound(issue) =
                         &self.claims[&previous.authorization_lsn]
-                    {
-                        self.claims.insert(
-                            previous.authorization_lsn,
-                            RecoveryClaimState::Superseded {
-                                issue: issue.clone(),
-                                successor: id,
-                                barrier_lsn: lsn,
-                            },
-                        );
-                    }
+                {
+                    self.claims.insert(
+                        previous.authorization_lsn,
+                        RecoveryClaimState::Superseded {
+                            issue: issue.clone(),
+                            successor: id,
+                            barrier_lsn: lsn,
+                        },
+                    );
                 }
                 self.episodes.insert(
                     id,
@@ -309,164 +308,9 @@ impl RecoveryState {
         }
         let prior = |lsn: Lsn| lsn != Lsn::ZERO && lsn <= facts.through;
         match event {
-            RecoveryEvent::Required(required) => {
-                valid_binding(&required.binding, facts)?;
-                if !prior(required.binding.issue_lsn)
-                    || !prior(required.binding.hired_lsn)
-                    || required.binding.hired_lsn >= required.binding.issue_lsn
-                    || matches!(required.origin, RecoveryOrigin::Existing { lsn } if !prior(lsn) || lsn <= required.binding.issue_lsn)
-                {
-                    return Err(RecoveryStateError::Position);
-                }
-                if matches!(required.origin, RecoveryOrigin::Existing { .. })
-                    != matches!(required.reason, RecoveryReason::HeldOrPausedFailure)
-                {
-                    return Err(RecoveryStateError::Binding);
-                }
-                let incumbent = self.current(required.binding.work);
-                if incumbent.is_none()
-                    && self
-                        .planned_turns
-                        .get(&required.binding.work.turn)
-                        .is_some_and(|owner| {
-                            required.predecessor.map(|claim| claim.authorization_lsn)
-                                != Some(*owner)
-                        })
-                {
-                    return Err(RecoveryStateError::Binding);
-                }
-                if let Some(previous) = required.predecessor {
-                    let (_, state) = self.claim(previous)?;
-                    let old = &self.episodes[&previous.episode];
-                    let mut expected = old.binding.clone();
-                    match state {
-                        RecoveryClaimState::IssueBound(issue) => {
-                            expected.work = issue.issued.work;
-                            expected.issue_lsn = issue.lsn;
-                            if required.reason != RecoveryReason::MissingSpawn
-                                || required.origin != RecoveryOrigin::ThisBarrier
-                                || facts.source_issue != *issue
-                            {
-                                return Err(RecoveryStateError::Binding);
-                            }
-                        }
-                        RecoveryClaimState::Consumed {
-                            issue,
-                            evidence_lsn,
-                        } => {
-                            expected.work = issue.issued.work;
-                            expected.issue_lsn = issue.lsn;
-                            if required.reason == RecoveryReason::MissingSpawn
-                                || matches!(required.origin, RecoveryOrigin::Existing { lsn } if lsn <= *evidence_lsn)
-                            {
-                                return Err(RecoveryStateError::Binding);
-                            }
-                        }
-                        RecoveryClaimState::Invalidated {
-                            invalidation_lsn, ..
-                        } => {
-                            if required.reason == RecoveryReason::MissingSpawn
-                                || matches!(required.origin, RecoveryOrigin::Existing { lsn } if lsn <= *invalidation_lsn)
-                            {
-                                return Err(RecoveryStateError::Binding);
-                            }
-                        }
-                        _ => return Err(RecoveryStateError::Lifecycle),
-                    }
-                    if required.binding != expected
-                        || self.current(previous.episode.work).map(|e| e.id)
-                            != Some(previous.episode)
-                        || incumbent.is_some_and(|e| e.id != previous.episode)
-                        || actual.is_some_and(|lsn| episode_id(required, lsn) == previous.episode)
-                    {
-                        return Err(RecoveryStateError::Binding);
-                    }
-                } else if incumbent.is_some() {
-                    return Err(RecoveryStateError::EpisodeAlias);
-                }
-            }
+            RecoveryEvent::Required(required) => self.validate_required(required, facts, actual)?,
             RecoveryEvent::Authorized(authorization) => {
-                if self.requests.contains_key(&authorization.request_id) {
-                    return Err(RecoveryStateError::DuplicateRequest);
-                }
-                valid_binding(&authorization.binding, facts)?;
-                let episode = self
-                    .current(authorization.episode.work)
-                    .filter(|e| e.id == authorization.episode)
-                    .ok_or(RecoveryStateError::Binding)?;
-                if episode.authorization_lsn.is_some() {
-                    return Err(RecoveryStateError::Claimed);
-                }
-                if episode.binding != authorization.binding {
-                    return Err(RecoveryStateError::Binding);
-                }
-                if !prior(episode.barrier_lsn) {
-                    return Err(RecoveryStateError::Position);
-                }
-                if [
-                    authorization.expected_control,
-                    authorization.resulting_control,
-                    authorization.resume_lsn,
-                ]
-                .into_iter()
-                .flatten()
-                .any(|lsn| !prior(lsn))
-                {
-                    return Err(RecoveryStateError::Position);
-                }
-                match authorization.resume_lsn {
-                    Some(resume) => {
-                        if authorization.resulting_control != Some(resume)
-                            || resume <= episode.barrier_lsn
-                            || authorization
-                                .expected_control
-                                .is_some_and(|old| old >= resume)
-                        {
-                            return Err(RecoveryStateError::Control);
-                        }
-                    }
-                    None if authorization.expected_control != authorization.resulting_control => {
-                        return Err(RecoveryStateError::Control);
-                    }
-                    None => {}
-                }
-                if authorization.resulting_control != facts.control_lsn {
-                    return Err(RecoveryStateError::Control);
-                }
-                match &authorization.plan {
-                    RecoveryPlan::New { turn, context } => {
-                        if episode.reason == RecoveryReason::MissingSpawn {
-                            return Err(RecoveryStateError::Context);
-                        }
-                        if *turn == episode.id.work.turn || self.planned_turns.contains_key(turn) {
-                            return Err(RecoveryStateError::PlannedTurn);
-                        }
-                        match context {
-                            RecoveryContext::TryRecorded { session } => {
-                                if episode.reason == RecoveryReason::UnconfirmedContext
-                                    || facts.confirmed_session.as_ref() != Some(session)
-                                {
-                                    return Err(RecoveryStateError::Context);
-                                }
-                            }
-                            RecoveryContext::Fresh { recap, .. } => {
-                                if recap.text.len() > MAX_RECOVERY_RECAP_BYTES
-                                    || !ordered_positions(&recap.sources)
-                                    || recap.sources.iter().any(|lsn| !prior(*lsn))
-                                {
-                                    return Err(RecoveryStateError::Context);
-                                }
-                            }
-                        }
-                    }
-                    RecoveryPlan::RepeatIssued { issue, .. } => {
-                        if episode.reason != RecoveryReason::MissingSpawn
-                            || *issue != facts.source_issue
-                        {
-                            return Err(RecoveryStateError::Context);
-                        }
-                    }
-                }
+                self.validate_authorization(authorization, facts)?;
             }
             RecoveryEvent::Issued { claim, issued } => {
                 let (authorization, state) = self.claim(claim)?;
@@ -523,6 +367,176 @@ impl RecoveryState {
                     || evidence_lsn <= claim.authorization_lsn
                 {
                     return Err(RecoveryStateError::Lifecycle);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_required(
+        &self,
+        required: &RecoveryRequired,
+        facts: &RecoveryFacts,
+        actual: Option<Lsn>,
+    ) -> Result<(), RecoveryStateError> {
+        let prior = |lsn: Lsn| lsn != Lsn::ZERO && lsn <= facts.through;
+        valid_binding(&required.binding, facts)?;
+        if !prior(required.binding.issue_lsn)
+            || !prior(required.binding.hired_lsn)
+            || required.binding.hired_lsn >= required.binding.issue_lsn
+            || matches!(required.origin, RecoveryOrigin::Existing { lsn } if !prior(lsn) || lsn <= required.binding.issue_lsn)
+        {
+            return Err(RecoveryStateError::Position);
+        }
+        if matches!(required.origin, RecoveryOrigin::Existing { .. })
+            != matches!(required.reason, RecoveryReason::HeldOrPausedFailure)
+        {
+            return Err(RecoveryStateError::Binding);
+        }
+        let incumbent = self.current(required.binding.work);
+        if incumbent.is_none()
+            && self
+                .planned_turns
+                .get(&required.binding.work.turn)
+                .is_some_and(|owner| {
+                    required.predecessor.map(|claim| claim.authorization_lsn) != Some(*owner)
+                })
+        {
+            return Err(RecoveryStateError::Binding);
+        }
+        if let Some(previous) = required.predecessor {
+            let (_, state) = self.claim(previous)?;
+            let old = &self.episodes[&previous.episode];
+            let mut expected = old.binding.clone();
+            match state {
+                RecoveryClaimState::IssueBound(issue) => {
+                    expected.work = issue.issued.work;
+                    expected.issue_lsn = issue.lsn;
+                    if required.reason != RecoveryReason::MissingSpawn
+                        || required.origin != RecoveryOrigin::ThisBarrier
+                        || facts.source_issue != *issue
+                    {
+                        return Err(RecoveryStateError::Binding);
+                    }
+                }
+                RecoveryClaimState::Consumed {
+                    issue,
+                    evidence_lsn,
+                } => {
+                    expected.work = issue.issued.work;
+                    expected.issue_lsn = issue.lsn;
+                    if required.reason == RecoveryReason::MissingSpawn
+                        || matches!(required.origin, RecoveryOrigin::Existing { lsn } if lsn <= *evidence_lsn)
+                    {
+                        return Err(RecoveryStateError::Binding);
+                    }
+                }
+                RecoveryClaimState::Invalidated {
+                    invalidation_lsn, ..
+                } => {
+                    if required.reason == RecoveryReason::MissingSpawn
+                        || matches!(required.origin, RecoveryOrigin::Existing { lsn } if lsn <= *invalidation_lsn)
+                    {
+                        return Err(RecoveryStateError::Binding);
+                    }
+                }
+                _ => return Err(RecoveryStateError::Lifecycle),
+            }
+            if required.binding != expected
+                || self.current(previous.episode.work).map(|e| e.id) != Some(previous.episode)
+                || incumbent.is_some_and(|e| e.id != previous.episode)
+                || actual.is_some_and(|lsn| episode_id(required, lsn) == previous.episode)
+            {
+                return Err(RecoveryStateError::Binding);
+            }
+        } else if incumbent.is_some() {
+            return Err(RecoveryStateError::EpisodeAlias);
+        }
+        Ok(())
+    }
+
+    fn validate_authorization(
+        &self,
+        authorization: &RecoveryAuthorized,
+        facts: &RecoveryFacts,
+    ) -> Result<(), RecoveryStateError> {
+        let prior = |lsn: Lsn| lsn != Lsn::ZERO && lsn <= facts.through;
+        if self.requests.contains_key(&authorization.request_id) {
+            return Err(RecoveryStateError::DuplicateRequest);
+        }
+        valid_binding(&authorization.binding, facts)?;
+        let episode = self
+            .current(authorization.episode.work)
+            .filter(|e| e.id == authorization.episode)
+            .ok_or(RecoveryStateError::Binding)?;
+        if episode.authorization_lsn.is_some() {
+            return Err(RecoveryStateError::Claimed);
+        }
+        if episode.binding != authorization.binding {
+            return Err(RecoveryStateError::Binding);
+        }
+        if !prior(episode.barrier_lsn) {
+            return Err(RecoveryStateError::Position);
+        }
+        if [
+            authorization.expected_control,
+            authorization.resulting_control,
+            authorization.resume_lsn,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|lsn| !prior(lsn))
+        {
+            return Err(RecoveryStateError::Position);
+        }
+        match authorization.resume_lsn {
+            Some(resume) => {
+                if authorization.resulting_control != Some(resume)
+                    || resume <= episode.barrier_lsn
+                    || authorization
+                        .expected_control
+                        .is_some_and(|old| old >= resume)
+                {
+                    return Err(RecoveryStateError::Control);
+                }
+            }
+            None if authorization.expected_control != authorization.resulting_control => {
+                return Err(RecoveryStateError::Control);
+            }
+            None => {}
+        }
+        if authorization.resulting_control != facts.control_lsn {
+            return Err(RecoveryStateError::Control);
+        }
+        match &authorization.plan {
+            RecoveryPlan::New { turn, context } => {
+                if episode.reason == RecoveryReason::MissingSpawn {
+                    return Err(RecoveryStateError::Context);
+                }
+                if *turn == episode.id.work.turn || self.planned_turns.contains_key(turn) {
+                    return Err(RecoveryStateError::PlannedTurn);
+                }
+                match context {
+                    RecoveryContext::TryRecorded { session } => {
+                        if episode.reason == RecoveryReason::UnconfirmedContext
+                            || facts.confirmed_session.as_ref() != Some(session)
+                        {
+                            return Err(RecoveryStateError::Context);
+                        }
+                    }
+                    RecoveryContext::Fresh { recap, .. } => {
+                        if recap.text.len() > MAX_RECOVERY_RECAP_BYTES
+                            || !ordered_positions(&recap.sources)
+                            || recap.sources.iter().any(|lsn| !prior(*lsn))
+                        {
+                            return Err(RecoveryStateError::Context);
+                        }
+                    }
+                }
+            }
+            RecoveryPlan::RepeatIssued { issue, .. } => {
+                if episode.reason != RecoveryReason::MissingSpawn || *issue != facts.source_issue {
+                    return Err(RecoveryStateError::Context);
                 }
             }
         }
