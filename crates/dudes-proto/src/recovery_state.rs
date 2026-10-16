@@ -1,5 +1,8 @@
 //! Pure episode exclusivity and permanent recovery receipt history.
 
+pub mod cache;
+pub mod history;
+
 use std::collections::BTreeMap;
 use std::fmt;
 
