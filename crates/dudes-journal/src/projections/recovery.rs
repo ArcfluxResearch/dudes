@@ -27,7 +27,7 @@ use super::{
 };
 use crate::error::{Error, RecoveryStoreError, Result};
 use crate::reader::ValidatedPrefix;
-use crate::writer::Writer;
+use crate::writer::{PreparedAppend, Writer};
 
 pub(super) const LAST_RETIREMENT: &str = "recovery_last_retirement_lsn";
 
@@ -57,6 +57,85 @@ pub struct RecoveryReceipt {
     pub authorization: RecoveryAuthorized,
     /// Committed claim outcome at the checked cut, under the configured sync policy.
     pub state: RecoveryClaimState,
+}
+
+/// Actual owned frames committed by one checked append.
+#[derive(Debug)]
+pub struct CheckedAppend {
+    main: (Lsn, Entry),
+    checkpoint: Option<(Lsn, Entry)>,
+}
+
+impl CheckedAppend {
+    /// Position of the caller's entry.
+    #[must_use]
+    pub const fn lsn(&self) -> Lsn {
+        self.main.0
+    }
+
+    /// Last physical frame committed and projected by this append.
+    #[must_use]
+    pub fn through(&self) -> Lsn {
+        self.checkpoint.as_ref().map_or(self.main.0, |tail| tail.0)
+    }
+
+    /// Consume the caller frame and its optional physical checkpoint.
+    #[must_use]
+    pub fn into_parts(self) -> ((Lsn, Entry), Option<(Lsn, Entry)>) {
+        (self.main, self.checkpoint)
+    }
+}
+
+/// Which boundary refused a guarded append.
+#[derive(Debug)]
+pub enum GuardedAppendError<A, F> {
+    /// Journal validation, writing or projection failed.
+    Journal(Error),
+    /// The caller refused the short-lived write permit before any write.
+    Acquire(A),
+    /// The caller's post-sync boundary failed after this actual caller frame was written.
+    AfterFsync {
+        /// Actual caller frame position, even when a checkpoint follows it.
+        caller: Lsn,
+        /// Caller-owned boundary failure.
+        source: F,
+    },
+}
+
+impl<A, F> From<Error> for GuardedAppendError<A, F> {
+    fn from(error: Error) -> Self {
+        Self::Journal(error)
+    }
+}
+
+impl<A: std::fmt::Display, F: std::fmt::Display> std::fmt::Display for GuardedAppendError<A, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Journal(error) => error.fmt(f),
+            Self::Acquire(error) => write!(f, "append permit refused: {error}"),
+            Self::AfterFsync { caller, source } => {
+                write!(f, "append boundary after {caller:?}: {source}")
+            }
+        }
+    }
+}
+
+impl<A: std::error::Error + 'static, F: std::error::Error + 'static> std::error::Error
+    for GuardedAppendError<A, F>
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match self {
+            Self::Journal(error) => error,
+            Self::Acquire(error) => error,
+            Self::AfterFsync { source, .. } => source,
+        })
+    }
+}
+
+struct ProjectionCommit {
+    txn: redb::WriteTransaction,
+    certification: Certification,
+    first: super::AppliedBatch,
 }
 
 /// Exclusive access to the actual writer and its canonically checked projection generation.
@@ -197,11 +276,71 @@ impl<'a> CheckedRecoveryStore<'a> {
     /// reopening/reconstruction before another checked receipt can be read. Existing daemon
     /// authority checks remain required when this boundary is wired into the append path.
     pub fn append(&mut self, entry: &Entry) -> Result<Lsn> {
+        match self.append_guarded(
+            entry,
+            || Ok::<_, std::convert::Infallible>(()),
+            || Ok::<_, std::convert::Infallible>(()),
+        ) {
+            Ok(append) => Ok(append.lsn()),
+            Err(GuardedAppendError::Journal(error)) => Err(error),
+            Err(GuardedAppendError::Acquire(never))
+            | Err(GuardedAppendError::AfterFsync { source: never, .. }) => match never {},
+        }
+    }
+
+    /// Preflight the owned entry before acquiring a guard held only during journal commit.
+    ///
+    /// The guard is dropped before the post-sync callback and projection commit. A failure after
+    /// writing fences this writer and yields no acknowledgment; it may leave durable frames.
+    pub fn append_guarded<G, A, F>(
+        &mut self,
+        entry: &Entry,
+        acquire: impl FnOnce() -> std::result::Result<G, A>,
+        after_fsync: impl FnOnce() -> std::result::Result<(), F>,
+    ) -> std::result::Result<CheckedAppend, GuardedAppendError<A, F>> {
+        let (prepared, projection) = self.prepare_checked(entry)?;
+        let lsn = prepared.lsn();
+        let crc = prepared.crc();
+        let guard = acquire().map_err(GuardedAppendError::Acquire)?;
+        let written = self.writer.commit_prepared(prepared);
+        drop(guard);
+        let (written_lsn, written_crc) = match written {
+            Ok(value) => value,
+            Err(error) => {
+                if self.writer.poisoned().is_some()
+                    || self.writer.next_lsn().ok() != Some(projection.certification.frontier)
+                {
+                    self.writer.recovery_fenced = true;
+                }
+                return Err(GuardedAppendError::Journal(error));
+            }
+        };
+        if let Err(error) = certain(self.writer) {
+            self.writer.recovery_fenced = true;
+            return Err(GuardedAppendError::Journal(error));
+        }
+        if let Err(source) = after_fsync() {
+            self.writer.recovery_fenced = true;
+            return Err(GuardedAppendError::AfterFsync {
+                caller: written_lsn,
+                source,
+            });
+        }
+        let result =
+            self.commit_projection(entry, (lsn, crc), (written_lsn, written_crc), projection);
+        if result.is_err() {
+            self.writer.recovery_fenced = true;
+        }
+        result.map_err(GuardedAppendError::Journal)
+    }
+
+    fn prepare_checked<'e>(
+        &mut self,
+        entry: &'e Entry,
+    ) -> Result<(PreparedAppend<'e>, ProjectionCommit)> {
         check(self.writer, self.projections)?;
         self.projections.validate_next_instruction(entry)?;
         let prepared = self.writer.prepare_append(entry, false)?;
-        let lsn = prepared.lsn();
-        let crc = prepared.crc();
         let mut txn = self.projections.db.begin_write()?;
         txn.set_durability(self.projections.durability)?;
         check_metadata_table(self.projections, &txn.open_table(META)?)?;
@@ -219,52 +358,64 @@ impl<'a> CheckedRecoveryStore<'a> {
         if first.applied != 1 {
             return refused(RecoveryStoreError::AppendMismatch);
         }
-        let written = self.writer.commit_prepared(prepared);
-        let (written_lsn, written_crc) = match written {
-            Ok(value) => value,
-            Err(error) => {
-                if self.writer.poisoned().is_some()
-                    || self.writer.next_lsn()? != certification.frontier
-                {
-                    self.writer.recovery_fenced = true;
-                }
-                return Err(error);
-            }
-        };
-        let result = (|| {
-            certain(self.writer)?;
-            if (written_lsn, written_crc) != (lsn, crc) {
-                return refused(RecoveryStoreError::AppendMismatch);
-            }
-            let frontier = self.writer.next_lsn()?;
-            let frames = written_interval(self.writer, lsn, crc, entry, frontier)?;
-            let last = if frames.len() == 2 {
-                let (at, witness, checkpoint) = &frames[1];
-                super::fold_batch(&txn, first.last, [(*at, *witness, checkpoint)])?
-            } else {
-                first
-            };
-            let retirement = txn
-                .open_table(META)?
-                .get(LAST_RETIREMENT)?
-                .map(|value| value.value());
-            txn.commit()?;
-            self.projections.publish_batch(&last);
-            self.projections.recovery_certification = Some(Certification {
-                store: certification.store,
-                writer: certification.writer,
-                origin: certification.origin,
-                frontier,
-                cut: self.projections.last_applied,
-                crc: self.projections.last_applied_crc,
-                retirement,
-            });
-            Ok(lsn)
-        })();
-        if result.is_err() {
-            self.writer.recovery_fenced = true;
+        Ok((
+            prepared,
+            ProjectionCommit {
+                txn,
+                certification,
+                first,
+            },
+        ))
+    }
+
+    fn commit_projection(
+        &mut self,
+        entry: &Entry,
+        expected: (Lsn, u32),
+        written: (Lsn, u32),
+        projection: ProjectionCommit,
+    ) -> Result<CheckedAppend> {
+        certain(self.writer)?;
+        if written != expected {
+            return refused(RecoveryStoreError::AppendMismatch);
         }
-        result
+        let (lsn, crc) = written;
+        let ProjectionCommit {
+            txn,
+            certification,
+            first,
+        } = projection;
+        let frontier = self.writer.next_lsn()?;
+        let frames = written_interval(self.writer, lsn, crc, entry, frontier)?;
+        let last = if frames.len() == 2 {
+            let (at, witness, checkpoint) = &frames[1];
+            super::fold_batch(&txn, first.last, [(*at, *witness, checkpoint)])?
+        } else {
+            first
+        };
+        let retirement = txn
+            .open_table(META)?
+            .get(LAST_RETIREMENT)?
+            .map(|value| value.value());
+        txn.commit()?;
+        self.projections.publish_batch(&last);
+        self.projections.recovery_certification = Some(Certification {
+            store: certification.store,
+            writer: certification.writer,
+            origin: certification.origin,
+            frontier,
+            cut: self.projections.last_applied,
+            crc: self.projections.last_applied_crc,
+            retirement,
+        });
+        let mut frames = frames.into_iter();
+        let (at, _, main) = frames
+            .next()
+            .ok_or(Error::RecoveryStore(RecoveryStoreError::AppendMismatch))?;
+        Ok(CheckedAppend {
+            main: (at, main),
+            checkpoint: frames.next().map(|(at, _, tail)| (at, tail)),
+        })
     }
 }
 

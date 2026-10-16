@@ -1233,20 +1233,14 @@ fn a_spawn_claim_survives_both_orderings_of_cause_clear_and_spawn_ack() {
         "a control: before the spawn acknowledgement crash rule (2) can still see the turn"
     );
 
-    let resume_ack = clear_first.step(Input::Persisted {
-        token: resume_token,
-        lsn: Lsn(10_000),
-    });
+    let resume_ack = clear_first.step(clear_first.persisted(resume_token, Lsn(10_000)));
     assert!(
         resume_ack
             .iter()
             .all(|seen| !matches!(seen, Seen::Spawn { turn: spawned, .. } if *spawned == turn)),
         "the earlier cause clear cannot launch a second process while TurnSpawned is in flight"
     );
-    clear_first.step(Input::Persisted {
-        token: spawned_token,
-        lsn: Lsn(10_001),
-    });
+    clear_first.step(clear_first.persisted(spawned_token, Lsn(10_001)));
     assert_eq!(
         clear_first.supervisor.world().turns[&turn].status,
         TurnStatus::Spawned,
@@ -1272,10 +1266,7 @@ fn a_spawn_claim_survives_both_orderings_of_cause_clear_and_spawn_ack() {
         mcp_grant: None,
     });
     let spawned_token = persist_token(&spawned, RecordKind::TurnSpawned);
-    ack_first.step(Input::Persisted {
-        token: spawned_token,
-        lsn: Lsn(20_000),
-    });
+    ack_first.step(ack_first.persisted(spawned_token, Lsn(20_000)));
     let resume = ack_first.step(Input::Command(Command::Resume {
         agent,
         browser: None,
@@ -1285,10 +1276,7 @@ fn a_spawn_claim_survives_both_orderings_of_cause_clear_and_spawn_ack() {
         spawned_token < resume_token,
         "a control: token order says TurnSpawned was emitted before Resume"
     );
-    let resume_ack = ack_first.step(Input::Persisted {
-        token: resume_token,
-        lsn: Lsn(20_001),
-    });
+    let resume_ack = ack_first.step(ack_first.persisted(resume_token, Lsn(20_001)));
     assert!(
         resume_ack
             .iter()

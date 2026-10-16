@@ -49,6 +49,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
+use dudes_journal::projections::recovery::{CheckedAppend, GuardedAppendError};
 use dudes_journal::{MemoryApply, MemoryProjection, Projections, Writer};
 use dudes_proto::goal::{Evidence, Predicate};
 use dudes_proto::record::{
@@ -68,7 +69,7 @@ use dudes_rpc::dispatch::error;
 use dudes_rpc::{StopFlag, Subscribers};
 use dudes_supervisor::input::{
     BrowserAnswerCommand, BrowserOnboardGoal, BrowserOnboardHire, DurableInputError, Handled,
-    MailWakeRefreshFailure, SpendView,
+    MailWakeRefreshFailure, RecordedAppend, SpendView,
 };
 use dudes_supervisor::{
     Clock, Command, Effect, HookId, Input, KillOutcome, ProcessHost, Rng, SpawnResult, Supervisor,
@@ -1890,17 +1891,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         at: admitted_at.unwrap_or_else(|| self.ctx.clock.now()),
                         record: record.clone(),
                     };
-                    let lsn = {
+                    let append = {
                         let supervisor = supervisor.borrow();
                         self.ctx.append(supervisor.world(), &entry)?
                     };
+                    let lsn = append.lsn();
                     if self.ctx.writer.poisoned().is_some() {
                         anyhow::bail!("mailbox append checkpoint stopped the journal");
                     }
-                    acknowledged.push_back(Input::Journaled {
-                        lsn,
-                        entry: entry.clone(),
-                    });
+                    acknowledged.push_back(Input::Journaled { append });
                     Ok((lsn, entry))
                 },
             );
@@ -5496,21 +5495,29 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             at: self.ctx.clock.now(),
             record,
         };
-        let lsn = if is_close {
-            self.ctx.append(self.sup.world(), &entry)
-        } else {
-            self.ctx.append_projection_only(self.sup.world(), &entry)
-        }
-        .map_err(|failure| {
-            error(
-                ErrorCode::InternalError,
-                format!("the daemon could not {action}: {failure}"),
-            )
-        })?;
         if is_close {
-            self.fold_durable_pty_entry(lsn, entry)?;
+            let append = self
+                .ctx
+                .append(self.sup.world(), &entry)
+                .map_err(|failure| {
+                    error(
+                        ErrorCode::InternalError,
+                        format!("the daemon could not {action}: {failure}"),
+                    )
+                })?;
+            let lsn = append.lsn();
+            self.fold_durable_pty_entry(append)?;
+            Ok(lsn)
+        } else {
+            self.ctx
+                .append_projection_only(self.sup.world(), &entry)
+                .map_err(|failure| {
+                    error(
+                        ErrorCode::InternalError,
+                        format!("the daemon could not {action}: {failure}"),
+                    )
+                })
         }
-        Ok(lsn)
     }
 
     fn attachment_lost(&mut self, agent: AgentId, pty: PtyId, reason: &'static str) {
@@ -5649,7 +5656,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 outcome,
             },
         };
-        let lsn = self
+        let append = self
             .ctx
             .append(self.sup.world(), &entry)
             .map_err(|failure| {
@@ -5667,17 +5674,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 },
             );
         }
-        self.fold_durable_pty_entry(lsn, entry)
+        self.fold_durable_pty_entry(append)
     }
 
-    fn fold_durable_pty_entry(&mut self, lsn: Lsn, entry: Entry) -> Result<(), RpcError> {
-        let result = self.pump_or_refuse(Input::InstructionJournaled { lsn, entry });
+    fn fold_durable_pty_entry(&mut self, append: RecordedAppend) -> Result<(), RpcError> {
+        let through = append.through();
+        let result = self.pump_or_refuse(Input::InstructionJournaled { append });
         if result.is_err()
             && self
                 .sup
                 .world()
                 .last_applied_lsn
-                .is_none_or(|folded| folded < lsn)
+                .is_none_or(|folded| folded < through)
         {
             self.ctx.fence_journal();
         }
@@ -6036,7 +6044,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             at: self.ctx.clock.now(),
             record,
         };
-        let lsn = self
+        let append = self
             .ctx
             .append(self.sup.world(), &entry)
             .map_err(|failure| {
@@ -6045,7 +6053,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     format!("could not append board record: {failure}"),
                 )
             })?;
-        self.pump_or_refuse(Input::BoardChanged { lsn, entry })
+        self.pump_or_refuse(Input::BoardChanged { append })
     }
 
     /// A retired agent's recorded child still resolves to that agent, so its call is
@@ -7085,6 +7093,7 @@ fn liveness_unknown_refusal() -> RpcError {
 }
 
 pub(crate) struct PendingFloor {
+    through: Lsn,
     patch: crate::floor_stream::FloorPatch,
     notice: OutputNotice,
     publication: FloorPublication,
@@ -7173,9 +7182,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         world: &dudes_supervisor::World,
         waiting: &mut crate::closing::Waiting,
     ) -> Result<()> {
-        while let Some((&lsn, pending)) = self.pending_floor.first_key_value() {
+        while let Some((_, pending)) = self.pending_floor.first_key_value() {
             if pending.publication == FloorPublication::AfterFold
-                && world.last_applied_lsn != Some(lsn)
+                && world.last_applied_lsn != Some(pending.through)
             {
                 break;
             }
@@ -7364,12 +7373,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                             at: self.clock.now(),
                             record: record.clone(),
                         };
-                        let lsn = self.append(sup.world(), &entry)?;
+                        let append = self.append(sup.world(), &entry)?;
+                        let lsn = append.lsn();
                         anyhow::ensure!(
                             self.writer.poisoned().is_none(),
                             "mailbox checkpoint stopped the journal"
                         );
-                        acknowledged = Some((lsn, entry.clone()));
+                        acknowledged = Some(append);
                         Ok((lsn, entry))
                     });
                     self.mailbox = Some(mailbox);
@@ -7382,9 +7392,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                         self.fence_journal();
                     }
                     result?;
-                    let (lsn, entry) = acknowledged
+                    let append = acknowledged
                         .ok_or_else(|| anyhow::anyhow!("mailbox acknowledgment is unavailable"))?;
-                    queue.push_back(Input::Journaled { lsn, entry });
+                    queue.push_back(Input::Journaled { append });
                 }
                 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
                 {
@@ -7404,7 +7414,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         queue: &mut VecDeque<Input>,
         sup: &Supervisor<Shared<C>, R>,
     ) -> Result<()> {
-        let lsn = self.append(sup.world(), entry)?;
+        let append = self.append(sup.world(), entry)?;
         // Spend moves only on a `TurnEnded`, and the decision that reads it runs on this
         // very acknowledgement — so the refresh goes in front of it rather than at the top
         // of the next pump, which would be a decide too late. A browser goal change's own
@@ -7429,7 +7439,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             refreshed
         };
         refreshed.inspect_err(|_| self.fence_journal())?;
-        queue.push_back(Input::Persisted { token, lsn });
+        queue.push_back(Input::Persisted { token, append });
         Ok(())
     }
 
@@ -7707,8 +7717,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
     }
 
-    fn append(&mut self, world: &dudes_supervisor::World, entry: &Entry) -> Result<Lsn> {
-        self.append_with_publication(world, entry, FloorPublication::AfterFold)
+    fn append(&mut self, world: &dudes_supervisor::World, entry: &Entry) -> Result<RecordedAppend> {
+        let committed = self.append_with_publication(world, entry, FloorPublication::AfterFold)?;
+        let through = committed.through();
+        let (main, checkpoint) = committed.into_parts();
+        RecordedAppend::try_new(through, main, checkpoint)
+            .inspect_err(|_| self.fence_journal())
+            .map_err(Into::into)
     }
 
     fn append_projection_only(
@@ -7717,6 +7732,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         entry: &Entry,
     ) -> Result<Lsn> {
         self.append_with_publication(world, entry, FloorPublication::ProjectionOnly)
+            .map(|committed| committed.lsn())
     }
 
     #[expect(
@@ -7728,7 +7744,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         world: &dudes_supervisor::World,
         entry: &Entry,
         publication: FloorPublication,
-    ) -> Result<Lsn> {
+    ) -> Result<CheckedAppend> {
         if matches!(
             entry.record,
             Record::Mail { .. }
@@ -7757,22 +7773,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             self.fence_journal();
             return Err(error.context("invalid live goal replacement"));
         }
-        if matches!(
-            entry.record,
-            Record::InstructionObservationStarted { .. }
-                | Record::InstructionObservationFinished { .. }
-                | Record::TicketInstructionReviewed { .. }
-                | Record::InstructionAttemptBoundarySettled { .. }
-        ) {
-            self.projections.validate_next_instruction(entry)?;
-        }
-        let (lsn, crc) = self.write_frame(entry)?;
+        let committed = self.write_frame(entry)?;
+        let lsn = committed.lsn();
+        let through = committed.through();
         let output = self.children.output();
         let post_fsync = (|| -> Result<()> {
             self.goal_index.apply(&entry.record);
-            self.projections
-                .apply(lsn, crc, entry)
-                .with_context(|| format!("projecting a {:?}", entry.record.kind()))?;
             if self.onboarding_failure.take_hire_projection(&entry.record) {
                 anyhow::bail!("injected post-projection onboarding failure");
             }
@@ -7888,6 +7894,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                             patch,
                             notice: output_notice,
                             publication,
+                            through,
                         },
                     );
                 } else {
@@ -7910,7 +7917,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             }
             return Err(error);
         }
-        Ok(lsn)
+        Ok(committed)
     }
 
     fn index_browser_record(&mut self, lsn: Lsn, record: &Record) -> Result<()> {
@@ -7937,20 +7944,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .context("indexing durable browser retire record")
     }
 
-    /// Append one frame while any browser permit is held, then release before all folds/effects.
-    fn write_frame(&mut self, entry: &Entry) -> Result<(Lsn, u32)> {
+    /// Hold any browser permit only across the checked journal commit.
+    fn write_frame(&mut self, entry: &Entry) -> Result<CheckedAppend> {
         self.ensure_memory_ready()?;
         self.ensure_journal_ready()?;
         if self.append_failure.take() {
             return Err(anyhow::Error::new(KnownNoEffect));
         }
-        // The checksum comes back with the lsn so the projection can store the two together:
-        // a cursor whose witness were computed anywhere but from
-        // the frame that was written would witness something other than the log.
-        let session = browser_chat::attribution_session(&entry.record);
-        self.onboarding_pause
-            .at(&entry.record, AppendStage::BeforePermit);
-        let identity = session
+        let identity = browser_chat::attribution_session(&entry.record)
             .map(|digest| {
                 let identity = self
                     .browser_session
@@ -7963,13 +7964,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 Ok::<_, anyhow::Error>(identity.clone())
             })
             .transpose()?;
-        let permit = identity
-            .as_ref()
-            .map(crate::floor_session::SessionIdentity::permit)
-            .transpose()
-            .map_err(anyhow::Error::new)?;
-        self.onboarding_pause
-            .at(&entry.record, AppendStage::AfterPermit);
         #[cfg(debug_assertions)]
         if let Some((frames_to_skip, bytes)) = self
             .append_failure
@@ -7980,7 +7974,34 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         {
             self.writer.fail_write_after(frames_to_skip, bytes);
         }
-        let written = self.writer.append_witnessed(entry);
+        let pause = &self.onboarding_pause;
+        let failure = &self.onboarding_failure;
+        let written = (|| {
+            let mut store = self
+                .writer
+                .checked_recovery(&mut self.projections)
+                .map_err(GuardedAppendError::Journal)?;
+            store.append_guarded(
+                entry,
+                || {
+                    pause.at(&entry.record, AppendStage::BeforePermit);
+                    let permit = identity
+                        .as_ref()
+                        .map(crate::floor_session::SessionIdentity::permit)
+                        .transpose()
+                        .map_err(anyhow::Error::new)?;
+                    pause.at(&entry.record, AppendStage::AfterPermit);
+                    Ok::<_, anyhow::Error>(permit)
+                },
+                || {
+                    if failure.take(&entry.record) {
+                        anyhow::bail!("injected post-fsync onboarding failure");
+                    }
+                    pause.at(&entry.record, AppendStage::AfterFsync);
+                    Ok::<_, anyhow::Error>(())
+                },
+            )
+        })();
         if let Some(lsn) = self.writer.poisoned() {
             self.handle.publish_journal_stopped(lsn);
             if let Some(streams) = &self.floor_streams
@@ -7990,25 +8011,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 tracing::error!(%error, "stopped-journal Floor publication failed");
             }
         }
-        // Revocation and expiry may now win; projection, callbacks and Spawn run unlocked.
-        drop(permit);
-        let (lsn, crc) = match written {
-            Ok(witness) => witness,
-            Err(error) => {
+        match written {
+            Ok(committed) => Ok(committed),
+            Err(GuardedAppendError::Acquire(error)) => Err(error),
+            Err(GuardedAppendError::Journal(error)) => {
                 if self.writer.poisoned().is_none() {
                     self.fence_journal();
                 }
-                return Err(error)
-                    .with_context(|| format!("appending a {:?}", entry.record.kind()));
+                Err(error).with_context(|| format!("appending a {:?}", entry.record.kind()))
             }
-        };
-        if self.onboarding_failure.take(&entry.record) {
-            self.fence_journal();
-            anyhow::bail!("injected post-fsync onboarding failure");
+            Err(GuardedAppendError::AfterFsync { caller, source }) => {
+                self.fence_journal();
+                Err(source).with_context(|| format!("after fsync of caller at {caller:?}"))
+            }
         }
-        self.onboarding_pause
-            .at(&entry.record, AppendStage::AfterFsync);
-        Ok((lsn, crc))
     }
 
     fn fence_journal(&self) {
@@ -8745,7 +8761,7 @@ mod mail_wake_fence_tests {
         fn pending(floor: Usd) -> Self {
             let mut owned = Self::completed(floor);
             let entry = owned.mail(MailId::from_parts(6, 1));
-            let lsn = owned
+            let append = owned
                 .daemon
                 .ctx
                 .append(owned.daemon.sup.world(), &entry)
@@ -8753,7 +8769,7 @@ mod mail_wake_fence_tests {
             owned
                 .daemon
                 .sup
-                .handle(Input::Journaled { lsn, entry })
+                .handle(Input::Journaled { append })
                 .unwrap();
             let refresh = one(owned.daemon.sup.take_effects());
             let ready = owned.execute(&refresh);
@@ -8821,15 +8837,18 @@ mod mail_wake_fence_tests {
                 at: self.clock.now(),
                 record,
             };
-            let lsn = self
+            let append = self
                 .daemon
                 .ctx
                 .append(self.daemon.sup.world(), &entry)
                 .expect("owned prefix append");
-            self.daemon
-                .sup
-                .handle(Input::Replayed { lsn, entry })
-                .unwrap();
+            let (main, checkpoint) = append.into_parts();
+            for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
+                self.daemon
+                    .sup
+                    .handle(Input::Replayed { lsn, entry })
+                    .unwrap();
+            }
             assert!(self.daemon.sup.effects().is_empty());
         }
         fn execute(&mut self, effect: &Effect) -> Input {
@@ -9212,7 +9231,7 @@ mod mail_wake_fence_tests {
     fn abandoned_durable_mail_suffix_fences_future_progress() {
         let mut owned = Owned::pending(Usd::from_dollars(10));
         let entry = owned.mail(MailId::from_parts(6, 2));
-        let lsn = owned
+        let append = owned
             .daemon
             .ctx
             .append(owned.daemon.sup.world(), &entry)
@@ -9228,7 +9247,7 @@ mod mail_wake_fence_tests {
                 agent: owned.agent,
                 text: None,
             }),
-            Input::Journaled { lsn, entry },
+            Input::Journaled { append },
         ]);
         assert!(
             owned
@@ -9445,16 +9464,19 @@ mod mail_wake_fence_tests {
                 outcome: Some(TurnOutcome::Vanished),
             },
         };
-        let lsn = owned
+        let append = owned
             .daemon
             .ctx
             .append(owned.daemon.sup.world(), &entry)
             .unwrap();
-        owned
-            .daemon
-            .sup
-            .handle(Input::Replayed { lsn, entry })
-            .unwrap();
+        let (main, checkpoint) = append.into_parts();
+        for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
+            owned
+                .daemon
+                .sup
+                .handle(Input::Replayed { lsn, entry })
+                .unwrap();
+        }
         let refresh = one(std::mem::take(&mut owned.pending));
         let ready = owned.execute(&refresh);
         let revision = owned.daemon.ctx.projections.last_applied_lsn();
@@ -9510,31 +9532,25 @@ mod mail_wake_fence_tests {
             queue,
             |_| Ok(Handled::default()),
             |daemon, queue| {
-                if let Some(Input::Journaled {
-                    lsn,
-                    entry:
-                        Entry {
-                            record:
-                                Record::MailState {
-                                    id,
-                                    state: MailState::Notified { n },
-                                },
-                            ..
-                        },
-                }) = queue.front()
+                if let Some(Input::Journaled { append }) = queue.front()
+                    && let Record::MailState {
+                        id,
+                        state: MailState::Notified { n },
+                    } = &append.entry().record
                 {
+                    let lsn = append.lsn();
                     reached += 1;
                     assert_eq!((*id, *n), (target.mail.id, target.target_count));
                     assert!(daemon.ctx.writer.poisoned().is_none());
                     assert!(daemon.ctx.mailbox.as_ref().unwrap().contains(*id));
                     assert!(!daemon.ctx.mailbox.as_ref().unwrap().is_fenced());
-                    assert_eq!(daemon.ctx.projections.last_applied_lsn(), *lsn);
+                    assert_eq!(daemon.ctx.projections.last_applied_lsn(), lsn);
                     assert!(
                         daemon
                             .sup
                             .world()
                             .last_applied_lsn
-                            .is_some_and(|world_lsn| world_lsn < *lsn)
+                            .is_some_and(|world_lsn| world_lsn < lsn)
                     );
                     assert!(
                         daemon
@@ -9594,15 +9610,16 @@ mod mail_wake_fence_tests {
         let mut reached = 0;
         let result = owned.daemon.pump_inputs_with_work_refresh(&mut PumpReport::Discard, PumpOrigin::Ordinary,
             queue, |_| Ok(Handled::default()), |daemon, queue| {
-                if let Some(Input::Persisted { lsn, .. }) = queue.front() {
+                if let Some(Input::Persisted { append, .. }) = queue.front() {
+                    let lsn = append.lsn();
                     reached += 1;
-                    assert!(fixture.entries().iter().any(|(position, entry)| position == lsn && matches!(&entry.record,
+                    assert!(fixture.entries().iter().any(|(position, entry)| *position == lsn && matches!(&entry.record,
                         Record::MailWakeTurnDecided(value) if matches!(value.purpose, MailWakePurpose::ExistingPreparation { root_lsn: root } if root == root_lsn)
                             && matches!(value.decision, dudes_proto::MailWakeAdmission::Hold { reason: dudes_proto::HoldReason::Paused }))));
-                    assert_eq!(daemon.ctx.projections.last_applied_lsn(), *lsn);
+                    assert_eq!(daemon.ctx.projections.last_applied_lsn(), lsn);
                     assert!(daemon.ctx.writer.poisoned().is_none());
                     assert!(!daemon.ctx.mailbox.as_ref().unwrap().is_fenced());
-                    assert!(daemon.sup.world().last_applied_lsn.is_some_and(|world_lsn| world_lsn < *lsn));
+                    assert!(daemon.sup.world().last_applied_lsn.is_some_and(|world_lsn| world_lsn < lsn));
                     return Err(anyhow::anyhow!("owned refresh cut before committed refusal acknowledgment fold"));
                 }
                 daemon.refresh_work()

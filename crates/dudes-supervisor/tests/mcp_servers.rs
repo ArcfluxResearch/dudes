@@ -680,10 +680,7 @@ fn a_launch_parked_before_its_grant_reselects_the_latest_desired_material() {
     assert!(grants(&run).is_empty());
     replace(&mut run, agent, &["b"]);
     let issued_lsn = dudes_types::Lsn(u64::try_from(run.journal.len()).unwrap() + 1);
-    let granted = run.step(Input::Persisted {
-        token: issued_token,
-        lsn: issued_lsn,
-    });
+    let granted = run.step(run.persisted(issued_token, issued_lsn));
     let grant_token = granted
         .iter()
         .find_map(|seen| match seen {
@@ -707,10 +704,7 @@ fn a_launch_parked_before_its_grant_reselects_the_latest_desired_material() {
         })
         .expect("the latest set is granted before dispatch");
     let grant_lsn = dudes_types::Lsn(issued_lsn.0 + 1);
-    let mut ready = run.step(Input::Persisted {
-        token: grant_token,
-        lsn: grant_lsn,
-    });
+    let mut ready = run.step(run.persisted(grant_token, grant_lsn));
     if let Some(token) = ready.iter().find_map(|seen| match seen {
         Seen::Persist { token, entry }
             if matches!(entry.record, Record::HookTokenMinted { .. }) =>
@@ -719,10 +713,7 @@ fn a_launch_parked_before_its_grant_reselects_the_latest_desired_material() {
         }
         _ => None,
     }) {
-        ready = run.step(Input::Persisted {
-            token,
-            lsn: dudes_types::Lsn(grant_lsn.0 + 1),
-        });
+        ready = run.step(run.persisted(token, dudes_types::Lsn(grant_lsn.0 + 1)));
     }
     let spec = ready
         .iter()

@@ -68,11 +68,17 @@ use crate::host::{
     AdoptionKey, Clock, HostBoot, KillOutcome, Liveness, ProbeAnswer, ProcessHost, SpawnResult,
     liveness,
 };
-use crate::input::{ClientId, Command, HookId, Input, PersistToken};
+use crate::input::{ClientId, Command, HookId, Input, PersistToken, RecordedAppend};
 use crate::machine::{Config, Supervisor};
 
 mod rng;
 pub use rng::{FakeRng, FakeTokens};
+
+/// Check one explicitly supplied fixture frame at its test-selected position.
+#[must_use]
+pub fn recorded_append(lsn: Lsn, entry: Entry) -> RecordedAppend {
+    RecordedAppend::try_new(lsn, (lsn, entry), None).unwrap()
+}
 
 /// A clock that moves only when the test says so.
 #[derive(Clone, Debug)]
@@ -829,6 +835,33 @@ impl Harness {
         seen
     }
 
+    /// Deliver the actual emitted entry with a test-selected acknowledgment position.
+    #[must_use]
+    pub fn persisted(&self, token: PersistToken, lsn: Lsn) -> Input {
+        Input::Persisted {
+            token,
+            append: self.persisted_append(token, lsn),
+        }
+    }
+
+    /// Acknowledge the actual entry emitted for this token at a test-selected position.
+    #[must_use]
+    pub(crate) fn persisted_append(&self, token: PersistToken, lsn: Lsn) -> RecordedAppend {
+        let entry = self
+            .trace
+            .iter()
+            .rev()
+            .find_map(|seen| match seen {
+                Seen::Persist {
+                    token: emitted,
+                    entry,
+                } if *emitted == token => Some(entry.clone()),
+                _ => None,
+            })
+            .expect("the fixture emitted this persist token");
+        recorded_append(lsn, entry)
+    }
+
     /// Run an input to quiescence, executing every effect the flags allow.
     pub fn drive(&mut self, input: Input) {
         let mut queue = VecDeque::from([input]);
@@ -877,11 +910,12 @@ impl Harness {
             Seen::Persist { token, entry }
                 if self.fsync && !self.unfsynced.contains(&entry.record.kind()) =>
             {
-                self.journal.push(entry);
+                self.journal.push(entry.clone());
                 self.next_lsn += 1;
+                let lsn = Lsn(self.next_lsn);
                 Some(Input::Persisted {
                     token,
-                    lsn: Lsn(self.next_lsn),
+                    append: recorded_append(lsn, entry),
                 })
             }
             Seen::Spawn {
@@ -1366,10 +1400,10 @@ mod tests {
             .cloned()
             .expect("recovery requests an exact missing-boundary append");
         harness.fsync = true;
-        let Some(Input::Persisted { lsn, .. }) = harness.follow_up(first) else {
+        let Some(Input::Persisted { append, .. }) = harness.follow_up(first) else {
             panic!("the mock writer acknowledges its first appended frame");
         };
-        (tail, lsn)
+        (tail, append.lsn())
     }
 
     #[test]

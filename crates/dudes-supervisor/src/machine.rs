@@ -45,7 +45,7 @@ use crate::effect::Effect;
 use crate::host::{AdoptionKey, Clock, Liveness, Rng, input_digest, session_id_from_ulid};
 use crate::input::{
     BrowserAnswerCommand, ClientId, Command, DurableInputError, Handled, HookId, Input,
-    PersistToken, RuntimeSignal, SpendView,
+    PersistToken, RecordedAppend, RuntimeSignal, SpendView,
 };
 use crate::token::Mint;
 use crate::world::{AgentRow, MAX_PENDING_STEERS, World};
@@ -1106,8 +1106,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Input::InstructionLaunchCleanupUnconfirmed { turn } => {
                 self.instruction_launch_cleanup_unconfirmed(turn);
             }
-            Input::InstructionJournaled { lsn, entry } => {
-                return self.instruction_journaled(lsn, &entry);
+            Input::InstructionJournaled { append } => {
+                return self.instruction_journaled(append);
             }
             Input::InstructionRecoveryTicketResolved { request, ticket } => {
                 self.instruction_recovery_ticket_resolved(request, ticket);
@@ -1134,7 +1134,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 ticket,
                 comparison.map(|comparison| *comparison),
             ),
-            Input::Journaled { lsn, entry } => return self.mail_journaled(lsn, &entry),
+            Input::Journaled { append } => return self.mail_journaled(append),
             Input::MailWakeReady {
                 agent,
                 request,
@@ -1146,7 +1146,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             }
             Input::Command(command) => self.on_command(command),
             Input::Hook { hook, event } => self.on_hook(hook, &event),
-            Input::Persisted { token, lsn } => return self.on_persisted(token, lsn),
+            Input::Persisted { token, append } => return self.on_persisted(token, append),
             Input::Spawned {
                 turn,
                 key,
@@ -1269,8 +1269,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 },
                 Then::Fold,
             ),
-            Input::BoardChanged { lsn, entry } => {
-                let card = match &entry.record {
+            Input::BoardChanged { append } => {
+                let card = match &append.entry().record {
                     Record::CardCreated { card, .. }
                     | Record::CardTransition { card, .. }
                     | Record::Claim { card, .. }
@@ -1281,12 +1281,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     | Record::TicketRemoved { card, .. } => *card,
                     _ => return Ok(Handled::default()),
                 };
-                self.apply_entry(lsn, &entry)?;
+                let through = append.through();
+                self.apply_recorded(append)?;
                 let goals: Vec<_> = self.world.held_board_goals(Some(card)).collect();
                 for (agent, goal) in goals {
                     self.judge(agent, goal);
                 }
-                return Ok(Handled::folded(lsn));
+                return Ok(Handled::folded(through));
             }
         }
         Ok(Handled::default())
@@ -1450,18 +1451,26 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
     }
 
-    /// Fold one confirmed entry, appended at `lsn`, into the world and move the agent's status
-    /// from it.
-    ///
-    /// Called by both `Input::Persisted` and `Input::Replayed`, which is the point: statuses are
-    /// derived from records, so replaying the same records reaches the same statuses. Both
-    /// callers hold the entry's position and pass it here for the same reason: a fold that saw
-    /// one position live and another on replay would break exactly that equality.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one exhaustive match applies each durable lifecycle carrier"
-    )]
     fn apply_entry(&mut self, lsn: Lsn, entry: &Entry) -> Result<(), DurableInputError> {
+        self.fold_world(lsn, entry)?;
+        self.apply_entry_effects(lsn, entry);
+        Ok(())
+    }
+
+    fn apply_recorded(&mut self, append: RecordedAppend) -> Result<(), DurableInputError> {
+        let (main, checkpoint) = append.into_parts();
+        self.fold_world(main.0, &main.1)?;
+        if let Some((lsn, entry)) = &checkpoint {
+            self.fold_world(*lsn, entry)?;
+        }
+        self.apply_entry_effects(main.0, &main.1);
+        if let Some((lsn, entry)) = checkpoint {
+            self.apply_entry_effects(lsn, &entry);
+        }
+        Ok(())
+    }
+
+    fn fold_world(&mut self, lsn: Lsn, entry: &Entry) -> Result<(), DurableInputError> {
         #[cfg(any(test, feature = "testing"))]
         if let Some((at, reason)) = self.fold_failure
             && at == lsn
@@ -1471,7 +1480,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
         self.world
             .apply_checked(lsn, entry)
-            .map_err(|reason| DurableInputError::Recovery { lsn, reason })?;
+            .map_err(|reason| DurableInputError::Recovery { lsn, reason })
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match applies each durable lifecycle carrier"
+    )]
+    fn apply_entry_effects(&mut self, lsn: Lsn, entry: &Entry) {
         self.fold_activity(entry);
         if let Record::PredicateResult { goal, .. } = &entry.record {
             self.goals_awaiting_board_result.remove(goal);
@@ -1623,7 +1639,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Record::Detached { agent, .. } => self.move_status(*agent, FsmEvent::Detached),
             _ => {}
         }
-        Ok(())
     }
 
     fn move_status(&mut self, agent: AgentId, event: FsmEvent) {
@@ -1641,13 +1656,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     fn on_persisted(
         &mut self,
         token: PersistToken,
-        lsn: Lsn,
+        append: RecordedAppend,
     ) -> Result<Handled, DurableInputError> {
         let Some(entry) = self.ledger.get(&token).map(|parked| parked.entry.clone()) else {
             return Ok(Handled::default());
         };
+        let lsn = append.lsn();
+        if append.entry() != &entry {
+            return Err(DurableInputError::PersistedEntryMismatch { token, lsn });
+        }
+        let through = append.through();
         let reconcile = self.mail_event_recipients(&entry.record);
-        self.apply_entry(lsn, &entry)?;
+        self.apply_recorded(append)?;
         let parked = self
             .ledger
             .remove(&token)
@@ -1673,7 +1693,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         for agent in reconcile {
             self.request_mail_wake(agent);
         }
-        Ok(Handled::folded(lsn))
+        Ok(Handled::folded(through))
     }
 
     #[expect(
@@ -5203,6 +5223,204 @@ mod tests {
         }
     }
 
+    fn checkpointed(
+        main: (dudes_types::Lsn, super::Entry),
+        through: dudes_types::Lsn,
+    ) -> crate::input::RecordedAppend {
+        let tail = super::Entry {
+            at: main.1.at,
+            record: Record::Checkpoint {
+                projection_version: 1,
+                segment: through.segment(),
+                offset: through.offset(),
+            },
+        };
+        crate::input::RecordedAppend::try_new(through, main, Some((through, tail))).unwrap()
+    }
+
+    #[test]
+    fn all_live_acknowledgments_fold_both_frames_like_physical_replay() {
+        use dudes_types::Lsn;
+        for carrier in ["persist", "mail", "instruction", "board"] {
+            let mut harness = Harness::new();
+            let agent = harness.hire();
+            let token = if carrier == "persist" {
+                harness.fsync = false;
+                let effects = harness.step(Input::Command(Command::Pause {
+                    agent,
+                    browser: None,
+                }));
+                effects.iter().find_map(|seen| match seen {
+                    crate::testing::Seen::Persist { token, .. } => Some(*token),
+                    _ => None,
+                })
+            } else {
+                None
+            };
+            let entry = match carrier {
+                "persist" => harness.persisted_append(token.unwrap(), Lsn(1000)).into_parts().0.1,
+                "mail" => super::Entry { at: dudes_types::Timestamp::UNIX_EPOCH,
+                    record: serde_json::from_value(serde_json::json!({
+                        "t":"mail", "id":dudes_types::MailId::from_parts(900, 4), "from":{"kind":"human"},
+                        "to":{"kind":"agent","agent":agent}, "act":"message", "subject":"checkpoint", "body_len":0,
+                        "state":dudes_types::MailState::Durable
+                    })).unwrap() },
+                "instruction" => super::Entry { at: dudes_types::Timestamp::UNIX_EPOCH,
+                    record: Record::PtyCloseRequested { pty: dudes_proto::rpc::pty::PtyId(7), actor: dudes_proto::Actor::System,
+                        provenance: None, reason: "cleanup".into() } },
+                "board" => super::Entry { at: dudes_types::Timestamp::UNIX_EPOCH,
+                    record: Record::CardCreated { card: dudes_types::CardId::from_parts(90, 1), title: "checkpoint".into(), department: "engineering".into(), by: dudes_proto::Actor::System, deps: Vec::new() } },
+                _ => unreachable!(),
+            };
+            let mut replayed = harness.supervisor.world().clone();
+            let append = checkpointed((Lsn(1000), entry), Lsn(1001));
+            let (main, tail) =
+                checkpointed((append.lsn(), append.entry().clone()), append.through()).into_parts();
+            for (lsn, entry) in std::iter::once(main).chain(tail) {
+                replayed.apply_checked(lsn, &entry).unwrap();
+            }
+            let input = match carrier {
+                "persist" => Input::Persisted {
+                    token: token.unwrap(),
+                    append,
+                },
+                "mail" => Input::Journaled { append },
+                "instruction" => Input::InstructionJournaled { append },
+                "board" => Input::BoardChanged { append },
+                _ => unreachable!(),
+            };
+            let handled = harness.supervisor.handle(input).unwrap();
+            assert_eq!(handled.folded_through(), Some(Lsn(1001)), "{carrier}");
+            assert_eq!(
+                format!("{:?}", harness.supervisor.world()),
+                format!("{replayed:?}"),
+                "{carrier}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mismatched_persisted_entry_preserves_the_parked_continuation() {
+        use dudes_types::Lsn;
+        let mut harness = Harness::new();
+        let agent = harness.hire();
+        harness.fsync = false;
+        let effects = harness.step(Input::Command(Command::Pause {
+            agent,
+            browser: None,
+        }));
+        let token = effects
+            .iter()
+            .find_map(|seen| match seen {
+                crate::testing::Seen::Persist { token, .. } => Some(*token),
+                _ => None,
+            })
+            .unwrap();
+        let original = harness.persisted_append(token, Lsn(1000)).into_parts().0.1;
+        let mut wrong = original.clone();
+        wrong.record = Record::Resume {
+            agent,
+            browser: None,
+        };
+        let before = format!("{:?}", harness.supervisor.world());
+        let result = harness.supervisor.handle(Input::Persisted {
+            token,
+            append: checkpointed((Lsn(1000), wrong), Lsn(1001)),
+        });
+        assert_eq!(
+            result,
+            Err(crate::input::DurableInputError::PersistedEntryMismatch {
+                token,
+                lsn: Lsn(1000)
+            })
+        );
+        assert_eq!(format!("{:?}", harness.supervisor.world()), before);
+        assert_eq!(harness.supervisor.ledger[&token].entry, original);
+        assert!(harness.supervisor.effects().is_empty());
+    }
+
+    #[test]
+    fn a_refused_checkpoint_keeps_the_main_prefix_but_not_mint_confirmation() {
+        use dudes_types::Lsn;
+        let mut harness = Harness::new();
+        let agent = harness.hire();
+        harness.supervisor.mint(
+            agent,
+            super::Then::Reply {
+                hook: crate::input::HookId(902),
+                reply: dudes_proto::reply::HookReply::ALLOW,
+            },
+        );
+        let effects = harness.supervisor.take_effects();
+        let [super::Effect::Persist { token, entry }] = effects.as_slice() else {
+            panic!("actual mint")
+        };
+        let mut prefix = harness.supervisor.world().clone();
+        prefix.apply_checked(Lsn(1000), entry).unwrap();
+        harness.supervisor.refuse_fold_once(
+            Lsn(1001),
+            dudes_proto::recovery_state::RecoveryStateError::Binding,
+        );
+        let result = harness.supervisor.handle(Input::Persisted {
+            token: *token,
+            append: checkpointed((Lsn(1000), entry.clone()), Lsn(1001)),
+        });
+        assert_eq!(
+            result,
+            Err(crate::input::DurableInputError::Recovery {
+                lsn: Lsn(1001),
+                reason: dudes_proto::recovery_state::RecoveryStateError::Binding,
+            })
+        );
+        assert_eq!(
+            format!("{:?}", harness.supervisor.world()),
+            format!("{prefix:?}")
+        );
+        assert!(harness.supervisor.tokens.live(agent).is_none());
+        assert_eq!(harness.supervisor.ledger[token].entry, *entry);
+        assert!(harness.supervisor.effects().is_empty());
+    }
+
+    #[test]
+    fn a_checkpointed_decision_continuation_uses_the_main_lsn() {
+        use dudes_types::Lsn;
+        let mut harness = Harness::new();
+        harness.unfsynced.insert(RecordKind::LoopDecided);
+        let (agent, _) = harness.hire_with_goal(&["npm", "test"]);
+        let token = harness
+            .trace
+            .iter()
+            .rev()
+            .find_map(|seen| match seen {
+                crate::testing::Seen::Persist { token, entry }
+                    if matches!(entry.record, Record::LoopDecided { .. }) =>
+                {
+                    Some(*token)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let main = harness.persisted_append(token, Lsn(1000)).into_parts().0;
+        let handled = harness
+            .supervisor
+            .handle(Input::Persisted {
+                token,
+                append: checkpointed(main, Lsn(1001)),
+            })
+            .unwrap();
+        assert_eq!(handled.folded_through(), Some(Lsn(1001)));
+        assert!(
+            harness
+                .supervisor
+                .effects()
+                .iter()
+                .any(|effect| matches!(effect,
+            super::Effect::Persist { entry: super::Entry { record: Record::TurnIssued {
+                agent: owner, lsn_of_decision, .. }, .. }, .. }
+                if *owner == agent && *lsn_of_decision == Lsn(1000)))
+        );
+    }
+
     #[test]
     fn handled_distinguishes_actual_replay_from_ignored_durable_inputs() {
         let mut harness = Harness::new();
@@ -5240,31 +5458,25 @@ mod tests {
         for input in [
             Input::Persisted {
                 token: crate::input::PersistToken(u64::MAX),
-                lsn: dudes_types::Lsn(900),
+                append: crate::testing::recorded_append(dudes_types::Lsn(900), entry.clone()),
             },
             Input::Journaled {
-                lsn: through,
-                entry: mail,
+                append: crate::testing::recorded_append(through, mail),
             },
             Input::Journaled {
-                lsn: dudes_types::Lsn(900),
-                entry: entry.clone(),
+                append: crate::testing::recorded_append(dudes_types::Lsn(900), entry.clone()),
             },
             Input::InstructionJournaled {
-                lsn: through,
-                entry: close.clone(),
+                append: crate::testing::recorded_append(through, close.clone()),
             },
             Input::InstructionJournaled {
-                lsn: dudes_types::Lsn::ZERO,
-                entry: close,
+                append: crate::testing::recorded_append(dudes_types::Lsn::ZERO, close),
             },
             Input::InstructionJournaled {
-                lsn: dudes_types::Lsn(900),
-                entry: entry.clone(),
+                append: crate::testing::recorded_append(dudes_types::Lsn(900), entry.clone()),
             },
             Input::BoardChanged {
-                lsn: dudes_types::Lsn(900),
-                entry,
+                append: crate::testing::recorded_append(dudes_types::Lsn(900), entry),
             },
             Input::Spend {
                 agent,
@@ -5319,7 +5531,10 @@ mod tests {
                     panic!("one genuinely parked append")
                 };
                 (
-                    Input::Persisted { token: *token, lsn },
+                    Input::Persisted {
+                        token: *token,
+                        append: crate::testing::recorded_append(lsn, entry.clone()),
+                    },
                     Some((*token, entry.clone())),
                 )
             } else {
@@ -5383,9 +5598,10 @@ mod tests {
                     dudes_proto::recovery_state::RecoveryStateError::Binding,
                 );
             }
-            let result = harness
-                .supervisor
-                .handle(Input::Persisted { token: *token, lsn });
+            let result = harness.supervisor.handle(Input::Persisted {
+                token: *token,
+                append: crate::testing::recorded_append(lsn, entry.clone()),
+            });
             if refuse {
                 assert_eq!(
                     result,
@@ -6428,10 +6644,7 @@ mod taught_notes_controls {
                 _ => None,
             })
             .unwrap();
-        let effects = h.step(Input::Persisted {
-            token,
-            lsn: Lsn(u64::try_from(h.journal.len()).unwrap() + 1),
-        });
+        let effects = h.step(h.persisted(token, Lsn(u64::try_from(h.journal.len()).unwrap() + 1)));
         assert_eq!(
             effects
                 .iter()
@@ -6520,11 +6733,9 @@ mod taught_notes_controls {
                 .count(),
             1
         );
+        let append = h.persisted_append(token, Lsn(10_002));
         h.supervisor
-            .handle(Input::Persisted {
-                token,
-                lsn: Lsn(10_002),
-            })
+            .handle(Input::Persisted { token, append })
             .unwrap();
         for _ in 0..3 {
             h.supervisor.handle(Input::Tick).unwrap();

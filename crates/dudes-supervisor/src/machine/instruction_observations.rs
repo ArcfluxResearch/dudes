@@ -3,7 +3,7 @@ use super::{
     GoalId, LoopDecision, Lsn, Mode, ModelSelection, Path, PathBuf, PreparedLaunch, Provenance,
     Provider, Record, Rng, Supervisor, Then, TurnId, Usd, WorktreeId,
 };
-use crate::input::{DurableInputError, Handled, InstructionRequest};
+use crate::input::{DurableInputError, Handled, InstructionRequest, RecordedAppend};
 use dudes_proto::instruction::{
     InstructionBaselineRef, InstructionComparison, InstructionCoverageGap, InstructionEndBoundary,
     InstructionGapKind, InstructionIssueAssociation, InstructionObservationOwner,
@@ -251,9 +251,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     pub(super) fn instruction_journaled(
         &mut self,
-        lsn: Lsn,
-        entry: &Entry,
+        append: RecordedAppend,
     ) -> Result<Handled, DurableInputError> {
+        let lsn = append.lsn();
+        let entry = append.entry();
         if lsn == Lsn::ZERO
             || self.world.last_applied_lsn.is_some_and(|last| lsn <= last)
             || !matches!(
@@ -268,8 +269,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return Ok(Handled::default());
         }
-        self.apply_entry(lsn, entry)?;
-        Ok(Handled::folded(lsn))
+        let through = append.through();
+        self.apply_recorded(append)?;
+        Ok(Handled::folded(through))
     }
 
     pub(super) fn recover_instruction_observations(&mut self) -> bool {
@@ -1374,7 +1376,7 @@ mod tests {
             .expect("the actual supervisor must request this durable boundary");
         let lsn = Lsn(harness.supervisor.world().last_applied_lsn.unwrap().0 + 1);
         harness.journal.push(entry);
-        harness.step(Input::Persisted { token, lsn })
+        harness.step(harness.persisted(token, lsn))
     }
 
     fn delayed_board_sample() -> (
@@ -1401,7 +1403,13 @@ mod tests {
         };
         let lsn = Lsn(harness.supervisor.world().last_applied_lsn.unwrap().0 + 1);
         harness.journal.push(entry.clone());
-        assert!(harness.step(Input::BoardChanged { lsn, entry }).is_empty());
+        assert!(
+            harness
+                .step(Input::BoardChanged {
+                    append: crate::testing::recorded_append(lsn, entry)
+                })
+                .is_empty()
+        );
         let effects = harness.step(Input::Command(Command::GoalSet {
             agent,
             text: "immutable allocated task".into(),
@@ -2160,7 +2168,9 @@ mod tests {
         };
         let lsn = Lsn(harness.supervisor.world().last_applied_lsn.unwrap().0 + 1);
         harness.journal.push(entry.clone());
-        let effects = harness.step(Input::BoardChanged { lsn, entry });
+        let effects = harness.step(Input::BoardChanged {
+            append: crate::testing::recorded_append(lsn, entry),
+        });
         assert!(effects.iter().any(|effect| matches!(effect,
             crate::testing::Seen::RunPredicate { goal: checked } if *checked == goal)));
         assert!(
@@ -2417,10 +2427,7 @@ mod tests {
                     }
                     _ => {}
                 }
-                queue.extend(harness.step(Input::Persisted {
-                    token,
-                    lsn: Lsn(position),
-                }));
+                queue.extend(harness.step(harness.persisted(token, Lsn(position))));
             }
         }
         let ended = ended.expect("the actual translated Stop must have an observed end receipt");
@@ -2515,10 +2522,9 @@ mod tests {
                         finished = Some(entry.clone());
                     }
                     entries.push(entry);
-                    queue.extend(recovered.step(Input::Persisted {
-                        token,
-                        lsn: Lsn(u64::try_from(entries.len()).unwrap()),
-                    }));
+                    queue.extend(recovered.step(
+                        recovered.persisted(token, Lsn(u64::try_from(entries.len()).unwrap())),
+                    ));
                 }
                 _ => {}
             }
@@ -2595,10 +2601,7 @@ mod tests {
             && comparison.usage == InstructionSampleUsage::default())
         );
         entries.push(entry);
-        harness.step(Input::Persisted {
-            token,
-            lsn: Lsn(u64::try_from(entries.len()).unwrap()),
-        });
+        harness.step(harness.persisted(token, Lsn(u64::try_from(entries.len()).unwrap())));
         assert!(
             harness
                 .supervisor
@@ -2654,7 +2657,7 @@ mod tests {
             && comparison.gaps.iter().any(|gap| gap.reason == InstructionGapKind::MissingBaseline)
             && comparison.gaps.iter().any(|gap| gap.reason == InstructionGapKind::UnrecordedLaunchBoundary))
         );
-        harness.step(Input::Persisted { token, lsn: Lsn(4) });
+        harness.step(harness.persisted(token, Lsn(4)));
         let attempt = harness
             .supervisor
             .world()
@@ -2752,7 +2755,7 @@ mod tests {
         } if *captured_agent == agent && *captured_turn == turn && *missing == turn && comparison.changes.is_empty()
             && comparison.gaps.iter().any(|gap| gap.reason == InstructionGapKind::MissingBaseline))
         );
-        let effects = harness.step(Input::Persisted { token, lsn: Lsn(5) });
+        let effects = harness.step(harness.persisted(token, Lsn(5)));
         assert!(!effects.iter().any(|effect| matches!(
             effect,
             crate::testing::Seen::Spawn { .. } | crate::testing::Seen::SampleInstructions { .. }
@@ -2841,7 +2844,7 @@ mod tests {
         } if *found == turn && *ended == turn && comparison.changes.is_empty()
             && comparison.gaps.iter().any(|gap| gap.reason == InstructionGapKind::MissingBaseline))
         );
-        let effects = harness.step(Input::Persisted { token, lsn: Lsn(6) });
+        let effects = harness.step(harness.persisted(token, Lsn(6)));
         assert!(effects.iter().any(|effect| matches!(effect, crate::testing::Seen::RunPredicate { goal: found } if *found == goal)));
         entries.push(entry);
         let mut replayed = replay_prefix(&entries);
@@ -2905,7 +2908,7 @@ mod tests {
                 })
                 .is_empty()
         );
-        let effects = harness.step(Input::Persisted { token, lsn: Lsn(6) });
+        let effects = harness.step(harness.persisted(token, Lsn(6)));
         assert!(effects.iter().any(|effect| matches!(effect, crate::testing::Seen::RunPredicate { goal: checked } if *checked == goal)));
         assert!(
             harness
@@ -2944,7 +2947,7 @@ mod tests {
             })
             .unwrap();
         assert!(harness.supervisor.instructions.recovering());
-        harness.step(Input::Persisted { token, lsn: Lsn(7) });
+        harness.step(harness.persisted(token, Lsn(7)));
         assert!(!harness.supervisor.instructions.recovering());
     }
 
@@ -3096,8 +3099,7 @@ mod tests {
         assert!(
             harness
                 .step(Input::InstructionJournaled {
-                    lsn,
-                    entry: entry.clone()
+                    append: crate::testing::recorded_append(lsn, entry.clone())
                 })
                 .is_empty()
         );
@@ -3106,16 +3108,14 @@ mod tests {
         assert!(
             harness
                 .step(Input::InstructionJournaled {
-                    lsn,
-                    entry: entry.clone()
+                    append: crate::testing::recorded_append(lsn, entry.clone())
                 })
                 .is_empty()
         );
         assert!(
             harness
                 .step(Input::InstructionJournaled {
-                    lsn: Lsn::ZERO,
-                    entry
+                    append: crate::testing::recorded_append(Lsn::ZERO, entry)
                 })
                 .is_empty()
         );
@@ -3129,8 +3129,7 @@ mod tests {
         assert!(
             harness
                 .step(Input::InstructionJournaled {
-                    lsn: Lsn(lsn.0 + 1),
-                    entry: unrelated
+                    append: crate::testing::recorded_append(Lsn(lsn.0 + 1), unrelated)
                 })
                 .is_empty()
         );

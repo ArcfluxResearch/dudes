@@ -278,15 +278,19 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             });
             return Ok(());
         }
-        let lsn = self.append(sup.world(), entry)?;
+        let append = self.append(sup.world(), entry)?;
+        let through = append.through();
         anyhow::ensure!(
             self.writer.poisoned().is_none(),
             "browser dispatch journal stopped after its append"
         );
         let handled = sup
-            .handle(Input::Persisted { token: *token, lsn })
+            .handle(Input::Persisted {
+                token: *token,
+                append,
+            })
             .inspect_err(|_| self.fence_journal())?;
-        self.require_handled_through(sup.world(), &handled, lsn)?;
+        self.require_handled_through(sup.world(), &handled, through)?;
         self.tokens.mark_folded();
         self.publish_folded_floor(sup.world(), closing)?;
         let effects = sup.take_effects();

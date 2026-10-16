@@ -2,7 +2,9 @@ use super::{
     AgentId, BreakerSignal, Clock, Effect, Entry, GoalId, Lsn, ManagedLaunch, Mode, Provenance,
     Record, Rng, SpendView, Supervisor, Then, Timestamp, TurnId,
 };
-use crate::input::{DurableInputError, Handled, MailWakeRefreshFailure, MailWakeRequest};
+use crate::input::{
+    DurableInputError, Handled, MailWakeRefreshFailure, MailWakeRequest, RecordedAppend,
+};
 use dudes_policy::{
     BudgetState, Ceilings, CompletedNoteState, Control, MailWakeFacts, MailWakeInput, MailWakeWork,
 };
@@ -146,9 +148,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     pub(super) fn mail_journaled(
         &mut self,
-        lsn: Lsn,
-        entry: &Entry,
+        append: RecordedAppend,
     ) -> Result<Handled, DurableInputError> {
+        let lsn = append.lsn();
+        let entry = append.entry();
         if !matches!(entry.record, Record::Mail { .. } | Record::MailState { .. })
             || self
                 .world
@@ -158,11 +161,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return Ok(Handled::default());
         }
         let agents = self.mail_event_recipients(&entry.record);
-        self.apply_entry(lsn, entry)?;
+        let through = append.through();
+        self.apply_recorded(append)?;
         for agent in agents {
             self.request_mail_wake(agent);
         }
-        Ok(Handled::folded(lsn))
+        Ok(Handled::folded(through))
     }
 
     fn mail_wake_input_for(
@@ -668,8 +672,10 @@ mod tests {
             let entry = Entry { at: at(1), record };
             self.h.journal.push(entry.clone());
             self.h.step(Input::Journaled {
-                lsn: Lsn(u64::try_from(self.h.journal.len()).unwrap()),
-                entry,
+                append: crate::testing::recorded_append(
+                    Lsn(u64::try_from(self.h.journal.len()).unwrap()),
+                    entry,
+                ),
             })
         }
         fn refresh(&mut self, effects: &[Seen], stamp: Timestamp, spend: SpendView) -> Vec<Seen> {
@@ -704,7 +710,9 @@ mod tests {
             self.h.journal.push(entry.clone());
             self.h.step(Input::Persisted {
                 token: *token,
-                lsn: Lsn(u64::try_from(self.h.journal.len()).unwrap()),
+                append: self
+                    .h
+                    .persisted_append(*token, Lsn(u64::try_from(self.h.journal.len()).unwrap())),
             })
         }
         fn instruction_phases(&mut self, mut effects: Vec<Seen>) -> Vec<Seen> {

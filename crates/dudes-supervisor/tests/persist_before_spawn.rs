@@ -284,9 +284,25 @@ fn an_unknown_persist_token_does_nothing() {
     harness.hire_with_goal(&["npm", "test"]);
     let before = harness.trace.len();
 
+    // Deliberately pair an emitted entry with a token this fixture never issued.
     let seen = harness.step(Input::Persisted {
         token: PersistToken(9_999),
-        lsn: Lsn(9_999),
+        append: dudes_supervisor::input::RecordedAppend::try_new(
+            Lsn(9_999),
+            (
+                Lsn(9_999),
+                harness
+                    .trace
+                    .iter()
+                    .find_map(|seen| match seen {
+                        Seen::Persist { entry, .. } => Some(entry.clone()),
+                        _ => None,
+                    })
+                    .unwrap(),
+            ),
+            None,
+        )
+        .unwrap(),
     });
     assert!(seen.is_empty(), "{seen:?}");
     assert_eq!(harness.trace.len(), before + seen.len());
@@ -340,7 +356,7 @@ fn a_deferred_issue_is_stamped_when_its_persist_is_emitted() {
     clock.advance(1_000);
     let lsn = Lsn(u64::try_from(harness.journal.len()).unwrap() + 1);
     harness.journal.push(entry);
-    let effects = harness.step(Input::Persisted { token, lsn });
+    let effects = harness.step(harness.persisted(token, lsn));
     let issue = effects
         .iter()
         .find_map(|seen| match seen {

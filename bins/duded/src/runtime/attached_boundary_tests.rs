@@ -162,9 +162,14 @@ fn append(daemon: &mut TestDaemon, record: Record) -> Lsn {
         at: daemon.ctx.clock.now(),
         record,
     };
-    let lsn = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
-    daemon.sup.handle(Input::Replayed { lsn, entry }).unwrap();
-    assert_eq!(daemon.sup.world().last_applied_lsn, Some(lsn));
+    let append = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let lsn = append.lsn();
+    let through = append.through();
+    let (main, checkpoint) = append.into_parts();
+    for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
+        daemon.sup.handle(Input::Replayed { lsn, entry }).unwrap();
+    }
+    assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
     assert!(daemon.sup.take_effects().is_empty());
     lsn
 }

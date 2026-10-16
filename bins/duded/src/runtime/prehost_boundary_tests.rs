@@ -316,7 +316,7 @@ fn persist_failed_end(
         .iter()
         .position(|input| {
             matches!(input,
-            Input::Persisted { token, lsn } if *token == end_token && *lsn == end_lsn)
+            Input::Persisted { token, append } if *token == end_token && append.lsn() == end_lsn)
         })
         .and_then(|position| queue.remove(position))
         .expect("real post-fsync acknowledgement of this exact end");
@@ -560,8 +560,8 @@ fn an_actual_host_not_launched_end_does_not_become_a_no_host_call_assertion() {
         .pop_front()
         .expect("actual journaled native boundary input");
     assert!(matches!(&native,
-        Input::InstructionJournaled { entry, .. }
-            if matches!(entry.record,
+        Input::InstructionJournaled { append }
+            if matches!(append.entry().record,
                 Record::InstructionAttemptBoundarySettled {
                     owner,
                     started_lsn,
@@ -600,7 +600,8 @@ fn reboot_after_only_a_durable_hold_retains_uncertainty_instead_of_reconstructin
     let hold_lsn = daemon
         .ctx
         .append(daemon.sup.world(), &hold)
-        .expect("real full-fsync hold append before crash");
+        .expect("real full-fsync hold append before crash")
+        .lsn();
     assert!(hold_lsn > attempt.issue);
     assert!(
         fixture

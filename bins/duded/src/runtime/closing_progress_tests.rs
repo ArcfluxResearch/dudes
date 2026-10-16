@@ -26,7 +26,14 @@ type TestDaemon = crate::Daemon<
 >;
 
 fn boot_daemon(fixture: &common::Fixture) -> TestDaemon {
-    let settings = settings(fixture);
+    boot_with_checkpoints(fixture, None)
+}
+
+fn boot_with_checkpoints(fixture: &common::Fixture, cadence: Option<u64>) -> TestDaemon {
+    let mut settings = settings(fixture);
+    if let Some(cadence) = cadence {
+        settings.journal.checkpoint_every = cadence;
+    }
     crate::boot(
         &settings,
         common::seams(
@@ -172,13 +179,18 @@ fn failure_serializing_the_last_folded_patch_keeps_its_original_context() {
             browser_rename: None,
         },
     };
-    let lsn = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let append = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let (main, checkpoint) = append.into_parts();
+    let inputs = std::iter::once(main)
+        .chain(checkpoint)
+        .map(|(lsn, entry)| Input::Replayed { lsn, entry })
+        .collect();
     assert_eq!(daemon.ctx.pending_floor.len(), 1);
     let failure = daemon
         .pump_inputs(
             &mut PumpReport::Discard,
             PumpOrigin::Ordinary,
-            VecDeque::from([Input::Replayed { lsn, entry }]),
+            inputs,
             |_| Ok(Handled::default()),
         )
         .unwrap_err();
@@ -407,8 +419,17 @@ fn saving_memory_publishes_its_projection_cut_without_waiting_for_a_policy_fold(
 
 #[test]
 fn saving_memory_behind_a_policy_cut_drains_in_durable_order() {
+    assert_memory_drain(None);
+}
+
+#[test]
+fn saving_memory_behind_a_checkpointed_policy_cut_drains_in_durable_order() {
+    assert_memory_drain(Some(1));
+}
+
+fn assert_memory_drain(cadence: Option<u64>) {
     let fixture = common::Fixture::new();
-    let mut daemon = boot_daemon(&fixture);
+    let mut daemon = boot_with_checkpoints(&fixture, cadence);
     let hired = hire_open(&mut daemon, &fixture);
     daemon
         .closing_request(crate::closing::Request::Announce)
@@ -432,7 +453,16 @@ fn saving_memory_behind_a_policy_cut_drains_in_durable_order() {
     let Effect::Persist { token, entry } = effects.pop().unwrap() else {
         panic!("pause append");
     };
-    let policy_lsn = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let policy_append = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let policy_lsn = policy_append.lsn();
+    let policy_through = policy_append.through();
+    if cadence == Some(1) {
+        assert!(policy_through > policy_lsn);
+    }
+    assert_eq!(
+        daemon.ctx.pending_floor[&policy_lsn].through,
+        policy_through
+    );
     let prepared = daemon
         .ctx
         .memory
@@ -453,7 +483,7 @@ fn saving_memory_behind_a_policy_cut_drains_in_durable_order() {
     daemon
         .pump(Input::Persisted {
             token,
-            lsn: policy_lsn,
+            append: policy_append,
         })
         .unwrap();
     assert!(
@@ -461,7 +491,7 @@ fn saving_memory_behind_a_policy_cut_drains_in_durable_order() {
         "the projection-only successor drains after the earlier policy cut"
     );
     assert!(daemon.ctx.pending_floor_base.is_none());
-    assert_eq!(daemon.sup.world().last_applied_lsn, Some(policy_lsn));
+    assert_eq!(daemon.sup.world().last_applied_lsn, Some(policy_through));
     for expected in [policy_lsn, memory_lsn] {
         let QueueRead::Frame(bytes) = opened.subscription.next(Duration::ZERO) else {
             panic!("ordered durable cut");

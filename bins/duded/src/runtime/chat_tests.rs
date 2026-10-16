@@ -2106,6 +2106,24 @@ fn freeze_pending_chat_prefix(
     host.not_launched.store(true, Ordering::SeqCst);
 }
 
+fn historical_dispatch_ack(
+    history: &HistoricalReplay,
+    token: dudes_supervisor::input::PersistToken,
+    lsn: Lsn,
+) -> dudes_supervisor::Input {
+    let entry = history
+        .fixture
+        .entries()
+        .into_iter()
+        .find(|(at, _)| *at == lsn)
+        .expect("the fixture recorded this historical dispatch position")
+        .1;
+    dudes_supervisor::Input::Persisted {
+        token,
+        append: dudes_supervisor::testing::recorded_append(lsn, entry),
+    }
+}
+
 #[test]
 fn actual_late_preparation_and_proposed_ack_keep_uncertainty_through_resume() {
     let mut history = HistoricalReplay::new();
@@ -2162,10 +2180,7 @@ fn actual_late_preparation_and_proposed_ack_keep_uncertainty_through_resume() {
     daemon.pump_runtime_input(duplicate).unwrap();
     assert_uncertain_chat_history(&history, &daemon, &host);
     daemon
-        .pump_runtime_input(dudes_supervisor::Input::Persisted {
-            token: proposed_token,
-            lsn: prior,
-        })
+        .pump_runtime_input(historical_dispatch_ack(&history, proposed_token, prior))
         .unwrap();
     assert_eq!(
         daemon
@@ -2947,7 +2962,8 @@ fn an_injected_direct_browser_ack_fault_stops_before_host_dispatch() {
         let host = BoundaryHost::new();
         let pause = crate::BrowserLaunchPause::default();
         pause.arm();
-        let settings = history.fixture.settings();
+        let mut settings = history.fixture.settings();
+        settings.journal.checkpoint_every = 1;
         let mut daemon = crate::boot::boot_with_preparation_pause(
             &settings,
             with_owned_program(
@@ -3021,6 +3037,9 @@ fn an_injected_direct_browser_ack_fault_stops_before_host_dispatch() {
             assert!(daemon.sup.effects().is_empty());
         } else {
             result.unwrap();
+            let through = daemon.ctx.projections.last_applied_lsn();
+            assert!(through > lsn);
+            assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
             assert_eq!(host.calls.load(Ordering::SeqCst), 1);
             assert!(
                 matches!(queue.front(), Some(dudes_supervisor::Input::Spawned { turn: issued, .. }) if *issued == turn)

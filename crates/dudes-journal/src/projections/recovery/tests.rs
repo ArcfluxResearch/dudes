@@ -14,13 +14,17 @@ struct Fixture {
 
 impl Fixture {
     fn new(checkpoints: u64) -> Self {
+        Self::with_rotation(checkpoints, 16 * 1024 * 1024)
+    }
+
+    fn with_rotation(checkpoints: u64, rotate_at: u64) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal");
         let (mut writer, _) = crate::open(
             &journal,
             JournalOptions {
                 fsync: Fsync::None,
-                rotate_at: 16 * 1024 * 1024,
+                rotate_at,
                 checkpoint_every: checkpoints,
             },
         )
@@ -1225,4 +1229,253 @@ fn literal_version_50_cache_rebuilds_standing_control_and_failure_classification
         gateway.facts(&binding).unwrap().control,
         RecoveryStandingControl::default()
     );
+}
+
+#[test]
+fn guarded_append_returns_reader_frames_for_plain_checkpointed_and_rotating_writes() {
+    for (cadence, rotate_at) in [(0, 16 * 1024 * 1024), (1, 16 * 1024 * 1024), (1, 1)] {
+        let mut fixture = Fixture::with_rotation(cadence, rotate_at);
+        let caller = entry(RecordKind::Pause);
+        let committed = fixture
+            .writer
+            .checked_recovery(&mut fixture.projections)
+            .unwrap()
+            .append_guarded(&caller, || Ok::<_, ()>(()), || Ok::<_, ()>(()))
+            .unwrap();
+        let main_lsn = committed.lsn();
+        let through = committed.through();
+        let (main, checkpoint) = committed.into_parts();
+        let actual: Vec<_> = fixture
+            .writer
+            .reader()
+            .witnessed_from(main_lsn)
+            .unwrap()
+            .map(|frame| {
+                let (lsn, _, entry) = frame.unwrap();
+                (lsn, entry)
+            })
+            .collect();
+        let supplied: Vec<_> = std::iter::once(main).chain(checkpoint).collect();
+        assert_eq!(supplied, actual);
+        assert_eq!(supplied[0], (main_lsn, caller));
+        assert_eq!(supplied.len(), if cadence == 0 { 1 } else { 2 });
+        assert_eq!(through, supplied.last().unwrap().0);
+        assert_eq!(fixture.projections.last_applied_lsn(), through);
+        if rotate_at == 1 {
+            assert_ne!(supplied[0].0.segment(), supplied[1].0.segment());
+        }
+        let mut replayed = Projections::in_memory().unwrap();
+        crate::replay(&fixture.writer.reader(), &mut replayed).unwrap();
+        assert_eq!(
+            fixture.projections.export().unwrap(),
+            replayed.export().unwrap()
+        );
+    }
+}
+
+struct ObservedWriteGuard<'a> {
+    events: &'a std::cell::RefCell<Vec<&'static str>>,
+    journal: &'a std::path::Path,
+    before: &'a std::collections::BTreeMap<std::ffi::OsString, Vec<u8>>,
+}
+
+impl Drop for ObservedWriteGuard<'_> {
+    fn drop(&mut self) {
+        assert_ne!(
+            &journal_bytes(self.journal),
+            self.before,
+            "commit completed under the guard"
+        );
+        self.events.borrow_mut().push("drop");
+    }
+}
+
+#[test]
+fn guarded_append_preflights_before_acquire_and_drops_before_the_post_sync_boundary() {
+    let mut fixture = Fixture::new(1);
+    let journal = fixture.dir.path().join("journal");
+    let before = journal_bytes(&journal);
+    let events = std::cell::RefCell::new(Vec::new());
+    fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap()
+        .append_guarded(
+            &entry(RecordKind::Pause),
+            || {
+                assert_eq!(journal_bytes(&journal), before);
+                events.borrow_mut().push("acquire");
+                Ok::<_, ()>(ObservedWriteGuard {
+                    events: &events,
+                    journal: &journal,
+                    before: &before,
+                })
+            },
+            || {
+                assert_eq!(*events.borrow(), ["acquire", "drop"]);
+                events.borrow_mut().push("after_fsync");
+                Ok::<_, ()>(())
+            },
+        )
+        .unwrap();
+    assert_eq!(events.into_inner(), ["acquire", "drop", "after_fsync"]);
+
+    let invalid = mail_wake_missing_completion(&fixture.projections);
+    let before = (
+        journal_bytes(&journal),
+        fixture.projections.export().unwrap(),
+    );
+    let acquired = std::cell::Cell::new(false);
+    let result = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap()
+        .append_guarded(
+            &invalid,
+            || {
+                acquired.set(true);
+                Ok::<_, ()>(())
+            },
+            || Ok::<_, ()>(()),
+        );
+    assert!(matches!(
+        result,
+        Err(GuardedAppendError::Journal(Error::MailWakeAdmission { .. }))
+    ));
+    assert!(!acquired.get());
+    assert_eq!(journal_bytes(&journal), before.0);
+    assert_eq!(fixture.projections.export().unwrap(), before.1);
+}
+
+#[test]
+fn denied_append_guard_changes_no_bytes_and_requires_recertification() {
+    let mut fixture = Fixture::new(1);
+    let journal = fixture.dir.path().join("journal");
+    let before = (
+        journal_bytes(&journal),
+        fixture.projections.export().unwrap(),
+    );
+    let next = fixture.writer.next_lsn().unwrap();
+    let after = std::cell::Cell::new(false);
+    let mut gateway = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap();
+    let result = gateway.append_guarded(
+        &entry(RecordKind::Pause),
+        || Err::<(), _>("denied"),
+        || {
+            after.set(true);
+            Ok::<_, ()>(())
+        },
+    );
+    assert!(matches!(result, Err(GuardedAppendError::Acquire("denied"))));
+    assert_eq!(
+        reason(&gateway.receipt(request(), digest()).unwrap_err()),
+        RecoveryStoreError::Uncertified
+    );
+    assert!(!after.get());
+    assert_eq!(fixture.writer.next_lsn().unwrap(), next);
+    assert_eq!(journal_bytes(&journal), before.0);
+    assert_eq!(fixture.projections.export().unwrap(), before.1);
+    assert!(
+        fixture
+            .writer
+            .checked_recovery(&mut fixture.projections)
+            .is_ok()
+    );
+}
+
+#[test]
+fn post_sync_failure_retains_the_actual_caller_and_requires_canonical_reopen() {
+    let mut fixture = Fixture::new(1);
+    let before = fixture.projections.export().unwrap();
+    let expected = fixture.writer.next_lsn().unwrap();
+    let caller = entry(RecordKind::Pause);
+    let result = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap()
+        .append_guarded(&caller, || Ok::<_, ()>(()), || Err("after"));
+    assert!(
+        matches!(result, Err(GuardedAppendError::AfterFsync { caller, source: "after" }) if caller == expected)
+    );
+    let frames: Vec<_> = fixture
+        .writer
+        .reader()
+        .witnessed_from(expected)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(frames.len(), 2);
+    assert_eq!((frames[0].0, &frames[0].2), (expected, &caller));
+    assert_eq!(fixture.projections.export().unwrap(), before);
+    assert!(fixture.writer.recovery_fenced);
+    assert!(
+        fixture
+            .writer
+            .checked_recovery(&mut fixture.projections)
+            .is_err()
+    );
+    let Fixture {
+        dir,
+        writer,
+        mut projections,
+    } = fixture;
+    drop(writer);
+    let (mut writer, _) = crate::open(
+        &dir.path().join("journal"),
+        JournalOptions {
+            fsync: Fsync::None,
+            rotate_at: 16 * 1024 * 1024,
+            checkpoint_every: 1,
+        },
+    )
+    .unwrap();
+    crate::replay(&writer.reader(), &mut projections).unwrap();
+    assert!(writer.checked_recovery(&mut projections).is_ok());
+    let mut canonical = Projections::in_memory().unwrap();
+    crate::replay(&writer.reader(), &mut canonical).unwrap();
+    assert_eq!(projections.export().unwrap(), canonical.export().unwrap());
+}
+
+#[test]
+fn a_poisoned_checkpoint_drops_the_guard_without_running_the_post_sync_callback() {
+    let mut fixture = Fixture::new(1);
+    let journal = fixture.dir.path().join("journal");
+    let before = journal_bytes(&journal);
+    let cache = fixture.projections.export().unwrap();
+    fixture.writer.fail_second_write(Fault::WriteShort(5));
+    let events = std::cell::RefCell::new(Vec::new());
+    let after = std::cell::Cell::new(false);
+    let result = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap()
+        .append_guarded(
+            &entry(RecordKind::Pause),
+            || {
+                events.borrow_mut().push("acquire");
+                Ok::<_, ()>(ObservedWriteGuard {
+                    events: &events,
+                    journal: &journal,
+                    before: &before,
+                })
+            },
+            || {
+                after.set(true);
+                Err("post-sync must not obscure the poisoned checkpoint")
+            },
+        );
+    assert!(matches!(
+        result,
+        Err(GuardedAppendError::Journal(Error::RecoveryStore(
+            RecoveryStoreError::JournalUncertain
+        )))
+    ));
+    assert_eq!(events.into_inner(), ["acquire", "drop"]);
+    assert!(!after.get());
+    assert!(fixture.writer.poisoned().is_some());
+    assert!(fixture.writer.recovery_fenced);
+    assert_eq!(fixture.projections.export().unwrap(), cache);
 }

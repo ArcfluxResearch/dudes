@@ -311,9 +311,11 @@ impl Owned {
     }
 
     fn fold(&mut self, input: Input, attempt: &Attempt) {
-        let Input::InstructionJournaled { lsn, entry } = &input else {
+        let Input::InstructionJournaled { append } = &input else {
             panic!("settlement must use the instruction journal acknowledgement")
         };
+        let lsn = append.lsn();
+        let entry = append.entry();
         assert!(
             matches!(entry.record, Record::InstructionAttemptBoundarySettled {
             owner, started_lsn,
@@ -326,7 +328,7 @@ impl Owned {
             self.fixture
                 .entries()
                 .iter()
-                .any(|(written, stamped)| { written == lsn && stamped.record == entry.record })
+                .any(|(written, stamped)| { *written == lsn && stamped.record == entry.record })
         );
         self.daemon.sup.handle(input).unwrap();
         self.daemon

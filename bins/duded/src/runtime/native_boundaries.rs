@@ -481,7 +481,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 proof: settlement.proof,
             },
         };
-        let lsn = self.append(world, &entry)?;
+        let append = self.append(world, &entry)?;
+        let lsn = append.lsn();
         if let Some((key, receipt)) = settlement.acknowledgement {
             self.native_acknowledgements.insert(
                 settlement.started,
@@ -496,7 +497,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         if settlement.launch_failure {
             self.confirmed_launch_failures.remove(&settlement.started);
         }
-        queue.push_back(Input::InstructionJournaled { lsn, entry });
+        queue.push_back(Input::InstructionJournaled { append });
         Ok(true)
     }
 }

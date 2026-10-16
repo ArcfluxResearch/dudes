@@ -490,10 +490,7 @@ mod tests {
             panic!("expected persistence")
         };
         h.journal.push(entry);
-        h.step(Input::Persisted {
-            token,
-            lsn: Lsn(u64::try_from(h.journal.len()).unwrap()),
-        })
+        h.step(h.persisted(token, Lsn(u64::try_from(h.journal.len()).unwrap())))
     }
 
     fn sample(h: &mut Harness, seen: Seen) -> Vec<Seen> {
@@ -721,8 +718,10 @@ mod tests {
         };
         h.journal.push(entry.clone());
         h.step(Input::Journaled {
-            lsn: Lsn(u64::try_from(h.journal.len()).unwrap()),
-            entry,
+            append: crate::testing::recorded_append(
+                Lsn(u64::try_from(h.journal.len()).unwrap()),
+                entry,
+            ),
         })
     }
 
@@ -907,8 +906,10 @@ mod tests {
         };
         h.journal.push(entry.clone());
         h.step(Input::BoardChanged {
-            lsn: Lsn(u64::try_from(h.journal.len()).unwrap()),
-            entry,
+            append: crate::testing::recorded_append(
+                Lsn(u64::try_from(h.journal.len()).unwrap()),
+                entry,
+            ),
         })
     }
 

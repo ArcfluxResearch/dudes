@@ -17,9 +17,14 @@ fn append(daemon: &mut TestDaemon, record: Record) -> Lsn {
         at: daemon.ctx.clock.now(),
         record,
     };
-    let lsn = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
-    daemon.sup.handle(Input::Replayed { lsn, entry }).unwrap();
-    assert_eq!(daemon.sup.world().last_applied_lsn, Some(lsn));
+    let append = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let lsn = append.lsn();
+    let through = append.through();
+    let (main, checkpoint) = append.into_parts();
+    for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
+        daemon.sup.handle(Input::Replayed { lsn, entry }).unwrap();
+    }
+    assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
     assert!(daemon.sup.take_effects().is_empty());
     lsn
 }
@@ -310,11 +315,12 @@ fn a_later_ticket_cannot_rebind_an_actual_attached_hook_end_before_append() {
     );
     assert_eq!(format!("{:?}", daemon.sup.world()), live_world);
     let valid = finishing(&captured, None, daemon.ctx.clock.now());
-    let lsn = daemon.ctx.append(daemon.sup.world(), &valid).unwrap();
-    daemon
-        .sup
-        .handle(Input::Replayed { lsn, entry: valid })
-        .unwrap();
+    let append = daemon.ctx.append(daemon.sup.world(), &valid).unwrap();
+    let lsn = append.lsn();
+    let (main, checkpoint) = append.into_parts();
+    for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
+        daemon.sup.handle(Input::Replayed { lsn, entry }).unwrap();
+    }
     assert_eq!(fixture.entries().len(), journal.len() + 1);
     assert_eq!(fixture.entries().last().unwrap().0, lsn);
     assert_eq!(daemon.ctx.projections.last_applied_lsn(), lsn);

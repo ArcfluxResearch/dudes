@@ -180,10 +180,7 @@ fn assert_server_leak_persists_before_notifying_and_never_stops() {
     );
 
     let before_ack = leaking.trace.len();
-    leaking.drive(Input::Persisted {
-        token,
-        lsn: Lsn(10_000),
-    });
+    leaking.drive(leaking.persisted(token, Lsn(10_000)));
     assert!(matches!(
         &leaking.trace[before_ack..],
         [Seen::Notify { method, .. }] if method == "floor.resync"

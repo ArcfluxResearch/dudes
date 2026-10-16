@@ -34,11 +34,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             at: self.clock.now(),
             record,
         };
-        let lsn = self.append(sup.world(), &entry)?;
+        let append = self.append(sup.world(), &entry)?;
+        let lsn = append.lsn();
+        let through = append.through();
         let handled = sup
-            .handle(Input::InstructionJournaled { lsn, entry })
+            .handle(Input::InstructionJournaled { append })
             .inspect_err(|_| self.fence_journal())?;
-        self.require_handled_through(sup.world(), &handled, lsn)?;
+        self.require_handled_through(sup.world(), &handled, through)?;
         anyhow::ensure!(
             sup.effects().is_empty(),
             "instruction boundary emitted unrelated effects"
@@ -452,7 +454,8 @@ mod tests {
     fn an_injected_direct_instruction_fold_fault_fences_before_publication() {
         for fault in [false, true] {
             let fixture = common::Fixture::new();
-            let settings = fixture.settings();
+            let mut settings = fixture.settings();
+            settings.journal.checkpoint_every = 1;
             let host = common::SharedHost::new();
             let mut daemon = crate::boot(
                 &settings,
@@ -496,7 +499,9 @@ mod tests {
                 assert!(daemon.ctx.journal_writes_stopped());
             } else {
                 assert_eq!(result.unwrap(), lsn);
-                assert_eq!(daemon.sup.world().last_applied_lsn, Some(lsn));
+                let through = daemon.ctx.projections.last_applied_lsn();
+                assert!(through > lsn);
+                assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
                 assert!(!daemon.ctx.journal_writes_stopped());
             }
             assert!(daemon.sup.effects().is_empty());

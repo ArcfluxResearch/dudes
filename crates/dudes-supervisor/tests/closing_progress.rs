@@ -123,14 +123,19 @@ fn durable_counts_partition_participants_and_keep_acknowledged_turns_running() {
 fn a_tick_can_queue_one_durable_change_per_roster_row_before_any_fold() {
     let mut harness = Harness::new();
     let agents: Vec<_> = (0..128).map(|_| harness.hire()).collect();
-    let token = match harness.supervisor.closing_announce().unwrap() {
-        [dudes_supervisor::Effect::Persist { token, .. }] => *token,
+    let announcement = harness
+        .supervisor
+        .closing_announce()
+        .unwrap()
+        .iter()
+        .map(dudes_supervisor::testing::Seen::of)
+        .collect::<Vec<_>>();
+    harness.trace.extend(announcement.iter().cloned());
+    let token = match announcement.as_slice() {
+        [dudes_supervisor::testing::Seen::Persist { token, .. }] => *token,
         _ => panic!("one announcement"),
     };
-    harness.drive(Input::Persisted {
-        token,
-        lsn: Lsn(10_000),
-    });
+    harness.drive(harness.persisted(token, Lsn(10_000)));
     assert!(harness.supervisor.is_closing());
     for agent in &agents {
         harness.step(Input::Signal {

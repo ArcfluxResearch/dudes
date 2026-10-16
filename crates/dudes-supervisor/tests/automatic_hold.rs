@@ -417,10 +417,7 @@ fn an_unacknowledged_hold_refuses_a_pending_token_spawn() {
         lsn: dudes_types::Lsn(900),
         entry: held,
     });
-    h.drive(Input::Persisted {
-        token: mint,
-        lsn: dudes_types::Lsn(901),
-    });
+    h.drive(h.persisted(mint, dudes_types::Lsn(901)));
     assert!(
         !h.trace
             .iter()
@@ -591,10 +588,7 @@ fn a_new_goal_recovers_an_issued_turn_held_before_spawn() {
             },
         },
     });
-    h.drive(Input::Persisted {
-        token: mint,
-        lsn: dudes_types::Lsn(901),
-    });
+    h.drive(h.persisted(mint, dudes_types::Lsn(901)));
     assert!(!h.trace.iter().any(|s| matches!(s, Seen::Spawn { .. })));
     h.drive(Input::Command(Command::GoalSet {
         completion_check: None,

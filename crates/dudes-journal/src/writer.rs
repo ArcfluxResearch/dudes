@@ -342,9 +342,9 @@ impl Writer {
             //   nothing is poisoned. The writer stays coherent (`rotate` mutates no field until
             //   both of its fallible calls have succeeded) and appends carry on, but this
             //   checkpoint is lost and `since_checkpoint` has already been reset, so the cadence
-            //   slips by one interval. Nothing downstream reads a checkpoint, so that costs
-            //   nothing today — but it is the writer's own durability path, and an error there
-            //   that no one can see is worse than the slip.
+            //   slips by one interval. Replay does not start from checkpoints, so the slip does
+            //   not change recovery today. It is still the writer's durability path, and an
+            //   invisible error there is worse than the slip.
             //
             // Hence the log line rather than a discarded `Result`: it is the only report the
             // second arm has.
@@ -365,15 +365,15 @@ impl Writer {
     /// stamped with `at` — the `at` of the entry whose append triggered it, because this crate
     /// reads no clock (see `lib.rs`).
     ///
-    /// **Nothing reads a `Checkpoint`.** `replay.rs` says so: starting from a `Checkpoint` is not
-    /// implemented yet and the record is applied as a no-op. `dudes-supervisor`'s `world.rs` folds it
+    /// Replay does not start from a `Checkpoint`; it is applied as a no-op. The checked append
+    /// transport validates its physical tail without treating it as a recovery starting point.
+    /// `dudes-supervisor`'s `world.rs` folds it
     /// in an arm that names the record; in this crate's four projection modules it reaches a
     /// wildcard — `agents::apply` and `agents::apply_flow`, `goals::apply`, `turns::apply` name
     /// it beside their wildcards, and `budget::apply` matches no record at all, returning before
     /// any record arm unless `turns::apply` handed it an ended turn.
     ///
-    /// This is a producer with no consumer, and it must not read as a live mechanism: what the
-    /// record attests is that the writer reached this position under this `PROJECTION_VERSION`,
+    /// This is not checkpoint-based recovery: the record attests is that the writer reached this position under this `PROJECTION_VERSION`,
     /// and **nothing about what any projection has applied**. Starting a replay from one, and
     /// archiving the segments before one, are both the follow-up: replay starting from the
     /// latest usable `Checkpoint` needs the `crc32c` that `Record::Checkpoint` is to gain,
@@ -383,8 +383,8 @@ impl Writer {
     ///
     /// **The pin, and what the change that lands a consumer does with it.** `tests/checkpoint.rs`
     /// asserts that checkpointing changes no projection, which is true only while every fold is
-    /// inert. That proposition is false by design the moment a consumer exists, so the pin has no
-    /// true form to be updated into: **the implementing change deletes it** and puts the
+    /// inert. That proposition is false by design when checkpoint-based recovery exists, so the
+    /// pin has no true form to be updated into: **the implementing change deletes it** and puts the
     /// consumer's own properties in its place. It is not repaired, and it is not to be weakened
     /// until it passes.
     ///

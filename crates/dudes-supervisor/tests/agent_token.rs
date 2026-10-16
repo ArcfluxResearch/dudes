@@ -642,7 +642,7 @@ impl InOrder {
         );
         self.lsn += 1;
         let lsn = Lsn(self.lsn);
-        self.step(Input::Persisted { token, lsn })
+        self.step(self.harness.persisted(token, lsn))
     }
 
     fn outstanding(&self) -> &[PersistToken] {

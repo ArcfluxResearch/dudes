@@ -46,9 +46,109 @@ impl Handled {
     }
 }
 
+/// Owned caller and checkpoint frames acknowledged by the live append boundary.
+#[derive(Debug)]
+pub struct RecordedAppend {
+    frames: Box<RecordedFrames>,
+}
+
+#[derive(Debug)]
+struct RecordedFrames {
+    main: (Lsn, Entry),
+    checkpoint: Option<(Lsn, Entry)>,
+}
+
+impl RecordedAppend {
+    /// Check the supplied physical tail and exact final cut, without certifying provenance.
+    pub fn try_new(
+        expected: Lsn,
+        main: (Lsn, Entry),
+        checkpoint: Option<(Lsn, Entry)>,
+    ) -> Result<Self, DurableInputError> {
+        if let Some((lsn, entry)) = &checkpoint {
+            let dudes_proto::Record::Checkpoint {
+                segment, offset, ..
+            } = &entry.record
+            else {
+                return Err(DurableInputError::CheckpointKind { lsn: *lsn });
+            };
+            if *lsn <= main.0 || lsn.segment() != *segment || lsn.offset() != *offset {
+                return Err(DurableInputError::CheckpointPosition { lsn: *lsn });
+            }
+            if entry.at != main.1.at {
+                return Err(DurableInputError::CheckpointTimestamp { lsn: *lsn });
+            }
+        }
+        let actual = checkpoint.as_ref().map_or(main.0, |tail| tail.0);
+        if expected != actual {
+            return Err(DurableInputError::AppendCut { expected, actual });
+        }
+        Ok(Self {
+            frames: Box::new(RecordedFrames { main, checkpoint }),
+        })
+    }
+
+    /// Actual caller frame position.
+    #[must_use]
+    pub fn lsn(&self) -> Lsn {
+        self.frames.main.0
+    }
+
+    /// Actual final frame position.
+    #[must_use]
+    pub fn through(&self) -> Lsn {
+        self.frames
+            .checkpoint
+            .as_ref()
+            .map_or(self.lsn(), |tail| tail.0)
+    }
+
+    /// Actual caller entry, used for persist-token correlation before folding.
+    #[must_use]
+    pub fn entry(&self) -> &Entry {
+        &self.frames.main.1
+    }
+
+    /// Consume the physical frames in append order.
+    #[must_use]
+    pub fn into_parts(self) -> ((Lsn, Entry), Option<(Lsn, Entry)>) {
+        let RecordedFrames { main, checkpoint } = *self.frames;
+        (main, checkpoint)
+    }
+}
+
 /// A durable input refused before its continuation may run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DurableInputError {
+    /// The supplied acknowledgment omitted or misidentified the final physical frame.
+    AppendCut {
+        /// Required final cut.
+        expected: Lsn,
+        /// Final supplied frame.
+        actual: Lsn,
+    },
+    /// The supplied tail was not a checkpoint.
+    CheckpointKind {
+        /// Supplied tail position.
+        lsn: Lsn,
+    },
+    /// A checkpoint did not follow its main frame or name its own position.
+    CheckpointPosition {
+        /// Supplied checkpoint position.
+        lsn: Lsn,
+    },
+    /// A checkpoint was not stamped with its triggering caller entry's time.
+    CheckpointTimestamp {
+        /// Supplied checkpoint position.
+        lsn: Lsn,
+    },
+    /// A known persist token acknowledged a different entry.
+    PersistedEntryMismatch {
+        /// Parked correlation identity.
+        token: PersistToken,
+        /// Actual acknowledged caller position.
+        lsn: Lsn,
+    },
     /// The checked World fold refused this actual journal position.
     Recovery {
         /// The actual durable frame position.
@@ -61,6 +161,22 @@ pub enum DurableInputError {
 impl std::fmt::Display for DurableInputError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::AppendCut { expected, actual } => {
+                write!(f, "append cut {actual:?} differs from {expected:?}")
+            }
+            Self::CheckpointKind { lsn } => write!(f, "append tail at {lsn:?} is not a checkpoint"),
+            Self::CheckpointPosition { lsn } => {
+                write!(f, "append checkpoint position at {lsn:?} is invalid")
+            }
+            Self::CheckpointTimestamp { lsn } => {
+                write!(
+                    f,
+                    "append checkpoint timestamp at {lsn:?} differs from its caller"
+                )
+            }
+            Self::PersistedEntryMismatch { token, lsn } => {
+                write!(f, "persist {token:?} entry differs at {lsn:?}")
+            }
             Self::Recovery { lsn, reason } => write!(f, "recovery history at {lsn:?}: {reason}"),
         }
     }
@@ -220,17 +336,13 @@ pub struct SpendView {
 pub enum Input {
     /// An external mailbox append was acknowledged in canonical LSN order.
     Journaled {
-        /// Canonical position, without a supervisor persist token.
-        lsn: Lsn,
-        /// The acknowledged mailbox entry.
-        entry: Entry,
+        /// Actual committed mailbox frame and optional checkpoint.
+        append: RecordedAppend,
     },
     /// A runtime-owned instruction or PTY boundary append is durable and projected in LSN order.
     InstructionJournaled {
-        /// Exact caller frame position, without a supervisor persist token.
-        lsn: Lsn,
-        /// The acknowledged instruction or existing PTY close boundary entry.
-        entry: Entry,
+        /// Actual instruction or PTY boundary frame and optional checkpoint.
+        append: RecordedAppend,
     },
     /// Current facts for exactly one still-owned mail refresh.
     MailWakeReady {
@@ -317,8 +429,8 @@ pub enum Input {
     Persisted {
         /// Which persist.
         token: PersistToken,
-        /// Where it landed.
-        lsn: Lsn,
+        /// Actual committed frames, including the entry correlated with this token.
+        append: RecordedAppend,
     },
     /// The host launched a child and read its adoption key. An observation after the fact;
     /// nothing waits on it.
@@ -519,10 +631,8 @@ pub enum Input {
     /// A board record the runtime has appended and projected durably. Fold it, invalidate the
     /// changed card's cached evidence, and judge goals holding that card before another turn.
     BoardChanged {
-        /// Where the durable record landed.
-        lsn: Lsn,
-        /// A `CardCreated`, `Claim`, or `CardTransition` entry. Other records are ignored.
-        entry: Entry,
+        /// Actual board frame and optional checkpoint; other record kinds are ignored.
+        append: RecordedAppend,
     },
     /// A bounded resolver worker returned a revocable browser launch preparation.
     BrowserLaunchReady {
@@ -936,5 +1046,105 @@ pub struct BrowserOnboardGoal {
 impl std::fmt::Debug for BrowserOnboardGoal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("BrowserOnboardGoal(<redacted>)")
+    }
+}
+
+#[cfg(test)]
+mod recorded_append_tests {
+    use super::*;
+    use dudes_proto::Record;
+
+    fn checkpoint(at: Lsn) -> Entry {
+        Entry {
+            at: dudes_types::Timestamp::UNIX_EPOCH,
+            record: Record::Checkpoint {
+                projection_version: 1,
+                segment: at.segment(),
+                offset: at.offset(),
+            },
+        }
+    }
+
+    #[test]
+    fn recorded_append_requires_the_exact_tail_kind_position_and_cut() {
+        let main_lsn = Lsn::from_parts(1, 10).unwrap();
+        let tail_lsn = Lsn::from_parts(2, 0).unwrap();
+        let main = Entry {
+            at: dudes_types::Timestamp::UNIX_EPOCH,
+            record: Record::Pause {
+                agent: AgentId::from_parts(90, 1),
+                browser: None,
+            },
+        };
+        let tail = checkpoint(tail_lsn);
+        let valid = RecordedAppend::try_new(
+            tail_lsn,
+            (main_lsn, main.clone()),
+            Some((tail_lsn, tail.clone())),
+        )
+        .unwrap();
+        assert_eq!(
+            (valid.lsn(), valid.through(), valid.entry()),
+            (main_lsn, tail_lsn, &main)
+        );
+        assert_eq!(
+            valid.into_parts(),
+            ((main_lsn, main.clone()), Some((tail_lsn, tail)))
+        );
+        assert_eq!(
+            RecordedAppend::try_new(tail_lsn, (main_lsn, main.clone()), None).unwrap_err(),
+            DurableInputError::AppendCut {
+                expected: tail_lsn,
+                actual: main_lsn
+            }
+        );
+        assert_eq!(
+            RecordedAppend::try_new(
+                tail_lsn,
+                (main_lsn, main.clone()),
+                Some((tail_lsn, main.clone()))
+            )
+            .unwrap_err(),
+            DurableInputError::CheckpointKind { lsn: tail_lsn }
+        );
+        for (position, payload) in [
+            (main_lsn, checkpoint(main_lsn)),
+            (tail_lsn, checkpoint(main_lsn)),
+        ] {
+            assert_eq!(
+                RecordedAppend::try_new(
+                    tail_lsn,
+                    (main_lsn, main.clone()),
+                    Some((position, payload))
+                )
+                .unwrap_err(),
+                DurableInputError::CheckpointPosition { lsn: position }
+            );
+        }
+        assert_eq!(
+            RecordedAppend::try_new(
+                main_lsn,
+                (main_lsn, main.clone()),
+                Some((tail_lsn, checkpoint(tail_lsn)))
+            )
+            .unwrap_err(),
+            DurableInputError::AppendCut {
+                expected: main_lsn,
+                actual: tail_lsn
+            }
+        );
+        let mut wrong_time = checkpoint(tail_lsn);
+        wrong_time.at = dudes_types::Timestamp::from_unix_millis(1);
+        assert_eq!(
+            RecordedAppend::try_new(
+                tail_lsn,
+                (main_lsn, main.clone()),
+                Some((tail_lsn, wrong_time))
+            )
+            .unwrap_err(),
+            DurableInputError::CheckpointTimestamp { lsn: tail_lsn }
+        );
+        let zero = RecordedAppend::try_new(Lsn::ZERO, (Lsn::ZERO, main), None).unwrap();
+        assert_eq!((zero.lsn(), zero.through()), (Lsn::ZERO, Lsn::ZERO));
     }
 }
