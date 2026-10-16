@@ -1,5 +1,6 @@
 //! Equal factual recovery inputs from one actual ordinary journal prefix.
 
+#[path = "recovery_facts/carriers.rs"]
 mod carriers;
 
 use dudes_journal::{Error, Fsync, JournalOptions, Projections, Writer};
