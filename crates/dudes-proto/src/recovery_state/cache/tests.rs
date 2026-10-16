@@ -633,31 +633,57 @@ fn a_nonzero_contract_cut_cannot_stand_in_for_missing_episode_intent() {
 #[test]
 fn corrupted_stored_authorization_intent_is_not_deserialized_into_authority() {
     let (h, _, auth, _) = claimed();
-    let edits: [fn(&mut RecoveryAuthorized); 5] = [
-        |value| value.resulting_control = None,
-        |value| value.resume_lsn = Some(Lsn(250)),
-        |value| value.binding.provider = Provider::Claude,
-        |value| {
-            let RecoveryPlan::New { turn, .. } = &mut value.plan else {
-                unreachable!()
-            };
-            *turn = value.episode.work.turn;
-        },
-        |value| {
-            let RecoveryPlan::New {
-                context: RecoveryContext::Fresh { recap, .. },
-                ..
-            } = &mut value.plan
-            else {
-                unreachable!()
-            };
-            recap.sources = vec![Lsn(301)];
-        },
+    let cases: [(&str, fn(&mut RecoveryAuthorized), RecoveryCacheError); 5] = [
+        (
+            "resulting_control",
+            |value| value.resulting_control = None,
+            RecoveryCacheError::Identity,
+        ),
+        (
+            "resume",
+            |value| value.resume_lsn = Some(Lsn(250)),
+            RecoveryCacheError::Identity,
+        ),
+        (
+            "provider",
+            |value| value.binding.provider = Provider::Claude,
+            RecoveryCacheError::Identity,
+        ),
+        (
+            "original_turn",
+            |value| {
+                let RecoveryPlan::New { turn, .. } = &mut value.plan else {
+                    unreachable!()
+                };
+                *turn = value.episode.work.turn;
+            },
+            RecoveryCacheError::MissingCell,
+        ),
+        (
+            "future_recap_source",
+            |value| {
+                let RecoveryPlan::New {
+                    context: RecoveryContext::Fresh { recap, .. },
+                    ..
+                } = &mut value.plan
+                else {
+                    unreachable!()
+                };
+                recap.sources = vec![Lsn(301)];
+            },
+            RecoveryCacheError::Identity,
+        ),
     ];
-    for edit in edits {
+    for (name, edit, expected) in cases {
         let mut memory = h.memory.clone();
         let mut changed = auth.clone();
         edit(&mut changed);
+        if expected == RecoveryCacheError::MissingCell {
+            let RecoveryPlan::New { turn, .. } = &changed.plan else {
+                unreachable!()
+            };
+            assert!(!memory.rows.contains_key(&Key::Planned(*turn).bytes()));
+        }
         let cell = Cell::Authorization {
             lsn: Lsn(300),
             value: changed,
@@ -666,14 +692,16 @@ fn corrupted_stored_authorization_intent_is_not_deserialized_into_authority() {
             .rows
             .insert(cell.key().bytes(), encoded(&cell).unwrap());
         let before = memory.rows.clone();
-        assert!(matches!(
-            RecoveryCache::load_receipt(&memory, h.through, auth.request_id),
-            Err(RecoveryCacheError::Identity)
-        ));
-        assert!(matches!(
-            RecoveryCache::read_all(&memory, h.through),
-            Err(RecoveryCacheError::Identity)
-        ));
+        assert_eq!(
+            RecoveryCache::load_receipt(&memory, h.through, auth.request_id).err(),
+            Some(expected),
+            "{name}: hot refusal"
+        );
+        assert_eq!(
+            RecoveryCache::read_all(&memory, h.through).err(),
+            Some(expected),
+            "{name}: cold refusal"
+        );
         assert_eq!(memory.rows, before);
     }
 }
