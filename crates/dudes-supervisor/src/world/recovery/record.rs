@@ -1,7 +1,7 @@
 //! Prepared recovery changes retain the actual before-record facts through the ordinary fold.
 
 use dudes_proto::recovery::{RecoveryClaimRef, RecoveryInvalidated, RecoveryIssue, RecoveryWork};
-use dudes_proto::recovery_state::history::{RecoveryHistory, RecoveryWitness};
+use dudes_proto::recovery_state::history::{RecoveryEvidence, RecoveryHistory, RecoveryWitness};
 use dudes_proto::recovery_state::transition::RecoveryTransition;
 use dudes_proto::recovery_state::{
     RecoveryAttemptFacts, RecoveryClaimState, RecoveryFacts, RecoveryState, RecoveryStateError,
@@ -126,7 +126,7 @@ impl World {
                 }))
             }
             Record::TurnSpawned { turn, .. } | Record::TurnEnded { turn, .. } => {
-                let Some(row) = self.turns.get(turn).filter(|row| row.mode == Mode::Managed) else {
+                let Some(row) = self.turns.get(turn) else {
                     return Ok(None);
                 };
                 let Some(goal) = row.goal else {
@@ -144,6 +144,19 @@ impl World {
                 let RecoveryClaimState::IssueBound(issue) = receipt.state else {
                     return Ok(None);
                 };
+                let source = self
+                    .recovery_history
+                    .at(row.issue_lsn)
+                    .map_err(|_| RecoveryStateError::Binding)?;
+                if !matches!(
+                    source.evidence(),
+                    RecoveryEvidence::Issue {
+                        mode: Mode::Managed,
+                        ..
+                    }
+                ) {
+                    return Err(RecoveryStateError::Binding);
+                }
                 let facts = self.recovery_attempt_facts(issue)?;
                 let evidence = self.recovery_entry_source(lsn, entry)?;
                 self.recovery_state
