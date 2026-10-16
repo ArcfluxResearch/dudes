@@ -69,6 +69,10 @@ enum Placement {
     Out(&'static str),
 }
 
+const RECOVERY_PREFIX_PLACEMENT: Placement = Placement::Out(
+    "recovery authority requires exact before-record sources; recovery_records and recovery gateway tests compare joined prefixes across automatic checkpoints",
+);
+
 /// Every kind, placed. **The match has no wildcard**, so a kind added to the contract does not
 /// compile until someone places it or states why it is out.
 ///
@@ -198,9 +202,7 @@ fn placement(kind: RecordKind) -> Placement {
         ),
         RecordKind::RecoveryRequired
         | RecordKind::RecoveryAuthorized
-        | RecordKind::RecoveryInvalidated => Placement::Out(
-            "recovery authority requires exact before-record sources; recovery_records and recovery gateway tests compare joined prefixes across automatic checkpoints",
-        ),
+        | RecordKind::RecoveryInvalidated => RECOVERY_PREFIX_PLACEMENT,
         RecordKind::AgentMcpServersChanged | RecordKind::McpLaunchGranted => Placement::Out(
             "MCP authority requires its edited policy and physical joins; required frame and cache rebuild tests cover those records separately",
         ),
