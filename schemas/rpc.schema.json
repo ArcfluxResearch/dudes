@@ -7463,6 +7463,125 @@
             "stamp"
           ],
           "type": "object"
+        },
+        {
+          "description": "An exact interrupted-work boundary requiring explicit recovery consent.",
+          "properties": {
+            "binding": {
+              "$ref": "#/$defs/RecoveryBinding",
+              "description": "Immutable target and configuration."
+            },
+            "boundary": {
+              "$ref": "#/$defs/RecoveryBoundary",
+              "description": "Exact immutable ordinary-history sources for this reason."
+            },
+            "origin": {
+              "$ref": "#/$defs/RecoveryOrigin",
+              "description": "Existing origin or this barrier's eventual actual position."
+            },
+            "predecessor": {
+              "$ref": "#/$defs/ExplicitNullable_RecoveryClaimRef",
+              "description": "Exact prior claim whose closed episode is replaced or whose issue-bound consent is superseded."
+            },
+            "reason": {
+              "$ref": "#/$defs/RecoveryReason",
+              "description": "Available context choices."
+            },
+            "t": {
+              "const": "recovery_required",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "binding",
+            "origin",
+            "reason",
+            "boundary",
+            "predecessor"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Immutable operator consent for one canonical recovery episode.",
+          "properties": {
+            "attribution": {
+              "$ref": "#/$defs/RecoveryAttribution",
+              "description": "Recorded identity; a writer must separately authenticate the live command."
+            },
+            "binding": {
+              "$ref": "#/$defs/RecoveryBinding",
+              "description": "Original target and configuration."
+            },
+            "episode": {
+              "$ref": "#/$defs/RecoveryEpisodeId",
+              "description": "Exact canonical episode, including its original boundary."
+            },
+            "expected_control": {
+              "$ref": "#/$defs/ExplicitNullable_Lsn",
+              "description": "Control identity the operator reviewed."
+            },
+            "plan": {
+              "$ref": "#/$defs/RecoveryPlan",
+              "description": "New work intent or an immutable owed issue."
+            },
+            "request_digest": {
+              "$ref": "#/$defs/HexDigest",
+              "description": "Digest of canonical request fields."
+            },
+            "request_id": {
+              "$ref": "#/$defs/HexDigest",
+              "description": "Original operator request identity."
+            },
+            "resulting_control": {
+              "$ref": "#/$defs/ExplicitNullable_Lsn",
+              "description": "Control identity after this command's optional attributed Resume."
+            },
+            "resume_lsn": {
+              "$ref": "#/$defs/ExplicitNullable_Lsn",
+              "description": "Exact own Resume, absent when no control transition was needed."
+            },
+            "t": {
+              "const": "recovery_authorized",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "episode",
+            "binding",
+            "request_id",
+            "request_digest",
+            "attribution",
+            "expected_control",
+            "resulting_control",
+            "resume_lsn",
+            "plan"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Durable closure of unused recovery consent on exact evidence.",
+          "properties": {
+            "claim": {
+              "$ref": "#/$defs/RecoveryClaimRef",
+              "description": "Exact original authorization and episode."
+            },
+            "evidence": {
+              "$ref": "#/$defs/RecoveryInvalidationEvidence",
+              "description": "Actual recorded change or observation made durable by this record."
+            },
+            "t": {
+              "const": "recovery_invalidated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "claim",
+            "evidence"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -7763,6 +7882,16 @@
         }
       ]
     },
+    "ExplicitNullable_Lsn": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Lsn"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "ExplicitNullable_MailWakeCarrierText": {
       "anyOf": [
         {
@@ -7783,6 +7912,46 @@
         }
       ]
     },
+    "ExplicitNullable_RecoveryClaimRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecoveryClaimRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ExplicitNullable_RecoveryFailure": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecoveryFailure"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ExplicitNullable_RecoveryModelFields": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecoveryModelFields"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ExplicitNullable_RecoveryTicketFields": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecoveryTicketFields"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "ExplicitNullable_SessionId": {
       "anyOf": [
         {
@@ -7791,6 +7960,24 @@
         {
           "type": "null"
         }
+      ]
+    },
+    "ExplicitNullable_WorktreeId": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorktreeId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ExplicitNullable_uint32": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
       ]
     },
     "ExportedSession": {
@@ -15079,6 +15266,692 @@
       "required": [
         "id",
         "label"
+      ],
+      "type": "object"
+    },
+    "RecoveryAnswerDelivery": {
+      "additionalProperties": false,
+      "description": "Proof that an answer was carried for this goal by a child that was durably recorded.",
+      "properties": {
+        "answer_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Exact historical answer."
+        },
+        "issue_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Issue whose ordered answer list carried it."
+        },
+        "spawn_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Matching physical spawn, rather than current pending-answer presence."
+        }
+      },
+      "required": [
+        "answer_lsn",
+        "issue_lsn",
+        "spawn_lsn"
+      ],
+      "type": "object"
+    },
+    "RecoveryAttribution": {
+      "description": "Recorded actor attribution. Deserialization and historical consistency confer no permission.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Local operator attribution captured by authenticated router admission.",
+          "properties": {
+            "kind": {
+              "const": "local_operator",
+              "type": "string"
+            },
+            "pid": {
+              "description": "Transport-resolved peer process.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "uid": {
+              "$ref": "#/$defs/ExplicitNullable_uint32",
+              "description": "Transport-resolved user identity, when available."
+            }
+          },
+          "required": [
+            "kind",
+            "pid",
+            "uid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Browser session attribution captured by live session admission.",
+          "properties": {
+            "kind": {
+              "const": "browser_session",
+              "type": "string"
+            },
+            "session_digest": {
+              "$ref": "#/$defs/HexDigest",
+              "description": "Digest of the admitted session, never its cookie or secret."
+            }
+          },
+          "required": [
+            "kind",
+            "session_digest"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RecoveryBinding": {
+      "additionalProperties": false,
+      "description": "Recorded identities that recovery cannot redirect.",
+      "properties": {
+        "hired_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Hire that owns the recorded checkout and provider configuration."
+        },
+        "issue_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Exact original managed issue."
+        },
+        "model_selection": {
+          "$ref": "#/$defs/ExplicitNullable_RecoveryModelFields",
+          "description": "Original explicit model choice, or an older issue with no recorded choice."
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider",
+          "description": "Recorded provider."
+        },
+        "ticket": {
+          "$ref": "#/$defs/ExplicitNullable_RecoveryTicketFields",
+          "description": "Original ticket association, absent for a non-ticket goal."
+        },
+        "work": {
+          "$ref": "#/$defs/RecoveryWork",
+          "description": "Original work."
+        },
+        "worktree": {
+          "$ref": "#/$defs/ExplicitNullable_WorktreeId",
+          "description": "Exact daemon-owned checkout lease, absent for an unleased checkout."
+        }
+      },
+      "required": [
+        "work",
+        "issue_lsn",
+        "hired_lsn",
+        "ticket",
+        "worktree",
+        "provider",
+        "model_selection"
+      ],
+      "type": "object"
+    },
+    "RecoveryBoundary": {
+      "description": "Historical sources for the selected boundary; current liveness is a separate admission gate.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "An eligible current automatic hold and its named observed failures.",
+          "properties": {
+            "end_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Latest turn's exact terminal source."
+            },
+            "first": {
+              "$ref": "#/$defs/ExplicitNullable_RecoveryFailure",
+              "description": "First failure named by a repeated-failure hold, absent for launch holds."
+            },
+            "kind": {
+              "const": "held",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "end_lsn",
+            "first"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Current operator pause after an observed failed or no-result turn.",
+          "properties": {
+            "end_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Latest turn's actual observed end."
+            },
+            "kind": {
+              "const": "paused",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "end_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Recorded child durably settled as Gone/Vanished.",
+          "properties": {
+            "end_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact later observed Vanished end."
+            },
+            "kind": {
+              "const": "vanished",
+              "type": "string"
+            },
+            "spawn_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact latest spawn."
+            }
+          },
+          "required": [
+            "kind",
+            "spawn_lsn",
+            "end_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A particular recorded-conversation attempt ended without confirming its requested context.",
+          "properties": {
+            "end_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact later qualifying observed end."
+            },
+            "kind": {
+              "const": "unconfirmed",
+              "type": "string"
+            },
+            "requested_confirmation_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Earlier accepted confirmation of the conversation this attempt requested."
+            },
+            "spawn_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact latest spawn."
+            }
+          },
+          "required": [
+            "kind",
+            "spawn_lsn",
+            "end_lsn",
+            "requested_confirmation_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Complete before-record rows have no spawn or terminal source for this issued obligation.",
+          "properties": {
+            "kind": {
+              "const": "missing_spawn",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RecoveryClaimRef": {
+      "additionalProperties": false,
+      "description": "An authorization is identified by its actual durable position and original episode.",
+      "properties": {
+        "authorization_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Exact authorization position."
+        },
+        "episode": {
+          "$ref": "#/$defs/RecoveryEpisodeId",
+          "description": "Canonical logical episode."
+        }
+      },
+      "required": [
+        "episode",
+        "authorization_lsn"
+      ],
+      "type": "object"
+    },
+    "RecoveryContext": {
+      "description": "An immutable context choice for new work, never a promise of restored history.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Try only this still-confirmed recorded conversation.",
+          "properties": {
+            "kind": {
+              "const": "try_recorded",
+              "type": "string"
+            },
+            "session": {
+              "$ref": "#/$defs/SessionId",
+              "description": "Exact internal vendor-confirmed identifier, never a browser input."
+            }
+          },
+          "required": [
+            "kind",
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "New vendor context with bounded supplemental recap intent.",
+          "properties": {
+            "kind": {
+              "const": "fresh",
+              "type": "string"
+            },
+            "recap": {
+              "$ref": "#/$defs/RecoveryRecap",
+              "description": "Historical recap intent, packed only after mandatory task sections."
+            },
+            "session": {
+              "$ref": "#/$defs/ExplicitNullable_SessionId",
+              "description": "Daemon-minted identifier, or vendor-assigned context."
+            }
+          },
+          "required": [
+            "kind",
+            "session",
+            "recap"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RecoveryEpisodeId": {
+      "additionalProperties": false,
+      "description": "The logical origin remains stable when an existing hold or pause gains a barrier.",
+      "properties": {
+        "origin": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Original boundary position, which can precede the barrier."
+        },
+        "work": {
+          "$ref": "#/$defs/RecoveryWork",
+          "description": "Exact interrupted work."
+        }
+      },
+      "required": [
+        "work",
+        "origin"
+      ],
+      "type": "object"
+    },
+    "RecoveryFailure": {
+      "additionalProperties": false,
+      "description": "Exact source pair for a failure named by an automatic hold.",
+      "properties": {
+        "end_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Actual observed terminal source for that attempt."
+        },
+        "issue_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Actual issue of the named failure, preserving its goal relationship."
+        }
+      },
+      "required": [
+        "issue_lsn",
+        "end_lsn"
+      ],
+      "type": "object"
+    },
+    "RecoveryInvalidationEvidence": {
+      "description": "Journaled evidence and a durable authority observation have different position semantics.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "An actual earlier record supplies the named invalidating relationship.",
+          "properties": {
+            "kind": {
+              "const": "recorded_change",
+              "type": "string"
+            },
+            "lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Actual preceding evidence, never the invalidation's own position."
+            },
+            "reason": {
+              "$ref": "#/$defs/RecoveryInvalidationReason",
+              "description": "Fixed domain reason, validated against the source kind and owner."
+            }
+          },
+          "required": [
+            "kind",
+            "reason",
+            "lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "This invalidation durably records a daemon-owned effective-authority recheck.",
+          "properties": {
+            "kind": {
+              "const": "browser_authority_unavailable",
+              "type": "string"
+            },
+            "session_digest": {
+              "$ref": "#/$defs/HexDigest",
+              "description": "Exact originating browser session; no guessed loss time or cause."
+            }
+          },
+          "required": [
+            "kind",
+            "session_digest"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RecoveryInvalidationReason": {
+      "description": "A durable relationship change that closes unused consent.",
+      "oneOf": [
+        {
+          "const": "goal_changed",
+          "description": "The original goal was replaced, cleared or reassigned.",
+          "type": "string"
+        },
+        {
+          "const": "goal_completed",
+          "description": "The existing predicate rule qualified an observed completion of this goal.",
+          "type": "string"
+        },
+        {
+          "const": "ticket_changed",
+          "description": "The original ticket association no longer names this target.",
+          "type": "string"
+        },
+        {
+          "const": "lease_changed",
+          "description": "The original daemon-owned lease was removed.",
+          "type": "string"
+        },
+        {
+          "const": "control_changed",
+          "description": "Another control transition changed the reviewed identity.",
+          "type": "string"
+        },
+        {
+          "const": "agent_unavailable",
+          "description": "The agent was retired or attached.",
+          "type": "string"
+        }
+      ]
+    },
+    "RecoveryIssue": {
+      "additionalProperties": false,
+      "description": "An actual durable issue, without predicting its append position.",
+      "properties": {
+        "issued": {
+          "$ref": "#/$defs/RecoveryIssued",
+          "description": "Exact immutable payload witness."
+        },
+        "lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Actual managed issue position."
+        }
+      },
+      "required": [
+        "lsn",
+        "issued"
+      ],
+      "type": "object"
+    },
+    "RecoveryIssued": {
+      "additionalProperties": false,
+      "description": "Compact evidence of the immutable issued task and its ordered carried answers.",
+      "properties": {
+        "answers": {
+          "description": "Exact ordered answer list carried by that issue.",
+          "items": {
+            "$ref": "#/$defs/Lsn"
+          },
+          "type": "array"
+        },
+        "model_selection": {
+          "$ref": "#/$defs/ExplicitNullable_RecoveryModelFields",
+          "description": "Original explicit model selection."
+        },
+        "session": {
+          "$ref": "#/$defs/ExplicitNullable_SessionId",
+          "description": "Session announced for this new issue, without a provider-history claim."
+        },
+        "task_digest": {
+          "$ref": "#/$defs/HexDigest",
+          "description": "Digest of exact task bytes, computed by the journal adapter."
+        },
+        "work": {
+          "$ref": "#/$defs/RecoveryWork",
+          "description": "Original owner, goal and turn."
+        }
+      },
+      "required": [
+        "work",
+        "task_digest",
+        "answers",
+        "model_selection",
+        "session"
+      ],
+      "type": "object"
+    },
+    "RecoveryModelFields": {
+      "additionalProperties": false,
+      "properties": {
+        "selector": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RecoveryOrigin": {
+      "description": "How a required barrier obtains its logical origin without predicting an append position.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The exact hold or pause already shown to the operator.",
+          "properties": {
+            "kind": {
+              "const": "existing",
+              "type": "string"
+            },
+            "lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Original control boundary."
+            }
+          },
+          "required": [
+            "kind",
+            "lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Resolve to the actual position only after this barrier becomes durable.",
+          "properties": {
+            "kind": {
+              "const": "this_barrier",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RecoveryPlan": {
+      "description": "One new planned turn or one already-issued immutable obligation.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Normal admission later composes task bytes and carried answers.",
+          "properties": {
+            "context": {
+              "$ref": "#/$defs/RecoveryContext",
+              "description": "Exact context and supplemental recap intent."
+            },
+            "kind": {
+              "const": "new",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Reserved identity, without another admission or budget charge yet."
+            }
+          },
+          "required": [
+            "kind",
+            "turn",
+            "context"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Fresh-context repeat without a new issue, task, hop or reserve.",
+          "properties": {
+            "issue": {
+              "$ref": "#/$defs/RecoveryIssue",
+              "description": "Exact original issue witness."
+            },
+            "kind": {
+              "const": "repeat_issued",
+              "type": "string"
+            },
+            "session": {
+              "$ref": "#/$defs/ExplicitNullable_SessionId",
+              "description": "Fresh launch announcement, independent of the original issue's announcement."
+            }
+          },
+          "required": [
+            "kind",
+            "issue",
+            "session"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RecoveryReason": {
+      "description": "Context restrictions established by the recovery boundary.",
+      "oneOf": [
+        {
+          "const": "held_or_paused_failure",
+          "description": "A releasable automatic hold or a paused failed turn.",
+          "type": "string"
+        },
+        {
+          "const": "vanished",
+          "description": "A recorded child was observed Gone and durably settled as Vanished.",
+          "type": "string"
+        },
+        {
+          "const": "unconfirmed_context",
+          "description": "A goal-bearing resume did not confirm its requested context.",
+          "type": "string"
+        },
+        {
+          "const": "missing_spawn",
+          "description": "A durable issue has no recorded Spawn and requires fresh-repeat consent.",
+          "type": "string"
+        }
+      ]
+    },
+    "RecoveryRecap": {
+      "additionalProperties": false,
+      "description": "Supplemental historical context. Mandatory current answers are composed later.",
+      "properties": {
+        "delivered_answers": {
+          "description": "Delivery proofs for exactly the historical answers listed among `sources`.",
+          "items": {
+            "$ref": "#/$defs/RecoveryAnswerDelivery"
+          },
+          "type": "array"
+        },
+        "sources": {
+          "description": "Exact recorded sources in increasing journal order.",
+          "items": {
+            "$ref": "#/$defs/Lsn"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "At most eight KiB of UTF-8, possibly omitted by task packing.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "sources",
+        "delivered_answers"
+      ],
+      "type": "object"
+    },
+    "RecoveryTicketFields": {
+      "additionalProperties": false,
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/CardId"
+        },
+        "claimant": {
+          "$ref": "#/$defs/AgentId"
+        },
+        "goal": {
+          "$ref": "#/$defs/GoalId"
+        },
+        "round": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "card",
+        "round",
+        "goal",
+        "claimant"
+      ],
+      "type": "object"
+    },
+    "RecoveryWork": {
+      "additionalProperties": false,
+      "description": "Work whose latest recovery episode is canonical, including later physical attempts.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentId",
+          "description": "Unchanged managed agent."
+        },
+        "goal": {
+          "$ref": "#/$defs/GoalId",
+          "description": "Original goal."
+        },
+        "turn": {
+          "$ref": "#/$defs/TurnId",
+          "description": "Interrupted, failed, or still-owed turn."
+        }
+      },
+      "required": [
+        "agent",
+        "goal",
+        "turn"
       ],
       "type": "object"
     },
