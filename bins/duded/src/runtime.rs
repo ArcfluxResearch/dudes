@@ -1736,9 +1736,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 self.refuse_retired(agent)?;
                 self.require_journal_writes()?;
                 self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, move |sup| {
-                    sup.closing_ack(announcement, agent)
-                        .map(|_| Handled::default())
-                        .map_err(anyhow::Error::new)
+                    sup.closing_ack(announcement, agent)?;
+                    Ok(Handled::default())
                 })
                 .map_err(|failure| closing_pump_error(&failure))?;
                 self.closing.responses += 1;
@@ -1747,9 +1746,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             Request::Announce => {
                 self.require_journal_writes()?;
                 self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, |sup| {
-                    sup.closing_announce()
-                        .map(|_| Handled::default())
-                        .map_err(anyhow::Error::new)
+                    sup.closing_announce()?;
+                    Ok(Handled::default())
                 })
                 .map_err(|failure| closing_pump_error(&failure))?;
             }
@@ -1800,9 +1798,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
         if let Err(error) =
             self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, move |sup| {
-                sup.closing_finish(expired)
-                    .map(|_| Handled::default())
-                    .map_err(anyhow::Error::new)
+                sup.closing_finish(expired)?;
+                Ok(Handled::default())
             })
         {
             if error.downcast_ref::<dudes_supervisor::closing::ClosingError>()
@@ -4035,39 +4032,27 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 let Self {
                     sup, ctx, closing, ..
                 } = self;
-                let handled = if let Some(input) = queue.pop_front() {
+                let handling = if let Some(input) = queue.pop_front() {
                     let input = ctx.current_mail_response(input, sup);
-                    match sup.handle(input) {
-                        Ok(handled) => handled,
-                        Err(error) => {
-                            ctx.fence_journal();
-                            break 'work Err(anyhow::Error::new(error));
-                        }
-                    }
+                    sup.handle(input).map_err(anyhow::Error::new)
                 } else if let Some(start) = start.take() {
-                    match start(sup) {
-                        Ok(handled) => handled,
-                        Err(error) => {
-                            if error.downcast_ref::<DurableInputError>().is_some() {
-                                ctx.fence_journal();
-                            }
-                            break 'work Err(error);
-                        }
-                    }
+                    start(sup)
                 } else {
                     break;
+                };
+                let handled = match handling {
+                    Ok(handled) => handled,
+                    Err(error) => {
+                        if error.downcast_ref::<DurableInputError>().is_some() {
+                            ctx.fence_journal();
+                        }
+                        break 'work Err(error);
+                    }
                 };
                 let folds_journal_record = handled.folded_through().is_some();
                 // Persistent and before the fallible executor: once `handle` has folded, the pump
                 // exit must publish that completed fold even if an effect below fails.
-                if let Some(through) = handled.folded_through() {
-                    if let Err(error) = ctx.require_folded_through(sup.world(), through) {
-                        break 'work Err(error);
-                    }
-                    ctx.retire_recorded_native_launches(sup.world());
-                    ctx.tokens.mark_folded();
-                }
-                if let Err(error) = ctx.publish_folded_floor(sup.world(), closing) {
+                if let Err(error) = ctx.publish_handled(sup.world(), &handled, closing) {
                     break 'work Err(error);
                 }
                 if let Err(error) = self.execute_pump_effects(
@@ -7167,6 +7152,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             anyhow::bail!("durable acknowledgment did not report its expected fold");
         }
         self.require_folded_through(world, expected)
+    }
+
+    fn publish_handled(
+        &mut self,
+        world: &dudes_supervisor::World,
+        handled: &Handled,
+        waiting: &mut crate::closing::Waiting,
+    ) -> Result<()> {
+        if let Some(through) = handled.folded_through() {
+            self.require_folded_through(world, through)?;
+            self.retire_recorded_native_launches(world);
+            self.tokens.mark_folded();
+        }
+        self.publish_folded_floor(world, waiting)
     }
 
     fn publish_folded_floor(
