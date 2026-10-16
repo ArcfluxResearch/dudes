@@ -21,6 +21,7 @@
 //! refused it.
 #![cfg(unix)]
 
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::{fs, path::Path};
 
@@ -404,6 +405,7 @@ fn a_labelled_post_reader_fold_fault_stops_before_replay_completion() {
             })
             .unwrap();
         let runtime = tempfile::tempdir().unwrap();
+        fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700)).unwrap();
         settings.runtime_dir = runtime.path().to_path_buf();
         let witness = Witness::default();
         let host = SharedHost::new();
