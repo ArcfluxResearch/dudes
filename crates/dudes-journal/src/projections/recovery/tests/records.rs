@@ -916,3 +916,64 @@ fn actual_repeated_failure_boundary_joins_both_qualified_named_ends() {
     append(&mut fixture, Record::RecoveryRequired(required));
     assert_canonical(&mut fixture);
 }
+
+#[test]
+fn a_reserved_new_turn_refuses_an_attached_issue_without_appending_or_changing_rows() {
+    let (mut fixture, authorization, _) = fresh(0);
+    let RecoveryPlan::New { turn, .. } = authorization.plan else {
+        unreachable!()
+    };
+    assert_eq!(receipt(&mut fixture).state, RecoveryClaimState::Pending);
+    assert!(fixture.projections.turn(turn).unwrap().is_none());
+    let mut issued = goal_entries().1;
+    if let Record::TurnIssued {
+        turn: actual,
+        task,
+        answers,
+        ..
+    } = &mut issued.record
+    {
+        *actual = turn;
+        *task = "fresh recovery task".into();
+        answers.clear();
+    }
+    let decision = append(&mut fixture, decision_for(&issued).record);
+    if let Record::TurnIssued {
+        lsn_of_decision,
+        mode,
+        ..
+    } = &mut issued.record
+    {
+        *lsn_of_decision = decision;
+        *mode = Mode::Attached;
+    }
+    let before = fixture.projections.export().unwrap();
+    let bytes = journal_inventory(&fixture);
+    let result = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap()
+        .append(&issued);
+    let refusal = match result {
+        Err(Error::RecoveryAdmission { kind, reason }) => Some((kind, reason)),
+        Err(other) => panic!("unexpected reserved-issue refusal: {other}"),
+        Ok(_) => None,
+    };
+    let observed = (
+        refusal,
+        fixture.projections.export().unwrap() == before,
+        journal_inventory(&fixture) == bytes,
+        fixture.projections.turn(turn).unwrap().is_none(),
+        receipt(&mut fixture).state,
+    );
+    assert_eq!(
+        observed,
+        (
+            Some((RecordKind::TurnIssued, RecoveryStateError::Binding)),
+            true,
+            true,
+            true,
+            RecoveryClaimState::Pending,
+        )
+    );
+}

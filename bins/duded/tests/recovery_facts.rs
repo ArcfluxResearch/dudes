@@ -1531,3 +1531,94 @@ fn actual_required_pending_invalidation_refuses_wrong_evidence_without_world_mut
         },
     }));
 }
+
+#[test]
+fn a_reserved_new_turn_refuses_attached_issue_before_persistent_and_world_mutation() {
+    use dudes_proto::recovery::RecoveryPlan;
+    let (mut prefix, authorization, _) = recovery_new_prefix();
+    let RecoveryPlan::New { turn, .. } = authorization.plan else {
+        unreachable!()
+    };
+    assert!(!prefix.world.turns.contains_key(&turn));
+    let mut decision = samples::record(RecordKind::LoopDecided);
+    let Record::LoopDecided {
+        agent,
+        decision: action,
+        ..
+    } = &mut decision
+    else {
+        unreachable!()
+    };
+    *agent = authorization.binding.work.agent;
+    *action = LoopDecision::Continue {
+        task: "fresh recovery task".into(),
+    };
+    let decided = prefix.recovery_append(decision);
+    let issued = Entry {
+        at: Timestamp::UNIX_EPOCH,
+        record: Record::TurnIssued {
+            agent: authorization.binding.work.agent,
+            goal: authorization.binding.work.goal,
+            turn,
+            mode: Mode::Attached,
+            lsn_of_decision: decided,
+            task: "fresh recovery task".into(),
+            session: None,
+            model_selection: authorization.binding.model_selection.clone(),
+            answers: Vec::new(),
+        },
+    };
+    let ordinary = |world: &World| {
+        let owner = world.agents.get(&authorization.binding.work.agent).unwrap();
+        let goal = world.goals.get(&authorization.binding.work.goal).unwrap();
+        (
+            world.last_applied_lsn,
+            owner.open_turn,
+            owner.goal,
+            owner.control_lsn,
+            owner.context_lsn,
+            goal.turns_on_goal,
+            goal.last_turn,
+            world.turns.keys().copied().collect::<Vec<_>>(),
+        )
+    };
+    let ordinary_before = ordinary(&prefix.world);
+    let recovery_before = prefix
+        .world
+        .recovery_projection()
+        .map(|(state, history)| (state.clone(), history.clone()))
+        .unwrap();
+    let before = prefix.persistent.export().unwrap();
+    let bytes = journal_bytes(&prefix.dir.path().join("journal"));
+    let attempted = prefix.writer.next_lsn().unwrap();
+    let result = prefix
+        .writer
+        .checked_recovery(&mut prefix.persistent)
+        .unwrap()
+        .append(&issued);
+    let refusal = match result {
+        Err(Error::RecoveryAdmission { kind, reason }) => Some((kind, reason)),
+        Err(other) => panic!("unexpected reserved-issue refusal: {other}"),
+        Ok(_) => None,
+    };
+    let world_result = prefix.world.apply_checked(attempted, &issued);
+    let observed = (
+        refusal,
+        world_result,
+        prefix.persistent.export().unwrap() == before,
+        journal_bytes(&prefix.dir.path().join("journal")) == bytes,
+        prefix.world.recovery_projection().unwrap() == (&recovery_before.0, &recovery_before.1),
+        ordinary(&prefix.world) == ordinary_before,
+    );
+    assert_eq!(
+        observed,
+        (
+            Some((RecordKind::TurnIssued, RecoveryStateError::Binding)),
+            Err(RecoveryStateError::Binding),
+            true,
+            true,
+            true,
+            true
+        )
+    );
+}
