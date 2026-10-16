@@ -16,8 +16,9 @@ const FRESHNESS: Readonly<Record<DiffFreshness, string>> = {
     + 'This does not show that the check passed on these changes, and it does not cover the files left out below.',
   changed_after_check: 'Some files changed after the check ran, so these are not the files the check saw. '
     + 'Look at them again before you accept.',
-  unknown: 'Dudes cannot tell whether this is what the check saw. It has no complete sample from just after the check, '
-    + 'which is common: leaving out any one file makes a sample incomplete. Unknown does not mean fresh.',
+  unknown: 'Dudes cannot tell whether this is what the check saw. It cannot make a complete comparison with the sample '
+    + 'from just after the check, which is common: leaving out any one file makes a sample incomplete. '
+    + 'Unknown does not mean fresh.',
 };
 const KINDS: Readonly<Record<DiffKind, string>> = {
   added: 'Added', modified: 'Modified', deleted: 'Deleted', renamed: 'Renamed', type_changed: 'Type changed',

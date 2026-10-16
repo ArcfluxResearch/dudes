@@ -122,6 +122,7 @@ test('each freshness label says what it means and never reads as fresh or as a p
   const unknown = html(diffPage({ freshness: 'unknown', binding: diffBinding({ check_lsn: null }) }));
   assert.match(unknown, /<span class="diff-badge" data-freshness="unknown">Unknown<\/span>/);
   assert.match(unknown, /Dudes cannot tell whether this is what the check saw\./);
+  assert.match(unknown, /It cannot make a complete comparison with the sample from just after the check/);
   assert.match(unknown, /leaving out any one file makes a sample incomplete/);
   assert.match(unknown, /Unknown does not mean fresh\./);
   assert.doesNotMatch(unknown, /Unchanged since|Changed since|passed the check|is unchanged/);
