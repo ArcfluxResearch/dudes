@@ -33,14 +33,16 @@ test('Workers lists each agent in its own worktree with branch, state and base, 
     { id: ADA, name: 'Ada', worktree: { branch: 'dudes/0123456789ab', state: 'active', from: LEASE } },
     { id: GRACE, name: 'Grace', worktree: { branch: 'dudes/ba9876543210', state: 'released' } },
     { id: LINUS, name: 'Linus' },
+    { id: '01ARZ3NDEKTSV4RRFFQ69G5FAY', worktree: { branch: 'dudes/aaaaaaaaaaaa', state: 'pending' } },
   ]);
-  assert.match(html, /<h3 id="workers-title">Workers <span>2<\/span><\/h3>/);
+  assert.match(html, /<h3 id="workers-title">Workers <span>3<\/span><\/h3>/);
   assert.match(html, new RegExp(`data-worker-id="${ADA}"><strong>Ada</strong>`));
   assert.ok(html.includes('<dt>Branch</dt><dd class="data">dudes/0123456789ab</dd>'));
   assert.ok(html.includes('<dt>State</dt><dd>in use</dd>'));
-  assert.ok(html.includes(`<dt>Started from</dt><dd class="data">Worktree lease ${LEASE}</dd>`));
+  assert.ok(html.includes(`<dt>Started from</dt><dd>Another agent&#x27;s worktree <span class="data">${LEASE}</span></dd>`));
   assert.ok(html.includes('<dd>released, not yet removed</dd>'));
-  assert.ok(html.includes('No earlier worktree recorded'));
+  assert.ok(html.includes("<dd>The workspace&#x27;s current commit when the agent was hired</dd>"));
+  assert.ok(html.includes('<strong>01ARZ3NDEKTSV4RRFFQ69G5FAY</strong>'));
   assert.ok(!html.includes('Linus'));
   assert.ok(!html.includes('<button'));
 });

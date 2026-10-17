@@ -8,7 +8,7 @@ import type { Worktree } from './worktree.ts';
 export function WorkersList({ agents }: { readonly agents: FloorState['agents'] }) {
   const workers = agents.flatMap((row) => {
     const worktree = decodeWorktree(row.worktree);
-    return worktree === null ? [] : [{ id: row.id, name: typeof row.name === 'string' && row.name !== '' ? row.name : '—', worktree }];
+    return worktree === null ? [] : [{ id: row.id, name: typeof row.name === 'string' && row.name !== '' ? row.name : row.id, worktree }];
   });
   if (workers.length === 0) return null;
   return (
@@ -22,7 +22,7 @@ export function WorkersList({ agents }: { readonly agents: FloorState['agents'] 
             <dl>
               <div><dt>Branch</dt><dd className="data">{worktree.branch}</dd></div>
               <div><dt>State</dt><dd>{worktreeStateText(worktree.state)}</dd></div>
-              <div><dt>Started from</dt><dd className="data">{baseText(worktree)}</dd></div>
+              <div><dt>Started from</dt><dd>{baseText(worktree)}</dd></div>
             </dl>
           </li>
         ))}
@@ -31,6 +31,8 @@ export function WorkersList({ agents }: { readonly agents: FloorState['agents'] 
   );
 }
 
-function baseText(worktree: Worktree): string {
-  return worktree.from === undefined ? 'No earlier worktree recorded' : `Worktree lease ${worktree.from}`;
+function baseText(worktree: Worktree) {
+  return worktree.from === undefined
+    ? "The workspace's current commit when the agent was hired"
+    : <>Another agent&apos;s worktree <span className="data">{worktree.from}</span></>;
 }

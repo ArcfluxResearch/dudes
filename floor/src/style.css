@@ -3173,6 +3173,10 @@ samp,
 .agent-detail-actions .retire-dialog button { flex: none; padding: 0.3rem 0.7rem; }
 .agent-detail-status .stream-state { font-weight: inherit; }
 
+.workers-list {
+  margin: 0 0 1rem;
+}
+
 .workers-list ul {
   display: grid;
   gap: 0.6rem;
