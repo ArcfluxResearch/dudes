@@ -2,6 +2,7 @@
 
 mod carriers;
 mod matrix;
+mod subjects;
 
 use super::*;
 use dudes_proto::recovery::{

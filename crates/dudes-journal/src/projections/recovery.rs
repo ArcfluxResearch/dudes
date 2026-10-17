@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use dudes_proto::record::Hex32;
 use dudes_proto::recovery::RecoveryBinding;
-use dudes_proto::recovery::{RecoveryAuthorized, RecoveryClaimRef};
+use dudes_proto::recovery::{RecoveryAuthorized, RecoveryClaimRef, RecoveryPlan, RecoveryWork};
 use dudes_proto::recovery_state::admission::{
     RecoveryAgentCurrent, RecoveryCurrent, RecoveryGoalCurrent, RecoveryLeaseCurrent,
 };
@@ -15,7 +15,8 @@ use dudes_proto::recovery_state::history::{
 };
 use dudes_proto::recovery_state::transition::RecoveryTransition;
 use dudes_proto::recovery_state::{
-    RecoveryAttempt, RecoveryAttemptFacts, RecoveryClaimState, RecoveryFacts, RecoveryStateError,
+    RecoveryAttempt, RecoveryAttemptFacts, RecoveryClaimState, RecoveryEpisode, RecoveryFacts,
+    RecoveryStateError,
 };
 use dudes_proto::{Entry, Record};
 use dudes_types::{GoalStatus, Lsn};
@@ -57,6 +58,65 @@ pub struct RecoveryReceipt {
     pub authorization: RecoveryAuthorized,
     /// Committed claim outcome at the checked cut, under the configured sync policy.
     pub state: RecoveryClaimState,
+}
+
+/// Detached recovery relationships from one certified journal cut, without live authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CheckedWorkSubject {
+    /// Neither a current episode nor a planned claim names this work.
+    NoClaim {
+        /// Exact work queried by the caller.
+        work: RecoveryWork,
+        /// Certified committed prefix.
+        through: Lsn,
+    },
+    /// A current boundary has not been claimed, even if an older plan names this turn.
+    UnclaimedBoundary {
+        /// Exact work queried by the caller.
+        work: RecoveryWork,
+        /// Canonical current episode.
+        episode: Box<RecoveryEpisode>,
+        /// Certified committed prefix.
+        through: Lsn,
+    },
+    /// Independently joined claim and request receipts.
+    Claim(Box<CheckedClaimSubject>),
+}
+
+/// Immutable receipt and stage-specific current facts, without a session observation or permit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckedClaimSubject {
+    through: Lsn,
+    queried_work: RecoveryWork,
+    receipt: RecoveryReceipt,
+    current_facts: Option<RecoveryFacts>,
+}
+
+impl CheckedClaimSubject {
+    /// Certified cut shared by the receipt and current facts.
+    #[must_use]
+    pub const fn through(&self) -> Lsn {
+        self.through
+    }
+
+    /// Work requested by the caller, which may precede the effective issued work.
+    #[must_use]
+    pub const fn queried_work(&self) -> RecoveryWork {
+        self.queried_work
+    }
+
+    /// Original authorization and its durable outcome, without rewriting its binding.
+    #[must_use]
+    pub const fn receipt(&self) -> &RecoveryReceipt {
+        &self.receipt
+    }
+
+    /// Current source facts for `Pending`, or exact issued facts for `IssueBound`.
+    /// Closed historical claims have no active admission facts.
+    #[must_use]
+    pub const fn current_facts(&self) -> Option<&RecoveryFacts> {
+        self.current_facts.as_ref()
+    }
 }
 
 /// Actual owned frames committed by one checked append.
@@ -148,6 +208,26 @@ pub struct CheckedRecoveryStore<'a> {
 }
 
 impl<'a> CheckedRecoveryStore<'a> {
+    /// Compose recovery subjects at one certified cut without observing live authority.
+    pub fn authority_subjects(&self, works: &[RecoveryWork]) -> Result<Vec<CheckedWorkSubject>> {
+        check(self.writer, self.projections)?;
+        let txn = self.projections.db.begin_read()?;
+        check_metadata(self.projections, &txn)?;
+        let tables = FactTables {
+            agents: &txn.open_table(super::AGENTS)?,
+            goals: &txn.open_table(super::GOALS)?,
+            turns: &txn.open_table(super::TURNS)?,
+            board: &txn.open_table(super::BOARD)?,
+            leases: &txn.open_table(super::WORKTREES)?,
+            recovery: &txn.open_table(RECOVERY)?,
+            meta: &txn.open_table(META)?,
+        };
+        works
+            .iter()
+            .map(|work| subject_at(&tables, self.projections.last_applied, *work))
+            .collect()
+    }
+
     /// Bind a target to current rows and exact sources in this owned, certified prefix.
     /// This factual result grants no operator permission and releases no work.
     pub fn facts(&self, binding: &RecoveryBinding) -> Result<RecoveryFacts> {
@@ -443,6 +523,110 @@ pub(super) struct FactTables<'a, Rows, Sources, Meta> {
     pub leases: &'a Rows,
     pub recovery: &'a Sources,
     pub meta: &'a Meta,
+}
+
+fn subject_at<Rows, Sources, Meta>(
+    tables: &FactTables<'_, Rows, Sources, Meta>,
+    through: Lsn,
+    work: RecoveryWork,
+) -> Result<CheckedWorkSubject>
+where
+    Rows: ReadableTable<&'static [u8; 16], &'static [u8]>,
+    Sources: ReadableTable<&'static [u8], &'static [u8]>,
+    Meta: ReadableTable<&'static str, u64>,
+{
+    let scoped = RecoveryCache::load_work(&CacheReader(tables.recovery), through, work)?;
+    let state = scoped.state();
+    let claim = match state.work_claim(work) {
+        Ok(Some(claim)) => claim,
+        Ok(None) => return Ok(CheckedWorkSubject::NoClaim { work, through }),
+        Err(RecoveryStateError::Lifecycle)
+            if state
+                .current(work)
+                .is_some_and(|episode| episode.authorization_lsn.is_none()) =>
+        {
+            return Ok(CheckedWorkSubject::UnclaimedBoundary {
+                work,
+                episode: Box::new(
+                    state
+                        .current(work)
+                        .ok_or(RecoveryStateError::Binding)?
+                        .clone(),
+                ),
+                through,
+            });
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let original = state.claim_receipt(claim)?;
+    let request = RecoveryCache::load_receipt(
+        &CacheReader(tables.recovery),
+        through,
+        original.authorization.request_id,
+    )?;
+    if request.state().receipt(
+        original.authorization.request_id,
+        original.authorization.request_digest,
+    )? != Some(original.clone())
+    {
+        return Err(RecoveryStateError::Binding.into());
+    }
+    let receipt = RecoveryReceipt {
+        claim,
+        authorization: original.authorization.clone(),
+        state: original.state.clone(),
+    };
+    let current_facts = claim_facts_at(tables, through, work, &receipt)?;
+    Ok(CheckedWorkSubject::Claim(Box::new(CheckedClaimSubject {
+        through,
+        queried_work: work,
+        receipt,
+        current_facts,
+    })))
+}
+
+fn claim_facts_at<Rows, Sources, Meta>(
+    tables: &FactTables<'_, Rows, Sources, Meta>,
+    through: Lsn,
+    queried: RecoveryWork,
+    receipt: &RecoveryReceipt,
+) -> Result<Option<RecoveryFacts>>
+where
+    Rows: ReadableTable<&'static [u8; 16], &'static [u8]>,
+    Sources: ReadableTable<&'static [u8], &'static [u8]>,
+    Meta: ReadableTable<&'static str, u64>,
+{
+    let authorization = &receipt.authorization;
+    let target = match &authorization.plan {
+        RecoveryPlan::New { turn, .. } => RecoveryWork {
+            turn: *turn,
+            ..authorization.binding.work
+        },
+        RecoveryPlan::RepeatIssued { issue, .. } => issue.issued.work,
+    };
+    if queried != authorization.binding.work && queried != target {
+        return Err(RecoveryStateError::Binding.into());
+    }
+    let mut binding = authorization.binding.clone();
+    let issued = match &receipt.state {
+        RecoveryClaimState::Pending => None,
+        RecoveryClaimState::IssueBound(issue) => {
+            binding.work = issue.issued.work;
+            binding.issue_lsn = issue.lsn;
+            Some(issue)
+        }
+        RecoveryClaimState::Consumed { .. }
+        | RecoveryClaimState::Invalidated { .. }
+        | RecoveryClaimState::Superseded { .. } => return Ok(None),
+    };
+    let facts = facts_at(tables, through, &binding)?;
+    if issued.is_some_and(|issue| facts.source_issue != *issue) {
+        return Err(RecoveryStateError::Binding.into());
+    }
+    if facts.control_lsn != authorization.resulting_control {
+        return Err(RecoveryStateError::Control.into());
+    }
+    Ok(Some(facts))
 }
 
 pub(super) fn facts_at<Rows, Sources, Meta>(
