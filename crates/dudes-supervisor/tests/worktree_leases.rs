@@ -395,6 +395,31 @@ fn a_missing_tree_holds_the_agent_before_the_first_decide_launches_into_it() {
         harness.supervisor.world().agents[&agent].automatic_hold,
         Some(dudes_proto::AutomaticHold::WorktreeMissing { worktree: tree })
     );
+    assert_eq!(expected.work.agent, agent);
+    assert_eq!(expected.work.turn, harness.open_turn(agent).unwrap());
+    assert!(matches!(
+        harness.supervisor.recovery_opportunity(agent),
+        Err(dudes_supervisor::input::RecoveryRefusal::NotRecoverable)
+    ));
+    let refused = harness.recover(RecoveryCommand {
+        request_id: Hex32::new([43; 32]),
+        digest: Hex32::new([44; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(
+        refused.recovery().expect("command refusal").refusal,
+        Some(dudes_supervisor::input::RecoveryRefusal::NotRecoverable)
+    );
+    assert!(
+        harness
+            .journal
+            .iter()
+            .all(|entry| !matches!(entry.record, Record::RecoveryAuthorized(_)))
+    );
+    assert_eq!(spawned(&harness, before), 0);
+    assert_eq!(issued(&harness), turns);
 }
 
 /// The set the daemon reports is applied once, at start. An agent whose tree is restored and who is
