@@ -1689,10 +1689,20 @@ fn step<'a>(drawn: &'a [Op], want: fn(&Op) -> bool, name: &str) -> &'a Op {
 
 /// Take one step. Shared by the property and by its positive control, so the control really does
 /// exercise the generator's own driver.
-fn apply(harness: &mut Harness, agent: AgentId, goal: GoalId, op: &Op) {
+fn apply(
+    harness: &mut Harness,
+    children: &mut BTreeSet<TurnId>,
+    agent: AgentId,
+    goal: GoalId,
+    op: &Op,
+) {
+    let trace_start = harness.trace.len();
     match op {
         Op::Tick => harness.drive(Input::Tick),
-        Op::Restart => harness.restart(),
+        Op::Restart => {
+            children.clear();
+            harness.restart();
+        }
         Op::Halt => harness.drive(Input::Command(Command::Halt { agent, text: None })),
         Op::Resume => harness.drive(Input::Command(Command::Resume {
             agent,
@@ -1703,7 +1713,7 @@ fn apply(harness: &mut Harness, agent: AgentId, goal: GoalId, op: &Op) {
             signal: RuntimeSignal::ALL[*index],
         }),
         Op::ChildExited(clean) => {
-            if let Some(turn) = harness.open_turn(agent) {
+            if let Some(turn) = children.pop_first() {
                 harness.drive(Input::ChildExited {
                     final_reply: None,
                     elapsed_ms: None,
@@ -1758,6 +1768,173 @@ fn apply(harness: &mut Harness, agent: AgentId, goal: GoalId, op: &Op) {
             };
         }
     }
+    children.extend(spawned_turns(&harness.trace[trace_start..]));
+}
+
+fn spawned_turns(trace: &[Seen]) -> impl Iterator<Item = TurnId> + '_ {
+    trace
+        .iter()
+        .filter_map(Seen::record)
+        .filter_map(|record| match record {
+            Record::TurnSpawned { turn, .. } => Some(*turn),
+            _ => None,
+        })
+}
+
+#[test]
+fn the_reaper_driver_exits_an_owned_child_after_launch_is_disabled() {
+    let mut harness = Harness::new();
+    let (agent, goal) = harness.hire_with_goal(&["npm", "test"]);
+    let turn = harness.open_turn(agent).expect("a turn was issued");
+    let mut children = spawned_turns(&harness.trace).collect();
+    assert_eq!(harness.host.spawned_pids, [1000]);
+
+    apply(&mut harness, &mut children, agent, goal, &Op::Launch(false));
+    apply(
+        &mut harness,
+        &mut children,
+        agent,
+        goal,
+        &Op::ChildExited(true),
+    );
+
+    assert_eq!(
+        ends_of(&harness, turn),
+        [(
+            Provenance::Observed,
+            ExitStatus {
+                code: Some(0),
+                signal: None
+            },
+            Some(TurnOutcome::Completed),
+        )]
+    );
+    assert!(children.is_empty(), "the stream exit was consumed");
+    apply(
+        &mut harness,
+        &mut children,
+        agent,
+        goal,
+        &Op::ChildExited(false),
+    );
+    assert_eq!(ends_of(&harness, turn).len(), 1);
+}
+
+#[test]
+fn the_reaper_driver_does_not_exit_an_unspawned_issue() {
+    let mut harness = Harness::new();
+    let (agent, goal) = harness.hire_with_goal(&["npm", "test"]);
+    let first = harness.open_turn(agent).expect("a turn was issued");
+    let mut children = spawned_turns(&harness.trace).collect();
+    for op in [
+        Op::ChildExited(false),
+        Op::Launch(false),
+        Op::Resume,
+        Op::PredicateDone(false),
+        Op::Restart,
+        Op::Tick,
+        Op::Tick,
+    ] {
+        apply(&mut harness, &mut children, agent, goal, &op);
+    }
+    let blocked = harness
+        .open_turn(agent)
+        .expect("the successor is still issued");
+    assert_ne!(blocked, first);
+    assert_eq!(harness.host.spawned_pids, [1000]);
+    assert_eq!(
+        harness.supervisor.world().turns[&blocked].status,
+        TurnStatus::Issued
+    );
+    assert_eq!(spawn_records(&harness, blocked), 0);
+    assert!(children.is_empty());
+
+    apply(
+        &mut harness,
+        &mut children,
+        agent,
+        goal,
+        &Op::ChildExited(false),
+    );
+
+    assert!(ends_of(&harness, blocked).is_empty());
+    assert_eq!(harness.open_turn(agent), Some(blocked));
+    assert_eq!(ends_of(&harness, first).len(), 1);
+}
+
+#[test]
+fn the_reaper_driver_exits_a_child_before_its_spawn_is_acknowledged() {
+    let mut harness = Harness::new();
+    harness.unfsynced.insert(RecordKind::TurnSpawned);
+    let (agent, goal) = harness.hire_with_goal(&["npm", "test"]);
+    let turn = harness.open_turn(agent).expect("a turn was issued");
+    let mut children = spawned_turns(&harness.trace).collect();
+    assert_eq!(harness.host.spawned_pids, [1000]);
+    assert_eq!(spawn_records(&harness, turn), 1);
+    assert_eq!(
+        harness.supervisor.world().turns[&turn].status,
+        TurnStatus::Issued
+    );
+    assert!(
+        harness
+            .journal
+            .iter()
+            .all(|entry| !matches!(entry.record, Record::TurnSpawned { .. }))
+    );
+
+    apply(
+        &mut harness,
+        &mut children,
+        agent,
+        goal,
+        &Op::ChildExited(true),
+    );
+
+    assert_eq!(
+        ends_of(&harness, turn),
+        [(
+            Provenance::Observed,
+            ExitStatus {
+                code: Some(0),
+                signal: None
+            },
+            Some(TurnOutcome::Completed),
+        )]
+    );
+    assert!(children.is_empty());
+}
+
+#[test]
+fn the_reaper_driver_reaps_an_adopted_child_through_gone() {
+    let mut harness = Harness::new();
+    let (agent, goal) = harness.hire_with_goal(&["npm", "test"]);
+    let turn = harness.open_turn(agent).expect("a turn was issued");
+    let mut children = spawned_turns(&harness.trace).collect();
+    apply(&mut harness, &mut children, agent, goal, &Op::Restart);
+    assert!(probed(&harness, turn));
+    assert!(children.is_empty());
+
+    apply(
+        &mut harness,
+        &mut children,
+        agent,
+        goal,
+        &Op::ChildExited(true),
+    );
+    assert!(ends_of(&harness, turn).is_empty());
+    apply(&mut harness, &mut children, agent, goal, &Op::Answer(0));
+    apply(&mut harness, &mut children, agent, goal, &Op::Tick);
+
+    assert_eq!(
+        ends_of(&harness, turn),
+        [(
+            Provenance::Observed,
+            ExitStatus::UNKNOWN,
+            Some(TurnOutcome::Vanished)
+        )]
+    );
+    assert_eq!(probes(&harness, turn), 2);
+    assert_eq!(harness.host.spawned_pids, [1000]);
 }
 
 /// **The positive control for the property below.** A property over generated sequences can hold
@@ -1782,9 +1959,11 @@ fn the_reaper_generator_reaches_every_liveness() {
     // Gone: a pid the process table no longer holds.
     let mut gone = Harness::new();
     let (agent, goal) = gone.hire_with_goal(&["npm", "test"]);
+    let mut children = spawned_turns(&gone.trace).collect();
     let turn = gone.open_turn(agent).expect("a turn was issued");
     apply(
         &mut gone,
+        &mut children,
         agent,
         goal,
         step(&drawn, |op| matches!(op, Op::Answer(0)), "Op::Answer(0)"),
@@ -1792,16 +1971,14 @@ fn the_reaper_generator_reaches_every_liveness() {
     gone.trace.clear();
     apply(
         &mut gone,
+        &mut children,
         agent,
         goal,
         step(&drawn, |op| matches!(op, Op::Restart), "Op::Restart"),
     );
     assert!(probed(&gone, turn), "Gone: the probe was emitted");
     assert_eq!(
-        ends_of(&gone, turn)
-            .first()
-            .map(|end| end.2.clone())
-            .unwrap_or_default(),
+        ends_of(&gone, turn).first().and_then(|end| end.2.clone()),
         Some(TurnOutcome::Vanished),
         "Gone: and the answer ended the turn"
     );
@@ -1809,9 +1986,11 @@ fn the_reaper_generator_reaches_every_liveness() {
     // Alive: the start value the fake stamped at spawn, which is what it answers by default.
     let mut alive = Harness::new();
     let (agent, goal) = alive.hire_with_goal(&["npm", "test"]);
+    let mut children = spawned_turns(&alive.trace).collect();
     let turn = alive.open_turn(agent).expect("a turn was issued");
     apply(
         &mut alive,
+        &mut children,
         agent,
         goal,
         step(&drawn, |op| matches!(op, Op::Answer(1)), "Op::Answer(1)"),
@@ -1819,6 +1998,7 @@ fn the_reaper_generator_reaches_every_liveness() {
     alive.trace.clear();
     apply(
         &mut alive,
+        &mut children,
         agent,
         goal,
         step(&drawn, |op| matches!(op, Op::Restart), "Op::Restart"),
@@ -1830,6 +2010,7 @@ fn the_reaper_generator_reaches_every_liveness() {
     );
     apply(
         &mut alive,
+        &mut children,
         agent,
         goal,
         step(&drawn, |op| matches!(op, Op::Halt), "Op::Halt"),
@@ -1839,9 +2020,11 @@ fn the_reaper_generator_reaches_every_liveness() {
     // Unknown: the key names no boot identity and this host produces one.
     let mut unknown = Harness::new();
     let (agent, goal) = unknown.hire_with_goal(&["npm", "test"]);
+    let mut children = spawned_turns(&unknown.trace).collect();
     let turn = unknown.open_turn(agent).expect("a turn was issued");
     apply(
         &mut unknown,
+        &mut children,
         agent,
         goal,
         step(
@@ -1853,6 +2036,7 @@ fn the_reaper_generator_reaches_every_liveness() {
     unknown.trace.clear();
     apply(
         &mut unknown,
+        &mut children,
         agent,
         goal,
         step(&drawn, |op| matches!(op, Op::Restart), "Op::Restart"),
@@ -1864,6 +2048,7 @@ fn the_reaper_generator_reaches_every_liveness() {
     );
     apply(
         &mut unknown,
+        &mut children,
         agent,
         goal,
         step(&drawn, |op| matches!(op, Op::Halt), "Op::Halt"),
@@ -1911,8 +2096,9 @@ proptest! {
     ) {
         let mut harness = Harness::new();
         let (agent, goal) = harness.hire_with_goal(&["npm", "test"]);
+        let mut children = spawned_turns(&harness.trace).collect();
         for step in &ops {
-            apply(&mut harness, agent, goal, step);
+            apply(&mut harness, &mut children, agent, goal, step);
         }
         for record in harness.records() {
             match record {
