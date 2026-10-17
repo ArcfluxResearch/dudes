@@ -1605,13 +1605,63 @@ fn try_recorded_uses_the_confirmed_session_and_reserved_new_identity() {
     );
 }
 
+fn unconfirmed_context_turn(harness: &mut Harness, agent: AgentId, first: TurnId) -> TurnId {
+    let confirmed = harness.supervisor.world().turns[&first]
+        .announced
+        .clone()
+        .unwrap();
+    harness.drive(crate::Input::SessionLearned {
+        turn: first,
+        session: confirmed.clone(),
+    });
+    harness.drive(crate::Input::ChildExited {
+        final_reply: None,
+        elapsed_ms: Some(10_000),
+        turn: first,
+        exit: dudes_proto::ExitStatus {
+            code: Some(0),
+            signal: None,
+        },
+        usage: None,
+        model_usage: std::collections::BTreeMap::new(),
+        outcome: dudes_proto::TurnOutcome::Completed,
+        last_message: None,
+    });
+    let goal = harness.supervisor.world().agents[&agent].goal.unwrap();
+    harness.drive(crate::Input::PredicateDone {
+        goal,
+        pass: false,
+        evidence: dudes_proto::goal::Evidence::Command {
+            argv: vec!["false".into()],
+            program: None,
+            exit: Some(1),
+            output_tail: String::new(),
+        },
+    });
+    let turn = harness
+        .open_turn(agent)
+        .expect("the observed failed check continues in the confirmed context");
+    assert_ne!(turn, first);
+    assert_eq!(
+        harness.supervisor.world().turns[&turn].announced.as_ref(),
+        Some(&confirmed)
+    );
+    assert!(!harness.supervisor.world().turns[&turn].session_confirmed);
+    turn
+}
+
 fn legacy_uncertainty_source(
     reason: RecoveryReason,
 ) -> (Vec<(Lsn, Entry)>, AgentId, RecoveryExpected) {
     let mut harness = Harness::new();
     harness.launch = reason != RecoveryReason::MissingSpawn;
     let (agent, _) = harness.hire_with_goal(&["false"]);
-    let turn = harness.open_turn(agent).unwrap();
+    let first = harness.open_turn(agent).unwrap();
+    let turn = if reason == RecoveryReason::UnconfirmedContext {
+        unconfirmed_context_turn(&mut harness, agent, first)
+    } else {
+        first
+    };
     let count = if reason == RecoveryReason::MissingSpawn {
         harness.journal.len()
     } else {

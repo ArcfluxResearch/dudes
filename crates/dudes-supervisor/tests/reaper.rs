@@ -234,12 +234,22 @@ fn gone_after_crash_ends_observed_vanished_and_done_is_reachable() {
         Record::LoopDecided { agent: owner, decision: dudes_proto::LoopDecision::Done, .. }
             if *owner == agent
     )));
-    assert_eq!(spawn_records(&harness, turn), 1);
     assert_eq!(
         harness
-            .records()
-            .filter(|record| matches!(record,
-                Record::TurnIssued { agent: owner, .. } if *owner == agent
+            .journal
+            .iter()
+            .filter(|entry| matches!(entry.record,
+                Record::TurnSpawned { turn: spawned, .. } if spawned == turn
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        harness
+            .journal
+            .iter()
+            .filter(|entry| matches!(entry.record,
+                Record::TurnIssued { agent: owner, .. } if owner == agent
             ))
             .count(),
         1
@@ -295,7 +305,16 @@ fn gone_after_crash_failed_predicate_keeps_recovery_before_any_new_work() {
                 ..
             }
     )));
-    assert_eq!(spawn_records(&harness, turn), 1);
+    assert_eq!(
+        harness
+            .journal
+            .iter()
+            .filter(|entry| matches!(entry.record,
+                Record::TurnSpawned { turn: spawned, .. } if spawned == turn
+            ))
+            .count(),
+        1
+    );
     assert!(harness.supervisor.world().completed_goal(agent).is_none());
 }
 
