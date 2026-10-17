@@ -178,6 +178,19 @@ fn an_issued_turn_is_reissued_unchanged_and_gains_no_baseline() {
         goal,
         expected_seq: Seq(1),
     };
+    entries.insert(
+        1,
+        dudes_proto::Entry {
+            at: entries[1].at,
+            record: Record::TicketAssigned {
+                card: card(),
+                agent,
+                by: dudes_proto::Actor::Peer { pid: 17, uid: None },
+                message: None,
+                expected_seq: Seq(0),
+            },
+        },
+    );
     let mut harness = Harness::new();
     harness.journal = entries;
     let recovery_from = harness.trace.len();
@@ -203,6 +216,7 @@ fn an_issued_turn_is_reissued_unchanged_and_gains_no_baseline() {
         .recovery_opportunity(agent)
         .unwrap()
         .expected;
+    assert_eq!(expected.ticket, Some((card(), 1)));
     let handled = harness.recover(RecoveryCommand {
         request_id: Hex32::new([41; 32]),
         digest: Hex32::new([42; 32]),

@@ -397,10 +397,13 @@ fn a_missing_tree_holds_the_agent_before_the_first_decide_launches_into_it() {
     );
     assert_eq!(expected.work.agent, agent);
     assert_eq!(expected.work.turn, harness.open_turn(agent).unwrap());
-    assert!(matches!(
-        harness.supervisor.recovery_opportunity(agent),
+    assert_eq!(
+        harness
+            .supervisor
+            .recovery_opportunity(agent)
+            .map(|opportunity| opportunity.expected),
         Err(dudes_supervisor::input::RecoveryRefusal::NotRecoverable)
-    ));
+    );
     let refused = harness.recover(RecoveryCommand {
         request_id: Hex32::new([43; 32]),
         digest: Hex32::new([44; 32]),
