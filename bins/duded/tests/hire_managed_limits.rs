@@ -310,7 +310,7 @@ fn settle_control(
         .unwrap()
         .call_as_operator(
             Method::LoopPause,
-            Some(serde_json::to_value(dudes_proto::rpc::agent::AgentRef { agent }).unwrap()),
+            Some(serde_json::to_value(dudes_proto::rpc::AgentRef { agent }).unwrap()),
             credential_of(settings),
         )
         .unwrap();
