@@ -3412,6 +3412,60 @@
           ],
           "type": "object"
         },
+        "recovery.inspect": {
+          "description": "The operator's inert recovery inspection.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/RecoveryInspectParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/RecoveryInspectResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "recovery.receipt": {
+          "description": "The operator's inert historical receipt read.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/RecoveryReceiptParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/RecoveryReceiptResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "recovery.submit": {
+          "description": "The operator's deliberate recovery submission.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/RecoverySubmitParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/RecoverySubmitResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "system.closingTime": {
           "description": "Start the closing-time protocol.",
           "properties": {
@@ -3743,7 +3797,10 @@
         "ticket.stop",
         "ticket.checkout",
         "floor.session.export",
-        "floor.session.import"
+        "floor.session.import",
+        "recovery.inspect",
+        "recovery.submit",
+        "recovery.receipt"
       ],
       "title": "CurrentMethods",
       "type": "object"
@@ -7872,6 +7929,50 @@
       },
       "type": "object"
     },
+    "ExpectedRecovery": {
+      "additionalProperties": false,
+      "description": "Conditions the operator reviewed before choosing recovery.",
+      "properties": {
+        "control_lsn": {
+          "$ref": "#/$defs/ExplicitNullable_Lsn",
+          "description": "Reviewed control identity, explicitly null without a recorded control."
+        },
+        "episode": {
+          "$ref": "#/$defs/ExplicitNullable_RecoveryEpisodeId",
+          "description": "Current canonical episode, explicitly null before one exists."
+        },
+        "expected_predecessor": {
+          "$ref": "#/$defs/ExplicitNullable_RecoveryClaimRef",
+          "description": "Exact claim a new barrier would supersede, explicitly null when unclaimed."
+        },
+        "issue_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Exact original issue."
+        },
+        "source_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Observed eligibility source, never a predicted barrier position."
+        },
+        "ticket": {
+          "$ref": "#/$defs/ExplicitNullable_ReviewedTicketRound",
+          "description": "Reviewed ticket association, explicitly null for non-ticket work."
+        },
+        "work": {
+          "$ref": "#/$defs/RecoveryWork",
+          "description": "Original agent, goal and interrupted turn."
+        }
+      },
+      "required": [
+        "work",
+        "issue_lsn",
+        "source_lsn",
+        "episode",
+        "expected_predecessor",
+        "control_lsn",
+        "ticket"
+      ],
+      "type": "object"
+    },
     "ExplicitNullable_InstructionGoalClear": {
       "anyOf": [
         {
@@ -7922,6 +8023,16 @@
         }
       ]
     },
+    "ExplicitNullable_RecoveryEpisodeId": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecoveryEpisodeId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "ExplicitNullable_RecoveryFailure": {
       "anyOf": [
         {
@@ -7946,6 +8057,16 @@
       "anyOf": [
         {
           "$ref": "#/$defs/RecoveryTicketFields"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ExplicitNullable_ReviewedTicketRound": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReviewedTicketRound"
         },
         {
           "type": "null"
@@ -15261,6 +15382,26 @@
       ],
       "type": "object"
     },
+    "RecoveryAllowedChoices": {
+      "description": "Complete finite sets of choices offered for one opportunity.",
+      "oneOf": [
+        {
+          "const": "fresh_only",
+          "description": "Only fresh context with supplemental recap is offered.",
+          "type": "string"
+        },
+        {
+          "const": "recorded_or_fresh",
+          "description": "Recorded context and fresh context with supplemental recap are offered.",
+          "type": "string"
+        },
+        {
+          "const": "repeat_issued_fresh",
+          "description": "Only a fresh repeat of the owed issue is offered.",
+          "type": "string"
+        }
+      ]
+    },
     "RecoveryAnswerDelivery": {
       "additionalProperties": false,
       "description": "Proof that an answer was carried for this goal by a child that was durably recorded.",
@@ -15283,6 +15424,45 @@
         "issue_lsn",
         "spawn_lsn"
       ],
+      "type": "object"
+    },
+    "RecoveryAttemptView": {
+      "description": "Recorded physical-attempt positions, without a provider-history guarantee.",
+      "properties": {
+        "confirmation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lsn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Accepted confirmation for the current attempt, if any."
+        },
+        "end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lsn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Latest recorded end, if any."
+        },
+        "spawn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lsn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Latest recorded spawn, if any."
+        }
+      },
       "type": "object"
     },
     "RecoveryAttribution": {
@@ -15499,6 +15679,26 @@
         }
       ]
     },
+    "RecoveryChoice": {
+      "description": "An explicit context choice, without caller-supplied context contents.",
+      "oneOf": [
+        {
+          "const": "try_recorded",
+          "description": "Try the recorded confirmed conversation.",
+          "type": "string"
+        },
+        {
+          "const": "fresh_with_recap",
+          "description": "Start fresh with daemon-generated supplemental recap.",
+          "type": "string"
+        },
+        {
+          "const": "repeat_issued_fresh",
+          "description": "Repeat the immutable owed issue in fresh context.",
+          "type": "string"
+        }
+      ]
+    },
     "RecoveryClaimRef": {
       "additionalProperties": false,
       "description": "An authorization is identified by its actual durable position and original episode.",
@@ -15603,6 +15803,126 @@
         "end_lsn"
       ],
       "type": "object"
+    },
+    "RecoveryInspectParams": {
+      "additionalProperties": false,
+      "description": "Target of one inert recovery inspection.",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentId",
+          "description": "Agent whose current opportunity is inspected."
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "type": "object"
+    },
+    "RecoveryInspectResult": {
+      "description": "One current opportunity. The inspected cut alone is not a staleness condition.",
+      "oneOf": [
+        {
+          "description": "One opportunity with exact reviewed conditions and bounded waits.",
+          "properties": {
+            "choices": {
+              "$ref": "#/$defs/RecoveryAllowedChoices",
+              "description": "Complete offered choice set."
+            },
+            "expected": {
+              "$ref": "#/$defs/ExpectedRecovery",
+              "description": "Conditions that submission must preserve."
+            },
+            "prior_effects_unknown": {
+              "description": "Prior external effects may repeat.",
+              "type": "boolean"
+            },
+            "reason": {
+              "$ref": "#/$defs/RecoveryReason",
+              "description": "Recorded boundary restriction."
+            },
+            "state": {
+              "const": "available",
+              "type": "string"
+            },
+            "through": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Informational checked journal cut."
+            },
+            "waiting": {
+              "$ref": "#/$defs/RecoveryWaitSummary",
+              "description": "Admission waits still in force."
+            }
+          },
+          "required": [
+            "state",
+            "through",
+            "expected",
+            "reason",
+            "choices",
+            "prior_effects_unknown",
+            "waiting"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No coherent eligible opportunity is offered.",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/RecoveryInspectUnavailable",
+              "description": "Fixed explanation without raw errors."
+            },
+            "state": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RecoveryInspectUnavailable": {
+      "description": "Fixed explanation when inspection cannot offer recovery.",
+      "oneOf": [
+        {
+          "const": "agent_unavailable",
+          "description": "The agent is absent, retired or not managed.",
+          "type": "string"
+        },
+        {
+          "const": "goal_unavailable",
+          "description": "No unfinished current goal can be recovered.",
+          "type": "string"
+        },
+        {
+          "const": "halted",
+          "description": "The agent has a standing halt.",
+          "type": "string"
+        },
+        {
+          "const": "turn_open",
+          "description": "A physical attempt or command check remains unsettled.",
+          "type": "string"
+        },
+        {
+          "const": "not_recoverable",
+          "description": "The current boundary does not permit recovery.",
+          "type": "string"
+        },
+        {
+          "const": "claimed",
+          "description": "Existing consent exclusively owns this opportunity.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "Journal or live facts cannot be checked coherently.",
+          "type": "string"
+        }
+      ]
     },
     "RecoveryInvalidationEvidence": {
       "description": "Journaled evidence and a durable authority observation have different position semantics.",
@@ -15743,6 +16063,34 @@
       ],
       "type": "object"
     },
+    "RecoveryKnownPrefix": {
+      "description": "Known acknowledged prefix of this submission, including a later refusal.",
+      "properties": {
+        "required": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lsn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Actual acknowledged barrier, if this command wrote one."
+        },
+        "resume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lsn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Actual acknowledged own Resume, if this command wrote one."
+        }
+      },
+      "type": "object"
+    },
     "RecoveryModelFields": {
       "additionalProperties": false,
       "properties": {
@@ -15847,6 +16195,36 @@
         }
       ]
     },
+    "RecoveryReadUnavailable": {
+      "description": "Fixed reason a receipt read cannot establish presence or absence.",
+      "oneOf": [
+        {
+          "const": "journal_uncertain",
+          "description": "A journal write has uncertain durability.",
+          "type": "string"
+        },
+        {
+          "const": "uncertified",
+          "description": "The persistent generation lacks a valid certificate.",
+          "type": "string"
+        },
+        {
+          "const": "stale_cut",
+          "description": "The journal advanced beyond the certified cut.",
+          "type": "string"
+        },
+        {
+          "const": "invalid_history",
+          "description": "Metadata or historical relationships are inconsistent.",
+          "type": "string"
+        },
+        {
+          "const": "storage_unavailable",
+          "description": "Persistent storage could not be read.",
+          "type": "string"
+        }
+      ]
+    },
     "RecoveryReason": {
       "description": "Context restrictions established by the recovery boundary.",
       "oneOf": [
@@ -15902,6 +16280,435 @@
       ],
       "type": "object"
     },
+    "RecoveryReceiptInvalidation": {
+      "description": "Fixed historical closure reason without browser-session identity.",
+      "oneOf": [
+        {
+          "const": "goal_changed",
+          "description": "The original goal changed.",
+          "type": "string"
+        },
+        {
+          "const": "goal_completed",
+          "description": "An observed predicate completed the goal.",
+          "type": "string"
+        },
+        {
+          "const": "ticket_changed",
+          "description": "The ticket association changed.",
+          "type": "string"
+        },
+        {
+          "const": "lease_changed",
+          "description": "The recorded checkout lease changed.",
+          "type": "string"
+        },
+        {
+          "const": "control_changed",
+          "description": "The reviewed control changed.",
+          "type": "string"
+        },
+        {
+          "const": "agent_unavailable",
+          "description": "The agent became unavailable.",
+          "type": "string"
+        },
+        {
+          "const": "authority_unavailable",
+          "description": "Effective browser authority could not be revalidated.",
+          "type": "string"
+        }
+      ]
+    },
+    "RecoveryReceiptParams": {
+      "additionalProperties": false,
+      "description": "An inert lookup using only the identity retained before submission.",
+      "properties": {
+        "request_id": {
+          "$ref": "#/$defs/HexDigest",
+          "description": "Original request identity."
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "type": "object"
+    },
+    "RecoveryReceiptResult": {
+      "description": "Result of an inert historical lookup.",
+      "oneOf": [
+        {
+          "description": "Original durable authorization at this checked cut.",
+          "properties": {
+            "receipt": {
+              "$ref": "#/$defs/RecoveryReceiptView",
+              "description": "Bounded historical receipt."
+            },
+            "state": {
+              "const": "found",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "receipt"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No authorization exists at this certain complete cut.",
+          "properties": {
+            "checked_through": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Exact cut checked for the request."
+            },
+            "state": {
+              "const": "absent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "checked_through"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Neither presence nor absence can be certified.",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/RecoveryReadUnavailable",
+              "description": "Fixed explanation without raw errors."
+            },
+            "state": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RecoveryReceiptState": {
+      "description": "Bounded committed lifecycle without task, answer or context contents.",
+      "oneOf": [
+        {
+          "description": "The reserved new turn has not been issued.",
+          "properties": {
+            "state": {
+              "const": "pending",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An exact issue is durable without a consuming physical receipt.",
+          "properties": {
+            "issue_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Actual issue position."
+            },
+            "state": {
+              "const": "issue_bound",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Actual issued turn."
+            }
+          },
+          "required": [
+            "state",
+            "turn",
+            "issue_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A matching physical attempt was durably observed.",
+          "properties": {
+            "evidence_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Recorded physical receipt position."
+            },
+            "issue_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Actual issue position."
+            },
+            "state": {
+              "const": "consumed",
+              "type": "string"
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Actual issued turn."
+            }
+          },
+          "required": [
+            "state",
+            "turn",
+            "issue_lsn",
+            "evidence_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Unused consent closed on recorded evidence.",
+          "properties": {
+            "invalidation_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Actual invalidation position."
+            },
+            "reason": {
+              "$ref": "#/$defs/RecoveryReceiptInvalidation",
+              "description": "Fixed closure reason."
+            },
+            "state": {
+              "const": "invalidated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "invalidation_lsn",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A later missing-Spawn episode superseded this consent.",
+          "properties": {
+            "barrier_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Actual superseding barrier position."
+            },
+            "issue_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Unchanged owed issue position."
+            },
+            "state": {
+              "const": "superseded",
+              "type": "string"
+            },
+            "successor": {
+              "$ref": "#/$defs/RecoveryEpisodeId",
+              "description": "Exact successor episode."
+            },
+            "turn": {
+              "$ref": "#/$defs/TurnId",
+              "description": "Unchanged owed turn."
+            }
+          },
+          "required": [
+            "state",
+            "turn",
+            "issue_lsn",
+            "successor",
+            "barrier_lsn"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RecoveryReceiptView": {
+      "description": "Durable authorization and its state at a checked cut. This does not promise a launch.",
+      "properties": {
+        "attempt": {
+          "$ref": "#/$defs/RecoveryAttemptView",
+          "description": "Recorded attempt facts."
+        },
+        "choice": {
+          "$ref": "#/$defs/RecoveryChoice",
+          "description": "Original selected context mode."
+        },
+        "claim": {
+          "$ref": "#/$defs/RecoveryClaimRef",
+          "description": "Original authorization identity."
+        },
+        "prior_effects_unknown": {
+          "description": "Prior external effects may repeat.",
+          "type": "boolean"
+        },
+        "request_id": {
+          "$ref": "#/$defs/HexDigest",
+          "description": "Original request identity."
+        },
+        "status": {
+          "$ref": "#/$defs/RecoveryReceiptState",
+          "description": "Current durable claim lifecycle."
+        }
+      },
+      "required": [
+        "request_id",
+        "claim",
+        "choice",
+        "status",
+        "attempt",
+        "prior_effects_unknown"
+      ],
+      "type": "object"
+    },
+    "RecoverySubmitParams": {
+      "additionalProperties": false,
+      "description": "One deliberate submission. Parsing does not establish eligibility or caller authority.",
+      "properties": {
+        "choice": {
+          "$ref": "#/$defs/RecoveryChoice",
+          "description": "Operator-selected context mode."
+        },
+        "expected": {
+          "$ref": "#/$defs/ExpectedRecovery",
+          "description": "Exact conditions returned by inspection."
+        },
+        "request_id": {
+          "$ref": "#/$defs/HexDigest",
+          "description": "Identity retained before sending, including when the reply is lost."
+        }
+      },
+      "required": [
+        "request_id",
+        "expected",
+        "choice"
+      ],
+      "type": "object"
+    },
+    "RecoverySubmitRefusal": {
+      "description": "Fixed semantic refusal of one submission attempt.",
+      "oneOf": [
+        {
+          "const": "request_conflict",
+          "description": "This identity already names different intent.",
+          "type": "string"
+        },
+        {
+          "const": "stale_work",
+          "description": "The original work or issue no longer matches.",
+          "type": "string"
+        },
+        {
+          "const": "stale_source",
+          "description": "The inspected eligibility source no longer matches.",
+          "type": "string"
+        },
+        {
+          "const": "stale_episode",
+          "description": "The canonical episode no longer matches.",
+          "type": "string"
+        },
+        {
+          "const": "stale_predecessor",
+          "description": "The claim to supersede no longer matches.",
+          "type": "string"
+        },
+        {
+          "const": "stale_control",
+          "description": "The reviewed control no longer matches.",
+          "type": "string"
+        },
+        {
+          "const": "stale_ticket",
+          "description": "The reviewed ticket round no longer matches.",
+          "type": "string"
+        },
+        {
+          "const": "claimed",
+          "description": "Existing consent exclusively owns this opportunity.",
+          "type": "string"
+        },
+        {
+          "const": "choice_unavailable",
+          "description": "The selected context mode is not offered.",
+          "type": "string"
+        },
+        {
+          "const": "not_recoverable",
+          "description": "The current work cannot be recovered.",
+          "type": "string"
+        },
+        {
+          "const": "authority_unavailable",
+          "description": "The admitted authority could not be revalidated.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "Journal or live facts cannot be checked coherently.",
+          "type": "string"
+        }
+      ]
+    },
+    "RecoverySubmitResult": {
+      "description": "Outcome of one deliberate submission, without automatic retry.",
+      "oneOf": [
+        {
+          "description": "Durable authorization was certified.",
+          "properties": {
+            "receipt": {
+              "$ref": "#/$defs/RecoveryReceiptView",
+              "description": "Bounded original receipt."
+            },
+            "state": {
+              "const": "accepted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "receipt"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "This attempt refused while retaining its acknowledged prefix.",
+          "properties": {
+            "prefix": {
+              "$ref": "#/$defs/RecoveryKnownPrefix",
+              "description": "Frames already acknowledged for this invocation."
+            },
+            "reason": {
+              "$ref": "#/$defs/RecoverySubmitRefusal",
+              "description": "Fixed refusal reason."
+            },
+            "state": {
+              "const": "refused",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "prefix"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Authorization may be durable but cannot currently be certified.",
+          "properties": {
+            "request_id": {
+              "$ref": "#/$defs/HexDigest",
+              "description": "Retained identity for a separate receipt read."
+            },
+            "state": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "request_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "RecoveryTicketFields": {
       "additionalProperties": false,
       "properties": {
@@ -15925,6 +16732,54 @@
         "round",
         "goal",
         "claimant"
+      ],
+      "type": "object"
+    },
+    "RecoveryWaitStatus": {
+      "description": "Whether one admission gate is currently waiting.",
+      "oneOf": [
+        {
+          "const": "ready",
+          "description": "This gate is not waiting.",
+          "type": "string"
+        },
+        {
+          "const": "waiting",
+          "description": "This gate still prevents admission.",
+          "type": "string"
+        }
+      ]
+    },
+    "RecoveryWaitSummary": {
+      "description": "Current admission waits. Authorization does not clear these waits.",
+      "properties": {
+        "budget": {
+          "$ref": "#/$defs/RecoveryWaitStatus",
+          "description": "An admission budget is exhausted."
+        },
+        "hops": {
+          "$ref": "#/$defs/RecoveryWaitStatus",
+          "description": "The goal has no remaining hops."
+        },
+        "instruction_comparison": {
+          "$ref": "#/$defs/RecoveryWaitStatus",
+          "description": "A ticket instruction comparison is outstanding."
+        },
+        "instruction_review": {
+          "$ref": "#/$defs/RecoveryWaitStatus",
+          "description": "Ticket instructions still need review."
+        },
+        "open_question": {
+          "$ref": "#/$defs/RecoveryWaitStatus",
+          "description": "A question still needs an answer."
+        }
+      },
+      "required": [
+        "open_question",
+        "budget",
+        "hops",
+        "instruction_review",
+        "instruction_comparison"
       ],
       "type": "object"
     },
@@ -16325,6 +17180,28 @@
         "retired_at",
         "turns",
         "spend"
+      ],
+      "type": "object"
+    },
+    "ReviewedTicketRound": {
+      "additionalProperties": false,
+      "description": "Ticket round shown with the interrupted work.",
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "Exact ticket."
+        },
+        "round": {
+          "description": "Exact reviewed round.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "card",
+        "round"
       ],
       "type": "object"
     },
