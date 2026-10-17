@@ -20,6 +20,7 @@ import { LookStatus } from './look/LookEditor.tsx';
 import { MessagesPanel } from './MessagesPanel.tsx';
 import { RenameStatus } from './rename/NameEditor.tsx';
 import { RetireStatus, RetireStrip } from './retire/RetirePanel.tsx';
+import { RecoveryPanel, RecoveryReceipts } from './recovery/RecoveryPanel.tsx';
 import { switchedOffControls, UnavailableControls } from './settings/SettingsView.tsx';
 import type { AgentRow } from './scene/cast.ts';
 import { TerminalAttach } from './terminal/TerminalPanel.tsx';
@@ -40,6 +41,7 @@ export function Receipts({ floor, leaveFocusTo }: { readonly floor: FloorState; 
       <ControlStatus floor={floor} leaveFocusTo={leaveFocusTo} />
       <RetireStatus floor={floor} leaveFocusTo={leaveFocusTo} />
       <GoalStatus floor={floor} leaveFocusTo={leaveFocusTo} />
+      <RecoveryReceipts floor={floor} />
     </div>
   );
 }
@@ -94,6 +96,7 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
           git={floor.git ? <GitPanel row={row} active={detailTab === 'git'} /> : null}
           memory={<MemoryPanel agent={row.id} active={detailTab === 'memory'} crew={floor} />}
           control={<ControlStrip floor={floor} row={row} />}
+          recovery={<RecoveryPanel floor={floor} row={row} />}
           retire={switchedOff.includes('retire') ? null : <RetireStrip floor={floor} row={row} />}
           terminal={switchedOff.includes('terminal') ? null : <TerminalAttach floor={floor} row={row} />}
           enable={switchedOff.length === 0 ? null : <details className="enable-controls">

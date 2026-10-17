@@ -12,7 +12,7 @@ import { desktopNotificationPreference } from '../desktopNotifications.ts';
 import { releaseNotesLabel, releaseNotesUrl } from '../releaseLinks.ts';
 
 const SWITCHES = [
-  ['answer', 'Answer questions'], ['control', 'Pause, resume and rename'], ['goal', 'Change goals'],
+  ['answer', 'Answer questions'], ['control', 'Pause, resume and rename'], ['recovery', 'Recover interrupted goals'], ['goal', 'Change goals'],
   ['retire', 'Retire agents'], ['terminal', 'Attach terminals'], ['git', 'Read checkouts in the Git tab'],
   ['hire', 'Hire agents'], ['renew', 'Start new goals'],
 ] as const;
@@ -81,8 +81,8 @@ export function SettingsView({ floor, onSetup }: {
       {SWITCHES.map(([key, label]) => {
         const next = report.switches[key] ? 'off' : 'on';
         const renewOff = report.switches.renew ? ' floor.renew off' : '';
-        const companions = (key === 'goal' || key === 'retire') && next === 'on' ? ' floor.control on'
-          : key === 'control' && next === 'off' ? ` floor.goal off floor.retire off${renewOff}`
+        const companions = (key === 'goal' || key === 'retire' || key === 'recovery') && next === 'on' ? ' floor.control on'
+          : key === 'control' && next === 'off' ? ` floor.goal off floor.retire off floor.recovery off${renewOff}`
             : (key === 'goal' || key === 'hire') && next === 'off' ? renewOff : '';
         if (key === 'renew' && !report.switches.renew) {
           return <div key={key}><dt>{label} <code>floor.{key}</code></dt>
@@ -92,6 +92,8 @@ export function SettingsView({ floor, onSetup }: {
         return <div key={key}><dt>{label} <code>floor.{key}</code></dt>
           <dd>{report.switches[key] ? 'On' : 'Off'}<code>dudes config set floor.{key} {next}{companions}</code></dd></div>;
       })}</dl>
+      <p>Recovery needs both <code>floor.recovery</code> and <code>floor.control</code>. It keeps existing budgets and admission gates.
+        Receipt lookup remains read-only when recovery is off.</p>
     </section>
     <section aria-labelledby="settings-budget"><h3 id="settings-budget">Budget ceilings and per-turn reserves</h3>
       <dl>

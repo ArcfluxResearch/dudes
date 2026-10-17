@@ -255,6 +255,8 @@ const ADMITTED_IN_ANSWER_FORM = Object.freeze(['a textarea', 'a change handler',
 const CONTROL_PANEL = 'src/renderer/control/ControlPanel.tsx';
 const PAUSE_ALL_PANEL = 'src/renderer/control/PauseAllControl.tsx';
 const CONTROL_MODULE = 'src/renderer/control/control.ts';
+const RECOVERY_PANEL = 'src/renderer/recovery/RecoveryPanel.tsx';
+const RECOVERY_MODULE = 'src/renderer/recovery/recovery.ts';
 const TERMINAL_PANEL = 'src/renderer/terminal/TerminalPanel.tsx';
 const TERMINAL_MODULE = 'src/renderer/terminal/terminal.ts';
 const TERMINAL_CONTROLS = 'src/renderer/terminal/controls.ts';
@@ -1050,7 +1052,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
 test('the only activators are named selection, retry, view, Hire, answer, Chat, pause, Pause all, resume, goal change, look edit and dismiss buttons, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, Retire\'s own four, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
-  + 'Settings\' office layout and desktop notification choices, the guide\'s navigation and Hire opener, '
+  + 'Settings\' office layout and desktop notification choices, recovery inspection, context choices, one authorization and inert receipt lookup, the guide\'s navigation and Hire opener, '
   + 'and checkout differences\' explicit show, refresh, hide, open and more-files controls', async () => {
   const buttons = [];
   const clicks = [];
@@ -1074,6 +1076,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(8).fill(CHAT_PANEL),
     ...Array(4).fill(CONTROL_PANEL),
     ...Array(5).fill(PAUSE_ALL_PANEL),
+    ...Array(4).fill(RECOVERY_PANEL),
     ...Array(3).fill(GOAL_PANEL),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
     ...Array(6).fill(TICKET_BOARD),
@@ -1102,6 +1105,12 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
   assert.deepEqual(clicks.sort(), clickExpected.sort());
   const readError = await readFile(resolve(source, 'renderer/ReadError.tsx'), 'utf8');
+  assert.deepEqual(clicksIn(await readFile(resolve(floor, RECOVERY_PANEL), 'utf8')), [
+    '(event) => { if (event.detail < 2) void inspectRecovery(row.id, browserRecoveryDeps); }',
+    '() => { if (problem === null && !blocked) chooseRecovery(draft.key, choice); }',
+    '(event) => { if (event.detail < 2) void submitRecovery(draft.key, browserRecoveryDeps); }',
+    '(event) => { if (event.detail < 2) void checkRecoveryReceipt(id, browserRecoveryDeps); }',
+  ]);
   assert.deepEqual(clicksIn(readError), ['onRetry']);
   assert.match(readError, /onRetry = refreshFloorSnapshot/);
   const archive = await readFile(resolve(floor, ARCHIVED_AGENTS), 'utf8');
@@ -1444,6 +1453,11 @@ const REQUESTS = {
     methods: ['POST'],
     fetches: ['floorFetch', 'fetch', 'floorFetch', 'deps.fetch', 'fetch(ROUTES[attempt.verb])'],
   },
+  [RECOVERY_MODULE]: {
+    paths: ['application/json', '/floor/recovery/inspect', '/floor/recovery/submit', '/floor/recovery/receipt'],
+    methods: ['POST'],
+    fetches: ['floorFetch', 'fetch', 'floorFetch', "deps.fetch('/floor/recovery/inspect')", "deps.fetch('/floor/recovery/submit')", "deps.fetch('/floor/recovery/receipt')"],
+  },
   'src/renderer/control/pauseAll.ts': {
     paths: [],
     methods: [],
@@ -1649,7 +1663,7 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
     Object.fromEntries([...reaching].sort().map(([name, files]) => [name, [...files].sort()])),
     {
       WebSocket: ['src/renderer/floor/stream.ts'],
-      fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RENAME_MODULE, RETIRE_MODULE,
+      fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE,
         TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
     },
     'the page reaches the network somewhere new',
@@ -1751,8 +1765,8 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
 
   const fetching = reaching.get('fetch') ?? [];
   assert.deepEqual(fetching.sort(),
-    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RENAME_MODULE, RETIRE_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
-    'something other than the session exchange, the Hire, the answer, pause or resume, goal change, Retire, the Git read, the changes read, the memory reads, the away watch and the transport fetches');
+    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
+    'something other than the admitted action, read, session and transport modules fetches');
   assert.deepEqual(calling.sort(), fetching,
     'a module other than those six calls fetch with a space before the parenthesis');
 

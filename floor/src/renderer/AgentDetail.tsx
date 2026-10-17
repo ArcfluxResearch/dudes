@@ -39,7 +39,7 @@ const BASELINE_LINES: Readonly<Record<Baseline | 'absent', string>> = Object.fre
 });
 
 export function AgentDetail({
-  row, selection = null, streamState = null, control = null, retire = null, terminal = null, enable = null, answer = null, goal: goalForm = null,
+  row, selection = null, streamState = null, control = null, recovery = null, retire = null, terminal = null, enable = null, answer = null, goal: goalForm = null,
   messages = null, chat = null, liveOutput = null, git = null, memory = null, tab = 'overview', onTabChange = () => {}, live = false,
 }: {
   readonly row: AgentRow;
@@ -47,6 +47,7 @@ export function AgentDetail({
   /** The output stream's state, drawn as the last part of the header's status line. */
   readonly streamState?: string | null;
   readonly control?: ReactNode;
+  readonly recovery?: ReactNode;
   readonly retire?: ReactNode;
   readonly terminal?: ReactNode;
   /** How to turn on the controls the daemon reports off. */
@@ -78,6 +79,7 @@ export function AgentDetail({
   const panels: readonly { readonly id: DetailTab; readonly label: string; readonly content: ReactNode }[] = [
     { id: 'overview', label: 'Overview', content: <>
       {goalForm}
+      {recovery}
       <LookEditor row={row} />
       <dl>
         <div><dt>AgentId</dt><dd className="data">{row.id}</dd></div>

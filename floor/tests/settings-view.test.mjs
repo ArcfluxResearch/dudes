@@ -37,7 +37,7 @@ test('Settings shows read-only running values, local commands, Setup and About',
     for (const expected of ['Floor switches', 'budget.floor_usd_per_day', '$0', '$0.001234', '9007199254740993',
       'dudes config set floor.answer on', 'dudes config set floor.control on', 'dudes config set floor.goal on',
       'dudes config set floor.retire on', 'dudes config set floor.terminal on', 'dudes config set floor.hire on',
-      'dudes config set floor.git on',
+      'dudes config set floor.git on', 'dudes config set floor.recovery on floor.control on',
       'dudes config set providers.codex on', 'default to $0.25 and 20000 tokens',
       'dudes workspace add', 'dudes workspace remove repo_1', '&lt;Service&gt;', '$10', '$5', '456',
       'Setup', 'About', 'Daemon', '0.12.3', 'Floor build', 'Browser wire', 'browser-wire-v3', 'restart']) {
@@ -72,7 +72,7 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.doesNotMatch(renewOn, /Renew is off/);
     const renewing = renderToStaticMarkup(createElement(SettingsView, { floor: floor({ ...REPORT,
       switches: { ...REPORT.switches, control: true, goal: true, hire: true, renew: true } }), onSetup() {} }));
-    for (const command of ['dudes config set floor.control off floor.goal off floor.retire off floor.renew off',
+    for (const command of ['dudes config set floor.control off floor.goal off floor.retire off floor.recovery off floor.renew off',
       'dudes config set floor.goal off floor.renew off', 'dudes config set floor.hire off floor.renew off']) {
       assert.ok(renewing.includes(command), `a command the CLI refuses while renewal needs it: ${command}`);
     }

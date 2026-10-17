@@ -1,0 +1,14 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+
+.recovery-panel, .recovery-receipt {
+  border: 1px solid var(--line, #555);
+  border-radius: .5rem;
+  margin-block: 1rem;
+  padding: 1rem;
+  overflow-wrap: anywhere;
+}
+.recovery-panel h3, .recovery-receipt h3 { margin-top: 0; }
+.recovery-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.recovery-actions [aria-pressed="true"] { outline: 2px solid currentColor; outline-offset: 2px; }
+.recovery-panel [aria-disabled="true"], .recovery-receipt [aria-disabled="true"] { opacity: .6; }
+.recovery-warning { border-inline-start: 3px solid currentColor; padding-inline-start: .75rem; }
