@@ -12,7 +12,7 @@ use dudes_proto::rpc::recovery::{
     RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectResult, RecoverySubmitParams,
     RecoverySubmitResult,
 };
-use dudes_proto::rpc::{ErrorCode, Method, Request, RequestId, Response};
+use dudes_proto::rpc::{CurrentMethod, ErrorCode, Method, Request, RequestId, Response};
 use dudes_proto::{Predicate, Record};
 use dudes_rpc::Client;
 use dudes_types::{AgentId, GoalId, Lsn, TurnId};
@@ -1714,7 +1714,14 @@ fn authorize_owed_replay(
     issue_lsn: Lsn,
     request_id: Hex32,
 ) {
-    let response = call(settings, Method::RecoveryInspect, json!({"agent":agent}));
+    let mut client = Client::connect(settings.socket()).unwrap();
+    let response = client
+        .call_current_as_operator(
+            CurrentMethod::RecoveryInspect,
+            Some(json!({"agent":agent})),
+            credential(settings),
+        )
+        .unwrap();
     assert!(response.error.is_none(), "{response:?}");
     let inspection: RecoveryInspectResult =
         serde_json::from_value(response.result.unwrap()).unwrap();
@@ -1733,16 +1740,20 @@ fn authorize_owed_replay(
     assert_eq!(expected.issue_lsn, issue_lsn);
     assert_eq!(choices, RecoveryAllowedChoices::RepeatIssuedFresh);
     assert!(prior_effects_unknown);
-    let response = call(
-        settings,
-        Method::RecoverySubmit,
-        serde_json::to_value(RecoverySubmitParams {
-            request_id,
-            expected: *expected,
-            choice: RecoveryChoice::RepeatIssuedFresh,
-        })
-        .unwrap(),
-    );
+    let response = client
+        .call_current_as_operator(
+            CurrentMethod::RecoverySubmit,
+            Some(
+                serde_json::to_value(RecoverySubmitParams {
+                    request_id,
+                    expected: *expected,
+                    choice: RecoveryChoice::RepeatIssuedFresh,
+                })
+                .unwrap(),
+            ),
+            credential(settings),
+        )
+        .unwrap();
     assert!(response.error.is_none(), "{response:?}");
     let submitted: RecoverySubmitResult = serde_json::from_value(response.result.unwrap()).unwrap();
     let RecoverySubmitResult::Accepted { receipt } = submitted else {
