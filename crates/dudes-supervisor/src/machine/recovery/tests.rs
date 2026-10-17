@@ -1549,3 +1549,158 @@ fn try_recorded_uses_the_confirmed_session_and_reserved_new_identity() {
         Some(&expected_session)
     );
 }
+
+fn legacy_uncertainty_source(reason: RecoveryReason) -> (Vec<(Lsn, Entry)>, AgentId) {
+    let mut harness = Harness::new();
+    harness.launch = reason != RecoveryReason::MissingSpawn;
+    let (agent, _) = harness.hire_with_goal(&["false"]);
+    let turn = harness.open_turn(agent).unwrap();
+    let count = if reason == RecoveryReason::MissingSpawn {
+        harness.journal.len()
+    } else {
+        if reason == RecoveryReason::Vanished {
+            let session = harness.supervisor.world().turns[&turn]
+                .announced
+                .clone()
+                .unwrap();
+            harness.drive(crate::Input::SessionLearned { turn, session });
+            harness.drive(crate::Input::Liveness {
+                turn,
+                liveness: crate::Liveness::Gone,
+            });
+        } else {
+            harness.drive(crate::Input::ChildExited {
+                final_reply: None,
+                elapsed_ms: Some(10_000),
+                turn,
+                exit: dudes_proto::ExitStatus {
+                    code: Some(1),
+                    signal: None,
+                },
+                usage: None,
+                model_usage: Default::default(),
+                outcome: dudes_proto::TurnOutcome::NoResult,
+                last_message: None,
+            });
+        }
+        harness.journal.iter().position(|entry| matches!(entry.record, Record::TurnEnded { turn: seen, .. } if seen == turn)).unwrap() + 1
+    };
+    let prefix = harness
+        .journal
+        .into_iter()
+        .take(count)
+        .zip(1u64..)
+        .map(|(entry, at)| (Lsn(at), entry))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        replay_machine(&prefix)
+            .recovery_opportunity(agent)
+            .unwrap()
+            .required
+            .reason,
+        reason
+    );
+    (without_recorded_model(&prefix), agent)
+}
+
+#[test]
+fn legacy_uncertainty_keeps_a_durable_required_barrier_after_restart_and_ordinary_resume() {
+    let mut outcomes = Vec::new();
+    for reason in [
+        RecoveryReason::Vanished,
+        RecoveryReason::UnconfirmedContext,
+        RecoveryReason::MissingSpawn,
+    ] {
+        let (mut prefix, agent) = legacy_uncertainty_source(reason);
+        let mut machine = replay_machine(&prefix);
+        let before = format!("{:?}", machine.world());
+        let entropy = machine.rng.drawn();
+        let public = machine.recovery_opportunity(agent);
+        if reason != RecoveryReason::MissingSpawn {
+            assert_eq!(public, Err(RecoveryRefusal::NotRecoverable));
+            let binding = machine.recovery_binding(agent).unwrap();
+            let intent = RecoveryCommand {
+                request_id: Hex32::new([71; 32]),
+                digest: Hex32::new([72; 32]),
+                expected: RecoveryExpected {
+                    work: binding.work,
+                    issue_lsn: binding.issue_lsn,
+                    source_lsn: Lsn(1),
+                    episode: None,
+                    predecessor: None,
+                    control_lsn: None,
+                    ticket: None,
+                },
+                choice: RecoveryChoice::FreshWithRecap,
+                attribution: dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+                    pid: 17,
+                    uid: None,
+                },
+            };
+            assert_eq!(
+                machine.recover(intent).recovery().unwrap().refusal,
+                Some(RecoveryRefusal::NotRecoverable)
+            );
+        } else {
+            assert!(public.is_ok());
+        }
+        assert_eq!(machine.rng.drawn(), entropy);
+        assert_eq!(format!("{:?}", machine.world()), before);
+        assert!(machine.effects().is_empty());
+        let admitted = machine.ensure_recovery_admission(agent);
+        let actual = machine.effects().iter().find_map(|effect| match effect {
+            Effect::Persist { token, entry }
+                if matches!(entry.record, Record::RecoveryRequired(_)) =>
+            {
+                Some((*token, entry.clone()))
+            }
+            _ => None,
+        });
+        let mut durable_after_resume = false;
+        if let Some((token, entry)) = actual {
+            let Record::RecoveryRequired(required) = &entry.record else {
+                unreachable!()
+            };
+            assert_eq!(required.reason, reason);
+            let work = required.binding.work;
+            prefix.push((Lsn(10_001), entry.clone()));
+            acknowledge(&mut machine, token, entry, Lsn(10_001));
+            let mut restarted = replay_machine(&prefix);
+            restarted
+                .handle(crate::Input::Command(crate::Command::Resume {
+                    agent,
+                    browser: None,
+                }))
+                .unwrap();
+            let (token, entry) = emitted(&restarted);
+            assert!(matches!(entry.record, Record::Resume { .. }));
+            acknowledge(&mut restarted, token, entry, Lsn(10_003));
+            let (state, _) = restarted.world.recovery_projection().unwrap();
+            let episode = state.current(work).unwrap();
+            durable_after_resume = episode.authorization_lsn.is_none()
+                && !restarted.recovery_admission_allowed(agent)
+                && restarted.effects().iter().all(|effect| {
+                    !matches!(
+                        effect,
+                        Effect::Spawn { .. }
+                            | Effect::Persist {
+                                entry: Entry {
+                                    record: Record::TurnIssued { .. } | Record::LoopDecided { .. },
+                                    ..
+                                },
+                                ..
+                            }
+                    )
+                });
+        }
+        outcomes.push((reason, admitted, durable_after_resume));
+    }
+    assert_eq!(
+        outcomes,
+        vec![
+            (RecoveryReason::Vanished, false, true),
+            (RecoveryReason::UnconfirmedContext, false, true),
+            (RecoveryReason::MissingSpawn, false, true),
+        ]
+    );
+}

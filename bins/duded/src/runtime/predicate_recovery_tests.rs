@@ -693,16 +693,67 @@ fn agentless_baseline_folder_blocks_recovery_until_its_actual_end() {
     daemon.ctx.baselines.end(id);
     assert!(daemon.ctx.recovery_checkout_clear(&daemon.sup, agent));
     let missing = daemon.ctx.baselines.start_local(agent);
-    assert!(
-        daemon
-            .start_baseline(
-                missing,
-                vec!["/usr/bin/false".into()],
-                10,
-                fixture.state.path().join("missing-folder")
-            )
-            .is_err()
-    );
+    let Answered::CheckRunning(ticket) = daemon
+        .start_baseline(
+            missing,
+            vec!["/usr/bin/false".into()],
+            10,
+            fixture.state.path().join("missing-folder"),
+        )
+        .unwrap()
+    else {
+        panic!("a preparation refusal retains the baseline result contract");
+    };
+    assert!(matches!(
+        ticket.wait(
+            &std::sync::atomic::AtomicBool::new(false),
+            &dudes_rpc::HangUp::never()
+        ),
+        crate::baseline::Baseline::Refused(crate::baseline::Refusal::CannotRun(_))
+    ));
     assert!(!daemon.ctx.baselines.local_running(agent));
     assert_eq!(daemon.ctx.baselines.active_folders(2).count(), 0);
+}
+
+#[test]
+fn an_unresolved_predicate_folder_keeps_the_observed_preparation_refusal_without_a_run_mark() {
+    let fixture = common::Fixture::new();
+    let runner = ControlledRunner::new(RunnerReply::Error);
+    let (mut daemon, _) = boot(&fixture, &runner, None);
+    let goal = GoalId::from_parts(95, 1);
+    let cwd = fixture.state.path().join("missing-predicate-folder");
+    let argv = vec!["/usr/bin/false".into()];
+    let error = predicate::spec_for(
+        &argv,
+        &cwd,
+        &daemon.ctx.predicate_env,
+        daemon.ctx.predicate_path.as_deref(),
+    )
+    .unwrap_err();
+    let (expected_pass, expected_evidence) = predicate::refused(&argv, &error);
+    let mut queue = VecDeque::new();
+    daemon.ctx.run_predicate(
+        goal,
+        cwd,
+        &Predicate::Command {
+            argv,
+            timeout_s: 10,
+        },
+        &mut queue,
+    );
+    let Some(Input::PredicateDone {
+        goal: seen,
+        pass,
+        evidence,
+    }) = queue.pop_front()
+    else {
+        panic!("the known preparation refusal must remain an observed failed check");
+    };
+    assert_eq!(seen, goal);
+    assert_eq!(pass, expected_pass);
+    assert_eq!(evidence, expected_evidence);
+    assert!(queue.is_empty());
+    assert!(daemon.ctx.predicate_runs.is_empty());
+    assert!(daemon.ctx.predicate_folders.is_empty());
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
 }
