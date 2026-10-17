@@ -164,6 +164,129 @@ fn recorded_limits(fixture: &Fixture) -> Vec<(Option<u32>, Option<dudes_types::U
         .collect()
 }
 
+fn authorize_owed_issue(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    agent: dudes_types::AgentId,
+    turn: dudes_types::TurnId,
+) {
+    use dudes_proto::rpc::CurrentMethod;
+    use dudes_proto::rpc::recovery::{
+        RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectParams, RecoveryInspectResult,
+        RecoverySubmitParams, RecoverySubmitResult,
+    };
+    let issue_lsn = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| {
+            matches!(entry.record, Record::TurnIssued { agent: owner, turn: issued, .. }
+            if owner == agent && issued == turn)
+            .then_some(lsn)
+        })
+        .expect("the original immutable issued turn");
+    fixture.await_record("the original issue requires explicit recovery", |record| {
+        matches!(record, Record::RecoveryRequired(required)
+            if required.binding.work.agent == agent && required.binding.work.turn == turn)
+        .then_some(())
+    });
+    let credential = || {
+        dudes_proto::rpc::cred::OperatorCredential::new(
+            std::fs::read_to_string(
+                settings
+                    .runtime_dir
+                    .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+            )
+            .expect("the fixture daemon minted the operator credential"),
+        )
+        .expect("the operator credential is well formed")
+    };
+    let mut client = dudes_rpc::Client::connect(settings.socket()).expect("the operator connects");
+    let response = client
+        .call_current_as_operator(
+            CurrentMethod::RecoveryInspect,
+            Some(serde_json::to_value(RecoveryInspectParams { agent }).unwrap()),
+            credential(),
+        )
+        .expect("the authenticated inspection answers");
+    assert!(response.error.is_none(), "{response:?}");
+    let inspected: RecoveryInspectResult =
+        serde_json::from_value(response.result.unwrap()).unwrap();
+    let RecoveryInspectResult::Available {
+        expected,
+        reason,
+        choices,
+        prior_effects_unknown,
+        ..
+    } = inspected
+    else {
+        panic!("the exact owed issue offers recovery: {inspected:?}");
+    };
+    assert_eq!(expected.work.agent, agent);
+    assert_eq!(expected.work.turn, turn);
+    assert_eq!(expected.issue_lsn, issue_lsn);
+    assert_eq!(reason, dudes_proto::recovery::RecoveryReason::MissingSpawn);
+    assert_eq!(choices, RecoveryAllowedChoices::RepeatIssuedFresh);
+    assert!(prior_effects_unknown);
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record,
+               Record::TurnSpawned { turn: owned, .. } if *owned == turn
+            ))
+            .count(),
+        0
+    );
+    let work = expected.work;
+    let request_id = dudes_proto::record::Hex32::new([233; 32]);
+    let response = client
+        .call_current_as_operator(
+            CurrentMethod::RecoverySubmit,
+            Some(
+                serde_json::to_value(RecoverySubmitParams {
+                    request_id,
+                    expected: *expected,
+                    choice: RecoveryChoice::RepeatIssuedFresh,
+                })
+                .unwrap(),
+            ),
+            credential(),
+        )
+        .expect("one explicit authenticated consent answers");
+    assert!(response.error.is_none(), "{response:?}");
+    let submitted: RecoverySubmitResult = serde_json::from_value(response.result.unwrap()).unwrap();
+    let RecoverySubmitResult::Accepted { receipt } = submitted else {
+        panic!("explicit recovery must be durably accepted: {submitted:?}");
+    };
+    assert_eq!(receipt.request_id, request_id);
+    assert_eq!(receipt.choice, RecoveryChoice::RepeatIssuedFresh);
+    assert_eq!(receipt.claim.episode.work, work);
+    let authorization = fixture
+        .records()
+        .into_iter()
+        .find_map(|record| match record {
+            Record::RecoveryAuthorized(authorized) if authorized.request_id == request_id => {
+                Some(authorized)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        matches!(authorization.plan, dudes_proto::recovery::RecoveryPlan::RepeatIssued { issue, .. }
+        if issue.lsn == issue_lsn && issue.issued.work == work)
+    );
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record,
+               Record::TurnIssued { agent: owner, .. } if *owner == agent
+            ))
+            .count(),
+        1
+    );
+}
+
 /// Whether `argv` carries `flag` followed by `value`, as the two adjacent parts the composer emits.
 fn carries(argv: &[OsString], flag: &str, value: &str) -> bool {
     argv.windows(2)
@@ -183,7 +306,7 @@ fn carries(argv: &[OsString], flag: &str, value: &str) -> bool {
 /// records what it was asked for rather than what it completed.
 ///
 /// **Run two** boots over the same state directory with a **different** `[providers.claude]`
-/// table, and replay re-issues the un-spawned turn. The differing table is the arm that makes this
+/// table, and explicit fresh-repeat consent releases the un-spawned turn. The differing table is the arm that makes this
 /// a test about *history* rather than about repetition: an implementation that read current
 /// configuration instead of the replayed `AgentRow` would still be reading a table, and would still
 /// produce two flags, so the same-value assertion would pass. `--max-thinking-tokens 100` appearing
@@ -274,6 +397,7 @@ fn explicit_limits_reach_first_and_reissued_launch() {
     seams.adapters = Adapters::new([Box::new(ClaudeAdapter::new(claude)) as Box<dyn Adapter>]);
     let daemon = boot(&settings, seams).expect("the same state directory boots again");
     let mut running = common::start(daemon);
+    authorize_owed_issue(&fixture, &settings, capped.agent, capped_turn);
     fixture.await_record("reissued capped TurnSpawned", |record| {
         (matches!(record, Record::TurnSpawned { agent, turn, reissued: true, .. }
             if *agent == capped.agent && *turn == capped_turn)
