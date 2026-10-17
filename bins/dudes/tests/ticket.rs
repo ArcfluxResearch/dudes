@@ -272,6 +272,56 @@ impl World {
         }
     }
 
+    fn assert_review_guidance(&self, card: &str, shown: &str, sequence: &str) {
+        let refused = self.dudes(["ticket", "accept", card]);
+        assert!(
+        refused.stderr.contains(&format!(
+            "Read the current instruction review before acknowledging it. Run `dudes ticket show {card}` to read it. It ends with the exact command for what it shows."
+        )),
+        "{}",
+        refused.stderr
+    );
+        assert!(
+            !refused.stderr.contains("--expected-seq"),
+            "{}",
+            refused.stderr
+        );
+        assert!(
+        shown.ends_with(&format!(
+            "To act on exactly this state:\n  dudes ticket accept {card} --expected-seq {sequence}\n  dudes ticket changes {card} --message \"<what to change>\" --expected-seq {sequence}\nIf the ticket changes first, Dudes refuses and you read it again.\n"
+        )),
+        "{shown}"
+    );
+        let stale = (sequence.parse::<u64>().unwrap() - 1).to_string();
+        let stale = self.dudes(["ticket", "accept", card, "--expected-seq", &stale]);
+        assert_eq!(stale.code(), 3, "{}", stale.output());
+        assert!(
+            stale
+                .stderr
+                .contains("This ticket changed while you were looking. Reload and try again."),
+            "{}",
+            stale.stderr
+        );
+        let after = self.dudes(["ticket", "show", card]);
+        assert!(
+            after.stdout.contains("State: Needs you"),
+            "{}",
+            after.stdout
+        );
+    }
+
+    fn assert_remove_refused_for_review(&self, card: &str) {
+        let refused = self.dudes(["ticket", "remove", card]);
+        assert_eq!(refused.code(), dudes::exit::REFUSED, "{}", refused.output());
+        assert!(
+        refused.stderr.contains(
+            "This ticket has an instruction review nobody has acknowledged yet. Accept it or ask for changes first, then remove the ticket."
+        ),
+        "{}",
+        refused.stderr
+    );
+    }
+
     fn assert_review_required<const N: usize>(&self, args: [&str; N]) {
         let refused = self.cli.clone().arg("--json").args(args).run();
         assert_eq!(refused.code(), dudes::exit::REFUSED, "{}", refused.output());
@@ -648,41 +698,7 @@ fn the_loop_gives_by_name_reviews_accepts_asks_for_changes_stops_and_removes() {
     }
 
     world.assert_review_required(["ticket", "accept", &first]);
-    let refused = world.dudes(["ticket", "accept", &first]);
-    assert!(
-        refused.stderr.contains(&format!(
-            "Read the current instruction review before acknowledging it. Run `dudes ticket show {first}` to read it. It ends with the exact command for what it shows."
-        )),
-        "{}",
-        refused.stderr
-    );
-    assert!(
-        !refused.stderr.contains("--expected-seq"),
-        "{}",
-        refused.stderr
-    );
-    assert!(
-        shown.ends_with(&format!(
-            "To act on exactly this state:\n  dudes ticket accept {first} --expected-seq {sequence}\n  dudes ticket changes {first} --message \"<what to change>\" --expected-seq {sequence}\nIf the ticket changes first, Dudes refuses and you read it again.\n"
-        )),
-        "{shown}"
-    );
-    let stale = (sequence.parse::<u64>().unwrap() - 1).to_string();
-    let stale = world.dudes(["ticket", "accept", &first, "--expected-seq", &stale]);
-    assert_eq!(stale.code(), 3, "{}", stale.output());
-    assert!(
-        stale
-            .stderr
-            .contains("This ticket changed while you were looking. Reload and try again."),
-        "{}",
-        stale.stderr
-    );
-    let shown_after = world.dudes(["ticket", "show", &first]);
-    assert!(
-        shown_after.stdout.contains("State: Needs you"),
-        "{}",
-        shown_after.stdout
-    );
+    world.assert_review_guidance(&first, &shown, &sequence);
     let accepted = world.dudes(["ticket", "accept", &first, "--expected-seq", &sequence]);
     assert_eq!(accepted.code(), 0, "{}", accepted.output());
     assert_eq!(accepted.stdout, "Ticket accepted.\n");
@@ -731,15 +747,7 @@ fn the_loop_gives_by_name_reviews_accepts_asks_for_changes_stops_and_removes() {
     world.finish(turn, "Stopped after the empty-form change.");
     let read = world.settled_review(&second, turn);
     let sequence = read.card.seq.0.to_string();
-    let refused = world.dudes(["ticket", "remove", &second]);
-    assert_eq!(refused.code(), dudes::exit::REFUSED, "{}", refused.output());
-    assert!(
-        refused.stderr.contains(
-            "This ticket has an instruction review nobody has acknowledged yet. Accept it or ask for changes first, then remove the ticket."
-        ),
-        "{}",
-        refused.stderr
-    );
+    world.assert_remove_refused_for_review(&second);
     let acknowledged = world.dudes(["ticket", "accept", &second, "--expected-seq", &sequence]);
     assert_eq!(acknowledged.code(), 0, "{}", acknowledged.output());
     assert_eq!(
