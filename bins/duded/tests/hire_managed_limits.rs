@@ -350,6 +350,25 @@ fn carries(argv: &[OsString], flag: &str, value: &str) -> bool {
         .any(|pair| pair[0] == *OsStr::new(flag) && pair[1] == *OsStr::new(value))
 }
 
+fn assert_first_launch_limits(first_run: &[Vec<OsString>]) {
+    assert_eq!(
+        first_run.len(),
+        2,
+        "one launch per agent was asked for: {first_run:?}"
+    );
+    let (capped_argv, plain_argv) = (&first_run[0], &first_run[1]);
+    assert!(
+        carries(capped_argv, "--max-turns", "7")
+            && carries(capped_argv, "--max-budget-usd", "2.500000"),
+        "the first launch composes both recorded limits: {capped_argv:?}"
+    );
+    assert!(
+        !plain_argv.iter().any(|part| part == "--max-turns")
+            && !plain_argv.iter().any(|part| part == "--max-budget-usd"),
+        "an agent hired with no limits gets no flag, not a default: {plain_argv:?}"
+    );
+}
+
 /// A hire's `max_turns` and `max_budget` reach the composed argv on the first
 /// launch and again on the crash re-issue, and a configuration change between the two runs cannot
 /// move either value. A hire that asked for neither composes neither flag.
@@ -420,23 +439,7 @@ fn explicit_limits_reach_first_and_reissued_launch() {
     settle_control(&fixture, &settings, &first_host, plain.agent);
     running.stop(ExitCause::Ended);
 
-    let first_run = first_host.argv();
-    assert_eq!(
-        first_run.len(),
-        2,
-        "one launch per agent was asked for: {first_run:?}"
-    );
-    let (capped_argv, plain_argv) = (&first_run[0], &first_run[1]);
-    assert!(
-        carries(capped_argv, "--max-turns", "7")
-            && carries(capped_argv, "--max-budget-usd", "2.500000"),
-        "the first launch composes both recorded limits: {capped_argv:?}"
-    );
-    assert!(
-        !plain_argv.iter().any(|part| part == "--max-turns")
-            && !plain_argv.iter().any(|part| part == "--max-budget-usd"),
-        "an agent hired with no limits gets no flag, not a default: {plain_argv:?}"
-    );
+    assert_first_launch_limits(&first_host.argv());
 
     // Run two: the same journal, a different `[providers.claude]` table.
     let second_host = LoggingHost::new(false, &fixture);
