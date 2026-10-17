@@ -1106,9 +1106,6 @@ enum ActionRoute {
 }
 
 impl ActionRoute {
-    /// The action a POST to `path` carries. One the operator did not enable is not a route: its
-    /// POST falls through to the static branch exactly as any other unrouted POST does. Pause and
-    /// resume are routes together or not at all.
     fn of(method: &str, path: &str, catalog: Catalog<'_>) -> Option<Self> {
         if method != "POST" {
             return None;
