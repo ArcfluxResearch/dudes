@@ -120,14 +120,14 @@ pub fn recovery_inspection(
             )?;
             match choices {
                 RecoveryAllowedChoices::FreshOnly => {
-                    recovery_choice_warning(out, RecoveryChoice::FreshWithRecap)?
+                    recovery_choice_warning(out, RecoveryChoice::FreshWithRecap)?;
                 }
                 RecoveryAllowedChoices::RecordedOrFresh => {
                     recovery_choice_warning(out, RecoveryChoice::TryRecorded)?;
                     recovery_choice_warning(out, RecoveryChoice::FreshWithRecap)?;
                 }
                 RecoveryAllowedChoices::RepeatIssuedFresh => {
-                    recovery_choice_warning(out, RecoveryChoice::RepeatIssuedFresh)?
+                    recovery_choice_warning(out, RecoveryChoice::RepeatIssuedFresh)?;
                 }
             }
             if *prior_effects_unknown {
@@ -154,7 +154,7 @@ fn recovery_recorded(
     )?;
     match &receipt.status {
         RecoveryReceiptState::Pending => {
-            writeln!(out, "Pending: the reserved turn has not been issued.")?
+            writeln!(out, "Pending: the reserved turn has not been issued.")?;
         }
         RecoveryReceiptState::IssueBound { turn, issue_lsn } => writeln!(
             out,
