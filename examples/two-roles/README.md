@@ -119,13 +119,13 @@ launches it almost in the same breath. Killing from the outside and hoping to la
 window is not a test, it is a coin toss — and a check that only sometimes lands is a bug, not
 something to retry.
 
-So the daemon used by the crash arms is built with one extra feature (`--features
-fault-injection`) that adds a single ability: **stop at one chosen launch, and leave a file saying
-you have stopped.** It kills nothing and changes nothing else. The script waits for that file and
+The crash arms build the daemon with `--features fault-injection` and use its launch wrappers to
+**stop at one chosen launch, and leave a file saying it has stopped.** A wrapper kills nothing and
+changes nothing else. The script waits for that file and
 then sends a real `SIGKILL` from outside, exactly as a person would. What the daemon has on disk at
 that moment is precisely the window's state.
 
-There are two stall points, because a launch has two windows and the two arms are about different
+There are two launch stall points, because a launch has two windows and the two arms are about different
 ones:
 
 | | armed with | what exists when the signal lands |

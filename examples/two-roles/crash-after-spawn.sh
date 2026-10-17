@@ -46,9 +46,9 @@ open_sandbox
 
 # --- the daemon this arm drives -------------------------------------------------------------------
 #
-# The same feature-built binary `crash.sh` uses, armed at the other window. `--features
-# fault-injection` adds one thing: a wrapper that parks the loop at a chosen launch and touches a
-# file to say it has. **It kills nothing.** The SIGKILL below is a real external signal, sent by
+# The same feature-built binary `crash.sh` uses, armed at the other window. This script uses its
+# after-launch wrapper to park the loop and touch a file to say it has. **It kills nothing.**
+# The SIGKILL below is a real external signal, sent by
 # this script exactly as a person would send it.
 #
 # It builds into a target directory of its own, so `target/release/duded` — what arm 1 runs — is

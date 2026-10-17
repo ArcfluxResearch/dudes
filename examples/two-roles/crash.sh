@@ -65,8 +65,8 @@ open_sandbox
 # its process exists. That window is microseconds wide in the daemon's own code, so an outside
 # killer cannot land in it and a script that retried until it did would be flaky by construction.
 #
-# So the daemon is built with `--features fault-injection`, which adds one thing: a wrapper that
-# parks the loop before a chosen launch and touches a file to say it has. **It kills nothing.** The
+# This script builds the daemon with `--features fault-injection` and uses the wrapper that parks
+# the loop before a chosen launch and touches a file to say it has. **It kills nothing.** The
 # SIGKILL below is a real external signal, sent by this script exactly as a person would send it,
 # and the on-disk state it lands on is the window's: a turn written and fsynced, no process.
 #
