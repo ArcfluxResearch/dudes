@@ -950,6 +950,14 @@ samp,
   pointer-events: none;
 }
 
+.office-tag bdi {
+  display: inline-block;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
 .office-tag small {
   display: block;
   color: #cfe3f7;
@@ -3164,3 +3172,28 @@ samp,
 .agent-detail-actions .retire-dialog p { flex: none; margin: 0 0 0.75rem; }
 .agent-detail-actions .retire-dialog button { flex: none; padding: 0.3rem 0.7rem; }
 .agent-detail-status .stream-state { font-weight: inherit; }
+
+.workers-list {
+  margin: 0 0 1rem;
+}
+
+.workers-list ul {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workers-list li {
+  overflow-wrap: anywhere;
+}
+
+.workers-list dl {
+  flex-wrap: wrap;
+  gap: 0.2rem 1.5rem;
+}
+
+.workers-list dd {
+  font-weight: 400;
+}

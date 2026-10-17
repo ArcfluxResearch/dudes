@@ -16,12 +16,13 @@ import type { WaitingItem } from './questions.ts';
 import { fieldsOf } from './scene/label.ts';
 import { SetupView } from './setup/SetupView.tsx';
 import { SettingsView } from './settings/SettingsView.tsx';
-import { Board, CardDetail } from './BoardPanel.tsx';
-import { drawsTickets, NewTicketForm, TicketBoard, TicketNotice } from './ticket/TicketBoard.tsx';
+import { CardDetail } from './BoardPanel.tsx';
+import { NewTicketForm, TicketBoard, TicketNotice } from './ticket/TicketBoard.tsx';
 import { viewConfirmed } from './ticket/model.ts';
 import { TicketOffHint } from './ticket/TicketGuidance.tsx';
 import { TicketPanel } from './ticket/TicketPanel.tsx';
 import { workspaceGroups, workspaceLabel } from './workspace.ts';
+import { WorkersList } from './WorkersList.tsx';
 import { HireEntry } from './onboarding/HireEntry.tsx';
 
 export type ControlView = 'overview' | 'board' | 'log' | 'setup' | 'settings';
@@ -78,6 +79,7 @@ export function OverviewSummary({ floor, selectedId, onOpenQuestion, onOpenTicke
       <p>{selectedId === null
         ? 'Select an agent in the office or in Crew to open its details.'
         : 'The selected agent’s current projection and read-only Live work are open in its details.'}</p>
+      <WorkersList agents={floor.agents} />
       <ArchivedAgents floor={floor} onHireAgain={onHireAgain} />
     </div>
   );
@@ -262,10 +264,8 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
   const panels: Record<ControlView, ReactNode> = {
     overview: <OverviewSummary floor={floor} selectedId={selectedId} onOpenQuestion={onOpenQuestion}
       onOpenTicket={onOpenTicket} onHireAgain={onHireAgain} />,
-    board: drawsTickets(floor)
-      ? <TicketBoard floor={floor} selectedId={selectedCardId} onSelect={openCard}
-        forming={overlay?.kind === 'new'} onNewTicket={openNewTicket} />
-      : <Board floor={floor} selectedId={selectedCardId} onSelect={openCard} />,
+    board: <TicketBoard floor={floor} selectedId={selectedCardId} onSelect={openCard}
+      forming={overlay?.kind === 'new'} onNewTicket={openNewTicket} />,
     log: <LogPanel floor={floor} />,
     setup: <SetupView floor={floor} onGuide={onGuide} />,
     settings: <SettingsView floor={floor} onSetup={() => onView('setup')} />,

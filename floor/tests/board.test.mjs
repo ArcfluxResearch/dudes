@@ -43,10 +43,9 @@ test('cards enter through snapshots and deltas and leave with their subscription
   assert.deepEqual(getFloorState().cards, []);
 });
 
-test('the four columns group all statuses and Crew chooses current work', async () => {
-  const { cardsForColumn, activeCard } = await import('../src/renderer/board.ts');
+test('Crew chooses current work', async () => {
+  const { activeCard } = await import('../src/renderer/board.ts');
   const rows = [card(A, 'todo'), card(B, 'claimed'), card(C, 'doing'), card(D, 'review'), card(E, 'blocked'), card(F, 'done')];
-  assert.deepEqual(['todo', 'doing', 'blocked', 'done'].map((key) => cardsForColumn(rows, key).length), [1, 3, 1, 1]);
   assert.equal(activeCard(rows, A)?.id, C);
   assert.equal(activeCard(rows.filter((row) => row.status !== 'doing'), A)?.id, D);
   assert.equal(activeCard([card(F, 'done')], A), null);
@@ -67,10 +66,14 @@ async function renderModule(path, symbol, props) {
 }
 
 test('Board shows counts and its detail keeps card text inert', async () => {
-  const rows = [card(A, 'todo', '<script>Own board</script>'), card(B, 'claimed'), card(C, 'doing'), card(D, 'review'), card(E, 'blocked'), card(F, 'done')];
+  const rows = [card(A, 'todo', '<script>Own board</script>'), card(B, 'claimed'), card(C, 'doing'), card(D, 'review'), card(E, 'blocked'), card(F, 'done')].map((row) => ({ ...row, ticket: null }));
   const floor = { ...getFloorState(), phase: 'live', stale: false, cards: rows, agents: [] };
-  const html = await renderModule('/src/renderer/BoardPanel.tsx', 'Board', { floor, selectedId: A, onSelect() {} });
-  for (const label of ['Todo (1)', 'Doing (3)', 'Blocked (1)', 'Done (1)']) assert.ok(html.includes(label), label);
+  const html = await renderModule('/src/renderer/ticket/TicketBoard.tsx', 'TicketBoard',
+    { floor, selectedId: A, onSelect() {}, onNewTicket() {} });
+  for (const label of ['To do (2)', 'Working (1)', 'Ready for you (0)', 'Done (1)', 'Needs you (0)', 'Other board cards (2)']) {
+    assert.ok(html.includes(label), label);
+  }
+  for (const old of ['Todo (', 'Doing (', 'Blocked (']) assert.ok(!html.includes(old), old);
   assert.equal((html.match(/data-card-id=/g) ?? []).length, 6);
   const detail = await renderModule('/src/renderer/BoardPanel.tsx', 'CardDetail', { floor, card: { ...rows[0], deps: [B] } });
   assert.ok(detail.includes('&lt;script&gt;Own board&lt;/script&gt;'));

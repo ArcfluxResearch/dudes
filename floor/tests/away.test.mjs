@@ -394,7 +394,11 @@ test('each away state says its one thing, in words', async () => {
     );
     assert.match(text(), /^Dudes stopped answering\./);
     await timers.step(AWAY_POLL_MS);
-    assert.equal(text(), words);
+    assert.equal(text(), kind === 'updated' ? `${words} See the release notes.` : words);
+    const html = renderToStaticMarkup(createElement(StreamNotice,
+      { floor: { ...store.getFloorState(), phase: 'closed', stale: false, epoch: 1, snapshotEpoch: 1 } }));
+    assert.equal(html.includes('<a href="https://github.com/ArcfluxResearch/dudes/releases" target="_blank" rel="noopener noreferrer">'),
+      kind === 'updated', 'the update notice links the releases list, since the page knows only its own version');
   }
 
   away.resetAway();

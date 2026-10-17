@@ -262,10 +262,9 @@ fn review_parameters(
         return Err(Failure::Refused(RpcError {
             code: ErrorCode::Refused.code(),
             message: format!(
-                "{} Read `dudes ticket show {}`, then retry with --expected-seq {}.",
+                "{} Run `dudes ticket show {}` to read it. It ends with the exact command for what it shows.",
                 TicketRefusal::InstructionReviewRequired.sentence(read.card.status),
                 read.card.id,
-                read.card.seq.0
             ),
             data: Some(
                 serde_json::json!({"reason":TicketRefusal::InstructionReviewRequired.code()}),
@@ -501,6 +500,47 @@ mod instruction_tests {
         assert_eq!(
             review_parameters(&read, Some(Seq(6))).expect("ordinary named"),
             (Seq(6), None)
+        );
+    }
+
+    #[test]
+    fn the_act_on_this_state_lines_wait_for_the_comparison_to_settle() {
+        let mut read = reading();
+        read.ticket.instruction_review = Some(InstructionPendingReview {
+            watermark: InstructionReviewWatermark {
+                through_lsn: Lsn(9),
+                set_digest: Hex32::new([0xdd; 32]),
+            },
+            pending_comparison: true,
+            intervals: Vec::new(),
+            changed_paths: Vec::new(),
+            gaps: Vec::new(),
+        });
+        let text = |read: &TicketReadResult| {
+            let mut out = Vec::new();
+            render::ticket::show(&mut out, false, read, &AgentNames::new(), &chrono::Utc)
+                .expect("write");
+            String::from_utf8(out).expect("utf8")
+        };
+        let pending = text(&read);
+        assert!(
+            pending.contains("Review actions are unavailable."),
+            "{pending}"
+        );
+        assert!(
+            !pending.contains("To act on exactly this state"),
+            "{pending}"
+        );
+        assert!(!pending.contains("--expected-seq"), "{pending}");
+        read.ticket
+            .instruction_review
+            .as_mut()
+            .expect("review")
+            .pending_comparison = false;
+        let settled = text(&read);
+        assert!(
+            settled.contains("  dudes ticket accept 01JBQ8XK2M3N4P5Q6R7S8T9VWX --expected-seq 7\n"),
+            "{settled}"
         );
     }
 }

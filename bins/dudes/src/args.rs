@@ -826,6 +826,9 @@ COMMANDS
         Edit and remove work on a ticket nobody is working on; an empty --note clears
         the note. Every change reads the ticket's current sequence just before the
         call, so --expected-seq is only for a script that wants a stale one refused.
+        A ticket with an instruction review is the exception: Accept and Changes
+        refuse until you read it with Show, which ends with the exact command for
+        the state it showed.
         With --give-to, add creates the ticket and then gives it; a refused give leaves
         the ticket in place and prints the refusal. List can be narrowed by --status.
         EXAMPLE: tickets

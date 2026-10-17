@@ -9,6 +9,7 @@ import { formatUsdMicros } from '../onboarding/catalog.ts';
 import { ReadNotice, snapshotReadState } from '../ReadError.tsx';
 import { getOfficePin, setOfficePin, subscribeToOfficePin } from '../view.ts';
 import { desktopNotificationPreference } from '../desktopNotifications.ts';
+import { releaseNotesLabel, releaseNotesUrl } from '../releaseLinks.ts';
 
 const SWITCHES = [
   ['answer', 'Answer questions'], ['control', 'Pause, resume and rename'], ['goal', 'Change goals'],
@@ -124,6 +125,13 @@ export function SettingsView({ floor, onSetup }: {
       <dl><div><dt>Daemon</dt><dd>{report.about.daemon_version}</dd></div>
         <div><dt>Floor build</dt><dd>{__FLOOR_BUILD_VERSION__}</dd></div>
         <div><dt>Browser wire</dt><dd>browser-wire-v{report.about.browser_wire_version}</dd></div></dl>
+      <ul>
+        <li><a href={releaseNotesUrl(report.about.daemon_version)} target="_blank" rel="noopener noreferrer">
+          {releaseNotesLabel(report.about.daemon_version)}</a></li>
+        <li><a href="https://github.com/ArcfluxResearch/dudes" target="_blank" rel="noopener noreferrer">Source repository</a></li>
+        <li><a href="https://github.com/ArcfluxResearch/dudes/issues" target="_blank" rel="noopener noreferrer">Issue tracker</a></li>
+      </ul>
+      <p>This page never checks for updates. To look for a newer version, run <code>dudes upgrade --check</code>.</p>
     </section>
   </div>;
 }

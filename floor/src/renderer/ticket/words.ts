@@ -48,6 +48,16 @@ export function stateName(status: CardRow['status']): string {
   }
 }
 
+/** What a card without a ticket says of itself where no column fits: the state as recorded, and whose word it is. */
+export function otherStateName(status: CardRow['status']): string {
+  switch (status) {
+    case 'review': return 'Waiting on a review';
+    case 'blocked': return 'Blocked';
+    case 'done': return 'Marked done by an agent, not checked';
+    default: return stateName(status);
+  }
+}
+
 export function refusalSentence(code: RefusalCode, status: CardRow['status'] | null): string {
   if (code === 'wrong_state') return `You can't do that to a ticket that is ${status === null ? 'in another state' : stateName(status)}.`;
   return REFUSALS[code];

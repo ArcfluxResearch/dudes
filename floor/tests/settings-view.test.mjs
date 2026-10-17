@@ -44,6 +44,21 @@ test('Settings shows read-only running values, local commands, Setup and About',
       assert.ok(html.includes(expected), `missing ${expected}: ${html}`);
     }
     assert.doesNotMatch(html, /<(?:input|textarea|form)\b/);
+    const anchors = [...html.matchAll(/<a ([^>]*)>/g)].map((match) => match[1]).filter((attrs) => attrs.includes('github.com'));
+    const link = (href) => `href="${href}" target="_blank" rel="noopener noreferrer"`;
+    assert.deepEqual(anchors, [
+      link('https://github.com/ArcfluxResearch/dudes/releases/tag/v0.12.3'),
+      link('https://github.com/ArcfluxResearch/dudes'),
+      link('https://github.com/ArcfluxResearch/dudes/issues'),
+    ]);
+    assert.match(html, /never checks for updates[^<]*<code>dudes upgrade --check<\/code>/);
+    assert.match(html, />Release notes for 0\.12\.3<\/a>/);
+    for (const version of ['0.89.0-dev', '0.89.0-rc.1', '0.89.0+build.5']) {
+      const dev = renderToStaticMarkup(createElement(SettingsView,
+        { floor: floor({ ...REPORT, about: { ...REPORT.about, daemon_version: version } }), onSetup() {} }));
+      assert.ok(dev.includes(`<a href="https://github.com/ArcfluxResearch/dudes/releases" target="_blank" rel="noopener noreferrer">Release notes</a>`), version);
+      assert.ok(!dev.includes('/releases/tag/'), version);
+    }
     assert.match(html, /Chat messages<\/dt><dd>Always on, with no setting<\/dd>/);
     assert.doesNotMatch(html, /floor\.chat/);
     const gitRow = (git) => renderToStaticMarkup(createElement(SettingsView,

@@ -8,21 +8,30 @@ import { accentOf } from '../appearance.ts';
 import { initialOf } from '../Portrait.tsx';
 import './ticket.css';
 
-import { LegacyColumns, useRequestedCard } from '../BoardPanel.tsx';
+import { useRequestedCard } from '../BoardPanel.tsx';
 import type { FloorState } from '../floor/store.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
 import { decodeWorkspace } from '../workspace.ts';
-import { agentChoiceSentence, agentRow, boardColumns, cardWords, noProjects, plainCards, tickets, TICKET_COLUMNS } from './model.ts';
+import { agentChoiceSentence, agentRow, boardColumns, cardWords, noProjects, otherCards, plainColumnOf, TICKET_COLUMNS } from './model.ts';
 import type { TicketColumn } from './model.ts';
 import { createTicket, dismissNotice, getTicketState, subscribeToTicket } from './ticket.ts';
-import { agentWithoutProjectSentence, stateName } from './words.ts';
+import { agentWithoutProjectSentence, otherStateName, stateName } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
 const NOTICE_SECONDS = 8;
 
 const COLUMN_TONE: Readonly<Record<TicketColumn | 'needs', string>> = Object.freeze({
   todo: 'todo', working: 'doing', ready: 'review', done: 'done', needs: 'blocked',
+});
+
+/** With tickets off, only the daemon's recorded states can fill a column, and nothing here can wait on the operator. */
+const EMPTY_COLUMN_CARDS: Readonly<Record<TicketColumn | 'needs', string>> = Object.freeze({
+  needs: 'Nothing is placed here while tickets are off.',
+  todo: 'No unclaimed or claimed cards.',
+  working: 'No cards being worked on.',
+  ready: 'Nothing is placed here while tickets are off.',
+  done: 'No cards marked done by you or the daemon.',
 });
 
 const EMPTY_COLUMN: Readonly<Record<TicketColumn, string>> = Object.freeze({
@@ -35,11 +44,6 @@ const EMPTY_COLUMN: Readonly<Record<TicketColumn, string>> = Object.freeze({
 /** Whether this page may act on tickets now: the switch is on and the view is live and confirmed. */
 export function ticketActionsOpen(floor: FloorState): boolean {
   return floor.ticket && floor.phase === 'live' && !floor.stale && floor.snapshotEpoch === floor.epoch;
-}
-
-/** Whether the Board draws tickets: the switch is on, or a ticket already exists to read. */
-export function drawsTickets(floor: FloorState): boolean {
-  return floor.ticket || tickets(floor.cards).length > 0;
 }
 
 /** The projects a ticket can be made in, as the snapshot's check list names them, each with its label. */
@@ -176,10 +180,11 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
   const words = cardWords(floor, card);
   const row = agentRow(floor, card.claimed_by);
   return <li>
-    <button type="button" className="task-card ticket-card" data-card-id={card.id} data-ticket-status={card.status}
+    <button type="button" className="task-card ticket-card" data-card-id={card.id} data-ticket-status={card.ticket === null && plainColumnOf(card) === null ? undefined : card.status}
       aria-pressed={selected} aria-controls="selected-card-detail" aria-haspopup="dialog" disabled={!selectable}
       onClick={(event) => onSelect(card.id, event.currentTarget)}>
-      <span className="ticket-card-meta"><span className="ticket-card-state">{card.ticket?.stopping ? 'Stopping…' : stateName(card.status)}</span>
+      <span className="ticket-card-meta"><span className="ticket-card-state">{card.ticket?.stopping ? 'Stopping…'
+          : card.ticket === null && plainColumnOf(card) === null ? otherStateName(card.status) : stateName(card.status)}</span>
         {(card.ticket?.round ?? 0) > 1 ? <span className="ticket-round">Round {card.ticket?.round}</span> : null}
       </span>
       <strong>{card.title}</strong>
@@ -192,7 +197,7 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
         </span>}
         {words.place === null ? null : <span className="ticket-place">{words.place}</span>}
       </span>
-      {card.status === 'review' ? <span className="ticket-review-link">Review ticket <span aria-hidden="true">↗</span></span> : null}
+      {card.ticket !== null && card.status === 'review' ? <span className="ticket-review-link">Review ticket <span aria-hidden="true">↗</span></span> : null}
     </button>
   </li>;
 }
@@ -209,7 +214,7 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
   const { columns, needsYou, doneHidden } = boardColumns(floor.cards);
   // The panel of the selected ticket says what happened; the board says it when none is open.
   const opened = forming || floor.cards.some((card) => card.id === selectedId && card.ticket !== null);
-  const plain = plainCards(floor.cards);
+  const other = otherCards(floor.cards);
   const draw = (card: CardRow) => <TicketCard key={card.id} floor={floor} card={card} selected={card.id === selectedId}
     selectable={selectable} onSelect={onSelect} />;
   return <div className="board-view ticket-board">
@@ -224,7 +229,7 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
       data-lane="needs-you" aria-label="Needs you">
       <h3>Needs you ({needsYou.length})</h3>
       <ul>{needsYou.map(draw)}</ul>
-      {needsYou.length === 0 ? <p className="ticket-empty">Tickets that need your next step appear here.</p> : null}
+      {needsYou.length === 0 ? <p className="ticket-empty">{floor.ticket ? 'Tickets that need your next step appear here.' : EMPTY_COLUMN_CARDS.needs}</p> : null}
     </section>
     <div className="task-columns">
       {TICKET_COLUMNS.map((column) => {
@@ -233,16 +238,17 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
           data-ticket-column={column.key} aria-label={column.title}>
           <h3>{column.title} ({cards.length})</h3>
           <ul>{cards.map(draw)}</ul>
-          {cards.length === 0 ? <p className="ticket-empty">{EMPTY_COLUMN[column.key]}</p> : null}
+          {cards.length === 0 ? <p className="ticket-empty">{(floor.ticket ? EMPTY_COLUMN : EMPTY_COLUMN_CARDS)[column.key]}</p> : null}
           {column.key === 'done' && doneHidden > 0
-            ? <p className="ticket-hint">{doneHidden} older ticket{doneHidden === 1 ? '' : 's'} not shown. List them with <code>dudes ticket list --status done</code>.</p> : null}
+            ? <p className="ticket-hint">{doneHidden} older card{doneHidden === 1 ? '' : 's'} not shown. List tickets with <code>dudes ticket list --status done</code> and other cards with <code>dudes board list</code>.</p> : null}
         </section>;
       })}
     </div>
     </div>
-    {plain.length === 0 ? null : <section className="ticket-plain" aria-label="Other board cards">
-      <h3>Other board cards</h3>
-      <LegacyColumns floor={{ ...floor, cards: plain }} selectedId={selectedId} onSelect={onSelect} />
+    {other.length === 0 ? null : <section className="ticket-plain" aria-label="Other board cards">
+      <h3>Other board cards ({other.length})</h3>
+      <p className="ticket-hint">No column above is true of these, so each one says its state as recorded.</p>
+      <ul>{other.map(draw)}</ul>
     </section>}
   </div>;
 }

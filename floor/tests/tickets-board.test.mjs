@@ -87,20 +87,45 @@ test('each status lands in its column, and Needs you is a lane', () => {
   });
   const { columns, needsYou } = model.boardColumns(store.getFloorState().cards);
   assert.deepEqual(Object.fromEntries(Object.entries(columns).map(([key, cards]) => [key, cards.map((c) => c.title)])), {
-    todo: ['Ticket 1', 'Ticket 2'], working: ['Ticket 3'], ready: ['Ticket 4'], done: ['Ticket 6'],
+    todo: ['Ticket 1', 'Plain 7', 'Ticket 2'], working: ['Ticket 3'], ready: ['Ticket 4'], done: ['Ticket 6'],
   });
   assert.deepEqual(needsYou.map((c) => c.title), ['Ticket 5']);
   assert.deepEqual(model.TICKET_COLUMNS.map((c) => c.title), ['To do', 'Working', 'Ready for you', 'Done']);
 
   const html = board();
-  assert.deepEqual(titles(column(html, 'todo')), ['Ticket 1', 'Ticket 2']);
+  assert.deepEqual(titles(column(html, 'todo')), ['Ticket 1', 'Plain 7', 'Ticket 2']);
   assert.deepEqual(titles(column(html, 'working')), ['Ticket 3']);
   assert.deepEqual(titles(column(html, 'ready')), ['Ticket 4']);
   assert.deepEqual(titles(column(html, 'done')), ['Ticket 6']);
   const lane = html.match(/<section[^>]*data-lane="needs-you"[\s\S]*?<\/section>/)[0];
   assert.deepEqual(titles(lane), ['Ticket 5']);
   assert.ok(!/data-ticket-column="needs/.test(html), 'Needs you is not a column');
-  assert.match(html, /Other board cards/, 'a plain card keeps its place beneath the tickets');
+  assert.doesNotMatch(html, /Other board cards/, 'every card here has a column that is true of it');
+});
+
+test('with the ticket switch off, board cards use the same columns and only true states', () => {
+  subscribe(store, {
+    ticket: null,
+    agents: [agent()],
+    cards: [
+      plainCard(1, 'todo'), plainCard(2, 'claimed'), plainCard(3, 'doing'),
+      plainCard(4, 'review'), plainCard(5, 'blocked'), plainCard(6, 'done'),
+      { ...plainCard(7, 'done'), claimed_by: ADA, status_by: { kind: 'agent', agent: ADA } },
+    ],
+  });
+  const html = board();
+  assert.deepEqual(titles(column(html, 'todo')), ['Plain 1', 'Plain 2']);
+  assert.deepEqual(titles(column(html, 'working')), ['Plain 3']);
+  assert.deepEqual(titles(column(html, 'ready')), [], 'nothing waits for the operator in Ready for you on a plain card');
+  assert.deepEqual(titles(column(html, 'done')), ['Plain 6'], 'an agent saying done is not a recorded result');
+  const lane = html.match(/<section[^>]*data-lane="needs-you"[\s\S]*?<\/section>/)[0];
+  assert.deepEqual(titles(lane), []);
+  const other = html.match(/<section[^>]*aria-label="Other board cards"[\s\S]*?<\/section>/)[0];
+  assert.deepEqual(titles(other), ['Plain 4', 'Plain 5', 'Plain 7']);
+  for (const text of ['Waiting on a review', 'Blocked', 'Marked done by an agent, not checked']) assert.ok(other.includes(text), text);
+  assert.doesNotMatch(other, /Ready for you|Needs you|ticket-review-link/);
+  for (const old of ['Todo (', 'Doing (']) assert.ok(!html.includes(old), old);
+  assert.match(html, /Needs you \(0\)/);
 });
 
 test('Done shows the newest twenty and says how many it leaves out', () => {
@@ -109,7 +134,7 @@ test('Done shows the newest twenty and says how many it leaves out', () => {
   assert.equal(columns.done.length, 20);
   assert.deepEqual([columns.done[0].title, columns.done[19].title], ['Ticket 25', 'Ticket 6']);
   assert.equal(doneHidden, 5);
-  assert.match(board(), /5 older tickets not shown\. List them with <code>dudes ticket list --status done<\/code>/);
+  assert.match(board(), /5 older cards not shown\. List tickets with <code>dudes ticket list --status done<\/code> and other cards with <code>dudes board list<\/code>/);
 });
 
 test('an empty ticket board gives one next step in every labelled lane', () => {
@@ -235,8 +260,14 @@ test('an empty board with tickets off says how to turn them on', () => {
     onClose() {}, onView() {}, onOpenQuestion() {},
   }));
   assert.match(html, /Tickets are off\. Turn them on with <code>dudes config set floor.board on<\/code>, then restart the daemon\./);
-  assert.match(html, /No board cards\./);
+  for (const name of ['Needs you', 'To do', 'Working', 'Ready for you', 'Done']) assert.ok(html.includes(`>${name} (0)<`), name);
   assert.doesNotMatch(html, /ticket-new-toggle/);
+  for (const text of ['Nothing is placed here while tickets are off.', 'No unclaimed or claimed cards.',
+    'No cards being worked on.', 'No cards marked done by you or the daemon.']) {
+    assert.ok(html.includes(`<p class="ticket-empty">${text}</p>`), text);
+  }
+  assert.equal(html.split('Nothing is placed here while tickets are off.').length - 1, 2);
+  assert.doesNotMatch(html, /Create a ticket|Tickets appear here|Tickets that need your next step|Accepted tickets|Review finished work/);
 });
 
 test('ticket switches are not called off before a snapshot or after the stream closes', () => {

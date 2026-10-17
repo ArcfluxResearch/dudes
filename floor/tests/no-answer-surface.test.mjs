@@ -292,10 +292,13 @@ const ACTIVITY_PANEL = 'src/renderer/LogPanel.tsx';
 const HIRE_ENTRY = 'src/renderer/onboarding/HireEntry.tsx';
 /**
  * `FORBIDDEN` kinds a file carries that no handler rule names. The Setup
- * view's install guide link navigates away and sends nothing; its Recheck and
+ * view's install guide link, the About links and the update notice link navigate away and send nothing; its Recheck and
  * Copy buttons are counted with the other activators below.
  */
-const ADMITTED_WITHOUT_HANDLER = new Map([[SETUP_VIEW, Object.freeze(['a link'])]]);
+const STREAM_NOTICE = 'src/renderer/StreamNotice.tsx';
+const ADMITTED_WITHOUT_HANDLER = new Map([
+  [SETUP_VIEW, Object.freeze(['a link'])], [SETTINGS_VIEW, Object.freeze(['a link'])], [STREAM_NOTICE, Object.freeze(['a link'])],
+]);
 /**
  * The `FORBIDDEN` kinds each listed file may carry. "the floor ships no
  * mutation control…" asserts that each file's list equals the kinds its
@@ -622,6 +625,8 @@ function staticAssetImportIdentifiersIn(syntax) {
   return admitted;
 }
 
+/** The About link to the running version's release notes: a fixed GitHub path plus the daemon's version string. */
+const ADMITTED_RELEASE_NOTES_HREF = 'releaseNotesUrl(report.about.daemon_version)';
 const URL_ATTRIBUTES = new Set(['src', 'href', 'data', 'srcSet', 'poster', 'xlinkHref']);
 // tsc refuses a namespaced JSX name, but the build emits it.
 URL_ATTRIBUTES.add('xlink:href');
@@ -644,6 +649,7 @@ function urlAttributesIn(text, file) {
       if (value === undefined || !ts.isJsxExpression(value) || value.expression === undefined) continue;
       const expression = value.expression;
       if (ts.isIdentifier(expression) && assets.has(expression.text)) continue;
+      if (file === SETTINGS_VIEW && expression.getText(syntax) === ADMITTED_RELEASE_NOTES_HREF) continue;
       found.push({ tag, name, expression: expression.getText(syntax) });
     }
   }
@@ -1062,7 +1068,6 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     'src/renderer/DoneNotices.tsx',
     ...Array(3).fill('src/renderer/LiveWork.tsx'),
     'src/renderer/BoardNotes.tsx',
-    'src/renderer/BoardPanel.tsx',
     ...Array(6).fill('src/renderer/OfficeCanvas.tsx'),
     'src/renderer/ReadError.tsx',
     ...Array(4).fill(ANSWER_FORM),
@@ -1130,8 +1135,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   const notes = await readFile(resolve(floor, 'src/renderer/BoardNotes.tsx'), 'utf8');
   assert.match(notes, /className="board-select"/);
   assert.match(notes, /onClick=\{onOpenTasks\}/);
-  const tasks = await readFile(resolve(floor, 'src/renderer/BoardPanel.tsx'), 'utf8');
-  assert.match(tasks, /onClick=\{\(\) => onSelect\(card\.id\)\}/);
+  const tasks = await readFile(resolve(floor, 'src/renderer/ticket/TicketBoard.tsx'), 'utf8');
+  assert.match(tasks, /onClick=\{\(event\) => onSelect\(card\.id, event\.currentTarget\)\}/);
   assert.match(center, /onSelect=\{openCard\}/);
   assert.match(strip, /className="crew-row"/);
   assert.match(strip, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);

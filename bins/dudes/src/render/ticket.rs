@@ -213,6 +213,21 @@ where
     if read.ticket.round > 0 {
         writeln!(out, "Open the Floor to see the changed files.")?;
     }
+    if let Some(review) = &read.ticket.instruction_review
+        && !review.pending_comparison
+    {
+        let (id, seq) = (read.card.id, read.card.seq.0);
+        writeln!(out, "To act on exactly this state:")?;
+        writeln!(out, "  dudes ticket accept {id} --expected-seq {seq}")?;
+        writeln!(
+            out,
+            "  dudes ticket changes {id} --message \"<what to change>\" --expected-seq {seq}"
+        )?;
+        writeln!(
+            out,
+            "If the ticket changes first, Dudes refuses and you read it again."
+        )?;
+    }
     Ok(())
 }
 
