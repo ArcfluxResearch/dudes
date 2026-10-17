@@ -642,7 +642,6 @@ fn same_goal_check_completions_retire_only_their_immutable_execution_folder() {
             .collect::<Vec<_>>(),
         vec![(prefix.goal, original.clone())]
     );
-    // A duplicate completion cannot retire the other run of this same goal.
     daemon.predicate_ended(prefix.goal, changed, None).unwrap();
     assert_eq!(daemon.ctx.predicate_runs.get(&prefix.goal), Some(&1));
     runner.release_error();

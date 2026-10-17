@@ -211,7 +211,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             required: None,
             resume: None,
         };
-        // Original receipt authority precedes current target and live eligibility checks.
         let existing = self
             .ctx
             .writer

@@ -7,9 +7,9 @@ use dudes_proto::recovery_state::history::{RecoveryEndClass, RecoveryEvidence};
 use dudes_proto::recovery_state::transition::RecoveryTransition;
 use dudes_proto::recovery_state::{RecoveryClaimState, RecoveryStateError};
 use dudes_proto::{AutomaticHold, Entry, Record};
-use dudes_types::{AgentId, Lsn, TurnId};
+use dudes_types::{AgentId, Lsn, Provenance, TurnId};
 
-use super::{Clock, Rng, Supervisor, Then};
+use super::{Clock, ManagedLaunch, PreparedLaunch, Rng, Supervisor, Then};
 use crate::input::{
     Handled, PersistToken, RecoveryAppend, RecoveryChoice, RecoveryCommand, RecoveryExpected,
     RecoveryOpportunity, RecoveryPrefix, RecoveryRefusal, RecoveryStage, RecoveryUpdate,
@@ -90,7 +90,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .world
                 .turns
                 .get(&binding.work.turn)
-                .is_some_and(|turn| turn.is_issued_not_spawned())
+                .is_some_and(crate::world::TurnRow::is_issued_not_spawned)
         {
             return Err(RecoveryRefusal::NotRecoverable);
         }
@@ -308,7 +308,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return Err(RecoveryRefusal::Unavailable);
         }
         let view = self.recovery_opportunity(command.expected.work.agent)?;
-        compare_expected(command.expected, view.expected)?;
+        compare_expected(&command.expected, &view.expected)?;
         let mut next = Continuing {
             command,
             required: view.required,
@@ -578,7 +578,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .world
                 .turns
                 .get(&binding.work.turn)
-                .is_some_and(|turn| turn.is_issued_not_spawned())
+                .is_some_and(crate::world::TurnRow::is_issued_not_spawned)
         {
             return true;
         }
@@ -666,9 +666,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return false;
         };
         let work = RecoveryWork { agent, goal, turn };
-        let claim = match state.work_claim(work) {
-            Ok(claim) => claim,
-            Err(_) => return false,
+        let Ok(claim) = state.work_claim(work) else {
+            return false;
         };
         let Some(claim) = claim else {
             return true;
@@ -797,6 +796,58 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
     }
 
+    pub(super) fn prepare_new_issue(
+        &mut self,
+        agent: AgentId,
+        row: &crate::world::AgentRow,
+        task: &str,
+    ) -> Option<(TurnId, Box<PreparedLaunch>)> {
+        let recovery = self.recovery_new_context(agent).ok()?;
+        if recovery
+            .as_ref()
+            .is_some_and(|context| context.model.is_none())
+        {
+            return None;
+        }
+        let turn = recovery.as_ref().map_or_else(
+            || TurnId::from_ulid(self.rng.ulid()),
+            |context| context.turn,
+        );
+        let session = recovery.as_ref().map_or_else(
+            || self.announce_session(agent, false),
+            |context| context.session.clone(),
+        );
+        let recovered_task = recovery::with_recap(
+            task,
+            recovery
+                .as_ref()
+                .map_or("", |context| context.recap.as_str()),
+        );
+        let task = recovered_task.as_str();
+        let selection = recovery
+            .as_ref()
+            .and_then(|context| context.model.clone())
+            .or_else(|| self.model_selection(row))?;
+        let launch = match self.launch(agent, row, task, &session, &selection) {
+            ManagedLaunch::Ready(launch) => launch,
+            ManagedLaunch::Unavailable => return None,
+            ManagedLaunch::Refused(error) => {
+                self.persist(
+                    Record::AgentHeld {
+                        agent,
+                        provenance: Provenance::Observed,
+                        cause: dudes_proto::AutomaticHold::LaunchRefused {
+                            reason: error.to_string(),
+                        },
+                    },
+                    Then::Decide { agent },
+                );
+                return None;
+            }
+        };
+        Some((turn, launch))
+    }
+
     pub(super) fn recovery_task(&self, agent: AgentId, task: &str) -> Option<String> {
         let context = self.recovery_new_context(agent).ok()?;
         Some(match context {
@@ -922,8 +973,8 @@ fn existing_required(
 }
 
 fn compare_expected(
-    expected: RecoveryExpected,
-    actual: RecoveryExpected,
+    expected: &RecoveryExpected,
+    actual: &RecoveryExpected,
 ) -> Result<(), RecoveryRefusal> {
     if expected.work != actual.work || expected.issue_lsn != actual.issue_lsn {
         return Err(RecoveryRefusal::StaleWork);

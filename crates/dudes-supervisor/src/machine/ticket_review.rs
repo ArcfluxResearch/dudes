@@ -142,9 +142,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         check_lsn: Lsn,
         stamp: StampPayload,
     ) -> Option<crate::input::RecoveryUpdate> {
-        let Some((parked_lsn, then)) = self.ticket_review.stamps_parked.remove(&goal) else {
-            return None;
-        };
+        let (parked_lsn, then) = self.ticket_review.stamps_parked.remove(&goal)?;
         if parked_lsn != check_lsn {
             self.ticket_review
                 .stamps_parked

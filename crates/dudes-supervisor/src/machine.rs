@@ -2807,55 +2807,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return;
         }
-        let recovery = match self.recovery_new_context(agent) {
-            Ok(context) => context,
-            Err(()) => return,
-        };
-        if recovery
-            .as_ref()
-            .is_some_and(|context| context.model.is_none())
-        {
-            return;
-        }
-        let turn = recovery.as_ref().map_or_else(
-            || TurnId::from_ulid(self.rng.ulid()),
-            |context| context.turn,
-        );
-        let session = recovery.as_ref().map_or_else(
-            || self.announce_session(agent, false),
-            |context| context.session.clone(),
-        );
-        let recovered_task = recovery::with_recap(
-            task,
-            recovery
-                .as_ref()
-                .map_or("", |context| context.recap.as_str()),
-        );
-        let task = recovered_task.as_str();
-        let Some(selection) = recovery
-            .as_ref()
-            .and_then(|context| context.model.clone())
-            .or_else(|| self.model_selection(&row))
-        else {
+        let Some((turn, launch)) = self.prepare_new_issue(agent, &row, task) else {
             return;
         };
-        let launch = match self.launch(agent, &row, task, &session, &selection) {
-            ManagedLaunch::Ready(launch) => launch,
-            ManagedLaunch::Unavailable => return,
-            ManagedLaunch::Refused(error) => {
-                self.persist(
-                    Record::AgentHeld {
-                        agent,
-                        provenance: Provenance::Observed,
-                        cause: dudes_proto::AutomaticHold::LaunchRefused {
-                            reason: error.to_string(),
-                        },
-                    },
-                    Then::Decide { agent },
-                );
-                return;
-            }
-        };
+        let task = launch.task.as_str();
+        let session = &launch.session;
+        let selection = launch.selection.clone();
         let record = match browser {
             Some((note_lsn, Some(completion_lsn))) => Record::TaughtNoteOnlyTurnIssued {
                 agent,
