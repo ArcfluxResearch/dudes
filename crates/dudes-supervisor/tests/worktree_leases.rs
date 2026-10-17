@@ -8,7 +8,10 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{AgentBudget, ExitStatus, Record, TurnOutcome, WorktreeRemoval};
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
 use dudes_supervisor::testing::Harness;
 use dudes_supervisor::{Command, Input, WorktreeState};
 use dudes_types::{AgentId, GitCommit, Provider, Usd, WorktreeId};
@@ -324,13 +327,43 @@ fn a_missing_tree_holds_the_agent_before_the_first_decide_launches_into_it() {
             .count()
     };
 
-    let (mut control, _, _) = scenario();
+    let (mut control, control_agent, _) = scenario();
     let before = control.trace.len();
+    let recovery_from = control.trace.len();
     control.restart();
+    assert!(
+        control.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    control.drive(Input::Command(Command::Resume {
+        agent: control_agent,
+        browser: None,
+    }));
+    assert!(
+        control.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = control
+        .supervisor
+        .recovery_opportunity(control_agent)
+        .unwrap()
+        .expected;
+    control.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+
     assert_eq!(
         spawned(&control, before),
         1,
-        "a control: told nothing, the restart re-issues the turn into the tree"
+        "a control: explicit recovery repeats the owed turn into the available tree"
     );
 
     let (mut harness, agent, tree) = scenario();
@@ -388,6 +421,23 @@ fn a_resumed_agent_is_not_held_again_at_its_next_turn_end() {
         agent,
         browser: None,
     }));
+    assert!(
+        harness.host.spawned.is_empty(),
+        "ordinary Resume does not repeat the owed goal turn"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+
     let turn = harness
         .open_turn(agent)
         .expect("resumed, the agent re-issues its turn");

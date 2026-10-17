@@ -7,7 +7,10 @@ use dudes_proto::diff_stamp::{
     BaselineOutcome, CaptureInterval, DigestHex, StampOutcome, StampPayload,
 };
 use dudes_proto::goal::{Evidence, Predicate};
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{ExitStatus, GoalBudget, Record, RecordKind, TurnOutcome};
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
 use dudes_supervisor::testing::{
     Harness, Seen, journal_with_issued_turn, unavailable_baseline, unavailable_stamp,
 };
@@ -177,7 +180,36 @@ fn an_issued_turn_is_reissued_unchanged_and_gains_no_baseline() {
     };
     let mut harness = Harness::new();
     harness.journal = entries;
+    let recovery_from = harness.trace.len();
     harness.restart();
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
 
     assert!(baseline_requests(&harness).is_empty());
     assert_eq!(count(&harness, RecordKind::TicketBaselineRecorded), 0);

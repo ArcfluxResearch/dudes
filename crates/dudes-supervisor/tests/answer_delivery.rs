@@ -10,10 +10,13 @@ use std::collections::BTreeMap;
 use std::io;
 
 use dudes_proto::goal::{Evidence, Predicate};
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{
     Actor, AutomaticHold, Entry, ExitStatus, Gate, GoalBudget, HoldReason, LoopDecision,
     PeerProvenance, Record, RecordKind, TurnOutcome,
 };
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
 use dudes_supervisor::testing::{Harness, Seen};
 use dudes_supervisor::{Command, Input, World};
 use dudes_types::{AgentId, Lsn, Timestamp, TurnId, Usd};
@@ -500,7 +503,37 @@ fn a_reissue_replays_the_recorded_task_and_consumes_its_answers() {
     assert_eq!(before.len(), 1);
 
     harness.launch = true;
+    let recovery_from = harness.trace.len();
     harness.restart();
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+
     assert_eq!(
         issued(&harness),
         before,
