@@ -41,7 +41,7 @@ pub enum RecoveryTransition<'a> {
         claim: RecoveryClaimRef,
         /// Immutable owed issue.
         issue: &'a RecoveryIssue,
-        /// Actual spawn or positively observed no-spawn failure with before-record context.
+        /// Actual spawn or observed managed terminal evidence with before-record context.
         evidence: &'a RecoveryWitness,
     },
 }
