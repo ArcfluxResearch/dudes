@@ -8,7 +8,7 @@ import type { Worktree } from './worktree.ts';
 export function WorkersList({ agents }: { readonly agents: FloorState['agents'] }) {
   const workers = agents.flatMap((row) => {
     const worktree = decodeWorktree(row.worktree);
-    return worktree === null ? [] : [{ id: row.id, name: typeof row.name === 'string' && row.name !== '' ? row.name : row.id, worktree }];
+    return worktree === null || worktree.state === 'removed' ? [] : [{ id: row.id, name: typeof row.name === 'string' && row.name !== '' ? row.name : row.id, worktree }];
   });
   if (workers.length === 0) return null;
   return (
@@ -18,7 +18,7 @@ export function WorkersList({ agents }: { readonly agents: FloorState['agents'] 
       <ul>
         {workers.map(({ id, name, worktree }) => (
           <li key={id} data-worker-id={id}>
-            <strong>{name}</strong>
+            <strong><bdi>{name}</bdi></strong>
             <dl>
               <div><dt>Branch</dt><dd className="data">{worktree.branch}</dd></div>
               <div><dt>State</dt><dd>{worktreeStateText(worktree.state)}</dd></div>
