@@ -1017,4 +1017,49 @@ mod tests {
             json!({"state":"refused","reason":"stale_control","prefix":{"required":"43","resume":"47"}})
         );
     }
+
+    #[test]
+    fn receipt_encoders_preserve_every_choice_and_invalidation_reason() {
+        let work = expected().work;
+        for choice in ["try_recorded", "fresh_with_recap", "repeat_issued_fresh"] {
+            for reason in [
+                "goal_changed",
+                "goal_completed",
+                "ticket_changed",
+                "lease_changed",
+                "control_changed",
+                "agent_unavailable",
+                "authority_unavailable",
+            ] {
+                let receipt: RecoveryReceiptView = serde_json::from_value(json!({
+                    "request_id":REQUEST,"claim":{"episode":{"work":work,"origin":11},"authorization_lsn":13},
+                    "choice":choice,"status":{"state":"invalidated","invalidation_lsn":29,"reason":reason},
+                    "attempt":{"spawn":null,"confirmation":null,"end":null},"prior_effects_unknown":false
+                })).unwrap();
+                let wire = json!({
+                    "request_id":REQUEST,"claim":{"episode":{"work":work,"origin":"11"},"authorization_lsn":"13"},
+                    "choice":choice,"status":{"state":"invalidated","invalidation_lsn":"29","reason":reason},
+                    "attempt":{"spawn":null,"confirmation":null,"end":null},"prior_effects_unknown":false
+                });
+                assert_eq!(
+                    value(
+                        &encode_receipt(&RecoveryReceiptResult::Found {
+                            receipt: Box::new(receipt)
+                        })
+                        .unwrap()
+                    ),
+                    json!({"state":"found","receipt":wire})
+                );
+                assert_eq!(
+                    value(
+                        &encode_submission(&RecoverySubmitResult::Accepted {
+                            receipt: Box::new(receipt)
+                        })
+                        .unwrap()
+                    ),
+                    json!({"state":"accepted","receipt":wire})
+                );
+            }
+        }
+    }
 }
