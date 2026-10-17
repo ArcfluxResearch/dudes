@@ -649,3 +649,49 @@ fn keyed_legacy_issue_keeps_a_single_snapshotless_interval_after_acknowledgment(
     );
     assert!(!h.memory.rows.contains_key(&Key::Snapshot(Lsn(3)).bytes()));
 }
+
+#[test]
+fn prior_run_key_survives_keyed_cache_and_settlement_replay() {
+    let mut h = Harness::default();
+    let ticket = Some(h.ticket_prefix());
+    let initial = owner(samples::turn(), InstructionIssueAssociation::Prospective);
+    h.apply(3, start(initial, ticket), None);
+    h.apply(4, samples::record(RecordKind::TurnIssued), None);
+    let spawned = samples::record(RecordKind::TurnSpawned);
+    let Record::TurnSpawned {
+        pid,
+        start_time,
+        boot,
+        ..
+    } = &spawned
+    else {
+        unreachable!()
+    };
+    let (pid, start_time, boot) = (*pid, *start_time, boot.clone());
+    h.apply(5, spawned, None);
+    let before = h.full.watermark(samples::card(), hash).unwrap();
+    let record = Record::InstructionAttemptBoundarySettled {
+        owner: initial,
+        started_lsn: Lsn(3),
+        proof: InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+            receipt: InstructionNativeBoundaryReceipt::Spawned { lsn: Lsn(5) },
+            pid,
+            start_time,
+            boot,
+            leader: crate::PriorRunLeader::StartTimeDiffers,
+        },
+    };
+    h.apply(6, record.clone(), None);
+    h.apply(7, record, None);
+    assert_eq!(h.full.watermark(samples::card(), hash).unwrap(), before);
+    assert_eq!(
+        h.full
+            .attempt(Lsn(3))
+            .unwrap()
+            .boundary_settled
+            .as_ref()
+            .unwrap()
+            .lsn,
+        Lsn(6)
+    );
+}

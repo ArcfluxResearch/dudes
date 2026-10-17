@@ -2999,6 +2999,7 @@ mod current_census_tests {
             snapshot: InstructionSnapshot {
                 sampled_at: Timestamp::UNIX_EPOCH,
                 source: InstructionSnapshotSource::Fresh,
+                pid_namespace: None,
                 boot: None,
                 execution_folder: Some(NativeInstructionPath::Utf8 {
                     value: "/work/repo".into(),

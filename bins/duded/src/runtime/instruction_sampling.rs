@@ -655,6 +655,7 @@ fn unknown_seed(job: &SampleJob, sampled_at: Timestamp) -> InstructionSnapshot {
             path: None,
         }],
         usage: InstructionSampleUsage::default(),
+        pid_namespace: None,
         boot: job.boot.clone(),
     }
 }
@@ -1131,6 +1132,7 @@ mod tests {
         InstructionSnapshot {
             sampled_at: Timestamp::UNIX_EPOCH,
             source: InstructionSnapshotSource::Fresh,
+            pid_namespace: None,
             boot: None,
             execution_folder: Some(NativeInstructionPath::from_path(path).unwrap()),
             participants: Vec::new(),

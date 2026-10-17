@@ -554,6 +554,7 @@ mod tests {
                 gap.clone(),
             ],
             usage: InstructionSampleUsage::default(),
+            pid_namespace: None,
             boot: None,
         };
         assert!(snapshot.validate().is_ok());

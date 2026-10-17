@@ -1071,6 +1071,7 @@ impl Harness {
                 gap.clone(),
             ],
             usage: dudes_proto::InstructionSampleUsage::default(),
+            pid_namespace: None,
             boot: None,
         };
         let ticket = goal.and_then(|goal| {

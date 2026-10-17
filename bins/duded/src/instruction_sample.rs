@@ -1455,6 +1455,7 @@ mod tests {
             inventoried: Vec::new(),
             gaps: Vec::new(),
             usage: InstructionSampleUsage::default(),
+            pid_namespace: None,
             boot: None,
         }
     }

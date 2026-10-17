@@ -293,6 +293,10 @@ mod tests {
                 match proof {
                     dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
                         receipt,
+                    }
+                    | dudes_proto::InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                        receipt,
+                        ..
                     } => refs.push(match receipt {
                         dudes_proto::InstructionNativeBoundaryReceipt::Spawned { lsn }
                         | dudes_proto::InstructionNativeBoundaryReceipt::LaunchFailureEnded {

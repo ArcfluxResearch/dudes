@@ -2155,6 +2155,51 @@
         },
         {
           "additionalProperties": false,
+          "description": "A later daemon run observed the recorded leader absent and its process group empty.\nThis observes no reap and makes no claim about escaped descendants or earlier effects.",
+          "properties": {
+            "boot": {
+              "description": "Recorded boot identity, when applicable.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "prior_run_group_absent",
+              "type": "string"
+            },
+            "leader": {
+              "$ref": "#/$defs/PriorRunLeader",
+              "description": "The process table's positive absence observation."
+            },
+            "pid": {
+              "description": "Recorded process group leader pid.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "receipt": {
+              "$ref": "#/$defs/InstructionNativeBoundaryReceipt",
+              "description": "Exact recorded spawn position, never a launch failure."
+            },
+            "start_time": {
+              "description": "Recorded platform-native start value.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "receipt",
+            "pid",
+            "start_time",
+            "leader"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Comparable OS evidence proves that the starting boot has ended.",
           "properties": {
             "current": {
@@ -3793,6 +3838,13 @@
           },
           "type": "array"
         },
+        "pid_namespace": {
+          "description": "Linux pid namespace sampled with the boot identity, absent for older observations.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "sampled_at": {
           "$ref": "#/$defs/Timestamp",
           "description": "Actual sample time, never substituted for a process boundary time."
@@ -5155,6 +5207,21 @@
             "agent_verify"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "PriorRunLeader": {
+      "description": "How the recorded leader's adoption key was observed to be absent.",
+      "oneOf": [
+        {
+          "const": "no_such_process",
+          "description": "The process table has no process with the recorded pid.",
+          "type": "string"
+        },
+        {
+          "const": "start_time_differs",
+          "description": "The process with the recorded pid has a different native start time.",
+          "type": "string"
         }
       ]
     },

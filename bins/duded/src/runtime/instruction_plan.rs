@@ -1299,6 +1299,7 @@ mod tests {
             let snapshot = dudes_proto::instruction::InstructionSnapshot {
                 sampled_at: dudes_types::Timestamp::UNIX_EPOCH,
                 source: dudes_proto::instruction::InstructionSnapshotSource::Fresh,
+                pid_namespace: None,
                 boot: None,
                 execution_folder: Some(NativeInstructionPath::from_path(&folder).unwrap()),
                 participants: vec![participant],

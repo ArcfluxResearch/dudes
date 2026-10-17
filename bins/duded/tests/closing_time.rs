@@ -498,6 +498,10 @@ fn remap_seed_references(record: &mut Record, positions: &BTreeMap<Lsn, Lsn>) {
             match proof {
                 dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
                     receipt,
+                }
+                | dudes_proto::InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                    receipt,
+                    ..
                 } => {
                     let lsn = match receipt {
                         dudes_proto::InstructionNativeBoundaryReceipt::Spawned { lsn }

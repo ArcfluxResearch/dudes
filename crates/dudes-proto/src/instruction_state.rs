@@ -120,7 +120,7 @@ pub struct InstructionState {
     card_goals: BTreeMap<CardId, GoalId>,
     associations: BTreeMap<GoalId, InstructionTicketAssociation>,
     ticket_history: BTreeMap<GoalId, InstructionTicketAssociation>,
-    native_receipts: BTreeMap<Lsn, (Lsn, InstructionNativeBoundaryReceipt)>,
+    native_receipts: BTreeMap<Lsn, NativeReceipt>,
     pty_attachments: BTreeMap<crate::rpc::pty::PtyId, Lsn>,
     close_requests: BTreeMap<Lsn, Lsn>,
     latest_attachments: BTreeMap<AgentId, Lsn>,
@@ -128,6 +128,20 @@ pub struct InstructionState {
     no_host_claims: BTreeMap<Lsn, Lsn>,
     observed_turns: BTreeSet<TurnId>,
     last_applied: Lsn,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct NativeReceipt {
+    started: Lsn,
+    receipt: InstructionNativeBoundaryReceipt,
+    key: Option<NativeSpawnKey>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct NativeSpawnKey {
+    pid: u32,
+    start_time: u64,
+    boot: Option<String>,
 }
 
 /// A rejected durable relationship, without task, configuration or instruction contents.
@@ -513,7 +527,8 @@ impl InstructionState {
         earlier_started: Lsn,
         spawn_lsn: Lsn,
     ) -> Option<(Lsn, &InstructionAttempt)> {
-        let &(started, receipt) = self.native_receipts.get(&spawn_lsn)?;
+        let native = self.native_receipts.get(&spawn_lsn)?;
+        let (started, receipt) = (native.started, native.receipt);
         if started <= earlier_started
             || receipt != (InstructionNativeBoundaryReceipt::Spawned { lsn: spawn_lsn })
         {
@@ -910,7 +925,12 @@ impl InstructionState {
                     | InstructionNativeBoundaryReceipt::LaunchFailureEnded { lsn } => *lsn,
                 };
                 if receipt_lsn >= lsn
-                    || self.native_receipts.get(&receipt_lsn) != Some(&(started, *receipt))
+                    || !self
+                        .native_receipts
+                        .get(&receipt_lsn)
+                        .is_some_and(|native| {
+                            native.started == started && native.receipt == *receipt
+                        })
                     || match receipt {
                         InstructionNativeBoundaryReceipt::Spawned { lsn } => {
                             attempt.spawn_lsn != Some(*lsn)
@@ -922,6 +942,32 @@ impl InstructionState {
                 {
                     return Err(InstructionStateError::Boundary);
                 }
+            }
+            InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                receipt: InstructionNativeBoundaryReceipt::Spawned { lsn: spawn },
+                pid,
+                start_time,
+                boot,
+                ..
+            } => {
+                if *spawn >= lsn
+                    || attempt.spawn_lsn != Some(*spawn)
+                    || !self.native_receipts.get(spawn).is_some_and(|native| {
+                        native.started == started
+                            && native.receipt
+                                == (InstructionNativeBoundaryReceipt::Spawned { lsn: *spawn })
+                            && native.key.as_ref().is_some_and(|key| {
+                                key.pid == *pid
+                                    && key.start_time == *start_time
+                                    && key.boot == *boot
+                            })
+                    })
+                {
+                    return Err(InstructionStateError::Boundary);
+                }
+            }
+            InstructionBoundaryAbsenceProof::PriorRunGroupAbsent { .. } => {
+                return Err(InstructionStateError::Boundary);
             }
             InstructionBoundaryAbsenceProof::PriorBootAbsent { previous, current } => {
                 if attempt
@@ -1070,11 +1116,13 @@ impl InstructionState {
         };
         let corroborated = self.no_host_holds.get(&proof_lsn) == Some(&agent)
             || (self.managed_end_lsn(agent, turn) == Some(proof_lsn)
-                && self.native_receipts.get(&proof_lsn)
-                    == Some(&(
-                        started,
-                        InstructionNativeBoundaryReceipt::LaunchFailureEnded { lsn: proof_lsn },
-                    )));
+                && self.native_receipts.get(&proof_lsn).is_some_and(|native| {
+                    native.started == started
+                        && native.receipt
+                            == (InstructionNativeBoundaryReceipt::LaunchFailureEnded {
+                                lsn: proof_lsn,
+                            })
+                }));
         if proof_lsn >= lsn
             || proof_lsn <= started
             || !corroborated
@@ -1209,10 +1257,13 @@ impl InstructionState {
                     {
                         self.native_receipts.insert(
                             lsn,
-                            (
-                                key,
-                                InstructionNativeBoundaryReceipt::LaunchFailureEnded { lsn },
-                            ),
+                            NativeReceipt {
+                                started: key,
+                                receipt: InstructionNativeBoundaryReceipt::LaunchFailureEnded {
+                                    lsn,
+                                },
+                                key: None,
+                            },
                         );
                     }
                 }
@@ -1221,7 +1272,14 @@ impl InstructionState {
                 self.attachments.insert(lsn, *agent);
                 self.latest_attachments.insert(*agent, lsn);
             }
-            Record::TurnSpawned { agent, turn, .. } => {
+            Record::TurnSpawned {
+                agent,
+                turn,
+                pid,
+                start_time,
+                boot,
+                ..
+            } => {
                 if let Some(&key) = self.current_turns.get(turn)
                     && let Some(attempt) = self.attempts.get_mut(&key)
                     && owner_agent(attempt.owner) == *agent
@@ -1229,7 +1287,15 @@ impl InstructionState {
                     attempt.spawn_lsn.get_or_insert(lsn);
                     self.native_receipts.insert(
                         lsn,
-                        (key, InstructionNativeBoundaryReceipt::Spawned { lsn }),
+                        NativeReceipt {
+                            started: key,
+                            receipt: InstructionNativeBoundaryReceipt::Spawned { lsn },
+                            key: Some(NativeSpawnKey {
+                                pid: *pid,
+                                start_time: *start_time,
+                                boot: boot.clone(),
+                            }),
+                        },
                     );
                     let owner = attempt.owner;
                     self.clear_unresolved(owner, key);
@@ -1283,7 +1349,13 @@ impl InstructionState {
 
     fn fold_pty(&mut self, lsn: Lsn, record: &Record, folded: &mut InstructionFold) {
         match record {
-            Record::PtySpawned { agent, pty, .. } => {
+            Record::PtySpawned {
+                agent,
+                pty,
+                pid,
+                start_time,
+                boot,
+            } => {
                 if let Some(&attachment) = self.latest_attachments.get(agent) {
                     self.pty_attachments.insert(*pty, attachment);
                     if let Some(&key) = self.current_attachments.get(&attachment) {
@@ -1292,7 +1364,15 @@ impl InstructionState {
                         }
                         self.native_receipts.insert(
                             lsn,
-                            (key, InstructionNativeBoundaryReceipt::Spawned { lsn }),
+                            NativeReceipt {
+                                started: key,
+                                receipt: InstructionNativeBoundaryReceipt::Spawned { lsn },
+                                key: Some(NativeSpawnKey {
+                                    pid: *pid,
+                                    start_time: *start_time,
+                                    boot: boot.clone(),
+                                }),
+                            },
                         );
                         self.clear_unresolved(
                             InstructionObservationOwner::AttachedProcess {
@@ -2906,5 +2986,130 @@ mod tests {
             Err(InstructionStateError::Boundary)
         );
         assert_eq!(state, before);
+    }
+    fn prior_run_spawned_state() -> InstructionState {
+        let mut state = seeded();
+        for (lsn, record) in [
+            (4, start(InstructionIssueAssociation::Prospective)),
+            (5, samples::record(RecordKind::TurnIssued)),
+            (6, samples::record(RecordKind::TurnSpawned)),
+        ] {
+            state.apply(Lsn(lsn), &stamp(record), None, hash).unwrap();
+        }
+        state
+    }
+
+    fn prior_run_settlement() -> Record {
+        let Record::TurnSpawned {
+            pid,
+            start_time,
+            boot,
+            ..
+        } = samples::record(RecordKind::TurnSpawned)
+        else {
+            unreachable!()
+        };
+        Record::InstructionAttemptBoundarySettled {
+            owner: owner(InstructionIssueAssociation::Prospective),
+            started_lsn: Lsn(4),
+            proof: InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                receipt: InstructionNativeBoundaryReceipt::Spawned { lsn: Lsn(6) },
+                pid,
+                start_time,
+                boot,
+                leader: crate::PriorRunLeader::NoSuchProcess,
+            },
+        }
+    }
+
+    #[test]
+    fn prior_run_settlement_requires_the_exact_recorded_spawn_key() {
+        let base = prior_run_spawned_state();
+        for field in 0..7 {
+            let mut bad = prior_run_settlement();
+            if let Record::InstructionAttemptBoundarySettled {
+                owner,
+                started_lsn,
+                proof:
+                    InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                        receipt,
+                        pid,
+                        start_time,
+                        boot,
+                        ..
+                    },
+            } = &mut bad
+            {
+                match field {
+                    0 => *pid += 1,
+                    1 => *start_time += 1,
+                    2 => *boot = Some("other-boot".into()),
+                    3 => *receipt = InstructionNativeBoundaryReceipt::Spawned { lsn: Lsn(5) },
+                    4 => {
+                        *receipt =
+                            InstructionNativeBoundaryReceipt::LaunchFailureEnded { lsn: Lsn(6) }
+                    }
+                    5 => *started_lsn = Lsn(3),
+                    6 => {
+                        *owner = InstructionObservationOwner::Managed {
+                            agent: samples::agent(),
+                            turn: TurnId::from_parts(9, 9),
+                            issue: InstructionIssueAssociation::Prospective,
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            assert!(
+                base.clone().apply(Lsn(7), &stamp(bad), None, hash).is_err(),
+                "field {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn prior_run_settlement_replays_idempotently_and_preserves_review() {
+        let mut state = prior_run_spawned_state();
+        let before = state.watermark(samples::card(), hash).unwrap();
+        assert_eq!(
+            before,
+            Some(InstructionReviewWatermark {
+                through_lsn: Lsn(4),
+                set_digest: Hex32::new([
+                    52, 94, 240, 11, 208, 26, 27, 69, 225, 236, 202, 139, 136, 170, 140, 213, 36,
+                    252, 98, 93, 104, 113, 32, 13, 130, 28, 187, 133, 68, 17, 45, 48
+                ]),
+            })
+        );
+        let receipt = prior_run_settlement();
+        state
+            .apply(Lsn(7), &stamp(receipt.clone()), None, hash)
+            .unwrap();
+        state
+            .apply(Lsn(8), &stamp(receipt.clone()), None, hash)
+            .unwrap();
+        assert_eq!(
+            state
+                .attempt(Lsn(4))
+                .unwrap()
+                .boundary_settled
+                .as_ref()
+                .unwrap()
+                .lsn,
+            Lsn(7)
+        );
+        assert_eq!(state.watermark(samples::card(), hash).unwrap(), before);
+        let mut conflicting = receipt;
+        if let Record::InstructionAttemptBoundarySettled {
+            proof: InstructionBoundaryAbsenceProof::PriorRunGroupAbsent { leader, .. },
+            ..
+        } = &mut conflicting
+        {
+            *leader = crate::PriorRunLeader::StartTimeDiffers;
+        }
+        assert_eq!(
+            state.apply(Lsn(9), &stamp(conflicting), None, hash),
+            Err(InstructionStateError::ConflictingBoundarySettlement)
+        );
     }
 }

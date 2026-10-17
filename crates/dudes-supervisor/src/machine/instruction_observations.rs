@@ -1055,6 +1055,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                             owner_agent(starting.owner),
                         )],
                         usage: InstructionSampleUsage::default(),
+                        pid_namespace: None,
                         boot: None,
                     }
                 };
@@ -1495,6 +1496,7 @@ mod tests {
                 gap(InstructionGapKind::DeclarationMissing, agent),
             ],
             usage: InstructionSampleUsage::default(),
+            pid_namespace: None,
             boot: None,
         };
         let effects = harness.step(Input::InstructionSampled {
@@ -1948,6 +1950,7 @@ mod tests {
                 harness.supervisor.world().turns[&turn].agent,
             )],
             usage: InstructionSampleUsage::default(),
+            pid_namespace: None,
             boot: None,
         };
         let effects = harness.step(Input::InstructionSampled {
@@ -2336,6 +2339,7 @@ mod tests {
                     inventoried: Vec::new(),
                     gaps: vec![gap(InstructionGapKind::PathUnresolved, agent)],
                     usage: InstructionSampleUsage::default(),
+                    pid_namespace: None,
                     boot: None,
                 },
             },

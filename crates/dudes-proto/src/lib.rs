@@ -93,7 +93,7 @@ pub use instruction::{
     MAX_INSTRUCTION_DESCENDANTS, MAX_INSTRUCTION_IMPORT_EDGES, MAX_INSTRUCTION_INPUTS,
     MAX_INSTRUCTION_METADATA_BYTES, MAX_INSTRUCTION_PARTICIPANTS, MAX_INSTRUCTION_PATH_BYTES,
     MAX_INSTRUCTION_SOURCE_BYTES, MAX_INSTRUCTION_SYMLINK_HOPS, NativeInstructionPath,
-    TicketCoverageNote, validate_instruction_record,
+    PriorRunLeader, TicketCoverageNote, validate_instruction_record,
 };
 pub use mail_wake::{
     MailRef, MailWakeAdmission, MailWakeDecision, MailWakeDigest, MailWakeDigestDomain,

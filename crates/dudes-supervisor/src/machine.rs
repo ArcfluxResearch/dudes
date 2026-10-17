@@ -5475,6 +5475,7 @@ mod tests {
                     gap,
                 ],
                 usage: dudes_proto::InstructionSampleUsage::default(),
+                pid_namespace: None,
                 boot: None,
             }),
             ticket: None,

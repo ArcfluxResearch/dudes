@@ -637,6 +637,7 @@ mod tests {
             let snapshot = InstructionSnapshot {
                 sampled_at: Timestamp::from_unix_millis(10),
                 source: InstructionSnapshotSource::Fresh,
+                pid_namespace: None,
                 boot: None,
                 execution_folder: Some(NativeInstructionPath::Utf8 {
                     value: "/gate/work".into(),

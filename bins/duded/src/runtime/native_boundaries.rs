@@ -760,6 +760,7 @@ mod owed_retry_tests {
         InstructionSnapshot {
             sampled_at: dudes_types::Timestamp::UNIX_EPOCH,
             source: InstructionSnapshotSource::Fresh,
+            pid_namespace: None,
             boot: None,
             execution_folder: Some(NativeInstructionPath::Utf8 {
                 value: "/work/repo".into(),

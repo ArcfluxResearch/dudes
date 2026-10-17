@@ -1195,6 +1195,7 @@ fn deliver_recovery_start(machine: &mut Machine, agent: AgentId) {
                     gap,
                 ],
                 usage: dudes_proto::InstructionSampleUsage::default(),
+                pid_namespace: None,
                 boot: None,
             }),
             ticket: None,

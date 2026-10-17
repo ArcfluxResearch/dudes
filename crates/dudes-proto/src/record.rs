@@ -3122,6 +3122,7 @@ pub mod samples {
                 snapshot: crate::instruction::InstructionSnapshot {
                     sampled_at: Timestamp::UNIX_EPOCH,
                     source: crate::instruction::InstructionSnapshotSource::Fresh,
+                    pid_namespace: None,
                     boot: None,
                     execution_folder: Some(crate::instruction::NativeInstructionPath::Utf8 {
                         value: "/work/project".into(),
