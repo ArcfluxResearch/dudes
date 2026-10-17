@@ -1544,6 +1544,10 @@ fn settings_from_environment() -> anyhow::Result<(
     dudes_journal::MemoryCondenseConfig,
     duded::settings::RunOptions,
 )> {
+    #[cfg(feature = "fault-injection")]
+    let recovery_stop = duded::fault::RecoveryStop::parse(
+        std::env::var_os("DUDES_FAULT_RECOVERY_STOP").as_deref(),
+    )?;
     let profile = if cfg!(windows) {
         std::env::var_os("USERPROFILE")
     } else {
@@ -1618,7 +1622,10 @@ fn settings_from_environment() -> anyhow::Result<(
             .map(|exe| exe.with_file_name(format!("dudes-hook{}", std::env::consts::EXE_SUFFIX))),
         daemon_exe: exe,
     };
-    Ok((settings, operator.providers, memory, startup.options))
+    let options = startup.options;
+    #[cfg(feature = "fault-injection")]
+    let options = options.with_recovery_stop(recovery_stop);
+    Ok((settings, operator.providers, memory, options))
 }
 
 /// The uid this daemon runs as, which an installed Floor under `share` must belong to. Windows,
