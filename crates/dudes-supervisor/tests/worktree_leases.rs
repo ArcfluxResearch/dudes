@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use dudes_proto::record::Hex32;
 use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{AgentBudget, ExitStatus, Record, TurnOutcome, WorktreeRemoval};
-use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand, RecoveryExpected};
 use dudes_supervisor::testing::Harness;
 use dudes_supervisor::{Command, Input, WorktreeState};
 use dudes_types::{AgentId, GitCommit, Provider, Usd, WorktreeId};
@@ -296,39 +296,7 @@ fn a_hire_that_names_no_lease_leaves_the_table_empty() {
     assert_eq!(harness.supervisor.world().live_worktrees().count(), 0);
 }
 
-/// the hold for a missing tree lands before the first decide. An agent with a goal and
-/// an issued turn that never spawned is re-issued at start, so without the hold the daemon would
-/// launch a turn into a tree that is gone. The restart that is told nothing is the control.
-#[test]
-fn a_missing_tree_holds_the_agent_before_the_first_decide_launches_into_it() {
-    let scenario = || {
-        let mut harness = Harness::new();
-        harness.launch = false;
-        let tree = lease(&mut harness, None);
-        let agent = hire_into(&mut harness, Some(tree));
-        harness.set_goal(agent, &["npm", "test"]);
-        assert!(
-            harness.open_turn(agent).is_some(),
-            "a control: the goal issued a turn that has not spawned"
-        );
-        harness.launch = true;
-        (harness, agent, tree)
-    };
-    let spawned = |harness: &Harness, from: usize| {
-        harness.trace[from..]
-            .iter()
-            .filter(|seen| matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. }))
-            .count()
-    };
-    let issued = |harness: &Harness| {
-        harness
-            .records()
-            .filter(|record| matches!(record, Record::TurnIssued { .. }))
-            .count()
-    };
-
-    let (mut control, control_agent, _) = scenario();
-    let before = control.trace.len();
+fn recover_available_tree(control: &mut Harness, control_agent: AgentId) -> RecoveryExpected {
     let recovery_from = control.trace.len();
     control.restart();
     assert!(
@@ -364,10 +332,49 @@ fn a_missing_tree_holds_the_agent_before_the_first_decide_launches_into_it() {
         Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     assert_eq!(
-        spawned(&control, before),
+        control.trace[recovery_from..]
+            .iter()
+            .filter(|seen| matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. }))
+            .count(),
         1,
         "a control: explicit recovery repeats the owed turn into the available tree"
     );
+    expected
+}
+
+/// the hold for a missing tree lands before the first decide. An agent with a goal and
+/// an issued turn that never spawned is re-issued at start, so without the hold the daemon would
+/// launch a turn into a tree that is gone. The restart that is told nothing is the control.
+#[test]
+fn a_missing_tree_holds_the_agent_before_the_first_decide_launches_into_it() {
+    let scenario = || {
+        let mut harness = Harness::new();
+        harness.launch = false;
+        let tree = lease(&mut harness, None);
+        let agent = hire_into(&mut harness, Some(tree));
+        harness.set_goal(agent, &["npm", "test"]);
+        assert!(
+            harness.open_turn(agent).is_some(),
+            "a control: the goal issued a turn that has not spawned"
+        );
+        harness.launch = true;
+        (harness, agent, tree)
+    };
+    let spawned = |harness: &Harness, from: usize| {
+        harness.trace[from..]
+            .iter()
+            .filter(|seen| matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. }))
+            .count()
+    };
+    let issued = |harness: &Harness| {
+        harness
+            .records()
+            .filter(|record| matches!(record, Record::TurnIssued { .. }))
+            .count()
+    };
+
+    let (mut control, control_agent, _) = scenario();
+    let expected = recover_available_tree(&mut control, control_agent);
 
     let (mut harness, agent, tree) = scenario();
     let (before, turns) = (harness.trace.len(), issued(&harness));
