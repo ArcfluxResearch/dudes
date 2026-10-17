@@ -1764,7 +1764,12 @@ fn authorize_owed_replay(
     assert_eq!(receipt.claim.episode.work, expected.work);
 }
 
-fn assert_owed_issue_preserved(records: &[Record], original: &Record) {
+fn assert_owed_issue_preserved(
+    records: &[Record],
+    original: &Record,
+    issue_lsn: Lsn,
+    request_id: Hex32,
+) {
     let Record::TurnIssued {
         agent, goal, turn, ..
     } = original
@@ -1802,6 +1807,13 @@ fn assert_owed_issue_preserved(records: &[Record], original: &Record) {
             .count(),
         1
     );
+    assert!(records.iter().any(|record| matches!(record,
+        Record::RecoveryAuthorized(authorization)
+            if authorization.request_id == request_id
+                && authorization.binding.work.agent == *agent
+                && authorization.binding.work.goal == *goal
+                && authorization.binding.work.turn == *turn
+                && authorization.binding.issue_lsn == issue_lsn)));
     assert!(
         !records
             .iter()
@@ -1905,14 +1917,7 @@ fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_go
         }
     ));
     assert_eq!(fixture.records(), before);
-    assert_owed_issue_preserved(&before, &original_issue);
-    assert!(before.iter().any(|record| matches!(record,
-        Record::RecoveryAuthorized(authorization)
-            if authorization.request_id == recovery_request
-                && authorization.binding.work.agent == agent
-                && authorization.binding.work.goal == goal
-                && authorization.binding.work.turn == issued
-                && authorization.binding.issue_lsn == issue_lsn)));
+    assert_owed_issue_preserved(&before, &original_issue, issue_lsn, recovery_request);
     restarted.stop(ExitCause::Ended);
 }
 
