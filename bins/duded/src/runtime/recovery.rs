@@ -113,6 +113,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 RecoveryInspectResult::Unavailable { reason },
             ))
         };
+        if self.sup.is_closing() {
+            return unavailable(RecoveryInspectUnavailable::NotRecoverable);
+        }
         let Some(row) = self.sup.world().agents.get(&agent) else {
             return unavailable(RecoveryInspectUnavailable::AgentUnavailable);
         };
@@ -262,6 +265,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let PumpReport::Recovery(context) = report else {
             unreachable!("owned recovery report")
         };
+        if result.is_err() {
+            return Answered::RecoverySubmitted(RecoverySubmitResult::Unknown {
+                request_id: request,
+            });
+        }
         if let Some(reason) = context.update.refusal {
             return Answered::RecoverySubmitted(RecoverySubmitResult::Refused {
                 reason: refusal(reason),
@@ -269,11 +277,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     required: context.update.prefix.required,
                     resume: context.update.prefix.resume,
                 },
-            });
-        }
-        if result.is_err() {
-            return Answered::RecoverySubmitted(RecoverySubmitResult::Unknown {
-                request_id: request,
             });
         }
         Answered::RecoverySubmitted(match self.ctx.recovery_read(request) {
@@ -447,11 +450,13 @@ fn recovery_waits<C: Clock, R: Rng>(
         hops: ready(goal.is_some_and(|goal| goal.turns_on_goal >= goal.goal.hop_cap)),
         instruction_review: ready(
             row.goal
-                .is_some_and(|goal| sup.world().instructions.pending_for_goal(goal)),
+                .and_then(|goal| sup.world().ticket_goal(goal))
+                .is_some_and(|(card, _)| sup.world().instructions.ticket_reason(card).is_some()),
         ),
         instruction_comparison: ready(
             row.goal
-                .is_some_and(|goal| sup.world().instructions.pending_for_goal(goal)),
+                .and_then(|goal| sup.world().ticket_goal(goal))
+                .is_some_and(|(card, _)| sup.world().instructions.observation_pending(card)),
         ),
     }
 }

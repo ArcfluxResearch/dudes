@@ -17,7 +17,8 @@ use crate::mail::{MailWakeDecided, MailWakeInput};
 use crate::predicate::judge;
 
 /// Most UTF-8 bytes one `Continue` task may carry.
-const NEXT_WORK_TASK_MAX_BYTES: usize = 65_536;
+/// Byte ceiling shared by ordinary mandatory packing and supplemental recovery context.
+pub const NEXT_WORK_TASK_MAX_BYTES: usize = 65_536;
 
 const BROWSER_NOTE_PREFIX: &str = "\n\n[browser note]\n";
 const BROWSER_NOTE_SUFFIX: &str = "\n[end browser note]";

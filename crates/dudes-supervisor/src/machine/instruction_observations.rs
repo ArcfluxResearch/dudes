@@ -1247,7 +1247,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Some(note) => dudes_policy::decide_with_browser_note(&input, &note),
             None => dudes_policy::decide(&input),
         };
-        matches!(&decided.decision, LoopDecision::Continue { task: current } if current.as_str() == task)
+        matches!(&decided.decision, LoopDecision::Continue { task: current } if self.recovery_task(agent, current).as_deref() == Some(task))
             && decided.answers.as_slice() == answers
     }
 

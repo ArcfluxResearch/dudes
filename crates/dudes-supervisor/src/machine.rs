@@ -522,6 +522,7 @@ pub struct Supervisor<C: Clock, R: Rng> {
     status: BTreeMap<AgentId, AgentStatus>,
     ledger: Ledger,
     live_issues: BTreeSet<TurnId>,
+    recovery_discovery: recovery::Discovery,
     spend: BTreeMap<AgentId, SpendView>,
     mail_refreshes: BTreeMap<AgentId, MailRefresh>,
     next_mail_request: u64,
@@ -702,6 +703,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             status: BTreeMap::new(),
             ledger: Ledger::new(),
             live_issues: BTreeSet::new(),
+            recovery_discovery: recovery::Discovery::default(),
             spend: BTreeMap::new(),
             mail_refreshes: BTreeMap::new(),
             next_mail_request: 0,
@@ -1094,15 +1096,25 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// React to one input.
     ///
     /// Effects are available through [`Self::effects`] or [`Self::take_effects`] after success.
-    /// The outcome reports only actual durable folding; ignored inputs report no new fold.
+    /// The outcome reports actual durable folding and request-local recovery progress; ignored inputs report no new fold.
     ///
     /// # Errors
     /// Returns the actual journal position and fixed reason when a checked fold refuses.
+    pub fn handle(&mut self, input: Input) -> Result<Handled, DurableInputError> {
+        let replayed = matches!(&input, Input::Replayed { .. });
+        let scheduling = matches!(&input, Input::Started | Input::Tick);
+        let handled = self.handle_input(input)?;
+        if !replayed && (scheduling || handled.folded_through().is_some()) {
+            self.drain_recovery_invalidations();
+        }
+        Ok(handled)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the exhaustive typed input routing stays in one visible match"
     )]
-    pub fn handle(&mut self, input: Input) -> Result<Handled, DurableInputError> {
+    fn handle_input(&mut self, input: Input) -> Result<Handled, DurableInputError> {
         self.pending.clear();
         match input {
             Input::MissingWorktrees(agents) => self.set_missing_worktrees(agents),
@@ -1460,6 +1472,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     fn apply_entry(&mut self, lsn: Lsn, entry: &Entry) -> Result<(), DurableInputError> {
         self.fold_world(lsn, entry)?;
+        self.recovery_discovery
+            .folded(&self.world, lsn, &entry.record);
         let mail_wake_accepted = self.world.mail_wake_entry_accepted(lsn);
         self.apply_entry_effects(entry, mail_wake_accepted);
         Ok(())
@@ -1475,6 +1489,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         } else {
             false
         };
+        self.recovery_discovery
+            .folded(&self.world, main.0, &main.1.record);
+        if let Some((lsn, entry)) = &checkpoint {
+            self.recovery_discovery
+                .folded(&self.world, *lsn, &entry.record);
+        }
         self.apply_entry_effects(&main.1, main_mail_wake_accepted);
         if let Some((_, entry)) = checkpoint {
             self.apply_entry_effects(&entry, checkpoint_mail_wake_accepted);
@@ -2191,6 +2211,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         turn: TurnId,
         mut launch: Box<PreparedLaunch>,
     ) -> bool {
+        if !self.recovery_launch_context_allowed(agent, turn, &launch.session) {
+            self.spawning.remove(&turn);
+            return false;
+        }
         let Some(row) = self.world.agents.get(&agent).cloned() else {
             self.spawning.remove(&turn);
             return false;
@@ -2262,6 +2286,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         mut launch: Box<PreparedLaunch>,
         mcp_grant: Option<Lsn>,
     ) {
+        if !self.recovery_launch_context_allowed(agent, turn, &launch.session) {
+            self.spawning.remove(&turn);
+            return;
+        }
         if !self.world.mail_wake_history_valid() {
             return;
         }
@@ -2788,11 +2816,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             ),
             Err(()) => return,
         };
-        let recovered_task = if recap.is_empty() {
-            task.to_owned()
-        } else {
-            format!("{task}\n\nPrevious work context:\n{recap}")
-        };
+        let recovered_task = recovery::with_recap(task, &recap);
         let task = recovered_task.as_str();
         // One selection, obtained **before** the record that carries it and handed to the launch
         // rather than re-derived inside it. Asking the adapter twice would let the

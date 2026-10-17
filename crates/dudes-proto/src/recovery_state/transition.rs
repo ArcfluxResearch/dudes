@@ -580,7 +580,7 @@ fn validate_hold(
     }
     match hold.evidence() {
         RecoveryEvidence::Hold {
-            provenance: Provenance::Observed,
+            provenance: Provenance::Observed | Provenance::Inferred,
             cause:
                 RecoveryHoldWitness::RepeatedFastFailure {
                     first: first_turn,

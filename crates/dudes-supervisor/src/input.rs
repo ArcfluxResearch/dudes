@@ -1,7 +1,7 @@
 //! Machine inputs and the durable progress made while handling them.
 //!
 //! Inputs carry values the runtime already has: parsed commands, acknowledged appends and process
-//! observations. The handling outcome names only an actual folded position. These values contain
+//! observations. The handling outcome names actual folds and request-local recovery progress. These values contain
 //! no JSON parsing or World access; the runtime observes and the machine decides.
 
 use std::collections::BTreeMap;

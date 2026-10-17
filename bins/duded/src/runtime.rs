@@ -3959,9 +3959,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             // Their durable acknowledgements remain unfolded; this pump does not drain
             // them or claim that its failed call reached quiescence.
             executed?;
-            if report.recovery_refused() {
-                break;
-            }
             *mail_acknowledgments |= mail_acknowledged_by_effect(effect);
             if let Some(lsn) = ctx.writer.poisoned() {
                 return Err(dudes_journal::Error::Poisoned { lsn }.into());
@@ -4017,10 +4014,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     queue.pop_front();
                     continue;
                 }
-                if report.recovery_refused() {
-                    break;
-                }
                 if queue.is_empty() && start.is_none() {
+                    if report.recovery_refused() {
+                        break;
+                    }
                     if native_settlements < dudes_supervisor::host::MAX_OWNED_TARGET_QUERY_ROWS {
                         match self.ctx.settle_one_attached_boundary(
                             &mut self.sup,

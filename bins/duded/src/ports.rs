@@ -2587,11 +2587,11 @@ impl dudes_rpc::methods::recovery::RecoveryControl for Handle {
 
     fn submit_recovery(
         &self,
-        params: dudes_proto::rpc::recovery::RecoverySubmitParams,
+        params: &dudes_proto::rpc::recovery::RecoverySubmitParams,
         admission: dudes_rpc::dispatch::OperatorAdmission,
     ) -> Result<dudes_proto::rpc::recovery::RecoverySubmitResult, RpcError> {
         use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand, RecoveryExpected};
-        let digest = recovery_digest(&params)?;
+        let digest = recovery_digest(params)?;
         let command = RecoveryCommand {
             request_id: params.request_id,
             digest,
@@ -2652,12 +2652,11 @@ fn recovery_digest(
     params: &dudes_proto::rpc::recovery::RecoverySubmitParams,
 ) -> Result<dudes_proto::record::Hex32, RpcError> {
     let bytes = serde_json::to_vec(params).map_err(|_| unavailable())?;
-    let mut digest = blake3::Hasher::new();
+    use sha2::{Digest as _, Sha256};
+    let mut digest = Sha256::new();
     digest.update(b"dudes.recovery.intent.v1\0");
     digest.update(&bytes);
-    Ok(dudes_proto::record::Hex32::new(
-        *digest.finalize().as_bytes(),
-    ))
+    Ok(dudes_proto::record::Hex32::new(digest.finalize().into()))
 }
 
 #[cfg(test)]
@@ -2676,6 +2675,13 @@ mod recovery_intent_tests {
         let original: RecoverySubmitParams = serde_json::from_str(INTENT).unwrap();
         assert_eq!(serde_json::to_string(&original).unwrap(), INTENT);
         let digest = recovery_digest(&original).unwrap();
+        assert_eq!(
+            digest,
+            dudes_proto::record::Hex32::new([
+                141, 78, 75, 201, 121, 169, 184, 232, 115, 87, 134, 160, 145, 51, 114, 43, 95, 141,
+                112, 143, 169, 97, 133, 2, 145, 206, 239, 95, 31, 164, 173, 168
+            ])
+        );
         let mut edits = Vec::new();
         let mut changed = original;
         changed.choice = RecoveryChoice::TryRecorded;
@@ -2709,6 +2715,28 @@ mod recovery_intent_tests {
             round: 1,
         });
         edits.push(changed);
+        let mut full = original;
+        let episode = dudes_proto::recovery::RecoveryEpisodeId {
+            work: original.expected.work,
+            origin: dudes_types::Lsn(7),
+        };
+        full.expected.episode = Some(episode);
+        full.expected.expected_predecessor = Some(dudes_proto::recovery::RecoveryClaimRef {
+            episode,
+            authorization_lsn: dudes_types::Lsn(11),
+        });
+        full.expected.control_lsn = Some(dudes_types::Lsn(8));
+        full.expected.ticket = Some(dudes_proto::rpc::recovery::ReviewedTicketRound {
+            card: dudes_types::CardId::from_parts(1, 4),
+            round: 1,
+        });
+        assert_eq!(
+            recovery_digest(&full).unwrap(),
+            dudes_proto::record::Hex32::new([
+                150, 248, 228, 205, 168, 194, 133, 57, 184, 63, 32, 137, 92, 135, 51, 65, 202, 63,
+                201, 46, 228, 133, 221, 48, 97, 222, 189, 250, 41, 3, 188, 171
+            ])
+        );
         for changed in edits {
             assert_ne!(recovery_digest(&changed).unwrap(), digest, "{changed:?}");
         }

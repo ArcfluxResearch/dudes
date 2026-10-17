@@ -56,13 +56,22 @@ impl Continuing {
 impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// Inspect journal-derived eligibility without pumping, minting identities or appending work.
     /// Executor liveness and persistent certification are separate requirements.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unavailable, claimed or inconsistent current boundary.
     pub fn recovery_opportunity(
         &self,
         agent: AgentId,
     ) -> Result<RecoveryOpportunity, RecoveryRefusal> {
         let binding = self.recovery_binding(agent)?;
         let facts = self.world.recovery_facts(&binding).map_err(refusal)?;
-        if facts.control.halted {
+        if facts.control.halted
+            || matches!(
+                facts.control.hold,
+                Some(dudes_proto::recovery_state::history::RecoveryHoldWitness::Unknown)
+            )
+        {
             return Err(RecoveryRefusal::NotRecoverable);
         }
         let (state, _) = self.world.recovery_projection().map_err(refusal)?;
@@ -94,13 +103,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let turn = &self.world.turns[&binding.work.turn];
         if let Some(episode) = current.filter(|episode| episode.authorization_lsn.is_none()) {
             let required = existing_required(episode, turn, &candidates)?;
-            return Ok(opportunity(
+            let mut view = opportunity(
                 required,
                 Some(episode.id),
                 None,
                 facts.control_lsn,
                 facts.confirmed_session.is_some(),
-            ));
+            );
+            if facts.control.paused || facts.control.hold.is_some() {
+                view.expected.source_lsn =
+                    facts.control_lsn.ok_or(RecoveryRefusal::StaleControl)?;
+            }
+            return Ok(view);
         }
         for (reason, origin, boundary) in candidates {
             let required = RecoveryRequired {
@@ -197,6 +211,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 RecoveryBoundary::MissingSpawn,
             ));
         }
+        candidates.sort_by_key(|(reason, _, _)| match reason {
+            RecoveryReason::UnconfirmedContext => 0,
+            RecoveryReason::Vanished => 1,
+            RecoveryReason::MissingSpawn => 2,
+            RecoveryReason::HeldOrPausedFailure => 3,
+        });
         candidates
     }
 
@@ -258,6 +278,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         &mut self,
         command: RecoveryCommand,
     ) -> Result<RecoveryUpdate, RecoveryRefusal> {
+        if self.recovery_discovery.busy() {
+            return Err(RecoveryRefusal::Unavailable);
+        }
         let view = self.recovery_opportunity(command.expected.work.agent)?;
         compare_expected(command.expected, view.expected)?;
         let mut next = Continuing {
@@ -435,7 +458,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         .announce_session(episode.work.agent, true)
                         .id()
                         .cloned(),
-                    recap: RecoveryRecap::default(),
+                    recap: self.recovery_recap(&next.required.binding),
                 }
             };
             RecoveryPlan::New { turn, context }
@@ -458,9 +481,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     pub(super) fn recovery_admission_allowed(&self, agent: AgentId) -> bool {
+        if self.recovery_discovery.busy() {
+            return false;
+        }
         let Ok(binding) = self.recovery_binding(agent) else {
             return true;
         };
+        if self.recovery_owed_saving(agent, binding.work.turn) {
+            return true;
+        }
         let Ok((state, _)) = self.world.recovery_projection() else {
             return false;
         };
@@ -478,10 +507,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             if matches!(receipt.state, RecoveryClaimState::Consumed { .. }) {
                 return self.recovery_opportunity(agent).is_err();
             }
-            if self
-                .world
-                .recovery_facts(&receipt.authorization.binding)
-                .is_err()
+            let Ok(facts) = self.world.recovery_facts(&receipt.authorization.binding) else {
+                return false;
+            };
+            if let RecoveryPlan::New {
+                context: RecoveryContext::TryRecorded { session },
+                ..
+            } = &receipt.authorization.plan
+                && facts.confirmed_session.as_ref() != Some(session)
             {
                 return false;
             }
@@ -494,7 +527,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 return false;
             }
             return match receipt.state {
-                RecoveryClaimState::Pending => true,
+                RecoveryClaimState::Pending => !self.closing_active,
                 RecoveryClaimState::IssueBound(issue) => {
                     self.live_issues.contains(&issue.issued.work.turn)
                 }
@@ -504,12 +537,27 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 }
             };
         }
-        self.live_issues.contains(&binding.work.turn) || self.recovery_opportunity(agent).is_err()
+        if self.live_issues.contains(&binding.work.turn)
+            && self
+                .world
+                .turns
+                .get(&binding.work.turn)
+                .is_some_and(|turn| turn.is_issued_not_spawned())
+        {
+            return true;
+        }
+        match self.recovery_opportunity(agent) {
+            Ok(view) => view.required.reason == RecoveryReason::HeldOrPausedFailure,
+            Err(_) => true,
+        }
     }
 
     pub(super) fn ensure_recovery_admission(&mut self, agent: AgentId) -> bool {
         if self.recovery_admission_allowed(agent) {
             return true;
+        }
+        if self.closing_active {
+            return false;
         }
         if let Ok(view) = self.recovery_opportunity(agent) {
             let existing = self
@@ -568,6 +616,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return false;
         }
+        if self.recovery_owed_saving(agent, turn) {
+            return true;
+        }
+        if self.world.recovery_witness(row.issue_lsn).is_ok_and(|source| matches!(source.evidence(), RecoveryEvidence::Issue { carrier: dudes_proto::recovery_state::history::RecoveryIssueCarrier::CompletedNote { .. } | dudes_proto::recovery_state::history::RecoveryIssueCarrier::MailWake { .. }, .. })) { return true; }
         if !self.live_issues.contains(&turn) {
             return false;
         }
@@ -599,6 +651,17 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .is_some_and(|owner| owner.control_lsn == receipt.authorization.resulting_control)
     }
 
+    fn recovery_owed_saving(&self, agent: AgentId, turn: TurnId) -> bool {
+        self.closing_active
+            && self.world.closing.as_ref().is_some_and(|session| {
+                !session.is_complete()
+                    && session
+                        .participants
+                        .get(&agent)
+                        .is_some_and(|participant| participant.saving_turn == Some(turn))
+            })
+    }
+
     pub(super) fn recovery_new_context(
         &self,
         agent: AgentId,
@@ -621,6 +684,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if !matches!(receipt.state, RecoveryClaimState::Pending) {
             return Err(());
         }
+        if self.closing_active {
+            return Err(());
+        }
         let RecoveryPlan::New { turn, context } = &receipt.authorization.plan else {
             return Err(());
         };
@@ -638,6 +704,55 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             ),
         };
         Ok(Some((*turn, session, recap)))
+    }
+
+    fn recovery_recap(&self, binding: &RecoveryBinding) -> RecoveryRecap {
+        let goal = &self.world.goals[&binding.work.goal];
+        let role = &self.world.agents[&binding.work.agent].role;
+        let mut text = format!(
+            "Prior execution effects are unknown. This recap does not restore conversation history.\n\nRecorded goal: {}",
+            goal.goal.text
+        );
+        let mut sources = vec![goal.installed_lsn];
+        if text.len() < dudes_proto::recovery::MAX_RECOVERY_RECAP_BYTES && !role.is_empty() {
+            text.push_str("\n\nRecorded role: ");
+            text.push_str(role);
+            sources.push(binding.hired_lsn);
+        }
+        if text.len() > dudes_proto::recovery::MAX_RECOVERY_RECAP_BYTES {
+            let mut end = dudes_proto::recovery::MAX_RECOVERY_RECAP_BYTES;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+        }
+        sources.sort_unstable();
+        sources.dedup();
+        RecoveryRecap {
+            text,
+            sources,
+            delivered_answers: Vec::new(),
+        }
+    }
+
+    pub(super) fn recovery_task(&self, agent: AgentId, task: &str) -> Option<String> {
+        let context = self.recovery_new_context(agent).ok()?;
+        Some(match context {
+            Some((_, _, recap)) => with_recap(task, &recap),
+            None => task.to_owned(),
+        })
+    }
+
+    pub(super) fn recovery_launch_context_allowed(
+        &self,
+        agent: AgentId,
+        turn: TurnId,
+        session: &dudes_providers::adapter::TurnSession,
+    ) -> bool {
+        self.recovery_launch_allowed(agent, turn)
+            && self
+                .recovery_repeat_context(agent, turn)
+                .is_none_or(|expected| &expected == session)
     }
 
     fn recovery_repeat_context(
@@ -669,6 +784,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     /// Identify only the actual parked command-owned entry; metadata is not authority.
+    #[must_use]
     pub fn recovery_append(&self, token: PersistToken, entry: &Entry) -> Option<RecoveryAppend> {
         let parked = self.ledger.get(&token)?;
         if &parked.entry != entry {
@@ -812,5 +928,299 @@ pub(super) const fn refusal(error: RecoveryStateError) -> RecoveryRefusal {
         RecoveryStateError::Context => RecoveryRefusal::ChoiceUnavailable,
         RecoveryStateError::Control => RecoveryRefusal::StaleControl,
         _ => RecoveryRefusal::StaleWork,
+    }
+}
+
+pub(super) fn with_recap(task: &str, recap: &str) -> String {
+    const SEPARATOR: &str = "\n\nPrevious work context:\n";
+    if !recap.is_empty()
+        && task
+            .len()
+            .saturating_add(SEPARATOR.len())
+            .saturating_add(recap.len())
+            <= dudes_policy::r#loop::NEXT_WORK_TASK_MAX_BYTES
+    {
+        format!("{task}{SEPARATOR}{recap}")
+    } else {
+        task.to_owned()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum InvalidationSubject {
+    GoalSet(AgentId),
+    GoalCleared(AgentId, dudes_types::GoalId),
+    GoalReassigned(AgentId, dudes_types::GoalId),
+    GoalReviewed(AgentId, dudes_types::GoalId),
+    GoalCompleted(AgentId, dudes_types::GoalId),
+    Control(AgentId),
+    AgentUnavailable(AgentId),
+    TicketAssigned(dudes_types::CardId),
+    TicketStarted(dudes_types::CardId),
+    TicketRemoved(dudes_types::CardId),
+    Lease(dudes_types::WorktreeId),
+}
+
+impl InvalidationSubject {
+    fn for_binding(binding: &RecoveryBinding) -> Vec<Self> {
+        let work = binding.work;
+        let mut keys = vec![
+            Self::GoalSet(work.agent),
+            Self::GoalCleared(work.agent, work.goal),
+            Self::GoalReassigned(work.agent, work.goal),
+            Self::GoalReviewed(work.agent, work.goal),
+            Self::GoalCompleted(work.agent, work.goal),
+            Self::Control(work.agent),
+            Self::AgentUnavailable(work.agent),
+        ];
+        if let Some(ticket) = binding.ticket {
+            keys.extend([
+                Self::TicketAssigned(ticket.card),
+                Self::TicketStarted(ticket.card),
+                Self::TicketRemoved(ticket.card),
+            ]);
+        }
+        if let Some(lease) = binding.worktree {
+            keys.push(Self::Lease(lease));
+        }
+        keys
+    }
+
+    fn reason(self) -> dudes_proto::recovery::RecoveryInvalidationReason {
+        use dudes_proto::recovery::RecoveryInvalidationReason as R;
+        match self {
+            Self::GoalSet(_)
+            | Self::GoalCleared(..)
+            | Self::GoalReassigned(..)
+            | Self::GoalReviewed(..) => R::GoalChanged,
+            Self::GoalCompleted(..) => R::GoalCompleted,
+            Self::Control(_) => R::ControlChanged,
+            Self::AgentUnavailable(_) => R::AgentUnavailable,
+            Self::TicketAssigned(_) | Self::TicketStarted(_) | Self::TicketRemoved(_) => {
+                R::TicketChanged
+            }
+            Self::Lease(_) => R::LeaseChanged,
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct Discovery {
+    claims: std::collections::BTreeMap<Lsn, RecoveryClaimRef>,
+    subjects: std::collections::BTreeMap<InvalidationSubject, usize>,
+    evidence: std::collections::BTreeMap<InvalidationSubject, [Option<Lsn>; 2]>,
+    cursor: Option<Lsn>,
+    dirty: bool,
+    again: bool,
+    inflight: Option<Lsn>,
+}
+
+impl Discovery {
+    fn busy(&self) -> bool {
+        self.dirty || self.inflight.is_some()
+    }
+
+    fn retire(&mut self, authorization: &RecoveryAuthorized, lsn: Lsn) {
+        if self.claims.remove(&lsn).is_none() {
+            return;
+        }
+        for key in InvalidationSubject::for_binding(&authorization.binding) {
+            if let Some(count) = self.subjects.get_mut(&key) {
+                *count -= 1;
+                if *count == 0 {
+                    self.subjects.remove(&key);
+                    self.evidence.remove(&key);
+                }
+            }
+        }
+        if self.inflight == Some(lsn) {
+            self.inflight = None;
+        }
+        if self.claims.is_empty() {
+            self.cursor = None;
+            self.dirty = false;
+            self.again = false;
+        }
+    }
+
+    fn next(&mut self) -> Option<RecoveryClaimRef> {
+        if !self.dirty || self.inflight.is_some() {
+            return None;
+        }
+        let after = self.cursor.unwrap_or(Lsn::ZERO);
+        if let Some((&lsn, &claim)) = self
+            .claims
+            .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
+            .next()
+        {
+            self.cursor = Some(lsn);
+            return Some(claim);
+        }
+        self.cursor = None;
+        self.dirty = self.again;
+        self.again = false;
+        None
+    }
+
+    pub(super) fn folded(&mut self, world: &crate::World, lsn: Lsn, record: &Record) {
+        let Ok((state, _)) = world.recovery_projection() else {
+            return;
+        };
+        match record {
+            Record::RecoveryAuthorized(authorization) => {
+                let claim = RecoveryClaimRef {
+                    episode: authorization.episode,
+                    authorization_lsn: lsn,
+                };
+                if state
+                    .claim_receipt(claim)
+                    .is_ok_and(|receipt| matches!(receipt.state, RecoveryClaimState::Pending))
+                    && self.claims.insert(lsn, claim).is_none()
+                {
+                    for key in InvalidationSubject::for_binding(&authorization.binding) {
+                        *self.subjects.entry(key).or_default() += 1;
+                    }
+                }
+            }
+            Record::RecoveryInvalidated(invalidated) => {
+                if let Ok(receipt) = state.claim_receipt(invalidated.claim) {
+                    self.retire(receipt.authorization, invalidated.claim.authorization_lsn);
+                }
+            }
+            _ => {
+                if let Ok(source) = world.recovery_witness(lsn)
+                    && let Some(issue) = source.issue()
+                    && let Some(claim) = state.planned_claim(issue.issued.work.turn)
+                    && let Ok(receipt) = state.claim_receipt(claim)
+                    && !matches!(receipt.state, RecoveryClaimState::Pending)
+                {
+                    self.retire(receipt.authorization, claim.authorization_lsn);
+                }
+            }
+        }
+        self.capture(world, lsn);
+    }
+
+    fn capture(&mut self, world: &crate::World, lsn: Lsn) {
+        use dudes_proto::RecordKind as K;
+        use dudes_proto::recovery_state::history::RecoveryWitnessOwner as O;
+        let Ok(source) = world.recovery_witness(lsn) else {
+            return;
+        };
+        let reference = source.reference();
+        let key = match (reference.kind, reference.owner) {
+            (K::GoalSet, O::Goal { agent, .. }) => InvalidationSubject::GoalSet(agent),
+            (K::GoalCleared, O::Goal { agent, goal }) => {
+                InvalidationSubject::GoalCleared(agent, goal)
+            }
+            (K::GoalReassigned, O::Goal { agent, goal }) if matches!(source.evidence(), RecoveryEvidence::Reassigned { to } if *to != agent) => {
+                InvalidationSubject::GoalReassigned(agent, goal)
+            }
+            (K::TicketInstructionReviewed, _) => {
+                let Some(work) = source.context().cleared_goal else {
+                    return;
+                };
+                InvalidationSubject::GoalReviewed(work.agent, work.goal)
+            }
+            (K::PredicateResult, _) => {
+                let Some(work) = source.context().qualified_completion else {
+                    return;
+                };
+                InvalidationSubject::GoalCompleted(work.agent, work.goal)
+            }
+            (K::Pause | K::Resume | K::Halt | K::AgentHeld, O::Agent(agent)) => {
+                InvalidationSubject::Control(agent)
+            }
+            (K::AgentRetired | K::Attached, O::Agent(agent)) => {
+                InvalidationSubject::AgentUnavailable(agent)
+            }
+            (K::TicketAssigned, O::Card(card)) => InvalidationSubject::TicketAssigned(card),
+            (K::TicketRemoved, O::Card(card)) => InvalidationSubject::TicketRemoved(card),
+            (K::TicketStarted, O::Ticket { card, .. }) => InvalidationSubject::TicketStarted(card),
+            (K::WorktreeRemoved, O::Worktree(lease)) => InvalidationSubject::Lease(lease),
+            _ => return,
+        };
+        if !self.subjects.contains_key(&key) {
+            return;
+        }
+        let old = self.evidence.get(&key).copied().unwrap_or([None; 2]);
+        let distinct = matches!(
+            key,
+            InvalidationSubject::TicketStarted(_) | InvalidationSubject::GoalSet(_)
+        ) && old[0]
+            .and_then(|at| world.recovery_witness(at).ok())
+            .is_some_and(|old| old.reference().owner != reference.owner);
+        self.evidence
+            .insert(key, [Some(lsn), if distinct { old[0] } else { old[1] }]);
+        if self.dirty {
+            self.again = true;
+        } else {
+            self.dirty = true;
+            self.cursor = None;
+        }
+    }
+
+    fn candidates(
+        &self,
+        binding: &RecoveryBinding,
+    ) -> Vec<dudes_proto::recovery::RecoveryInvalidationEvidence> {
+        InvalidationSubject::for_binding(binding)
+            .into_iter()
+            .flat_map(|key| {
+                self.evidence
+                    .get(&key)
+                    .copied()
+                    .unwrap_or([None; 2])
+                    .into_iter()
+                    .flatten()
+                    .map(move |lsn| {
+                        dudes_proto::recovery::RecoveryInvalidationEvidence::RecordedChange {
+                            reason: key.reason(),
+                            lsn,
+                        }
+                    })
+            })
+            .collect()
+    }
+}
+
+impl<C: Clock, R: Rng> Supervisor<C, R> {
+    pub(super) fn drain_recovery_invalidations(&mut self) {
+        for _ in 0..16 {
+            let Some(claim) = self.recovery_discovery.next() else {
+                return;
+            };
+            let Ok((state, history)) = self.world.recovery_projection() else {
+                return;
+            };
+            let Ok(receipt) = state.claim_receipt(claim) else {
+                return;
+            };
+            if !matches!(receipt.state, RecoveryClaimState::Pending) {
+                self.recovery_discovery
+                    .retire(receipt.authorization, claim.authorization_lsn);
+                continue;
+            }
+            let Some(through) = self.world.last_applied_lsn else {
+                return;
+            };
+            let candidate = self
+                .recovery_discovery
+                .candidates(&receipt.authorization.binding)
+                .into_iter()
+                .find_map(|evidence| {
+                    let record = dudes_proto::recovery::RecoveryInvalidated { claim, evidence };
+                    state
+                        .validate_invalidation(&record, through, history)
+                        .is_ok()
+                        .then_some(record)
+                });
+            if let Some(record) = candidate {
+                let agent = receipt.authorization.binding.work.agent;
+                self.recovery_discovery.inflight = Some(claim.authorization_lsn);
+                self.persist(Record::RecoveryInvalidated(record), Then::Decide { agent });
+                return;
+            }
+        }
     }
 }

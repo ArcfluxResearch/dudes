@@ -387,3 +387,183 @@ fn pending_new_claim_is_exclusive_with_current_predecessor_and_an_open_question(
     assert_eq!(machine.rng.drawn(), drawn);
     assert!(machine.effects().is_empty());
 }
+
+#[test]
+fn unseen_issue_bound_claim_refuses_stale_none_but_fresh_exact_consent_supersedes() {
+    let (mut machine, agent) = owed(false);
+    machine
+        .handle(crate::Input::Replayed {
+            lsn: Lsn(8_000),
+            entry: Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: Record::HumanQuestion {
+                    agent,
+                    text: "Keep this question open".into(),
+                },
+            },
+        })
+        .unwrap();
+    let required = machine.recovery_opportunity(agent).unwrap().required;
+    let work = required.binding.work;
+    let original = machine.world.turns[&work.turn].clone();
+    machine
+        .handle(crate::Input::Replayed {
+            lsn: Lsn(9_000),
+            entry: Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: Record::RecoveryRequired(required),
+            },
+        })
+        .unwrap();
+    let first = command(&machine, agent);
+    assert!(first.expected.episode.is_some());
+    assert_eq!(first.expected.predecessor, None);
+    let old_expected = first.expected;
+    machine.recover(first);
+    let (token, entry) = emitted(&machine);
+    acknowledge(&mut machine, token, entry, Lsn(10_001));
+    let claim = machine
+        .world
+        .recovery_projection()
+        .unwrap()
+        .0
+        .work_claim(work)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        machine
+            .world
+            .recovery_projection()
+            .unwrap()
+            .0
+            .claim_receipt(claim)
+            .unwrap()
+            .state,
+        RecoveryClaimState::IssueBound(_)
+    ));
+    let before = machine.world.recovery_projection().unwrap().0.clone();
+    let drawn = machine.rng.drawn();
+    let mut stale = command(&machine, agent);
+    stale.request_id = Hex32::new([61; 32]);
+    stale.expected = old_expected;
+    let refused = machine.recover(stale);
+    assert_eq!(
+        refused.recovery().unwrap().refusal,
+        Some(RecoveryRefusal::StalePredecessor)
+    );
+    assert_eq!(machine.world.recovery_projection().unwrap().0, &before);
+    assert_eq!(machine.rng.drawn(), drawn);
+    assert!(machine.effects().is_empty());
+    let mut fresh = command(&machine, agent);
+    fresh.request_id = Hex32::new([62; 32]);
+    assert_eq!(fresh.expected.predecessor, Some(claim));
+    machine.recover(fresh);
+    let (token, entry) = emitted(&machine);
+    assert!(
+        matches!(&entry.record, Record::RecoveryRequired(required) if required.predecessor == Some(claim))
+    );
+    acknowledge(&mut machine, token, entry, Lsn(10_003));
+    let (token, entry) = emitted(&machine);
+    acknowledge(&mut machine, token, entry, Lsn(10_005));
+    let state = machine.world.recovery_projection().unwrap().0;
+    assert!(
+        matches!(state.claim_receipt(claim).unwrap().state, RecoveryClaimState::Superseded { issue, .. } if issue.lsn == original.issue_lsn && issue.issued.work == work)
+    );
+    let current = state.work_claim(work).unwrap().unwrap();
+    assert_ne!(current, claim);
+    assert_eq!(current.episode.origin, Lsn(10_003));
+    assert!(
+        matches!(state.claim_receipt(current).unwrap().state, RecoveryClaimState::IssueBound(issue) if issue.lsn == original.issue_lsn && issue.issued.work == work)
+    );
+    let turn = &machine.world.turns[&work.turn];
+    assert_eq!(
+        (&turn.task, &turn.answers, turn.issue_lsn),
+        (&original.task, &original.answers, original.issue_lsn)
+    );
+}
+
+#[test]
+fn a_single_confirmed_context_failure_without_hold_keeps_ordinary_admission() {
+    let mut harness = Harness::new();
+    let (agent, _) = harness.hire_with_goal(&["true"]);
+    let turn = harness.open_turn(agent).unwrap();
+    let session = harness.supervisor.world().turns[&turn]
+        .announced
+        .clone()
+        .expect("the fixture pins its initial session");
+    let mut rng = FakeRng::new();
+    rng.reserve_entries(&harness.journal).unwrap();
+    let mut machine = Supervisor::new(Harness::config(), FakeClock::frozen(1_787_394_700_000), rng);
+    for (entry, lsn) in harness.journal.into_iter().zip(1u64..) {
+        machine
+            .handle(crate::Input::Replayed {
+                lsn: Lsn(lsn),
+                entry,
+            })
+            .unwrap();
+    }
+    machine
+        .handle(crate::Input::Replayed {
+            lsn: Lsn(9_000),
+            entry: Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: Record::SessionLearned {
+                    agent,
+                    turn,
+                    session,
+                },
+            },
+        })
+        .unwrap();
+    machine
+        .handle(crate::Input::Replayed {
+            lsn: Lsn(9_001),
+            entry: Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: Record::TurnEnded {
+                    agent,
+                    turn,
+                    mode: dudes_types::Mode::Managed,
+                    provenance: dudes_types::Provenance::Observed,
+                    elapsed_ms: Some(10_000),
+                    exit: dudes_proto::ExitStatus::UNKNOWN,
+                    usage: None,
+                    session_usage: None,
+                    model_usage: std::collections::BTreeMap::new(),
+                    last_message: None,
+                    final_reply: None,
+                    session: None,
+                    outcome: Some(dudes_proto::TurnOutcome::NoResult),
+                },
+            },
+        })
+        .unwrap();
+    assert!(machine.world.agents[&agent].session.is_some());
+    assert!(machine.world.agents[&agent].automatic_hold.is_none());
+    assert_eq!(
+        machine.recovery_opportunity(agent),
+        Err(RecoveryRefusal::NotRecoverable)
+    );
+    assert!(machine.ensure_recovery_admission(agent));
+    machine.decide(agent);
+    assert!(machine.effects().iter().any(|effect| matches!(
+        effect,
+        Effect::Persist {
+            entry: Entry {
+                record: Record::LoopDecided { .. },
+                ..
+            },
+            ..
+        }
+    )));
+    assert!(machine.effects().iter().all(|effect| !matches!(
+        effect,
+        Effect::Persist {
+            entry: Entry {
+                record: Record::RecoveryRequired(_),
+                ..
+            },
+            ..
+        }
+    )));
+}

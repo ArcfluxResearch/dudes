@@ -648,3 +648,25 @@ fn replay_of_an_old_launch_failure_excludes_execution_inputs_from_its_hold() {
         }
     );
 }
+
+#[test]
+fn the_actual_inferred_repeated_failure_hold_is_a_valid_recovery_source() {
+    let (h, agent, _, first, latest) = two_failures();
+    assert!(h.records().any(|record| matches!(record, Record::AgentHeld { agent: owner, provenance: Provenance::Inferred, cause: AutomaticHold::RepeatedFastFailure { first: named_first, latest: named_latest } } if *owner == agent && *named_first == first && *named_latest == latest)));
+    let view = h.supervisor.recovery_opportunity(agent).unwrap();
+    assert_eq!(
+        view.required.reason,
+        dudes_proto::recovery::RecoveryReason::HeldOrPausedFailure
+    );
+    assert!(matches!(
+        view.required.boundary,
+        dudes_proto::recovery::RecoveryBoundary::Held { first: Some(_), .. }
+    ));
+    assert_eq!(
+        h.supervisor.world().prepare_recovery(
+            dudes_proto::recovery_state::transition::RecoveryTransition::Required(&view.required)
+        ),
+        Ok(())
+    );
+    assert_eq!(issued(&h), 2);
+}
