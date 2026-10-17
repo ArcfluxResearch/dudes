@@ -950,6 +950,14 @@ samp,
   pointer-events: none;
 }
 
+.office-tag bdi {
+  display: inline-block;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
 .office-tag small {
   display: block;
   color: #cfe3f7;
