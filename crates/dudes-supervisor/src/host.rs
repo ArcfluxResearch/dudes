@@ -105,6 +105,19 @@ pub enum ProbeAnswer {
     CouldNotAnswer,
 }
 
+/// Result of a signal-zero query to one recorded process group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeGroupPresence {
+    /// The kernel found at least one member the daemon may signal.
+    Present,
+    /// The kernel reported no such process group.
+    Absent,
+    /// The kernel found the group but permission or zombie state prevents signalling it.
+    Unsignallable,
+    /// The query failed or this platform cannot inspect the group.
+    Unknown,
+}
+
 /// The only place an adoption key is compared **against a probe**. Returns [`Liveness`], never
 /// `bool`. Key-to-key comparison is a different question and is not this: see [`AdoptionKey`].
 ///
@@ -401,6 +414,22 @@ pub trait ProcessHost {
 
     /// Read the process table and apply [`liveness()`] against the host's own boot identity.
     fn alive(&self, key: &AdoptionKey) -> Liveness;
+
+    /// Read the process table for the recorded leader without adopting or signalling it.
+    fn probe_native_leader(&self, _key: &AdoptionKey) -> ProbeAnswer {
+        ProbeAnswer::CouldNotAnswer
+    }
+
+    /// Query the process group whose recorded leader pid is `pid`, without delivering a signal.
+    /// Only an explicit no-such-group answer establishes absence.
+    fn native_group_presence(&self, _pid: u32) -> NativeGroupPresence {
+        NativeGroupPresence::Unknown
+    }
+
+    /// The Linux pid namespace sampled when this host was created, when it could be read.
+    fn pid_namespace(&self) -> Option<String> {
+        None
+    }
 
     /// Inspect at most `limit` current native target entries, capped at
     /// [`MAX_OWNED_TARGET_QUERY_ROWS`], without signalling, waiting, or releasing ownership.
