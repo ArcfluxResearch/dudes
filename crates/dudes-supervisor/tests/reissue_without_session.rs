@@ -1,3 +1,5 @@
+//! Recovery consent preserves owed tasks, session isolation, and durable no-child refusals.
+
 use std::collections::BTreeMap;
 
 use dudes_proto::record::Hex32;

@@ -19,7 +19,7 @@ use dudes_proto::record::Hex32;
 use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{ExitStatus, Record, TurnOutcome};
 use dudes_providers::launch::LaunchSpec;
-use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand, RecoveryRefusal};
 use dudes_supervisor::testing::{Harness, Seen};
 use dudes_supervisor::{AdoptionKey, Command, Input, Liveness};
 use dudes_types::{AgentId, GoalId, SessionId, TurnId};
@@ -832,6 +832,7 @@ fn a_confirmation_from_an_earlier_attempt_cannot_license_a_later_reissue() {
         record,
         Record::TurnSpawned { turn, .. } if *turn == stranded
     )));
+    let issued_prefix = harness.journal.clone();
     harness.drive(Input::SessionLearned {
         turn: stranded,
         session: confirmed.clone(),
@@ -841,6 +842,19 @@ fn a_confirmation_from_an_earlier_attempt_cannot_license_a_later_reissue() {
     harness.trace.clear();
     harness.launch = true;
     harness.restart();
+    assert_eq!(
+        harness.supervisor.recovery_opportunity(agent),
+        Err(RecoveryRefusal::NotRecoverable),
+        "a confirmation without a durable spawn cannot license a repeat"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(harness.spawns_of(stranded).is_empty());
+
+    let mut harness = Harness::from_prefix(issued_prefix);
+    harness.drive(Input::Started);
     assert!(
         harness.spawns_of(stranded).is_empty(),
         "restart waits for consent"
