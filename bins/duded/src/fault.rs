@@ -437,6 +437,7 @@ mod tests {
     #[test]
     fn recovery_stop_parser_refuses_malformed_and_positional_fields() {
         let valid = stop_value("before_required", "command");
+        assert!(parse_stop(&valid).is_ok());
         for path in [vec![], vec!["target"], vec!["target", "work"]] {
             let mut value = valid.clone();
             let mut object = &mut value;
@@ -467,11 +468,14 @@ mod tests {
             value["point"] = serde_json::json!(point);
             assert!(parse_stop(&value).is_err());
         }
-        for marker in ["", "relative-marker", "/invalid\0marker"] {
+        for marker in ["", "relative-marker"] {
             let mut value = valid.clone();
             value["marker"] = serde_json::json!(marker);
             assert!(parse_stop(&value).is_err());
         }
+        let mut value = valid.clone();
+        value["marker"] = serde_json::json!(format!("{}\0marker", valid["marker"].as_str().unwrap()));
+        assert!(parse_stop(&value).is_err());
         let mut value = valid.clone();
         value["target"]["work"] = serde_json::json!([
             "00000000000000000000000001",
@@ -515,7 +519,10 @@ mod tests {
         boundary.push(' ');
         assert!(RecoveryStop::parse(Some(std::ffi::OsStr::new(&boundary))).is_err());
         let mut value = stop_value("after_authorized", "command");
-        value["marker"] = serde_json::json!(format!("/{}", "é".repeat(2_048)));
+        let marker = value["marker"].as_str().unwrap().to_owned();
+        value["marker"] = serde_json::json!(format!("{marker}{}", "é".repeat(1_000)));
+        assert!(parse_stop(&value).is_ok());
+        value["marker"] = serde_json::json!(format!("{marker}{}", "é".repeat(2_048)));
         assert!(parse_stop(&value).is_err());
     }
 
