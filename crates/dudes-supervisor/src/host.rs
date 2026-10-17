@@ -420,6 +420,8 @@ pub trait ProcessHost {
     /// process-table entry. Tables may hide live processes, so an independent signal-zero
     /// query must confirm absence. It delivers no signal. Permission refusals and query errors
     /// remain uncertainty. [`ProbeAnswer::StartValue`] is raw observed native start evidence.
+    /// On Linux, the numeric process-table view must first be confirmed aligned with this
+    /// daemon's active pid namespace.
     fn probe_native_leader(&self, _key: &AdoptionKey) -> ProbeAnswer {
         ProbeAnswer::CouldNotAnswer
     }
@@ -430,7 +432,8 @@ pub trait ProcessHost {
         NativeGroupPresence::Unknown
     }
 
-    /// The Linux pid namespace sampled when this host was created, when it could be read.
+    /// The cached Linux pid namespace only when its initial and current numeric process-table
+    /// views are confirmed aligned with the daemon's active pid namespace. Otherwise absent.
     fn pid_namespace(&self) -> Option<String> {
         None
     }

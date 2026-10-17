@@ -3839,7 +3839,7 @@
           "type": "array"
         },
         "pid_namespace": {
-          "description": "Linux pid namespace sampled with the boot identity, absent for older observations.",
+          "description": "Linux pid namespace sampled with the boot identity after confirming that numeric\nprocess-table queries use the daemon's pid view. Absent for older or unconfirmed samples.",
           "type": [
             "string",
             "null"

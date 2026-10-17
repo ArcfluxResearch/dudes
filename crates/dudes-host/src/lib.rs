@@ -92,6 +92,9 @@ use dudes_supervisor::host::{
 
 use crate::stream::ExitSlot;
 
+#[cfg(any(target_os = "linux", test))]
+mod procfs_view;
+
 mod kill;
 /// The platform-neutral half of the peer walk. Built under `test` on every platform so its own
 /// scripted-source arms run everywhere; supported desktop platforms provide a
@@ -610,9 +613,12 @@ impl RealHost {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let peers = PeerProcesses::new(boot.as_host_boot());
         #[cfg(target_os = "linux")]
-        let pid_namespace = fs::read_link("/proc/self/ns/pid")
-            .ok()
-            .and_then(|path| path.to_str().map(str::to_owned));
+        let pid_namespace = procfs_view::read_current(|| {
+            fs::read_link("/proc/self/ns/pid")
+                .ok()
+                .and_then(|path| path.to_str().map(str::to_owned))
+        })
+        .flatten();
         #[cfg(not(target_os = "linux"))]
         let pid_namespace = None;
         Self {
@@ -969,6 +975,25 @@ mod spawn_failure_tests {
                 answer
             );
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prior_run_namespace_and_start_values_use_this_process_aligned_view() {
+        let mut host = RealHost::new();
+        let namespace = fs::read_link("/proc/self/ns/pid").unwrap();
+        assert_eq!(host.pid_namespace().as_deref(), namespace.to_str());
+        assert!(host.pid_namespace().is_some());
+        let pid = std::process::id();
+        let key = host.read_key(pid, &super::plat::grip_adopted(pid)).unwrap();
+        let expected = if pid == 1 {
+            ProbeAnswer::CouldNotAnswer
+        } else {
+            ProbeAnswer::StartValue(key.start_time)
+        };
+        assert_eq!(host.probe_native_leader(&key), expected);
+        host.pid_namespace = None;
+        assert_eq!(host.pid_namespace(), None);
     }
 
     struct HelperChild(Child);
@@ -2829,10 +2854,18 @@ impl ProcessHost for RealHost {
             return ProbeAnswer::CouldNotAnswer;
         }
         #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
+        let observe = || {
             native_leader_observation(self.probe(key.pid), || {
                 unix::presence_checked(None, key.pid)
             })
+        };
+        #[cfg(target_os = "linux")]
+        {
+            procfs_view::read_current(observe).unwrap_or(ProbeAnswer::CouldNotAnswer)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            observe()
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
@@ -2857,7 +2890,14 @@ impl ProcessHost for RealHost {
     }
 
     fn pid_namespace(&self) -> Option<String> {
-        self.pid_namespace.clone()
+        #[cfg(target_os = "linux")]
+        {
+            procfs_view::read_current(|| self.pid_namespace.clone()).flatten()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.pid_namespace.clone()
+        }
     }
 
     fn owned_targets(&self, limit: usize) -> OwnedTargets {

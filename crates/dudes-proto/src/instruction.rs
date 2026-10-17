@@ -756,7 +756,8 @@ pub struct InstructionSnapshot {
     pub source: InstructionSnapshotSource,
     /// Comparable operating-system boot identity actually sampled by the host, when supported.
     pub boot: Option<InstructionBootIdentity>,
-    /// Linux pid namespace sampled with the boot identity, absent for older observations.
+    /// Linux pid namespace sampled with the boot identity after confirming that numeric
+    /// process-table queries use the daemon's pid view. Absent for older or unconfirmed samples.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid_namespace: Option<String>,
     /// Actual canonical execution folder, when it was resolved and fits the lossless encoding.
