@@ -1209,11 +1209,6 @@ fn a_turn_killed_before_a_crash_is_re_adopted_and_ends_vanished() {
     );
 }
 
-/// A launch claim survives repeated control actions until its actual acknowledgment.
-///
-/// After restart, ordinary Resume still cannot authorize the owed issue. Explicit fresh-repeat
-/// consent must launch once, so duplicate checks cannot pass merely because every attempt was
-/// refused by the recovery barrier.
 #[test]
 fn a_second_spawn_is_never_emitted_for_a_turn_whose_launch_is_outstanding() {
     let mut harness = Harness::new();
