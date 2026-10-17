@@ -189,7 +189,7 @@ fn await_spawn(daemon: &mut TestDaemon, agent: AgentId) -> TurnId {
 
 struct Prefix {
     fixture: common::Fixture,
-    _source: common::Fixture,
+    source_fixture: common::Fixture,
     agent: AgentId,
     goal: GoalId,
     turn: TurnId,
@@ -258,7 +258,7 @@ impl Prefix {
         drop(daemon);
         Self {
             fixture,
-            _source: source,
+            source_fixture: source,
             agent,
             goal,
             turn,
@@ -555,7 +555,7 @@ fn recovery_checkout_admission_uses_actual_check_folders_for_every_engine() {
         .clone();
     assert_eq!(
         actual,
-        std::fs::canonicalize(prefix._source.state.path()).unwrap()
+        std::fs::canonicalize(prefix.source_fixture.state.path()).unwrap()
     );
     let other = prefix.fixture.state.path().join("unrelated-checkout");
     std::fs::create_dir(&other).unwrap();

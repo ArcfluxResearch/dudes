@@ -214,6 +214,54 @@ fn a_clean_refusal_drains_an_already_owed_durable_ack_before_returning() {
     running.stop(crate::ExitCause::Ended);
 }
 
+fn shared_instruction_completion(
+    owner: dudes_proto::InstructionObservationOwner,
+    ticket: dudes_proto::InstructionTicketAssociation,
+    agent: dudes_types::AgentId,
+    turn: dudes_types::TurnId,
+) -> dudes_proto::Record {
+    use dudes_proto::Record;
+    use dudes_proto::instruction as I;
+    use dudes_types::{Lsn, Timestamp};
+    let change = I::InstructionPathChange {
+        path: I::NativeInstructionPath::Utf8 {
+            value: "/work/project/CLAUDE.md".into(),
+        },
+        context: I::InstructionPathContext::SharedProject,
+        source: I::InstructionInputSource {
+            agent,
+            rule: 0,
+            root: I::NativeInstructionPath::Utf8 {
+                value: "/work/project".into(),
+            },
+            kind: I::InstructionSourceKind::Fixed,
+        },
+        before: I::InstructionFingerprint::Absent,
+        after: I::InstructionFingerprint::File {
+            digest: Hex32::new([2; 32]),
+            bytes: 1,
+        },
+    };
+    Record::InstructionObservationFinished {
+        owner,
+        ticket: Some(ticket),
+        baseline: I::InstructionBaselineRef::Started { lsn: Lsn(4) },
+        settlement: I::InstructionSettlement::Compared {
+            end: I::InstructionEndBoundary::ManagedTurn {
+                turn,
+                end_lsn: Lsn(6),
+            },
+            sampled_at: Timestamp::UNIX_EPOCH,
+            recovery: false,
+            comparison: I::InstructionComparison {
+                changes: vec![change],
+                gaps: Vec::new(),
+                usage: I::InstructionSampleUsage::default(),
+            },
+        },
+    }
+}
+
 #[test]
 fn instruction_wait_views_distinguish_finished_shared_review_from_pending_comparison() {
     use dudes_proto::instruction as I;
@@ -292,43 +340,7 @@ fn instruction_wait_views_distinguish_finished_shared_review_from_pending_compar
         instruction_waits(&state, Some(card)),
         (RecoveryWaitStatus::Ready, RecoveryWaitStatus::Waiting)
     );
-    let change = I::InstructionPathChange {
-        path: I::NativeInstructionPath::Utf8 {
-            value: "/work/project/CLAUDE.md".into(),
-        },
-        context: I::InstructionPathContext::SharedProject,
-        source: I::InstructionInputSource {
-            agent,
-            rule: 0,
-            root: I::NativeInstructionPath::Utf8 {
-                value: "/work/project".into(),
-            },
-            kind: I::InstructionSourceKind::Fixed,
-        },
-        before: I::InstructionFingerprint::Absent,
-        after: I::InstructionFingerprint::File {
-            digest: Hex32::new([2; 32]),
-            bytes: 1,
-        },
-    };
-    let finished = Record::InstructionObservationFinished {
-        owner,
-        ticket: Some(ticket),
-        baseline: I::InstructionBaselineRef::Started { lsn: Lsn(4) },
-        settlement: I::InstructionSettlement::Compared {
-            end: I::InstructionEndBoundary::ManagedTurn {
-                turn,
-                end_lsn: Lsn(6),
-            },
-            sampled_at: Timestamp::UNIX_EPOCH,
-            recovery: false,
-            comparison: I::InstructionComparison {
-                changes: vec![change],
-                gaps: Vec::new(),
-                usage: I::InstructionSampleUsage::default(),
-            },
-        },
-    };
+    let finished = shared_instruction_completion(owner, ticket, agent, turn);
     state
         .apply(
             Lsn(7),
