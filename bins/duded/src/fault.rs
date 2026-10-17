@@ -112,8 +112,8 @@ impl RecoveryStop {
             "recovery Resume and Authorized stops require an exact command"
         );
         anyhow::ensure!(
-            stop.marker.is_absolute(),
-            "recovery stop marker must be absolute"
+            stop.marker.is_absolute() && !stop.marker.as_os_str().as_encoded_bytes().contains(&0),
+            "recovery stop marker must be an absolute path without NUL bytes"
         );
         Ok(Some(stop))
     }
@@ -467,7 +467,7 @@ mod tests {
             value["point"] = serde_json::json!(point);
             assert!(parse_stop(&value).is_err());
         }
-        for marker in ["", "relative-marker"] {
+        for marker in ["", "relative-marker", "/invalid\0marker"] {
             let mut value = valid.clone();
             value["marker"] = serde_json::json!(marker);
             assert!(parse_stop(&value).is_err());
