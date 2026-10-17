@@ -12,6 +12,11 @@ use crate::chat::required_nullable;
 use crate::record::Hex32;
 use crate::recovery::{RecoveryClaimRef, RecoveryEpisodeId, RecoveryReason, RecoveryWork};
 
+/// Maximum original recovery JSON request bytes, excluding the LF or CRLF delimiter.
+///
+/// This bounds the complete JSON envelope, including whitespace and escape bytes before decoding.
+pub const MAX_RECOVERY_REQUEST_BYTES: usize = 4096;
+
 /// Target of one inert recovery inspection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

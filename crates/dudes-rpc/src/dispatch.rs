@@ -77,6 +77,7 @@ use crate::conditioned::{
     PersistenceOperation, PersistenceReceipt, R5Method,
 };
 use crate::outbound::Outbound;
+use crate::recovery::RecoveryParams;
 
 /// One call, as a handler sees it.
 ///
@@ -120,8 +121,8 @@ type AuditedHandler = Box<dyn Fn(Call<'_>, Option<u32>) -> Result<Value, RpcErro
 
 /// Captured transport attribution for a call admitted by [`Requirement::Operator`].
 ///
-/// Only the dispatcher's Operator route constructs this value, after role admission. These
-/// transport facts do not independently identify or authorize the peer.
+/// Only routes that require [`Requirement::Operator`] construct this value, after role admission.
+/// These transport facts do not independently identify or authorize the peer.
 #[derive(Debug)]
 pub struct OperatorAdmission {
     pid: NonZeroU32,
@@ -145,6 +146,9 @@ impl OperatorAdmission {
 type OperatorHandler =
     Box<dyn Fn(Call<'_>, OperatorAdmission) -> Result<Value, RpcError> + Send + Sync>;
 
+type RecoveryHandler =
+    Box<dyn Fn(RecoveryParams, OperatorAdmission) -> Result<Value, RpcError> + Send + Sync>;
+
 /// A registered method: what it requires, and what runs when it is allowed to.
 struct Registered {
     requires: Requirement,
@@ -156,6 +160,7 @@ enum Route {
     Ordinary(Handler),
     Audited(AuditedHandler),
     Operator(OperatorHandler),
+    Recovery(RecoveryHandler),
     BoundedQuestion(Handler),
     Conditioned(ConditionedRoute),
 }
@@ -294,7 +299,7 @@ impl Dispatcher {
     ///
     /// # Panics
     ///
-    /// A conditioned method requires its dedicated registration route.
+    /// A conditioned or recovery method requires its dedicated registration route.
     pub fn register_current_audited(
         &mut self,
         method: CurrentMethod,
@@ -304,6 +309,11 @@ impl Dispatcher {
         assert!(
             method.legacy().and_then(R5Method::from_method).is_none(),
             "{} requires its dedicated conditioned registration route",
+            method.name()
+        );
+        assert!(
+            !crate::recovery::is_method(method),
+            "{} requires its dedicated recovery registration route",
             method.name()
         );
         self.methods.insert(
@@ -324,7 +334,7 @@ impl Dispatcher {
     ///
     /// # Panics
     ///
-    /// A conditioned method requires its dedicated registration route.
+    /// A conditioned or recovery method requires its dedicated registration route.
     pub fn register_current_operator(
         &mut self,
         method: CurrentMethod,
@@ -333,6 +343,11 @@ impl Dispatcher {
         assert!(
             method.legacy().and_then(R5Method::from_method).is_none(),
             "{} requires its dedicated conditioned registration route",
+            method.name()
+        );
+        assert!(
+            !crate::recovery::is_method(method),
+            "{} requires its dedicated recovery registration route",
             method.name()
         );
         self.methods.insert(
@@ -344,6 +359,25 @@ impl Dispatcher {
             },
         );
         self
+    }
+
+    pub(crate) fn register_recovery(
+        &mut self,
+        method: CurrentMethod,
+        handler: impl Fn(RecoveryParams, OperatorAdmission) -> Result<Value, RpcError>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        assert!(crate::recovery::is_method(method));
+        self.methods.insert(
+            method,
+            Registered {
+                requires: Requirement::Operator,
+                route: Route::Recovery(Box::new(handler)),
+                after_response: None,
+            },
+        );
     }
 
     /// Register the `agent.ask` bounded-question method on its disjoint conditioned route.
@@ -574,11 +608,23 @@ impl Dispatcher {
                 } else {
                     None
                 };
+                let recovery = match request.method.parse::<CurrentMethod>() {
+                    Ok(method) if crate::recovery::is_method(method) => {
+                        match crate::recovery::decode(line, method) {
+                            Ok(params) => Some(params),
+                            Err(err) => {
+                                return DispatchOutcome::response(Response::err(request.id, err));
+                            }
+                        }
+                    }
+                    _ => None,
+                };
                 self.dispatch_with_after_response_on_connection(
                     &request,
                     connection,
                     outbound,
                     replacement.as_ref(),
+                    recovery,
                 )
             }
             Err(err) => {
@@ -607,7 +653,7 @@ impl Dispatcher {
         connection: &ConditionedConnectionContext,
         outbound: &Arc<Outbound>,
     ) -> Response {
-        self.dispatch_with_after_response_on_connection(request, connection, outbound, None)
+        self.dispatch_with_after_response_on_connection(request, connection, outbound, None, None)
             .into_response()
     }
 
@@ -617,6 +663,7 @@ impl Dispatcher {
         connection: &ConditionedConnectionContext,
         outbound: &Arc<Outbound>,
         replacement: Option<&dudes_proto::rpc::goal::GoalReplaceParams>,
+        recovery: Option<RecoveryParams>,
     ) -> DispatchOutcome<'a> {
         let provenance = connection.provenance();
         let id = request.id.clone();
@@ -699,13 +746,19 @@ impl Dispatcher {
         let result = match &entry.route {
             Route::Ordinary(handler) | Route::BoundedQuestion(handler) => handler(call),
             Route::Audited(handler) => handler(call, connection.peer_pid()),
-            Route::Operator(handler) => match connection
-                .peer_attribution()
-                .and_then(|(pid, uid)| NonZeroU32::new(pid).map(|pid| (pid, uid)))
-            {
-                Some((pid, uid)) => handler(call, OperatorAdmission { pid, uid }),
-                None => Err(error(ErrorCode::Unauthorized, "the call is not admitted")),
-            },
+            Route::Operator(handler) => {
+                operator_admission(connection).and_then(|admission| handler(call, admission))
+            }
+            Route::Recovery(handler) => recovery
+                .ok_or_else(|| {
+                    error(
+                        ErrorCode::InvalidParams,
+                        "recovery requires original-frame validation",
+                    )
+                })
+                .and_then(|params| {
+                    operator_admission(connection).and_then(|admission| handler(params, admission))
+                }),
             Route::Conditioned(route) => route(request.params.as_ref(), &role, connection),
         };
         match result {
@@ -716,6 +769,15 @@ impl Dispatcher {
             Err(err) => DispatchOutcome::response(Response::err(id, err)),
         }
     }
+}
+
+fn operator_admission(
+    connection: &ConditionedConnectionContext,
+) -> Result<OperatorAdmission, RpcError> {
+    connection
+        .peer_attribution()
+        .and_then(|(pid, uid)| NonZeroU32::new(pid).map(|pid| OperatorAdmission { pid, uid }))
+        .ok_or_else(|| error(ErrorCode::Unauthorized, "the call is not admitted"))
 }
 
 /// An [`RpcError`] with no typed `data`.

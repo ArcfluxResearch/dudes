@@ -1365,6 +1365,9 @@ mod tests {
                 CurrentMethod::TicketCheckout.name(),
                 CurrentMethod::FloorSessionExport.name(),
                 CurrentMethod::FloorSessionImport.name(),
+                CurrentMethod::RecoveryInspect.name(),
+                CurrentMethod::RecoverySubmit.name(),
+                CurrentMethod::RecoveryReceipt.name(),
             ])
             .collect();
         for schema in [&generated, &committed] {
@@ -1394,6 +1397,34 @@ mod tests {
                 schema["$defs"]["TicketCheckoutParams"]["additionalProperties"],
                 false
             );
+            for (method, params, result) in [
+                (
+                    "recovery.inspect",
+                    "RecoveryInspectParams",
+                    "RecoveryInspectResult",
+                ),
+                (
+                    "recovery.submit",
+                    "RecoverySubmitParams",
+                    "RecoverySubmitResult",
+                ),
+                (
+                    "recovery.receipt",
+                    "RecoveryReceiptParams",
+                    "RecoveryReceiptResult",
+                ),
+            ] {
+                let shape = &schema["$defs"]["CurrentMethods"]["properties"][method];
+                assert_eq!(
+                    shape["properties"]["params"]["$ref"],
+                    format!("#/$defs/{params}")
+                );
+                assert_eq!(
+                    shape["properties"]["result"]["$ref"],
+                    format!("#/$defs/{result}")
+                );
+                assert_eq!(schema["$defs"][params]["additionalProperties"], false);
+            }
         }
     }
 

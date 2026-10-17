@@ -212,6 +212,30 @@ fn operator_registration_is_fixed_and_refuses_dedicated_routes() {
 }
 
 #[test]
+fn recovery_methods_refuse_generic_registration_routes() {
+    for method in [
+        CurrentMethod::RecoveryInspect,
+        CurrentMethod::RecoverySubmit,
+        CurrentMethod::RecoveryReceipt,
+    ] {
+        assert!(method.legacy().is_none());
+        assert!(method.name().parse::<Method>().is_err());
+        let audited = catch_unwind(AssertUnwindSafe(|| {
+            Dispatcher::new(AdmitAll).register_current_audited(
+                method,
+                Requirement::AnyRole,
+                |_, _| Ok(json!({})),
+            );
+        }));
+        assert!(audited.is_err(), "{method} bypassed the typed route");
+        let operator = catch_unwind(AssertUnwindSafe(|| {
+            Dispatcher::new(AdmitAll).register_current_operator(method, |_, _| Ok(json!({})));
+        }));
+        assert!(operator.is_err(), "{method} bypassed the typed route");
+    }
+}
+
+#[test]
 fn operator_admission_uses_captured_pid_and_preserves_optional_uid() {
     let calls = Arc::new(AtomicUsize::new(0));
     let dispatcher = operator_dispatcher(Arc::clone(&calls));
