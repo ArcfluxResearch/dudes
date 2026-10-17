@@ -576,6 +576,26 @@ fn a_vanished_or_killed_turn_does_not_invalidate() {
     }
 }
 
+fn assert_first_turn_accepts_assigned_session() {
+    let mut first_turn = Harness::new();
+    let (first_agent, _) = first_turn.hire_with_goal(&["npm", "test"]);
+    let first = first_turn
+        .open_turn(first_agent)
+        .expect("a turn was issued");
+    let assigned = SessionId::new("vendor-assigned-first-id");
+    first_turn.drive(Input::SessionLearned {
+        turn: first,
+        session: assigned.clone(),
+    });
+    assert_eq!(
+        first_turn.supervisor.world().agents[&first_agent]
+            .session
+            .as_ref(),
+        Some(&assigned),
+        "a first turn may bind the id the vendor assigned"
+    );
+}
+
 #[test]
 fn a_resume_confirmed_as_another_id_invalidates_and_does_not_rebind() {
     let mut mismatch = Harness::new();
@@ -600,23 +620,7 @@ fn a_resume_confirmed_as_another_id_invalidates_and_does_not_rebind() {
     let next = fresh_after_unconfirmed(&mut mismatch, agent, goal, resumed);
     assert!(matches!(announcement(&mismatch, next), Announced::Mint(_)));
 
-    let mut first_turn = Harness::new();
-    let (first_agent, _) = first_turn.hire_with_goal(&["npm", "test"]);
-    let first = first_turn
-        .open_turn(first_agent)
-        .expect("a turn was issued");
-    let assigned = SessionId::new("vendor-assigned-first-id");
-    first_turn.drive(Input::SessionLearned {
-        turn: first,
-        session: assigned.clone(),
-    });
-    assert_eq!(
-        first_turn.supervisor.world().agents[&first_agent]
-            .session
-            .as_ref(),
-        Some(&assigned),
-        "a first turn may bind the id the vendor assigned"
-    );
+    assert_first_turn_accepts_assigned_session();
 
     let mut before_spawn = Harness::new();
     let (reissue_agent, reissue_goal) = before_spawn.hire_with_goal(&["npm", "test"]);
