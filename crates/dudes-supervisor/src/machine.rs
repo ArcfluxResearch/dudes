@@ -673,6 +673,13 @@ pub struct Supervisor<C: Clock, R: Rng> {
 
 #[cfg(any(test, feature = "testing"))]
 impl<C: Clock> Supervisor<C, crate::testing::FakeRng> {
+    pub(crate) fn test_reserve_entries(
+        &mut self,
+        entries: &[Entry],
+    ) -> Result<(), serde_json::Error> {
+        self.rng.reserve_entries(entries)
+    }
+
     pub(crate) fn test_rng_drawn(&self) -> u128 {
         self.rng.drawn()
     }
