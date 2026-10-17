@@ -931,6 +931,46 @@ mod spawn_failure_tests {
         );
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn prior_run_missing_process_table_entry_requires_direct_pid_absence() {
+        for presence in [
+            super::unix::Presence::Present,
+            super::unix::Presence::Unsignallable,
+        ] {
+            assert_eq!(
+                super::native_leader_observation(ProbeAnswer::NoSuchPid, || Ok(presence)),
+                ProbeAnswer::CouldNotAnswer
+            );
+        }
+        assert_eq!(
+            super::native_leader_observation(ProbeAnswer::NoSuchPid, || Err(
+                io::ErrorKind::PermissionDenied.into()
+            )),
+            ProbeAnswer::CouldNotAnswer
+        );
+        assert_eq!(
+            super::native_leader_observation(ProbeAnswer::NoSuchPid, || Err(io::Error::other(
+                "query failed"
+            ))),
+            ProbeAnswer::CouldNotAnswer
+        );
+        assert_eq!(
+            super::native_leader_observation(ProbeAnswer::NoSuchPid, || Ok(
+                super::unix::Presence::Absent
+            )),
+            ProbeAnswer::NoSuchPid
+        );
+        for answer in [ProbeAnswer::StartValue(99), ProbeAnswer::CouldNotAnswer] {
+            assert_eq!(
+                super::native_leader_observation(answer, || panic!(
+                    "only missing table entries require corroboration"
+                )),
+                answer
+            );
+        }
+    }
+
     struct HelperChild(Child);
 
     impl HelperChild {
@@ -2790,7 +2830,9 @@ impl ProcessHost for RealHost {
         }
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
-            self.probe(key.pid)
+            native_leader_observation(self.probe(key.pid), || {
+                unix::presence_checked(None, key.pid)
+            })
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
@@ -2984,6 +3026,22 @@ fn owned_target_state(
             OwnedTargetState::Present
         }
         Ok(kill::TargetState::Present) => OwnedTargetState::UnknownIdentity,
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn native_leader_observation(
+    answer: ProbeAnswer,
+    direct: impl FnOnce() -> io::Result<unix::Presence>,
+) -> ProbeAnswer {
+    match answer {
+        ProbeAnswer::NoSuchPid => match direct() {
+            Ok(unix::Presence::Absent) => ProbeAnswer::NoSuchPid,
+            Ok(unix::Presence::Present | unix::Presence::Unsignallable) | Err(_) => {
+                ProbeAnswer::CouldNotAnswer
+            }
+        },
+        ProbeAnswer::StartValue(_) | ProbeAnswer::CouldNotAnswer => answer,
     }
 }
 

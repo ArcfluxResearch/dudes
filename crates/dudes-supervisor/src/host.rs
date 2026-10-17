@@ -415,7 +415,9 @@ pub trait ProcessHost {
     /// Read the process table and apply [`liveness()`] against the host's own boot identity.
     fn alive(&self, key: &AdoptionKey) -> Liveness;
 
-    /// Read the process table for the recorded leader without adopting or signalling it.
+    /// Observe the recorded leader without adopting it or delivering a signal.
+    /// A missing table entry requires an independent direct-pid absence query because process
+    /// tables may hide live processes. Permission refusals and query errors remain uncertainty.
     fn probe_native_leader(&self, _key: &AdoptionKey) -> ProbeAnswer {
         ProbeAnswer::CouldNotAnswer
     }
