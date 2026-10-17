@@ -127,7 +127,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
         if self
             .ctx
-            .admit_prior_attempt(&self.sup, agent, row.open_turn)
+            .admit_recovery_prior_attempt(&self.sup, agent, row.open_turn)
             .is_err()
         {
             return unavailable(RecoveryInspectUnavailable::TurnOpen);
@@ -250,7 +250,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
         if self
             .ctx
-            .admit_prior_attempt(
+            .admit_recovery_prior_attempt(
                 &self.sup,
                 command.expected.work.agent,
                 Some(command.expected.work.turn),

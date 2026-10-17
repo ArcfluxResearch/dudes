@@ -152,20 +152,17 @@ fn owed_retry_observation(
     .then_some((started, owner))
 }
 
-fn historical_owed_observation(
+fn finished_owed_observation(
     world: &dudes_supervisor::World,
-    retry: Option<(Lsn, InstructionObservationOwner)>,
+    owner: InstructionObservationOwner,
     started: Lsn,
     attempt: &dudes_proto::instruction_state::InstructionAttempt,
 ) -> bool {
-    let Some((
-        fresh_started,
-        InstructionObservationOwner::Managed {
-            agent,
-            turn,
-            issue: dudes_proto::InstructionIssueAssociation::Issued { issue_lsn },
-        },
-    )) = retry
+    let InstructionObservationOwner::Managed {
+        agent,
+        turn,
+        issue: dudes_proto::InstructionIssueAssociation::Issued { issue_lsn },
+    } = owner
     else {
         return false;
     };
@@ -189,10 +186,43 @@ fn historical_owed_observation(
         },
         _ => false,
     };
-    started < fresh_started
-        && same_issue
-        && attempt.finished.is_some()
-        && attempt.spawn_lsn.is_none()
+    same_issue && attempt.finished.is_some() && attempt.spawn_lsn.is_none()
+}
+
+fn historical_owed_observation(
+    world: &dudes_supervisor::World,
+    retry: Option<(Lsn, InstructionObservationOwner)>,
+    started: Lsn,
+    attempt: &dudes_proto::instruction_state::InstructionAttempt,
+) -> bool {
+    retry.is_some_and(|(fresh_started, owner)| {
+        started < fresh_started && finished_owed_observation(world, owner, started, attempt)
+    })
+}
+
+fn original_owed_observation(
+    world: &dudes_supervisor::World,
+    binding: &dudes_proto::recovery::RecoveryBinding,
+    started: Lsn,
+    attempt: &dudes_proto::instruction_state::InstructionAttempt,
+) -> bool {
+    world.turns.get(&binding.work.turn).is_some_and(|row| {
+        row.agent == binding.work.agent
+            && row.goal == Some(binding.work.goal)
+            && row.issue_lsn == binding.issue_lsn
+            && row.is_issued_not_spawned()
+    }) && finished_owed_observation(
+        world,
+        InstructionObservationOwner::Managed {
+            agent: binding.work.agent,
+            turn: binding.work.turn,
+            issue: dudes_proto::InstructionIssueAssociation::Issued {
+                issue_lsn: binding.issue_lsn,
+            },
+        },
+        started,
+        attempt,
+    )
 }
 
 fn completed_owed_observation(
@@ -258,11 +288,39 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             || self.cleanup_ptys.len() > MAX_OWNED_TARGET_QUERY_ROWS
     }
 
+    pub(super) fn admit_recovery_prior_attempt<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: AgentId,
+        issued_turn: Option<TurnId>,
+    ) -> Result<(), dudes_supervisor::SharedFolderRefusal> {
+        let owed = sup.recovery_opportunity(agent).ok().filter(|view| {
+            view.required.reason == dudes_proto::recovery::RecoveryReason::MissingSpawn
+                && Some(view.required.binding.work.turn) == issued_turn
+        });
+        self.admit_prior_attempt_for(
+            sup,
+            agent,
+            issued_turn,
+            owed.as_ref().map(|view| &view.required.binding),
+        )
+    }
+
     pub(super) fn admit_prior_attempt<R: Rng>(
         &self,
         sup: &Supervisor<Shared<C>, R>,
         agent: dudes_types::AgentId,
         issued_turn: Option<TurnId>,
+    ) -> Result<(), dudes_supervisor::SharedFolderRefusal> {
+        self.admit_prior_attempt_for(sup, agent, issued_turn, None)
+    }
+
+    fn admit_prior_attempt_for<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: AgentId,
+        issued_turn: Option<TurnId>,
+        consent: Option<&dudes_proto::recovery::RecoveryBinding>,
     ) -> Result<(), dudes_supervisor::SharedFolderRefusal> {
         let refused = || dudes_supervisor::SharedFolderRefusal::PriorAttemptUnresolved { agent };
         let world = sup.world();
@@ -323,7 +381,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .unresolved_launch_attempts(agent)
             .enumerate()
         {
-            let historical_owed = historical_owed_observation(world, owed_retry, *started, attempt);
+            let historical_owed = historical_owed_observation(world, owed_retry, *started, attempt)
+                || consent.is_some_and(|binding| {
+                    original_owed_observation(world, binding, *started, attempt)
+                });
             let completed_owed = completed_owed_observation(world, *started, attempt);
             if count == MAX_OWNED_TARGET_QUERY_ROWS
                 || (!historical_owed
