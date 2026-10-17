@@ -77,6 +77,7 @@ pub mod floor_goal;
 pub mod floor_look;
 pub mod floor_memory;
 mod floor_port;
+pub mod floor_recovery;
 pub mod floor_rename;
 pub mod floor_retire;
 pub mod floor_session;
