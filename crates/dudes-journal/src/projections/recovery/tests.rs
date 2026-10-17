@@ -629,6 +629,7 @@ impl redb::StorageBackend for FailingProjectionSync {
 fn fault_backed_projection(
     dir: &std::path::Path,
     writer: &Writer,
+    state: &std::path::Path,
 ) -> (Projections, Arc<CommitSyncFault>) {
     let journal = crate::segment::segment_path(&dir.join("journal"), writer.segment());
     let fault = Arc::new(CommitSyncFault {
@@ -642,7 +643,7 @@ fn fault_backed_projection(
         .read(true)
         .write(true)
         .create_new(true)
-        .open(dir.join("state.redb"))
+        .open(state)
         .unwrap();
     let backend = FailingProjectionSync {
         inner: redb::backends::FileBackend::new(file).unwrap(),
@@ -655,20 +656,20 @@ fn fault_backed_projection(
     (projections, fault)
 }
 
-fn record_pause_through_failed_projection_commit(
+fn record_through_failed_projection_commit(
     writer: &mut Writer,
     projections: &mut Projections,
     fault: &CommitSyncFault,
+    attempted: &Entry,
 ) -> Vec<String> {
     use std::sync::atomic::Ordering::SeqCst;
     let old_cut = projections.last_applied_lsn();
     let old_crc = projections.last_applied_crc();
     let start = writer.next_lsn().unwrap();
     let before = std::fs::read(&fault.journal).unwrap();
-    let attempted = entry(RecordKind::Pause);
     let mut gateway = writer.checked_recovery(projections).unwrap();
     fault.armed.store(true, SeqCst);
-    let error = gateway.append(&attempted).unwrap_err();
+    let error = gateway.append(attempted).unwrap_err();
     assert!(
         matches!(&error, Error::Store(redb::Error::Io(_))),
         "unexpected failure: {error}"
@@ -690,7 +691,7 @@ fn record_pause_through_failed_projection_commit(
         .unwrap();
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0].0, start);
-    assert_eq!(frames[0].2, attempted);
+    assert_eq!(&frames[0].2, attempted);
     let after = std::fs::read(&fault.journal).unwrap();
     assert!(after.starts_with(&before));
     assert_eq!(
@@ -698,7 +699,11 @@ fn record_pause_through_failed_projection_commit(
         RecoveryStoreError::JournalUncertain
     );
     assert_eq!(
-        reason(&gateway.append(&attempted).unwrap_err()),
+        reason(&gateway.receipt_by_request(request()).unwrap_err()),
+        RecoveryStoreError::JournalUncertain
+    );
+    assert_eq!(
+        reason(&gateway.append(attempted).unwrap_err()),
         RecoveryStoreError::JournalUncertain
     );
     assert_eq!(std::fs::read(&fault.journal).unwrap(), after);
@@ -721,11 +726,16 @@ fn real_redb_commit_sync_failure_fences_then_reopens_atomically_and_replays() {
     };
     let (mut writer, _) = crate::open(&journal, options).unwrap();
     writer.append(&entry(RecordKind::AgentHired)).unwrap();
-    let (mut projections, fault) = fault_backed_projection(dir.path(), &writer);
+    let (mut projections, fault) =
+        fault_backed_projection(dir.path(), &writer, &dir.path().join("state.redb"));
     crate::replay(&writer.reader(), &mut projections).unwrap();
     let old = authority_rows(&projections).unwrap();
-    let canonical_new =
-        record_pause_through_failed_projection_commit(&mut writer, &mut projections, &fault);
+    let canonical_new = record_through_failed_projection_commit(
+        &mut writer,
+        &mut projections,
+        &fault,
+        &entry(RecordKind::Pause),
+    );
     drop(projections);
     drop(writer);
     fault.armed.store(false, SeqCst);
@@ -741,6 +751,86 @@ fn real_redb_commit_sync_failure_fences_then_reopens_atomically_and_replays() {
     assert_eq!(authority_rows(&reopened).unwrap(), canonical_new);
     let gateway = writer.checked_recovery(&mut reopened).unwrap();
     assert_eq!(gateway.receipt(request(), digest()).unwrap(), None);
+    assert_eq!(fault.fired.load(SeqCst), 1);
+}
+
+#[test]
+fn durable_authorization_survives_real_projection_sync_failure_and_request_only_replay() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (fixture, authorization) = records::fresh_authorization(0);
+    let Fixture {
+        dir,
+        writer,
+        projections,
+    } = fixture;
+    drop(projections);
+    drop(writer);
+    let journal = dir.path().join("journal");
+    let options = JournalOptions {
+        fsync: Fsync::Full,
+        rotate_at: 16 * 1024 * 1024,
+        checkpoint_every: 0,
+    };
+    let (mut writer, _) = crate::open(&journal, options).unwrap();
+    let state = dir.path().join("fault.redb");
+    let (mut projections, fault) = fault_backed_projection(dir.path(), &writer, &state);
+    crate::replay(&writer.reader(), &mut projections).unwrap();
+    let old = authority_rows(&projections).unwrap();
+    let authorization_lsn = writer.next_lsn().unwrap();
+    let attempted = Entry {
+        at: Timestamp::UNIX_EPOCH,
+        record: Record::RecoveryAuthorized(Box::new(authorization.clone())),
+    };
+    let canonical_new =
+        record_through_failed_projection_commit(&mut writer, &mut projections, &fault, &attempted);
+    assert_ne!(old, canonical_new);
+    drop(projections);
+    drop(writer);
+    fault.armed.store(false, SeqCst);
+    let (mut writer, _) = crate::open(&journal, options).unwrap();
+    let mut reopened = Projections::open(&state).unwrap();
+    assert!(reopened.recovery_certification.is_none());
+    let actual = authority_rows(&reopened).unwrap();
+    assert!(
+        actual == old || actual == canonical_new,
+        "commit exposed mixed authorization rows/cursor/witness"
+    );
+    let frames = writer
+        .reader()
+        .iter_from(authorization_lsn)
+        .unwrap()
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(frames, vec![(authorization_lsn, attempted)]);
+    crate::replay(&writer.reader(), &mut reopened).unwrap();
+    assert_eq!(authority_rows(&reopened).unwrap(), canonical_new);
+    let expected = RecoveryReceipt {
+        claim: RecoveryClaimRef {
+            episode: authorization.episode,
+            authorization_lsn,
+        },
+        authorization,
+        state: RecoveryClaimState::Pending,
+    };
+    let before_rows = reopened.export().unwrap();
+    let before_journal = journal_bytes(&journal);
+    let before_next = writer.next_lsn().unwrap();
+    let gateway = writer.checked_recovery(&mut reopened).unwrap();
+    let counts = crate::reader::validation_counts();
+    for _ in 0..4 {
+        assert_eq!(
+            gateway.receipt_by_request(request()).unwrap(),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            gateway.receipt(request(), digest()).unwrap(),
+            Some(expected.clone())
+        );
+    }
+    assert_eq!(crate::reader::validation_counts(), counts);
+    assert_eq!(gateway.writer.next_lsn().unwrap(), before_next);
+    assert_eq!(gateway.projections.export().unwrap(), before_rows);
+    assert_eq!(journal_bytes(&journal), before_journal);
     assert_eq!(fault.fired.load(SeqCst), 1);
 }
 

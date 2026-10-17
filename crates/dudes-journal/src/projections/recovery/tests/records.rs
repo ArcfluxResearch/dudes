@@ -112,7 +112,7 @@ fn paused(checkpoints: u64) -> (Fixture, RecoveryRequired, Lsn) {
     (fixture, required, pause)
 }
 
-fn fresh(checkpoints: u64) -> (Fixture, RecoveryAuthorized, Lsn) {
+pub(super) fn fresh_authorization(checkpoints: u64) -> (Fixture, RecoveryAuthorized) {
     let (mut fixture, required, origin) = paused(checkpoints);
     let resumed = append(
         &mut fixture,
@@ -144,6 +144,11 @@ fn fresh(checkpoints: u64) -> (Fixture, RecoveryAuthorized, Lsn) {
             },
         },
     };
+    (fixture, authorization)
+}
+
+fn fresh(checkpoints: u64) -> (Fixture, RecoveryAuthorized, Lsn) {
+    let (mut fixture, authorization) = fresh_authorization(checkpoints);
     let at = append(
         &mut fixture,
         Record::RecoveryAuthorized(Box::new(authorization.clone())),
