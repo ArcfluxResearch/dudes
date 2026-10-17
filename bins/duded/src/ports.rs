@@ -335,17 +335,23 @@ pub enum TicketAsk {
 pub enum Ask {
     /// Inert recovery inspection for an admitted operator.
     RecoveryInspect {
+        /// Managed agent whose current recovery boundary is inspected.
         agent: AgentId,
+        /// Transport-verified Operator admission for this read.
         admission: dudes_rpc::dispatch::OperatorAdmission,
     },
     /// One explicit recovery command, with separate live admission.
     Recover {
+        /// Original intent translated into the supervisor's pure command.
         command: Box<dudes_supervisor::input::RecoveryCommand>,
+        /// Transport-verified Operator admission for the command-owned appends.
         admission: dudes_rpc::dispatch::OperatorAdmission,
     },
     /// Inert request-ID-only historical lookup.
     RecoveryReceipt {
+        /// Original command request identity; the lookup never resubmits it.
         request: dudes_proto::record::Hex32,
+        /// Transport-verified Operator admission for this read.
         admission: dudes_rpc::dispatch::OperatorAdmission,
     },
     /// Read or replace the next managed launch's desired server names.
@@ -2662,8 +2668,8 @@ impl dudes_rpc::methods::recovery::RecoveryControl for Handle {
 fn recovery_digest(
     params: &dudes_proto::rpc::recovery::RecoverySubmitParams,
 ) -> Result<dudes_proto::record::Hex32, RpcError> {
-    let bytes = serde_json::to_vec(params).map_err(|_| unavailable())?;
     use sha2::{Digest as _, Sha256};
+    let bytes = serde_json::to_vec(params).map_err(|_| unavailable())?;
     let mut digest = Sha256::new();
     digest.update(b"dudes.recovery.intent.v1\0");
     digest.update(&bytes);

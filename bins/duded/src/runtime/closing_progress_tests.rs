@@ -83,7 +83,7 @@ fn pump_fixture_job(daemon: &mut TestDaemon, deadline: std::time::Instant) {
             goal,
             folder,
             verdict,
-        } => daemon.predicate_ended(goal, folder, verdict).unwrap(),
+        } => daemon.predicate_ended(goal, &folder, verdict).unwrap(),
         _ => panic!("unexpected fixture job"),
     }
 }

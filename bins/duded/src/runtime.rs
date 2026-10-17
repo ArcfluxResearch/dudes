@@ -1562,7 +1562,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     verdict,
                 } => {
                     if !self.ctx.journal_writes_stopped()
-                        && let Err(error) = self.predicate_ended(goal, folder, verdict)
+                        && let Err(error) = self.predicate_ended(goal, &folder, verdict)
                     {
                         if !self.ctx.journal_writes_stopped() {
                             return Err(error);
@@ -3589,13 +3589,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
         let Some(resolved) = shared_folder::canonical_folder(&cwd) else {
             self.ctx.baselines.end(run);
-            let reason = if !cwd.exists() {
-                format!("{} does not exist", cwd.display())
-            } else {
+            let reason = if cwd.exists() {
                 format!(
                     "the execution folder {} cannot be resolved as a directory",
                     cwd.display()
                 )
+            } else {
+                format!("{} does not exist", cwd.display())
             };
             return Ok(Answered::CheckRunning(Box::new(
                 crate::baseline::Ticket::refused(
@@ -3828,10 +3828,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     fn predicate_ended(
         &mut self,
         goal: GoalId,
-        folder: PathBuf,
+        folder: &std::path::Path,
         verdict: Option<(bool, Evidence)>,
     ) -> Result<()> {
-        if !self.ctx.predicate_run_ended(goal, &folder) {
+        if !self.ctx.predicate_run_ended(goal, folder) {
             return Ok(());
         }
         match verdict {
@@ -4135,6 +4135,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             mail_requests,
         );
 
+        self.publish_pump_outcome(outcome)
+    }
+
+    fn publish_pump_outcome(&mut self, outcome: Result<()>) -> Result<()> {
         // **Here, and not inside `append`.** On success the queue is quiescent, so the snapshot is
         // complete for the call. On error it contains only folds completed before the first failed
         // effect: no later effect runs and no queued acknowledgement is folded.
@@ -6483,7 +6487,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     folder,
                     verdict,
                 } => {
-                    if let Err(error) = self.predicate_ended(goal, folder, verdict) {
+                    if let Err(error) = self.predicate_ended(goal, &folder, verdict) {
                         clean = false;
                         tracing::error!(%error, "a predicate verdict could not be journaled during shutdown");
                     }
@@ -7647,7 +7651,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 agent: _,
                 cwd,
                 predicate,
-            } => self.run_predicate(*goal, cwd.clone(), predicate, queue),
+            } => self.run_predicate(*goal, cwd, predicate, queue),
             Effect::CaptureBaseline { .. } | Effect::CaptureStamp { .. } => {
                 self.execute_ticket_capture(effect, sup, queue);
             }
@@ -8248,7 +8252,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     fn run_predicate(
         &mut self,
         goal: GoalId,
-        cwd: PathBuf,
+        cwd: &std::path::Path,
         predicate: &Predicate,
         queue: &mut VecDeque<Input>,
     ) {
@@ -8281,10 +8285,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             );
             return;
         };
-        let Some(resolved) = shared_folder::canonical_folder(&cwd) else {
+        let Some(resolved) = shared_folder::canonical_folder(cwd) else {
             let failure = predicate::spec_for(
                 argv,
-                &cwd,
+                cwd,
                 &self.predicate_env,
                 self.predicate_path.as_deref(),
             )

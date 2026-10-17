@@ -374,7 +374,7 @@ fn a_recovered_predicate_runner_error_releases_new_work_without_a_verdict() {
     prefix.recover_finished(&mut daemon);
     let folder = take_predicate_end(&daemon, prefix.goal);
     assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
-    daemon.predicate_ended(prefix.goal, folder, None).unwrap();
+    daemon.predicate_ended(prefix.goal, &folder, None).unwrap();
     assert!(daemon.ctx.predicate_runs.is_empty());
     assert!(daemon.ctx.predicate_folders.is_empty());
     prefix.assert_no_verdict();
@@ -413,7 +413,7 @@ fn a_wrong_goal_no_verdict_keeps_the_actual_recovery_wait() {
     let wrong = GoalId::from_parts(0, 1_000);
     assert_ne!(wrong, prefix.goal);
     daemon
-        .predicate_ended(wrong, PathBuf::from("/unmatched-run"), None)
+        .predicate_ended(wrong, std::path::Path::new("/unmatched-run"), None)
         .unwrap();
     assert_eq!(daemon.ctx.predicate_runs.get(&prefix.goal), Some(&1));
     let probe = prefix.probe(&mut daemon);
@@ -421,7 +421,7 @@ fn a_wrong_goal_no_verdict_keeps_the_actual_recovery_wait() {
     assert!(host.spawned().is_empty());
     runner.release_error();
     let folder = take_predicate_end(&daemon, prefix.goal);
-    daemon.predicate_ended(prefix.goal, folder, None).unwrap();
+    daemon.predicate_ended(prefix.goal, &folder, None).unwrap();
     let turn = await_spawn(&mut daemon, probe);
     assert_eq!(daemon.sup.world().turns[&turn].agent, probe);
     assert_eq!(host.spawned().len(), 1);
@@ -440,7 +440,7 @@ fn a_no_verdict_after_teardown_cannot_restart_waiting_work() {
     daemon.exit(ExitCause::Ended);
     let folder = take_predicate_end(&daemon, prefix.goal);
     let before = prefix.fixture.entries();
-    daemon.predicate_ended(prefix.goal, folder, None).unwrap();
+    daemon.predicate_ended(prefix.goal, &folder, None).unwrap();
     assert_eq!(prefix.fixture.entries(), before);
     assert_eq!(daemon.sup.world().agents[&probe].open_turn, None);
     assert!(host.spawned().is_empty());
@@ -525,7 +525,7 @@ fn an_unmatched_normal_no_verdict_does_not_append_or_block_work() {
     daemon
         .predicate_ended(
             GoalId::from_parts(0, 1_000),
-            PathBuf::from("/unmatched-run"),
+            std::path::Path::new("/unmatched-run"),
             None,
         )
         .unwrap();
@@ -585,7 +585,7 @@ fn recovery_checkout_admission_uses_actual_check_folders_for_every_engine() {
     runner.release_error();
     let folder = take_predicate_end(&daemon, prefix.goal);
     assert_eq!(folder, actual);
-    daemon.predicate_ended(prefix.goal, folder, None).unwrap();
+    daemon.predicate_ended(prefix.goal, &folder, None).unwrap();
     assert!(daemon.ctx.predicate_folders.is_empty());
 }
 
@@ -618,7 +618,7 @@ fn same_goal_check_completions_retire_only_their_immutable_execution_folder() {
     let mut queue = VecDeque::new();
     daemon.ctx.run_predicate(
         prefix.goal,
-        changed.clone(),
+        &changed,
         &Predicate::Command {
             argv: vec!["/usr/bin/false".into()],
             timeout_s: 10,
@@ -631,7 +631,7 @@ fn same_goal_check_completions_retire_only_their_immutable_execution_folder() {
     runner.release_folder_error(changed.clone());
     let folder = take_predicate_end(&daemon, prefix.goal);
     assert_eq!(folder, changed);
-    daemon.predicate_ended(prefix.goal, folder, None).unwrap();
+    daemon.predicate_ended(prefix.goal, &folder, None).unwrap();
     assert_eq!(daemon.ctx.predicate_runs.get(&prefix.goal), Some(&1));
     assert_eq!(
         daemon
@@ -642,12 +642,12 @@ fn same_goal_check_completions_retire_only_their_immutable_execution_folder() {
             .collect::<Vec<_>>(),
         vec![(prefix.goal, original.clone())]
     );
-    daemon.predicate_ended(prefix.goal, changed, None).unwrap();
+    daemon.predicate_ended(prefix.goal, &changed, None).unwrap();
     assert_eq!(daemon.ctx.predicate_runs.get(&prefix.goal), Some(&1));
     runner.release_error();
     let folder = take_predicate_end(&daemon, prefix.goal);
     assert_eq!(folder, original);
-    daemon.predicate_ended(prefix.goal, folder, None).unwrap();
+    daemon.predicate_ended(prefix.goal, &folder, None).unwrap();
     assert!(daemon.ctx.predicate_folders.is_empty());
     assert!(daemon.ctx.predicate_runs.is_empty());
 }
@@ -734,7 +734,7 @@ fn an_unresolved_predicate_folder_keeps_the_observed_preparation_refusal_without
     let mut queue = VecDeque::new();
     daemon.ctx.run_predicate(
         goal,
-        cwd,
+        &cwd,
         &Predicate::Command {
             argv,
             timeout_s: 10,
