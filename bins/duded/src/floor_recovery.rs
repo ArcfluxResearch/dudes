@@ -781,8 +781,8 @@ mod tests {
     fn receipt_pair(
         number: u64,
         text: &str,
-        status: Value,
-        wire_status: Value,
+        status: &Value,
+        wire_status: &Value,
     ) -> (RecoveryReceiptView, Value) {
         let claim = expected().expected_predecessor.unwrap();
         let rpc = json!({
@@ -823,7 +823,7 @@ mod tests {
                     json!({"state":"superseded","turn":TURN,"issue_lsn":text,"successor":{"work":work,"origin":text},"barrier_lsn":text}),
                 ),
             ] {
-                let (receipt, wire) = receipt_pair(number, text, status, wire_status);
+                let (receipt, wire) = receipt_pair(number, text, &status, &wire_status);
                 let found = encode_receipt(&RecoveryReceiptResult::Found {
                     receipt: Box::new(receipt),
                 })
@@ -841,8 +841,8 @@ mod tests {
         let (mut receipt, mut wire) = receipt_pair(
             0,
             "0",
-            json!({"state":"pending"}),
-            json!({"state":"pending"}),
+            &json!({"state":"pending"}),
+            &json!({"state":"pending"}),
         );
         receipt.attempt.spawn = None;
         receipt.attempt.confirmation = None;
