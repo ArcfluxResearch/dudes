@@ -277,7 +277,7 @@ fn replay_crash(
         .expected;
     assert_eq!(expected.work.turn, turn);
     let request_id = Hex32::new([31; 32]);
-    let handled = harness.recover(RecoveryCommand {
+    let progress = harness.recover(RecoveryCommand {
         request_id,
         digest: Hex32::new([32; 32]),
         expected,
@@ -287,7 +287,7 @@ fn replay_crash(
             uid: Some(42),
         },
     });
-    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert_eq!(progress.recovery().expect("command progress").refusal, None);
     assert!(harness.records().any(|record| matches!(
         record,
         Record::RecoveryAuthorized(authorization)
