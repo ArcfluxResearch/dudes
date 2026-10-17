@@ -3,7 +3,7 @@ use super::{
     GoalId, LoopDecision, Lsn, Mode, ModelSelection, Path, PathBuf, PreparedLaunch, Provenance,
     Provider, Record, Rng, Supervisor, Then, TurnId, Usd, WorktreeId,
 };
-use crate::input::InstructionRequest;
+use crate::input::{DurableInputError, Handled, InstructionRequest, RecordedAppend};
 use dudes_proto::instruction::{
     InstructionBaselineRef, InstructionComparison, InstructionCoverageGap, InstructionEndBoundary,
     InstructionGapKind, InstructionIssueAssociation, InstructionObservationOwner,
@@ -249,7 +249,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             if self.world.goals.get(&goal).is_some_and(|row| row.agent == agent))
     }
 
-    pub(super) fn instruction_journaled(&mut self, lsn: Lsn, entry: &Entry) {
+    pub(super) fn instruction_journaled(
+        &mut self,
+        append: RecordedAppend,
+    ) -> Result<Handled, DurableInputError> {
+        let lsn = append.lsn();
+        let entry = append.entry();
         if lsn == Lsn::ZERO
             || self.world.last_applied_lsn.is_some_and(|last| lsn <= last)
             || !matches!(
@@ -262,9 +267,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     | Record::PtyCloseCompleted { .. }
             )
         {
-            return;
+            return Ok(Handled::default());
         }
-        self.apply_entry(lsn, entry);
+        let through = append.through();
+        self.apply_recorded(append)?;
+        Ok(Handled::folded(through))
     }
 
     pub(super) fn recover_instruction_observations(&mut self) -> bool {
@@ -1048,6 +1055,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                             owner_agent(starting.owner),
                         )],
                         usage: InstructionSampleUsage::default(),
+                        pid_namespace: None,
                         boot: None,
                     }
                 };
@@ -1105,17 +1113,19 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 then,
                 closing,
             } => {
-                let allowed = self.world.agents.get(&agent).is_some_and(|row| {
-                    !row.retired
-                        && !row.halted
-                        && !row.paused
-                        && !row.attached
-                        && row.automatic_hold.is_none()
-                        && row.open_turn.is_none()
-                        && row.goal == starting.goal
-                }) && starting
-                    .goal
-                    .is_none_or(|goal| !self.world.instructions.pending_for_goal(goal))
+                let allowed = self.recovery_admission_allowed(agent)
+                    && self.world.agents.get(&agent).is_some_and(|row| {
+                        !row.retired
+                            && !row.halted
+                            && !row.paused
+                            && !row.attached
+                            && row.automatic_hold.is_none()
+                            && row.open_turn.is_none()
+                            && row.goal == starting.goal
+                    })
+                    && starting
+                        .goal
+                        .is_none_or(|goal| !self.world.instructions.pending_for_goal(goal))
                     && !self.instructions.recovering()
                     && !self.closing_recovery
                     && !self.protection_pending(agent)
@@ -1144,6 +1154,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.persist_unobserved(at, record, *then);
             }
             StartAction::Retry { launch } => {
+                if !self.recovery_launch_allowed(agent, turn) {
+                    self.spawning.remove(&turn);
+                    return;
+                }
                 self.spawn_prepared(agent, turn, launch);
             }
         }
@@ -1234,7 +1248,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Some(note) => dudes_policy::decide_with_browser_note(&input, &note),
             None => dudes_policy::decide(&input),
         };
-        matches!(&decided.decision, LoopDecision::Continue { task: current } if current.as_str() == task)
+        matches!(&decided.decision, LoopDecision::Continue { task: current } if self.recovery_task(agent, current).as_deref() == Some(task))
             && decided.answers.as_slice() == answers
     }
 
@@ -1275,24 +1289,26 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             && decided.answers.as_slice() == answers
     }
 
-    pub(super) fn observe_after_end(&mut self, turn: TurnId, then: Then, end_lsn: Lsn) {
+    pub(super) fn observe_after_end(
+        &mut self,
+        turn: TurnId,
+        then: Then,
+        end_lsn: Lsn,
+    ) -> Option<crate::input::RecoveryUpdate> {
         let Some(row) = self.world.turns.get(&turn).cloned() else {
-            self.resume_after(then, end_lsn);
-            return;
+            return self.resume_after(then, end_lsn);
         };
         let Some((started_lsn, attempt)) = self.world.instructions.current_for_turn(turn) else {
-            self.resume_after(then, end_lsn);
-            return;
+            return self.resume_after(then, end_lsn);
         };
         let Some(snapshot) = attempt.snapshot.clone() else {
-            self.resume_after(then, end_lsn);
-            return;
+            return self.resume_after(then, end_lsn);
         };
         let owner = attempt.owner;
         let ticket = attempt.ticket;
         let baseline = InstructionBaselineRef::Started { lsn: started_lsn };
         if !self.instructions.ending.insert(baseline) {
-            return;
+            return None;
         }
         let selection = row
             .model_selection
@@ -1318,6 +1334,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Some(Box::new(snapshot)),
             Awaiting::End(ending),
         );
+        None
     }
 
     /// Pure declaration from the actual adapter composition and supplied execution folder.
@@ -1369,7 +1386,7 @@ mod tests {
             .expect("the actual supervisor must request this durable boundary");
         let lsn = Lsn(harness.supervisor.world().last_applied_lsn.unwrap().0 + 1);
         harness.journal.push(entry);
-        harness.step(Input::Persisted { token, lsn })
+        harness.step(harness.persisted(token, lsn))
     }
 
     fn delayed_board_sample() -> (
@@ -1396,7 +1413,13 @@ mod tests {
         };
         let lsn = Lsn(harness.supervisor.world().last_applied_lsn.unwrap().0 + 1);
         harness.journal.push(entry.clone());
-        assert!(harness.step(Input::BoardChanged { lsn, entry }).is_empty());
+        assert!(
+            harness
+                .step(Input::BoardChanged {
+                    append: crate::testing::recorded_append(lsn, entry)
+                })
+                .is_empty()
+        );
         let effects = harness.step(Input::Command(Command::GoalSet {
             agent,
             text: "immutable allocated task".into(),
@@ -1473,6 +1496,7 @@ mod tests {
                 gap(InstructionGapKind::DeclarationMissing, agent),
             ],
             usage: InstructionSampleUsage::default(),
+            pid_namespace: None,
             boot: None,
         };
         let effects = harness.step(Input::InstructionSampled {
@@ -1926,6 +1950,7 @@ mod tests {
                 harness.supervisor.world().turns[&turn].agent,
             )],
             usage: InstructionSampleUsage::default(),
+            pid_namespace: None,
             boot: None,
         };
         let effects = harness.step(Input::InstructionSampled {
@@ -1986,6 +2011,7 @@ mod tests {
             .iter()
             .map(crate::testing::Seen::of)
             .collect();
+        harness.trace.extend(effects.iter().cloned());
         acknowledge_actual_persist(&mut harness, &effects);
         actual_turn_end_to_check(&mut harness, turn);
         assert!(
@@ -2006,6 +2032,7 @@ mod tests {
             .iter()
             .map(crate::testing::Seen::of)
             .collect();
+        harness.trace.extend(effects.iter().cloned());
         let effects = acknowledge_actual_persist(&mut harness, &effects);
         let request = actual_pending_request(&effects);
         let Some(Awaiting::Start(Starting {
@@ -2155,7 +2182,9 @@ mod tests {
         };
         let lsn = Lsn(harness.supervisor.world().last_applied_lsn.unwrap().0 + 1);
         harness.journal.push(entry.clone());
-        let effects = harness.step(Input::BoardChanged { lsn, entry });
+        let effects = harness.step(Input::BoardChanged {
+            append: crate::testing::recorded_append(lsn, entry),
+        });
         assert!(effects.iter().any(|effect| matches!(effect,
             crate::testing::Seen::RunPredicate { goal: checked } if *checked == goal)));
         assert!(
@@ -2223,14 +2252,7 @@ mod tests {
     }
 
     fn replay_prefix(entries: &[Entry]) -> Harness {
-        let mut harness = Harness::new();
-        for (lsn, entry) in (1u64..).zip(entries) {
-            harness.step(Input::Replayed {
-                lsn: Lsn(lsn),
-                entry: entry.clone(),
-            });
-        }
-        harness
+        Harness::from_prefix(entries.to_vec())
     }
 
     fn ended_legacy_ticket() -> (Vec<Entry>, AgentId, TurnId, GoalId) {
@@ -2317,6 +2339,7 @@ mod tests {
                     inventoried: Vec::new(),
                     gaps: vec![gap(InstructionGapKind::PathUnresolved, agent)],
                     usage: InstructionSampleUsage::default(),
+                    pid_namespace: None,
                     boot: None,
                 },
             },
@@ -2412,10 +2435,7 @@ mod tests {
                     }
                     _ => {}
                 }
-                queue.extend(harness.step(Input::Persisted {
-                    token,
-                    lsn: Lsn(position),
-                }));
+                queue.extend(harness.step(harness.persisted(token, Lsn(position))));
             }
         }
         let ended = ended.expect("the actual translated Stop must have an observed end receipt");
@@ -2510,10 +2530,9 @@ mod tests {
                         finished = Some(entry.clone());
                     }
                     entries.push(entry);
-                    queue.extend(recovered.step(Input::Persisted {
-                        token,
-                        lsn: Lsn(u64::try_from(entries.len()).unwrap()),
-                    }));
+                    queue.extend(recovered.step(
+                        recovered.persisted(token, Lsn(u64::try_from(entries.len()).unwrap())),
+                    ));
                 }
                 _ => {}
             }
@@ -2590,10 +2609,7 @@ mod tests {
             && comparison.usage == InstructionSampleUsage::default())
         );
         entries.push(entry);
-        harness.step(Input::Persisted {
-            token,
-            lsn: Lsn(u64::try_from(entries.len()).unwrap()),
-        });
+        harness.step(harness.persisted(token, Lsn(u64::try_from(entries.len()).unwrap())));
         assert!(
             harness
                 .supervisor
@@ -2649,7 +2665,7 @@ mod tests {
             && comparison.gaps.iter().any(|gap| gap.reason == InstructionGapKind::MissingBaseline)
             && comparison.gaps.iter().any(|gap| gap.reason == InstructionGapKind::UnrecordedLaunchBoundary))
         );
-        harness.step(Input::Persisted { token, lsn: Lsn(4) });
+        harness.step(harness.persisted(token, Lsn(4)));
         let attempt = harness
             .supervisor
             .world()
@@ -2747,7 +2763,7 @@ mod tests {
         } if *captured_agent == agent && *captured_turn == turn && *missing == turn && comparison.changes.is_empty()
             && comparison.gaps.iter().any(|gap| gap.reason == InstructionGapKind::MissingBaseline))
         );
-        let effects = harness.step(Input::Persisted { token, lsn: Lsn(5) });
+        let effects = harness.step(harness.persisted(token, Lsn(5)));
         assert!(!effects.iter().any(|effect| matches!(
             effect,
             crate::testing::Seen::Spawn { .. } | crate::testing::Seen::SampleInstructions { .. }
@@ -2836,7 +2852,7 @@ mod tests {
         } if *found == turn && *ended == turn && comparison.changes.is_empty()
             && comparison.gaps.iter().any(|gap| gap.reason == InstructionGapKind::MissingBaseline))
         );
-        let effects = harness.step(Input::Persisted { token, lsn: Lsn(6) });
+        let effects = harness.step(harness.persisted(token, Lsn(6)));
         assert!(effects.iter().any(|effect| matches!(effect, crate::testing::Seen::RunPredicate { goal: found } if *found == goal)));
         entries.push(entry);
         let mut replayed = replay_prefix(&entries);
@@ -2900,7 +2916,7 @@ mod tests {
                 })
                 .is_empty()
         );
-        let effects = harness.step(Input::Persisted { token, lsn: Lsn(6) });
+        let effects = harness.step(harness.persisted(token, Lsn(6)));
         assert!(effects.iter().any(|effect| matches!(effect, crate::testing::Seen::RunPredicate { goal: checked } if *checked == goal)));
         assert!(
             harness
@@ -2939,7 +2955,7 @@ mod tests {
             })
             .unwrap();
         assert!(harness.supervisor.instructions.recovering());
-        harness.step(Input::Persisted { token, lsn: Lsn(7) });
+        harness.step(harness.persisted(token, Lsn(7)));
         assert!(!harness.supervisor.instructions.recovering());
     }
 
@@ -3091,8 +3107,7 @@ mod tests {
         assert!(
             harness
                 .step(Input::InstructionJournaled {
-                    lsn,
-                    entry: entry.clone()
+                    append: crate::testing::recorded_append(lsn, entry.clone())
                 })
                 .is_empty()
         );
@@ -3101,16 +3116,14 @@ mod tests {
         assert!(
             harness
                 .step(Input::InstructionJournaled {
-                    lsn,
-                    entry: entry.clone()
+                    append: crate::testing::recorded_append(lsn, entry.clone())
                 })
                 .is_empty()
         );
         assert!(
             harness
                 .step(Input::InstructionJournaled {
-                    lsn: Lsn::ZERO,
-                    entry
+                    append: crate::testing::recorded_append(Lsn::ZERO, entry)
                 })
                 .is_empty()
         );
@@ -3124,8 +3137,7 @@ mod tests {
         assert!(
             harness
                 .step(Input::InstructionJournaled {
-                    lsn: Lsn(lsn.0 + 1),
-                    entry: unrelated
+                    append: crate::testing::recorded_append(Lsn(lsn.0 + 1), unrelated)
                 })
                 .is_empty()
         );

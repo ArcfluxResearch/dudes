@@ -1,34 +1,5 @@
 #!/bin/sh
-# The post-Spawn arm of the gate — a crash *after* a child exists leaves two children in two
-# independent sessions, and never one session file with both of them writing into it.
-#
-#   ./crash-after-spawn.sh   kill the daemon after a launch has happened and before any record
-#                            names it, restart, and watch replay mint a second session instead of
-#                            resuming the first.
-#
-# # Why this is a second arm and not a flag on `crash.sh`
-#
-# `crash.sh` kills between a turn's durable write and its launch, so **no child exists** when the
-# signal lands. That is one of the two windows a launch has. This is the other: the child is
-# running, and nothing in the journal names it — the pid and the session are recorded by the record
-# that the crash prevents. A restart therefore re-issues a turn whose first child is still alive and
-# still writing, and the question this arm answers is what the second child writes into.
-#
-# The answer this asserts is *its own session*: two children, two transcripts, neither holding the
-# other's events. That is a claim about a real process writing a real file, so no unit test can make
-# it — the supervisor is sans-io and its test host spawns nothing.
-#
-# # The one thing to know before reading the output
-#
-# The crashed turn here is the agent's **first**, and the session it announced is unconfirmed at
-# the kill. The stream watcher reads the vendor's `system/init` line and can enqueue its
-# `Input::SessionLearned`, but the fault has parked the decide loop inside `spawn`: that same loop
-# cannot process the queued input before the external signal lands. A normal completed turn does
-# persist the confirmation and the next turn resumes it; this arm asserts only the state left by
-# this deliberately earlier fault window.
-#
-# A first turn is also why the goal is set from a detached call: the decide loop answers `goal.set`
-# and runs the launch that call causes, in that order and on one thread. See `set_one_goal_detached`.
+# Prior external effects remain unknown even when the replacement uses fresh context.
 set -u
 
 . "$(dirname "$0")/lib.sh"
@@ -39,16 +10,17 @@ if [ "$#" -ne 0 ]; then
 fi
 
 MODE=after-spawn
-TITLE="the post-Spawn arm — two children, two sessions"
+TITLE="the post-launch arm: explicit consent after the old child is gone"
 
 require_binaries
+require_recovery_tools
 open_sandbox
 
 # --- the daemon this arm drives -------------------------------------------------------------------
 #
-# The same feature-built binary `crash.sh` uses, armed at the other window. `--features
-# fault-injection` adds one thing: a wrapper that parks the loop at a chosen launch and touches a
-# file to say it has. **It kills nothing.** The SIGKILL below is a real external signal, sent by
+# The same feature-built binary `crash.sh` uses, armed at the other window. This script uses its
+# after-launch wrapper to park the loop and touch a file to say it has. **It kills nothing.**
+# The SIGKILL below is a real external signal, sent by
 # this script exactly as a person would send it.
 #
 # It builds into a target directory of its own, so `target/release/duded` — what arm 1 runs — is
@@ -147,7 +119,7 @@ else
 fi
 
 header "the crash left a durable TurnIssued with no Spawn (invariant 2)"
-unspawned=$(unspawned_turns "$at_kill")
+unspawned=$(issues_without_spawn "$at_kill")
 count=$(printf '%s' "$unspawned" | grep -c . || true)
 if [ "$count" -eq 1 ]; then
 	pass "exactly one issued turn has no spawn: $unspawned"
@@ -158,7 +130,7 @@ fi
 
 header "and this arm's difference from arm 2: that turn has a child, which outlived the daemon"
 if kill -0 "$orphan" 2>/dev/null; then
-	pass "pid $orphan is still running with nobody reading it and nobody owning it"
+	pass "the process table still reports the old child pid $orphan"
 else
 	fail "the child did not survive the kill: this arm is then arm 2's window under another name"
 fi
@@ -207,30 +179,31 @@ header "the daemon restarts on the state the crash left"
 start_daemon "$MODE-restart"
 pass "restarted on $STATE_DIR"
 
-header "replay re-issued the turn: a second child, and exactly one of the daemon's own"
+header "restart keeps the missing-Spawn barrier while the old child remains alive"
+inspect_missing_spawn "$at_kill" 2
+if kill -0 "$orphan" 2>/dev/null; then
+	pass "the old child survived the first restart; no replacement was launched"
+else
+	fail "the old child ended before the no-repeat observation"
+fi
+
+header "release the old child and observe its absence before consenting"
+release_standin 1
+if await "the old child to disappear from the process table" 60 process_gone "$orphan"; then
+	pass "the OS no longer reports pid $orphan; this shell did not waitpid that orphan"
+else
+	fatal "the old child remains present; no repeat consent will be sent"
+fi
+submit_fresh_repeat
+
+header "the consented same-turn repeat has one held child"
 if await_standin 2; then
 	assert_one_child_is_the_agents 2
 else
-	fail "replay never launched anything for the turn the crash left"
+	fail "no replacement child followed the recorded consent"
 	finish "$TITLE"
 fi
 reissued_child=$(standin_pid 2)
-
-header "the two children of that one turn are running at the same time"
-# Two children run side by side, and this is the moment: the first is orphaned and invisible to any parent-pid count, the second is the daemon's.
-if kill -0 "$orphan" 2>/dev/null; then
-	pass "pid $orphan (crashed) beside pid $reissued_child (re-issued)"
-else
-	fail "the first child was gone before the second started; they never overlapped"
-fi
-
-header "the crashed turn's child runs to completion on its own"
-release_standin 1
-if await "the crashed turn's child to exit" 60 process_gone "$orphan"; then
-	pass "pid $orphan ended by itself; nothing reaped it, nothing killed it, nothing waited for it"
-else
-	fail "the crashed turn's child is still running"
-fi
 release_standin 2
 
 header "the goal closes"
@@ -240,6 +213,7 @@ else
 	fail "the goal never reached Done"
 fi
 
+save_final_recovery_receipt
 stop_daemon
 
 # --- what the journal, the projections and the transcripts say, read offline ----------------------
@@ -271,15 +245,16 @@ assert_done_is_observed "$dump" "$store_export"
 # which would cost this arm the only thing it exists to count.
 assert_one_spawn_per_issued_turn "$dump"
 assert_not_exhausted_by_hops "$dump"
+assert_recovery_repeat "$at_kill" "$dump" "$store_export"
 
 # --- what the re-issued turn announced ----------------------------------------
 
-header "exactly one spawn came from replay"
+header "exactly one durable Spawn follows the explicit repeat"
 reissued=$(records_of "$dump" "$KIND_TURN_SPAWNED" | grep -cF '"reissued":true' || true)
 if [ "$reissued" -eq 1 ]; then
-	pass "one spawn is marked as coming from replay"
+	pass "one consented Spawn is marked reissued"
 else
-	fail "expected exactly one replayed spawn, found $reissued"
+	fail "expected one consented reissued Spawn, found $reissued"
 	finish "$TITLE"
 fi
 
@@ -313,7 +288,6 @@ else
 	fail "$KIND_TURN_SPAWNED names $FIELD_PID ${spawned_pid:-none}; run 2 was $reissued_child"
 fi
 
-# --- two children, two sessions, no interleaving ---------------------------
 
 sessions=$(transcript_sessions)
 present=$(printf '%s\n' "$sessions" | grep -c . || true)
@@ -326,9 +300,7 @@ else
 	note "$(printf '%s' "$sessions" | tr '\n' ' ')"
 fi
 
-header "and they are exactly the two sessions the journal names for that turn"
-# A count of two says nothing about *which* two. This is what ties the files to the records: the
-# session the crashed turn announced, and the one replay launched it on.
+header "the two files match the original and consented fresh session identities"
 want=$(printf '%s\n%s\n' "$announced" "$launched" | sort)
 if [ "$sessions" = "$want" ]; then
 	pass "$(printf '%s' "$want" | tr '\n' ' ')"
@@ -364,7 +336,7 @@ for pair in "$orphan:$announced" "$reissued_child:$launched"; do
 	fi
 done
 
-header "neither transcript holds events from both of that turn's children"
+header "each physical attempt left its own session transcript"
 # The claim this arm exists for, stated plainly: over *these two*
 # children, which are the two attempts at one turn. It follows from the pair above and is asserted
 # anyway, because it is the sentence a reader came here to see and because it is what a future

@@ -756,6 +756,10 @@ pub struct InstructionSnapshot {
     pub source: InstructionSnapshotSource,
     /// Comparable operating-system boot identity actually sampled by the host, when supported.
     pub boot: Option<InstructionBootIdentity>,
+    /// Linux pid namespace sampled with the boot identity after confirming that numeric
+    /// process-table queries use the daemon's pid view. Absent for older or unconfirmed samples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid_namespace: Option<String>,
     /// Actual canonical execution folder, when it was resolved and fits the lossless encoding.
     /// Absence requires a named unresolved-path, overflow or missing-baseline gap.
     pub execution_folder: Option<NativeInstructionPath>,
@@ -959,15 +963,43 @@ pub enum InstructionNativeBoundaryReceipt {
     },
 }
 
+/// How the recorded leader's adoption key was observed to be absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PriorRunLeader {
+    /// The process table has no process with the recorded pid.
+    NoSuchProcess,
+    /// The process with the recorded pid has a different native start time.
+    StartTimeDiffers,
+}
+
 /// Scoped absence of an incumbent native process group or job, separate from comparison/review.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "Proof variant names are durable journal wire tags."
+)]
 pub enum InstructionBoundaryAbsenceProof {
     /// The host confirmed fresh native group/job absence and successfully reaped its leader.
     /// This makes no claim about arbitrary descendants outside that native boundary.
     NativeOwnedBoundaryAbsent {
         /// Incumbent receipt attributed to this exact physical attempt.
         receipt: InstructionNativeBoundaryReceipt,
+    },
+    /// A later daemon run observed the recorded leader absent and its process group empty.
+    /// This observes no reap and makes no claim about escaped descendants or earlier effects.
+    PriorRunGroupAbsent {
+        /// Exact recorded spawn position, never a launch failure.
+        receipt: InstructionNativeBoundaryReceipt,
+        /// Recorded process group leader pid.
+        pid: u32,
+        /// Recorded platform-native start value.
+        start_time: u64,
+        /// Recorded boot identity, when applicable.
+        boot: Option<String>,
+        /// The process table's positive absence observation.
+        leader: PriorRunLeader,
     },
     /// Comparable OS evidence proves that the starting boot has ended.
     PriorBootAbsent {
@@ -1491,6 +1523,13 @@ impl InstructionSnapshot {
     pub fn validate(&self) -> Result<(), InstructionValidationError> {
         if let Some(boot) = &self.boot {
             boot_valid(boot)?;
+        }
+        if self
+            .pid_namespace
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || !crate::ticket::clean_title(value, 128))
+        {
+            return Err(InstructionValidationError::InvalidBoundary);
         }
         if let Some(folder) = &self.execution_folder {
             folder.validate()?;
@@ -2020,24 +2059,7 @@ pub fn validate_instruction_record(record: &Record) -> Result<(), InstructionVal
             {
                 return Err(InstructionValidationError::InvalidBoundary);
             }
-            match proof {
-                InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent { receipt } => {
-                    let lsn = match receipt {
-                        InstructionNativeBoundaryReceipt::Spawned { lsn }
-                        | InstructionNativeBoundaryReceipt::LaunchFailureEnded { lsn } => *lsn,
-                    };
-                    if lsn == Lsn::ZERO {
-                        return Err(InstructionValidationError::InvalidBoundary);
-                    }
-                }
-                InstructionBoundaryAbsenceProof::PriorBootAbsent { previous, current } => {
-                    boot_valid(previous)?;
-                    boot_valid(current)?;
-                    if previous == current {
-                        return Err(InstructionValidationError::InvalidBoundary);
-                    }
-                }
-            }
+            proof.validate()?;
         }
         _ => return Ok(()),
     }
@@ -2049,6 +2071,47 @@ pub fn validate_instruction_record(record: &Record) -> Result<(), InstructionVal
         return Err(InstructionValidationError::MetadataTooLarge);
     }
     Ok(())
+}
+
+impl InstructionBoundaryAbsenceProof {
+    fn validate(&self) -> Result<(), InstructionValidationError> {
+        match self {
+            InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent { receipt } => {
+                let lsn = match receipt {
+                    InstructionNativeBoundaryReceipt::Spawned { lsn }
+                    | InstructionNativeBoundaryReceipt::LaunchFailureEnded { lsn } => *lsn,
+                };
+                if lsn == Lsn::ZERO {
+                    return Err(InstructionValidationError::InvalidBoundary);
+                }
+            }
+            InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                receipt,
+                pid,
+                start_time,
+                boot,
+                ..
+            } => {
+                if !matches!(receipt, InstructionNativeBoundaryReceipt::Spawned { lsn } if *lsn != Lsn::ZERO)
+                    || !(2..=i32::MAX as u32).contains(pid)
+                    || *start_time == 0
+                    || boot.as_ref().is_some_and(|value| {
+                        value.is_empty() || !crate::ticket::clean_title(value, 128)
+                    })
+                {
+                    return Err(InstructionValidationError::InvalidBoundary);
+                }
+            }
+            InstructionBoundaryAbsenceProof::PriorBootAbsent { previous, current } => {
+                boot_valid(previous)?;
+                boot_valid(current)?;
+                if previous == current {
+                    return Err(InstructionValidationError::InvalidBoundary);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn boot_valid(boot: &InstructionBootIdentity) -> Result<(), InstructionValidationError> {
@@ -2112,6 +2175,7 @@ mod tests {
         InstructionSnapshot {
             sampled_at: Timestamp::UNIX_EPOCH,
             source: InstructionSnapshotSource::Fresh,
+            pid_namespace: None,
             boot: None,
             execution_folder: Some(path("/project")),
             participants: vec![InstructionParticipant {
@@ -2208,7 +2272,7 @@ mod tests {
             assert_eq!(json["t"], name);
             assert_eq!(serde_json::from_value::<Record>(json).unwrap(), record);
         }
-        assert_eq!(crate::RecordKind::from_tag(82), None);
+        assert_eq!(crate::RecordKind::from_tag(85), None);
     }
 
     #[test]
@@ -2888,6 +2952,95 @@ mod tests {
         assert_eq!(
             crate::TicketReason::SharedInstructionsUnknown.sentence(),
             "Dudes could not determine whether shared project instructions changed during this work. Review the work, then Accept or Ask for changes."
+        );
+    }
+    #[test]
+    fn prior_run_proof_validates_native_identity_and_spawned_receipt() {
+        let proof = InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+            receipt: InstructionNativeBoundaryReceipt::Spawned { lsn: Lsn(3) },
+            pid: 42,
+            start_time: 8,
+            boot: None,
+            leader: PriorRunLeader::NoSuchProcess,
+        };
+        let record = |proof| Record::InstructionAttemptBoundarySettled {
+            owner: InstructionObservationOwner::Managed {
+                agent: samples::agent(),
+                turn: samples::turn(),
+                issue: InstructionIssueAssociation::Prospective,
+            },
+            started_lsn: Lsn(1),
+            proof,
+        };
+        assert!(validate_instruction_record(&record(proof.clone())).is_ok());
+        for invalid in [0, 1, i32::MAX as u32 + 1, u32::MAX] {
+            let mut bad = proof.clone();
+            if let InstructionBoundaryAbsenceProof::PriorRunGroupAbsent { pid, .. } = &mut bad {
+                *pid = invalid;
+            }
+            assert_eq!(
+                validate_instruction_record(&record(bad)),
+                Err(InstructionValidationError::InvalidBoundary)
+            );
+        }
+        let mut bad = proof.clone();
+        if let InstructionBoundaryAbsenceProof::PriorRunGroupAbsent { start_time, .. } = &mut bad {
+            *start_time = 0;
+        }
+        assert_eq!(
+            validate_instruction_record(&record(bad)),
+            Err(InstructionValidationError::InvalidBoundary)
+        );
+        let mut bad = proof;
+        if let InstructionBoundaryAbsenceProof::PriorRunGroupAbsent { receipt, .. } = &mut bad {
+            *receipt = InstructionNativeBoundaryReceipt::LaunchFailureEnded { lsn: Lsn(3) };
+        }
+        assert_eq!(
+            validate_instruction_record(&record(bad)),
+            Err(InstructionValidationError::InvalidBoundary)
+        );
+    }
+
+    #[test]
+    fn prior_run_leader_wire_shape_and_legacy_snapshot_bytes_are_stable() {
+        assert_eq!(
+            serde_json::to_string(&PriorRunLeader::NoSuchProcess).unwrap(),
+            "\"no_such_process\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PriorRunLeader::StartTimeDiffers).unwrap(),
+            "\"start_time_differs\""
+        );
+        let legacy = snapshot();
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("pid_namespace"));
+        let decoded: InstructionSnapshot = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.pid_namespace, None);
+        assert_eq!(serde_json::to_vec(&decoded).unwrap(), bytes);
+        let mut current = decoded;
+        current.pid_namespace = Some("pid:[4026531836]".into());
+        assert_eq!(current.validate(), Ok(()));
+        assert!(
+            String::from_utf8_lossy(&serde_json::to_vec(&current).unwrap())
+                .contains("pid_namespace")
+        );
+    }
+    #[test]
+    fn legacy_snapshot_literal_round_trips_without_changing_its_bytes() {
+        const LEGACY: &str = r#"{"sampled_at":0,"source":"fresh","boot":null,"execution_folder":{"encoding":"utf8","value":"/project"},"participants":[],"inputs":[],"inventoried":[],"gaps":[{"reason":"declaration_missing","context":{"kind":"unresolved"},"agent":null,"path":null,"origin":"observed"}],"usage":{"ancestor_steps":0,"descendant_entries":0,"descendant_depth":0,"import_edges":0,"symlink_hops":0,"source_bytes":0}}"#;
+        let snapshot: InstructionSnapshot = serde_json::from_str(LEGACY).unwrap();
+        assert_eq!(snapshot.pid_namespace, None);
+        assert!(snapshot.validate().is_ok());
+        assert_eq!(serde_json::to_string(&snapshot).unwrap(), LEGACY);
+        let mut current: serde_json::Value = serde_json::from_str(LEGACY).unwrap();
+        current["pid_namespace"] = serde_json::json!("pid:[4026531836]");
+        let current: InstructionSnapshot = serde_json::from_value(current).unwrap();
+        assert_eq!(current.pid_namespace.as_deref(), Some("pid:[4026531836]"));
+        assert!(current.validate().is_ok());
+        assert_eq!(
+            serde_json::from_slice::<InstructionSnapshot>(&serde_json::to_vec(&current).unwrap())
+                .unwrap(),
+            current
         );
     }
 }

@@ -214,6 +214,74 @@ mod tests {
                 }
                 refs
             }
+            Record::RecoveryRequired(record) => {
+                let mut refs = recovery_binding_refs(&record.binding);
+                if let dudes_proto::recovery::RecoveryOrigin::Existing { lsn } = record.origin {
+                    refs.push(lsn);
+                }
+                match record.boundary {
+                    dudes_proto::recovery::RecoveryBoundary::Held { end_lsn, first } => {
+                        refs.push(end_lsn);
+                        if let Some(first) = first {
+                            refs.extend([first.issue_lsn, first.end_lsn]);
+                        }
+                    }
+                    dudes_proto::recovery::RecoveryBoundary::Paused { end_lsn } => {
+                        refs.push(end_lsn);
+                    }
+                    dudes_proto::recovery::RecoveryBoundary::Vanished { spawn_lsn, end_lsn } => {
+                        refs.extend([spawn_lsn, end_lsn]);
+                    }
+                    dudes_proto::recovery::RecoveryBoundary::Unconfirmed {
+                        spawn_lsn,
+                        end_lsn,
+                        requested_confirmation_lsn,
+                    } => refs.extend([spawn_lsn, end_lsn, requested_confirmation_lsn]),
+                    dudes_proto::recovery::RecoveryBoundary::MissingSpawn => {}
+                }
+                if let Some(previous) = record.predecessor {
+                    refs.extend([previous.episode.origin, previous.authorization_lsn]);
+                }
+                refs
+            }
+            Record::RecoveryAuthorized(record) => {
+                let mut refs = recovery_binding_refs(&record.binding);
+                refs.push(record.episode.origin);
+                refs.extend(record.expected_control);
+                refs.extend(record.resulting_control);
+                refs.extend(record.resume_lsn);
+                match &record.plan {
+                    dudes_proto::recovery::RecoveryPlan::New { context, .. } => {
+                        if let dudes_proto::recovery::RecoveryContext::Fresh { recap, .. } = context
+                        {
+                            refs.extend(&recap.sources);
+                            for delivered in &recap.delivered_answers {
+                                refs.extend([
+                                    delivered.answer_lsn,
+                                    delivered.issue_lsn,
+                                    delivered.spawn_lsn,
+                                ]);
+                            }
+                        }
+                    }
+                    dudes_proto::recovery::RecoveryPlan::RepeatIssued { issue, .. } => {
+                        refs.push(issue.lsn);
+                        refs.extend(&issue.issued.answers);
+                    }
+                }
+                refs
+            }
+            Record::RecoveryInvalidated(record) => {
+                let mut refs = vec![record.claim.episode.origin, record.claim.authorization_lsn];
+                if let dudes_proto::recovery::RecoveryInvalidationEvidence::RecordedChange {
+                    lsn,
+                    ..
+                } = record.evidence
+                {
+                    refs.push(lsn);
+                }
+                refs
+            }
             Record::TicketReviewStamped { stamp, .. } => vec![stamp.baseline_lsn, stamp.check_lsn],
             Record::InstructionAttemptBoundarySettled {
                 owner,
@@ -225,6 +293,10 @@ mod tests {
                 match proof {
                     dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
                         receipt,
+                    }
+                    | dudes_proto::InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                        receipt,
+                        ..
                     } => refs.push(match receipt {
                         dudes_proto::InstructionNativeBoundaryReceipt::Spawned { lsn }
                         | dudes_proto::InstructionNativeBoundaryReceipt::LaunchFailureEnded {
@@ -514,9 +586,13 @@ mod tests {
         refs
     }
 
+    fn recovery_binding_refs(binding: &dudes_proto::recovery::RecoveryBinding) -> Vec<Lsn> {
+        vec![binding.hired_lsn, binding.issue_lsn]
+    }
+
     #[test]
     fn no_sample_lsn_is_below_the_first_segment() {
-        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 54;
+        const EXPECTED_SAMPLE_REFERENCE_COUNT: usize = 62;
 
         let mut swept = 0_usize;
         let mut lsns = 0_usize;

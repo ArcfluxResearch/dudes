@@ -1801,6 +1801,12 @@ pub enum Record {
         /// The bounded sample.
         stamp: crate::diff_stamp::StampPayload,
     },
+    /// An exact interrupted-work boundary requiring explicit recovery consent.
+    RecoveryRequired(crate::recovery::RecoveryRequired),
+    /// Immutable operator consent for one canonical recovery episode.
+    RecoveryAuthorized(Box<crate::recovery::RecoveryAuthorized>),
+    /// Durable closure of unused recovery consent on exact evidence.
+    RecoveryInvalidated(crate::recovery::RecoveryInvalidated),
 }
 
 /// Who removed a worktree.
@@ -2068,6 +2074,9 @@ impl Record {
             }
             Self::TicketBaselineRecorded { .. } => RecordKind::TicketBaselineRecorded,
             Self::TicketReviewStamped { .. } => RecordKind::TicketReviewStamped,
+            Self::RecoveryRequired(_) => RecordKind::RecoveryRequired,
+            Self::RecoveryAuthorized(_) => RecordKind::RecoveryAuthorized,
+            Self::RecoveryInvalidated(_) => RecordKind::RecoveryInvalidated,
         }
     }
 
@@ -2257,6 +2266,12 @@ pub enum RecordKind {
     TicketBaselineRecorded = 80,
     /// [`Record::TicketReviewStamped`].
     TicketReviewStamped = 81,
+    /// [`Record::RecoveryRequired`].
+    RecoveryRequired = 82,
+    /// [`Record::RecoveryAuthorized`].
+    RecoveryAuthorized = 83,
+    /// [`Record::RecoveryInvalidated`].
+    RecoveryInvalidated = 84,
 }
 
 impl RecordKind {
@@ -2313,8 +2328,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 81] {
-        let mut kinds = [Self::AgentHired; 81];
+    const fn known_kinds() -> [Self; 84] {
+        let mut kinds = [Self::AgentHired; 84];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2355,6 +2370,9 @@ impl RecordKind {
         kinds[78] = Self::InstructionAttemptBoundarySettled;
         kinds[79] = Self::TicketBaselineRecorded;
         kinds[80] = Self::TicketReviewStamped;
+        kinds[81] = Self::RecoveryRequired;
+        kinds[82] = Self::RecoveryAuthorized;
+        kinds[83] = Self::RecoveryInvalidated;
         kinds
     }
 
@@ -2396,6 +2414,9 @@ impl RecordKind {
                 | Self::InstructionAttemptBoundarySettled
                 | Self::TicketBaselineRecorded
                 | Self::TicketReviewStamped
+                | Self::RecoveryRequired
+                | Self::RecoveryAuthorized
+                | Self::RecoveryInvalidated
         )
     }
 
@@ -2684,8 +2705,61 @@ pub mod samples {
         MailId::parse("01ARZ3NDEKTSV4RRFFQ69G5FB0").unwrap()
     }
 
-    /// Every variant by kind. The match is exhaustive over [`RecordKind`], so a kind without a
-    /// sample does not compile; the count test in `tests` covers the other direction.
+    fn recovery_required() -> crate::recovery::RecoveryRequired {
+        use crate::recovery::{
+            RecoveryBinding, RecoveryBoundary, RecoveryOrigin, RecoveryReason, RecoveryRequired,
+            RecoveryWork,
+        };
+        RecoveryRequired {
+            binding: RecoveryBinding {
+                work: RecoveryWork {
+                    agent: agent(),
+                    goal: goal(),
+                    turn: turn(),
+                },
+                issue_lsn: Lsn::from_parts(1, 12).unwrap(),
+                hired_lsn: Lsn::from_parts(1, 8).unwrap(),
+                ticket: None,
+                worktree: None,
+                provider: dudes_types::Provider::Claude,
+                model_selection: None,
+            },
+            origin: RecoveryOrigin::ThisBarrier,
+            reason: RecoveryReason::MissingSpawn,
+            boundary: RecoveryBoundary::MissingSpawn,
+            predecessor: None,
+        }
+    }
+
+    fn recovery_authorized() -> crate::recovery::RecoveryAuthorized {
+        use crate::recovery::{
+            RecoveryAttribution, RecoveryAuthorized, RecoveryContext, RecoveryEpisodeId,
+            RecoveryPlan, RecoveryRecap,
+        };
+        let required = recovery_required();
+        RecoveryAuthorized {
+            episode: RecoveryEpisodeId {
+                work: required.binding.work,
+                origin: Lsn::from_parts(1, 18).unwrap(),
+            },
+            binding: required.binding,
+            request_id: Hex32::new([2; 32]),
+            request_digest: Hex32::new([3; 32]),
+            attribution: RecoveryAttribution::LocalOperator { pid: 7, uid: None },
+            expected_control: None,
+            resulting_control: None,
+            resume_lsn: None,
+            plan: RecoveryPlan::New {
+                turn: TurnId::from_parts(8, 2),
+                context: RecoveryContext::Fresh {
+                    session: None,
+                    recap: RecoveryRecap::default(),
+                },
+            },
+        }
+    }
+
+    /// Every variant by kind. A missing sample does not compile; the count test covers extras.
     #[allow(clippy::too_many_lines)] // one arm per variant; a table, not logic
     pub fn record(kind: RecordKind) -> Record {
         match kind {
@@ -3048,6 +3122,7 @@ pub mod samples {
                 snapshot: crate::instruction::InstructionSnapshot {
                     sampled_at: Timestamp::UNIX_EPOCH,
                     source: crate::instruction::InstructionSnapshotSource::Fresh,
+                    pid_namespace: None,
                     boot: None,
                     execution_folder: Some(crate::instruction::NativeInstructionPath::Utf8 {
                         value: "/work/project".into(),
@@ -3162,6 +3237,22 @@ pub mod samples {
                 )
                 .unwrap(),
             },
+            RecordKind::RecoveryRequired => Record::RecoveryRequired(recovery_required()),
+            RecordKind::RecoveryAuthorized => {
+                Record::RecoveryAuthorized(Box::new(recovery_authorized()))
+            }
+            RecordKind::RecoveryInvalidated => {
+                Record::RecoveryInvalidated(crate::recovery::RecoveryInvalidated {
+                    claim: crate::recovery::RecoveryClaimRef {
+                        episode: recovery_authorized().episode,
+                        authorization_lsn: Lsn::from_parts(1, 20).unwrap(),
+                    },
+                    evidence: crate::recovery::RecoveryInvalidationEvidence::RecordedChange {
+                        reason: crate::recovery::RecoveryInvalidationReason::ControlChanged,
+                        lsn: Lsn::from_parts(1, 21).unwrap(),
+                    },
+                })
+            }
             RecordKind::AgentRenamed => Record::AgentRenamed {
                 id: agent(),
                 name: "Kim renamed".to_owned(),
@@ -3573,7 +3664,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 81);
+        assert_eq!(RecordKind::KNOWN.len(), 84);
         for &kind in &RecordKind::KNOWN[46..66] {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys() {
@@ -4076,7 +4167,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            81,
+            84,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -5074,8 +5165,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 81);
-        assert_eq!(RecordKind::from_tag(82), None);
+        assert_eq!(RecordKind::KNOWN.len(), 84);
+        assert_eq!(RecordKind::from_tag(85), None);
     }
 
     const TICKET_KINDS: [(RecordKind, u16); 5] = [
@@ -5342,5 +5433,40 @@ mod tests {
             let value = serde_json::to_value(&record).unwrap();
             assert_eq!(serde_json::from_value::<Record>(value).unwrap(), record);
         }
+    }
+}
+
+#[cfg(test)]
+mod recovery_record_tests {
+    use super::{Entry, RecordKind, samples};
+    use dudes_types::Timestamp;
+
+    const KINDS: [(RecordKind, u16); 3] = [
+        (RecordKind::RecoveryRequired, 82),
+        (RecordKind::RecoveryAuthorized, 83),
+        (RecordKind::RecoveryInvalidated, 84),
+    ];
+
+    #[test]
+    fn recovery_records_have_fixed_required_tags_and_strict_original_envelopes() {
+        for (kind, tag) in KINDS {
+            assert_eq!(kind.tag(), tag);
+            assert_eq!(RecordKind::from_tag(tag), Some(kind));
+            assert!(kind.requires_required_frame());
+            let entry = Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: samples::record(kind),
+            };
+            let encoded = serde_json::to_string(&entry).unwrap();
+            assert_eq!(serde_json::from_str::<Entry>(&encoded).unwrap(), entry);
+            let unknown = encoded.replacen('{', "{\"unexpected\":true,", 1);
+            assert!(serde_json::from_str::<Entry>(&unknown).is_err(), "{kind:?}");
+            let duplicate = encoded.replacen('{', "{\"t\":\"recovery_required\",", 1);
+            assert!(
+                serde_json::from_str::<Entry>(&duplicate).is_err(),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(RecordKind::from_tag(85), None);
     }
 }

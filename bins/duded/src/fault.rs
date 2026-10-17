@@ -1,56 +1,9 @@
-//! The two faults the crash-recovery tests need, behind a feature this daemon does not ship with.
+//! Native crash-test stops, compiled only with `fault-injection`.
 //!
-//! # What they are
-//!
-//! Both wrap a [`ProcessHost`] and, on the *n*th launch, stop answering: each touches a marker file
-//! and parks the calling thread for good. Every other call passes straight through. What separates
-//! them is one line, and that line is the whole reason there are two:
-//!
-//! | | where it parks | on-disk state when the signal lands |
-//! |---|---|---|
-//! | [`StallBeforeSpawn`] | **before** delegating | a fsynced `TurnIssued`, **no child**, no `TurnSpawned` |
-//! | [`StallAfterSpawn`] | after delegating, **before answering** | a fsynced `TurnIssued`, **a live child**, no `TurnSpawned` |
-//!
-//! # Why the tests need them, and why the daemon does not kill itself
-//!
-//! The post-append crash test kills `duded` between the fsynced `TurnIssued` append and the launch. That
-//! window is real but microseconds wide — `Ctx::execute` appends and folds, then the `Spawn`
-//! effect follows on the next pump — so an outside killer cannot land in it, and a harness that
-//! retried until it did would be flaky by construction. Flaky tests are bugs, not retries.
-//!
-//! So these **widen a window** and do nothing else. They create no process of their own, kill
-//! nothing and write no journal record; each stops the loop at the exact instant one arm names and
-//! leaves the killing to whoever is watching the marker. The `SIGKILL` in a transcript is a real
-//! external signal sent by a person or a script.
-//!
-//! On-disk state when the signal lands is precisely what each arm is about. For the first: a
-//! `TurnIssued` that `Writer::append` fsynced and folded, and no `TurnSpawned`. Nothing has been
-//! launched, so there is no orphan either — which matters on Unix, where a `SIGKILL`ed daemon
-//! cannot reap anything.
-//!
-//! For the second the orphan **is** the point, and what makes the state reachable is an ordering in
-//! the executor rather than anything here: `Ctx::execute` registers the child with the stream sink
-//! and queues `Input::Spawned` only *after* the host has answered. A park inside the answer
-//! therefore leaves a real child running whose pid no record names, on a session no vendor line can
-//! confirm — the loop that would fold one is the parked thread. That is the state the post-`Spawn`
-//! arm restarts on; what a re-issue then announces depends on the turn's session, and for a
-//! turn with no vendor-confirmed session behind it that is a freshly minted one.
-//!
-//! # Why a feature and not an environment variable
-//!
-//! Because then the released binary does not contain it at all, and that is the compiler's
-//! statement rather than a promise in a comment — the shape `dudes-rpc`'s `testing` feature already
-//! sets for the permissive authorisers. `cargo build --release --workspace` does not enable it;
-//! the crash arm builds `-p duded --features fault-injection` and says so in its own output. What
-//! the two binaries differ by is this wrapper in `main.rs`'s seam composition, which cannot reach
-//! the journal, the fold, replay or the decide loop.
-//!
-//! # What it is not
-//!
-//! Not a general fault-injection framework. Two faults, a counter and a marker file each; the
-//! second exists because the claim that a post-`Spawn` crash leaves *two children in two
-//! independent sessions* is about a real child, and the before-`Spawn` fault only reaches the
-//! branch where no child exists.
+//! Spawn wrappers park before native launch or after a successful launch but before its answer.
+//! Recovery stops select one exact work identity and one finite journal boundary. They create no
+//! child, kill nothing, and append no journal record. The marker contains the daemon PID only;
+//! journal positions and child identity must be observed separately.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -60,8 +13,128 @@ use dudes_providers::adapter::{HookInstall, ManagedInstall};
 use dudes_providers::launch::LaunchSpec;
 use dudes_supervisor::host::{
     AdoptionKey, HostBoot, KillOutcome, Liveness, NativeBoundaryAcknowledgement,
-    NativeBoundaryReceipt, OwnedTargets, ProcessHost, SpawnResult,
+    NativeBoundaryReceipt, NativeGroupPresence, OwnedTargets, ProbeAnswer, ProcessHost,
+    SpawnResult,
 };
+
+/// Journal boundaries available to an instrumented recovery run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryStopPoint {
+    /// After preparation and command joining, before the Required write or any admission permit.
+    BeforeRequired,
+    /// After the Required commit and any automatic checkpoint, after guard drop, before projection.
+    AfterRequired,
+    /// After the exact command's Resume commit and any automatic checkpoint, after guard drop.
+    AfterResume,
+    /// After the Authorized commit and any automatic checkpoint, after guard drop.
+    AfterAuthorized,
+}
+
+/// Exact work and command identity selected for a recovery stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RecoveryStopTarget {
+    /// A startup Required boundary with no operator command.
+    Startup {
+        /// Exact interrupted work.
+        work: dudes_proto::recovery::RecoveryWork,
+    },
+    /// A boundary joined to this admitted operator command.
+    Command {
+        /// Exact interrupted work.
+        work: dudes_proto::recovery::RecoveryWork,
+        /// Original command request ID.
+        request_id: dudes_proto::record::Hex32,
+    },
+}
+
+/// One armed recovery stop. No configuration means no stop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryStop {
+    point: RecoveryStopPoint,
+    target: RecoveryStopTarget,
+    marker: PathBuf,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecoveryStopFields {
+    point: RecoveryStopPoint,
+    target: RecoveryStopTarget,
+    marker: PathBuf,
+}
+
+impl RecoveryStop {
+    /// Parse the native stop configuration without reading the environment or touching the marker.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a present value unless it is at most 4,096 UTF-8 bytes, has the exact object shape,
+    /// selects a supported point and target, and names an absolute marker path. Startup targets
+    /// can select only Required boundaries.
+    pub fn parse(value: Option<&std::ffi::OsStr>) -> anyhow::Result<Option<Self>> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let value = value
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("recovery stop configuration must be UTF-8"))?;
+        anyhow::ensure!(
+            value.len() <= 4_096,
+            "recovery stop configuration exceeds 4096 bytes"
+        );
+        let object: serde_json::Value = serde_json::from_str(value)
+            .map_err(|_| anyhow::anyhow!("invalid recovery stop configuration"))?;
+        anyhow::ensure!(
+            object.is_object()
+                && object
+                    .get("target")
+                    .is_some_and(serde_json::Value::is_object)
+                && object
+                    .get("target")
+                    .and_then(|target| target.get("work"))
+                    .is_some_and(serde_json::Value::is_object),
+            "recovery stop configuration requires named object fields"
+        );
+        let fields: RecoveryStopFields = serde_json::from_str(value)
+            .map_err(|_| anyhow::anyhow!("invalid recovery stop configuration fields"))?;
+        let stop = Self {
+            point: fields.point,
+            target: fields.target,
+            marker: fields.marker,
+        };
+        anyhow::ensure!(
+            !matches!(stop.target, RecoveryStopTarget::Startup { .. })
+                || matches!(
+                    stop.point,
+                    RecoveryStopPoint::BeforeRequired | RecoveryStopPoint::AfterRequired
+                ),
+            "recovery Resume and Authorized stops require an exact command"
+        );
+        anyhow::ensure!(
+            stop.marker.is_absolute() && !stop.marker.as_os_str().as_encoded_bytes().contains(&0),
+            "recovery stop marker must be an absolute path without NUL bytes"
+        );
+        Ok(Some(stop))
+    }
+
+    /// Whether this exact point, work and command identity select the armed stop.
+    #[must_use]
+    pub fn matches(&self, point: RecoveryStopPoint, target: RecoveryStopTarget) -> bool {
+        self.point == point && self.target == target
+    }
+
+    /// Announce and park only when the exact point, work and command identity match.
+    ///
+    /// Call before acquiring any permit for `BeforeRequired`, or after a successful complete
+    /// commit and guard drop for an `After` point. This callback receives no journal position.
+    pub fn park_if_matches(&self, point: RecoveryStopPoint, target: RecoveryStopTarget) {
+        if self.matches(point, target) {
+            announce_and_park(&self.marker);
+        }
+    }
+}
 
 /// Announce the window and never leave it.
 ///
@@ -126,6 +199,18 @@ impl<H: ProcessHost> ProcessHost for StallBeforeSpawn<H> {
 
     fn alive(&self, key: &AdoptionKey) -> Liveness {
         self.inner.alive(key)
+    }
+
+    fn probe_native_leader(&self, key: &AdoptionKey) -> ProbeAnswer {
+        self.inner.probe_native_leader(key)
+    }
+
+    fn native_group_presence(&self, pid: u32) -> NativeGroupPresence {
+        self.inner.native_group_presence(pid)
+    }
+
+    fn pid_namespace(&self) -> Option<String> {
+        self.inner.pid_namespace()
     }
 
     fn owned_targets(&self, limit: usize) -> OwnedTargets {
@@ -220,6 +305,18 @@ impl<H: ProcessHost> ProcessHost for StallAfterSpawn<H> {
         self.inner.alive(key)
     }
 
+    fn probe_native_leader(&self, key: &AdoptionKey) -> ProbeAnswer {
+        self.inner.probe_native_leader(key)
+    }
+
+    fn native_group_presence(&self, pid: u32) -> NativeGroupPresence {
+        self.inner.native_group_presence(pid)
+    }
+
+    fn pid_namespace(&self) -> Option<String> {
+        self.inner.pid_namespace()
+    }
+
     fn owned_targets(&self, limit: usize) -> OwnedTargets {
         self.inner.owned_targets(limit)
     }
@@ -254,6 +351,246 @@ mod tests {
     use dudes_supervisor::testing::FakeHost;
 
     use super::*;
+
+    #[test]
+    fn before_spawn_wrapper_delegates_native_observations() {
+        use crate::classify::native_observation_test_support::{Sentinel, assert_forwarded};
+        let sentinel = Sentinel::new();
+        let host = StallBeforeSpawn::new(sentinel.clone(), 1, PathBuf::new());
+        assert_forwarded(&host, &sentinel);
+        assert_eq!(host.seen.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn after_spawn_wrapper_delegates_native_observations() {
+        use crate::classify::native_observation_test_support::{Sentinel, assert_forwarded};
+        let sentinel = Sentinel::new();
+        let host = StallAfterSpawn::new(sentinel.clone(), 1, PathBuf::new());
+        assert_forwarded(&host, &sentinel);
+        assert_eq!(host.seen.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn nested_spawn_wrappers_and_peer_barrier_delegate_native_observations() {
+        use crate::classify::native_observation_test_support::{Sentinel, assert_forwarded};
+        let sentinel = Sentinel::new();
+        let peer = crate::classify::PeerBarrier::new(
+            sentinel.clone(),
+            crate::classify::Resolver::fixed(Arc::new(crate::classify::NoWalk)),
+        );
+        let before = StallBeforeSpawn::new(peer, 1, PathBuf::new());
+        let host = StallAfterSpawn::new(before, 1, PathBuf::new());
+        assert_forwarded(&host, &sentinel);
+        assert_eq!(host.seen.load(Ordering::SeqCst), 0);
+        assert_eq!(host.inner.seen.load(Ordering::SeqCst), 0);
+    }
+
+    fn stop_value(point: &str, kind: &str) -> serde_json::Value {
+        let mut target = serde_json::json!({
+            "kind": kind,
+            "work": {
+                "agent": "00000000000000000000000001",
+                "goal": "00000000000000000000000002",
+                "turn": "00000000000000000000000003"
+            }
+        });
+        if kind == "command" {
+            target["request_id"] = serde_json::Value::String("11".repeat(32));
+        }
+        serde_json::json!({
+            "point": point,
+            "target": target,
+            "marker": if cfg!(windows) { r"C:\recovery-stop" } else { "/recovery-stop" }
+        })
+    }
+
+    fn parse_stop(value: &serde_json::Value) -> anyhow::Result<RecoveryStop> {
+        RecoveryStop::parse(Some(std::ffi::OsStr::new(&value.to_string())))?
+            .ok_or_else(|| anyhow::anyhow!("the fixture must arm a stop"))
+    }
+
+    #[test]
+    fn recovery_stop_is_unarmed_only_when_configuration_is_absent() {
+        assert_eq!(RecoveryStop::parse(None).unwrap(), None);
+        for value in ["", "null", "false", "{}", "[]"] {
+            assert!(RecoveryStop::parse(Some(std::ffi::OsStr::new(value))).is_err());
+        }
+    }
+
+    #[test]
+    fn recovery_stop_accepts_each_exact_command_stage() {
+        for (name, point) in [
+            ("before_required", RecoveryStopPoint::BeforeRequired),
+            ("after_required", RecoveryStopPoint::AfterRequired),
+            ("after_resume", RecoveryStopPoint::AfterResume),
+            ("after_authorized", RecoveryStopPoint::AfterAuthorized),
+        ] {
+            let value = stop_value(name, "command");
+            let stop = parse_stop(&value).unwrap();
+            assert!(stop.matches(
+                point,
+                serde_json::from_value(value["target"].clone()).unwrap()
+            ));
+        }
+    }
+
+    #[test]
+    fn recovery_stop_matches_only_exact_point_work_and_request() {
+        let value = stop_value("after_resume", "command");
+        let stop = parse_stop(&value).unwrap();
+        let target: RecoveryStopTarget = serde_json::from_value(value["target"].clone()).unwrap();
+        assert!(stop.matches(RecoveryStopPoint::AfterResume, target));
+        for point in [
+            RecoveryStopPoint::BeforeRequired,
+            RecoveryStopPoint::AfterRequired,
+            RecoveryStopPoint::AfterAuthorized,
+        ] {
+            assert!(!stop.matches(point, target));
+        }
+        for field in ["agent", "goal", "turn"] {
+            let mut other = value["target"].clone();
+            other["work"][field] = serde_json::json!("00000000000000000000000004");
+            assert!(!stop.matches(
+                RecoveryStopPoint::AfterResume,
+                serde_json::from_value(other).unwrap()
+            ));
+        }
+        let mut other = value["target"].clone();
+        other["request_id"] = serde_json::json!("22".repeat(32));
+        assert!(!stop.matches(
+            RecoveryStopPoint::AfterResume,
+            serde_json::from_value(other).unwrap()
+        ));
+        let startup = stop_value("after_required", "startup");
+        assert!(!stop.matches(
+            RecoveryStopPoint::AfterResume,
+            serde_json::from_value(startup["target"].clone()).unwrap()
+        ));
+    }
+
+    #[test]
+    fn startup_recovery_stop_has_no_command_and_only_required_points() {
+        for (name, point) in [
+            ("before_required", RecoveryStopPoint::BeforeRequired),
+            ("after_required", RecoveryStopPoint::AfterRequired),
+        ] {
+            let value = stop_value(name, "startup");
+            let stop = parse_stop(&value).unwrap();
+            let target = serde_json::from_value(value["target"].clone()).unwrap();
+            assert!(stop.matches(point, target));
+            let command = stop_value(name, "command");
+            assert!(!stop.matches(
+                point,
+                serde_json::from_value(command["target"].clone()).unwrap()
+            ));
+        }
+        for point in ["after_resume", "after_authorized"] {
+            assert!(parse_stop(&stop_value(point, "startup")).is_err());
+        }
+        let mut value = stop_value("after_required", "startup");
+        value["target"]["request_id"] = serde_json::json!("11".repeat(32));
+        assert!(parse_stop(&value).is_err());
+    }
+
+    #[test]
+    fn recovery_stop_parser_refuses_malformed_and_positional_fields() {
+        let valid = stop_value("before_required", "command");
+        assert!(parse_stop(&valid).is_ok());
+        for path in [vec![], vec!["target"], vec!["target", "work"]] {
+            let mut value = valid.clone();
+            let mut object = &mut value;
+            for field in path {
+                object = &mut object[field];
+            }
+            object["extra"] = serde_json::json!(true);
+            assert!(parse_stop(&value).is_err());
+        }
+        for field in ["point", "target", "marker"] {
+            let mut value = valid.clone();
+            value.as_object_mut().unwrap().remove(field);
+            assert!(parse_stop(&value).is_err());
+        }
+        let mut value = valid.clone();
+        value["target"]
+            .as_object_mut()
+            .unwrap()
+            .remove("request_id");
+        assert!(parse_stop(&value).is_err());
+        for request in [serde_json::Value::Null, serde_json::json!("AA".repeat(32))] {
+            let mut value = valid.clone();
+            value["target"]["request_id"] = request;
+            assert!(parse_stop(&value).is_err());
+        }
+        for point in ["after_fsync", "after_permit", "resume", ""] {
+            let mut value = valid.clone();
+            value["point"] = serde_json::json!(point);
+            assert!(parse_stop(&value).is_err());
+        }
+        for marker in ["", "relative-marker"] {
+            let mut value = valid.clone();
+            value["marker"] = serde_json::json!(marker);
+            assert!(parse_stop(&value).is_err());
+        }
+        let mut value = valid.clone();
+        value["marker"] =
+            serde_json::json!(format!("{}\0marker", valid["marker"].as_str().unwrap()));
+        assert!(parse_stop(&value).is_err());
+        let mut value = valid.clone();
+        value["target"]["work"] = serde_json::json!([
+            "00000000000000000000000001",
+            "00000000000000000000000002",
+            "00000000000000000000000003"
+        ]);
+        assert!(parse_stop(&value).is_err());
+        let mut value = valid.clone();
+        value["target"] = serde_json::json!(["command", valid["target"]["work"], "11".repeat(32)]);
+        assert!(parse_stop(&value).is_err());
+        assert!(
+            parse_stop(&serde_json::json!([
+                valid["point"],
+                valid["target"],
+                valid["marker"]
+            ]))
+            .is_err()
+        );
+        let text = valid.to_string();
+        for duplicate in [
+            text.replacen('{', r#"{"point":"after_required","#, 1),
+            text.replace(
+                r#""kind":"command""#,
+                r#""kind":"command","kind":"command""#,
+            ),
+            text.replace(
+                r#""agent":"00000000000000000000000001""#,
+                r#""agent":"00000000000000000000000001","agent":"00000000000000000000000001""#,
+            ),
+        ] {
+            assert!(RecoveryStop::parse(Some(std::ffi::OsStr::new(&duplicate))).is_err());
+        }
+    }
+
+    #[test]
+    fn recovery_stop_limit_counts_original_utf8_configuration_bytes() {
+        let value = stop_value("after_authorized", "command").to_string();
+        let mut boundary = value.clone();
+        boundary.push_str(&" ".repeat(4_096 - value.len()));
+        assert!(RecoveryStop::parse(Some(std::ffi::OsStr::new(&boundary))).is_ok());
+        boundary.push(' ');
+        assert!(RecoveryStop::parse(Some(std::ffi::OsStr::new(&boundary))).is_err());
+        let mut value = stop_value("after_authorized", "command");
+        let marker = value["marker"].as_str().unwrap().to_owned();
+        value["marker"] = serde_json::json!(format!("{marker}{}", "é".repeat(1_000)));
+        assert!(parse_stop(&value).is_ok());
+        value["marker"] = serde_json::json!(format!("{marker}{}", "é".repeat(2_048)));
+        assert!(parse_stop(&value).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_stop_refuses_present_non_utf8_configuration() {
+        use std::os::unix::ffi::OsStrExt;
+        assert!(RecoveryStop::parse(Some(std::ffi::OsStr::from_bytes(&[0xff]))).is_err());
+    }
 
     fn spec() -> LaunchSpec {
         LaunchSpec {

@@ -162,9 +162,14 @@ fn append(daemon: &mut TestDaemon, record: Record) -> Lsn {
         at: daemon.ctx.clock.now(),
         record,
     };
-    let lsn = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
-    daemon.sup.handle(Input::Replayed { lsn, entry });
-    assert_eq!(daemon.sup.world().last_applied_lsn, Some(lsn));
+    let append = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let lsn = append.lsn();
+    let through = append.through();
+    let (main, checkpoint) = append.into_parts();
+    for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
+        daemon.sup.handle(Input::Replayed { lsn, entry }).unwrap();
+    }
+    assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
     assert!(daemon.sup.take_effects().is_empty());
     lsn
 }
@@ -723,7 +728,8 @@ fn tick_after_unfolded_pause(daemon: &mut TestDaemon, agent: AgentId) {
         .handle(Input::Command(dudes_supervisor::Command::Pause {
             agent,
             browser: None,
-        }));
+        }))
+        .unwrap();
     let mut queue = VecDeque::new();
     for effect in daemon.sup.take_effects() {
         daemon
@@ -749,7 +755,7 @@ fn tick_after_unfolded_pause(daemon: &mut TestDaemon, agent: AgentId) {
             &mut PumpReport::Discard,
             PumpOrigin::Ordinary,
             queue,
-            |_| Ok(()),
+            |_| Ok(Handled::default()),
         )
         .unwrap();
     assert!(
@@ -1257,7 +1263,9 @@ impl FailedOpen {
             &mut self.daemon.closing,
         )?;
         self.daemon
-            .pump_inputs(&mut report, PumpOrigin::Ordinary, queue, |_| Ok(()))
+            .pump_inputs(&mut report, PumpOrigin::Ordinary, queue, |_| {
+                Ok(Handled::default())
+            })
     }
 
     fn called(&self) -> CalledOpen {

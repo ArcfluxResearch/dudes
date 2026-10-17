@@ -533,6 +533,273 @@ dump_export() { dump_export_of "$STATE_DIR" "${1:-store}"; }
 # Lines of a given record kind, from a dump.
 records_of() { awk -v kind="$2" '$2 == kind' "$1"; }
 
+require_recovery_tools() {
+	command -v python3 >/dev/null 2>&1 || fatal "the crash examples require Python 3 for JSON assertions"
+}
+
+recovery_facts() {
+	python3 - "$@" <<'PYTHON'
+import json
+import re
+import sys
+from pathlib import Path
+
+
+def need(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        need(key not in result, "duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def read_json(path):
+    return json.loads(Path(path).read_text(), object_pairs_hook=unique)
+
+
+def records(path):
+    result = {}
+    for line in Path(path).read_text().splitlines():
+        if line.startswith("{"):
+            row = json.loads(line, object_pairs_hook=unique)
+            lsn, entry = row["lsn"], row["entry"]
+            entry = {key: value for key, value in entry.items() if key != "at"}
+        else:
+            at, kind, payload = line.split(" ", 2)
+            lsn, entry = int(at), json.loads(payload, object_pairs_hook=unique)
+            need(entry["t"] == kind, "journal kind disagrees with payload")
+        need(type(lsn) is int and lsn > 0 and lsn not in result, "invalid or repeated journal position")
+        result[lsn] = entry
+    need(result, "empty journal")
+    return result
+
+
+def one(rows, kind):
+    selected = [(lsn, row) for lsn, row in rows.items() if row["t"] == kind]
+    need(len(selected) == 1, "expected exactly one " + kind)
+    return selected[0]
+
+
+def original_issue(path, agent):
+    rows = records(path)
+    spawned = {row["turn"] for row in rows.values() if row["t"] == "turn_spawned"}
+    selected = [(lsn, row) for lsn, row in rows.items()
+                if row["t"] == "turn_issued" and row["agent"] == agent and row["turn"] not in spawned]
+    need(len(selected) == 1, "expected one original unspawned issue")
+    return selected[0]
+
+
+def inspect(at_kill, before, after, inspection, agent):
+    issue_lsn, issue = original_issue(at_kill, agent)
+    view = read_json(inspection)
+    work = {key: issue[key] for key in ("agent", "goal", "turn")}
+    need(view["state"] == "available" and view["choices"] == "repeat_issued_fresh", "fresh repeat not offered")
+    need(view["reason"] == "missing_spawn" and view["prior_effects_unknown"] is True, "missing repeat warning")
+    expected = view["expected"]
+    need(expected["work"] == work and expected["issue_lsn"] == issue_lsn, "inspection changed original work")
+    before_rows, after_rows = records(before), records(after)
+    baseline_issues = [(lsn, row) for lsn, row in records(at_kill).items()
+                       if row["t"] == "turn_issued" and row["agent"] == agent]
+    required_lsn, required = one(before_rows, "recovery_required")
+    need(one(after_rows, "recovery_required") == (required_lsn, required), "barrier changed during inspection")
+    need(required["binding"]["work"] == work and required["binding"]["issue_lsn"] == issue_lsn, "wrong barrier work")
+    need(required["reason"] == "missing_spawn" and required["boundary"] == {"kind": "missing_spawn"}, "wrong barrier reason")
+    need(required["origin"] == {"kind": "this_barrier"} and required["predecessor"] is None, "unexpected prior episode")
+    need(expected["episode"] == {"work": work, "origin": required_lsn}, "inspection missed durable episode")
+    need(expected["expected_predecessor"] is None, "unexpected prior claim")
+    for rows in (before_rows, after_rows):
+        need([(lsn, row) for lsn, row in rows.items()
+              if row["t"] == "turn_issued" and row["agent"] == agent] == baseline_issues,
+             "restart added or changed a logical issue")
+        need(rows[issue_lsn] == issue, "original task or answers changed")
+        need(not any(row["t"] == "turn_spawned" and row["turn"] == work["turn"] for row in rows.values()), "automatic repeat launched")
+        need(not any(row["t"] in ("recovery_authorized", "recovery_invalidated") for row in rows.values()), "unexpected recovery consent")
+        need(sum(row["t"] == "turn_issued" and row["turn"] == work["turn"] for row in rows.values()) == 1, "duplicate logical issue")
+
+
+def receipt(inspection, submitted, found, request):
+    expected = read_json(inspection)["expected"]
+    submitted, found = read_json(submitted), read_json(found)
+    need(found["state"] == "found", "request receipt is not certified present")
+    view = found["receipt"]
+    need(view["request_id"] == request and view["choice"] == "repeat_issued_fresh", "receipt changed request or choice")
+    need(view["claim"]["episode"] == expected["episode"], "receipt changed inspected episode")
+    need(view["prior_effects_unknown"] is True, "receipt lost prior-effects warning")
+    status = view["status"]
+    need(status["state"] in ("issue_bound", "consumed"), "repeat consent is not issue-bound or consumed")
+    need(status["turn"] == expected["work"]["turn"] and status["issue_lsn"] == expected["issue_lsn"], "receipt changed issue")
+    if submitted["state"] == "accepted":
+        original = submitted["receipt"]
+        need(original["request_id"] == request and original["claim"] == view["claim"], "submission and lookup disagree")
+        need(original["choice"] == view["choice"], "submission choice changed")
+    else:
+        need(submitted["state"] in ("unknown", "reply_unavailable") and submitted["request_id"] == request, "submission refused or changed request")
+
+
+def ulid(value):
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    need(len(value) == 26, "invalid identity length")
+    number = 0
+    for char in value:
+        number = number * 32 + alphabet.index(char)
+    return number.to_bytes(16, "big")
+
+
+def exported(path, rows):
+    authority, witnesses = {}, {}
+    for line in Path(path).read_text().splitlines():
+        if not line.startswith("recovery "):
+            continue
+        _, key, raw = line.split(" ", 2)
+        value = json.loads(raw, object_pairs_hook=unique)
+        need(key not in authority and key not in witnesses, "duplicate Recovery key")
+        if value["kind"] == "witness":
+            reference = value["value"]["reference"]
+            lsn = reference["lsn"]
+            need(key == "08" + lsn.to_bytes(8, "big").hex(), "wrong witness key")
+            need(lsn in rows and rows[lsn]["t"] == reference["kind"], "witness has no exact journal source")
+            witnesses[key] = value
+        else:
+            authority[key] = value
+    need(witnesses, "Recovery export has no source witnesses")
+    for lsn, row in rows.items():
+        if row["t"] == "turn_issued":
+            need("08" + lsn.to_bytes(8, "big").hex() in witnesses, "missing original issue witness")
+    return authority, witnesses
+
+
+def final(at_kill, journal, export, inspection, submitted, found, request):
+    agent = read_json(inspection)["expected"]["work"]["agent"]
+    issue_lsn, original = original_issue(at_kill, agent)
+    rows = records(journal)
+    need(rows[issue_lsn] == original, "original issued task or ordered answers changed")
+    before_issues = [(lsn, row) for lsn, row in records(at_kill).items()
+                     if row["t"] == "turn_issued" and row["agent"] == agent]
+    need([(lsn, row) for lsn, row in rows.items()
+          if row["t"] == "turn_issued" and row["agent"] == agent] == before_issues,
+         "repeat changed logical issues, tasks or ordered answers")
+    need(sum(row["t"] == "turn_issued" and row["turn"] == original["turn"] for row in rows.values()) == 1, "repeat added a logical issue")
+    required_lsn, required = one(rows, "recovery_required")
+    authorized_lsn, authorized = one(rows, "recovery_authorized")
+    need(not any(row["t"] == "recovery_invalidated" for row in rows.values()), "unexpected invalidation")
+    work = {key: original[key] for key in ("agent", "goal", "turn")}
+    episode = {"work": work, "origin": required_lsn}
+    need(required["binding"]["work"] == work and required["binding"]["issue_lsn"] == issue_lsn, "barrier changed issue")
+    need(authorized["episode"] == episode and authorized["binding"] == required["binding"], "authorization changed barrier")
+    need(authorized["request_id"] == request and authorized["plan"]["kind"] == "repeat_issued", "wrong repeat request")
+    need(authorized["attribution"]["kind"] == "local_operator" and authorized["attribution"]["pid"] > 0, "missing operator attribution")
+    plan = authorized["plan"]["issue"]
+    need(plan["lsn"] == issue_lsn and plan["issued"]["work"] == work, "plan changed logical issue")
+    need(plan["issued"]["answers"] == original.get("answers", []), "plan changed ordered answers")
+    need(plan["issued"]["model_selection"] == original.get("model_selection") and plan["issued"]["session"] == original.get("session"), "plan changed original launch intent")
+    spawns = [(lsn, row) for lsn, row in rows.items() if row["t"] == "turn_spawned" and row["turn"] == work["turn"]]
+    need(len(spawns) == 1, "repeat has no unique recorded Spawn")
+    spawn_lsn, spawn = spawns[0]
+    need(issue_lsn < required_lsn < authorized_lsn < spawn_lsn, "recovery event order changed")
+    need(spawn["agent"] == work["agent"] and spawn["reissued"] is True, "Spawn is not the same-turn repeat")
+    need(spawn.get("session") == authorized["plan"]["session"] != original.get("session"), "repeat did not use fresh context")
+    receipt(inspection, submitted, found, request)
+    view = read_json(found)["receipt"]
+    need(view["claim"] == {"episode": episode, "authorization_lsn": authorized_lsn}, "receipt changed authorization")
+    need(view["status"] == {"state": "consumed", "turn": work["turn"], "issue_lsn": issue_lsn, "evidence_lsn": spawn_lsn}, "final receipt is not the consumed repeat")
+    need(view["attempt"]["spawn"] == spawn_lsn, "receipt lost physical attempt")
+    authority, witnesses = exported(export, rows)
+    work_key = b"".join(ulid(work[key]) for key in ("agent", "goal", "turn"))
+    episode_key = work_key + required_lsn.to_bytes(8, "big")
+    authorization_key = authorized_lsn.to_bytes(8, "big")
+    payload = {key: value for key, value in authorized.items() if key != "t"}
+    expected = {
+        "00": {"kind": "cut", "lsn": spawn_lsn},
+        "01" + episode_key.hex(): {"kind": "episode", "value": {"id": episode, "barrier_lsn": required_lsn, "binding": required["binding"], "reason": "missing_spawn"}},
+        "02" + episode_key.hex(): {"kind": "episode_claim", "episode": episode, "authorization": authorized_lsn},
+        "03" + work_key.hex(): {"kind": "current", "work": work, "episode": episode},
+        "04" + authorization_key.hex(): {"kind": "authorization", "lsn": authorized_lsn, "value": payload},
+        "05" + authorization_key.hex(): {"kind": "claim", "authorization": authorized_lsn, "value": {"Consumed": {"issue": plan, "evidence_lsn": spawn_lsn}}},
+        "06" + bytes.fromhex(request).hex(): {"kind": "request", "request": request, "authorization": authorized_lsn},
+    }
+    need(authority == expected, "Recovery authority cells differ from exact journal facts")
+    witness = witnesses["08" + issue_lsn.to_bytes(8, "big").hex()]["value"]
+    need(witness["reference"]["owner"] == {"Work": work}, "issue witness changed owner")
+    need(witness["evidence"]["Issue"]["issued"] == plan["issued"], "repeat changed the complete immutable issue witness")
+
+
+try:
+    mode, *args = sys.argv[1:]
+    if mode == "request_id":
+        ids = [match.group(1) for line in Path(args[0]).read_text().splitlines()
+               if (match := re.fullmatch(r"Recovery request ID: ([0-9a-f]{64})", line))]
+        need(len(ids) == 1, "submission did not retain exactly one canonical request ID")
+        print(ids[0])
+    elif mode == "inspect":
+        inspect(*args)
+    elif mode == "receipt":
+        receipt(*args)
+    elif mode == "final":
+        final(*args)
+    elif mode == "ordinary":
+        rows = records(args[0])
+        need(not any(row["t"].startswith("recovery_") for row in rows.values()), "ordinary run created recovery events")
+        authority, _ = exported(args[1], rows)
+        need(not authority, "ordinary run created Recovery authority cells")
+    else:
+        raise ValueError("unknown recovery assertion")
+except (ValueError, KeyError, TypeError, OverflowError, OSError) as error:
+    sys.exit("recovery assertion failed: " + str(error))
+PYTHON
+}
+
+inspect_missing_spawn() {
+	RECOVERY_PREFIX="$GATE_OUT/$MODE.$(basename "$SANDBOX").recovery"
+	cli --json tail --from 0 >"$RECOVERY_PREFIX.before.jsonl" || fatal "could not read the restart barrier"
+	cli --json recovery inspect "$GOAL_AGENT" >"$RECOVERY_PREFIX.inspection.json" \
+		2>"$RECOVERY_PREFIX.inspection.err" || fatal "recovery inspection was refused; kept at $RECOVERY_PREFIX.inspection.err"
+	cli --json tail --from 0 >"$RECOVERY_PREFIX.after.jsonl" || fatal "could not read after inspection"
+	recovery_facts inspect "$1" "$RECOVERY_PREFIX.before.jsonl" "$RECOVERY_PREFIX.after.jsonl" \
+		"$RECOVERY_PREFIX.inspection.json" "$GOAL_AGENT" || fatal "restart did not retain the exact Required barrier"
+	[ ! -e "$WORK_DIR/started.$2" ] || fatal "restart automatically launched the next attempt"
+	recovery_children=$(live_children) || fatal "could not collect restarted daemon children"
+	[ "$recovery_children" -eq 0 ] || fatal "restart launched a child before consent"
+	pass "durable Required, saved inspection, and no automatic launch across two journal reads"
+}
+
+submit_fresh_repeat() {
+	header "explicit consent to repeat the original issued task in fresh context"
+	if cli --json recovery submit "$RECOVERY_PREFIX.inspection.json" --choice repeat-issued-fresh \
+		>"$RECOVERY_PREFIX.submit.json" 2>"$RECOVERY_PREFIX.submit.err"; then
+		:
+	else
+		note "submission reply was not accepted; reading the retained request receipt without resubmitting"
+	fi
+	RECOVERY_REQUEST_ID=$(recovery_facts request_id "$RECOVERY_PREFIX.submit.err") ||
+		fatal "no retained recovery request ID; submission logs kept at $RECOVERY_PREFIX.submit.err"
+	printf '%s\n' "$RECOVERY_REQUEST_ID" >"$RECOVERY_PREFIX.request-id"
+	cli --json recovery receipt "$RECOVERY_REQUEST_ID" >"$RECOVERY_PREFIX.receipt.json" \
+		2>"$RECOVERY_PREFIX.receipt.err" || fatal "receipt unavailable; do not resubmit; retained $RECOVERY_PREFIX.request-id"
+	recovery_facts receipt "$RECOVERY_PREFIX.inspection.json" "$RECOVERY_PREFIX.submit.json" \
+		"$RECOVERY_PREFIX.receipt.json" "$RECOVERY_REQUEST_ID" || fatal "recovery receipt did not confirm the original choice"
+	pass "original request receipt verified before checking the held replacement child"
+}
+
+save_final_recovery_receipt() {
+	cli --json recovery receipt "$RECOVERY_REQUEST_ID" >"$RECOVERY_PREFIX.receipt.final.json" \
+		2>"$RECOVERY_PREFIX.receipt.final.err" || fatal "could not read the final recovery receipt"
+}
+
+assert_recovery_repeat() {
+	header "one exact recovery claim, immutable issue and consumed physical attempt"
+	if recovery_facts final "$1" "$2" "$3" "$RECOVERY_PREFIX.inspection.json" \
+		"$RECOVERY_PREFIX.submit.json" "$RECOVERY_PREFIX.receipt.final.json" "$RECOVERY_REQUEST_ID"; then
+		pass "Required, consent, receipt and every Recovery authority cell join the original task and ordered answers"
+	else
+		fail "recovery journal, receipt or projection facts disagree"
+	fi
+}
+
 # --- reading the shipped record contract -----------------------------------------------------------
 #
 # `schemas/journal-record.schema.json` is generated from the record type by `cargo xtask schemas`
@@ -588,9 +855,7 @@ goal_last_result() { grep '^goals ' "$1" | grep -o '"last_result":{[^}]*}' | hea
 # The `reissued` flag of every `turns` row, in key order, as one line.
 turn_reissued_flags() { grep '^turns ' "$1" | grep -o '"reissued":[a-z]*' | tr '\n' ' '; }
 
-# The turns a dump shows as issued and never spawned — the state a crash between the durable write
-# and the launch leaves, and the state replay has to resolve. One id per line.
-unspawned_turns() {
+issues_without_spawn() {
 	issued=$(records_of "$1" turn_issued | grep -o '"turn":"[^"]*"' | sort -u)
 	spawned=$(records_of "$1" turn_spawned | grep -o '"turn":"[^"]*"' | sort -u)
 	printf '%s\n' "$issued" | while read -r turn; do
@@ -687,10 +952,10 @@ assert_a_predicate_came_out_false() {
 	fi
 }
 
-# Every issued turn was spawned exactly once — not zero, not twice.
+# One durable Spawn per logical issue does not prove one physical execution.
 assert_one_spawn_per_issued_turn() {
 	dump=$1
-	header "each issued turn was spawned exactly once"
+	header "each issued turn has exactly one durable Spawn"
 	issued=$(records_of "$dump" turn_issued | grep -o '"turn":"[^"]*"' | sort)
 	spawned=$(records_of "$dump" turn_spawned | grep -o '"turn":"[^"]*"' | sort)
 	if [ -z "$issued" ]; then
@@ -708,7 +973,7 @@ assert_one_spawn_per_issued_turn() {
 	if [ "$bad" -eq 0 ]; then
 		pass "$(printf '%s\n' "$issued" | wc -l | tr -d ' ') issued turn(s), one spawn each"
 	else
-		fail "$bad turn(s) were not spawned exactly once"
+		fail "$bad turn(s) lack one unique durable Spawn"
 	fi
 }
 
@@ -840,11 +1105,6 @@ await_standin() {
 
 # --- the control arm's own job: comparing the two runs ---------------------------------------------
 
-# The control, run from `crash.sh --no-crash` with the crashed run's kept artefacts beside it.
-#
-# What the control is for: "exactly one child after replay" cannot, on its own, tell replay
-# re-issuing one turn from a harness that only ever produces one child. Only a comparison with a
-# run in which the kill did not happen can.
 compare_with_the_crashed_run() {
 	mine=$1
 	theirs="$GATE_OUT/crash.journal"
@@ -884,36 +1144,32 @@ compare_with_the_crashed_run() {
 	# carries a durable TurnIssued with no Spawn before its restart, and this one never does.
 	# That is the check. A bare `diff` of the two dumps would report "different" for two runs that
 	# were identical in every way that matters, because every id in them is freshly minted.
-	theirs_unspawned=$(unspawned_turns "$at_kill" | grep -c . || true)
-	mine_unspawned=$(unspawned_turns "$mine" | grep -c . || true)
+	theirs_unspawned=$(issues_without_spawn "$at_kill" | grep -c . || true)
+	mine_unspawned=$(issues_without_spawn "$mine" | grep -c . || true)
 	if [ "$theirs_unspawned" -eq 1 ] && [ "$mine_unspawned" -eq 0 ]; then
 		pass "the crashed run had one turn written and unlaunched; this run never had any"
 	else
 		fail "unspawned turns: crashed $theirs_unspawned (want 1), no-crash $mine_unspawned (want 0)"
 	fi
 
-	header "and the crashed run says so in the record replay wrote"
+	header "the explicit recovery repeat has one recorded Spawn"
 	theirs_reissued=$(records_of "$theirs" turn_spawned | grep -cF '"reissued":true')
 	mine_reissued=$(records_of "$mine" turn_spawned | grep -cF '"reissued":true')
 	if [ "$theirs_reissued" -eq 1 ] && [ "$mine_reissued" -eq 0 ]; then
-		pass "one replayed spawn in the crashed run, none in this one"
+		pass "one reissued Spawn after consent in the crashed run, none in this one"
 	else
 		fail "replayed spawns: crashed $theirs_reissued (want 1), no-crash $mine_reissued (want 0)"
 	fi
 
 	header "the control on the comparator: it reads the journals rather than answering a constant"
-	# The same function over two dumps of the **same** crashed run — before its restart and after —
-	# must give different answers: one turn unlaunched at the kill, none once replay has spawned
-	# it. Without this, an `unspawned_turns` that always answered 1 (or always 0) would satisfy
-	# every assertion above.
-	theirs_after=$(unspawned_turns "$theirs" | grep -c . || true)
+	theirs_after=$(issues_without_spawn "$theirs" | grep -c . || true)
 	if [ "$theirs_unspawned" -eq 1 ] && [ "$theirs_after" -eq 0 ]; then
-		pass "the crashed run: 1 unlaunched turn at the kill, 0 after replay"
+		pass "the crashed run: 1 issue without a Spawn at the kill, 0 after consent"
 	else
-		fail "the crashed run reads $theirs_unspawned at the kill and $theirs_after after replay"
+		fail "the crashed run reads $theirs_unspawned at the kill and $theirs_after after consent"
 	fi
 
-	header "the same one child: each run spawned exactly one process per turn it issued"
+	header "both runs record one Spawn per logical issue"
 	theirs_issued=$(records_of "$theirs" turn_issued | grep -c .)
 	theirs_spawned=$(records_of "$theirs" turn_spawned | grep -c .)
 	mine_issued=$(records_of "$mine" turn_issued | grep -c .)
@@ -954,14 +1210,25 @@ compare_the_two_projections() {
 	fi
 
 	header "ordinary tables carry the same row counts"
-	theirs_shape=$(export_shape "$theirs" | grep -Ev ' (session_totals|instructions)$')
-	mine_shape=$(export_shape "$mine" | grep -Ev ' (session_totals|instructions)$')
+	theirs_shape=$(export_shape "$theirs" | grep -Ev ' (session_totals|instructions|recovery)$')
+	mine_shape=$(export_shape "$mine" | grep -Ev ' (session_totals|instructions|recovery)$')
 	if [ "$theirs_shape" = "$mine_shape" ]; then
 		pass "$(printf '%s' "$mine_shape" | tr -s ' \n' ' ')"
 	else
 		fail "the two exports differ in their tables or in how many rows each holds"
 		note "crashed: $(printf '%s' "$theirs_shape" | tr -s ' \n' ' ')"
 		note "control: $(printf '%s' "$mine_shape" | tr -s ' \n' ' ')"
+	fi
+
+	header "Recovery cells preserve the crash consent and the control has no recovery request"
+	crash_recovery_prefix="$GATE_OUT/crash.$attempt_id.recovery"
+	if recovery_facts final "$GATE_OUT/crash.at-kill.journal" "$GATE_OUT/crash.journal" "$theirs" \
+		"$crash_recovery_prefix.inspection.json" "$crash_recovery_prefix.submit.json" \
+		"$crash_recovery_prefix.receipt.final.json" "$(cat "$crash_recovery_prefix.request-id")" &&
+		recovery_facts ordinary "$GATE_OUT/no-crash.journal" "$mine"; then
+		pass "exact crash authority cells and source witnesses; no control authority or request"
+	else
+		fail "Recovery facts do not match the two journals"
 	fi
 
 	header "instruction cells match their exact journal boundaries, including the uncertain crash interval"
@@ -1002,7 +1269,7 @@ compare_the_two_projections() {
 	theirs_done=$(records_of "$GATE_OUT/crash.journal" loop_decided | grep -cF '"kind":"done"')
 	mine_done=$(records_of "$GATE_OUT/no-crash.journal" loop_decided | grep -cF '"kind":"done"')
 	if [ "$theirs_done" -eq 1 ] && [ "$mine_done" -eq 1 ]; then
-		pass "each run reached Done exactly once"
+		pass "each run records one Done decision"
 	else
 		fail "Done decisions: crashed $theirs_done, no-crash $mine_done; each should be 1"
 	fi

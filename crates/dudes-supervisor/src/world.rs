@@ -22,6 +22,7 @@ use std::path::PathBuf;
 mod attached_turn_end_tests;
 mod mail_wakes;
 mod mcp;
+mod recovery;
 mod worktrees;
 
 pub use mcp::{McpGrant, McpHistoryError, McpPolicy};
@@ -162,6 +163,8 @@ pub struct AgentRow {
     /// writer; a session-invalidating record and a replayed launch refusal may clear it. Announcing an
     /// id the daemon minted does not confirm it, so this stays `None` until the vendor speaks.
     pub session: Option<SessionId>,
+    /// Actual confirmation that established the current agent session.
+    pub session_lsn: Option<Lsn>,
     /// The turn in flight, when there is one.
     pub open_turn: Option<TurnId>,
     /// `input_digest` from this agent's **most recent** `LoopDecided`, and `None` before its first
@@ -198,6 +201,8 @@ pub struct PendingAnswer {
 pub struct GoalRow {
     /// The goal itself.
     pub goal: Goal,
+    /// Actual goal installation position.
+    pub installed_lsn: Lsn,
     /// Who pursues it.
     pub agent: AgentId,
     /// Managed turn issues for this goal so far (gate 6), saturated at `u32::MAX`.
@@ -205,6 +210,8 @@ pub struct GoalRow {
     pub turns_on_goal: u32,
     /// The latest `PredicateResult` (gate 4).
     pub predicate: Option<PredicateInput>,
+    /// Actual latest predicate result position.
+    pub predicate_lsn: Option<Lsn>,
     /// The most recent turn issued for this goal, so a predicate result names the turn it ran
     /// after.
     pub last_turn: Option<TurnId>,
@@ -233,6 +240,8 @@ struct ObservedPredicateResult {
 /// One turn, as the confirmed entries describe it.
 #[derive(Clone, Debug)]
 pub struct TurnRow {
+    /// Actual immutable issue position.
+    pub issue_lsn: Lsn,
     /// The agent.
     pub agent: AgentId,
     /// The goal it serves.
@@ -274,6 +283,10 @@ pub struct TurnRow {
     pub boot: Option<String>,
     /// Latest physical spawn receipt position, absent before a child was recorded.
     pub spawn_lsn: Option<Lsn>,
+    /// Latest terminal source, including an end before a subsequent physical spawn.
+    pub end_lsn: Option<Lsn>,
+    /// Accepted confirmation source for the current physical attempt.
+    pub confirmation_lsn: Option<Lsn>,
     /// Immutable grant paired with the latest physical spawn receipt.
     pub mcp_grant: Option<Lsn>,
 }
@@ -332,8 +345,8 @@ pub enum AttachedTurnEndQueryStatus {
 }
 
 impl TurnRow {
-    /// `TurnIssued` is fsynced and no `TurnSpawned` followed: replay re-issues this turn exactly
-    /// once, under the same `TurnId`.
+    /// A durable issue with no recorded spawn or end.
+    /// This is owed work, not permission to launch or proof that no process ran.
     #[must_use]
     pub const fn is_issued_not_spawned(&self) -> bool {
         matches!(self.status, TurnStatus::Issued)
@@ -428,6 +441,11 @@ fn qualifying_unconfirmed_resume_end(outcome: Option<&TurnOutcome>) -> bool {
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct World {
+    recovery_state: dudes_proto::recovery_state::RecoveryState,
+    recovery_history: dudes_proto::recovery_state::history::RecoveryHistory,
+    recovery_history_error: Option<dudes_proto::recovery_state::history::RecoveryHistoryError>,
+    recovery_card_changes: BTreeMap<CardId, Lsn>,
+    recovery_last_retirement: Option<Lsn>,
     /// Durable instruction attempts and independently consumed review evidence.
     pub instructions: dudes_proto::instruction_state::InstructionState,
     /// Latest journal-derived closure; a completed session remains historical.
@@ -452,8 +470,9 @@ pub struct World {
     ///
     /// The fold's own record of where it has reached, so that a record which has to be named by
     /// its position — a note removed by the `lsn` that set it — has a position to
-    /// be named by. Nothing decides on it: it is not read by [`World::loop_input`] and so never
-    /// reaches `dudes_policy::decide()`, which reads no clock and no position (invariant 5).
+    /// be named by. Recovery facts bound their source joins by this cut. It is not read by
+    /// [`World::loop_input`] and never reaches `dudes_policy::decide()`, which reads no clock
+    /// and no position (invariant 5).
     ///
     /// The same name as `dudes_journal::Projections::last_applied_lsn` because it is the same
     /// fact about the other projection of the same journal, and a second word for one fact is
@@ -717,17 +736,40 @@ impl World {
     /// carry (`dudes_proto::Entry` is `at` plus the record). Both callers hold it — replay reads
     /// it from the log and the live path is acknowledged with it — so the two folds agree on the
     /// position of every entry, which is what lets a record be named by where it sits.
-    #[allow(clippy::too_many_lines, clippy::match_same_arms)]
     pub fn apply(&mut self, lsn: Lsn, entry: &Entry) {
-        if self.validate_record_authority(entry).is_err() {
-            return;
-        }
+        let _ = self.apply_checked(lsn, entry);
+    }
+
+    /// Fold an entry only after its recovery relationships pass at the preceding cut.
+    /// Callers must propagate refusal; successful historical folding grants no dispatch permission.
+    #[allow(clippy::too_many_lines, clippy::match_same_arms)]
+    pub fn apply_checked(
+        &mut self,
+        lsn: Lsn,
+        entry: &Entry,
+    ) -> Result<(), dudes_proto::recovery_state::RecoveryStateError> {
+        use dudes_proto::recovery_state::RecoveryStateError;
+        self.validate_record_authority(entry)
+            .map_err(|_| RecoveryStateError::Binding)?;
+        let prepared_recovery = self.prepare_recovery_record(lsn, entry)?;
+        let mut recovery_context = self.recovery_before(entry);
         let attached_end = self.capture_attached_turn_end(lsn, entry);
         let Ok(instruction_fold) = self.instructions.apply_validated(lsn, entry, |bytes| {
             dudes_proto::record::Hex32::new(*blake3::hash(bytes).as_bytes())
         }) else {
-            return;
+            return Err(RecoveryStateError::Binding);
         };
+        if let Some(prepared) = prepared_recovery {
+            prepared.apply(lsn, &mut self.recovery_state, &self.recovery_history)?;
+        }
+        recovery_context.cleared_goal = instruction_fold.cleared_goal;
+        if let Err(error) =
+            self.recovery_history
+                .observe_with_context(lsn, entry, recovery_context, recovery::hash)
+        {
+            self.recovery_history_error.get_or_insert(error);
+        }
+        self.capture_recovery_positions(lsn, entry);
         if let Some(captured) = attached_end
             && matches!(captured.owner, InstructionObservationOwner::AttachedTurn { turn, .. }
                 if self.instructions.end_lsn(turn) == Some(captured.end_lsn))
@@ -802,9 +844,11 @@ impl World {
                 goal.id,
                 GoalRow {
                     goal: goal.clone(),
+                    installed_lsn: lsn,
                     agent,
                     turns_on_goal: 0,
                     predicate: None,
+                    predicate_lsn: None,
                     last_turn: None,
                     cleared: false,
                 },
@@ -897,7 +941,7 @@ impl World {
                 ..
             } => {
                 let Some(row) = self.agents.get_mut(agent) else {
-                    return;
+                    return Ok(());
                 };
                 if row.question_lsn != Some(*question_lsn)
                     || row.conversation_question != Some(*origin)
@@ -907,7 +951,7 @@ impl World {
                     || matches!(authority, dudes_proto::ConversationAnswerAuthority::Browser { browser } if browser.question_lsn != *question_lsn)
                     || dudes_proto::normalized_chat_text(text) != Some(text.as_str())
                 {
-                    return;
+                    return Ok(());
                 }
                 row.open_question = None;
                 row.question_lsn = None;
@@ -1035,7 +1079,7 @@ impl World {
                     destination,
                     BrowserNoteDestination::ManagedConversation { .. }
                 ) {
-                    return;
+                    return Ok(());
                 }
                 self.browser_notes
                     .entry(lsn)
@@ -1131,7 +1175,7 @@ impl World {
                             .last()
                             .is_some_and(|prior| !issue.uncertain_dispatches.contains(prior))
                     {
-                        return;
+                        return Ok(());
                     }
                     issue.dispatch_intents.push(lsn);
                 }
@@ -1300,6 +1344,7 @@ impl World {
                         rung: BreakerRung::Healthy,
                         steers: VecDeque::new(),
                         session: None,
+                        session_lsn: None,
                         open_turn: None,
                         last_input_digest: None,
                         exhausted: None,
@@ -1372,6 +1417,7 @@ impl World {
                 self.install_managed_turn(
                     *turn,
                     TurnRow {
+                        issue_lsn: lsn,
                         agent: *agent,
                         goal: Some(*goal),
                         status: TurnStatus::Issued,
@@ -1385,6 +1431,8 @@ impl World {
                         start_time: None,
                         boot: None,
                         spawn_lsn: None,
+                        end_lsn: None,
+                        confirmation_lsn: None,
                         mcp_grant: None,
                     },
                 );
@@ -1395,6 +1443,7 @@ impl World {
                     self.install_managed_turn(
                         issue.turn,
                         TurnRow {
+                            issue_lsn: lsn,
                             agent: issue.agent,
                             goal: Some(issue.goal),
                             status: TurnStatus::Issued,
@@ -1408,6 +1457,8 @@ impl World {
                             start_time: None,
                             boot: None,
                             spawn_lsn: None,
+                            end_lsn: None,
+                            confirmation_lsn: None,
                             mcp_grant: None,
                         },
                     );
@@ -1429,14 +1480,14 @@ impl World {
                         Some(BrowserIssueCancellation::Clean { .. })
                     )
                 }) {
-                    return;
+                    return Ok(());
                 }
                 if self
                     .browser_issues
                     .get(turn)
                     .is_some_and(|issue| issue.agent != *agent || issue.dispatch_intents.is_empty())
                 {
-                    return;
+                    return Ok(());
                 }
                 if let Some((started_lsn, attempt)) = self.instructions.current_for_turn(*turn)
                     && matches!(attempt.owner, InstructionObservationOwner::Managed { agent: owner, turn: owned_turn, .. } if owner == *agent && owned_turn == *turn)
@@ -1480,6 +1531,7 @@ impl World {
                     // only after this carrier is durable.
                     if *reissued {
                         row.session_confirmed = false;
+                        row.confirmation_lsn = None;
                     }
                 }
                 if let Some(grant) = mcp_grant.and_then(|grant| self.mcp_grants.get_mut(&grant)) {
@@ -1494,6 +1546,7 @@ impl World {
                 }
                 if *reissued && let Some(row) = self.agents.get_mut(agent) {
                     row.session = None;
+                    row.session_lsn = None;
                     if self
                         .browser_issues
                         .get(turn)
@@ -1524,9 +1577,11 @@ impl World {
                 if let Some(row) = self.turns.get_mut(turn) {
                     row.session = Some(session.clone());
                     row.session_confirmed = true;
+                    row.confirmation_lsn = Some(lsn);
                 }
                 if let Some(row) = self.agents.get_mut(agent) {
                     row.session = Some(session.clone());
+                    row.session_lsn = Some(lsn);
                 }
                 self.unconfirmed_resumes.remove(agent);
             }
@@ -1539,9 +1594,6 @@ impl World {
                 session,
                 usage,
                 session_usage,
-                elapsed_ms,
-                exit,
-                model_usage,
                 ..
             } => {
                 if self.browser_issues.get(turn).is_some_and(|issue| {
@@ -1550,7 +1602,7 @@ impl World {
                         Some(BrowserIssueCancellation::Clean { .. })
                     )
                 }) {
-                    return;
+                    return Ok(());
                 }
                 if let Some(issue) = self.browser_issues.get_mut(turn)
                     && issue.agent == *agent
@@ -1569,20 +1621,7 @@ impl World {
                         .get(agent)
                         .is_some_and(|row| row.goal == turn_row.goal)
                 });
-                let qualifies = *mode == dudes_types::Mode::Managed
-                    && *provenance == Provenance::Observed
-                    && exit.code.is_some_and(|code| code != 0)
-                    && elapsed_ms.is_some_and(|elapsed| elapsed <= 5_000)
-                    && !matches!(
-                        outcome,
-                        Some(
-                            TurnOutcome::Killed { .. }
-                                | TurnOutcome::NotLaunched { .. }
-                                | TurnOutcome::LaunchRefused { .. }
-                        )
-                    )
-                    && usage.as_ref().is_none_or(no_positive_usage)
-                    && model_usage.values().all(no_positive_usage);
+                let qualifies = dudes_proto::decision::is_fast_failure(&entry.record);
                 if current_goal_end && let Some(row) = self.agents.get_mut(agent) {
                     row.pending_launch_failure = match outcome {
                         Some(TurnOutcome::NotLaunched { reason }) => {
@@ -1632,6 +1671,7 @@ impl World {
                             })
                     });
                 if let Some(row) = self.turns.get_mut(turn) {
+                    row.end_lsn = Some(lsn);
                     row.status = if matches!(outcome, Some(dudes_proto::TurnOutcome::Killed { .. }))
                     {
                         TurnStatus::Killed
@@ -1657,6 +1697,7 @@ impl World {
                         )
                     {
                         row.session = None;
+                        row.session_lsn = None;
                     }
                 }
                 if invalidates_resume {
@@ -1689,6 +1730,7 @@ impl World {
                         provenance: *provenance,
                         not_run: evidence.not_run(*pass),
                     });
+                    row.predicate_lsn = Some(lsn);
                     if !row.cleared
                         && provenance.is_observed()
                         && let Some(turn) = turn
@@ -1952,7 +1994,11 @@ impl World {
             Record::ClosingTime { .. } => {}
             Record::LiveActivityObserved { .. } => {}
             Record::Checkpoint { .. } => {} // the writer's own record
+            Record::RecoveryRequired(_)
+            | Record::RecoveryAuthorized(_)
+            | Record::RecoveryInvalidated(_) => {}
         }
+        Ok(())
     }
 
     /// The durable ordinary completion of the agent's current uncleared goal.
@@ -2309,10 +2355,12 @@ impl World {
     ) {
         let agent = issue.agent;
         let goal = issue.goal;
+        let issue_lsn = issue.issue_lsn;
         self.browser_issues.insert(turn, issue);
         self.install_managed_turn(
             turn,
             TurnRow {
+                issue_lsn,
                 agent,
                 goal,
                 status: TurnStatus::Issued,
@@ -2326,6 +2374,8 @@ impl World {
                 start_time: None,
                 boot: None,
                 spawn_lsn: None,
+                end_lsn: None,
+                confirmation_lsn: None,
                 mcp_grant: None,
             },
         );
@@ -2820,10 +2870,6 @@ pub enum MintedFor {
     RetiredWithChild(AgentId),
 }
 
-fn no_positive_usage(usage: &Usage) -> bool {
-    usage.total_tokens().count() == 0 && usage.usd.is_none_or(|usd| usd.micros() == 0)
-}
-
 fn launch_failed_reason(reason: &str) -> String {
     if reason.len() <= 128
         && reason
@@ -2953,6 +2999,7 @@ mod current_census_tests {
             snapshot: InstructionSnapshot {
                 sampled_at: Timestamp::UNIX_EPOCH,
                 source: InstructionSnapshotSource::Fresh,
+                pid_namespace: None,
                 boot: None,
                 execution_folder: Some(NativeInstructionPath::Utf8 {
                     value: "/work/repo".into(),

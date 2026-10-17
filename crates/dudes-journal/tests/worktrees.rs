@@ -294,7 +294,7 @@ fn the_removal_cause_and_the_automatic_hold_keep_a_value_a_later_version_adds() 
 /// ordinary replay would skip them for ever. The version bump is what rebuilds it.
 #[test]
 fn a_version_37_cache_is_rebuilt_so_it_holds_the_leases_the_journal_records() {
-    assert_eq!(dudes_journal::PROJECTION_VERSION, 47);
+    assert_eq!(dudes_journal::PROJECTION_VERSION, 52);
     let dir = tempfile::tempdir().unwrap();
     let journal = dir.path().join("journal");
     write_journal(&journal, &lifecycle(AgentId::from_parts(5, 1)), 0);

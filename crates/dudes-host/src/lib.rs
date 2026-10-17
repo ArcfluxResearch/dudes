@@ -85,11 +85,15 @@ use dudes_providers::adapter::{HookInstall, ManagedInstall};
 use dudes_providers::launch::LaunchSpec;
 use dudes_supervisor::host::{
     AdoptionKey, HostBoot, KillOutcome, Liveness, MAX_OWNED_TARGET_QUERY_ROWS,
-    NativeBoundaryAcknowledgement, NativeBoundaryReceipt, OwnedTargetEvidence, OwnedTargetState,
-    OwnedTargets, OwnedTargetsStatus, ProbeAnswer, ProcessHost, SpawnResult, liveness,
+    NativeBoundaryAcknowledgement, NativeBoundaryReceipt, NativeGroupPresence, OwnedTargetEvidence,
+    OwnedTargetState, OwnedTargets, OwnedTargetsStatus, ProbeAnswer, ProcessHost, SpawnResult,
+    liveness,
 };
 
 use crate::stream::ExitSlot;
+
+#[cfg(any(target_os = "linux", test))]
+mod procfs_view;
 
 mod kill;
 /// The platform-neutral half of the peer walk. Built under `test` on every platform so its own
@@ -306,6 +310,7 @@ impl Drop for Owned {
 /// none.
 pub struct RealHost {
     boot: BootIdentity,
+    pid_namespace: Option<String>,
     children: BTreeMap<u32, Owned>,
     current_native_targets: Mutex<BTreeMap<u32, CurrentNativeTarget>>,
     /// The process relation this host maintains for its children, shared with the local door.
@@ -607,8 +612,18 @@ impl RealHost {
         let peers = PeerProcesses::default();
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let peers = PeerProcesses::new(boot.as_host_boot());
+        #[cfg(target_os = "linux")]
+        let pid_namespace = procfs_view::read_current(|| {
+            fs::read_link("/proc/self/ns/pid")
+                .ok()
+                .and_then(|path| path.to_str().map(str::to_owned))
+        })
+        .flatten();
+        #[cfg(not(target_os = "linux"))]
+        let pid_namespace = None;
         Self {
             boot,
+            pid_namespace,
             children: BTreeMap::new(),
             current_native_targets: Mutex::new(BTreeMap::new()),
             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -701,8 +716,12 @@ impl RealHost {
 
 #[cfg(test)]
 mod spawn_failure_tests {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use dudes_supervisor::host::{AdoptionKey, NativeGroupPresence, ProbeAnswer};
     use std::ffi::OsString;
     use std::fs;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use std::io;
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
     use std::thread::sleep;
@@ -845,6 +864,136 @@ mod spawn_failure_tests {
         // Replacing the file preserves the previous complete counter if the writer is killed.
         before_replace(&staged);
         fs::rename(&staged, beat).expect("publish heartbeat");
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn prior_run_queries_observe_an_owned_fixture_without_adopting_it() {
+        let root = tempfile::TempDir::new().unwrap();
+        let mark = root.path().join("leader");
+        let mut command = helper_command("park", &mark);
+        super::unix::prepare(&mut command);
+        let mut child = HelperChild(command.spawn().unwrap());
+        await_beating(&mark);
+        let host = RealHost::new();
+        let pid = child.0.id();
+        let key = host.read_key(pid, &super::plat::grip_adopted(pid)).unwrap();
+        assert_eq!(
+            host.probe_native_leader(&key),
+            ProbeAnswer::StartValue(key.start_time)
+        );
+        assert_eq!(
+            host.native_group_presence(pid),
+            NativeGroupPresence::Present
+        );
+        assert!(host.children.is_empty());
+        assert!(host.owned_targets(1).targets.is_empty());
+        child.kill_and_reap();
+        assert_eq!(host.probe_native_leader(&key), ProbeAnswer::NoSuchPid);
+        assert_eq!(host.native_group_presence(pid), NativeGroupPresence::Absent);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn prior_run_group_queries_keep_permission_and_errors_unresolved() {
+        assert_eq!(
+            super::native_group_presence(&Ok(super::unix::Presence::Absent)),
+            NativeGroupPresence::Absent
+        );
+        assert_eq!(
+            super::native_group_presence(&Ok(super::unix::Presence::Present)),
+            NativeGroupPresence::Present
+        );
+        assert_eq!(
+            super::native_group_presence(&Ok(super::unix::Presence::Unsignallable)),
+            NativeGroupPresence::Unsignallable
+        );
+        assert_eq!(
+            super::native_group_presence(&Err(io::Error::from(io::ErrorKind::PermissionDenied))),
+            NativeGroupPresence::Unknown
+        );
+        let host = RealHost::new();
+        for pid in [0, 1, i32::MAX as u32 + 1, u32::MAX] {
+            assert_eq!(
+                host.native_group_presence(pid),
+                NativeGroupPresence::Unknown
+            );
+            assert_eq!(
+                host.probe_native_leader(&AdoptionKey {
+                    pid,
+                    start_time: 1,
+                    boot: None
+                }),
+                ProbeAnswer::CouldNotAnswer
+            );
+        }
+        assert_eq!(
+            host.probe_native_leader(&AdoptionKey {
+                pid: 42,
+                start_time: 0,
+                boot: None
+            }),
+            ProbeAnswer::CouldNotAnswer
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn prior_run_missing_process_table_entry_requires_direct_pid_absence() {
+        for presence in [
+            super::unix::Presence::Present,
+            super::unix::Presence::Unsignallable,
+        ] {
+            assert_eq!(
+                super::native_leader_observation(ProbeAnswer::NoSuchPid, || Ok(presence)),
+                ProbeAnswer::CouldNotAnswer
+            );
+        }
+        assert_eq!(
+            super::native_leader_observation(ProbeAnswer::NoSuchPid, || Err(
+                io::ErrorKind::PermissionDenied.into()
+            )),
+            ProbeAnswer::CouldNotAnswer
+        );
+        assert_eq!(
+            super::native_leader_observation(ProbeAnswer::NoSuchPid, || Err(io::Error::other(
+                "query failed"
+            ))),
+            ProbeAnswer::CouldNotAnswer
+        );
+        assert_eq!(
+            super::native_leader_observation(ProbeAnswer::NoSuchPid, || Ok(
+                super::unix::Presence::Absent
+            )),
+            ProbeAnswer::NoSuchPid
+        );
+        for answer in [ProbeAnswer::StartValue(99), ProbeAnswer::CouldNotAnswer] {
+            assert_eq!(
+                super::native_leader_observation(answer, || panic!(
+                    "only missing table entries require corroboration"
+                )),
+                answer
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prior_run_namespace_and_start_values_use_this_process_aligned_view() {
+        let mut host = RealHost::new();
+        let namespace = fs::read_link("/proc/self/ns/pid").unwrap();
+        assert_eq!(host.pid_namespace().as_deref(), namespace.to_str());
+        assert!(host.pid_namespace().is_some());
+        let pid = std::process::id();
+        let key = host.read_key(pid, &super::plat::grip_adopted(pid)).unwrap();
+        let expected = if pid == 1 {
+            ProbeAnswer::CouldNotAnswer
+        } else {
+            ProbeAnswer::StartValue(key.start_time)
+        };
+        assert_eq!(host.probe_native_leader(&key), expected);
+        host.pid_namespace = None;
+        assert_eq!(host.pid_namespace(), None);
     }
 
     struct HelperChild(Child);
@@ -2700,6 +2849,57 @@ impl ProcessHost for RealHost {
         liveness(key, self.boot.as_host_boot(), self.probe(key.pid))
     }
 
+    fn probe_native_leader(&self, key: &AdoptionKey) -> ProbeAnswer {
+        if !(2..=i32::MAX as u32).contains(&key.pid) || key.start_time == 0 {
+            return ProbeAnswer::CouldNotAnswer;
+        }
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let observe = || {
+            native_leader_observation(self.probe(key.pid), || {
+                unix::presence_checked(None, key.pid)
+            })
+        };
+        #[cfg(target_os = "linux")]
+        {
+            procfs_view::read_current(observe).unwrap_or(ProbeAnswer::CouldNotAnswer)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            observe()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            ProbeAnswer::CouldNotAnswer
+        }
+    }
+
+    fn native_group_presence(&self, pid: u32) -> NativeGroupPresence {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            let Some(group) = unix::as_pid(pid).filter(|_| (2..=i32::MAX as u32).contains(&pid))
+            else {
+                return NativeGroupPresence::Unknown;
+            };
+            native_group_presence(&unix::presence_checked(Some(group), pid))
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            let _ = pid;
+            NativeGroupPresence::Unknown
+        }
+    }
+
+    fn pid_namespace(&self) -> Option<String> {
+        #[cfg(target_os = "linux")]
+        {
+            procfs_view::read_current(|| self.pid_namespace.clone()).flatten()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.pid_namespace.clone()
+        }
+    }
+
     fn owned_targets(&self, limit: usize) -> OwnedTargets {
         let mut current = self
             .current_native_targets
@@ -2866,6 +3066,32 @@ fn owned_target_state(
             OwnedTargetState::Present
         }
         Ok(kill::TargetState::Present) => OwnedTargetState::UnknownIdentity,
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn native_leader_observation(
+    answer: ProbeAnswer,
+    direct: impl FnOnce() -> io::Result<unix::Presence>,
+) -> ProbeAnswer {
+    match answer {
+        ProbeAnswer::NoSuchPid => match direct() {
+            Ok(unix::Presence::Absent) => ProbeAnswer::NoSuchPid,
+            Ok(unix::Presence::Present | unix::Presence::Unsignallable) | Err(_) => {
+                ProbeAnswer::CouldNotAnswer
+            }
+        },
+        ProbeAnswer::StartValue(_) | ProbeAnswer::CouldNotAnswer => answer,
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn native_group_presence(answer: &io::Result<unix::Presence>) -> NativeGroupPresence {
+    match answer {
+        Ok(unix::Presence::Present) => NativeGroupPresence::Present,
+        Ok(unix::Presence::Absent) => NativeGroupPresence::Absent,
+        Ok(unix::Presence::Unsignallable) => NativeGroupPresence::Unsignallable,
+        Err(_) => NativeGroupPresence::Unknown,
     }
 }
 

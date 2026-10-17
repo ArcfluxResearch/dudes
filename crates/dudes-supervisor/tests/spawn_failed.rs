@@ -4,9 +4,12 @@ use std::collections::BTreeSet;
 use std::io;
 
 use dudes_proto::goal::{Evidence, Predicate};
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{
     AutomaticHold, ExhaustedReason, GoalBudget, HoldReason, LoopDecision, Record, TurnOutcome,
 };
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
 use dudes_supervisor::testing::{Harness, Seen};
 use dudes_supervisor::{Command, Input};
 use dudes_types::{AgentId, AgentStatus, Mode, Provenance, Tokens, Usd};
@@ -194,11 +197,44 @@ fn an_unanswered_launch_retains_the_supervisor_claim() {
     );
 
     harness.trace.clear();
+    let recovery_from = harness.trace.len();
     harness.restart();
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    let handled = harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
+
     assert_eq!(
         harness.spawns_of(turn).len(),
         1,
-        "after any daemon exit the journal contains only the issued prefix, so replay may reissue"
+        "after restart, explicit consent repeats the original issued prefix"
     );
 }
 

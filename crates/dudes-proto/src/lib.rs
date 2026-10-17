@@ -37,6 +37,8 @@ pub mod projection;
 pub mod providers;
 pub mod question_history;
 pub mod record;
+pub mod recovery;
+pub mod recovery_state;
 pub mod reply;
 pub mod rpc;
 pub mod schema;
@@ -67,7 +69,10 @@ pub use git::{
     MAX_GIT_HEAD_BYTES, MAX_GIT_NAME_BYTES, MAX_GIT_PARENTS, MAX_GIT_PATH_BYTES,
     MAX_GIT_SUBJECT_BYTES, MAX_GIT_VIEW_BYTES,
 };
-pub use goal::{CheckBaseline, CheckBaselineKind, CompletionCheckRef, Evidence, Goal, Predicate};
+pub use goal::{
+    CheckBaseline, CheckBaselineKind, CompletionCheckRef, Evidence, Goal, Predicate,
+    predicate_evidence_eligible,
+};
 pub use instruction::{
     InstructionAcceptCompletion, InstructionActivation, InstructionAncestorStop,
     InstructionBaselineRef, InstructionBootIdentity, InstructionBoundaryAbsenceProof,
@@ -88,7 +93,7 @@ pub use instruction::{
     MAX_INSTRUCTION_DESCENDANTS, MAX_INSTRUCTION_IMPORT_EDGES, MAX_INSTRUCTION_INPUTS,
     MAX_INSTRUCTION_METADATA_BYTES, MAX_INSTRUCTION_PARTICIPANTS, MAX_INSTRUCTION_PATH_BYTES,
     MAX_INSTRUCTION_SOURCE_BYTES, MAX_INSTRUCTION_SYMLINK_HOPS, NativeInstructionPath,
-    TicketCoverageNote, validate_instruction_record,
+    PriorRunLeader, TicketCoverageNote, validate_instruction_record,
 };
 pub use mail_wake::{
     MailRef, MailWakeAdmission, MailWakeDecision, MailWakeDigest, MailWakeDigestDomain,

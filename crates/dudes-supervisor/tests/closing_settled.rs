@@ -13,14 +13,19 @@ use dudes_types::{AgentId, GoalId, Lsn, Timestamp, TurnId};
 const ANNOUNCED: Lsn = Lsn(10_000);
 
 fn announce(harness: &mut Harness) {
-    let token = match harness.supervisor.closing_announce().unwrap() {
-        [Effect::Persist { token, .. }] => *token,
+    let announcement = harness
+        .supervisor
+        .closing_announce()
+        .unwrap()
+        .iter()
+        .map(dudes_supervisor::testing::Seen::of)
+        .collect::<Vec<_>>();
+    harness.trace.extend(announcement.iter().cloned());
+    let token = match announcement.as_slice() {
+        [dudes_supervisor::testing::Seen::Persist { token, .. }] => *token,
         other => panic!("one announcement expected, saw {other:?}"),
     };
-    harness.drive(Input::Persisted {
-        token,
-        lsn: ANNOUNCED,
-    });
+    harness.drive(harness.persisted(token, ANNOUNCED));
 }
 
 fn end_turn(harness: &mut Harness, turn: TurnId) {

@@ -343,6 +343,8 @@ where
     C: Clock + Send + Sync + 'static,
     R: Rng,
 {
+    #[cfg(feature = "fault-injection")]
+    let recovery_stop = options.recovery_stop().cloned();
     let Seams {
         host,
         pty_host,
@@ -615,6 +617,8 @@ where
             browser_session: None,
             onboarding_pause: crate::runtime::OnboardingPause::default(),
             onboarding_failure: crate::runtime::OnboardingFailure::default(),
+            #[cfg(feature = "fault-injection")]
+            recovery_stop,
             memory,
             memory_config,
             memory_condenses,
@@ -640,6 +644,7 @@ where
             #[cfg(all(feature = "testing", any(target_os = "macos", target_os = "linux")))]
             mailbox_passes: Arc::default(),
             predicate_runs: BTreeMap::new(),
+            predicate_folders: BTreeMap::new(),
             baselines: crate::baseline::Baselines::default(),
             predicate_spawn_failure: crate::runtime::PredicateSpawnFailure::default(),
             accept_panic: AcceptPanic::default(),
@@ -652,6 +657,7 @@ where
             confirmed_launch_failures: BTreeMap::new(),
             pending_attached_calls: BTreeMap::new(),
             attached_instruction_boundaries: BTreeMap::new(),
+            inherited_native_boundaries: crate::runtime::InheritedNativeBoundaries::default(),
             pending_native_launches: BTreeMap::new(),
             native_acknowledgements: BTreeMap::new(),
             instruction_sampler: {
@@ -1202,16 +1208,32 @@ where
             }
             Ok(_) => {}
         }
-        let effects = sup.handle(Input::Replayed { lsn, entry });
-        debug_assert!(effects.is_empty(), "replay emits no effects");
+        let replayed = || {
+            #[cfg(any(test, feature = "testing"))]
+            if let Some(reason) = witness.take_replay_fold_refusal(lsn) {
+                return Err(dudes_supervisor::input::DurableInputError::Recovery { lsn, reason });
+            }
+            sup.handle(Input::Replayed { lsn, entry })
+        };
+        let handled = replayed()?;
+        anyhow::ensure!(
+            handled.folded_through() == Some(lsn),
+            "replay did not report its actual frame"
+        );
+        anyhow::ensure!(
+            sup.world().last_applied_lsn == Some(lsn),
+            "replay did not reach its exact cut"
+        );
+        debug_assert!(sup.effects().is_empty(), "replay emits no effects");
         folded += 1;
     }
     let applied = replay(&reader, &mut projections).context("replaying into the projections")?;
     for (agent, view) in crate::work::compose(&projections, &memory, |agent| sup.work_input(agent))?
     {
-        let effects = sup.handle(Input::Work { agent, view });
+        let handled = sup.handle(Input::Work { agent, view })?;
+        debug_assert!(handled.folded_through().is_none());
         debug_assert!(
-            effects.is_empty(),
+            sup.effects().is_empty(),
             "work projection refresh emits no effects"
         );
     }
@@ -1606,6 +1628,7 @@ where
     });
     let journal = Arc::new(JournalReader::new(journal_dir.to_path_buf()));
     register_all(&mut dispatcher, &control, &journal, subscribers);
+    dudes_rpc::methods::register_recovery(&mut dispatcher, &Arc::new(handle.clone()));
     crate::board::register(&mut dispatcher, &handle);
     crate::ticket::register(&mut dispatcher, &handle);
     register_agent_effects(&mut dispatcher, &control);

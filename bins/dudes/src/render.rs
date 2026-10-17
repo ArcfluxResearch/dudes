@@ -2,11 +2,12 @@
 //!
 //! # Two modes, one source
 //!
-//! `--json` writes the **contract's own type**, serialised. Not a shape of this binary's invention
-//! and not the daemon's bytes echoed back: the value is deserialised into `dudes_proto`'s type first
-//! and re-serialised from there, so a `--json` run that succeeds is also a proof that the answer
-//! *was* that type. A caller parses `HireResult`, `WhyResult`, `PingResult` or
+//! `--json` writes command results as the contract's own types. The daemon's value is deserialised
+//! into `dudes_proto` and re-serialised. A caller parses `HireResult`, `WhyResult`, `PingResult` or
 //! `JournalAppendedParams` against `schemas/rpc.schema.json` and never scrapes a line of prose.
+//! Recovery submission has one client-only exception. A missing or malformed reply produces
+//! `{"state":"reply_unavailable","request_id":"..."}` rather than a daemon result. The retained ID
+//! supports a separate receipt read, and the CLI does not resend the submission.
 //!
 //! The human mode is prose and is not a contract. Nothing should parse it, which is why the
 //! machine-readable mode exists at all.
@@ -53,6 +54,205 @@ use crate::config;
 use crate::floor::FloorUrl;
 
 pub mod ticket;
+
+/// Explain the selected context without promising restored history or exactly-once effects.
+pub fn recovery_choice_warning(
+    out: &mut dyn Write,
+    choice: dudes_proto::rpc::recovery::RecoveryChoice,
+) -> io::Result<()> {
+    use dudes_proto::rpc::recovery::RecoveryChoice;
+    writeln!(
+        out,
+        "{}",
+        match choice {
+            RecoveryChoice::TryRecorded =>
+                "Try recorded conversation. A matching identifier does not prove provider history was restored.",
+            RecoveryChoice::FreshWithRecap =>
+                "Fresh context does not restore old conversation history. Its bounded recap may be shortened or omitted.",
+            RecoveryChoice::RepeatIssuedFresh =>
+                "Repeat the original issued task in fresh context. A child may have executed before its Spawn was recorded; prior effects may repeat.",
+        }
+    )
+}
+
+/// Render one inspected opportunity or its fixed unavailable reason.
+pub fn recovery_inspection(
+    out: &mut dyn Write,
+    machine: bool,
+    result: &dudes_proto::rpc::recovery::RecoveryInspectResult,
+) -> io::Result<()> {
+    use dudes_proto::rpc::recovery::{
+        RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectResult,
+    };
+    if machine {
+        return json(out, result);
+    }
+    match result {
+        RecoveryInspectResult::Unavailable { reason } => {
+            writeln!(out, "Recovery unavailable: {reason:?}.")
+        }
+        RecoveryInspectResult::Available {
+            through,
+            expected,
+            reason,
+            choices,
+            prior_effects_unknown,
+            waiting,
+        } => {
+            writeln!(
+                out,
+                "Recovery available for agent {}, goal {}, turn {}.",
+                expected.work.agent, expected.work.goal, expected.work.turn
+            )?;
+            writeln!(
+                out,
+                "Checked through {through}; issue {}; source {}; reason {reason:?}.",
+                expected.issue_lsn, expected.source_lsn
+            )?;
+            writeln!(
+                out,
+                "Admission waits: question={:?}, budget={:?}, hops={:?}, instruction review={:?}, instruction comparison={:?}.",
+                waiting.open_question,
+                waiting.budget,
+                waiting.hops,
+                waiting.instruction_review,
+                waiting.instruction_comparison
+            )?;
+            match choices {
+                RecoveryAllowedChoices::FreshOnly => {
+                    recovery_choice_warning(out, RecoveryChoice::FreshWithRecap)?;
+                }
+                RecoveryAllowedChoices::RecordedOrFresh => {
+                    recovery_choice_warning(out, RecoveryChoice::TryRecorded)?;
+                    recovery_choice_warning(out, RecoveryChoice::FreshWithRecap)?;
+                }
+                RecoveryAllowedChoices::RepeatIssuedFresh => {
+                    recovery_choice_warning(out, RecoveryChoice::RepeatIssuedFresh)?;
+                }
+            }
+            if *prior_effects_unknown {
+                writeln!(out, "Prior effects are unknown and may repeat.")?;
+            }
+            writeln!(
+                out,
+                "Save and review `dudes --json recovery inspect {}` before submitting a choice.",
+                expected.work.agent
+            )
+        }
+    }
+}
+
+fn recovery_recorded(
+    out: &mut dyn Write,
+    receipt: &dudes_proto::rpc::recovery::RecoveryReceiptView,
+) -> io::Result<()> {
+    use dudes_proto::rpc::recovery::RecoveryReceiptState;
+    writeln!(
+        out,
+        "Recovery authorization recorded at {}. Authorization does not promise that work launched.",
+        receipt.claim.authorization_lsn
+    )?;
+    match &receipt.status {
+        RecoveryReceiptState::Pending => {
+            writeln!(out, "Pending: the reserved turn has not been issued.")?;
+        }
+        RecoveryReceiptState::IssueBound { turn, issue_lsn } => writeln!(
+            out,
+            "Issue-bound: turn {turn}, issue {issue_lsn}; no consuming physical receipt is recorded."
+        )?,
+        RecoveryReceiptState::Consumed {
+            turn,
+            issue_lsn,
+            evidence_lsn,
+        } => writeln!(
+            out,
+            "Consumed: turn {turn}, issue {issue_lsn}, physical receipt {evidence_lsn}."
+        )?,
+        RecoveryReceiptState::Invalidated {
+            invalidation_lsn,
+            reason,
+        } => writeln!(out, "Invalidated at {invalidation_lsn}: {reason:?}.")?,
+        RecoveryReceiptState::Superseded { barrier_lsn, .. } => writeln!(
+            out,
+            "Superseded by a new recovery episode at {barrier_lsn}; the owed issue is retained."
+        )?,
+    }
+    recovery_choice_warning(out, receipt.choice)?;
+    if receipt.prior_effects_unknown {
+        writeln!(out, "Prior effects are unknown and may repeat.")?;
+    }
+    Ok(())
+}
+
+/// Render a typed daemon submission result.
+pub fn recovery_submitted(
+    out: &mut dyn Write,
+    machine: bool,
+    result: &dudes_proto::rpc::recovery::RecoverySubmitResult,
+) -> io::Result<()> {
+    use dudes_proto::rpc::recovery::RecoverySubmitResult;
+    if machine {
+        return json(out, result);
+    }
+    match result {
+        RecoverySubmitResult::Accepted { receipt } => recovery_recorded(out, receipt),
+        RecoverySubmitResult::Refused { reason, prefix } => {
+            writeln!(out, "Recovery refused: {reason:?}.")?;
+            if let Some(required) = prefix.required {
+                writeln!(out, "Required barrier already acknowledged at {required}.")?;
+            }
+            if let Some(resume) = prefix.resume {
+                writeln!(out, "Resume already acknowledged at {resume}.")?;
+            }
+            Ok(())
+        }
+        RecoverySubmitResult::Unknown { .. } => writeln!(
+            out,
+            "The daemon could not certify whether recovery was authorized. Read the retained request's receipt."
+        ),
+    }
+}
+
+/// Render a client-side missing reply separately from a daemon-produced unknown result.
+pub fn recovery_reply_unavailable(
+    out: &mut dyn Write,
+    machine: bool,
+    request_id: dudes_proto::record::Hex32,
+) -> io::Result<()> {
+    if machine {
+        return json(
+            out,
+            &serde_json::json!({"state":"reply_unavailable","request_id":request_id}),
+        );
+    }
+    writeln!(
+        out,
+        "Recovery reply unavailable. Authorization was not confirmed. Read the retained request's receipt."
+    )
+}
+
+/// Render a historical receipt without treating absence as a rollback of earlier steps.
+pub fn recovery_receipt(
+    out: &mut dyn Write,
+    machine: bool,
+    result: &dudes_proto::rpc::recovery::RecoveryReceiptResult,
+) -> io::Result<()> {
+    use dudes_proto::rpc::recovery::RecoveryReceiptResult;
+    if machine {
+        return json(out, result);
+    }
+    match result {
+        RecoveryReceiptResult::Found { receipt } => recovery_recorded(out, receipt),
+        RecoveryReceiptResult::Absent { checked_through } => writeln!(
+            out,
+            "No authorization at checked cut {checked_through}. A Required or Resume prefix may still have been recorded."
+        ),
+        RecoveryReceiptResult::Unavailable { reason } => writeln!(
+            out,
+            "Recovery receipt unavailable: {reason:?}. Neither presence nor absence is certified."
+        ),
+    }
+}
 
 /// Render the durable memory append receipt.
 pub fn memory_appended(

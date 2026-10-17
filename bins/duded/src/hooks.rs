@@ -495,21 +495,25 @@ mod tests {
     #[test]
     fn a_pure_closing_notice_survives_poison_but_never_bypasses_coherence() {
         use crate::ports::HookAnswer;
-        use dudes_supervisor::Effect;
         use dudes_supervisor::testing::Harness;
         use dudes_types::Lsn;
         let mut harness = Harness::new();
         let agent = harness.hire();
         harness.set_goal(agent, &["/usr/bin/true"]);
         let announcement = Lsn(10_000);
-        let token = match harness.supervisor.closing_announce().unwrap() {
-            [Effect::Persist { token, .. }] => *token,
+        let effects = harness
+            .supervisor
+            .closing_announce()
+            .unwrap()
+            .iter()
+            .map(dudes_supervisor::testing::Seen::of)
+            .collect::<Vec<_>>();
+        harness.trace.extend(effects.iter().cloned());
+        let token = match effects.as_slice() {
+            [dudes_supervisor::testing::Seen::Persist { token, .. }] => *token,
             _ => panic!("one closing announcement expected"),
         };
-        harness.drive(Input::Persisted {
-            token,
-            lsn: announcement,
-        });
+        harness.drive(harness.persisted(token, announcement));
         let pure = harness
             .supervisor
             .hook_reply_without_write(agent, &EventKind::PromptSubmit)

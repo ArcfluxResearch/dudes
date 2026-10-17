@@ -490,10 +490,7 @@ mod tests {
             panic!("expected persistence")
         };
         h.journal.push(entry);
-        h.step(Input::Persisted {
-            token,
-            lsn: Lsn(u64::try_from(h.journal.len()).unwrap()),
-        })
+        h.step(h.persisted(token, Lsn(u64::try_from(h.journal.len()).unwrap())))
     }
 
     fn sample(h: &mut Harness, seen: Seen) -> Vec<Seen> {
@@ -557,6 +554,7 @@ mod tests {
                 gap.clone(),
             ],
             usage: InstructionSampleUsage::default(),
+            pid_namespace: None,
             boot: None,
         };
         assert!(snapshot.validate().is_ok());
@@ -721,8 +719,10 @@ mod tests {
         };
         h.journal.push(entry.clone());
         h.step(Input::Journaled {
-            lsn: Lsn(u64::try_from(h.journal.len()).unwrap()),
-            entry,
+            append: crate::testing::recorded_append(
+                Lsn(u64::try_from(h.journal.len()).unwrap()),
+                entry,
+            ),
         })
     }
 
@@ -907,8 +907,10 @@ mod tests {
         };
         h.journal.push(entry.clone());
         h.step(Input::BoardChanged {
-            lsn: Lsn(u64::try_from(h.journal.len()).unwrap()),
-            entry,
+            append: crate::testing::recorded_append(
+                Lsn(u64::try_from(h.journal.len()).unwrap()),
+                entry,
+            ),
         })
     }
 
@@ -1113,6 +1115,10 @@ mod tests {
             let mut prefix = Prefix::completed(None);
             let (mut h, mint) = live(&mut prefix);
             canonical_control(&mut h, control);
+            assert!(
+                !h.supervisor
+                    .recovery_launch_allowed(prefix.agent, prefix.turn)
+            );
             assert!(h.host.spawned.is_empty());
             assert_eq!(h.open_turn(prefix.agent), Some(prefix.turn));
             let resumed = one(h.step(Input::Command(Command::Resume {
@@ -1138,6 +1144,11 @@ mod tests {
                 agent: prefix.agent,
                 browser: None,
             },
+        );
+        assert!(
+            paused
+                .supervisor
+                .recovery_launch_allowed(prefix.agent, prefix.turn)
         );
         let spawn = ready_spawn(&mut paused, mint);
         launch(&mut paused, spawn);
@@ -1545,6 +1556,10 @@ mod tests {
                 agent: prefix.agent,
                 goal: prefix.goal,
             },
+        );
+        assert!(
+            h.supervisor
+                .recovery_launch_allowed(prefix.agent, prefix.turn)
         );
         let spawn = ready_spawn(&mut h, mint);
         launch(&mut h, spawn);

@@ -11,7 +11,7 @@ use super::{
     End, InstructionAttempt, InstructionBaselineRef, InstructionBoundaryAbsenceProof,
     InstructionBoundarySettlement, InstructionFinished, InstructionNativeBoundaryReceipt,
     InstructionObservationOwner, InstructionSettlement, InstructionSnapshot, InstructionState,
-    InstructionTicketAssociation, Issue, baseline_key, issue_identity, owner_agent,
+    InstructionTicketAssociation, Issue, NativeReceipt, baseline_key, issue_identity, owner_agent,
 };
 use crate::record::Record;
 use crate::rpc::pty::PtyId;
@@ -306,8 +306,7 @@ enum Cell {
     },
     NativeReceipt {
         lsn: Lsn,
-        started: Lsn,
-        receipt: InstructionNativeBoundaryReceipt,
+        value: NativeReceipt,
     },
     PtyAttachment {
         pty: PtyId,
@@ -431,12 +430,8 @@ impl Cell {
             Self::TicketHistory { value } => {
                 state.ticket_history.insert(value.goal, value);
             }
-            Self::NativeReceipt {
-                lsn,
-                started,
-                receipt,
-            } => {
-                state.native_receipts.insert(lsn, (started, receipt));
+            Self::NativeReceipt { lsn, value } => {
+                state.native_receipts.insert(lsn, value);
             }
             Self::PtyAttachment { pty, attachment } => {
                 state.pty_attachments.insert(pty, attachment);
@@ -558,11 +553,10 @@ fn cells(state: &InstructionState) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, Instruc
     for &value in state.ticket_history.values() {
         add(Cell::TicketHistory { value })?;
     }
-    for (&lsn, &(started, receipt)) in &state.native_receipts {
+    for (&lsn, native) in &state.native_receipts {
         add(Cell::NativeReceipt {
             lsn,
-            started,
-            receipt,
+            value: native.clone(),
         })?;
     }
     for (&pty, &attachment) in &state.pty_attachments {
@@ -816,8 +810,8 @@ impl<'a, R: InstructionCacheReader> Loader<'a, R> {
                 started_lsn, proof, ..
             } => {
                 self.attempt(*started_lsn, false)?;
-                if let InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent { receipt } =
-                    proof
+                if let InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent { receipt }
+                | InstructionBoundaryAbsenceProof::PriorRunGroupAbsent { receipt, .. } = proof
                 {
                     let (InstructionNativeBoundaryReceipt::Spawned { lsn }
                     | InstructionNativeBoundaryReceipt::LaunchFailureEnded { lsn }) = receipt;

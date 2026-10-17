@@ -1365,6 +1365,9 @@ mod tests {
                 CurrentMethod::TicketCheckout.name(),
                 CurrentMethod::FloorSessionExport.name(),
                 CurrentMethod::FloorSessionImport.name(),
+                CurrentMethod::RecoveryInspect.name(),
+                CurrentMethod::RecoverySubmit.name(),
+                CurrentMethod::RecoveryReceipt.name(),
             ])
             .collect();
         for schema in [&generated, &committed] {
@@ -1394,6 +1397,34 @@ mod tests {
                 schema["$defs"]["TicketCheckoutParams"]["additionalProperties"],
                 false
             );
+            for (method, params, result) in [
+                (
+                    "recovery.inspect",
+                    "RecoveryInspectParams",
+                    "RecoveryInspectResult",
+                ),
+                (
+                    "recovery.submit",
+                    "RecoverySubmitParams",
+                    "RecoverySubmitResult",
+                ),
+                (
+                    "recovery.receipt",
+                    "RecoveryReceiptParams",
+                    "RecoveryReceiptResult",
+                ),
+            ] {
+                let shape = &schema["$defs"]["CurrentMethods"]["properties"][method];
+                assert_eq!(
+                    shape["properties"]["params"]["$ref"],
+                    format!("#/$defs/{params}")
+                );
+                assert_eq!(
+                    shape["properties"]["result"]["$ref"],
+                    format!("#/$defs/{result}")
+                );
+                assert_eq!(schema["$defs"][params]["additionalProperties"], false);
+            }
         }
     }
 
@@ -1435,5 +1466,79 @@ mod tests {
                 "held_card"
             ])
         );
+    }
+}
+
+#[cfg(test)]
+mod recovery_schema_tests {
+    use crate::{Entry, RecordKind, record::samples};
+    use dudes_types::Timestamp;
+
+    #[test]
+    fn recovery_local_operator_uid_requires_a_nullable_unsigned_integer() {
+        let schema = super::schema_for::<Entry>().to_value();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let entry = Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: samples::record(RecordKind::RecoveryAuthorized),
+        };
+        let value = serde_json::to_value(entry).unwrap();
+        assert_eq!(value["attribution"]["kind"], "local_operator");
+        for uid in [
+            serde_json::Value::Null,
+            serde_json::json!(0),
+            serde_json::json!(u32::MAX),
+        ] {
+            let mut accepted = value.clone();
+            accepted["attribution"]["uid"] = uid;
+            assert!(validator.is_valid(&accepted), "{accepted}");
+            let decoded = serde_json::from_value::<Entry>(accepted.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), accepted);
+        }
+        let mut omitted = value.clone();
+        omitted["attribution"]
+            .as_object_mut()
+            .unwrap()
+            .remove("uid");
+        assert!(!validator.is_valid(&omitted));
+        assert!(serde_json::from_value::<Entry>(omitted).is_err());
+        for uid in [
+            serde_json::json!(-1),
+            serde_json::json!("501"),
+            serde_json::json!(false),
+        ] {
+            let mut refused = value.clone();
+            refused["attribution"]["uid"] = uid;
+            assert!(!validator.is_valid(&refused), "{refused}");
+            assert!(serde_json::from_value::<Entry>(refused).is_err());
+        }
+    }
+
+    #[test]
+    fn recovery_nullable_intent_is_present_in_schema_and_original_decode() {
+        let schema = super::schema_for::<Entry>().to_value();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for kind in [RecordKind::RecoveryRequired, RecordKind::RecoveryAuthorized] {
+            let entry = Entry {
+                at: Timestamp::UNIX_EPOCH,
+                record: samples::record(kind),
+            };
+            let value = serde_json::to_value(&entry).unwrap();
+            assert!(validator.is_valid(&value));
+            for field in ["ticket", "worktree", "model_selection"] {
+                let mut omitted = value.clone();
+                omitted["binding"].as_object_mut().unwrap().remove(field);
+                assert!(!validator.is_valid(&omitted), "{kind:?} {field}");
+                assert!(serde_json::from_value::<Entry>(omitted).is_err());
+            }
+            if kind == RecordKind::RecoveryAuthorized {
+                for field in ["expected_control", "resulting_control", "resume_lsn"] {
+                    let mut omitted = value.clone();
+                    omitted.as_object_mut().unwrap().remove(field);
+                    assert!(!validator.is_valid(&omitted), "{field}");
+                    assert!(serde_json::from_value::<Entry>(omitted).is_err());
+                }
+            }
+        }
     }
 }

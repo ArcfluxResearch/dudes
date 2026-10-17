@@ -10,12 +10,17 @@ use std::collections::BTreeMap;
 use std::io;
 
 use dudes_proto::goal::{Evidence, Predicate};
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::{
+    RecoveryAttribution, RecoveryAuthorized, RecoveryContext, RecoveryPlan,
+};
 use dudes_proto::{
     Actor, AutomaticHold, Entry, ExitStatus, Gate, GoalBudget, HoldReason, LoopDecision,
     PeerProvenance, Record, RecordKind, TurnOutcome,
 };
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
 use dudes_supervisor::testing::{Harness, Seen};
-use dudes_supervisor::{Command, Input, World};
+use dudes_supervisor::{BrowserAnswerCommand, Command, Input, World};
 use dudes_types::{AgentId, Lsn, Timestamp, TurnId, Usd};
 
 /// The local route's cap on one answer (`dudes_rpc::conditioned::MAX_AGENT_ANSWER_TEXT_BYTES`).
@@ -500,7 +505,40 @@ fn a_reissue_replays_the_recorded_task_and_consumes_its_answers() {
     assert_eq!(before.len(), 1);
 
     harness.launch = true;
+    let recovery_from = harness.trace.len();
     harness.restart();
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    let handled = harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
+
     assert_eq!(
         issued(&harness),
         before,
@@ -513,6 +551,250 @@ fn a_reissue_replays_the_recorded_task_and_consumes_its_answers() {
     assert!(
         pending(&harness, agent).is_empty(),
         "the re-issued spawn consumed {answered:?}"
+    );
+}
+
+fn recover_answers(
+    harness: &mut Harness,
+    agent: AgentId,
+    choice: RecoveryChoice,
+) -> RecoveryAuthorized {
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .expect("the actual ended or owed turn offers recovery")
+        .expected;
+    let request_id = Hex32::new([71; 32]);
+    let handled = harness.recover(RecoveryCommand {
+        request_id,
+        digest: Hex32::new([72; 32]),
+        expected,
+        choice,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().unwrap().refusal, None);
+    harness
+        .records()
+        .find_map(|record| match record {
+            Record::RecoveryAuthorized(authorization) if authorization.request_id == request_id => {
+                Some(authorization.as_ref().clone())
+            }
+            _ => None,
+        })
+        .expect("the exact consent reached the journal")
+}
+
+fn waiting_for_fresh_answer_recovery(harness: &mut Harness, goal: &str) -> AgentId {
+    let agent = harness.hire();
+    harness.drive(Input::Command(Command::GoalSet {
+        completion_check: None,
+        agent,
+        text: goal.into(),
+        predicate: Predicate::Command {
+            argv: vec!["npm".into(), "test".into()],
+            timeout_s: 600,
+        },
+        budget: GoalBudget {
+            usd: Some(Usd::from_dollars(5)),
+            tokens: None,
+        },
+        hop_cap: 8,
+        browser_goal: None,
+        goal_replacement: None,
+        baseline: None,
+    }));
+    let first = harness.open_turn(agent).expect("the first task launched");
+    ask(harness, agent, "which branch?");
+    harness.drive(Input::Command(Command::Pause {
+        agent,
+        browser: None,
+    }));
+    harness.drive(Input::ChildExited {
+        final_reply: None,
+        elapsed_ms: None,
+        turn: first,
+        exit: ExitStatus {
+            code: Some(1),
+            signal: None,
+        },
+        usage: None,
+        model_usage: BTreeMap::new(),
+        outcome: TurnOutcome::Failed {
+            reason: "provider failed".into(),
+        },
+        last_message: None,
+    });
+    fail_predicate(harness, agent);
+    assert_eq!(issued(harness).len(), 1);
+    assert_eq!(harness.open_turn(agent), None);
+    agent
+}
+
+#[test]
+fn fresh_recovery_preserves_a_full_browser_answer_before_optional_recap() {
+    let continued = "\n\n[each question above is answered, so do not ask it again; continue your task from where you stopped. Your task, unchanged:]\n";
+    let recap_prefix = "Prior execution effects are unknown. This recap does not restore conversation history.\n\nRecorded goal: ";
+    for goal in ["ship".to_owned(), "g".repeat(65_536)] {
+        let mut harness = Harness::new();
+        let agent = waiting_for_fresh_answer_recovery(&mut harness, &goal);
+        let text = "b".repeat(4_096);
+        let attribution = dudes_proto::record::BrowserAnswer {
+            request_id: Hex32::new([61; 32]),
+            request_digest: Hex32::new([62; 32]),
+            question_lsn: harness.supervisor.world().agents[&agent]
+                .question_lsn
+                .unwrap(),
+            session_digest: Hex32::new([63; 32]),
+        };
+        harness.drive(Input::Command(Command::BrowserAnswer(Box::new(
+            BrowserAnswerCommand {
+                agent,
+                text: text.clone(),
+                attribution: attribution.clone(),
+            },
+        ))));
+        let answered = lsn_of(&harness, is_answer);
+        assert_eq!(issued(&harness).len(), 1, "answering supplies no consent");
+        assert_eq!(pending(&harness, agent), vec![answered]);
+        let authorization = recover_answers(&mut harness, agent, RecoveryChoice::FreshWithRecap);
+        let RecoveryPlan::New {
+            turn: reserved,
+            context: RecoveryContext::Fresh { recap, .. },
+        } = authorization.plan
+        else {
+            panic!("fresh consent reserves a new turn and a recap")
+        };
+        let turns = issued(&harness);
+        assert_eq!(turns.len(), 2);
+        let (turn, task, answers) = &turns[1];
+        assert_eq!(*turn, reserved);
+        assert_eq!(answers, &vec![answered]);
+        let block = format!("[answer to your question]\nquestion: which branch?\nanswer:\n{text}");
+        let expected = if goal == "ship" {
+            assert_eq!(
+                recap.text,
+                format!("{recap_prefix}ship\n\nRecorded role: infra")
+            );
+            format!(
+                "{block}{continued}ship{TEACHING_INSTRUCTIONS}\n\nPrevious work context:\n{recap_prefix}ship\n\nRecorded role: infra"
+            )
+        } else {
+            assert_eq!(
+                recap.text,
+                format!("{recap_prefix}{}", "g".repeat(8_192 - recap_prefix.len()))
+            );
+            let goal_bytes = 65_536
+                - block.len()
+                - continued.len()
+                - TEACHING_INSTRUCTIONS.len()
+                - '…'.len_utf8();
+            format!(
+                "{block}{continued}{}…{TEACHING_INSTRUCTIONS}",
+                "g".repeat(goal_bytes)
+            )
+        };
+        assert_eq!(task, &expected);
+        assert!(task.len() <= 65_536);
+        assert_eq!(pending(&harness, agent), Vec::<Lsn>::new());
+        assert!(harness.records().any(|record| matches!(record,
+            Record::HumanAnswer { text: whole, browser_answer: Some(browser), .. }
+                if whole == &text && browser == &attribution)));
+        assert!(harness.records().any(|record| matches!(record,
+            Record::TurnSpawned { turn: spawned, reissued: false, .. } if spawned == turn)));
+    }
+}
+
+#[test]
+fn fresh_recovery_keeps_the_oversize_local_prefix_ahead_of_goal_and_recap() {
+    let mut harness = Harness::new();
+    let agent = waiting_for_fresh_answer_recovery(&mut harness, &"g".repeat(65_536));
+    let text = "x".repeat(65_536);
+    answer(&mut harness, agent, &text);
+    let answered = lsn_of(&harness, is_answer);
+    assert_eq!(pending(&harness, agent), vec![answered]);
+    assert_eq!(issued(&harness).len(), 1);
+    let authorization = recover_answers(&mut harness, agent, RecoveryChoice::FreshWithRecap);
+    let RecoveryPlan::New {
+        turn: reserved,
+        context: RecoveryContext::Fresh { recap, .. },
+    } = authorization.plan
+    else {
+        panic!("fresh consent carries a real recap")
+    };
+    assert_eq!(recap.text.len(), 8_192);
+    assert!(recap.text.starts_with("Prior execution effects are unknown. This recap does not restore conversation history.\n\nRecorded goal: g"));
+    let turns = issued(&harness);
+    assert_eq!(turns.len(), 2);
+    let (turn, task, answers) = &turns[1];
+    let framing = "[answer to your question]\nquestion: which branch?\nanswer:\n";
+    let prefix_bytes = 65_536 - framing.len() - TEACHING_INSTRUCTIONS.len() - '…'.len_utf8();
+    assert_eq!(
+        task,
+        &format!(
+            "{framing}{}…{TEACHING_INSTRUCTIONS}",
+            "x".repeat(prefix_bytes)
+        )
+    );
+    assert_eq!(task.len(), 65_536);
+    assert_eq!(*turn, reserved);
+    assert_eq!(answers, &vec![answered]);
+    assert_eq!(pending(&harness, agent), Vec::<Lsn>::new());
+    assert!(harness.records().any(|record| matches!(record,
+        Record::HumanAnswer { text: whole, .. } if whole == &text)));
+    assert!(harness.records().any(|record| matches!(record,
+        Record::TurnSpawned { turn: spawned, reissued: false, .. } if spawned == turn)));
+}
+
+#[test]
+fn explicit_repeat_keeps_the_owed_task_and_leaves_a_later_answer_pending() {
+    let mut harness = Harness::new();
+    let agent = waiting_agent(&mut harness);
+    harness.launch = false;
+    answer(&mut harness, agent, "main");
+    let older = lsn_of(&harness, is_answer);
+    let before = issued(&harness);
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].2, vec![older]);
+    ask(&mut harness, agent, "which remote?");
+    answer(&mut harness, agent, "origin");
+    let later = lsn_of(&harness, is_answer);
+    assert_eq!(pending(&harness, agent), vec![older, later]);
+    harness.launch = true;
+    harness.restart();
+    assert_eq!(pending(&harness, agent), vec![older, later]);
+    let authorization = recover_answers(&mut harness, agent, RecoveryChoice::RepeatIssuedFresh);
+    assert!(matches!(authorization.plan,
+        RecoveryPlan::RepeatIssued { issue, .. } if issue.issued.work.turn == before[0].0));
+    assert_eq!(issued(&harness), before);
+    assert_eq!(pending(&harness, agent), vec![later]);
+    let spawns = harness.spawns_of(before[0].0);
+    assert_eq!(
+        spawns.len(),
+        2,
+        "one original emission and one explicit repeat"
+    );
+    let Seen::Spawn { spec, .. } = spawns[1] else {
+        unreachable!()
+    };
+    assert_eq!(
+        spec.argv.last().unwrap().to_str(),
+        Some(before[0].1.as_str())
+    );
+    assert!(harness.records().any(|record| matches!(record,
+        Record::TurnSpawned { turn, reissued: true, .. } if *turn == before[0].0)));
+    let mut replay = World::default();
+    for (entry, position) in harness.journal.iter().zip(1u64..) {
+        replay.apply(Lsn(position), entry);
+    }
+    assert_eq!(replay.turns[&before[0].0].task, before[0].1);
+    assert_eq!(replay.turns[&before[0].0].answers, vec![older]);
+    assert_eq!(
+        replay.agents[&agent]
+            .pending_answers
+            .iter()
+            .map(|answer| answer.lsn)
+            .collect::<Vec<_>>(),
+        vec![later]
     );
 }
 

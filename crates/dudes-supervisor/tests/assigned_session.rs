@@ -5,6 +5,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{Entry, ExitStatus, Record, RecordKind, TurnOutcome};
 use dudes_providers::adapter::{
     Adapter, AgentCtx, Arrival, Isolation, ManagedInstall, SessionAcquisition, TurnSession,
@@ -14,9 +16,10 @@ use dudes_providers::claude::SESSION_ACQUISITION;
 use dudes_providers::claude::stream::TurnStream;
 use dudes_providers::launch::{LaunchError, LaunchSpec};
 use dudes_providers::stream::TurnReader;
-use dudes_supervisor::Input;
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand, RecoveryRefusal};
 use dudes_supervisor::testing::{FakeClock, FakeHost, Harness, journal_with_issued_turn};
-use dudes_types::{ModelSelection, Provider, SessionId, Tier, TurnId};
+use dudes_supervisor::{Command, Input};
+use dudes_types::{Lsn, Mode, ModelSelection, Provenance, Provider, SessionId, Tier, TurnId};
 
 const ASSIGNED: SessionAcquisition = SessionAcquisition::Assigned {
     resume: "--session",
@@ -168,12 +171,79 @@ struct Reissue {
     refused: usize,
 }
 
-/// Whether the crashed launch's child named the issued session before its `TurnSpawned` was
-/// durable, so the journal holds a `SessionLearned` for it.
 #[derive(Clone, Copy, Debug)]
 enum Crash {
     Bare,
-    ChildNamed,
+    PriorConfirmed,
+}
+
+fn insert_prior_confirmed_turn(entries: &mut Vec<Entry>, session: SessionId) {
+    let at = entries.last().expect("the journal has entries").at;
+    let Record::TurnIssued { agent, goal, .. } = entries[2].record else {
+        unreachable!()
+    };
+    let prior = TurnId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("a distinct turn");
+    entries.splice(
+        2..2,
+        [
+            Entry {
+                at,
+                record: Record::TurnIssued {
+                    agent,
+                    turn: prior,
+                    goal,
+                    task: "prior completed work".to_owned(),
+                    session: Some(session.clone()),
+                    mode: Mode::Managed,
+                    model_selection: Some(ModelSelection::provider_default()),
+                    lsn_of_decision: Lsn(1),
+                    answers: Vec::new(),
+                },
+            },
+            Entry {
+                at,
+                record: Record::TurnSpawned {
+                    agent,
+                    turn: prior,
+                    pid: 7,
+                    start_time: 11,
+                    boot: None,
+                    session: Some(session.clone()),
+                    reissued: false,
+                    mcp_grant: None,
+                },
+            },
+            Entry {
+                at,
+                record: Record::SessionLearned {
+                    agent,
+                    turn: prior,
+                    session: session.clone(),
+                },
+            },
+            Entry {
+                at,
+                record: Record::TurnEnded {
+                    final_reply: None,
+                    elapsed_ms: None,
+                    session_usage: None,
+                    agent,
+                    turn: prior,
+                    mode: Mode::Managed,
+                    provenance: Provenance::Observed,
+                    exit: ExitStatus {
+                        code: Some(0),
+                        signal: None,
+                    },
+                    usage: None,
+                    model_usage: BTreeMap::new(),
+                    last_message: Some("continue".to_owned()),
+                    session: Some(session),
+                    outcome: Some(TurnOutcome::Completed),
+                },
+            },
+        ],
+    );
 }
 
 fn replay_crash(
@@ -184,22 +254,79 @@ fn replay_crash(
 ) -> (Harness, Received, TurnId) {
     let (mut entries, agent, turn) =
         journal_with_issued_turn(session.clone(), "make the tests pass");
-    if let (Crash::ChildNamed, Some(session)) = (crash, session) {
-        let at = entries.last().expect("the journal has entries").at;
-        entries.push(Entry {
-            at,
-            record: Record::SessionLearned {
-                agent,
-                turn,
-                session,
-            },
-        });
+    if let (Crash::PriorConfirmed, Some(session)) = (crash, session) {
+        insert_prior_confirmed_turn(&mut entries, session);
     }
     let (mut harness, handed) = harness(mode);
     harness.journal = entries;
     before_restart(&mut harness);
     harness.restart();
+    assert!(received(&handed).is_empty(), "restart waits for consent");
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        received(&handed).is_empty(),
+        "ordinary Resume waits for consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .expect("the missing spawn offers an exact repeat")
+        .expected;
+    assert_eq!(expected.work.turn, turn);
+    let request_id = Hex32::new([31; 32]);
+    let progress = harness.recover(RecoveryCommand {
+        request_id,
+        digest: Hex32::new([32; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator {
+            pid: 7,
+            uid: Some(42),
+        },
+    });
+    assert_eq!(progress.recovery().expect("command progress").refusal, None);
+    assert!(harness.records().any(|record| matches!(
+        record,
+        Record::RecoveryAuthorized(authorization)
+            if authorization.request_id == request_id
+    )));
     (harness, handed, turn)
+}
+
+#[test]
+fn a_pre_spawn_historical_confirmation_cannot_authorize_a_repeat() {
+    let session = old();
+    let (mut entries, agent, turn) =
+        journal_with_issued_turn(Some(session.clone()), "make the tests pass");
+    let at = entries.last().expect("the journal has entries").at;
+    entries.push(Entry {
+        at,
+        record: Record::SessionLearned {
+            agent,
+            turn,
+            session,
+        },
+    });
+    let (mut harness, handed) = harness(SESSION_ACQUISITION);
+    harness.journal = entries;
+    harness.restart();
+    assert!(harness.supervisor.world().turns[&turn].session_confirmed);
+    assert_eq!(
+        harness.supervisor.recovery_opportunity(agent),
+        Err(RecoveryRefusal::NotRecoverable)
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(received(&handed).is_empty());
+    assert_eq!(
+        harness.supervisor.recovery_opportunity(agent),
+        Err(RecoveryRefusal::NotRecoverable)
+    );
 }
 
 fn child_exits(harness: &mut Harness, turn: TurnId) {
@@ -233,7 +360,7 @@ fn ended_session(harness: &Harness, turn: TurnId) -> Option<SessionId> {
 }
 
 fn reissued(mode: SessionAcquisition, session: Option<SessionId>) -> Reissue {
-    let (harness, handed, turn) = replay_crash(mode, session, Crash::ChildNamed, |_| {});
+    let (harness, handed, turn) = replay_crash(mode, session, Crash::PriorConfirmed, |_| {});
     Reissue {
         handed: received(&handed),
         spawned: harness.spawned_session(turn),
@@ -299,7 +426,7 @@ fn old() -> SessionId {
 
 #[test]
 fn a_reissued_turn_ends_on_the_session_it_confirmed_or_announced() {
-    for crash in [Crash::Bare, Crash::ChildNamed] {
+    for crash in [Crash::Bare, Crash::PriorConfirmed] {
         assert_eq!(
             ended_after_reissue(ASSIGNED, crash, None),
             Ended {
@@ -359,7 +486,7 @@ enum EarlyEnd {
 
 #[test]
 fn a_reissue_that_ends_before_its_spawn_folds_ends_on_what_it_announced() {
-    for crash in [Crash::Bare, Crash::ChildNamed] {
+    for crash in [Crash::Bare, Crash::PriorConfirmed] {
         for early_end in [EarlyEnd::SpawnRefused, EarlyEnd::ExitBeforeAck] {
             assert_eq!(
                 ended_before_spawn_folds(ASSIGNED, crash, early_end),

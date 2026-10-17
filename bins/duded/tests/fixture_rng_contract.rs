@@ -374,6 +374,8 @@ fn daemon_and_cli_fixture_rng_fields_have_only_the_named_boundary_exceptions() {
                 "duded/tests/goal_replace.rs",
                 "invalid_record_cannot_bypass_startup_validation_through_cached_projections"
             ),
+            ("duded/tests/recovery.rs", "backend"),
+            ("duded/tests/recovery.rs", "snapshot"),
             ("duded/tests/validation_scratch.rs", "daemon_scratch_child"),
         ],
         "RNG fields are checked within named source functions, not by a Rust parser: {raw:?}"

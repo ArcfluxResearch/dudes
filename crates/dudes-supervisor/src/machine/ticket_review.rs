@@ -100,7 +100,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
     }
 
-    pub(super) fn request_stamp(&mut self, goal: GoalId, then: Then, check_lsn: Lsn) {
+    pub(super) fn request_stamp(
+        &mut self,
+        goal: GoalId,
+        then: Then,
+        check_lsn: Lsn,
+    ) -> Option<crate::input::RecoveryUpdate> {
         let request = self.world.ticket_goal(goal).and_then(|(card, round)| {
             let agent = self
                 .world
@@ -125,20 +130,24 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     .stamps_parked
                     .insert(goal, (check_lsn, Box::new(then)));
                 self.pending.push(effect);
+                None
             }
             None => self.resume_after(then, check_lsn),
         }
     }
 
-    pub(super) fn on_stamp_captured(&mut self, goal: GoalId, check_lsn: Lsn, stamp: StampPayload) {
-        let Some((parked_lsn, then)) = self.ticket_review.stamps_parked.remove(&goal) else {
-            return;
-        };
+    pub(super) fn on_stamp_captured(
+        &mut self,
+        goal: GoalId,
+        check_lsn: Lsn,
+        stamp: StampPayload,
+    ) -> Option<crate::input::RecoveryUpdate> {
+        let (parked_lsn, then) = self.ticket_review.stamps_parked.remove(&goal)?;
         if parked_lsn != check_lsn {
             self.ticket_review
                 .stamps_parked
                 .insert(goal, (parked_lsn, then));
-            return;
+            return None;
         }
         let record = self.world.ticket_goal(goal).and_then(|(card, _)| {
             let review = self.world.ticket_review(goal)?;
@@ -148,7 +157,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .then_some(Record::TicketReviewStamped { card, goal, stamp })
         });
         match record {
-            Some(record) => self.persist(record, *then),
+            Some(record) => {
+                self.persist(record, *then);
+                None
+            }
             None => self.resume_after(*then, check_lsn),
         }
     }

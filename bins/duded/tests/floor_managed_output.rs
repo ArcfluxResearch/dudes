@@ -448,19 +448,108 @@ impl WebSocket {
         }
         panic!("selected output never contained {expected}");
     }
-    fn expect_closed(&mut self) {
-        let mut byte = [0];
-        match self.0.read(&mut byte) {
-            Ok(0) => {}
-            Ok(1) if byte[0] == 0x88 => {}
+    fn expect_closed(&mut self, context: &str) {
+        read_transport_close(
+            &mut self.0,
+            Instant::now() + Duration::from_secs(3),
+            duded::floor_stream::MAX_QUEUE_BYTES * 2,
+        )
+        .unwrap_or_else(|error| panic!("socket did not close for {context}: {error}"));
+    }
+}
+
+fn read_transport_close(
+    stream: &mut TcpStream,
+    deadline: Instant,
+    byte_cap: usize,
+) -> Result<usize, String> {
+    let mut buffer = [0; 8192];
+    let mut drained = 0;
+    let mut first_byte = None;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "transport stayed open to deadline; drained_bytes={drained}; first_byte={first_byte:?}"
+            ));
+        }
+        stream.set_read_timeout(Some(remaining)).map_err(|error| {
+            format!("read timeout setup failed {error:?}; drained_bytes={drained}; first_byte={first_byte:?}")
+        })?;
+        match stream.read(&mut buffer) {
+            Ok(0) => return Ok(drained),
+            Ok(read) => {
+                first_byte.get_or_insert(buffer[0]);
+                drained += read;
+                if drained > byte_cap {
+                    return Err(format!(
+                        "byte cap {byte_cap} exceeded; drained_bytes={drained}; first_byte={first_byte:?}"
+                    ));
+                }
+            }
             Err(error)
                 if matches!(
                     error.kind(),
                     std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
-                ) => {}
-            other => panic!("invalid browser message left socket open: {other:?}"),
+                ) =>
+            {
+                return Ok(drained);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                return Err(format!(
+                    "transport read failed {error:?}; drained_bytes={drained}; first_byte={first_byte:?}"
+                ));
+            }
         }
     }
+}
+
+fn closure_pair() -> (TcpStream, TcpStream) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let reader = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (writer, _) = listener.accept().unwrap();
+    (reader, writer)
+}
+
+#[test]
+fn closure_oracle_drains_queued_text_before_transport_eof() {
+    let (mut reader, mut writer) = closure_pair();
+    writer.write_all(b"\x81\x02{}").unwrap();
+    writer.shutdown(std::net::Shutdown::Write).unwrap();
+    assert_eq!(
+        read_transport_close(&mut reader, Instant::now() + Duration::from_secs(3), 32),
+        Ok(4)
+    );
+}
+
+#[test]
+fn closure_oracle_rejects_a_silent_live_socket() {
+    let (mut reader, writer) = closure_pair();
+    assert!(
+        read_transport_close(&mut reader, Instant::now() + Duration::from_millis(40), 32).is_err()
+    );
+    drop(writer);
+}
+
+#[test]
+fn closure_oracle_rejects_a_close_frame_without_transport_closure() {
+    let (mut reader, mut writer) = closure_pair();
+    writer.write_all(&[0x88, 0]).unwrap();
+    assert!(
+        read_transport_close(&mut reader, Instant::now() + Duration::from_millis(40), 32).is_err()
+    );
+    drop(writer);
+}
+
+#[test]
+fn closure_oracle_enforces_the_total_byte_cap() {
+    let (mut reader, mut writer) = closure_pair();
+    writer.write_all(b"\x81\x02{}").unwrap();
+    writer.shutdown(std::net::Shutdown::Write).unwrap();
+    let error =
+        read_transport_close(&mut reader, Instant::now() + Duration::from_secs(3), 3).unwrap_err();
+    assert!(error.contains("byte cap 3 exceeded"), "{error}");
 }
 
 #[test]
@@ -775,7 +864,7 @@ fn selected_output_read_is_epoch_scoped_and_bounded() {
         socket.send(r#"{"type":"floor.subscribe"}"#);
         assert_eq!(socket.json()["type"], "floor.snapshot");
         socket.send(invalid);
-        socket.expect_closed();
+        socket.expect_closed(invalid);
     }
 
     let flood_dir = fixture.state.path().join("FLOOD");
@@ -827,7 +916,7 @@ fn selected_output_read_is_epoch_scoped_and_bounded() {
         "the output flood never closed the 256-frame queue"
     );
     fault.release_output_drain();
-    flooded.expect_closed();
+    flooded.expect_closed("overflowed output subscription");
     drop(flooded);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 

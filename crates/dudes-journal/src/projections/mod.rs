@@ -1,6 +1,6 @@
 //! The redb projections. `state.redb` is a cache: a deterministic function of a journal prefix
-//! that `dudes replay` rebuilds, never written except by [`Projections::apply`] with an entry
-//! whose `append` has returned.
+//! that `dudes replay` rebuilds. Raw replay and the checked recovery gateway share the same
+//! transaction fold; rows, cursor and frame witness become visible together after append.
 //!
 //! Tables: `meta` (`schema_version`, `last_applied_lsn`, `last_applied_crc`); `agents`, `turns`,
 //! `goals`, `board`, `budget_by_goal` and `mail` keyed by the 16 ULID bytes; `budget_by_day` by an agent and
@@ -25,6 +25,7 @@ mod instructions;
 mod mail;
 mod mail_wakes;
 mod question_history;
+pub mod recovery;
 mod retired;
 mod traces;
 pub mod turns;
@@ -32,13 +33,14 @@ mod worktrees;
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use dudes_proto::{ActivityView, CardView, Entry, MessageView, RetiredAgentView, Spend};
 use dudes_types::{AgentId, CardId, GoalId, Lsn, Timestamp, TurnId, UtcDay};
 use redb::backends::InMemoryBackend;
 use redb::{
     Database, Durability, ReadableDatabase, ReadableTable, ReadableTableMetadata, Table,
-    TableDefinition,
+    TableDefinition, WriteTransaction,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -57,6 +59,17 @@ use crate::writer::Fsync;
 /// The projection schema this build writes. Bump when a row's meaning changes, **when a table
 /// is added**, or **when what a fold computes changes**; the store is then rebuilt from the
 /// journal.
+///
+/// `52`: native spawn receipt cells retain their recorded adoption key. Older cells must rebuild.
+///
+/// `51`: standing-control snapshots and exact fast-failure source classification require replay.
+///
+/// `50`: recovery attempt positions and immutable before-attempt context require replay.
+///
+/// `49`: recovery source context and exact binding positions require replay of older caches.
+///
+/// `48`: recovery source witnesses have a separate keyed table. Older caches must replay
+/// ordinary source records before a checked recovery lookup can certify absence.
 ///
 /// `47`: shared instruction attempt, review and scoped-boundary facts are folded with ticket
 /// evidence sequences. Older caches must rebuild rather than silently omit those obligations.
@@ -238,7 +251,7 @@ use crate::writer::Fsync;
 /// `2` was the previous bump: the rows became at-derived and `turns.status` gained
 /// a *reachable* `Killed`, so a v1 row saying `Ended` for a killed turn was wrong. Half-right is
 /// worse than rebuilt.
-pub const PROJECTION_VERSION: u64 = 47;
+pub const PROJECTION_VERSION: u64 = 52;
 /// Entries applied per write transaction during replay.
 pub const BATCH: usize = 1000;
 
@@ -248,6 +261,7 @@ const TURNS: TableDefinition<'_, &[u8; 16], &[u8]> = TableDefinition::new("turns
 const GOALS: TableDefinition<'_, &[u8; 16], &[u8]> = TableDefinition::new("goals");
 const BOARD: TableDefinition<'_, &[u8; 16], &[u8]> = TableDefinition::new("board");
 const INSTRUCTIONS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("instructions");
+const RECOVERY: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("recovery");
 const ACTIVITY: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("activity");
 const QUESTION_HISTORY: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("question_history");
 const TRACES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("traces");
@@ -324,6 +338,8 @@ pub struct Projections {
     /// no key, which is not the same state as a checksum of zero.
     last_applied_crc: Option<u64>,
     durability: Durability,
+    recovery_generation: Arc<()>,
+    recovery_certification: Option<recovery::Certification>,
 }
 
 impl Projections {
@@ -401,6 +417,7 @@ impl Projections {
         txn.open_table(GOAL_FIRST_DONE)?;
         txn.open_table(BOARD)?;
         txn.open_table(INSTRUCTIONS)?;
+        txn.open_table(RECOVERY)?;
         txn.open_table(WORKTREES)?;
         txn.open_table(MAIL)?;
         txn.open_table(MAIL_PENDING)?;
@@ -425,6 +442,8 @@ impl Projections {
             last_applied,
             last_applied_crc,
             durability,
+            recovery_generation: Arc::new(()),
+            recovery_certification: None,
         })
     }
 
@@ -474,155 +493,26 @@ impl Projections {
     /// arms rather than needing a branch in them: the highest-lsn record for a row is the last
     /// one this loop hands to it. It is also what makes the witness the right one: entries
     /// arrive in increasing lsn order, so the last one applied is the one the cursor names.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one transaction folds each record through every table in the order the comment above fixes"
-    )]
     pub fn apply_batch<'a>(
         &mut self,
         entries: impl IntoIterator<Item = (Lsn, u32, &'a Entry)>,
     ) -> Result<u64> {
+        self.recovery_certification = None;
         let mut txn = self.db.begin_write()?;
         txn.set_durability(self.durability)?;
-        let mut applied = 0u64;
-        let mut last = self.last_applied;
-        // The checksum of the last entry applied in this batch. `Some` exactly when `applied`
-        // is non-zero — the loop sets the two together — which is what lets one guard write the
-        // cursor and its witness.
-        let mut witness: Option<u32> = None;
-        {
-            let mut agents = txn.open_table(AGENTS)?;
-            let mut turns = txn.open_table(TURNS)?;
-            let mut goals = txn.open_table(GOALS)?;
-            let mut first_done = txn.open_table(GOAL_FIRST_DONE)?;
-            let mut meta = txn.open_table(META)?;
-            let mut board = txn.open_table(BOARD)?;
-            let mut instruction_rows = txn.open_table(INSTRUCTIONS)?;
-            let mut mail = txn.open_table(MAIL)?;
-            let mut pending = txn.open_table(MAIL_PENDING)?;
-            let mut wakes = mail_wakes::Tables {
-                states: txn.open_table(MAIL_WAKES)?,
-                by_day: txn.open_table(MAIL_WAKE_BY_DAY)?,
-            };
-            let mut messages = txn.open_table(MESSAGES)?;
-            let mut activity = txn.open_table(ACTIVITY)?;
-            let mut retired = txn.open_table(RETIRED_AGENTS)?;
-            let mut history = txn.open_table(QUESTION_HISTORY)?;
-            let mut traces = txn.open_table(TRACES)?;
-            let mut by_goal = txn.open_table(BUDGET_BY_GOAL)?;
-            let mut by_day = txn.open_table(BUDGET_BY_DAY)?;
-            let mut sessions = txn.open_table(SESSION_TOTALS)?;
-            let mut leases = txn.open_table(WORKTREES)?;
-            let mut chat = chat::Tables {
-                notes: txn.open_table(CHAT_NOTES)?,
-                issues: txn.open_table(CHAT_ISSUES)?,
-                decisions: txn.open_table(CHAT_DECISIONS)?,
-                completions: txn.open_table(CHAT_COMPLETIONS)?,
-                windows: txn.open_table(CHAT_WINDOWS)?,
-            };
-            for (lsn, crc, entry) in entries {
-                if lsn <= self.last_applied {
-                    continue;
-                }
-                if lsn <= last {
-                    return Err(Error::NonMonotone { last, got: lsn });
-                }
-                // Owner, then goal, then turn, then money. Only the last step is *ordered*, and
-                // it is ordered by the type system rather than by this comment: `budget::apply`
-                // takes the `EndedTurn` that `turns::apply` returns, because `TurnEnded` names
-                // no goal and the goal lives on the turn's row (see `turns::EndedTurn`). Moving
-                // it above `turns::apply` does not compile. `goals::apply` reads `agents` for
-                // one arm, but that read is order-independent — see its doc comment.
-                chat::apply(&mut chat, &agents, &turns, lsn, entry)?;
-                mail_wakes::apply(
-                    &mut wakes,
-                    &mail_wakes::Facts {
-                        agents: &agents,
-                        goals: &goals,
-                        turns: &turns,
-                        mail: &mail,
-                        pending: &pending,
-                        completions: &chat.completions,
-                    },
-                    lsn,
-                    entry,
-                )?;
-                let normal = mail_wakes::normal_carrier(entry);
-                let carrier = normal.as_ref().unwrap_or(entry);
-                activity::capture_before_source_update(
-                    &mut activity,
-                    &agents,
-                    &board,
-                    lsn,
-                    carrier,
-                )?;
-                retired::capture(&mut retired, &agents, &by_day, &turns, &leases, entry)?;
-                question_history::capture(&mut history, &agents, lsn, entry)?;
-                agents::apply(&mut agents, &turns, &goals, lsn, carrier)?;
-                goals::apply(&mut goals, &mut first_done, &agents, lsn, carrier)?;
-                let (instruction_state, instruction_fold) = instructions::apply(
-                    &mut instruction_rows,
-                    &agents,
-                    &board,
-                    &goals,
-                    last,
-                    lsn,
-                    entry,
-                )?;
-                if let Some(clear) = instruction_fold.cleared_goal {
-                    let cleared = Entry {
-                        at: entry.at,
-                        record: dudes_proto::Record::GoalCleared {
-                            agent: clear.agent,
-                            goal: clear.goal,
-                        },
-                    };
-                    agents::apply(&mut agents, &turns, &goals, lsn, &cleared)?;
-                    goals::apply(&mut goals, &mut first_done, &agents, lsn, &cleared)?;
-                }
-                board::apply(&mut board, &turns, lsn, entry)?;
-                board::apply_instruction(
-                    &mut board,
-                    lsn,
-                    entry,
-                    instruction_state.state(),
-                    &instruction_fold,
-                )?;
-                worktrees::apply(&mut leases, entry)?;
-                let ended = turns::apply(&mut turns, lsn, carrier)?;
-                traces::capture(&mut traces, &agents, &turns, entry, ended.is_some())?;
-                budget::apply(
-                    &mut by_goal,
-                    &mut by_day,
-                    &mut sessions,
-                    &agents,
-                    entry,
-                    ended.as_ref(),
-                )?;
-                if let Some(ended) = ended.as_ref() {
-                    retired::refresh_totals(&mut retired, &by_day, &turns, ended.agent)?;
-                }
-                mail::apply(&mut mail, &mut pending, &mut messages, lsn, entry)?;
-                last = lsn;
-                witness = Some(crc);
-                applied += 1;
-            }
-            // In this transaction or not at all: a cursor that moved without its
-            // witness would meet the next replay as a checksum for a record it no longer names,
-            // and refuse a journal nobody touched.
-            if let Some(crc) = witness {
-                meta.insert(LAST_APPLIED_LSN, &last.0)?;
-                meta.insert(LAST_APPLIED_CRC, &u64::from(crc))?;
-            }
-        }
-        if applied == 0 {
+        let folded = fold_batch(&txn, self.last_applied, entries)?;
+        if folded.applied == 0 {
             txn.abort()?;
             return Ok(0);
         }
         txn.commit()?;
-        self.last_applied = last;
-        self.last_applied_crc = witness.map(u64::from);
-        Ok(applied)
+        self.publish_batch(&folded);
+        Ok(folded.applied)
+    }
+
+    fn publish_batch(&mut self, folded: &AppliedBatch) {
+        self.last_applied = folded.last;
+        self.last_applied_crc = folded.witness.map(u64::from);
     }
 
     /// How many goals first completed, with an observed pass, in `[start, end)` by the `Entry.at`
@@ -1052,12 +942,16 @@ impl Projections {
     ///
     /// One read transaction covers all tables, so a caller cannot assemble part of the
     /// document from one store state and part of it from another.
+    pub fn export(&self) -> Result<String> {
+        let txn = self.db.begin_read()?;
+        self.export_at(&txn)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one document with a line group per table"
     )]
-    pub fn export(&self) -> Result<String> {
-        let txn = self.db.begin_read()?;
+    fn export_at(&self, txn: &redb::ReadTransaction) -> Result<String> {
         let mut lines = vec![
             format!("lsn {}", self.last_applied.0),
             match self.last_applied_crc {
@@ -1081,6 +975,7 @@ impl Projections {
             let json = serde_json::to_string(&cell).map_err(|source| Error::Row { source })?;
             lines.push(format!("instructions {} {json}", hex(key.value())));
         }
+        recovery::export_cells(&mut lines, "recovery", &txn.open_table(RECOVERY)?)?;
         export_rows::<16, WorktreeRow>(&mut lines, "worktrees", &txn.open_table(WORKTREES)?)?;
         export_rows::<16, budget::BudgetRow>(
             &mut lines,
@@ -1170,6 +1065,177 @@ impl Projections {
     }
 }
 
+struct AppliedBatch {
+    applied: u64,
+    last: Lsn,
+    witness: Option<u32>,
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one transaction folds each record through every table in the fixed order"
+)]
+fn fold_batch<'a>(
+    txn: &WriteTransaction,
+    before: Lsn,
+    entries: impl IntoIterator<Item = (Lsn, u32, &'a Entry)>,
+) -> Result<AppliedBatch> {
+    let mut applied = 0u64;
+    let mut last = before;
+    // The checksum of the last entry applied in this batch. `Some` exactly when `applied`
+    // is non-zero — the loop sets the two together — which is what lets one guard write the
+    // cursor and its witness.
+    let mut witness: Option<u32> = None;
+    {
+        let mut agents = txn.open_table(AGENTS)?;
+        let mut turns = txn.open_table(TURNS)?;
+        let mut goals = txn.open_table(GOALS)?;
+        let mut first_done = txn.open_table(GOAL_FIRST_DONE)?;
+        let mut meta = txn.open_table(META)?;
+        let mut board = txn.open_table(BOARD)?;
+        let mut instruction_rows = txn.open_table(INSTRUCTIONS)?;
+        let mut recovery_rows = txn.open_table(RECOVERY)?;
+        let mut mail = txn.open_table(MAIL)?;
+        let mut pending = txn.open_table(MAIL_PENDING)?;
+        let mut wakes = mail_wakes::Tables {
+            states: txn.open_table(MAIL_WAKES)?,
+            by_day: txn.open_table(MAIL_WAKE_BY_DAY)?,
+        };
+        let mut messages = txn.open_table(MESSAGES)?;
+        let mut activity = txn.open_table(ACTIVITY)?;
+        let mut retired = txn.open_table(RETIRED_AGENTS)?;
+        let mut history = txn.open_table(QUESTION_HISTORY)?;
+        let mut traces = txn.open_table(TRACES)?;
+        let mut by_goal = txn.open_table(BUDGET_BY_GOAL)?;
+        let mut by_day = txn.open_table(BUDGET_BY_DAY)?;
+        let mut sessions = txn.open_table(SESSION_TOTALS)?;
+        let mut leases = txn.open_table(WORKTREES)?;
+        let mut chat = chat::Tables {
+            notes: txn.open_table(CHAT_NOTES)?,
+            issues: txn.open_table(CHAT_ISSUES)?,
+            decisions: txn.open_table(CHAT_DECISIONS)?,
+            completions: txn.open_table(CHAT_COMPLETIONS)?,
+            windows: txn.open_table(CHAT_WINDOWS)?,
+        };
+        for (lsn, crc, entry) in entries {
+            if lsn <= before {
+                continue;
+            }
+            if lsn <= last {
+                return Err(Error::NonMonotone { last, got: lsn });
+            }
+            let mut recovery_context = recovery::capture_before(&agents, &turns, &goals, entry)?;
+            let recovery_updates = recovery::prepare_record(
+                &recovery::FactTables {
+                    agents: &agents,
+                    goals: &goals,
+                    turns: &turns,
+                    board: &board,
+                    leases: &leases,
+                    recovery: &recovery_rows,
+                    meta: &meta,
+                },
+                last,
+                lsn,
+                entry,
+                recovery_context,
+            )?;
+            // Owner, then goal, then turn, then money. Only the last step is *ordered*, and
+            // it is ordered by the type system rather than by this comment: `budget::apply`
+            // takes the `EndedTurn` that `turns::apply` returns, because `TurnEnded` names
+            // no goal and the goal lives on the turn's row (see `turns::EndedTurn`). Moving
+            // it above `turns::apply` does not compile. `goals::apply` reads `agents` for
+            // one arm, but that read is order-independent — see its doc comment.
+            chat::apply(&mut chat, &agents, &turns, lsn, entry)?;
+            mail_wakes::apply(
+                &mut wakes,
+                &mail_wakes::Facts {
+                    agents: &agents,
+                    goals: &goals,
+                    turns: &turns,
+                    mail: &mail,
+                    pending: &pending,
+                    completions: &chat.completions,
+                },
+                lsn,
+                entry,
+            )?;
+            let normal = mail_wakes::normal_carrier(entry);
+            let carrier = normal.as_ref().unwrap_or(entry);
+            activity::capture_before_source_update(&mut activity, &agents, &board, lsn, carrier)?;
+            retired::capture(&mut retired, &agents, &by_day, &turns, &leases, entry)?;
+            question_history::capture(&mut history, &agents, lsn, entry)?;
+            agents::apply(&mut agents, &turns, &goals, lsn, carrier)?;
+            goals::apply(&mut goals, &mut first_done, &agents, lsn, carrier)?;
+            let (instruction_state, instruction_fold) = instructions::apply(
+                &mut instruction_rows,
+                &agents,
+                &board,
+                &goals,
+                last,
+                lsn,
+                entry,
+            )?;
+            recovery_context.cleared_goal = instruction_fold.cleared_goal;
+            recovery::observe(&mut recovery_rows, last, lsn, entry, recovery_context)?;
+            recovery::write_updates(&mut recovery_rows, recovery_updates)?;
+            if let Some(clear) = instruction_fold.cleared_goal {
+                let cleared = Entry {
+                    at: entry.at,
+                    record: dudes_proto::Record::GoalCleared {
+                        agent: clear.agent,
+                        goal: clear.goal,
+                    },
+                };
+                agents::apply(&mut agents, &turns, &goals, lsn, &cleared)?;
+                goals::apply(&mut goals, &mut first_done, &agents, lsn, &cleared)?;
+            }
+            board::apply(&mut board, &turns, lsn, entry)?;
+            board::capture_recovery_change(&mut board, lsn, entry)?;
+            if matches!(entry.record, dudes_proto::Record::AgentRetired { .. }) {
+                meta.insert(recovery::LAST_RETIREMENT, &lsn.0)?;
+            }
+            board::apply_instruction(
+                &mut board,
+                lsn,
+                entry,
+                instruction_state.state(),
+                &instruction_fold,
+            )?;
+            worktrees::apply(&mut leases, entry)?;
+            let ended = turns::apply(&mut turns, lsn, carrier)?;
+            traces::capture(&mut traces, &agents, &turns, entry, ended.is_some())?;
+            budget::apply(
+                &mut by_goal,
+                &mut by_day,
+                &mut sessions,
+                &agents,
+                entry,
+                ended.as_ref(),
+            )?;
+            if let Some(ended) = ended.as_ref() {
+                retired::refresh_totals(&mut retired, &by_day, &turns, ended.agent)?;
+            }
+            mail::apply(&mut mail, &mut pending, &mut messages, lsn, entry)?;
+            last = lsn;
+            witness = Some(crc);
+            applied += 1;
+        }
+        // In this transaction or not at all: a cursor that moved without its
+        // witness would meet the next replay as a checksum for a record it no longer names,
+        // and refuse a journal nobody touched.
+        if let Some(crc) = witness {
+            meta.insert(LAST_APPLIED_LSN, &last.0)?;
+            meta.insert(LAST_APPLIED_CRC, &u64::from(crc))?;
+        }
+    }
+    Ok(AppliedBatch {
+        applied,
+        last,
+        witness,
+    })
+}
+
 /// Every table [`Projections::export`] covers, in the order it renders them.
 ///
 /// Public and declared beside the method rather than inlined into it, so that the journal's authority
@@ -1184,6 +1250,7 @@ pub const EXPORTED_TABLES: &[&str] = &[
     "goal_first_done",
     "board",
     "instructions",
+    "recovery",
     "worktrees",
     "budget_by_goal",
     "budget_by_day",
@@ -1743,6 +1810,248 @@ pub(crate) mod tests {
         }
     }
 
+    fn native_receipt_entries() -> [Entry; 5] {
+        use dudes_proto::record::{RecordKind, samples};
+        let turn = TurnId::from_parts(4, 9);
+        let Record::InstructionObservationStarted { snapshot, .. } =
+            samples::record(RecordKind::InstructionObservationStarted)
+        else {
+            unreachable!()
+        };
+        let mut spawned = samples::record(RecordKind::TurnSpawned);
+        if let Record::TurnSpawned {
+            agent: id,
+            turn: spawned_turn,
+            reissued,
+            ..
+        } = &mut spawned
+        {
+            *id = agent();
+            *spawned_turn = turn;
+            *reissued = false;
+        }
+        [
+            hired(),
+            goal_set(agent(), goal_id()),
+            stamped(
+                0,
+                Record::InstructionObservationStarted {
+                    owner: dudes_proto::InstructionObservationOwner::Managed {
+                        agent: agent(),
+                        turn,
+                        issue: dudes_proto::InstructionIssueAssociation::Prospective,
+                    },
+                    ticket: None,
+                    snapshot,
+                },
+            ),
+            issued_on(agent(), turn, goal_id()),
+            stamped(0, spawned),
+        ]
+    }
+
+    fn install_flat_native_receipt(path: &Path, started: Lsn, spawn: Lsn, crc: u32) {
+        let db = Database::create(path).unwrap();
+        let txn = db.begin_write().unwrap();
+        let mut key = vec![15];
+        key.extend_from_slice(&spawn.0.to_be_bytes());
+        let row = serde_json::json!({
+            "kind": "native_receipt",
+            "lsn": spawn.0,
+            "started": started.0,
+            "receipt": {"kind": "spawned", "lsn": spawn.0},
+        });
+        {
+            let mut rows = txn.open_table(INSTRUCTIONS).unwrap();
+            assert!(rows.get(key.as_slice()).unwrap().is_some());
+            rows.insert(key.as_slice(), serde_json::to_vec(&row).unwrap().as_slice())
+                .unwrap();
+            let mut meta = txn.open_table(META).unwrap();
+            assert_eq!(
+                meta.get(LAST_APPLIED_LSN).unwrap().unwrap().value(),
+                spawn.0
+            );
+            assert_eq!(
+                meta.get(LAST_APPLIED_CRC).unwrap().unwrap().value(),
+                u64::from(crc)
+            );
+            meta.insert(SCHEMA_VERSION, &51).unwrap();
+        }
+        txn.commit().unwrap();
+        let txn = db.begin_read().unwrap();
+        let rows = txn.open_table(INSTRUCTIONS).unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(rows.get(key.as_slice()).unwrap().unwrap().value()).unwrap();
+        assert_eq!(stored, row);
+        assert_eq!(stored.as_object().unwrap().len(), 4);
+        let meta = txn.open_table(META).unwrap();
+        assert_eq!(meta.get(SCHEMA_VERSION).unwrap().unwrap().value(), 51);
+        assert_eq!(
+            meta.get(LAST_APPLIED_LSN).unwrap().unwrap().value(),
+            spawn.0
+        );
+        assert_eq!(
+            meta.get(LAST_APPLIED_CRC).unwrap().unwrap().value(),
+            u64::from(crc)
+        );
+    }
+
+    fn native_receipt_settlement(started: Lsn, spawn: Lsn, entry: &Entry) -> Entry {
+        let Record::TurnSpawned {
+            agent,
+            turn,
+            pid,
+            start_time,
+            boot,
+            ..
+        } = &entry.record
+        else {
+            unreachable!()
+        };
+        stamped(
+            0,
+            Record::InstructionAttemptBoundarySettled {
+                owner: dudes_proto::InstructionObservationOwner::Managed {
+                    agent: *agent,
+                    turn: *turn,
+                    issue: dudes_proto::InstructionIssueAssociation::Prospective,
+                },
+                started_lsn: started,
+                proof: dudes_proto::InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                    receipt: dudes_proto::InstructionNativeBoundaryReceipt::Spawned { lsn: spawn },
+                    pid: *pid,
+                    start_time: *start_time,
+                    boot: boot.clone(),
+                    leader: dudes_proto::PriorRunLeader::NoSuchProcess,
+                },
+            },
+        )
+    }
+
+    fn reject_wrong_native_key(store: &mut Projections, lsn: Lsn, crc: u32, settled: &Entry) {
+        use dudes_proto::instruction_state::InstructionStateError;
+        let persisted_cursor = |store: &Projections| {
+            let txn = store.db.begin_read().unwrap();
+            let meta = txn.open_table(META).unwrap();
+            (
+                meta.get(LAST_APPLIED_LSN).unwrap().map(|v| v.value()),
+                meta.get(LAST_APPLIED_CRC).unwrap().map(|v| v.value()),
+            )
+        };
+        let cursor = persisted_cursor(store);
+        let state = store.instruction_state().unwrap();
+        let export = store.export().unwrap();
+        let mut wrong = settled.clone();
+        if let Record::InstructionAttemptBoundarySettled {
+            proof: dudes_proto::InstructionBoundaryAbsenceProof::PriorRunGroupAbsent { pid, .. },
+            ..
+        } = &mut wrong.record
+        {
+            *pid += 1;
+        }
+        assert!(matches!(
+            store.preflight_instruction(lsn, &wrong),
+            Err(Error::Instruction { lsn: found, reason: InstructionStateError::Boundary }) if found == lsn
+        ));
+        assert!(matches!(
+            store.apply(lsn, crc, &wrong),
+            Err(Error::Instruction { lsn: found, reason: InstructionStateError::Boundary }) if found == lsn
+        ));
+        assert_eq!(store.instruction_state().unwrap(), state);
+        assert_eq!(store.export().unwrap(), export);
+        assert_eq!(persisted_cursor(store), cursor);
+    }
+
+    #[test]
+    fn a_version_51_flat_native_receipt_rebuilds_its_spawn_key_from_the_journal() {
+        use dudes_proto::instruction_state::InstructionBoundarySettlement;
+        assert_eq!(PROJECTION_VERSION, 52);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.redb");
+        let journal = dir.path().join("journal");
+        let (mut writer, _) = crate::open(
+            &journal,
+            crate::JournalOptions {
+                fsync: Fsync::None,
+                checkpoint_every: 0,
+                ..crate::JournalOptions::default()
+            },
+        )
+        .unwrap();
+        let entries = native_receipt_entries();
+        let mut store = Projections::open_with(&path, Fsync::None).unwrap();
+        let mut positions = Vec::new();
+        for entry in &entries {
+            let (lsn, crc) = writer.append_witnessed(entry).unwrap();
+            store.apply(lsn, crc, entry).unwrap();
+            positions.push((lsn, crc));
+        }
+        let (started, _) = positions[2];
+        let (spawn, crc) = positions[4];
+        assert_ne!(spawn, Lsn::ZERO);
+        assert_ne!(crc, 0);
+        let expected_state = store.instruction_state().unwrap();
+        let expected_export = store.export().unwrap();
+        drop(store);
+        let store = Projections::open_with(&path, Fsync::None).unwrap();
+        assert_eq!(
+            (store.last_applied_lsn(), store.last_applied_crc()),
+            (spawn, Some(u64::from(crc)))
+        );
+        assert_eq!(store.export().unwrap(), expected_export);
+        drop(store);
+        install_flat_native_receipt(&path, started, spawn, crc);
+        let mut rebuilt = Projections::open_with(&path, Fsync::None).unwrap();
+        assert_eq!(
+            (rebuilt.last_applied_lsn(), rebuilt.last_applied_crc()),
+            (Lsn::ZERO, None)
+        );
+        assert_eq!(rebuilt.counts().unwrap(), (0, 0));
+        {
+            let txn = rebuilt.db.begin_read().unwrap();
+            assert_eq!(txn.open_table(INSTRUCTIONS).unwrap().len().unwrap(), 0);
+        }
+        assert_eq!(
+            crate::replay(&crate::Reader::new(&journal), &mut rebuilt)
+                .unwrap()
+                .applied,
+            5
+        );
+        assert_eq!(rebuilt.instruction_state().unwrap(), expected_state);
+        assert_eq!(rebuilt.export().unwrap(), expected_export);
+        let settled = native_receipt_settlement(started, spawn, &entries[4]);
+        reject_wrong_native_key(&mut rebuilt, Lsn(spawn.0 + 1), crc, &settled);
+        assert_eq!(rebuilt.instruction_state().unwrap(), expected_state);
+        assert_eq!(rebuilt.export().unwrap(), expected_export);
+        let (lsn, crc) = writer.append_witnessed(&settled).unwrap();
+        rebuilt.apply(lsn, crc, &settled).unwrap();
+        let Record::InstructionAttemptBoundarySettled { proof, .. } = settled.record else {
+            unreachable!()
+        };
+        assert_eq!(
+            rebuilt
+                .instruction_state()
+                .unwrap()
+                .attempt(started)
+                .unwrap()
+                .boundary_settled,
+            Some(InstructionBoundarySettlement { lsn, proof })
+        );
+        let mut fresh =
+            Projections::open_with(&dir.path().join("fresh.redb"), Fsync::None).unwrap();
+        assert_eq!(
+            crate::replay(&crate::Reader::new(&journal), &mut fresh)
+                .unwrap()
+                .applied,
+            6
+        );
+        assert_eq!(
+            fresh.instruction_state().unwrap(),
+            rebuilt.instruction_state().unwrap()
+        );
+        assert_eq!(fresh.export().unwrap(), rebuilt.export().unwrap());
+    }
+
     #[test]
     fn messages_preserve_original_metadata_and_replay_rebuilds_a_version_27_cache() {
         let dir = tempfile::tempdir().unwrap();
@@ -2143,7 +2452,7 @@ pub(crate) mod tests {
     /// cannot tell whether the constant was bumped when the rows changed meaning. This can.
     #[test]
     fn a_version_17_store_rebuilds_the_activity_window() {
-        assert_eq!(PROJECTION_VERSION, 47);
+        assert_eq!(PROJECTION_VERSION, 52);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let records = [
@@ -2177,7 +2486,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_24_store_rebuilds_the_current_live_kind() {
-        assert_eq!(PROJECTION_VERSION, 47);
+        assert_eq!(PROJECTION_VERSION, 52);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let entries = [
@@ -2215,7 +2524,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_25_store_rebuilds_retired_appearance() {
-        assert_eq!(PROJECTION_VERSION, 47);
+        assert_eq!(PROJECTION_VERSION, 52);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let mut hire = hired();
@@ -2327,7 +2636,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_8_store_is_rebuilt_for_per_turn_confirmation() {
         const LATCHED: u64 = 8;
-        assert_eq!(PROJECTION_VERSION, 47);
+        assert_eq!(PROJECTION_VERSION, 52);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2364,7 +2673,7 @@ pub(crate) mod tests {
     #[test]
     fn a_version_7_store_is_rebuilt_for_launch_refused_session_clear() {
         const LATCHED: u64 = 7;
-        assert_eq!(PROJECTION_VERSION, 47);
+        assert_eq!(PROJECTION_VERSION, 52);
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
@@ -2434,7 +2743,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 4;
         assert_eq!(
-            PROJECTION_VERSION, 47,
+            PROJECTION_VERSION, 52,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -3298,7 +3607,7 @@ pub(crate) mod tests {
     fn unread_mail_is_rebuilt_from_latest_mail_state() {
         const LATCHED: u64 = 10;
         assert_eq!(
-            PROJECTION_VERSION, 47,
+            PROJECTION_VERSION, 52,
             "this new table owns the 10 -> 11 bump; re-derive the latched store if the current \
              version moves"
         );
@@ -3765,7 +4074,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_version_11_budget_store_is_rebuilt_for_unknown_ends() {
-        assert_eq!(PROJECTION_VERSION, 47);
+        assert_eq!(PROJECTION_VERSION, 52);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.redb");
         let day = day_of(MIDNIGHT_MS);
@@ -3917,7 +4226,7 @@ pub(crate) mod tests {
         // The version the previous build stamped: the one this repair moved *from*.
         const LATCHED: u64 = 5;
         assert_eq!(
-            PROJECTION_VERSION, 47,
+            PROJECTION_VERSION, 52,
             "if this moves, re-derive LATCHED above it — a merge past another bump must move \
              both, or this test passes with this repair's own bump dropped"
         );
@@ -5008,7 +5317,7 @@ pub(crate) mod tests {
     fn a_version_13_store_is_rebuilt_for_question_identity() {
         const LATCHED: u64 = 13;
         assert_eq!(
-            PROJECTION_VERSION, 47,
+            PROJECTION_VERSION, 52,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5110,7 +5419,7 @@ pub(crate) mod tests {
     fn a_version_14_store_is_rebuilt_for_control_identity() {
         const LATCHED: u64 = 14;
         assert_eq!(
-            PROJECTION_VERSION, 47,
+            PROJECTION_VERSION, 52,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together"
         );
@@ -5217,7 +5526,7 @@ pub(crate) mod tests {
     fn a_version_15_store_counts_the_reset_unknown_end() {
         const LATCHED: u64 = 15;
         assert_eq!(
-            PROJECTION_VERSION, 47,
+            PROJECTION_VERSION, 52,
             "if this moves, move LATCHED above it — a merge past another bump must re-derive \
              both numbers together, or this test passes with this repair's own bump dropped"
         );
@@ -5490,7 +5799,7 @@ pub(crate) mod tests {
 
         #[test]
         fn a_version_38_store_rebuilds_the_first_completion_facts() {
-            assert_eq!(PROJECTION_VERSION, 47);
+            assert_eq!(PROJECTION_VERSION, 52);
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("state.redb");
             let history = [

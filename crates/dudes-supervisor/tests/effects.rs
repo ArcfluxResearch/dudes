@@ -13,18 +13,15 @@ use dudes_proto::{
 use dudes_providers::launch::EnvVar;
 use dudes_supervisor::testing::{Harness, Seen};
 use dudes_supervisor::{ClientId, Command, Config, HookId, Input};
-use dudes_types::{AgentId, Lsn, Provenance, SessionId, Timestamp, TurnId};
+use dudes_types::{AgentId, Provenance, SessionId, Timestamp, TurnId};
 
 fn prime_attached_session(harness: &mut Harness, agent: AgentId) {
-    harness.drive(Input::Replayed {
-        lsn: Lsn(1),
-        entry: Entry {
-            at: Timestamp::from_unix_millis(1),
-            record: Record::SessionLearned {
-                agent,
-                turn: TurnId::NIL,
-                session: SessionId::from("550e8400-e29b-41d4-a716-446655440000"),
-            },
+    harness.append_replayed(Entry {
+        at: Timestamp::from_unix_millis(1),
+        record: Record::SessionLearned {
+            agent,
+            turn: TurnId::NIL,
+            session: SessionId::from("550e8400-e29b-41d4-a716-446655440000"),
         },
     });
 }
@@ -67,8 +64,8 @@ fn a_new_attached_record_omits_the_legacy_hook_port() {
     );
 }
 
-/// `handle(Input) -> &[Effect]` emits `Persist`, `Spawn`, `Kill`, `Probe`,
-/// `RunPredicate`, `Reply`, `Notify` and `OpenPty`. The old `ClosePty` effect remains a public
+/// Checked input handling exposes `Persist`, `Spawn`, `Kill`, `Probe`, `RunPredicate`, `Reply`,
+/// `Notify` and `OpenPty` through effects accessors. The old `ClosePty` effect remains a public
 /// variant but has no producer now that confirmed-close superseded startup guessing.
 ///
 /// One run of the machine reaches all eight active effects. Nothing is constructed by hand: each name in the

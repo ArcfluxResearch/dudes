@@ -59,9 +59,9 @@ struct LoggingHost {
 }
 
 impl LoggingHost {
-    fn new(unconfirm_first: bool) -> Self {
+    fn new(unconfirm_first: bool, fixture: &Fixture) -> Self {
         Self {
-            inner: SharedHost::new(),
+            inner: SharedHost::with_native_evidence(fixture.journal_dir()),
             seen: Arc::new(Mutex::new(Vec::new())),
             unconfirm_next: Arc::new(AtomicBool::new(unconfirm_first)),
         }
@@ -102,6 +102,18 @@ impl ProcessHost for LoggingHost {
 
     fn boot_identity(&self) -> HostBoot {
         self.inner.boot_identity()
+    }
+
+    fn owned_targets(&self, limit: usize) -> dudes_supervisor::host::OwnedTargets {
+        self.inner.owned_targets(limit)
+    }
+
+    fn acknowledge_native_boundary_absence(
+        &mut self,
+        key: &AdoptionKey,
+        receipt: &dudes_supervisor::host::NativeBoundaryReceipt,
+    ) -> dudes_supervisor::host::NativeBoundaryAcknowledgement {
+        self.inner.acknowledge_native_boundary_absence(key, receipt)
     }
 
     fn shutdown(&mut self) -> io::Result<()> {
@@ -164,10 +176,197 @@ fn recorded_limits(fixture: &Fixture) -> Vec<(Option<u32>, Option<dudes_types::U
         .collect()
 }
 
+fn recovery_call(
+    settings: &duded::Settings,
+    method: dudes_proto::rpc::CurrentMethod,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    let credential = dudes_proto::rpc::cred::OperatorCredential::new(
+        std::fs::read_to_string(
+            settings
+                .runtime_dir
+                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+        )
+        .expect("the fixture daemon minted the operator credential"),
+    )
+    .expect("the operator credential is well formed");
+    let response = dudes_rpc::Client::connect(settings.socket())
+        .expect("the operator connects")
+        .call_current_as_operator(method, Some(params), credential)
+        .expect("one authenticated recovery request answers");
+    assert!(response.error.is_none(), "{response:?}");
+    response.result.expect("the published recovery result")
+}
+
+fn authorize_owed_issue(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    agent: dudes_types::AgentId,
+    turn: dudes_types::TurnId,
+) {
+    use dudes_proto::rpc::CurrentMethod;
+    use dudes_proto::rpc::recovery::{
+        RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectParams, RecoveryInspectResult,
+        RecoverySubmitParams, RecoverySubmitResult,
+    };
+    let issue_lsn = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| {
+            matches!(entry.record, Record::TurnIssued { agent: owner, turn: issued, .. }
+            if owner == agent && issued == turn)
+            .then_some(lsn)
+        })
+        .expect("the original immutable issued turn");
+    fixture.await_record("the original issue requires explicit recovery", |record| {
+        matches!(record, Record::RecoveryRequired(required)
+            if required.binding.work.agent == agent && required.binding.work.turn == turn)
+        .then_some(())
+    });
+    let inspected: RecoveryInspectResult = serde_json::from_value(recovery_call(
+        settings,
+        CurrentMethod::RecoveryInspect,
+        serde_json::to_value(RecoveryInspectParams { agent }).unwrap(),
+    ))
+    .unwrap();
+    let RecoveryInspectResult::Available {
+        expected,
+        reason,
+        choices,
+        prior_effects_unknown,
+        ..
+    } = inspected
+    else {
+        panic!("the exact owed issue offers recovery: {inspected:?}");
+    };
+    assert_eq!(expected.work.agent, agent);
+    assert_eq!(expected.work.turn, turn);
+    assert_eq!(expected.issue_lsn, issue_lsn);
+    assert_eq!(reason, dudes_proto::recovery::RecoveryReason::MissingSpawn);
+    assert_eq!(choices, RecoveryAllowedChoices::RepeatIssuedFresh);
+    assert!(prior_effects_unknown);
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record,
+               Record::TurnSpawned { turn: owned, .. } if *owned == turn
+            ))
+            .count(),
+        0
+    );
+    let work = expected.work;
+    let request_id = dudes_proto::record::Hex32::new([233; 32]);
+    let submitted: RecoverySubmitResult = serde_json::from_value(recovery_call(
+        settings,
+        CurrentMethod::RecoverySubmit,
+        serde_json::to_value(RecoverySubmitParams {
+            request_id,
+            expected: *expected,
+            choice: RecoveryChoice::RepeatIssuedFresh,
+        })
+        .unwrap(),
+    ))
+    .unwrap();
+    let RecoverySubmitResult::Accepted { receipt } = submitted else {
+        panic!("explicit recovery must be durably accepted: {submitted:?}");
+    };
+    assert_eq!(receipt.request_id, request_id);
+    assert_eq!(receipt.choice, RecoveryChoice::RepeatIssuedFresh);
+    assert_eq!(receipt.claim.episode.work, work);
+    let authorization = fixture
+        .records()
+        .into_iter()
+        .find_map(|record| match record {
+            Record::RecoveryAuthorized(authorized) if authorized.request_id == request_id => {
+                Some(authorized)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        matches!(authorization.plan, dudes_proto::recovery::RecoveryPlan::RepeatIssued { issue, .. }
+        if issue.lsn == issue_lsn && issue.issued.work == work)
+    );
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record,
+               Record::TurnIssued { agent: owner, .. } if *owner == agent
+            ))
+            .count(),
+        1
+    );
+}
+
+fn settle_control(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    host: &LoggingHost,
+    agent: dudes_types::AgentId,
+) {
+    let response = Client::connect(settings.socket())
+        .unwrap()
+        .call_as_operator(
+            Method::LoopPause,
+            Some(serde_json::to_value(dudes_proto::rpc::AgentRef { agent }).unwrap()),
+            credential_of(settings),
+        )
+        .unwrap();
+    assert!(response.error.is_none(), "{response:?}");
+    let turn = fixture
+        .records()
+        .into_iter()
+        .find_map(|record| match record {
+            Record::TurnSpawned {
+                agent: owner, turn, ..
+            } if owner == agent => Some(turn),
+            _ => None,
+        })
+        .unwrap();
+    common::end_turn_with_native_payload(
+        fixture,
+        &host.inner,
+        dudes_supervisor::Input::ChildExited {
+            final_reply: None,
+            elapsed_ms: None,
+            turn,
+            exit: dudes_proto::ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: None,
+            model_usage: std::collections::BTreeMap::new(),
+            outcome: dudes_proto::TurnOutcome::Completed,
+            last_message: None,
+        },
+    );
+}
+
 /// Whether `argv` carries `flag` followed by `value`, as the two adjacent parts the composer emits.
 fn carries(argv: &[OsString], flag: &str, value: &str) -> bool {
     argv.windows(2)
         .any(|pair| pair[0] == *OsStr::new(flag) && pair[1] == *OsStr::new(value))
+}
+
+fn assert_first_launch_limits(first_run: &[Vec<OsString>]) {
+    assert_eq!(
+        first_run.len(),
+        2,
+        "one launch per agent was asked for: {first_run:?}"
+    );
+    let (capped_argv, plain_argv) = (&first_run[0], &first_run[1]);
+    assert!(
+        carries(capped_argv, "--max-turns", "7")
+            && carries(capped_argv, "--max-budget-usd", "2.500000"),
+        "the first launch composes both recorded limits: {capped_argv:?}"
+    );
+    assert!(
+        !plain_argv.iter().any(|part| part == "--max-turns")
+            && !plain_argv.iter().any(|part| part == "--max-budget-usd"),
+        "an agent hired with no limits gets no flag, not a default: {plain_argv:?}"
+    );
 }
 
 /// A hire's `max_turns` and `max_budget` reach the composed argv on the first
@@ -182,8 +381,7 @@ fn carries(argv: &[OsString], flag: &str, value: &str) -> bool {
 /// The control agent's launch goes through. Both argvs are in the log either way, because the host
 /// records what it was asked for rather than what it completed.
 ///
-/// **Run two** boots over the same state directory with a **different** `[providers.claude]`
-/// table, and replay re-issues the un-spawned turn. The differing table is the arm that makes this
+/// The differing table is the arm that makes this
 /// a test about *history* rather than about repetition: an implementation that read current
 /// configuration instead of the replayed `AgentRow` would still be reading a table, and would still
 /// produce two flags, so the same-value assertion would pass. `--max-thinking-tokens 100` appearing
@@ -196,7 +394,7 @@ fn explicit_limits_reach_first_and_reissued_launch() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
 
-    let first_host = LoggingHost::new(true);
+    let first_host = LoggingHost::new(true, &fixture);
     let fixture_parts = seams(
         &settings,
         first_host.clone(),
@@ -204,6 +402,9 @@ fn explicit_limits_reach_first_and_reissued_launch() {
         Arc::new(TestClock::new()),
         Witness::default(),
     );
+    first_host
+        .inner
+        .bind_child_ends(Arc::clone(&fixture_parts.children));
     let daemon = boot(&settings, fixture_parts).expect("boot");
     let mut running = common::start(daemon);
     let mut client = Client::connect(settings.socket()).expect("connect to the daemon");
@@ -235,28 +436,13 @@ fn explicit_limits_reach_first_and_reissued_launch() {
         Record::TurnIssued { agent, turn, .. } if *agent == capped.agent => Some(*turn),
         _ => None,
     });
+    settle_control(&fixture, &settings, &first_host, plain.agent);
     running.stop(ExitCause::Ended);
 
-    let first_run = first_host.argv();
-    assert_eq!(
-        first_run.len(),
-        2,
-        "one launch per agent was asked for: {first_run:?}"
-    );
-    let (capped_argv, plain_argv) = (&first_run[0], &first_run[1]);
-    assert!(
-        carries(capped_argv, "--max-turns", "7")
-            && carries(capped_argv, "--max-budget-usd", "2.500000"),
-        "the first launch composes both recorded limits: {capped_argv:?}"
-    );
-    assert!(
-        !plain_argv.iter().any(|part| part == "--max-turns")
-            && !plain_argv.iter().any(|part| part == "--max-budget-usd"),
-        "an agent hired with no limits gets no flag, not a default: {plain_argv:?}"
-    );
+    assert_first_launch_limits(&first_host.argv());
 
     // Run two: the same journal, a different `[providers.claude]` table.
-    let second_host = LoggingHost::new(false);
+    let second_host = LoggingHost::new(false, &fixture);
     let mut seams = seams(
         &settings,
         second_host.clone(),
@@ -272,8 +458,12 @@ fn explicit_limits_reach_first_and_reissued_launch() {
     };
     claude.check(&[]).expect("an honourable table");
     seams.adapters = Adapters::new([Box::new(ClaudeAdapter::new(claude)) as Box<dyn Adapter>]);
+    second_host
+        .inner
+        .bind_child_ends(Arc::clone(&seams.children));
     let daemon = boot(&settings, seams).expect("the same state directory boots again");
     let mut running = common::start(daemon);
+    authorize_owed_issue(&fixture, &settings, capped.agent, capped_turn);
     fixture.await_record("reissued capped TurnSpawned", |record| {
         (matches!(record, Record::TurnSpawned { agent, turn, reissued: true, .. }
             if *agent == capped.agent && *turn == capped_turn)

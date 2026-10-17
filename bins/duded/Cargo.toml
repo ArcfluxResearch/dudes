@@ -26,8 +26,7 @@ name = "duded"
 path = "src/main.rs"
 
 [features]
-# Crash-recovery tests and nothing else: `src/fault.rs` and the one seam in `main.rs` that wraps
-# the host with its two stall points. **Off by default and never enabled by `--workspace`**, so the
+# Native crash-test adapters in `src/fault.rs`. Off by default and never enabled by `--workspace`, so the
 # released daemon does not contain the code — the same compile-time absence `dudes-rpc`'s `testing`
 # feature gives the permissive authorisers. `examples/two-roles/crash.sh` and
 # `examples/two-roles/crash-after-spawn.sh` build with it and each prints that it did.

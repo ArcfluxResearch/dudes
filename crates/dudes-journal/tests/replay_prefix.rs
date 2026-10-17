@@ -10,6 +10,10 @@ use std::path::Path;
 use dudes_journal::{
     AgentRow, Fsync, GoalRow, JournalOptions, Projections, Reader, TurnRow, open, replay,
 };
+use dudes_proto::recovery::RecoveryWork;
+use dudes_proto::recovery_state::history::{
+    RecoveryWitness, RecoveryWitnessOwner, RecoveryWitnessRef,
+};
 use dudes_proto::{
     AgentBudget, ClosingPhase, Entry, Evidence, ExhaustedReason, ExitStatus, Goal, HoldReason,
     KillReason, LoopDecision, Predicate, Record, Spend, TurnOutcome,
@@ -19,6 +23,76 @@ use dudes_types::{
     Provider, SessionId, Timestamp, Tokens, TurnId, TurnStatus, Usage, Usd, UtcDay,
 };
 use proptest::prelude::*;
+
+fn recovery_owner_for_generated_record(record: &Record) -> Option<RecoveryWitnessOwner> {
+    use RecoveryWitnessOwner as Owner;
+    match record {
+        Record::AgentHired { id: agent, .. }
+        | Record::AgentRetired { id: agent, .. }
+        | Record::HumanAnswer { agent, .. }
+        | Record::Attached { agent, .. }
+        | Record::Detached { agent, .. }
+        | Record::Pause { agent, .. }
+        | Record::Resume { agent, .. }
+        | Record::Halt { agent, .. }
+        | Record::LoopDecided {
+            agent,
+            decision: LoopDecision::Done,
+            ..
+        } => Some(Owner::Agent(*agent)),
+        Record::GoalSet { agent, goal, .. } => Some(Owner::Goal {
+            agent: *agent,
+            goal: goal.id,
+        }),
+        Record::GoalCleared { agent, goal }
+        | Record::GoalReassigned {
+            from: agent, goal, ..
+        } => Some(Owner::Goal {
+            agent: *agent,
+            goal: *goal,
+        }),
+        Record::TurnIssued {
+            agent, goal, turn, ..
+        } => Some(Owner::Work(RecoveryWork {
+            agent: *agent,
+            goal: *goal,
+            turn: *turn,
+        })),
+        Record::TurnSpawned { agent, turn, .. }
+        | Record::SessionLearned { agent, turn, .. }
+        | Record::TurnEnded { agent, turn, .. } => Some(Owner::Turn {
+            agent: *agent,
+            turn: *turn,
+        }),
+        Record::PredicateResult { goal, turn, .. } => Some(Owner::Predicate {
+            goal: *goal,
+            turn: *turn,
+        }),
+        Record::LoopDecided { .. }
+        | Record::ClosingTime { .. }
+        | Record::Checkpoint { .. }
+        | Record::MemoryAppend { .. }
+        | Record::HumanQuestion { .. }
+        | Record::BreakerBeat { .. } => None,
+        _ => panic!("generated record needs an explicit recovery witness expectation"),
+    }
+}
+
+fn exported_recovery_references(export: &str) -> BTreeMap<Lsn, RecoveryWitnessRef> {
+    let mut references = BTreeMap::new();
+    for line in export
+        .lines()
+        .filter_map(|line| line.strip_prefix("recovery "))
+    {
+        let (_, json) = line.split_once(' ').unwrap();
+        let cell: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(cell["kind"], "witness");
+        let witness: RecoveryWitness = serde_json::from_value(cell["value"].clone()).unwrap();
+        let reference = witness.reference();
+        assert!(references.insert(reference.lsn, reference).is_none());
+    }
+    references
+}
 
 // ---- generator ---------------------------------------------------------------------------
 
@@ -1373,8 +1447,16 @@ proptest! {
         let journal = dir.path().join("journal");
         let (mut w, _) = open(&journal, options()).unwrap();
         let mut live = Projections::in_memory().unwrap();
+        let mut expected_recovery = BTreeMap::new();
         for entry in &entries {
             let (lsn, crc) = w.append_witnessed(entry).unwrap();
+            if let Some(owner) = recovery_owner_for_generated_record(&entry.record) {
+                expected_recovery.insert(lsn, RecoveryWitnessRef {
+                    lsn,
+                    kind: entry.record.kind(),
+                    owner,
+                });
+            }
             prop_assert!(live.apply(lsn, crc, entry).unwrap());
         }
         let mut scratch = Projections::in_memory().unwrap();
@@ -1431,8 +1513,10 @@ proptest! {
             + instruction_issues.len()
             + instruction_ends.len()
             + instruction_attachments
-            + attached_agents.len();
+            + attached_agents.len()
+            + expected_recovery.len();
         let export = live.export().unwrap();
+        prop_assert_eq!(exported_recovery_references(&export), expected_recovery);
         prop_assert_eq!(
             export.lines().filter(|line| !line.starts_with("chat_")).count(),
             rows + 2,

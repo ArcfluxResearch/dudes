@@ -498,6 +498,10 @@ fn remap_seed_references(record: &mut Record, positions: &BTreeMap<Lsn, Lsn>) {
             match proof {
                 dudes_proto::InstructionBoundaryAbsenceProof::NativeOwnedBoundaryAbsent {
                     receipt,
+                }
+                | dudes_proto::InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                    receipt,
+                    ..
                 } => {
                     let lsn = match receipt {
                         dudes_proto::InstructionNativeBoundaryReceipt::Spawned { lsn }
@@ -868,7 +872,7 @@ fn announce_retries_keep_the_snapshot_and_original_clock_bound() {
 mod before_spawn_crash {
     use super::*;
     use std::path::Path;
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Child, Stdio};
     use std::time::{Duration, Instant};
 
     const STATE: &str = "DUDES_CLOSING_CRASH_STATE";
@@ -918,7 +922,7 @@ mod before_spawn_crash {
         let (announcement, saving, task) = seed_saving_prefix(&fixture);
         let marker = fixture.state.path().join("closing-before-spawn.marker");
         let mut child = OwnedDaemon(
-            Command::new(std::env::current_exe().unwrap())
+            std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
                     "before_spawn_crash::closing_crash_daemon_helper",

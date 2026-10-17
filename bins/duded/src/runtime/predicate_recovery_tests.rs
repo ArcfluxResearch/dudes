@@ -20,8 +20,13 @@ enum RunnerReply {
     Swept,
 }
 
+struct ControlledReplies {
+    all: RunnerReply,
+    folders: BTreeMap<PathBuf, RunnerReply>,
+}
+
 struct ControlledRunner {
-    reply: Mutex<RunnerReply>,
+    reply: Mutex<ControlledReplies>,
     ready: Condvar,
     calls: AtomicUsize,
 }
@@ -29,20 +34,39 @@ struct ControlledRunner {
 impl ControlledRunner {
     fn new(reply: RunnerReply) -> Arc<Self> {
         Arc::new(Self {
-            reply: Mutex::new(reply),
+            reply: Mutex::new(ControlledReplies {
+                all: reply,
+                folders: BTreeMap::new(),
+            }),
             ready: Condvar::new(),
             calls: AtomicUsize::new(0),
         })
     }
 
     fn release_error(&self) {
-        *self.reply.lock().unwrap_or_else(PoisonError::into_inner) = RunnerReply::Error;
+        self.reply
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .all = RunnerReply::Error;
+        self.ready.notify_all();
+    }
+
+    fn release_folder_error(&self, folder: PathBuf) {
+        self.reply
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .folders
+            .insert(folder, RunnerReply::Error);
         self.ready.notify_all();
     }
 
     fn wait_for_run(&self) {
+        self.wait_for_calls(1);
+    }
+
+    fn wait_for_calls(&self, count: usize) {
         let deadline = Instant::now() + Duration::from_secs(5);
-        while self.calls.load(Ordering::SeqCst) == 0 {
+        while self.calls.load(Ordering::SeqCst) < count {
             assert!(
                 Instant::now() < deadline,
                 "the actual predicate worker must enter the runner"
@@ -53,16 +77,18 @@ impl ControlledRunner {
 }
 
 impl PredicateRunner for ControlledRunner {
-    fn run(&self, _spec: &LaunchSpec, _timeout: Duration) -> io::Result<PredicateOutcome> {
+    fn run(&self, spec: &LaunchSpec, _timeout: Duration) -> io::Result<PredicateOutcome> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let mut reply = self.reply.lock().unwrap_or_else(PoisonError::into_inner);
-        while matches!(*reply, RunnerReply::Blocked) {
+        let selected =
+            |reply: &ControlledReplies| reply.folders.get(&spec.cwd).copied().unwrap_or(reply.all);
+        while matches!(selected(&reply), RunnerReply::Blocked) {
             reply = self
                 .ready
                 .wait(reply)
                 .unwrap_or_else(PoisonError::into_inner);
         }
-        match *reply {
+        match selected(&reply) {
             RunnerReply::Error => Err(io::Error::other("controlled predicate runner failure")),
             RunnerReply::Swept => Ok(PredicateOutcome::Swept),
             RunnerReply::Blocked => unreachable!("the runner waits until released"),
@@ -70,7 +96,9 @@ impl PredicateRunner for ControlledRunner {
     }
 
     fn sweep(&self) {
-        *self.reply.lock().unwrap_or_else(PoisonError::into_inner) = RunnerReply::Swept;
+        let mut reply = self.reply.lock().unwrap_or_else(PoisonError::into_inner);
+        reply.all = RunnerReply::Swept;
+        reply.folders.clear();
         self.ready.notify_all();
     }
 }
@@ -91,12 +119,20 @@ fn boot(
         Arc::new(common::TestClock::new()),
         Witness::default(),
     );
-    seams.adapters = [Box::new(dudes_providers::claude::ClaudeAdapter::new(
-        dudes_providers::claude::config::ClaudeConfig {
-            command: "/usr/bin/true".into(),
-            ..dudes_providers::claude::config::ClaudeConfig::default()
-        },
-    )) as Box<dyn dudes_providers::adapter::Adapter>]
+    seams.adapters = [
+        Box::new(dudes_providers::claude::ClaudeAdapter::new(
+            dudes_providers::claude::config::ClaudeConfig {
+                command: "/usr/bin/true".into(),
+                ..dudes_providers::claude::config::ClaudeConfig::default()
+            },
+        )) as Box<dyn dudes_providers::adapter::Adapter>,
+        Box::new(dudes_providers::codex::CodexAdapter::new(
+            dudes_providers::codex::config::CodexConfig::default(),
+        )),
+        Box::new(dudes_providers::pi::managed::PiAdapter::new(
+            dudes_providers::pi::config::PiConfig::default(),
+        )),
+    ]
     .into_iter()
     .collect();
     (crate::boot(&settings, seams).unwrap(), host)
@@ -153,7 +189,7 @@ fn await_spawn(daemon: &mut TestDaemon, agent: AgentId) -> TurnId {
 
 struct Prefix {
     fixture: common::Fixture,
-    _source: common::Fixture,
+    source_fixture: common::Fixture,
     agent: AgentId,
     goal: GoalId,
     turn: TurnId,
@@ -222,7 +258,7 @@ impl Prefix {
         drop(daemon);
         Self {
             fixture,
-            _source: source,
+            source_fixture: source,
             agent,
             goal,
             turn,
@@ -306,7 +342,7 @@ impl Prefix {
     }
 }
 
-fn take_predicate_end(daemon: &TestDaemon, goal: GoalId) {
+fn take_predicate_end(daemon: &TestDaemon, goal: GoalId) -> PathBuf {
     let deadline = Instant::now() + Duration::from_secs(5);
     for _ in 0..64 {
         match daemon
@@ -316,11 +352,12 @@ fn take_predicate_end(daemon: &TestDaemon, goal: GoalId) {
         {
             Job::PredicateEnded {
                 goal: ended,
+                folder,
                 verdict,
             } => {
                 assert_eq!(ended, goal);
                 assert!(verdict.is_none());
-                return;
+                return folder;
             }
             Job::Input(_) | Job::Stop(_) => {}
             _ => panic!("the fixture received an unrelated completion"),
@@ -335,10 +372,11 @@ fn a_recovered_predicate_runner_error_releases_new_work_without_a_verdict() {
     let runner = ControlledRunner::new(RunnerReply::Error);
     let (mut daemon, host) = prefix.restart(&runner);
     prefix.recover_finished(&mut daemon);
-    take_predicate_end(&daemon, prefix.goal);
+    let folder = take_predicate_end(&daemon, prefix.goal);
     assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
-    daemon.predicate_ended(prefix.goal, None).unwrap();
+    daemon.predicate_ended(prefix.goal, &folder, None).unwrap();
     assert!(daemon.ctx.predicate_runs.is_empty());
+    assert!(daemon.ctx.predicate_folders.is_empty());
     prefix.assert_no_verdict();
     let probe = prefix.probe(&mut daemon);
     let turn = await_spawn(&mut daemon, probe);
@@ -356,6 +394,7 @@ fn a_recovered_predicate_thread_spawn_error_releases_new_work_without_a_verdict(
     prefix.recover_finished(&mut daemon);
     assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
     assert!(daemon.ctx.predicate_runs.is_empty());
+    assert!(daemon.ctx.predicate_folders.is_empty());
     prefix.assert_no_verdict();
     let probe = prefix.probe(&mut daemon);
     let turn = await_spawn(&mut daemon, probe);
@@ -373,14 +412,16 @@ fn a_wrong_goal_no_verdict_keeps_the_actual_recovery_wait() {
     runner.wait_for_run();
     let wrong = GoalId::from_parts(0, 1_000);
     assert_ne!(wrong, prefix.goal);
-    daemon.predicate_ended(wrong, None).unwrap();
+    daemon
+        .predicate_ended(wrong, std::path::Path::new("/unmatched-run"), None)
+        .unwrap();
     assert_eq!(daemon.ctx.predicate_runs.get(&prefix.goal), Some(&1));
     let probe = prefix.probe(&mut daemon);
     assert_eq!(daemon.sup.world().agents[&probe].open_turn, None);
     assert!(host.spawned().is_empty());
     runner.release_error();
-    take_predicate_end(&daemon, prefix.goal);
-    daemon.predicate_ended(prefix.goal, None).unwrap();
+    let folder = take_predicate_end(&daemon, prefix.goal);
+    daemon.predicate_ended(prefix.goal, &folder, None).unwrap();
     let turn = await_spawn(&mut daemon, probe);
     assert_eq!(daemon.sup.world().turns[&turn].agent, probe);
     assert_eq!(host.spawned().len(), 1);
@@ -397,13 +438,14 @@ fn a_no_verdict_after_teardown_cannot_restart_waiting_work() {
     let probe = prefix.probe(&mut daemon);
     assert_eq!(daemon.sup.world().agents[&probe].open_turn, None);
     daemon.exit(ExitCause::Ended);
-    take_predicate_end(&daemon, prefix.goal);
+    let folder = take_predicate_end(&daemon, prefix.goal);
     let before = prefix.fixture.entries();
-    daemon.predicate_ended(prefix.goal, None).unwrap();
+    daemon.predicate_ended(prefix.goal, &folder, None).unwrap();
     assert_eq!(prefix.fixture.entries(), before);
     assert_eq!(daemon.sup.world().agents[&probe].open_turn, None);
     assert!(host.spawned().is_empty());
     assert!(daemon.ctx.predicate_runs.is_empty());
+    assert!(daemon.ctx.predicate_folders.is_empty());
     prefix.assert_no_verdict();
 }
 
@@ -444,6 +486,7 @@ fn a_thread_spawn_failure_during_teardown_cannot_resume_waiting_work() {
     daemon.pump(ending).unwrap();
     assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
     assert!(daemon.ctx.predicate_runs.is_empty());
+    assert!(daemon.ctx.predicate_folders.is_empty());
     assert!(
         daemon
             .sup
@@ -480,7 +523,11 @@ fn an_unmatched_normal_no_verdict_does_not_append_or_block_work() {
     let (mut daemon, host) = boot(&fixture, &runner, None);
     let before = fixture.entries();
     daemon
-        .predicate_ended(GoalId::from_parts(0, 1_000), None)
+        .predicate_ended(
+            GoalId::from_parts(0, 1_000),
+            std::path::Path::new("/unmatched-run"),
+            None,
+        )
         .unwrap();
     assert_eq!(fixture.entries(), before);
     let agent = hire(&mut daemon, fixture.state.path());
@@ -488,5 +535,225 @@ fn an_unmatched_normal_no_verdict_does_not_append_or_block_work() {
     let turn = await_spawn(&mut daemon, agent);
     assert_eq!(daemon.sup.world().turns[&turn].agent, agent);
     assert_eq!(host.spawned().len(), 1);
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn recovery_checkout_admission_uses_actual_check_folders_for_every_engine() {
+    let prefix = Prefix::unfinished_end();
+    let runner = ControlledRunner::new(RunnerReply::Blocked);
+    let (mut daemon, _) = prefix.restart(&runner);
+    prefix.recover_finished(&mut daemon);
+    runner.wait_for_run();
+    let actual = daemon
+        .ctx
+        .predicate_folders
+        .keys()
+        .next()
+        .unwrap()
+        .1
+        .clone();
+    assert_eq!(
+        actual,
+        std::fs::canonicalize(prefix.source_fixture.state.path()).unwrap()
+    );
+    let other = prefix.fixture.state.path().join("unrelated-checkout");
+    std::fs::create_dir(&other).unwrap();
+    let before = daemon.ctx.predicate_folders.clone();
+    assert!(
+        !daemon
+            .ctx
+            .recovery_checkout_clear(&daemon.sup, prefix.agent)
+    );
+    for provider in [Provider::Claude, Provider::Codex, Provider::Pi] {
+        for (cwd, allowed) in [(&actual, false), (&other, true)] {
+            let mut params = common::hire_params(cwd);
+            params.provider = provider;
+            params.budget.tokens_per_day = Some(dudes_types::Tokens::new(100_000));
+            let Answered::Hired(hired) = daemon.ask(Ask::Hire(Box::new(params))).unwrap() else {
+                panic!("the candidate hire must return its recorded owner");
+            };
+            assert_eq!(daemon.sup.world().agents[&hired.agent].provider, provider);
+            assert_eq!(
+                daemon.ctx.recovery_checkout_clear(&daemon.sup, hired.agent),
+                allowed,
+                "{provider} {cwd:?}"
+            );
+        }
+    }
+    assert_eq!(daemon.ctx.predicate_folders, before);
+    runner.release_error();
+    let folder = take_predicate_end(&daemon, prefix.goal);
+    assert_eq!(folder, actual);
+    daemon.predicate_ended(prefix.goal, &folder, None).unwrap();
+    assert!(daemon.ctx.predicate_folders.is_empty());
+}
+
+#[test]
+fn same_goal_check_completions_retire_only_their_immutable_execution_folder() {
+    let prefix = Prefix::unfinished_end();
+    let runner = ControlledRunner::new(RunnerReply::Blocked);
+    let (mut daemon, _) = prefix.restart(&runner);
+    prefix.recover_finished(&mut daemon);
+    runner.wait_for_run();
+    let original = daemon
+        .ctx
+        .predicate_folders
+        .keys()
+        .next()
+        .unwrap()
+        .1
+        .clone();
+    let before = daemon.ctx.predicate_folders.clone();
+    let later_goal = goal(&mut daemon, prefix.agent, 1);
+    assert_ne!(later_goal, prefix.goal);
+    assert_eq!(
+        daemon.sup.world().agents[&prefix.agent].goal,
+        Some(later_goal)
+    );
+    assert_eq!(daemon.ctx.predicate_folders, before);
+    let changed = prefix.fixture.state.path().join("later-checkout");
+    std::fs::create_dir(&changed).unwrap();
+    let changed = std::fs::canonicalize(changed).unwrap();
+    let mut queue = VecDeque::new();
+    daemon.ctx.run_predicate(
+        prefix.goal,
+        &changed,
+        &Predicate::Command {
+            argv: vec!["/usr/bin/false".into()],
+            timeout_s: 10,
+        },
+        &mut queue,
+    );
+    assert!(queue.is_empty());
+    runner.wait_for_calls(2);
+    assert_eq!(daemon.ctx.predicate_runs.get(&prefix.goal), Some(&2));
+    runner.release_folder_error(changed.clone());
+    let folder = take_predicate_end(&daemon, prefix.goal);
+    assert_eq!(folder, changed);
+    daemon.predicate_ended(prefix.goal, &folder, None).unwrap();
+    assert_eq!(daemon.ctx.predicate_runs.get(&prefix.goal), Some(&1));
+    assert_eq!(
+        daemon
+            .ctx
+            .predicate_folders
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![(prefix.goal, original.clone())]
+    );
+    daemon.predicate_ended(prefix.goal, &changed, None).unwrap();
+    assert_eq!(daemon.ctx.predicate_runs.get(&prefix.goal), Some(&1));
+    runner.release_error();
+    let folder = take_predicate_end(&daemon, prefix.goal);
+    assert_eq!(folder, original);
+    daemon.predicate_ended(prefix.goal, &folder, None).unwrap();
+    assert!(daemon.ctx.predicate_folders.is_empty());
+    assert!(daemon.ctx.predicate_runs.is_empty());
+}
+
+#[test]
+fn agentless_baseline_folder_blocks_recovery_until_its_actual_end() {
+    let fixture = common::Fixture::new();
+    let runner = ControlledRunner::new(RunnerReply::Blocked);
+    let (mut daemon, _) = boot(&fixture, &runner, None);
+    let agent = hire(&mut daemon, fixture.state.path());
+    let other = fixture.state.path().join("other-checkout");
+    std::fs::create_dir(&other).unwrap();
+    let peer = hire(&mut daemon, &other);
+    let run = daemon
+        .ctx
+        .baselines
+        .start_browser(None, dudes_proto::record::Hex32::new([78; 32]))
+        .unwrap();
+    let Answered::CheckRunning(ticket) = daemon
+        .start_baseline(
+            run,
+            vec!["/usr/bin/false".into()],
+            10,
+            fixture.state.path().to_path_buf(),
+        )
+        .unwrap()
+    else {
+        panic!("the actual baseline must own its worker");
+    };
+    runner.wait_for_run();
+    assert_eq!(
+        ticket.cwd,
+        std::fs::canonicalize(fixture.state.path()).unwrap()
+    );
+    assert!(!daemon.ctx.recovery_checkout_clear(&daemon.sup, agent));
+    assert!(daemon.ctx.recovery_checkout_clear(&daemon.sup, peer));
+    runner.release_error();
+    let Job::BaselineEnded { id } = daemon.jobs.recv_timeout(Duration::from_secs(5)).unwrap()
+    else {
+        panic!("the baseline worker must end its own run mark");
+    };
+    assert_eq!(id, run);
+    daemon.ctx.baselines.end(id);
+    assert!(daemon.ctx.recovery_checkout_clear(&daemon.sup, agent));
+    let missing = daemon.ctx.baselines.start_local(agent);
+    let Answered::CheckRunning(ticket) = daemon
+        .start_baseline(
+            missing,
+            vec!["/usr/bin/false".into()],
+            10,
+            fixture.state.path().join("missing-folder"),
+        )
+        .unwrap()
+    else {
+        panic!("a preparation refusal retains the baseline result contract");
+    };
+    assert!(matches!(
+        ticket.wait(
+            &std::sync::atomic::AtomicBool::new(false),
+            &dudes_rpc::HangUp::never()
+        ),
+        crate::baseline::Baseline::Refused(crate::baseline::Refusal::CannotRun(_))
+    ));
+    assert!(!daemon.ctx.baselines.local_running(agent));
+    assert_eq!(daemon.ctx.baselines.active_folders(2).count(), 0);
+}
+
+#[test]
+fn an_unresolved_predicate_folder_keeps_the_observed_preparation_refusal_without_a_run_mark() {
+    let fixture = common::Fixture::new();
+    let runner = ControlledRunner::new(RunnerReply::Error);
+    let (mut daemon, _) = boot(&fixture, &runner, None);
+    let goal = GoalId::from_parts(95, 1);
+    let cwd = fixture.state.path().join("missing-predicate-folder");
+    let argv = vec!["/usr/bin/false".into()];
+    let error = predicate::spec_for(
+        &argv,
+        &cwd,
+        &daemon.ctx.predicate_env,
+        daemon.ctx.predicate_path.as_deref(),
+    )
+    .unwrap_err();
+    let (expected_pass, expected_evidence) = predicate::refused(&argv, &error);
+    let mut queue = VecDeque::new();
+    daemon.ctx.run_predicate(
+        goal,
+        &cwd,
+        &Predicate::Command {
+            argv,
+            timeout_s: 10,
+        },
+        &mut queue,
+    );
+    let Some(Input::PredicateDone {
+        goal: seen,
+        pass,
+        evidence,
+    }) = queue.pop_front()
+    else {
+        panic!("the known preparation refusal must remain an observed failed check");
+    };
+    assert_eq!(seen, goal);
+    assert_eq!(pass, expected_pass);
+    assert_eq!(evidence, expected_evidence);
+    assert!(queue.is_empty());
+    assert!(daemon.ctx.predicate_runs.is_empty());
+    assert!(daemon.ctx.predicate_folders.is_empty());
     assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
 }

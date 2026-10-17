@@ -35,6 +35,8 @@ pub mod journal;
 pub mod loop_control;
 pub mod memory;
 pub mod pty;
+pub mod recovery;
+pub use recovery::{RecoveryControl, register_recovery};
 pub mod team;
 pub mod worktree;
 

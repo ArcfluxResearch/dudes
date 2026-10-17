@@ -9,6 +9,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use dudes_proto::rpc::MAX_FRAME_BYTES;
 use dudes_proto::rpc::journal::journal_appended;
@@ -93,6 +94,8 @@ pub struct Writer {
     /// The lsn of the append that failed mid-write, once one has.
     poisoned: Option<Lsn>,
     required_started: bool,
+    pub(crate) recovery_generation: Arc<()>,
+    pub(crate) recovery_fenced: bool,
     pub(crate) validated: Option<crate::reader::ValidatedPrefix>,
     pub(crate) validation_scratch: Option<PathBuf>,
     #[cfg(any(test, debug_assertions))]
@@ -115,7 +118,42 @@ pub(crate) enum Fault {
     Sync,
 }
 
+pub(crate) struct PreparedAppend<'a> {
+    entry: &'a Entry,
+    bytes: Vec<u8>,
+    frontier: Lsn,
+    lsn: Lsn,
+    rotates: bool,
+    required: bool,
+}
+
+impl PreparedAppend<'_> {
+    pub(crate) const fn entry(&self) -> &Entry {
+        self.entry
+    }
+    pub(crate) const fn lsn(&self) -> Lsn {
+        self.lsn
+    }
+    pub(crate) fn crc(&self) -> u32 {
+        let header: [u8; frame::HEADER_LEN] = self.bytes[..frame::HEADER_LEN]
+            .try_into()
+            .expect("stage writes the fixed header before the payload");
+        frame::Header::parse(&header).crc
+    }
+}
+
 impl Writer {
+    /// Compare the owned projection with the actual journal before allowing recovery reads.
+    ///
+    /// The returned borrow excludes raw journal/projection mutation. Dropping it does not let a
+    /// later raw append retain a truthful receipt: the next checked read verifies the writer cut.
+    pub fn checked_recovery<'a>(
+        &'a mut self,
+        projections: &'a mut crate::Projections,
+    ) -> Result<crate::projections::recovery::CheckedRecoveryStore<'a>> {
+        crate::projections::recovery::CheckedRecoveryStore::open(self, projections)
+    }
+
     /// A live reader that can reuse completed-contract validation from this writer's open.
     /// Replay checks the prefix's bytes before reuse and validates any changed journal again.
     #[must_use]
@@ -150,6 +188,8 @@ impl Writer {
             buf: Vec::new(),
             poisoned: None,
             required_started: false,
+            recovery_generation: Arc::new(()),
+            recovery_fenced: false,
             validated: None,
             validation_scratch: None,
             #[cfg(any(test, debug_assertions))]
@@ -164,8 +204,8 @@ impl Writer {
     /// write, this and every later call return [`Error::Poisoned`].
     ///
     /// The payload is the whole [`Entry`], so `at` is flattened beside `t`; the frame's `kind`
-    /// tag still comes from the record. A bare `Record` cannot be written: this signature is
-    /// the only door onto a segment — with one exception, and it is the writer's own: every
+    /// tag still comes from the record. Public append paths take `Entry` and commit the same
+    /// staged frame path. The writer has one additional producer: every
     /// [`JournalOptions::checkpoint_every`] appends this also writes a
     /// [`Record::Checkpoint`], after the caller's frame and before returning. See
     /// [`Writer::emit_checkpoint`] for what that record does and does not attest.
@@ -202,6 +242,20 @@ impl Writer {
     }
 
     fn append_framed(&mut self, entry: &Entry, required: bool) -> Result<(Lsn, u32)> {
+        let prepared = self.prepare_append(entry, required)?;
+        self.commit_prepared(prepared)
+    }
+
+    pub(crate) fn prepare_append<'a>(
+        &self,
+        entry: &'a Entry,
+        required: bool,
+    ) -> Result<PreparedAppend<'a>> {
+        if self.recovery_fenced {
+            return Err(Error::RecoveryStore(
+                crate::error::RecoveryStoreError::JournalUncertain,
+            ));
+        }
         if let Some(lsn) = self.poisoned {
             return Err(Error::Poisoned { lsn });
         }
@@ -226,6 +280,34 @@ impl Writer {
             });
         }
 
+        Ok(PreparedAppend {
+            entry,
+            bytes: staged,
+            frontier: self.next_lsn()?,
+            lsn: candidate_lsn,
+            rotates,
+            required,
+        })
+    }
+
+    pub(crate) fn commit_prepared(&mut self, prepared: PreparedAppend<'_>) -> Result<(Lsn, u32)> {
+        if let Some(lsn) = self.poisoned {
+            return Err(Error::Poisoned { lsn });
+        }
+        if self.next_lsn()? != prepared.frontier {
+            return Err(Error::RecoveryStore(
+                crate::error::RecoveryStoreError::JournalAdvanced,
+            ));
+        }
+        let PreparedAppend {
+            entry,
+            bytes: staged,
+            lsn: candidate_lsn,
+            rotates,
+            required,
+            ..
+        } = prepared;
+        let frame_len = staged.len();
         self.buf = staged;
         if rotates {
             self.rotate()?;
@@ -260,9 +342,9 @@ impl Writer {
             //   nothing is poisoned. The writer stays coherent (`rotate` mutates no field until
             //   both of its fallible calls have succeeded) and appends carry on, but this
             //   checkpoint is lost and `since_checkpoint` has already been reset, so the cadence
-            //   slips by one interval. Nothing downstream reads a checkpoint, so that costs
-            //   nothing today — but it is the writer's own durability path, and an error there
-            //   that no one can see is worse than the slip.
+            //   slips by one interval. Replay does not start from checkpoints, so the slip does
+            //   not change recovery today. It is still the writer's durability path, and an
+            //   invisible error there is worse than the slip.
             //
             // Hence the log line rather than a discarded `Result`: it is the only report the
             // second arm has.
@@ -283,15 +365,15 @@ impl Writer {
     /// stamped with `at` — the `at` of the entry whose append triggered it, because this crate
     /// reads no clock (see `lib.rs`).
     ///
-    /// **Nothing reads a `Checkpoint`.** `replay.rs` says so: starting from a `Checkpoint` is not
-    /// implemented yet and the record is applied as a no-op. `dudes-supervisor`'s `world.rs` folds it
+    /// Replay does not start from a `Checkpoint`; it is applied as a no-op. The checked append
+    /// transport validates its physical tail without treating it as a recovery starting point.
+    /// `dudes-supervisor`'s `world.rs` folds it
     /// in an arm that names the record; in this crate's four projection modules it reaches a
     /// wildcard — `agents::apply` and `agents::apply_flow`, `goals::apply`, `turns::apply` name
     /// it beside their wildcards, and `budget::apply` matches no record at all, returning before
     /// any record arm unless `turns::apply` handed it an ended turn.
     ///
-    /// This is a producer with no consumer, and it must not read as a live mechanism: what the
-    /// record attests is that the writer reached this position under this `PROJECTION_VERSION`,
+    /// This is not checkpoint-based recovery: the record attests that the writer reached this position under this `PROJECTION_VERSION`,
     /// and **nothing about what any projection has applied**. Starting a replay from one, and
     /// archiving the segments before one, are both the follow-up: replay starting from the
     /// latest usable `Checkpoint` needs the `crc32c` that `Record::Checkpoint` is to gain,
@@ -301,8 +383,8 @@ impl Writer {
     ///
     /// **The pin, and what the change that lands a consumer does with it.** `tests/checkpoint.rs`
     /// asserts that checkpointing changes no projection, which is true only while every fold is
-    /// inert. That proposition is false by design the moment a consumer exists, so the pin has no
-    /// true form to be updated into: **the implementing change deletes it** and puts the
+    /// inert. That proposition is false by design when checkpoint-based recovery exists, so the
+    /// pin has no true form to be updated into: **the implementing change deletes it** and puts the
     /// consumer's own properties in its place. It is not repaired, and it is not to be weakened
     /// until it passes.
     ///
@@ -342,6 +424,12 @@ impl Writer {
     /// emitter has to encode, ask whether that position survives the rotation check, and encode
     /// again when it does not.
     fn stage(entry: &Entry, required: bool) -> Result<Vec<u8>> {
+        dudes_proto::recovery::validate_record_shape(&entry.record).map_err(|reason| {
+            Error::RecoveryAdmission {
+                kind: entry.record.kind(),
+                reason,
+            }
+        })?;
         dudes_proto::validate_instruction_record(&entry.record).map_err(|reason| {
             Error::Instruction {
                 lsn: Lsn::ZERO,

@@ -30,6 +30,12 @@ pub struct TurnRow {
     pub status: TurnStatus,
     /// The lsn of the record that created the row: `TurnIssued`, or the attached `TurnEnded`.
     pub lsn_issued: Lsn,
+    /// Latest physical spawn, independent of earlier attempts under the same turn.
+    pub spawn_lsn: Option<Lsn>,
+    /// Latest terminal source; an earlier end does not settle a later spawn.
+    pub end_lsn: Option<Lsn>,
+    /// Accepted confirmation source for the current physical attempt.
+    pub confirmation_lsn: Option<Lsn>,
     /// The latest `TurnSpawned` entry's recorded time. Absent when no spawn was observed.
     pub spawned_at: Option<Timestamp>,
     /// The child's pid, once spawned.
@@ -74,6 +80,9 @@ impl Default for TurnRow {
             mode: Mode::Managed,
             status: TurnStatus::Issued,
             lsn_issued: Lsn::ZERO,
+            spawn_lsn: None,
+            end_lsn: None,
+            confirmation_lsn: None,
             spawned_at: None,
             pid: None,
             start_time: None,
@@ -278,6 +287,7 @@ pub(crate) fn apply(
             update(table, lsn, *turn, record, |t| {
                 t.status = TurnStatus::Spawned;
                 t.spawned_at = Some(entry.at);
+                t.spawn_lsn = Some(lsn);
                 t.pid = Some(*pid);
                 t.start_time = Some(*start_time);
                 t.reissued = *reissued;
@@ -289,6 +299,7 @@ pub(crate) fn apply(
                 // attempt. The current attempt's confirmation follows this record.
                 if *reissued {
                     t.session_confirmed = false;
+                    t.confirmation_lsn = None;
                 }
             })?;
             Ok(None)
@@ -297,6 +308,7 @@ pub(crate) fn apply(
             update(table, lsn, *turn, record, |t| {
                 t.session = Some(session.clone());
                 t.session_confirmed = true;
+                t.confirmation_lsn = Some(lsn);
             })?;
             Ok(None)
         }
@@ -341,6 +353,7 @@ pub(crate) fn apply(
             row.usage = *usage;
             row.model_usage.clone_from(model_usage);
             row.ended_at = Some(entry.at);
+            row.end_lsn = Some(lsn);
             row.outcome.clone_from(outcome);
             if session.is_some() {
                 row.session.clone_from(session);

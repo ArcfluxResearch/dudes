@@ -7,6 +7,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub(crate) struct ExplicitNullable<T>(std::marker::PhantomData<T>);
 
 impl<T: JsonSchema> JsonSchema for ExplicitNullable<T> {
+    fn inline_schema() -> bool {
+        T::inline_schema()
+    }
+
     fn schema_name() -> std::borrow::Cow<'static, str> {
         format!("ExplicitNullable_{}", T::schema_name()).into()
     }

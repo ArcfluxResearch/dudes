@@ -578,6 +578,10 @@ impl ConditionedConnectionContext {
         self.peer_actor.as_ref().map(|actor| actor.pid)
     }
 
+    pub(crate) fn peer_attribution(&self) -> Option<(u32, Option<u32>)> {
+        self.peer_actor.as_ref().map(|actor| (actor.pid, actor.uid))
+    }
+
     fn authority(&self) -> Option<&OperatorEffectAuthority> {
         self.authority
             .as_ref()

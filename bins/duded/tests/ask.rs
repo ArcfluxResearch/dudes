@@ -1343,8 +1343,8 @@ fn an_over_cap_question_appends_nothing_and_the_cap_itself_appends_one() {
     running.stop(ExitCause::Ended);
 }
 
-/// Every `Ask` arm is classified here, and every successful state change is observed at the
-/// answer barrier: its record is already durable and foldable, and a fresh connection already
+/// Every `Ask` arm is classified here. Successful state changes driven below are observed at the
+/// answer barrier: their record is already durable and foldable, and a fresh connection already
 /// reads the current token-owner snapshot. The classifier probe is `system.ping`, so it cannot
 /// pump the loop and hide a publication that the arm itself skipped.
 ///
@@ -1383,6 +1383,11 @@ fn every_ask_variant_preserves_publication_before_reply() {
     // variant therefore makes this test fail to compile until that variant gets a case.
     let run_case = |ask: duded::ports::Ask| {
         let variant = match &ask {
+            // Sealed Operator admission is obtained by the authenticated fixtures in
+            // tests/recovery.rs, which observe its published caller position without pumping.
+            duded::ports::Ask::RecoveryInspect { .. } => "RecoveryInspect",
+            duded::ports::Ask::Recover { .. } => "Recover",
+            duded::ports::Ask::RecoveryReceipt { .. } => "RecoveryReceipt",
             duded::ports::Ask::Mcp(_) => "Mcp",
             duded::ports::Ask::Hire(_) => "Hire",
             duded::ports::Ask::Retire(_) => "Retire",

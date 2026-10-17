@@ -186,6 +186,46 @@ pub struct Witness {
     /// It records the daemon's **own** captured identity re-compared against the path — not a value
     /// a test built for itself, which would exercise `SocketIdentity` and nothing else.
     pub sockets: Recorder<crate::socket::Standing>,
+    #[cfg(any(test, feature = "testing"))]
+    replay_fold_refusal: Arc<Mutex<Option<ReplayFoldRefusal>>>,
+}
+
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug)]
+struct ReplayFoldRefusal {
+    lsn: dudes_types::Lsn,
+    reason: dudes_proto::recovery_state::RecoveryStateError,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl Witness {
+    /// Inject one labelled replay-fold transport failure after strict Reader acceptance.
+    #[doc(hidden)]
+    pub fn refuse_replay_fold_once(
+        &self,
+        lsn: dudes_types::Lsn,
+        reason: dudes_proto::recovery_state::RecoveryStateError,
+    ) {
+        *self
+            .replay_fold_refusal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(ReplayFoldRefusal { lsn, reason });
+    }
+
+    pub(crate) fn take_replay_fold_refusal(
+        &self,
+        lsn: dudes_types::Lsn,
+    ) -> Option<dudes_proto::recovery_state::RecoveryStateError> {
+        let mut refusal = self
+            .replay_fold_refusal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if refusal.as_ref().is_some_and(|failure| failure.lsn == lsn) {
+            refusal.take().map(|failure| failure.reason)
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]

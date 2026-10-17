@@ -114,3 +114,4 @@ pub use server::{operator_credential_permissions, runtime_dir_permissions, socke
 pub use tail::Subscribers;
 
 mod goal_replace;
+mod recovery;

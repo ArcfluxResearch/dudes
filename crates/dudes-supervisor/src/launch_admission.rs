@@ -37,7 +37,7 @@ impl std::fmt::Display for SharedFolderRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::PriorAttemptUnresolved { agent } => write!(f,
-                "An earlier owned attempt of agent {agent} has unresolved native liveness; wait for confirmed absence or use another agent in a worktree"),
+                "An earlier owned attempt of agent {agent} has unresolved native liveness; wait for the daemon to confirm its old process group is empty or use another agent in a worktree"),
             Self::LivePeer { agent, name } => write!(f,
                 "Claude inherit is refused while {name} ({agent}) is live in the same folder; use a worktree"),
             Self::CandidateFolderUnresolved => f.write_str(

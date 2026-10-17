@@ -21,6 +21,7 @@
 //! refused it.
 #![cfg(unix)]
 
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::{fs, path::Path};
 
@@ -370,4 +371,89 @@ fn missing_and_mixed_floor_assets_refuse_before_listener_bind() {
     )
     .expect("valid control starts");
     shut!(daemon);
+}
+
+#[test]
+fn a_labelled_post_reader_fold_fault_stops_before_replay_completion() {
+    for fault in [false, true] {
+        let fixture = Fixture::new();
+        let mut settings = fixture.settings();
+        let seed = boot(
+            &settings,
+            seams(
+                &settings,
+                SharedHost::new(),
+                Arc::new(ScriptedRunner::default()),
+                Arc::new(TestClock::new()),
+                Witness::default(),
+            ),
+        )
+        .unwrap();
+        let mut seed = common::start(seed);
+        common::hire(&seed.handle, fixture.state.path());
+        seed.stop(ExitCause::Ended);
+        let (reader, _) = dudes_journal::Reader::open(&fixture.journal_dir()).unwrap();
+        let prefix: Vec<_> = reader
+            .iter_from(dudes_types::Lsn::ZERO)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let lsn = prefix
+            .iter()
+            .find_map(|(lsn, entry)| {
+                matches!(entry.record, dudes_proto::Record::AgentHired { .. }).then_some(*lsn)
+            })
+            .unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        settings.runtime_dir = runtime.path().to_path_buf();
+        let witness = Witness::default();
+        let host = SharedHost::new();
+        if fault {
+            witness.refuse_replay_fold_once(
+                lsn,
+                dudes_proto::recovery_state::RecoveryStateError::Binding,
+            );
+        }
+        let result = boot(
+            &settings,
+            seams(
+                &settings,
+                host.clone(),
+                Arc::new(ScriptedRunner::default()),
+                Arc::new(TestClock::new()),
+                witness.clone(),
+            ),
+        );
+        if fault {
+            let Err(failure) = result else {
+                panic!("the labelled fold fault must stop boot");
+            };
+            assert_eq!(
+                failure.downcast_ref::<dudes_supervisor::input::DurableInputError>(),
+                Some(&dudes_supervisor::input::DurableInputError::Recovery {
+                    lsn,
+                    reason: dudes_proto::recovery_state::RecoveryStateError::Binding
+                })
+            );
+            assert_eq!(
+                witness.startup.steps(),
+                vec![StartupStep::Lock, StartupStep::JournalOpen]
+            );
+            assert!(!settings.socket().exists());
+            assert!(
+                !settings
+                    .runtime_dir
+                    .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME)
+                    .exists()
+            );
+            assert!(host.spawned().is_empty());
+            assert_eq!(fixture.entries(), prefix);
+        } else {
+            let daemon = result.unwrap();
+            assert_eq!(witness.startup.steps(), StartupStep::ORDER.to_vec());
+            assert!(host.spawned().is_empty());
+            shut!(daemon);
+        }
+    }
 }

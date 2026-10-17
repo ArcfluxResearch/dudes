@@ -26,7 +26,14 @@ type TestDaemon = crate::Daemon<
 >;
 
 fn boot_daemon(fixture: &common::Fixture) -> TestDaemon {
-    let settings = settings(fixture);
+    boot_with_checkpoints(fixture, None)
+}
+
+fn boot_with_checkpoints(fixture: &common::Fixture, cadence: Option<u64>) -> TestDaemon {
+    let mut settings = settings(fixture);
+    if let Some(cadence) = cadence {
+        settings.journal.checkpoint_every = cadence;
+    }
     crate::boot(
         &settings,
         common::seams(
@@ -72,7 +79,11 @@ fn pump_fixture_job(daemon: &mut TestDaemon, deadline: std::time::Instant) {
         .expect("the actual fixture worker must finish within its deadline")
     {
         Job::Input(input) => daemon.pump(*input).unwrap(),
-        Job::PredicateEnded { goal, verdict } => daemon.predicate_ended(goal, verdict).unwrap(),
+        Job::PredicateEnded {
+            goal,
+            folder,
+            verdict,
+        } => daemon.predicate_ended(goal, &folder, verdict).unwrap(),
         _ => panic!("unexpected fixture job"),
     }
 }
@@ -172,14 +183,20 @@ fn failure_serializing_the_last_folded_patch_keeps_its_original_context() {
             browser_rename: None,
         },
     };
-    let lsn = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let append = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let through = append.through();
+    let (main, checkpoint) = append.into_parts();
+    let inputs = std::iter::once(main)
+        .chain(checkpoint)
+        .map(|(lsn, entry)| Input::Replayed { lsn, entry })
+        .collect();
     assert_eq!(daemon.ctx.pending_floor.len(), 1);
     let failure = daemon
         .pump_inputs(
             &mut PumpReport::Discard,
             PumpOrigin::Ordinary,
-            VecDeque::from([Input::Replayed { lsn, entry }]),
-            |_| Ok(()),
+            inputs,
+            |_| Ok(Handled::default()),
         )
         .unwrap_err();
     assert_eq!(
@@ -190,7 +207,7 @@ fn failure_serializing_the_last_folded_patch_keeps_its_original_context() {
         failure.root_cause().to_string(),
         "Floor browser event exceeds 1 MiB"
     );
-    assert_eq!(daemon.sup.world().last_applied_lsn, Some(lsn));
+    assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
     assert!(daemon.ctx.pending_floor.is_empty());
     assert!(daemon.ctx.pending_floor_base.is_none());
     assert!(matches!(
@@ -407,8 +424,17 @@ fn saving_memory_publishes_its_projection_cut_without_waiting_for_a_policy_fold(
 
 #[test]
 fn saving_memory_behind_a_policy_cut_drains_in_durable_order() {
+    assert_memory_drain(None);
+}
+
+#[test]
+fn saving_memory_behind_a_checkpointed_policy_cut_drains_in_durable_order() {
+    assert_memory_drain(Some(1));
+}
+
+fn assert_memory_drain(cadence: Option<u64>) {
     let fixture = common::Fixture::new();
-    let mut daemon = boot_daemon(&fixture);
+    let mut daemon = boot_with_checkpoints(&fixture, cadence);
     let hired = hire_open(&mut daemon, &fixture);
     daemon
         .closing_request(crate::closing::Request::Announce)
@@ -420,16 +446,28 @@ fn saving_memory_behind_a_policy_cut_drains_in_durable_order() {
         .unwrap()
         .subscribe()
         .unwrap();
-    let _ = daemon.sup.handle(Input::Command(Command::Pause {
-        agent: hired.agent,
-        browser: None,
-    }));
+    let _ = daemon
+        .sup
+        .handle(Input::Command(Command::Pause {
+            agent: hired.agent,
+            browser: None,
+        }))
+        .unwrap();
     let mut effects = daemon.sup.take_effects();
     assert_eq!(effects.len(), 1);
     let Effect::Persist { token, entry } = effects.pop().unwrap() else {
         panic!("pause append");
     };
-    let policy_lsn = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let policy_append = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let policy_lsn = policy_append.lsn();
+    let policy_through = policy_append.through();
+    if cadence == Some(1) {
+        assert!(policy_through > policy_lsn);
+    }
+    assert_eq!(
+        daemon.ctx.pending_floor[&policy_lsn].through,
+        policy_through
+    );
     let prepared = daemon
         .ctx
         .memory
@@ -442,6 +480,17 @@ fn saving_memory_behind_a_policy_cut_drains_in_durable_order() {
     let memory_lsn = daemon
         .append_memory_entry(prepared.record().clone(), "append")
         .unwrap();
+    let memory_through = daemon.ctx.projections.last_applied_lsn();
+    assert_eq!(
+        daemon.ctx.pending_floor[&memory_lsn].through,
+        memory_through
+    );
+    if cadence == Some(1) {
+        assert!(memory_through > memory_lsn);
+    } else {
+        assert_eq!(policy_through, policy_lsn);
+        assert_eq!(memory_through, memory_lsn);
+    }
     assert_eq!(daemon.ctx.pending_floor.len(), 2);
     assert!(matches!(
         opened.subscription.next(Duration::ZERO),
@@ -450,7 +499,7 @@ fn saving_memory_behind_a_policy_cut_drains_in_durable_order() {
     daemon
         .pump(Input::Persisted {
             token,
-            lsn: policy_lsn,
+            append: policy_append,
         })
         .unwrap();
     assert!(
@@ -458,8 +507,8 @@ fn saving_memory_behind_a_policy_cut_drains_in_durable_order() {
         "the projection-only successor drains after the earlier policy cut"
     );
     assert!(daemon.ctx.pending_floor_base.is_none());
-    assert_eq!(daemon.sup.world().last_applied_lsn, Some(policy_lsn));
-    for expected in [policy_lsn, memory_lsn] {
+    assert_eq!(daemon.sup.world().last_applied_lsn, Some(policy_through));
+    for expected in [policy_through, memory_through] {
         let QueueRead::Frame(bytes) = opened.subscription.next(Duration::ZERO) else {
             panic!("ordered durable cut");
         };
@@ -477,7 +526,10 @@ fn saving_memory_behind_a_policy_cut_drains_in_durable_order() {
     let frame: serde_json::Value =
         serde_json::from_slice(crate::floor_websocket::text_payload(&snapshot.snapshot).unwrap())
             .unwrap();
-    assert_eq!(frame["projection"]["lsn"], serde_json::json!(memory_lsn));
+    assert_eq!(
+        frame["projection"]["lsn"],
+        serde_json::json!(memory_through)
+    );
     let mut running = common::start(daemon);
     running.stop(ExitCause::ShutdownRpc);
 }

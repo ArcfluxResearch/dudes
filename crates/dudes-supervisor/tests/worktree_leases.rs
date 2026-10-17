@@ -8,7 +8,10 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{AgentBudget, ExitStatus, Record, TurnOutcome, WorktreeRemoval};
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand, RecoveryExpected};
 use dudes_supervisor::testing::Harness;
 use dudes_supervisor::{Command, Input, WorktreeState};
 use dudes_types::{AgentId, GitCommit, Provider, Usd, WorktreeId};
@@ -293,9 +296,52 @@ fn a_hire_that_names_no_lease_leaves_the_table_empty() {
     assert_eq!(harness.supervisor.world().live_worktrees().count(), 0);
 }
 
-/// the hold for a missing tree lands before the first decide. An agent with a goal and
-/// an issued turn that never spawned is re-issued at start, so without the hold the daemon would
-/// launch a turn into a tree that is gone. The restart that is told nothing is the control.
+fn recover_available_tree(control: &mut Harness, control_agent: AgentId) -> RecoveryExpected {
+    let recovery_from = control.trace.len();
+    control.restart();
+    assert!(
+        control.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    control.drive(Input::Command(Command::Resume {
+        agent: control_agent,
+        browser: None,
+    }));
+    assert!(
+        control.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = control
+        .supervisor
+        .recovery_opportunity(control_agent)
+        .unwrap()
+        .expected;
+    let handled = control.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(control.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
+
+    assert_eq!(
+        control.trace[recovery_from..]
+            .iter()
+            .filter(|seen| matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. }))
+            .count(),
+        1,
+        "a control: explicit recovery repeats the owed turn into the available tree"
+    );
+    expected
+}
+
 #[test]
 fn a_missing_tree_holds_the_agent_before_the_first_decide_launches_into_it() {
     let scenario = || {
@@ -324,14 +370,8 @@ fn a_missing_tree_holds_the_agent_before_the_first_decide_launches_into_it() {
             .count()
     };
 
-    let (mut control, _, _) = scenario();
-    let before = control.trace.len();
-    control.restart();
-    assert_eq!(
-        spawned(&control, before),
-        1,
-        "a control: told nothing, the restart re-issues the turn into the tree"
-    );
+    let (mut control, control_agent, _) = scenario();
+    let expected = recover_available_tree(&mut control, control_agent);
 
     let (mut harness, agent, tree) = scenario();
     let (before, turns) = (harness.trace.len(), issued(&harness));
@@ -359,6 +399,34 @@ fn a_missing_tree_holds_the_agent_before_the_first_decide_launches_into_it() {
         harness.supervisor.world().agents[&agent].automatic_hold,
         Some(dudes_proto::AutomaticHold::WorktreeMissing { worktree: tree })
     );
+    assert_eq!(expected.work.agent, agent);
+    assert_eq!(expected.work.turn, harness.open_turn(agent).unwrap());
+    assert_eq!(
+        harness
+            .supervisor
+            .recovery_opportunity(agent)
+            .map(|opportunity| opportunity.expected),
+        Err(dudes_supervisor::input::RecoveryRefusal::NotRecoverable)
+    );
+    let refused = harness.recover(RecoveryCommand {
+        request_id: Hex32::new([43; 32]),
+        digest: Hex32::new([44; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(
+        refused.recovery().expect("command refusal").refusal,
+        Some(dudes_supervisor::input::RecoveryRefusal::NotRecoverable)
+    );
+    assert!(
+        harness
+            .journal
+            .iter()
+            .all(|entry| !matches!(entry.record, Record::RecoveryAuthorized(_)))
+    );
+    assert_eq!(spawned(&harness, before), 0);
+    assert_eq!(issued(&harness), turns);
 }
 
 /// The set the daemon reports is applied once, at start. An agent whose tree is restored and who is
@@ -388,6 +456,26 @@ fn a_resumed_agent_is_not_held_again_at_its_next_turn_end() {
         agent,
         browser: None,
     }));
+    assert!(
+        harness.host.spawned.is_empty(),
+        "ordinary Resume does not repeat the owed goal turn"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    let handled = harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
+
     let turn = harness
         .open_turn(agent)
         .expect("resumed, the agent re-issues its turn");

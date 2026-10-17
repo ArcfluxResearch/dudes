@@ -24,11 +24,11 @@ use dudes_proto::record::{
     BrowserGoal, BrowserGoalKind, BrowserOnboardingGoal, BrowserOnboardingHire, BrowserRetire,
     Hex32, RecordKind,
 };
-use dudes_proto::rpc::Method;
 use dudes_proto::rpc::agent::RetireParams;
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_proto::rpc::goal::GoalSetParams;
+use dudes_proto::rpc::{CurrentMethod, Method};
 use dudes_proto::{
     AgentBudget, BudgetScope, Goal, GoalBudget, LoopDecision, Predicate, Record, Spend, TurnOutcome,
 };
@@ -3508,6 +3508,9 @@ fn post_fsync_cuts_replay_one_hire_goal_and_turn() {
         let addr = daemon.floor_addr().expect("replayed Floor address");
         let mut running = common::start(daemon);
         let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+        if cut == OnboardingFailurePoint::TurnIssued {
+            recover_owed_browser_turn(&settings, &fixture, &running, agent, goal);
+        }
         if matches!(
             cut,
             OnboardingFailurePoint::Goal | OnboardingFailurePoint::TurnIssued
@@ -6125,6 +6128,111 @@ fn issued_goal_turn(fixture: &Fixture, goal: GoalId) -> TurnId {
         matches!(record, Record::TurnSpawned { turn: seen, .. } if *seen == turn).then_some(())
     });
     turn
+}
+
+fn recover_owed_browser_turn(
+    settings: &duded::Settings,
+    fixture: &Fixture,
+    running: &common::Running,
+    agent: AgentId,
+    goal: GoalId,
+) {
+    use dudes_proto::rpc::recovery::{
+        RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectResult, RecoverySubmitParams,
+        RecoverySubmitResult,
+    };
+
+    let turn = nth_turn(fixture, goal, 0);
+    fixture.await_record("the owed goal's recovery barrier", |record| {
+        matches!(record, Record::RecoveryRequired(required)
+            if required.binding.work.agent == agent && required.binding.work.goal == goal
+                && required.binding.work.turn == turn)
+        .then_some(())
+    });
+    let owed: Vec<_> = fixture
+        .records()
+        .into_iter()
+        .filter(
+            |record| matches!(record, Record::TurnIssued { goal: issued, .. } if *issued == goal),
+        )
+        .collect();
+    assert_eq!(owed.len(), 1);
+    let no_spawn = || {
+        assert!(!fixture.records().iter().any(|record| {
+            matches!(record, Record::TurnSpawned { turn: seen, .. } if *seen == turn)
+        }));
+    };
+    no_spawn();
+    let call = |method, params| {
+        let credential = std::fs::read_to_string(
+            settings
+                .runtime_dir
+                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+        )
+        .expect("operator credential");
+        let response = Client::connect(settings.socket())
+            .expect("operator socket")
+            .call_current_as_operator(
+                method,
+                Some(params),
+                OperatorCredential::new(credential).expect("credential"),
+            )
+            .expect("operator response");
+        assert!(response.error.is_none(), "{response:?}");
+        response.result.expect("operator result")
+    };
+    call(
+        CurrentMethod::Legacy(Method::LoopResume),
+        json!({"agent":agent}),
+    );
+    running.handle.doctor().expect("Resume reached the writer");
+    no_spawn();
+    let inspection: RecoveryInspectResult =
+        serde_json::from_value(call(CurrentMethod::RecoveryInspect, json!({"agent":agent})))
+            .expect("typed recovery inspection");
+    let RecoveryInspectResult::Available {
+        expected,
+        choices,
+        reason,
+        ..
+    } = inspection
+    else {
+        panic!("the owed issue must offer exact recovery");
+    };
+    assert_eq!(choices, RecoveryAllowedChoices::RepeatIssuedFresh);
+    assert_eq!(reason, dudes_proto::recovery::RecoveryReason::MissingSpawn);
+    assert_eq!(expected.work.agent, agent);
+    assert_eq!(expected.work.goal, goal);
+    assert_eq!(expected.work.turn, turn);
+    let request_id = Hex32::new([231; 32]);
+    let request = RecoverySubmitParams {
+        request_id,
+        expected: *expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+    };
+    let submitted: RecoverySubmitResult = serde_json::from_value(call(
+        CurrentMethod::RecoverySubmit,
+        serde_json::to_value(request).expect("strict recovery request"),
+    ))
+    .expect("typed recovery submission");
+    let RecoverySubmitResult::Accepted { receipt } = submitted else {
+        panic!("one explicit submission must authorize the exact repeat");
+    };
+    assert_eq!(receipt.request_id, request_id);
+    assert_eq!(receipt.claim.episode.work, expected.work);
+    let records = fixture.records();
+    assert_eq!(records.iter().filter(|record| {
+        matches!(record, Record::RecoveryAuthorized(authorized) if authorized.request_id == request_id)
+    }).count(), 1);
+    assert_eq!(
+        records
+            .into_iter()
+            .filter(|record| {
+                matches!(record, Record::TurnIssued { goal: issued, .. } if *issued == goal)
+            })
+            .collect::<Vec<_>>(),
+        owed
+    );
 }
 
 fn await_continuation_outcome(fixture: &Fixture, handle: &duded::Handle, agent: AgentId) -> TurnId {
@@ -9177,10 +9285,6 @@ fn browser_goal_local_winner_is_never_overwritten() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// Across restarts, at three cuts: after the `GoalSet` fsync and before its fold; after its
-/// fold and before its decision; and after the first `TurnIssued{goal: G2}` fsync and before
-/// Spawn. Each replays exactly one `GoalSet`, the same key answers from the index, and the last
-/// re-issues G2's turn exactly once.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -9292,6 +9396,7 @@ fn browser_goal_restart_cut_points_replay_one_record() {
         let mut running = common::start(daemon);
         let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
         if cut == Cut::TurnIssuedFsync {
+            recover_owed_browser_turn(&settings, &fixture, &running, agent, g2_goal.id);
             issued_goal_turn(&fixture, g2_goal.id);
             assert_eq!(
                 restarted_host.spawned().len(),
@@ -15040,10 +15145,6 @@ fn browser_renew_restarts_a_done_goal_at_its_cap() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// Across restarts, at three cuts: after the renewal's `GoalSet` fsync and before its fold; after
-/// its fold and before its decision; and after the first `TurnIssued{goal: G2}` fsync and before
-/// Spawn. Each replays exactly one `GoalSet`, the same key answers from the index, and the last
-/// re-issues G2's turn exactly once.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -15144,6 +15245,7 @@ fn browser_renew_restart_cut_points_replay_one_record() {
         let mut running = common::start(daemon);
         let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
         if cut == Cut::TurnIssuedFsync {
+            recover_owed_browser_turn(&settings, &fixture, &running, agent, g2_goal.id);
             issued_goal_turn(&fixture, g2_goal.id);
             assert_eq!(
                 restarted_host.spawned().len(),

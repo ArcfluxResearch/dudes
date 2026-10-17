@@ -706,8 +706,6 @@ fn retirement_rejudges_held_board_goals_and_preserves_completed_goals() {
     assert_eq!(harness.supervisor.status_of(completed), AgentStatus::Done);
 }
 
-/// The latch stops new issuance only. A turn admitted and journaled before the crash is still
-/// re-issued exactly once (invariant 2), and its end issues nothing new.
 #[test]
 fn a_completed_goal_does_not_cancel_an_admitted_unspawned_turn() {
     let (mut entries, agent, turn) = journal_with_issued_turn(None, "admitted task");
@@ -716,20 +714,49 @@ fn a_completed_goal_does_not_cancel_an_admitted_unspawned_turn() {
     };
     entries.push(done_decision(agent));
     let mut harness = replay(entries);
-    assert_eq!(harness.spawns_of(turn).len(), 1);
-    assert!(harness.records().any(|record| matches!(
-        record,
-        Record::TurnSpawned { turn: spawned, reissued: true, .. } if *spawned == turn
-    )));
+    assert!(harness.spawns_of(turn).is_empty());
+    assert_eq!(harness.supervisor.status_of(agent), AgentStatus::Done);
+    assert_eq!(harness.open_turn(agent), Some(turn));
+    let row = &harness.supervisor.world().turns[&turn];
+    assert_eq!(row.task, "admitted task");
+    assert!(row.answers.is_empty());
+    assert_eq!(row.status, dudes_types::TurnStatus::Issued);
+    assert_eq!(harness.supervisor.world().goals[&goal].turns_on_goal, 1);
+    assert!(matches!(
+        harness.supervisor.recovery_opportunity(agent),
+        Err(dudes_supervisor::input::RecoveryRefusal::StaleWork)
+    ));
     assert_eq!(issued(&harness), 0);
     harness.trace.clear();
-    harness.drive(clean_exit(turn));
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    harness.drive(Input::Tick);
     harness.drive(Input::PredicateDone {
         goal,
         pass: false,
         evidence: command_evidence(),
     });
     assert_eq!((issued(&harness), spawned(&harness)), (0, 0));
+    assert_eq!(harness.supervisor.status_of(agent), AgentStatus::Done);
+    assert_eq!(
+        harness.supervisor.world().turns[&turn].task,
+        "admitted task"
+    );
+    assert_eq!(harness.supervisor.world().goals[&goal].turns_on_goal, 1);
+    assert_eq!(
+        harness
+            .supervisor
+            .world()
+            .completed_goal(agent)
+            .map(|(id, _)| id),
+        Some(goal)
+    );
+    assert!(matches!(
+        harness.supervisor.recovery_opportunity(agent),
+        Err(dudes_supervisor::input::RecoveryRefusal::StaleWork)
+    ));
 }
 
 /// Invariant 5 across the upgrade: a restart rebuilds the verdict cache the live run decided on,

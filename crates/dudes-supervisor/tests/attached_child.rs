@@ -300,10 +300,7 @@ fn attached_hooks_append_mail_context_preserve_steer_and_never_type_it() {
                     _ => None,
                 })
                 .expect("steer delivery waits for its durable consumption");
-            h.drive(Input::Persisted {
-                token,
-                lsn: Lsn(500),
-            });
+            h.drive(h.persisted(token, Lsn(500)));
         } else {
             h.drive(Input::Hook {
                 hook,

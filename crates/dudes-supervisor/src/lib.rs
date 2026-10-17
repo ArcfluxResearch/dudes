@@ -1,8 +1,9 @@
 //! The sans-io machine of the Dudes supervisor.
 //!
-//! One entry point — `handle(&mut self, Input) -> &[Effect]` — and one rule about it: it performs
-//! no I/O, awaits nothing, and reads no clock except through the [`Clock`](host::Clock) seam. The
-//! runtime that executes the effects lives elsewhere; everything decided here is decided
+//! One entry point, [`Supervisor::handle`], reports checked durable progress; [`Supervisor::effects`]
+//! and [`Supervisor::take_effects`] expose its effects. Handling performs no I/O, awaits nothing,
+//! and reads no clock except through the [`Clock`](host::Clock) seam.
+//! The runtime that executes the effects lives elsewhere; everything decided here is decided
 //! from values the supervisor has already journaled, which is what makes a decision reproducible
 //! from the log alone (invariant 5) and a crash test meaningful rather than decorative.
 //!

@@ -7,3 +7,4 @@
 #
 # The seed below is not reaper evidence and reaches no reaper code: ChildExited is the adapter path, and it shrank out of a mutant on end_turn, which both paths share. Cite it for end_turn; delete it freely once end_turn is covered by a named test.
 cc ab6f6654be6bc2f28e9fd145d66e7ea10df71a8e65fb1ed88d7e7a1df96477c0 # shrinks to ops = [ChildExited(false)]
+cc 5cb4d2f20c41aaaf826165016146ce7f74acee308fa026e8e3b49cd68c976da0 # shrinks to ops = [ChildExited(false), Launch(false), Resume, PredicateDone(false), Restart, Tick, Tick, ChildExited(false)]

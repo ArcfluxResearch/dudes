@@ -39,9 +39,26 @@ pub struct RunOptions {
     chat_key_ignored: bool,
     providers: crate::config::ProviderTables,
     mcp_servers: dudes_providers::mcp::DeclaredServers,
+    #[cfg(feature = "fault-injection")]
+    recovery_stop: Option<crate::fault::RecoveryStop>,
 }
 
 impl RunOptions {
+    /// Retain a native recovery stop in an explicitly instrumented build.
+    #[cfg(feature = "fault-injection")]
+    #[must_use]
+    pub fn with_recovery_stop(mut self, stop: Option<crate::fault::RecoveryStop>) -> Self {
+        self.recovery_stop = stop;
+        self
+    }
+
+    /// Native recovery stop selected before boot, absent in ordinary builds.
+    #[cfg(feature = "fault-injection")]
+    #[must_use]
+    pub const fn recovery_stop(&self) -> Option<&crate::fault::RecoveryStop> {
+        self.recovery_stop.as_ref()
+    }
+
     /// Record that the operator file still carries a `[floor.chat]` table, which the daemon
     /// ignores because Chat is always on.
     #[must_use]

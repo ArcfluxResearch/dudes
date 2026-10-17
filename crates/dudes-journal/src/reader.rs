@@ -34,6 +34,8 @@ use crate::error::{Error, Result};
 use crate::frame::{self, FrameError, HEADER_LEN, Header, MAX_PAYLOAD};
 use crate::segment::{FIRST_SEGMENT, list_segments, lsn_at, segment_path, sync_dir};
 
+mod recovery;
+
 #[cfg(test)]
 std::thread_local! {
     static VALIDATION_PASSES: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
@@ -213,6 +215,7 @@ pub(crate) struct DetailedScan {
     pub(crate) good_end: u64,
     pub(crate) stop: Option<ScanStop>,
     pub(crate) has_completed_contract: bool,
+    has_recovery_contract: bool,
     fingerprint: [u8; 32],
 }
 
@@ -221,19 +224,21 @@ fn completed_contract_payload(header: Header, payload: &[u8]) -> bool {
     struct Tag {
         t: String,
     }
-    if matches!(
-        RecordKind::from_tag(header.kind),
-        Some(
-            RecordKind::TaughtNoteTurnDecided
-                | RecordKind::TaughtNoteOnlyTurnIssued
-                | RecordKind::MailWakeTurnDecided
-                | RecordKind::MailWakeOnlyTurnIssued
-                | RecordKind::InstructionObservationStarted
-                | RecordKind::InstructionObservationFinished
-                | RecordKind::TicketInstructionReviewed
-                | RecordKind::InstructionAttemptBoundarySettled
+    if recovery::payload(header, payload)
+        || matches!(
+            RecordKind::from_tag(header.kind),
+            Some(
+                RecordKind::TaughtNoteTurnDecided
+                    | RecordKind::TaughtNoteOnlyTurnIssued
+                    | RecordKind::MailWakeTurnDecided
+                    | RecordKind::MailWakeOnlyTurnIssued
+                    | RecordKind::InstructionObservationStarted
+                    | RecordKind::InstructionObservationFinished
+                    | RecordKind::TicketInstructionReviewed
+                    | RecordKind::InstructionAttemptBoundarySettled
+            )
         )
-    ) {
+    {
         return true;
     }
     serde_json::from_slice::<Tag>(payload).is_ok_and(|tag| {
@@ -262,6 +267,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
     let mut offset = 0u64;
     let mut frames = 0u64;
     let mut has_completed_contract = false;
+    let mut has_recovery_contract = false;
     let mut fingerprint = blake3::Hasher::new();
     loop {
         match read_next_frame(r, offset, buf)? {
@@ -271,6 +277,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
                     good_end: offset,
                     stop: None,
                     has_completed_contract,
+                    has_recovery_contract,
                     fingerprint: *fingerprint.finalize().as_bytes(),
                 });
             }
@@ -278,6 +285,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
                 fingerprint.update(&header.to_bytes());
                 fingerprint.update(buf);
                 has_completed_contract |= completed_contract_payload(header, buf);
+                has_recovery_contract |= recovery::payload(header, buf);
                 offset += header.frame_len() as u64;
                 frames += 1;
             }
@@ -290,6 +298,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
                         kind: header.kind,
                     }),
                     has_completed_contract,
+                    has_recovery_contract,
                     fingerprint: *fingerprint.finalize().as_bytes(),
                 });
             }
@@ -303,6 +312,7 @@ pub(crate) fn scan_reader_detailed<R: Read>(
                         claimed_end,
                     })),
                     has_completed_contract,
+                    has_recovery_contract,
                     fingerprint: *fingerprint.finalize().as_bytes(),
                 });
             }
@@ -569,6 +579,16 @@ fn survey_with_bound(
     validated: Option<&ValidatedPrefix>,
     validation_scratch: Option<&Path>,
 ) -> Result<(OpenReport, Layout)> {
+    survey_with_projection(dir, stop_at, validated, validation_scratch, None)
+}
+
+fn survey_with_projection(
+    dir: &Path,
+    stop_at: Option<Lsn>,
+    validated: Option<&ValidatedPrefix>,
+    validation_scratch: Option<&Path>,
+    canonical: Option<&mut Option<crate::Projections>>,
+) -> Result<(OpenReport, Layout)> {
     #[cfg(test)]
     VALIDATION_PASSES.with(|count| {
         let (scans, folds) = count.get();
@@ -582,6 +602,7 @@ fn survey_with_bound(
     let mut last_len = 0;
     let mut buf = Vec::new();
     let mut has_completed_contract = false;
+    let mut has_recovery_contract = false;
     let mut fingerprint = blake3::Hasher::new();
     for (i, &no) in segments.iter().enumerate() {
         let path = segment_path(dir, no);
@@ -596,6 +617,7 @@ fn survey_with_bound(
             scan_reader_detailed(&mut (&mut reader).take(file_len), &mut buf)?
         };
         has_completed_contract |= scan.has_completed_contract;
+        has_recovery_contract |= scan.has_recovery_contract;
         if scan.frames != 0 {
             fingerprint.update(&no.to_le_bytes());
             fingerprint.update(&scan.good_end.to_le_bytes());
@@ -634,32 +656,29 @@ fn survey_with_bound(
         first_segment: segments.first().copied(),
         fingerprint: *fingerprint.finalize().as_bytes(),
     };
-    if has_completed_contract
-        && segments.first() == Some(&FIRST_SEGMENT)
-        && validated != Some(&prefix)
+    if (canonical.is_some() || has_recovery_contract)
+        && segments
+            .first()
+            .is_some_and(|first| *first != FIRST_SEGMENT)
+    {
+        return Err(Error::RecoveryStore(
+            crate::error::RecoveryStoreError::IncompletePrefix,
+        ));
+    }
+    if canonical.is_some()
+        || (has_completed_contract
+            && segments.first() == Some(&FIRST_SEGMENT)
+            && validated != Some(&prefix))
     {
         #[cfg(test)]
         VALIDATION_PASSES.with(|count| {
             let (scans, folds) = count.get();
             count.set((scans, folds + 1));
         });
-        let reader = Reader {
-            dir: dir.to_path_buf(),
-            stop_at: Some(report.end),
-            validated: None,
-            validation_scratch: validation_scratch.map(Path::to_path_buf),
-        };
-        let scratch = validation_scratch.map_or_else(std::env::temp_dir, Path::to_path_buf);
-        let mut projections = validation_projection(dir, &scratch)?;
-        let mut batch = Vec::with_capacity(crate::projections::BATCH);
-        for frame in reader.witnessed_from(Lsn::ZERO)? {
-            batch.push(frame?);
-            if batch.len() == crate::projections::BATCH {
-                apply_validation_batch(&mut projections, &batch, &scratch)?;
-                batch.clear();
-            }
+        let projections = fold_validation_prefix(dir, report.end, validation_scratch)?;
+        if let Some(output) = canonical {
+            *output = Some(projections);
         }
-        apply_validation_batch(&mut projections, &batch, &scratch)?;
     }
     Ok((
         report,
@@ -669,6 +688,31 @@ fn survey_with_bound(
             validated: prefix,
         },
     ))
+}
+
+fn fold_validation_prefix(
+    dir: &Path,
+    end: Lsn,
+    validation_scratch: Option<&Path>,
+) -> Result<crate::Projections> {
+    let reader = Reader {
+        dir: dir.to_path_buf(),
+        stop_at: Some(end),
+        validated: None,
+        validation_scratch: validation_scratch.map(Path::to_path_buf),
+    };
+    let scratch = validation_scratch.map_or_else(std::env::temp_dir, Path::to_path_buf);
+    let mut projections = validation_projection(dir, &scratch)?;
+    let mut batch = Vec::with_capacity(crate::projections::BATCH);
+    for frame in reader.witnessed_from(Lsn::ZERO)? {
+        batch.push(frame?);
+        if batch.len() == crate::projections::BATCH {
+            apply_validation_batch(&mut projections, &batch, &scratch)?;
+            batch.clear();
+        }
+    }
+    apply_validation_batch(&mut projections, &batch, &scratch)?;
+    Ok(projections)
 }
 
 /// Drop the torn tail [`survey`] reported: truncate its segment to the frame boundary before it,
@@ -748,7 +792,34 @@ pub struct Reader {
     pub(crate) validation_scratch: Option<PathBuf>,
 }
 
+#[cfg(test)]
+pub(crate) fn validation_counts() -> (u64, u64) {
+    VALIDATION_PASSES.with(std::cell::Cell::get)
+}
+
 impl Reader {
+    pub(crate) fn canonical_recovery_projection(
+        &self,
+    ) -> Result<(ValidatedPrefix, crate::Projections)> {
+        let mut canonical = None;
+        let (report, layout) = survey_with_projection(
+            &self.dir,
+            self.stop_at,
+            self.validated.as_ref(),
+            self.validation_scratch.as_deref(),
+            Some(&mut canonical),
+        )?;
+        if report.torn.is_some() {
+            return Err(Error::RecoveryStore(
+                crate::error::RecoveryStoreError::JournalUncertain,
+            ));
+        }
+        let projections = canonical.ok_or(Error::RecoveryStore(
+            crate::error::RecoveryStoreError::Uncertified,
+        ))?;
+        Ok((layout.validated, projections))
+    }
+
     pub(crate) fn validate_completed_contracts(&self) -> Result<Self> {
         let (report, layout) = survey_with_bound(
             &self.dir,
@@ -888,13 +959,35 @@ impl Reader {
         Ok(Iter(self.witnessed_from(lsn)?))
     }
 
-    /// [`Reader::iter_from`], pairing each entry with the `crc32c` of the frame it was decoded
-    /// from — the witness the projection stores beside its cursor.
-    ///
-    /// Crate-private because [`replay`](crate::replay) is the only caller that has a use for
-    /// the checksum: it must write, in the same commit that moves `last_applied_lsn`, the
-    /// checksum of the frame that lsn names. The frame header is already decoded here, so the
-    /// witness costs no second read. Everyone else reads [`Iter`], which drops it.
+    pub(crate) fn witnessed_between(&self, start: Lsn, end: Lsn) -> Result<Witnessed> {
+        if start.segment() < FIRST_SEGMENT
+            || end <= start
+            || end
+                .segment()
+                .checked_sub(start.segment())
+                .is_none_or(|distance| distance > 1)
+            || self.stop_at.is_some_and(|bound| end > bound)
+        {
+            return Err(Error::RecoveryStore(
+                crate::error::RecoveryStoreError::AppendMismatch,
+            ));
+        }
+        let mut segments = vec![start.segment()];
+        if end.segment() != start.segment() && end.offset() != 0 {
+            segments.push(end.segment());
+        }
+        Ok(Witnessed {
+            dir: self.dir.clone(),
+            segments,
+            next: 0,
+            current: None,
+            start_offset: start.offset(),
+            boundary: ReadBoundary::Exact(end),
+            done: false,
+            buf: Vec::new(),
+        })
+    }
+
     pub(crate) fn witnessed_from(&self, lsn: Lsn) -> Result<Witnessed> {
         let segments = list_segments(&self.dir)?;
         let start = segments.partition_point(|no| *no < lsn.segment());
@@ -909,7 +1002,7 @@ impl Reader {
             next: start,
             current: None,
             start_offset: offset,
-            stop_at: self.stop_at,
+            boundary: ReadBoundary::Live(self.stop_at),
             done: false,
             buf: Vec::new(),
         })
@@ -941,6 +1034,27 @@ impl Iterator for Iter {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ReadBoundary {
+    Live(Option<Lsn>),
+    Exact(Lsn),
+}
+
+impl ReadBoundary {
+    const fn end(self) -> Option<Lsn> {
+        match self {
+            Self::Live(end) => end,
+            Self::Exact(end) => Some(end),
+        }
+    }
+    const fn exact_end(self) -> Option<Lsn> {
+        match self {
+            Self::Live(_) => None,
+            Self::Exact(end) => Some(end),
+        }
+    }
+}
+
 /// [`Iter`] with each entry's frame checksum: what [`Reader::witnessed_from`] returns.
 #[derive(Debug)]
 pub(crate) struct Witnessed {
@@ -949,8 +1063,7 @@ pub(crate) struct Witnessed {
     next: usize,
     current: Option<OpenSegment>,
     start_offset: u64,
-    /// See [`Reader::stop_at`]: the position of a torn tail this reader must not read into.
-    stop_at: Option<Lsn>,
+    boundary: ReadBoundary,
     done: bool,
     buf: Vec<u8>,
 }
@@ -966,7 +1079,7 @@ impl Witnessed {
         let lsn = lsn_at(segment, offset)?;
         let file_len = file.metadata()?.len();
         let another_segment_follows = self.next + 1 < self.segments.len();
-        if self.stop_at.is_none_or(|stop| lsn < stop)
+        if self.boundary.end().is_none_or(|stop| lsn < stop)
             && (offset > file_len || (offset == file_len && another_segment_follows))
         {
             return Err(frame_error(lsn, FrameError::Short { need: HEADER_LEN }));
@@ -991,16 +1104,43 @@ impl Witnessed {
             Ok(lsn) => lsn,
             Err(e) => return Some(Err(e)),
         };
-        // The bytes of a torn tail are bytes no `append` ever returned for: the writer's open
-        // drops them, and a reader that cannot write stops before them instead.
-        if self.stop_at.is_some_and(|stop| lsn >= stop) {
+        if self.boundary.end().is_some_and(|stop| lsn >= stop) {
+            if self.boundary.exact_end().is_some_and(|end| lsn > end) {
+                return Some(Err(Error::RecoveryStore(
+                    crate::error::RecoveryStoreError::AppendMismatch,
+                )));
+            }
             return None;
         }
         let last = self.next == self.segments.len();
         match read_next_frame(&mut current.reader, current.offset, &mut self.buf) {
-            Ok(Next::End) => None,
+            Ok(Next::End) => {
+                if last
+                    && self.boundary.exact_end().is_some_and(|end| {
+                        end != lsn
+                            && !(end.offset() == 0
+                                && current.segment.checked_add(1) == Some(end.segment()))
+                    })
+                {
+                    return Some(Err(Error::RecoveryStore(
+                        crate::error::RecoveryStoreError::AppendMismatch,
+                    )));
+                }
+                None
+            }
             Ok(Next::Frame(header)) => {
                 current.offset += header.frame_len() as u64;
+                if let Some(end) = self.boundary.exact_end() {
+                    match lsn_at(current.segment, current.offset) {
+                        Ok(after) if after > end => {
+                            return Some(Err(Error::RecoveryStore(
+                                crate::error::RecoveryStoreError::AppendMismatch,
+                            )));
+                        }
+                        Err(error) => return Some(Err(error)),
+                        _ => {}
+                    }
+                }
                 Some(Ok((lsn, header)))
             }
             // Unreachable for a journal `survey` has already passed (`Reader::open`, or
@@ -1011,9 +1151,11 @@ impl Witnessed {
                 lsn,
                 kind: header.kind,
             })),
-            // A short tail in the last segment is the writer mid-append; anywhere else it is
-            // bytes the open-time walk did not accept.
-            Ok(Next::Failed(FrameError::Short { .. }, _)) if last => None,
+            Ok(Next::Failed(FrameError::Short { .. }, _))
+                if last && self.boundary.exact_end().is_none() =>
+            {
+                None
+            }
             Ok(Next::Failed(error, _)) => Some(Err(frame_error(lsn, error))),
             Err(e) => Some(Err(e.into())),
         }
@@ -1040,6 +1182,11 @@ impl Witnessed {
             if RecordKind::from_tag(header.kind).is_none()
                 && !completed_contract_payload(header, &self.buf)
             {
+                if self.boundary.exact_end().is_some() {
+                    return Some(Err(Error::RecoveryStore(
+                        crate::error::RecoveryStoreError::AppendMismatch,
+                    )));
+                }
                 tracing::debug!(target: "journal", lsn = %lsn, kind = header.kind, "journal.skip_unknown_kind");
                 continue;
             }
@@ -1054,10 +1201,22 @@ impl Witnessed {
                             },
                         )?;
                         let contract = completed_contract_payload(header, &self.buf);
+                        dudes_proto::recovery::validate_record_shape(&entry.record)
+                            .map_err(|reason| Error::RecoveryRecord { lsn, reason })?;
                         if contract
                             && (header.ver != frame::REQUIRED_VERSION
                                 || header.kind != entry.record.kind().tag())
                         {
+                            if recovery::is_kind(entry.record.kind())
+                                || RecordKind::from_tag(header.kind).is_some_and(recovery::is_kind)
+                            {
+                                return Err(Error::RecoveryFrame {
+                                    lsn,
+                                    kind: header.kind,
+                                    version: header.ver,
+                                    expected_kind: entry.record.kind().tag(),
+                                });
+                            }
                             if is_instruction_kind(entry.record.kind())
                                 || RecordKind::from_tag(header.kind)
                                     .is_some_and(is_instruction_kind)
@@ -1666,5 +1825,139 @@ mod tests {
             back.into_iter().map(|(_, e)| e).collect::<Vec<_>>(),
             entries
         );
+    }
+
+    #[test]
+    fn checked_append_interval_selects_segments_without_directory_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let absent = dir.path().join("absent");
+        let start = Lsn::from_parts(41, 7).unwrap();
+        let end = Lsn::from_parts(42, 23).unwrap();
+        let interval = Reader::new(&absent).witnessed_between(start, end).unwrap();
+        assert_eq!(interval.segments, vec![41, 42]);
+        assert_eq!(interval.start_offset, 7);
+        assert_eq!(interval.boundary.exact_end(), Some(end));
+        let too_wide = Lsn::from_parts(43, 23).unwrap();
+        assert!(
+            Reader::new(&absent)
+                .witnessed_between(start, too_wide)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn checked_append_interval_reads_only_its_two_real_segments_after_long_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = Writer::start(
+            dir.path(),
+            1,
+            JournalOptions {
+                fsync: Fsync::None,
+                rotate_at: 1,
+                checkpoint_every: 0,
+            },
+        )
+        .unwrap();
+        let record = Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: Record::Pause {
+                agent: AgentId::from_parts(19, 1),
+                browser: None,
+            },
+        };
+        for _ in 0..20 {
+            writer.append(&record).unwrap();
+        }
+        let start = writer.append(&record).unwrap();
+        let second = writer.append(&record).unwrap();
+        let end = writer.next_lsn().unwrap();
+        let interval = writer.reader().witnessed_between(start, end).unwrap();
+        assert_eq!(interval.segments, vec![start.segment(), second.segment()]);
+        let entries = interval.collect::<Result<Vec<_>>>().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, start);
+        assert_eq!(entries[1].0, second);
+        assert_eq!(entries[0].2, record);
+        assert_eq!(entries[1].2, record);
+    }
+
+    #[test]
+    fn checked_append_interval_accepts_a_complete_same_segment_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = Writer::start(
+            dir.path(),
+            1,
+            JournalOptions {
+                fsync: Fsync::None,
+                rotate_at: segment::DEFAULT_ROTATE_AT,
+                checkpoint_every: 0,
+            },
+        )
+        .unwrap();
+        let entry = Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: Record::Pause {
+                agent: AgentId::from_parts(19, 1),
+                browser: None,
+            },
+        };
+        let start = writer.append(&entry).unwrap();
+        let end = writer.next_lsn().unwrap();
+        let frames = writer
+            .reader()
+            .witnessed_between(start, end)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].2, entry);
+    }
+
+    #[test]
+    fn checked_append_interval_refuses_an_empty_final_segment_while_live_tail_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = Writer::start(
+            dir.path(),
+            1,
+            JournalOptions {
+                fsync: Fsync::None,
+                rotate_at: 1,
+                checkpoint_every: 1,
+            },
+        )
+        .unwrap();
+        let entry = Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: Record::Pause {
+                agent: AgentId::from_parts(19, 1),
+                browser: None,
+            },
+        };
+        let start = writer.append(&entry).unwrap();
+        let end = writer.next_lsn().unwrap();
+        assert_ne!(start.segment(), end.segment());
+        File::options()
+            .write(true)
+            .open(segment_path(dir.path(), end.segment()))
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+        let strict = writer
+            .reader()
+            .witnessed_between(start, end)
+            .unwrap()
+            .collect::<Result<Vec<_>>>();
+        assert!(
+            strict.is_err(),
+            "strict interval accepted an unconsumed end: {strict:?}"
+        );
+        let live = writer
+            .reader()
+            .iter_from(start)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].1, entry);
     }
 }

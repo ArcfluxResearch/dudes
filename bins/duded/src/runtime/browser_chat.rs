@@ -278,12 +278,19 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             });
             return Ok(());
         }
-        let lsn = self.append(sup.world(), entry)?;
+        let append = self.append(sup.world(), entry)?;
+        let through = append.through();
         anyhow::ensure!(
             self.writer.poisoned().is_none(),
             "browser dispatch journal stopped after its append"
         );
-        sup.handle(Input::Persisted { token: *token, lsn });
+        let handled = sup
+            .handle(Input::Persisted {
+                token: *token,
+                append,
+            })
+            .inspect_err(|_| self.fence_journal())?;
+        self.require_handled_through(sup.world(), &handled, through)?;
         self.tokens.mark_folded();
         self.publish_folded_floor(sup.world(), closing)?;
         let effects = sup.take_effects();
@@ -360,6 +367,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         queue: &mut std::collections::VecDeque<Input>,
         sup: &mut Supervisor<super::Shared<C>, R>,
     ) -> Result<()> {
+        if sup
+            .world()
+            .turns
+            .get(&turn)
+            .is_none_or(|row| !sup.recovery_launch_allowed(row.agent, turn))
+            || !self.recovery_turn_checkout_clear(sup, turn)
+        {
+            return Ok(());
+        }
         let generation = self
             .resolved_browser_turn
             .filter(|(prepared, _)| *prepared == turn)

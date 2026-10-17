@@ -58,6 +58,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use dudes_policy::input::{AgentInput, Control, FloorInput, GoalInput, LoopInput, WorkInput};
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{AgentBudget, Entry, GoalBudget, Record, Spend};
 use dudes_providers::adapter::{
     Adapter, AgentCtx, Isolation, ManagedInstall, SessionAcquisition, TurnSession, UsageSource,
@@ -67,9 +69,10 @@ use dudes_providers::claude::stream::TurnStream;
 use dudes_providers::launch::{EnvVar, LaunchSpec};
 use dudes_providers::mcp::McpLaunch;
 use dudes_providers::stream::TurnReader;
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
 use dudes_supervisor::testing::{FakeClock, FakeHost, Harness};
 use dudes_supervisor::{Command, Input, input_digest};
-use dudes_types::{AgentId, BreakerRung, Lsn, ModelSelection, Provider, Tier, Timestamp, Usd};
+use dudes_types::{AgentId, BreakerRung, ModelSelection, Provider, Tier, Timestamp, Usd};
 
 /// One `AgentCtx`, copied out of the borrow the machine built it as.
 ///
@@ -285,7 +288,39 @@ fn recorded_run_limits_reach_the_first_launch_and_the_reissue() {
     harness.launch = false;
     harness.set_goal(capped, &["npm", "test"]);
     harness.launch = true;
+    let recovery_from = harness.trace.len();
     harness.restart();
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent: capped,
+        browser: None,
+    }));
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(capped)
+        .unwrap()
+        .expected;
+    let handled = harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     let seen = log.seen();
     assert_eq!(
@@ -478,17 +513,43 @@ fn every_field_of_the_launch_context_comes_from_the_agent_it_is_built_for() {
          each in its own agent's repository"
     );
 
-    // A third agent whose turn is journaled and never spawned: the crash window invariant 2 is
-    // about. On restart, rule (2) re-issues it, and that re-issue is a second daemon run building
-    // a context — the only path on which `Harness`'s adapter *factory* is load-bearing. Hardcoding
-    // the Claude adapter in `restart()` instead, which is what the factory's own doc calls "a fake
-    // that lies", leaves the suite green without this step: nothing else in the workspace launches
-    // after a restart through a non-default adapter.
     let gamma = hire(&mut harness, "/repo/gamma", None);
     harness.launch = false;
     harness.set_goal(gamma, &["npm", "test"]);
     harness.launch = true;
+    let recovery_from = harness.trace.len();
     harness.restart();
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent: gamma,
+        browser: None,
+    }));
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(gamma)
+        .unwrap()
+        .expected;
+    let handled = harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     let config = Harness::config();
     let expected = |agent: AgentId, cwd: &str, sandbox: Option<bool>| Built {
@@ -557,16 +618,44 @@ fn hire_trust_comes_from_the_record_not_the_config() {
             browser_onboarding: None,
         },
     };
-    harness.journal.push(hired.clone());
-    harness.drive(Input::Replayed {
-        lsn: Lsn(1),
-        entry: hired,
-    });
+    harness.append_replayed(hired);
 
     harness.launch = false;
     harness.set_goal(agent, &["npm", "test"]);
     harness.launch = true;
+    let recovery_from = harness.trace.len();
     harness.restart();
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    let handled = harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     let seen = log.seen();
     assert_eq!(

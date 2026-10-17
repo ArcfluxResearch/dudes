@@ -372,7 +372,7 @@ impl Hand {
             let lsn = Lsn::from_parts(1, self.next_offset).expect("a segment-1 position");
             self.next_offset += 64;
             self.acked += 1;
-            self.harness.step(Input::Persisted { token, lsn });
+            self.harness.step(self.harness.persisted(token, lsn));
         }
     }
 }

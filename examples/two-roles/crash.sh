@@ -1,17 +1,5 @@
 #!/bin/sh
-# Arm 2 of the gate — a turn is written down before it is launched, so a crash cannot lose it
-# and cannot run it twice — and, with `--no-crash`, the control that arm is worthless without.
-#
-#   ./crash.sh              kill the daemon between a turn's durable write and its launch, restart,
-#                           and watch replay take that turn exactly once.
-#   ./crash.sh --no-crash   the same run with no kill, for comparison.
-#
-# The control matters because "exactly one child after replay" is not, on its own, evidence: a
-# harness that only ever produces one child would satisfy it. Comparing the two runs' journals is
-# what tells a kill that landed from a kill that missed.
-#
-# Run `./crash.sh` first and `./crash.sh --no-crash` second: the control compares its own run with
-# the crashed one's kept artefacts, and says so if they are not there.
+# --no-crash runs the ordinary completion control without any recovery request.
 set -u
 
 . "$(dirname "$0")/lib.sh"
@@ -57,6 +45,7 @@ if [ "$CHILD_COUNT_CONTROL" = read-failure ]; then
 fi
 
 require_binaries
+require_recovery_tools
 open_sandbox
 
 # --- the daemon this arm drives -------------------------------------------------------------------
@@ -65,8 +54,8 @@ open_sandbox
 # its process exists. That window is microseconds wide in the daemon's own code, so an outside
 # killer cannot land in it and a script that retried until it did would be flaky by construction.
 #
-# So the daemon is built with `--features fault-injection`, which adds one thing: a wrapper that
-# parks the loop before a chosen launch and touches a file to say it has. **It kills nothing.** The
+# This script builds the daemon with `--features fault-injection` and uses the wrapper that parks
+# the loop before a chosen launch and touches a file to say it has. **It kills nothing.** The
 # SIGKILL below is a real external signal, sent by this script exactly as a person would send it,
 # and the on-disk state it lands on is the window's: a turn written and fsynced, no process.
 #
@@ -107,9 +96,6 @@ STALL_NTH=${STALL_NTH:-2}
 ATTEMPT_ID=$(basename "$SANDBOX")
 
 if [ "$CRASH" = yes ]; then
-	# Stall before the *second* launch. The first turn must run and produce a child: without one,
-	# "exactly one child after replay" would be a statement about a harness that never launches
-	# anything.
 	start_daemon "$MODE" \
 		DUDES_FAULT_STALL_BEFORE_SPAWN="$STALL_NTH" \
 		DUDES_FAULT_STALL_MARKER="$STALL_MARKER"
@@ -173,13 +159,10 @@ if [ "$CRASH" = yes ]; then
 	at_kill="$GATE_OUT/$MODE.at-kill.journal"
 	dump_journal >"$at_kill" || fatal "could not read the journal the crash left behind"
 	note "the journal as the crash left it: $at_kill"
-	# The state directory as the crash left it, taken while nothing holds it. It is a second real
-	# projection, three records behind the one this run will finish with, and it is what makes the
-	# export comparison at the end of this script non-vacuous.
 	cp -R "$STATE_DIR" "$SANDBOX/at-kill-state" || fatal "could not copy the state the crash left"
 
 	header "the crash left a durable TurnIssued with no Spawn (invariant 2)"
-	unspawned=$(unspawned_turns "$at_kill")
+	unspawned=$(issues_without_spawn "$at_kill")
 	count=$(printf '%s' "$unspawned" | grep -c . || true)
 	if [ "$count" -eq 1 ]; then
 		pass "exactly one issued turn has no spawn: $unspawned"
@@ -193,12 +176,14 @@ if [ "$CRASH" = yes ]; then
 	# would only stop the thing being measured.
 	start_daemon "$MODE-restart"
 	pass "restarted on $STATE_DIR"
+	inspect_missing_spawn "$at_kill" 2
+	submit_fresh_repeat
 fi
 
 # --- after replay (or, in the control, simply after the first predicate) ---------------------------
 
 if [ "$CRASH" = yes ]; then
-	header "replay re-issued the turn exactly once: one child, not zero and not two"
+	header "the consented repeat has one held child"
 else
 	header "the loop took its second turn: one child, not zero and not two"
 fi
@@ -227,6 +212,9 @@ else
 	fail "the goal never reached Done"
 fi
 
+if [ "$CRASH" = yes ]; then
+	save_final_recovery_receipt
+fi
 stop_daemon
 
 # --- what the journal and the projections say, read offline ---------------------------------------
@@ -244,19 +232,26 @@ assert_done_is_observed "$dump" "$store_export"
 assert_a_predicate_came_out_false "$dump"
 assert_one_spawn_per_issued_turn "$dump"
 assert_not_exhausted_by_hops "$dump"
+if [ "$CRASH" = yes ]; then
+	assert_recovery_repeat "$at_kill" "$dump" "$store_export"
+elif recovery_facts ordinary "$dump" "$store_export"; then
+	pass "ordinary control has source witnesses and no recovery events or authority"
+else
+	fail "ordinary control created recovery authority"
+fi
 
 header "the re-issue is recorded as one, and only where a crash happened"
 reissued=$(records_of "$dump" turn_spawned | grep -cF '"reissued":true')
 if [ "$CRASH" = yes ]; then
 	if [ "$reissued" -eq 1 ]; then
-		pass "exactly one spawn is marked as coming from replay"
+		pass "one durable Spawn is marked reissued after explicit consent"
 	else
-		fail "expected exactly one replayed spawn, found $reissued"
+		fail "expected one consented reissued Spawn, found $reissued"
 	fi
 elif [ "$reissued" -eq 0 ]; then
-	pass "no spawn came from replay, because nothing crashed"
+	pass "no Spawn is marked reissued in the ordinary control"
 else
-	fail "$reissued spawn(s) claim to come from replay in a run that never crashed"
+	fail "$reissued Spawn(s) are marked reissued in an ordinary run"
 fi
 
 # --- the projection export after replay equals a from-scratch replay's -------------------
@@ -270,11 +265,6 @@ else
 fi
 
 header "the control for that comparison: the export moves when the projection does"
-# Without this the equality above could be passing on two empty documents, or on a comparison that
-# never looks at a row. The crashed run has a second store to hand — the one the SIGKILL left,
-# copied with no daemon holding it — and it is a real projection, produced by the same code, three
-# records behind the final one. The control run compares against the crashed run's instead, which
-# is a second real projection by the same argument.
 if [ "$CRASH" = yes ]; then
 	behind="$GATE_OUT/$MODE.export.at-kill"
 	dump_export_of "$SANDBOX/at-kill-state" >"$behind" ||
@@ -283,7 +273,7 @@ if [ "$CRASH" = yes ]; then
 		pass "the store the crash left exports differently from the one the run ended with"
 		note "kept at $behind"
 	else
-		fail "a projection three records behind the log exports the same document"
+		fail "the older crash projection exports the same document as the completed run"
 	fi
 elif [ -r "$GATE_OUT/crash.export.store" ]; then
 	if ! diff -q "$GATE_OUT/crash.export.store" "$store_export" >/dev/null; then

@@ -8,7 +8,10 @@
 use std::collections::BTreeMap;
 
 use dudes_proto::goal::{Evidence, Predicate};
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{ExitStatus, GoalBudget, Record, RecordKind, TurnOutcome};
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
 use dudes_supervisor::testing::{FakeClock, FakeHost, Harness, Seen};
 use dudes_supervisor::{Command, Input, PersistToken};
 use dudes_types::{AgentStatus, Lsn, TurnStatus, Usd};
@@ -105,15 +108,6 @@ fn an_empty_goal_still_carries_both_reserved_instructions() {
     assert!(harness.open_turn(agent).is_some());
 }
 
-/// **Invariant 2.** A turn whose `TurnIssued` is fsynced but whose process never started is
-/// re-issued by replay **exactly once**, under the same `TurnId`, and with no second
-/// `TurnIssued` — the record is already on the disk, so the invariant is already satisfied for
-/// that turn. The `reissued: true` flag rides on the following `TurnSpawned`, which is why it
-/// lives there and not on `TurnIssued`.
-///
-/// Replaying the journal a third time — now with the `TurnSpawned` in it — asks for no launch at
-/// all: the turn is no longer issued-without-spawned, so the same fold reaches a different, and
-/// correct, conclusion.
 #[test]
 fn replay_reissues_unspawned_turn_exactly_once() {
     let mut harness = Harness::new();
@@ -136,7 +130,39 @@ fn replay_reissues_unspawned_turn_exactly_once() {
     // The second daemon run: a fresh machine, the journal replayed, then `Started`.
     harness.trace.clear();
     harness.launch = true;
+    let recovery_from = harness.trace.len();
     harness.restart();
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    let handled = harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     let spawns = harness.spawns_of(turn);
     assert_eq!(
@@ -247,10 +273,6 @@ fn an_unfsynced_turn_issued_never_existed() {
     assert_eq!(harness.spawns_of(turn).len(), 1);
 }
 
-/// The accepted indistinguishability, written down so nobody "fixes" it: a crash
-/// after `Spawn` but before `TurnSpawned` is fsynced looks exactly like a crash before `Spawn`,
-/// and both re-issue once. The cost is a possible second process for one turn, which is why
-/// `TurnSpawned` is emitted as soon as the key is read and nothing in the loop waits on it.
 #[test]
 fn a_crash_after_spawn_before_turn_spawned_is_the_same_re_issue() {
     let mut harness = Harness::new();
@@ -266,7 +288,39 @@ fn a_crash_after_spawn_before_turn_spawned_is_the_same_re_issue() {
 
     harness.unfsynced.clear();
     harness.trace.clear();
+    let recovery_from = harness.trace.len();
     harness.restart();
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "restart alone does not repeat interrupted goal work"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        harness.trace[recovery_from..]
+            .iter()
+            .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
+        "plain Resume does not supply recovery consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    let handled = harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     assert_eq!(
         harness.spawns_of(turn).len(),
@@ -286,7 +340,22 @@ fn an_unknown_persist_token_does_nothing() {
 
     let seen = harness.step(Input::Persisted {
         token: PersistToken(9_999),
-        lsn: Lsn(9_999),
+        append: dudes_supervisor::input::RecordedAppend::try_new(
+            Lsn(9_999),
+            (
+                Lsn(9_999),
+                harness
+                    .trace
+                    .iter()
+                    .find_map(|seen| match seen {
+                        Seen::Persist { entry, .. } => Some(entry.clone()),
+                        _ => None,
+                    })
+                    .unwrap(),
+            ),
+            None,
+        )
+        .unwrap(),
     });
     assert!(seen.is_empty(), "{seen:?}");
     assert_eq!(harness.trace.len(), before + seen.len());
@@ -340,7 +409,7 @@ fn a_deferred_issue_is_stamped_when_its_persist_is_emitted() {
     clock.advance(1_000);
     let lsn = Lsn(u64::try_from(harness.journal.len()).unwrap() + 1);
     harness.journal.push(entry);
-    let effects = harness.step(Input::Persisted { token, lsn });
+    let effects = harness.step(harness.persisted(token, lsn));
     let issue = effects
         .iter()
         .find_map(|seen| match seen {
@@ -532,16 +601,35 @@ fn a_halted_agent_is_not_relaunched_by_a_restart() {
         "and nothing decides for it either: gate 1 would Hold, and open_turn is still set"
     );
 
-    // `loop.resume` lifts the cause, and lifting a cause re-runs crash rule (2) for that agent.
     harness.trace.clear();
     harness.drive(Input::Command(dudes_supervisor::Command::Resume {
         agent,
         browser: None,
     }));
+    assert!(
+        harness.spawns_of(turn).is_empty(),
+        "ordinary Resume leaves the owed goal issue gated"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .unwrap()
+        .expected;
+    let handled = harness.recover(RecoveryCommand {
+        request_id: Hex32::new([41; 32]),
+        digest: Hex32::new([42; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
+
     assert_eq!(
         harness.spawns_of(turn).len(),
         1,
-        "resume unsticks it, exactly once and under the same TurnId"
+        "consent repeats it exactly once under the same TurnId"
     );
     assert!(
         turn_ids(&harness).is_empty(),
