@@ -9285,10 +9285,6 @@ fn browser_goal_local_winner_is_never_overwritten() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// Across restarts, at three cuts: after the `GoalSet` fsync and before its fold; after its
-/// fold and before its decision; and after the first `TurnIssued{goal: G2}` fsync and before
-/// Spawn. Each replays exactly one `GoalSet` and answers the same key from the index.
-/// The owed issue repeats once after authenticated operator consent.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -15149,10 +15145,6 @@ fn browser_renew_restarts_a_done_goal_at_its_cap() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// Across restarts, at three cuts: after the renewal's `GoalSet` fsync and before its fold; after
-/// its fold and before its decision; and after the first `TurnIssued{goal: G2}` fsync and before
-/// Spawn. Each replays exactly one `GoalSet` and answers the same key from the index.
-/// The owed issue repeats once after authenticated operator consent.
 #[test]
 #[expect(
     clippy::too_many_lines,
