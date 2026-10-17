@@ -1612,9 +1612,19 @@ fn historical_intent_stays_ambiguous_when_new_preparation_never_dispatches() {
     )
     .expect("restart");
     let mut restarted = common::start(daemon);
+    restarted.handle.input(dudes_supervisor::Input::Command(
+        dudes_supervisor::Command::Resume {
+            agent,
+            browser: None,
+        },
+    ));
+    restarted.handle.doctor().unwrap();
+    assert!(!pause.wait(Duration::ZERO));
+    assert!(restarted_host.spawned().is_empty());
+    consent_to_chat_reissue(&mut |ask| restarted.handle.ask(ask), &fixture, agent, turn);
     assert!(
         pause.wait(Duration::from_secs(5)),
-        "new attempt is held preparation"
+        "new attempt is held preparation only after explicit consent"
     );
     let outcome = restarted
         .handle
@@ -1661,6 +1671,195 @@ fn historical_intent_stays_ambiguous_when_new_preparation_never_dispatches() {
         )
     );
     assert_acknowledged_prefixes(&fixture);
+}
+
+#[derive(Clone, Default)]
+struct RecoveryResponseBytes(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for RecoveryResponseBytes {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn local_recovery_call(
+    execute: &mut impl FnMut(
+        crate::ports::Ask,
+    ) -> Result<crate::ports::Answered, dudes_proto::rpc::RpcError>,
+    method: &'static str,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    let (jobs, received) = std::sync::mpsc::channel();
+    let mut dispatcher = dudes_rpc::Dispatcher::new(dudes_rpc::PeerClassifier::new(
+        dudes_proto::rpc::cred::OperatorCredential::new("C".repeat(43)).unwrap(),
+        Arc::new(crate::classify::WorldTokens::new()),
+    ));
+    dudes_rpc::methods::register_recovery(&mut dispatcher, &Arc::new(Handle::new(jobs)));
+    let response = RecoveryResponseBytes::default();
+    let captured = response.clone();
+    let serving = std::thread::spawn(move || {
+        let frame = format!(
+            "{}\n",
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":method,"params":params,"cred":"C".repeat(43)})
+        );
+        dudes_rpc::server::serve_stream(
+            std::io::Cursor::new(frame.into_bytes()),
+            &Arc::new(dudes_rpc::Outbound::new(captured)),
+            dudes_rpc::PeerIdentity {
+                uid: Some(501),
+                gid: None,
+                pid: dudes_rpc::PeerPid::Reported {
+                    pid: 4242,
+                    pidversion: None,
+                },
+            },
+            dudes_rpc::PeerProvenance::NoRecordedAgent,
+            &dispatcher,
+        )
+        .unwrap();
+    });
+    let crate::ports::Job::Ask { ask, reply } = received
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the authenticated route forwards one typed recovery command")
+    else {
+        panic!("one recovery ask");
+    };
+    reply.send(execute(ask)).unwrap();
+    serving.join().unwrap();
+    let response: dudes_proto::rpc::Response =
+        serde_json::from_slice(&response.0.lock().unwrap()).unwrap();
+    assert!(response.error.is_none(), "{response:?}");
+    response.result.expect("the actual recovery result")
+}
+
+fn consent_to_chat_reissue(
+    execute: &mut impl FnMut(
+        crate::ports::Ask,
+    ) -> Result<crate::ports::Answered, dudes_proto::rpc::RpcError>,
+    fixture: &common::Fixture,
+    agent: AgentId,
+    turn: TurnId,
+) {
+    use dudes_proto::rpc::recovery::{
+        RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectParams, RecoveryInspectResult,
+        RecoverySubmitParams, RecoverySubmitResult,
+    };
+
+    let original_issue = fixture.entries().into_iter().find_map(|(lsn, entry)| {
+        matches!(entry.record, Record::TurnIssuedWithBrowserNote { turn: issued, .. } if issued == turn)
+            .then_some(lsn)
+    }).expect("the original goal-bearing browser issue");
+    let inspected: RecoveryInspectResult = serde_json::from_value(local_recovery_call(
+        execute,
+        "recovery.inspect",
+        serde_json::to_value(RecoveryInspectParams { agent }).unwrap(),
+    ))
+    .unwrap();
+    let RecoveryInspectResult::Available {
+        expected,
+        reason,
+        choices,
+        ..
+    } = inspected
+    else {
+        panic!("the structurally eligible owed issue offers recovery: {inspected:?}");
+    };
+    assert_eq!(expected.work.agent, agent);
+    assert_eq!(expected.work.turn, turn);
+    assert_eq!(expected.issue_lsn, original_issue);
+    assert_eq!(reason, dudes_proto::recovery::RecoveryReason::MissingSpawn);
+    assert_eq!(choices, RecoveryAllowedChoices::RepeatIssuedFresh);
+    let episode = expected.episode.expect("restart durably required recovery");
+    assert!(fixture.entries().iter().any(|(lsn, entry)| {
+        matches!(&entry.record, Record::RecoveryRequired(required)
+            if *lsn == episode.origin && required.binding.work == episode.work)
+    }));
+    assert!(
+        !fixture
+            .records()
+            .iter()
+            .any(|record| matches!(record, Record::RecoveryAuthorized(_)))
+    );
+    let request_id = dudes_proto::record::Hex32::new([193; 32]);
+    let submitted: RecoverySubmitResult = serde_json::from_value(local_recovery_call(
+        execute,
+        "recovery.submit",
+        serde_json::to_value(RecoverySubmitParams {
+            request_id,
+            expected: *expected,
+            choice: RecoveryChoice::RepeatIssuedFresh,
+        })
+        .unwrap(),
+    ))
+    .unwrap();
+    let RecoverySubmitResult::Accepted { receipt } = submitted else {
+        panic!("the explicit owed-work consent is accepted: {submitted:?}");
+    };
+    assert_eq!(receipt.request_id, request_id);
+    assert_eq!(receipt.choice, RecoveryChoice::RepeatIssuedFresh);
+    assert_eq!(receipt.claim.episode, episode);
+    let authorized = fixture
+        .records()
+        .into_iter()
+        .filter_map(|record| match record {
+            Record::RecoveryAuthorized(value) if value.request_id == request_id => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(authorized.len(), 1);
+    assert_eq!(authorized[0].episode, episode);
+    assert_eq!(
+        authorized[0].attribution,
+        dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+            pid: 4242,
+            uid: Some(501),
+        }
+    );
+    assert!(
+        matches!(&authorized[0].plan, dudes_proto::recovery::RecoveryPlan::RepeatIssued { issue, .. }
+        if issue.lsn == original_issue && issue.issued.work == episode.work)
+    );
+}
+
+fn consent_to_direct_reissue<H: dudes_supervisor::ProcessHost>(
+    daemon: &mut PreparationDaemon<H>,
+    fixture: &common::Fixture,
+    agent: AgentId,
+    turn: TurnId,
+) {
+    let before = daemon
+        .sup
+        .world()
+        .instructions
+        .current_for_turn(turn)
+        .map(|(lsn, _)| lsn);
+    daemon
+        .pump_runtime_input(dudes_supervisor::Input::Command(
+            dudes_supervisor::Command::Resume {
+                agent,
+                browser: None,
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        daemon
+            .sup
+            .world()
+            .instructions
+            .current_for_turn(turn)
+            .map(|(lsn, _)| lsn),
+        before,
+        "ordinary Resume does not prepare the old issue"
+    );
+    assert!(daemon.sup.world().turns[&turn].is_issued_not_spawned());
+    assert!(!fixture.records().iter().any(|record| matches!(record,
+        Record::TurnSpawned { turn: spawned, .. } if *spawned == turn)));
+    consent_to_chat_reissue(&mut |ask| daemon.ask(ask), fixture, agent, turn);
 }
 
 struct HistoricalReplay {
@@ -1792,6 +1991,21 @@ fn assert_failed_replay_preserves_history(failure: &str) {
     .unwrap();
     let mut restarted = common::start(daemon);
     if failure != "adapter" {
+        restarted.handle.input(dudes_supervisor::Input::Command(
+            dudes_supervisor::Command::Resume {
+                agent: history.agent,
+                browser: None,
+            },
+        ));
+        restarted.handle.doctor().unwrap();
+        assert!(!pause.wait(Duration::ZERO));
+        assert!(host.spawned().is_empty());
+        consent_to_chat_reissue(
+            &mut |ask| restarted.handle.ask(ask),
+            &history.fixture,
+            history.agent,
+            history.turn,
+        );
         assert!(pause.wait(Duration::from_secs(5)));
         pause.release();
         assert!(pause.wait_returned(1, Duration::from_secs(5)));
@@ -2150,6 +2364,9 @@ fn actual_late_preparation_and_proposed_ack_keep_uncertainty_through_resume() {
         pause.clone(),
     )
     .unwrap();
+    assert!(!pause.wait(Duration::ZERO));
+    assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+    consent_to_direct_reissue(&mut daemon, &history.fixture, history.agent, history.turn);
     let parked = drive_preparation_pause(&mut daemon, &pause);
     assert!(pause.wait(Duration::from_secs(5)));
     pause.release();
@@ -2975,6 +3192,9 @@ fn an_injected_direct_browser_ack_fault_stops_before_host_dispatch() {
             pause.clone(),
         )
         .unwrap();
+        assert!(!pause.wait(Duration::ZERO));
+        assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+        consent_to_direct_reissue(&mut daemon, &history.fixture, history.agent, history.turn);
         let parked = drive_preparation_pause(&mut daemon, &pause);
         assert!(pause.wait(Duration::from_secs(5)));
         pause.release();
