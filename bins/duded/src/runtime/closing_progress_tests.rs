@@ -79,7 +79,11 @@ fn pump_fixture_job(daemon: &mut TestDaemon, deadline: std::time::Instant) {
         .expect("the actual fixture worker must finish within its deadline")
     {
         Job::Input(input) => daemon.pump(*input).unwrap(),
-        Job::PredicateEnded { goal, verdict } => daemon.predicate_ended(goal, verdict).unwrap(),
+        Job::PredicateEnded {
+            goal,
+            folder,
+            verdict,
+        } => daemon.predicate_ended(goal, folder, verdict).unwrap(),
         _ => panic!("unexpected fixture job"),
     }
 }

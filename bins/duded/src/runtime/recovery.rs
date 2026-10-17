@@ -132,6 +132,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         {
             return unavailable(RecoveryInspectUnavailable::TurnOpen);
         }
+        if !self.ctx.recovery_checkout_clear(&self.sup, agent) {
+            return unavailable(RecoveryInspectUnavailable::NotRecoverable);
+        }
         let view = match self.sup.recovery_opportunity(agent) {
             Ok(view) => view,
             Err(RecoveryRefusal::Claimed) => {
@@ -254,6 +257,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Some(command.expected.work.turn),
             )
             .is_err()
+        {
+            return refused(RecoverySubmitRefusal::NotRecoverable);
+        }
+        if !self
+            .ctx
+            .recovery_checkout_clear(&self.sup, command.expected.work.agent)
         {
             return refused(RecoverySubmitRefusal::NotRecoverable);
         }

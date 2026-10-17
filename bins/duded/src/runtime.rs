@@ -955,6 +955,7 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// thread, so a goal change queued behind a verdict finds it journaled and one queued ahead
     /// of it finds the run still marked. Run-local: a restart starts none.
     pub(crate) predicate_runs: BTreeMap<GoalId, u32>,
+    pub(crate) predicate_folders: BTreeMap<(GoalId, PathBuf), u32>,
     /// New goals' check runs before their first turn, counted on this thread like
     /// `predicate_runs`, with the per-session counts the Floor's limits read. Run-local.
     pub(crate) baselines: crate::baseline::Baselines,
@@ -1555,9 +1556,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     }
                 }
                 Job::BaselineEnded { id } => self.ctx.baselines.end(id),
-                Job::PredicateEnded { goal, verdict } => {
+                Job::PredicateEnded {
+                    goal,
+                    folder,
+                    verdict,
+                } => {
                     if !self.ctx.journal_writes_stopped()
-                        && let Err(error) = self.predicate_ended(goal, verdict)
+                        && let Err(error) = self.predicate_ended(goal, folder, verdict)
                     {
                         if !self.ctx.journal_writes_stopped() {
                             return Err(error);
@@ -3582,6 +3587,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 "the daemon is shutting down, so the goal's check was not run",
             ));
         }
+        let Some(cwd) = shared_folder::canonical_folder(&cwd) else {
+            self.ctx.baselines.end(run);
+            return Err(refused(
+                "the completion check's execution folder cannot be resolved",
+            ));
+        };
+        if !self.ctx.baselines.bind_folder(run, cwd.clone()) {
+            return Err(error(
+                ErrorCode::InternalError,
+                "the completion check's run mark cannot be bound",
+            ));
+        }
         let started = crate::baseline::start(
             run,
             crate::baseline::Run {
@@ -3793,8 +3810,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     /// One predicate run ended: clear its mark, then hand the machine its verdict, if it observed
     /// one, in this same job.
-    fn predicate_ended(&mut self, goal: GoalId, verdict: Option<(bool, Evidence)>) -> Result<()> {
-        self.ctx.predicate_run_ended(goal);
+    fn predicate_ended(
+        &mut self,
+        goal: GoalId,
+        folder: PathBuf,
+        verdict: Option<(bool, Evidence)>,
+    ) -> Result<()> {
+        if !self.ctx.predicate_run_ended(goal, &folder) {
+            return Ok(());
+        }
         match verdict {
             Some((pass, evidence)) => self.pump(Input::PredicateDone {
                 goal,
@@ -6439,8 +6463,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let _ = reply.send(crate::floor_ticket::TicketReply::Unavailable);
                 }
                 Job::BaselineEnded { id } => self.ctx.baselines.end(id),
-                Job::PredicateEnded { goal, verdict } => {
-                    if let Err(error) = self.predicate_ended(goal, verdict) {
+                Job::PredicateEnded {
+                    goal,
+                    folder,
+                    verdict,
+                } => {
+                    if let Err(error) = self.predicate_ended(goal, folder, verdict) {
                         clean = false;
                         tracing::error!(%error, "a predicate verdict could not be journaled during shutdown");
                     }
@@ -7450,6 +7478,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         report: &mut PumpReport,
     ) -> Result<()> {
         let metadata = sup.recovery_append(token, entry);
+        if let Some(metadata) = metadata
+            && !self.recovery_checkout_clear(sup, metadata.work.agent)
+        {
+            let handled = sup.recovery_refused(
+                token,
+                entry,
+                metadata,
+                dudes_supervisor::input::RecoveryRefusal::NotRecoverable,
+            );
+            report.recovery_update(&handled)?;
+            return Ok(());
+        }
         let admitted = match (metadata, &*report) {
             (Some(metadata), PumpReport::Recovery(context)) => Some((&**context, metadata)),
             (Some(_), _) => anyhow::bail!("command-owned append lacks its admitted context"),
@@ -8226,6 +8266,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             );
             return;
         };
+        let Some(cwd) = shared_folder::canonical_folder(&cwd) else {
+            queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
+            return;
+        };
+        let folder = cwd.clone();
         let argv = argv.clone();
         let timeout = Duration::from_secs(*timeout_s);
         let runner = Arc::clone(&self.predicates);
@@ -8238,6 +8283,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let operator_argv = argv.clone();
 
         *self.predicate_runs.entry(goal).or_default() += 1;
+        *self
+            .predicate_folders
+            .entry((goal, folder.clone()))
+            .or_default() += 1;
         let spawned = if self.predicate_spawn_failure.take() {
             Err(std::io::Error::other(
                 "injected predicate thread spawn failure",
@@ -8249,6 +8298,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     let mut end = RunEnd {
                         handle,
                         goal,
+                        folder: cwd.clone(),
                         verdict: None,
                     };
                     let (program, spec) =
@@ -8278,13 +8328,23 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         if let Err(error) = spawned {
             tracing::error!(%error, ?goal, "could not start a thread for the predicate");
             // No thread exists to own a `RunEnd`, so this thread clears the mark it just set.
-            self.predicate_run_ended(goal);
+            self.predicate_run_ended(goal, &folder);
             queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
         }
     }
 
     /// Clear one run's mark for `goal`.
-    fn predicate_run_ended(&mut self, goal: GoalId) {
+    fn predicate_run_ended(&mut self, goal: GoalId, folder: &std::path::Path) -> bool {
+        let key = (goal, folder.to_path_buf());
+        let std::collections::btree_map::Entry::Occupied(mut matching) =
+            self.predicate_folders.entry(key)
+        else {
+            return false;
+        };
+        *matching.get_mut() -= 1;
+        if *matching.get() == 0 {
+            matching.remove();
+        }
         if let std::collections::btree_map::Entry::Occupied(mut runs) =
             self.predicate_runs.entry(goal)
         {
@@ -8293,6 +8353,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 runs.remove();
             }
         }
+        true
     }
 }
 
@@ -8303,12 +8364,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
 struct RunEnd {
     handle: Handle,
     goal: GoalId,
+    folder: PathBuf,
     verdict: Option<(bool, Evidence)>,
 }
 
 impl Drop for RunEnd {
     fn drop(&mut self) {
-        self.handle.predicate_ended(self.goal, self.verdict.take());
+        self.handle
+            .predicate_ended(self.goal, self.folder.clone(), self.verdict.take());
     }
 }
 

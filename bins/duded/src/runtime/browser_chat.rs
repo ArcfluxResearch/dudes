@@ -372,6 +372,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .turns
             .get(&turn)
             .is_none_or(|row| !sup.recovery_launch_allowed(row.agent, turn))
+            || !self.recovery_turn_checkout_clear(sup, turn)
         {
             return Ok(());
         }

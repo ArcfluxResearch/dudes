@@ -852,6 +852,8 @@ pub enum Job {
     PredicateEnded {
         /// The goal the run judged.
         goal: GoalId,
+        /// The immutable resolved execution folder of this run.
+        folder: PathBuf,
         /// Whether it held, and what it rested on; `None` for a run that observed no verdict.
         verdict: Option<(bool, Evidence)>,
     },
@@ -1509,8 +1511,17 @@ impl Handle {
 
     /// Report that one predicate run ended. Silently dropped once the loop has stopped, as
     /// [`Self::input`] is.
-    pub(crate) fn predicate_ended(&self, goal: GoalId, verdict: Option<(bool, Evidence)>) {
-        let sent = self.jobs.send(Job::PredicateEnded { goal, verdict });
+    pub(crate) fn predicate_ended(
+        &self,
+        goal: GoalId,
+        folder: PathBuf,
+        verdict: Option<(bool, Evidence)>,
+    ) {
+        let sent = self.jobs.send(Job::PredicateEnded {
+            goal,
+            folder,
+            verdict,
+        });
         #[cfg(feature = "testing")]
         if sent.is_ok() {
             self.predicate_completions.fetch_add(1, Ordering::Release);

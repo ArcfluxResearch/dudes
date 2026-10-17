@@ -640,6 +640,7 @@ where
             #[cfg(all(feature = "testing", any(target_os = "macos", target_os = "linux")))]
             mailbox_passes: Arc::default(),
             predicate_runs: BTreeMap::new(),
+            predicate_folders: BTreeMap::new(),
             baselines: crate::baseline::Baselines::default(),
             predicate_spawn_failure: crate::runtime::PredicateSpawnFailure::default(),
             accept_panic: AcceptPanic::default(),

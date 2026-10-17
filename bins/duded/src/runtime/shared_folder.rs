@@ -12,7 +12,7 @@ use crate::predicate::PredicateRunner;
 
 const MAX_CHILDREN: usize = 512;
 
-fn canonical_folder(path: &Path) -> Option<PathBuf> {
+pub(super) fn canonical_folder(path: &Path) -> Option<PathBuf> {
     let canonical = std::fs::canonicalize(path).ok()?;
     std::fs::metadata(&canonical)
         .ok()?
@@ -268,10 +268,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         {
             return Ok(());
         }
-        self.admit_recovery_folder(sup, agent, cwd)
+        self.admit_folder_children(sup, agent, cwd)
     }
 
-    pub(super) fn admit_recovery_folder<R: Rng>(
+    fn admit_folder_children<R: Rng>(
         &self,
         sup: &Supervisor<Shared<C>, R>,
         agent: Option<AgentId>,
@@ -340,6 +340,71 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
         census.result()
     }
+    pub(super) fn recovery_checkout_clear<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: AgentId,
+    ) -> bool {
+        let Some(row) = sup.world().agents.get(&agent) else {
+            return false;
+        };
+        let cwd = match row.worktree {
+            Some(lease) => match sup.world().worktrees.get(&lease) {
+                Some(lease) => lease.path.as_path(),
+                None => return false,
+            },
+            None => row.cwd.as_path(),
+        };
+        let Some(folder) = canonical_folder(cwd) else {
+            return false;
+        };
+        if !self.recovery_checks_clear(&folder) {
+            return false;
+        }
+        self.admit_folder_children(sup, Some(agent), &folder)
+            .is_ok()
+    }
+
+    fn recovery_checks_clear(&self, folder: &Path) -> bool {
+        let active = self.baselines.active_folders(MAX_CHILDREN + 1).chain(
+            self.predicate_folders
+                .keys()
+                .map(|(_, path)| Some(path.as_path()))
+                .take(MAX_CHILDREN + 1),
+        );
+        for (index, active) in active.enumerate().take(MAX_CHILDREN + 1) {
+            if index == MAX_CHILDREN || active.is_none_or(|active| active == folder) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub(super) fn recovery_turn_checkout_clear<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        turn: dudes_types::TurnId,
+    ) -> bool {
+        let Some(row) = sup.world().turns.get(&turn) else {
+            return false;
+        };
+        let Some(goal) = row.goal else {
+            return true;
+        };
+        let Ok((state, _)) = sup.world().recovery_projection() else {
+            return false;
+        };
+        match state.work_claim(dudes_proto::recovery::RecoveryWork {
+            agent: row.agent,
+            goal,
+            turn,
+        }) {
+            Ok(None) => true,
+            Ok(Some(_)) => self.recovery_checkout_clear(sup, row.agent),
+            Err(_) => false,
+        }
+    }
+
     fn admit_runtime_peers(
         &self,
         census: &mut Census<'_, H>,
