@@ -465,15 +465,15 @@ fn unseen_issue_bound_claim_refuses_stale_none_but_fresh_exact_consent_supersede
     acknowledge(&mut machine, token, entry, Lsn(10_003));
     let (token, entry) = emitted(&machine);
     acknowledge(&mut machine, token, entry, Lsn(10_005));
-    let state = machine.world.recovery_projection().unwrap().0;
+    let projection = machine.world.recovery_projection().unwrap().0;
     assert!(
-        matches!(state.claim_receipt(claim).unwrap().state, RecoveryClaimState::Superseded { issue, .. } if issue.lsn == original.issue_lsn && issue.issued.work == work)
+        matches!(projection.claim_receipt(claim).unwrap().state, RecoveryClaimState::Superseded { issue, .. } if issue.lsn == original.issue_lsn && issue.issued.work == work)
     );
-    let current = state.work_claim(work).unwrap().unwrap();
+    let current = projection.work_claim(work).unwrap().unwrap();
     assert_ne!(current, claim);
     assert_eq!(current.episode.origin, Lsn(10_003));
     assert!(
-        matches!(state.claim_receipt(current).unwrap().state, RecoveryClaimState::IssueBound(issue) if issue.lsn == original.issue_lsn && issue.issued.work == work)
+        matches!(projection.claim_receipt(current).unwrap().state, RecoveryClaimState::IssueBound(issue) if issue.lsn == original.issue_lsn && issue.issued.work == work)
     );
     let turn = &machine.world.turns[&work.turn];
     assert_eq!(
@@ -1347,6 +1347,10 @@ fn legacy_unrecorded_model_repeat_keeps_the_original_issue_task_and_answers() {
     let original = machine.recovery_binding(agent).unwrap();
     assert_eq!(original.model_selection, None);
     let owed = machine.world.turns[&original.work.turn].clone();
+    let expected_task_digest =
+        dudes_proto::recovery_state::history::task_digest(&owed.task, &|bytes| {
+            Hex32::new(*blake3::hash(bytes).as_bytes())
+        });
     let hops = machine.world.goals[&original.work.goal].turns_on_goal;
     machine.recover(command(&machine, agent));
     let (token, entry) = emitted(&machine);
@@ -1357,7 +1361,7 @@ fn legacy_unrecorded_model_repeat_keeps_the_original_issue_task_and_answers() {
         panic!("same-issue legacy authorization");
     };
     assert!(
-        matches!(&authorization.plan, RecoveryPlan::RepeatIssued { issue, .. } if issue.issued.work == original.work && issue.issued.model_selection.is_none() && issue.issued.task == owed.task && issue.issued.answers == owed.answers)
+        matches!(&authorization.plan, RecoveryPlan::RepeatIssued { issue, .. } if issue.lsn == owed.issue_lsn && issue.issued.work == original.work && issue.issued.model_selection.is_none() && issue.issued.task_digest == expected_task_digest && issue.issued.answers == owed.answers)
     );
     acknowledge(&mut machine, token, entry, Lsn(10_003));
     let row = &machine.world.turns[&original.work.turn];
