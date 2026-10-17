@@ -35,6 +35,7 @@ pub mod journal;
 pub mod loop_control;
 pub mod memory;
 pub mod pty;
+pub mod recovery;
 pub mod team;
 pub mod worktree;
 
