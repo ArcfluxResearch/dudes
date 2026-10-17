@@ -714,6 +714,12 @@ impl State {
 }
 
 impl FloorSessions {
+    #[cfg(test)]
+    pub(crate) fn registry_counts_for_test(&self) -> (usize, usize) {
+        let state = self.0.registry.lock();
+        (state.pending.len(), state.sessions.len())
+    }
+
     /// Admit one exact-origin browser action — onboarding, an answer, a pause or a resume — and
     /// retain only its session digest.
     pub(crate) fn authorize_onboard(

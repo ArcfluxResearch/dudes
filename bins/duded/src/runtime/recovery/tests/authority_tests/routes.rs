@@ -184,6 +184,11 @@ fn http_inspect_submit_and_inert_receipt_keep_exact_request_and_claim_truth() {
     assert_eq!(accepted["receipt"]["choice"], "fresh_with_recap");
     assert!(owned.host.spawned().is_empty());
     let after = owned.fixture.entries();
+    let (code, duplicate) = owned.submit(&request, &expected);
+    assert_eq!(code, 200);
+    assert_eq!(duplicate, accepted);
+    assert_eq!(owned.fixture.entries(), after);
+    assert!(owned.host.spawned().is_empty());
     let (code, receipt) = owned.post("/floor/recovery/receipt", &json!({"request_id": request}));
     assert_eq!(code, 200);
     assert_eq!(
@@ -255,15 +260,20 @@ fn http_receipts_use_current_readers_without_observing_the_lost_original_authori
 fn repeated_http_receipt_reads_cannot_extend_the_registry_idle_deadline() {
     let owned = HttpFixture::new(true, true);
     let request = json!({"request_id": "78".repeat(32)});
+    owned.sessions.issue().unwrap();
+    assert_eq!(owned.sessions.registry_counts_for_test(), (1, 1));
     let before = owned.fixture.entries();
     owned.clock.advance(29 * 60_000);
     let (code, absent) = owned.post("/floor/recovery/receipt", &request);
     assert_eq!(code, 200);
     assert_eq!(absent["state"], "absent");
+    assert_eq!(owned.sessions.registry_counts_for_test(), (1, 1));
     owned.clock.advance(59_999);
     assert_eq!(owned.post("/floor/recovery/receipt", &request).0, 200);
+    assert_eq!(owned.sessions.registry_counts_for_test(), (1, 1));
     owned.clock.advance(1);
     assert_eq!(owned.post("/floor/recovery/receipt", &request).0, 403);
+    assert_eq!(owned.sessions.registry_counts_for_test(), (1, 1));
     assert_eq!(owned.fixture.entries(), before);
     assert!(owned.host.spawned().is_empty());
 }
