@@ -497,7 +497,7 @@ mod tests {
         );
         let text = valid.to_string();
         for duplicate in [
-            text.replacen("{", r#"{"point":"after_required","#, 1),
+            text.replacen('{', r#"{"point":"after_required","#, 1),
             text.replace(
                 r#""kind":"command""#,
                 r#""kind":"command","kind":"command""#,
