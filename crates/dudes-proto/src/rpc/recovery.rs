@@ -27,6 +27,7 @@ pub struct ReviewedTicketRound {
     /// Exact ticket.
     pub card: CardId,
     /// Exact reviewed round.
+    #[schemars(range(min = u32::MIN, max = u32::MAX))]
     pub round: u32,
 }
 
@@ -664,6 +665,14 @@ mod tests {
         let validator = jsonschema::validator_for(&schema).unwrap();
         let good: Value = serde_json::from_str(BOUND_SUBMIT).unwrap();
         assert!(validator.is_valid(&good));
+        for round in [0, 4_294_967_295_u32] {
+            let mut endpoint = good.clone();
+            endpoint["expected"]["ticket"]["round"] = json!(round);
+            assert!(validator.is_valid(&endpoint), "{round}");
+            let parsed: RecoverySubmitParams =
+                serde_json::from_slice(&serde_json::to_vec(&endpoint).unwrap()).unwrap();
+            assert_eq!(parsed.expected.ticket.unwrap().round, round);
+        }
         for (pointer, fields) in [
             ("", &["request_id", "expected", "choice"][..]),
             (
@@ -713,6 +722,7 @@ mod tests {
             ),
             ("/request_id", json!("A".repeat(64))),
             ("/expected/work/agent", json!("01arz3ndektsv4rrffq69g5fav")),
+            ("/expected/ticket/round", json!(-1)),
             ("/expected/ticket/round", json!(u64::from(u32::MAX) + 1)),
         ] {
             let mut bad = good.clone();
