@@ -846,6 +846,45 @@ impl AcceptPanic {
     }
 }
 
+#[cfg(feature = "fault-injection")]
+fn recovery_stop_for_append<'stop>(
+    stop: Option<&'stop crate::fault::RecoveryStop>,
+    recovery: Option<(
+        &recovery::CommandContext,
+        dudes_supervisor::input::RecoveryAppend,
+    )>,
+    entry: &Entry,
+) -> Option<(
+    &'stop crate::fault::RecoveryStop,
+    RecoveryStage,
+    RecoveryStopTarget,
+    RecoveryStopPoint,
+)> {
+    let stop = stop?;
+    let (stage, target) = match (recovery, &entry.record) {
+        (Some((_, metadata)), _) => (
+            metadata.stage,
+            RecoveryStopTarget::Command {
+                work: metadata.work,
+                request_id: metadata.request_id,
+            },
+        ),
+        (None, Record::RecoveryRequired(required)) => (
+            RecoveryStage::Required,
+            RecoveryStopTarget::Startup {
+                work: required.binding.work,
+            },
+        ),
+        _ => return None,
+    };
+    let point = match stage {
+        RecoveryStage::Required => RecoveryStopPoint::AfterRequired,
+        RecoveryStage::Resume => RecoveryStopPoint::AfterResume,
+        RecoveryStage::Authorized => RecoveryStopPoint::AfterAuthorized,
+    };
+    Some((stop, stage, target, point))
+}
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each is an independent `[floor.*]` operator switch, fixed for the run"
@@ -8112,25 +8151,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let pause = &self.onboarding_pause;
         let failure = &self.onboarding_failure;
         #[cfg(feature = "fault-injection")]
-        let recovery_stop = self.recovery_stop.as_ref().and_then(|stop| {
-            let (stage, target) = match (recovery, &entry.record) {
-                (Some((_, metadata)), _) => (
-                    metadata.stage,
-                    RecoveryStopTarget::Command {
-                        work: metadata.work,
-                        request_id: metadata.request_id,
-                    },
-                ),
-                (None, Record::RecoveryRequired(required)) => (
-                    RecoveryStage::Required,
-                    RecoveryStopTarget::Startup {
-                        work: required.binding.work,
-                    },
-                ),
-                _ => return None,
-            };
-            Some((stop, stage, target))
-        });
+        let recovery_stop = recovery_stop_for_append(self.recovery_stop.as_ref(), recovery, entry);
         let written = (|| {
             let mut store = self
                 .writer
@@ -8144,7 +8165,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                         context.join(metadata, entry)?;
                     }
                     #[cfg(feature = "fault-injection")]
-                    if let Some((stop, RecoveryStage::Required, target)) = recovery_stop {
+                    if let Some((stop, RecoveryStage::Required, target, _)) = recovery_stop {
                         stop.park_if_matches(RecoveryStopPoint::BeforeRequired, target);
                     }
                     let permit = identity
@@ -8157,12 +8178,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 },
                 || {
                     #[cfg(feature = "fault-injection")]
-                    if let Some((stop, stage, target)) = recovery_stop {
-                        let point = match stage {
-                            RecoveryStage::Required => RecoveryStopPoint::AfterRequired,
-                            RecoveryStage::Resume => RecoveryStopPoint::AfterResume,
-                            RecoveryStage::Authorized => RecoveryStopPoint::AfterAuthorized,
-                        };
+                    if let Some((stop, _, target, point)) = recovery_stop {
                         stop.park_if_matches(point, target);
                     }
                     if failure.take(&entry.record) {
