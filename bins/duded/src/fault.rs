@@ -13,7 +13,8 @@ use dudes_providers::adapter::{HookInstall, ManagedInstall};
 use dudes_providers::launch::LaunchSpec;
 use dudes_supervisor::host::{
     AdoptionKey, HostBoot, KillOutcome, Liveness, NativeBoundaryAcknowledgement,
-    NativeBoundaryReceipt, OwnedTargets, ProcessHost, SpawnResult,
+    NativeBoundaryReceipt, NativeGroupPresence, OwnedTargets, ProbeAnswer, ProcessHost,
+    SpawnResult,
 };
 
 /// Journal boundaries available to an instrumented recovery run.
@@ -200,6 +201,18 @@ impl<H: ProcessHost> ProcessHost for StallBeforeSpawn<H> {
         self.inner.alive(key)
     }
 
+    fn probe_native_leader(&self, key: &AdoptionKey) -> ProbeAnswer {
+        self.inner.probe_native_leader(key)
+    }
+
+    fn native_group_presence(&self, pid: u32) -> NativeGroupPresence {
+        self.inner.native_group_presence(pid)
+    }
+
+    fn pid_namespace(&self) -> Option<String> {
+        self.inner.pid_namespace()
+    }
+
     fn owned_targets(&self, limit: usize) -> OwnedTargets {
         self.inner.owned_targets(limit)
     }
@@ -292,6 +305,18 @@ impl<H: ProcessHost> ProcessHost for StallAfterSpawn<H> {
         self.inner.alive(key)
     }
 
+    fn probe_native_leader(&self, key: &AdoptionKey) -> ProbeAnswer {
+        self.inner.probe_native_leader(key)
+    }
+
+    fn native_group_presence(&self, pid: u32) -> NativeGroupPresence {
+        self.inner.native_group_presence(pid)
+    }
+
+    fn pid_namespace(&self) -> Option<String> {
+        self.inner.pid_namespace()
+    }
+
     fn owned_targets(&self, limit: usize) -> OwnedTargets {
         self.inner.owned_targets(limit)
     }
@@ -326,6 +351,39 @@ mod tests {
     use dudes_supervisor::testing::FakeHost;
 
     use super::*;
+
+    #[test]
+    fn before_spawn_wrapper_delegates_native_observations() {
+        use crate::classify::native_observation_test_support::{Sentinel, assert_forwarded};
+        let sentinel = Sentinel::new();
+        let host = StallBeforeSpawn::new(sentinel.clone(), 1, PathBuf::new());
+        assert_forwarded(&host, &sentinel);
+        assert_eq!(host.seen.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn after_spawn_wrapper_delegates_native_observations() {
+        use crate::classify::native_observation_test_support::{Sentinel, assert_forwarded};
+        let sentinel = Sentinel::new();
+        let host = StallAfterSpawn::new(sentinel.clone(), 1, PathBuf::new());
+        assert_forwarded(&host, &sentinel);
+        assert_eq!(host.seen.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn nested_spawn_wrappers_and_peer_barrier_delegate_native_observations() {
+        use crate::classify::native_observation_test_support::{Sentinel, assert_forwarded};
+        let sentinel = Sentinel::new();
+        let peer = crate::classify::PeerBarrier::new(
+            sentinel.clone(),
+            crate::classify::Resolver::fixed(Arc::new(crate::classify::NoWalk)),
+        );
+        let before = StallBeforeSpawn::new(peer, 1, PathBuf::new());
+        let host = StallAfterSpawn::new(before, 1, PathBuf::new());
+        assert_forwarded(&host, &sentinel);
+        assert_eq!(host.seen.load(Ordering::SeqCst), 0);
+        assert_eq!(host.inner.seen.load(Ordering::SeqCst), 0);
+    }
 
     fn stop_value(point: &str, kind: &str) -> serde_json::Value {
         let mut target = serde_json::json!({
