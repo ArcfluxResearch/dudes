@@ -241,6 +241,9 @@ fn the_exported_current_catalog_matches_the_production_dispatcher() {
         CurrentMethod::TicketCheckout,
         CurrentMethod::FloorSessionExport,
         CurrentMethod::FloorSessionImport,
+        CurrentMethod::RecoveryInspect,
+        CurrentMethod::RecoverySubmit,
+        CurrentMethod::RecoveryReceipt,
     ] {
         assert_eq!(
             dispatcher.current_requirement(method),

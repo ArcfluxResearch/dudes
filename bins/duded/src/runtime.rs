@@ -117,6 +117,7 @@ mod native_boundaries_tests;
 mod predicate_recovery_tests;
 #[cfg(all(test, unix))]
 mod prehost_boundary_tests;
+mod recovery;
 #[cfg(all(test, unix))]
 mod recovery_fold_tests;
 mod shared_folder;
@@ -994,6 +995,7 @@ pub(crate) struct CleanupPty {
 
 enum PumpReport {
     Discard,
+    Recovery(Box<recovery::CommandContext>),
     Attach {
         agent: AgentId,
         result: Option<Result<PtyId, String>>,
@@ -1001,6 +1003,20 @@ enum PumpReport {
 }
 
 impl PumpReport {
+    fn recovery_update(&mut self, handled: &Handled) -> Result<()> {
+        if let Some(update) = handled.recovery() {
+            let Self::Recovery(context) = self else {
+                anyhow::bail!("recovery progress escaped its request-local report");
+            };
+            context.observe(*update)?;
+        }
+        Ok(())
+    }
+
+    fn recovery_refused(&self) -> bool {
+        matches!(self, Self::Recovery(context) if context.refused())
+    }
+
     fn attach(agent: AgentId) -> Self {
         Self::Attach {
             agent,
@@ -1030,7 +1046,7 @@ impl PumpReport {
     fn take_attach(self) -> Option<Result<PtyId, String>> {
         match self {
             Self::Attach { result, .. } => result,
-            Self::Discard => None,
+            Self::Discard | Self::Recovery(_) => None,
         }
     }
 }
@@ -3943,6 +3959,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             // Their durable acknowledgements remain unfolded; this pump does not drain
             // them or claim that its failed call reached quiescence.
             executed?;
+            if report.recovery_refused() {
+                break;
+            }
             *mail_acknowledgments |= mail_acknowledged_by_effect(effect);
             if let Some(lsn) = ctx.writer.poisoned() {
                 return Err(dudes_journal::Error::Poisoned { lsn }.into());
@@ -3998,6 +4017,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     queue.pop_front();
                     continue;
                 }
+                if report.recovery_refused() {
+                    break;
+                }
                 if queue.is_empty() && start.is_none() {
                     if native_settlements < dudes_supervisor::host::MAX_OWNED_TARGET_QUERY_ROWS {
                         match self.ctx.settle_one_attached_boundary(
@@ -4048,6 +4070,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         break 'work Err(error);
                     }
                 };
+                if let Err(error) = report.recovery_update(&handled) {
+                    break 'work Err(error);
+                }
                 let folds_journal_record = handled.folded_through().is_some();
                 // Persistent and before the fallible executor: once `handle` has folded, the pump
                 // exit must publish that completed fold even if an effect below fails.
@@ -4257,6 +4282,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     )]
     fn ask(&mut self, ask: Ask) -> Result<Answered, RpcError> {
         let ask = match ask {
+            Ask::RecoveryInspect { agent, admission } => {
+                return self.recovery_inspect(agent, admission);
+            }
+            Ask::RecoveryReceipt { request, admission } => {
+                return Ok(self.recovery_receipt(request, admission));
+            }
+            Ask::Recover { command, admission } => {
+                return Ok(self.recovery_submit(*command, admission));
+            }
             Ask::ReplaceGoal(request) => return self.replace_goal(&request),
             Ask::ReplaceGoalChecked {
                 params,
@@ -4284,6 +4318,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
         }
         match ask {
+            Ask::RecoveryInspect { .. } | Ask::RecoveryReceipt { .. } | Ask::Recover { .. } => {
+                unreachable!("recovery routes precede the mutation fence")
+            }
             Ask::Mcp(params) => self.agent_mcp(params).map(Answered::Mcp),
             Ask::ReplaceGoal(_) => unreachable!("replacement was handled before the writer fence"),
             // The gate that keeps `agent.hire` and the launch reading one registry. Both ask
@@ -7412,9 +7449,34 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         token: dudes_supervisor::input::PersistToken,
         entry: &Entry,
         queue: &mut VecDeque<Input>,
-        sup: &Supervisor<Shared<C>, R>,
+        sup: &mut Supervisor<Shared<C>, R>,
+        report: &mut PumpReport,
     ) -> Result<()> {
-        let append = self.append(sup.world(), entry)?;
+        let metadata = sup.recovery_append(token, entry);
+        let admitted = match (metadata, &*report) {
+            (Some(metadata), PumpReport::Recovery(context)) => Some((&**context, metadata)),
+            (Some(_), _) => anyhow::bail!("command-owned append lacks its admitted context"),
+            (None, _) => None,
+        };
+        let committed =
+            self.append_with_publication(sup.world(), entry, FloorPublication::AfterFold, admitted);
+        let committed = match committed {
+            Ok(committed) => committed,
+            Err(error) => {
+                if let Some(metadata) = metadata
+                    && let Some(reason) = recovery::known_no_write(&error)
+                {
+                    let handled = sup.recovery_refused(token, entry, metadata, reason);
+                    report.recovery_update(&handled)?;
+                    return Ok(());
+                }
+                return Err(error);
+            }
+        };
+        let through = committed.through();
+        let (main, checkpoint) = committed.into_parts();
+        let append = RecordedAppend::try_new(through, main, checkpoint)
+            .inspect_err(|_| self.fence_journal())?;
         // Spend moves only on a `TurnEnded`, and the decision that reads it runs on this
         // very acknowledgement — so the refresh goes in front of it rather than at the top
         // of the next pump, which would be a decide too late. A browser goal change's own
@@ -7504,7 +7566,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 }
             }
             Effect::Persist { token, entry } => {
-                self.persist_effect(*token, entry, queue, sup)?;
+                self.persist_effect(*token, entry, queue, sup, report)?;
             }
             Effect::Spawn {
                 turn,
@@ -7718,7 +7780,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     }
 
     fn append(&mut self, world: &dudes_supervisor::World, entry: &Entry) -> Result<RecordedAppend> {
-        let committed = self.append_with_publication(world, entry, FloorPublication::AfterFold)?;
+        let committed =
+            self.append_with_publication(world, entry, FloorPublication::AfterFold, None)?;
         let through = committed.through();
         let (main, checkpoint) = committed.into_parts();
         RecordedAppend::try_new(through, main, checkpoint)
@@ -7731,7 +7794,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         world: &dudes_supervisor::World,
         entry: &Entry,
     ) -> Result<Lsn> {
-        self.append_with_publication(world, entry, FloorPublication::ProjectionOnly)
+        self.append_with_publication(world, entry, FloorPublication::ProjectionOnly, None)
             .map(|committed| committed.lsn())
     }
 
@@ -7744,6 +7807,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         world: &dudes_supervisor::World,
         entry: &Entry,
         publication: FloorPublication,
+        recovery: Option<(
+            &recovery::CommandContext,
+            dudes_supervisor::input::RecoveryAppend,
+        )>,
     ) -> Result<CheckedAppend> {
         if matches!(
             entry.record,
@@ -7773,7 +7840,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             self.fence_journal();
             return Err(error.context("invalid live goal replacement"));
         }
-        let committed = self.append_checked(entry)?;
+        let committed = self.append_checked(entry, recovery)?;
         let lsn = committed.lsn();
         let through = committed.through();
         let output = self.children.output();
@@ -7944,7 +8011,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .context("indexing durable browser retire record")
     }
 
-    fn append_checked(&mut self, entry: &Entry) -> Result<CheckedAppend> {
+    fn append_checked(
+        &mut self,
+        entry: &Entry,
+        recovery: Option<(
+            &recovery::CommandContext,
+            dudes_supervisor::input::RecoveryAppend,
+        )>,
+    ) -> Result<CheckedAppend> {
         self.ensure_memory_ready()?;
         self.ensure_journal_ready()?;
         if self.append_failure.take() {
@@ -7984,6 +8058,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 entry,
                 || {
                     pause.at(&entry.record, AppendStage::BeforePermit);
+                    if let Some((context, metadata)) = recovery {
+                        context.join(metadata, entry)?;
+                    }
                     let permit = identity
                         .as_ref()
                         .map(crate::floor_session::SessionIdentity::permit)
@@ -8014,6 +8091,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             Ok(committed) => Ok(committed),
             Err(GuardedAppendError::Acquire(error)) => Err(error),
             Err(GuardedAppendError::Journal(error)) => {
+                if recovery.is_some()
+                    && matches!(error, dudes_journal::Error::RecoveryAdmission { .. })
+                {
+                    return Err(error.into());
+                }
                 if self.writer.poisoned().is_none() {
                     self.fence_journal();
                 }

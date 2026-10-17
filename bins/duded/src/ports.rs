@@ -333,6 +333,21 @@ pub enum TicketAsk {
 )]
 #[derive(Debug)]
 pub enum Ask {
+    /// Inert recovery inspection for an admitted operator.
+    RecoveryInspect {
+        agent: AgentId,
+        admission: dudes_rpc::dispatch::OperatorAdmission,
+    },
+    /// One explicit recovery command, with separate live admission.
+    Recover {
+        command: Box<dudes_supervisor::input::RecoveryCommand>,
+        admission: dudes_rpc::dispatch::OperatorAdmission,
+    },
+    /// Inert request-ID-only historical lookup.
+    RecoveryReceipt {
+        request: dudes_proto::record::Hex32,
+        admission: dudes_rpc::dispatch::OperatorAdmission,
+    },
     /// Read or replace the next managed launch's desired server names.
     Mcp(McpParams),
     /// `agent.hire`.
@@ -588,6 +603,12 @@ pub enum Ask {
 /// What the loop answered.
 #[derive(Debug)]
 pub enum Answered {
+    /// Current bounded opportunity.
+    RecoveryInspected(dudes_proto::rpc::recovery::RecoveryInspectResult),
+    /// Durable authorization or a truthful refusal/uncertainty.
+    RecoverySubmitted(dudes_proto::rpc::recovery::RecoverySubmitResult),
+    /// Certified historical receipt read.
+    RecoveryReceipt(dudes_proto::rpc::recovery::RecoveryReceiptResult),
     /// The acknowledged desired set, with whether this call appended a change.
     Mcp(McpResult),
     /// The new agent.
@@ -2546,5 +2567,150 @@ mod tests {
             source.is_sealed(),
             "a validation, provider, persistence, or spawn failure cannot reopen acquisition"
         );
+    }
+}
+
+impl dudes_rpc::methods::recovery::RecoveryControl for Handle {
+    fn inspect_recovery(
+        &self,
+        params: dudes_proto::rpc::recovery::RecoveryInspectParams,
+        admission: dudes_rpc::dispatch::OperatorAdmission,
+    ) -> Result<dudes_proto::rpc::recovery::RecoveryInspectResult, RpcError> {
+        match self.ask(Ask::RecoveryInspect {
+            agent: params.agent,
+            admission,
+        })? {
+            Answered::RecoveryInspected(result) => Ok(result),
+            _ => Err(unavailable()),
+        }
+    }
+
+    fn submit_recovery(
+        &self,
+        params: dudes_proto::rpc::recovery::RecoverySubmitParams,
+        admission: dudes_rpc::dispatch::OperatorAdmission,
+    ) -> Result<dudes_proto::rpc::recovery::RecoverySubmitResult, RpcError> {
+        use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand, RecoveryExpected};
+        let digest = recovery_digest(&params)?;
+        let command = RecoveryCommand {
+            request_id: params.request_id,
+            digest,
+            expected: RecoveryExpected {
+                work: params.expected.work,
+                issue_lsn: params.expected.issue_lsn,
+                source_lsn: params.expected.source_lsn,
+                episode: params.expected.episode,
+                predecessor: params.expected.expected_predecessor,
+                control_lsn: params.expected.control_lsn,
+                ticket: params
+                    .expected
+                    .ticket
+                    .map(|ticket| (ticket.card, ticket.round)),
+            },
+            choice: match params.choice {
+                dudes_proto::rpc::recovery::RecoveryChoice::TryRecorded => {
+                    RecoveryChoice::TryRecorded
+                }
+                dudes_proto::rpc::recovery::RecoveryChoice::FreshWithRecap => {
+                    RecoveryChoice::FreshWithRecap
+                }
+                dudes_proto::rpc::recovery::RecoveryChoice::RepeatIssuedFresh => {
+                    RecoveryChoice::RepeatIssuedFresh
+                }
+            },
+            attribution: dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+                pid: admission.pid(),
+                uid: admission.uid(),
+            },
+        };
+        let request_id = command.request_id;
+        match self.ask(Ask::Recover {
+            command: Box::new(command),
+            admission,
+        }) {
+            Ok(Answered::RecoverySubmitted(result)) => Ok(result),
+            _ => Ok(dudes_proto::rpc::recovery::RecoverySubmitResult::Unknown { request_id }),
+        }
+    }
+
+    fn recovery_receipt(
+        &self,
+        params: dudes_proto::rpc::recovery::RecoveryReceiptParams,
+        admission: dudes_rpc::dispatch::OperatorAdmission,
+    ) -> Result<dudes_proto::rpc::recovery::RecoveryReceiptResult, RpcError> {
+        match self.ask(Ask::RecoveryReceipt {
+            request: params.request_id,
+            admission,
+        })? {
+            Answered::RecoveryReceipt(result) => Ok(result),
+            _ => Err(unavailable()),
+        }
+    }
+}
+
+fn recovery_digest(
+    params: &dudes_proto::rpc::recovery::RecoverySubmitParams,
+) -> Result<dudes_proto::record::Hex32, RpcError> {
+    let bytes = serde_json::to_vec(params).map_err(|_| unavailable())?;
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"dudes.recovery.intent.v1\0");
+    digest.update(&bytes);
+    Ok(dudes_proto::record::Hex32::new(
+        *digest.finalize().as_bytes(),
+    ))
+}
+
+#[cfg(test)]
+mod recovery_intent_tests {
+    use super::recovery_digest;
+    use dudes_proto::rpc::recovery::{RecoveryChoice, RecoverySubmitParams};
+
+    const INTENT: &str = concat!(
+        "{\"request_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",",
+        "\"expected\":{\"work\":{\"agent\":\"00000000010000000000000001\",\"goal\":\"00000000010000000000000002\",\"turn\":\"00000000010000000000000003\"},",
+        "\"issue_lsn\":5,\"source_lsn\":9,\"episode\":null,\"expected_predecessor\":null,\"control_lsn\":null,\"ticket\":null},\"choice\":\"fresh_with_recap\"}"
+    );
+
+    #[test]
+    fn original_typed_intent_has_a_fixed_canonical_encoding_including_explicit_nulls() {
+        let original: RecoverySubmitParams = serde_json::from_str(INTENT).unwrap();
+        assert_eq!(serde_json::to_string(&original).unwrap(), INTENT);
+        let digest = recovery_digest(&original).unwrap();
+        let mut edits = Vec::new();
+        let mut changed = original;
+        changed.choice = RecoveryChoice::TryRecorded;
+        edits.push(changed);
+        changed = original;
+        changed.request_id = dudes_proto::record::Hex32::new([2; 32]);
+        edits.push(changed);
+        changed = original;
+        changed.expected.issue_lsn = dudes_types::Lsn(6);
+        edits.push(changed);
+        changed = original;
+        changed.expected.source_lsn = dudes_types::Lsn(10);
+        edits.push(changed);
+        changed = original;
+        changed.expected.control_lsn = Some(dudes_types::Lsn(8));
+        edits.push(changed);
+        changed = original;
+        changed.expected.episode = Some(dudes_proto::recovery::RecoveryEpisodeId {
+            work: original.expected.work,
+            origin: dudes_types::Lsn(7),
+        });
+        edits.push(changed);
+        changed.expected.expected_predecessor = Some(dudes_proto::recovery::RecoveryClaimRef {
+            episode: changed.expected.episode.unwrap(),
+            authorization_lsn: dudes_types::Lsn(11),
+        });
+        edits.push(changed);
+        changed = original;
+        changed.expected.ticket = Some(dudes_proto::rpc::recovery::ReviewedTicketRound {
+            card: dudes_types::CardId::from_parts(1, 4),
+            round: 1,
+        });
+        edits.push(changed);
+        for changed in edits {
+            assert_ne!(recovery_digest(&changed).unwrap(), digest, "{changed:?}");
+        }
     }
 }

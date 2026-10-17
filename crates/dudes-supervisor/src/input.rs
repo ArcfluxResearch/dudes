@@ -30,12 +30,14 @@ use crate::host::{AdoptionKey, Liveness};
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Handled {
     folded_through: Option<Lsn>,
+    recovery: Option<RecoveryUpdate>,
 }
 
 impl Handled {
     pub(crate) const fn folded(through: Lsn) -> Self {
         Self {
             folded_through: Some(through),
+            recovery: None,
         }
     }
 
@@ -44,6 +46,144 @@ impl Handled {
     pub const fn folded_through(&self) -> Option<Lsn> {
         self.folded_through
     }
+
+    pub(crate) fn with_recovery(mut self, update: Option<RecoveryUpdate>) -> Self {
+        self.recovery = update;
+        self
+    }
+
+    /// Request-local recovery progress; this is neither a receipt nor permission to launch.
+    #[must_use]
+    pub const fn recovery(&self) -> Option<&RecoveryUpdate> {
+        self.recovery.as_ref()
+    }
+}
+
+/// Exact selectors reviewed before an operator submits recovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryExpected {
+    /// Original interrupted work.
+    pub work: dudes_proto::recovery::RecoveryWork,
+    /// Actual immutable issue.
+    pub issue_lsn: Lsn,
+    /// Actual observed eligibility source.
+    pub source_lsn: Lsn,
+    /// Canonical episode, absent before its first barrier.
+    pub episode: Option<dudes_proto::recovery::RecoveryEpisodeId>,
+    /// Exact claim the next barrier would supersede.
+    pub predecessor: Option<dudes_proto::recovery::RecoveryClaimRef>,
+    /// Reviewed control identity.
+    pub control_lsn: Option<Lsn>,
+    /// Exact reviewed ticket and round.
+    pub ticket: Option<(dudes_types::CardId, u32)>,
+}
+
+/// Operator-selected context intent, without client-supplied context contents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryChoice {
+    /// Try the still-confirmed conversation.
+    TryRecorded,
+    /// Fresh context with a bounded supplemental recap.
+    FreshWithRecap,
+    /// Fresh context for the same immutable owed issue.
+    RepeatIssuedFresh,
+}
+
+/// Pure command intent. Recorded attribution is separate from executor permission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryCommand {
+    /// Original request identity.
+    pub request_id: Hex32,
+    /// Digest of all original strictly typed caller fields.
+    pub digest: Hex32,
+    /// Original reviewed selectors, never advanced by a later discovered claim.
+    pub expected: RecoveryExpected,
+    /// Explicit context choice.
+    pub choice: RecoveryChoice,
+    /// Attribution captured at authenticated admission.
+    pub attribution: dudes_proto::recovery::RecoveryAttribution,
+}
+
+/// A clean semantic refusal, without raw journal or provider details.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryRefusal {
+    /// Same request identity with different original intent.
+    RequestConflict,
+    /// Target or immutable configuration changed.
+    StaleWork,
+    /// Eligibility source changed.
+    StaleSource,
+    /// Canonical episode changed.
+    StaleEpisode,
+    /// Current claim changed.
+    StalePredecessor,
+    /// Reviewed control changed.
+    StaleControl,
+    /// Ticket or round changed.
+    StaleTicket,
+    /// Consent already exclusively owns this opportunity.
+    Claimed,
+    /// Context choice is no longer offered.
+    ChoiceUnavailable,
+    /// The current boundary is not recoverable.
+    NotRecoverable,
+    /// Live authority was unavailable before the write.
+    AuthorityUnavailable,
+    /// Facts could not be checked coherently.
+    Unavailable,
+}
+
+/// Positions this invocation actually acknowledged, not predicted or whole-command rollback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecoveryPrefix {
+    /// Own required barrier, when written.
+    pub required: Option<Lsn>,
+    /// Own attributed Resume, when written.
+    pub resume: Option<Lsn>,
+}
+
+/// Progress carried only by the handling result of one command invocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryUpdate {
+    /// Request whose actual continuation advanced or refused.
+    pub request_id: Hex32,
+    /// Acknowledged prefix retained even after later clean refusal.
+    pub prefix: RecoveryPrefix,
+    /// Clean refusal before the current frame wrote anything.
+    pub refusal: Option<RecoveryRefusal>,
+}
+
+/// Exact command-owned append stage. This metadata alone grants no permission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryStage {
+    /// Required boundary.
+    Required,
+    /// Own Resume, without ordinary cleared-cause dispatch.
+    Resume,
+    /// Immutable consent.
+    Authorized,
+}
+
+/// Join between an emitted entry, its private continuation and the admitted executor call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryAppend {
+    /// Original request identity.
+    pub request_id: Hex32,
+    /// Exact target.
+    pub work: dudes_proto::recovery::RecoveryWork,
+    /// Expected command-owned frame.
+    pub stage: RecoveryStage,
+}
+
+/// Historical opportunity derived without appending, allocating or dispatching work.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryOpportunity {
+    /// Exact source-validated boundary, including its predecessor.
+    pub required: dudes_proto::recovery::RecoveryRequired,
+    /// Selectors to preserve on submission.
+    pub expected: RecoveryExpected,
+    /// Confirmed context may be tried, without guaranteeing provider history.
+    pub recorded_available: bool,
 }
 
 /// Owned caller and checkpoint frames acknowledged by the live append boundary.

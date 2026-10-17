@@ -367,6 +367,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         queue: &mut std::collections::VecDeque<Input>,
         sup: &mut Supervisor<super::Shared<C>, R>,
     ) -> Result<()> {
+        if sup
+            .world()
+            .turns
+            .get(&turn)
+            .is_none_or(|row| !sup.recovery_launch_allowed(row.agent, turn))
+        {
+            return Ok(());
+        }
         let generation = self
             .resolved_browser_turn
             .filter(|(prepared, _)| *prepared == turn)

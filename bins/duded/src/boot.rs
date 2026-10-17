@@ -1622,6 +1622,7 @@ where
     });
     let journal = Arc::new(JournalReader::new(journal_dir.to_path_buf()));
     register_all(&mut dispatcher, &control, &journal, subscribers);
+    dudes_rpc::methods::register_recovery(&mut dispatcher, &Arc::new(handle.clone()));
     crate::board::register(&mut dispatcher, &handle);
     crate::ticket::register(&mut dispatcher, &handle);
     register_agent_effects(&mut dispatcher, &control);

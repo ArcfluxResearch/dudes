@@ -1112,17 +1112,19 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 then,
                 closing,
             } => {
-                let allowed = self.world.agents.get(&agent).is_some_and(|row| {
-                    !row.retired
-                        && !row.halted
-                        && !row.paused
-                        && !row.attached
-                        && row.automatic_hold.is_none()
-                        && row.open_turn.is_none()
-                        && row.goal == starting.goal
-                }) && starting
-                    .goal
-                    .is_none_or(|goal| !self.world.instructions.pending_for_goal(goal))
+                let allowed = self.recovery_admission_allowed(agent)
+                    && self.world.agents.get(&agent).is_some_and(|row| {
+                        !row.retired
+                            && !row.halted
+                            && !row.paused
+                            && !row.attached
+                            && row.automatic_hold.is_none()
+                            && row.open_turn.is_none()
+                            && row.goal == starting.goal
+                    })
+                    && starting
+                        .goal
+                        .is_none_or(|goal| !self.world.instructions.pending_for_goal(goal))
                     && !self.instructions.recovering()
                     && !self.closing_recovery
                     && !self.protection_pending(agent)
@@ -1151,6 +1153,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.persist_unobserved(at, record, *then);
             }
             StartAction::Retry { launch } => {
+                if !self.recovery_launch_allowed(agent, turn) {
+                    self.spawning.remove(&turn);
+                    return;
+                }
                 self.spawn_prepared(agent, turn, launch);
             }
         }
@@ -1282,24 +1288,26 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             && decided.answers.as_slice() == answers
     }
 
-    pub(super) fn observe_after_end(&mut self, turn: TurnId, then: Then, end_lsn: Lsn) {
+    pub(super) fn observe_after_end(
+        &mut self,
+        turn: TurnId,
+        then: Then,
+        end_lsn: Lsn,
+    ) -> Option<crate::input::RecoveryUpdate> {
         let Some(row) = self.world.turns.get(&turn).cloned() else {
-            self.resume_after(then, end_lsn);
-            return;
+            return self.resume_after(then, end_lsn);
         };
         let Some((started_lsn, attempt)) = self.world.instructions.current_for_turn(turn) else {
-            self.resume_after(then, end_lsn);
-            return;
+            return self.resume_after(then, end_lsn);
         };
         let Some(snapshot) = attempt.snapshot.clone() else {
-            self.resume_after(then, end_lsn);
-            return;
+            return self.resume_after(then, end_lsn);
         };
         let owner = attempt.owner;
         let ticket = attempt.ticket;
         let baseline = InstructionBaselineRef::Started { lsn: started_lsn };
         if !self.instructions.ending.insert(baseline) {
-            return;
+            return None;
         }
         let selection = row
             .model_selection
@@ -1325,6 +1333,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Some(Box::new(snapshot)),
             Awaiting::End(ending),
         );
+        None
     }
 
     /// Pure declaration from the actual adapter composition and supplied execution folder.

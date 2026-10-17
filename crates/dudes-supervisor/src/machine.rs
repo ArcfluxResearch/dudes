@@ -55,6 +55,7 @@ mod conversations;
 mod instruction_observations;
 pub use instruction_observations::InstructionSource;
 mod mail_wakes;
+mod recovery;
 mod ticket_review;
 #[cfg(test)]
 mod ticket_start;
@@ -151,6 +152,7 @@ fn prepend_agent_bin(env: &mut [EnvVar], dir: &Path) {
 /// entry is on the disk.
 #[derive(Debug)]
 enum Then {
+    Recovery(recovery::RecoveryThen),
     InstructionRecoveryContinue,
     InstructionBaselineSaved {
         start: Box<instruction_observations::Starting>,
@@ -519,6 +521,7 @@ pub struct Supervisor<C: Clock, R: Rng> {
     missing_worktrees: BTreeSet<AgentId>,
     status: BTreeMap<AgentId, AgentStatus>,
     ledger: Ledger,
+    live_issues: BTreeSet<TurnId>,
     spend: BTreeMap<AgentId, SpendView>,
     mail_refreshes: BTreeMap<AgentId, MailRefresh>,
     next_mail_request: u64,
@@ -698,6 +701,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             missing_worktrees: BTreeSet::new(),
             status: BTreeMap::new(),
             ledger: Ledger::new(),
+            live_issues: BTreeSet::new(),
             spend: BTreeMap::new(),
             mail_refreshes: BTreeMap::new(),
             next_mail_request: 0,
@@ -1231,7 +1235,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 goal,
                 check_lsn,
                 stamp,
-            } => self.on_stamp_captured(goal, check_lsn, stamp),
+            } => {
+                let update = self.on_stamp_captured(goal, check_lsn, stamp);
+                return Ok(Handled::default().with_recovery(update));
+            }
             Input::PtyExited { agent } => {
                 self.persist(
                     Record::Detached {
@@ -1694,24 +1701,27 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if let Record::HookTokenMinted { agent, token_hash } = &parked.entry.record {
             self.tokens.confirm(*agent, token_hash);
         }
-        self.resume_after(parked.then, lsn);
+        let recovery = self.resume_after(parked.then, lsn);
         for agent in reconcile {
             self.request_mail_wake(agent);
         }
-        Ok(Handled::folded(through))
+        Ok(Handled::folded(through).with_recovery(recovery))
     }
 
     #[expect(
         clippy::too_many_lines,
         reason = "one exhaustive match resumes every fsynced continuation under its token"
     )]
-    fn resume_after(&mut self, then: Then, lsn: Lsn) {
+    fn resume_after(&mut self, then: Then, lsn: Lsn) -> Option<crate::input::RecoveryUpdate> {
         match then {
+            Then::Recovery(then) => return Some(self.recovery_after_ack(then, lsn)),
             Then::InstructionRecoveryContinue => self.instruction_recovery_continue(),
             Then::InstructionBaselineSaved { start } => {
                 self.instruction_baseline_saved(*start, lsn);
             }
-            Then::InstructionTurnEnded { turn, then } => self.observe_after_end(turn, *then, lsn),
+            Then::InstructionTurnEnded { turn, then } => {
+                return self.observe_after_end(turn, *then, lsn);
+            }
             Then::InstructionAttachedHookEnded => self.attached_hook_ended(lsn, false, Then::Fold),
             Then::InstructionPreHostEnded { attempt, then } => {
                 self.persist(
@@ -1729,7 +1739,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             }
             Then::InstructionCompared { baseline, then } => {
                 self.instructions.ending.remove(&baseline);
-                self.resume_after(*then, lsn);
+                return self.resume_after(*then, lsn);
             }
             Then::ConversationStartupReserved => self.on_started(),
             Then::ConversationRetryReserved { turn, generation } => {
@@ -1800,6 +1810,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 turn,
                 launch,
             } => {
+                self.live_issues.insert(turn);
                 self.spawn(agent, turn, launch);
             }
             Then::McpGranted {
@@ -1820,7 +1831,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.persist_held_reissue_confirmation(agent, turn);
             }
             Then::Decide { agent } => self.decide(agent),
-            Then::TicketStamp { goal, then } => self.request_stamp(goal, *then, lsn),
+            Then::TicketStamp { goal, then } => return self.request_stamp(goal, *then, lsn),
             Then::ClearedCause { agent } => self.on_cause_cleared(agent),
             Then::LaunchAdmissionHeld {
                 agent,
@@ -1902,6 +1913,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             }
             Then::Reply { hook, reply } => self.pending.push(Effect::Reply { hook, reply }),
         }
+        None
     }
 
     // ---- start ------------------------------------------------------------------------------
@@ -2086,6 +2098,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         task: &str,
         recorded: Option<ModelSelection>,
     ) {
+        if !self.recovery_launch_allowed(agent, turn) {
+            self.ensure_recovery_admission(agent);
+            return;
+        }
         if !self.world.mail_wake_history_valid() {
             return;
         }
@@ -2105,10 +2121,17 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Some(row) = self.world.agents.get(&agent).cloned() else {
             return;
         };
-        if row.retired || row.halted || self.launch_held(agent) {
+        if row.retired
+            || row.halted
+            || row.paused
+            || row.open_question.is_some()
+            || self.launch_held(agent)
+        {
             return;
         }
-        let session = self.announce_session(agent, true);
+        let session = self
+            .recovery_repeat_context(agent, turn)
+            .unwrap_or_else(|| self.announce_session(agent, true));
         let Some(selection) = recorded.or_else(|| self.model_selection(&row)) else {
             return;
         };
@@ -2540,6 +2563,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// Nothing decides while a turn is in flight: the loop is one turn deep per agent, and a
     /// second `Continue` would be a second process on one vendor session.
     fn decide(&mut self, agent: AgentId) {
+        if !self.ensure_recovery_admission(agent) {
+            return;
+        }
         if self.instructions.recovering() || self.instructions.pending_agents.contains(&agent) {
             return;
         }
@@ -2753,8 +2779,21 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return;
         }
-        let turn = TurnId::from_ulid(self.rng.ulid());
-        let session = self.announce_session(agent, false);
+        let (turn, session, recap) = match self.recovery_new_context(agent) {
+            Ok(Some(context)) => context,
+            Ok(None) => (
+                TurnId::from_ulid(self.rng.ulid()),
+                self.announce_session(agent, false),
+                String::new(),
+            ),
+            Err(()) => return,
+        };
+        let recovered_task = if recap.is_empty() {
+            task.to_owned()
+        } else {
+            format!("{task}\n\nPrevious work context:\n{recap}")
+        };
+        let task = recovered_task.as_str();
         // One selection, obtained **before** the record that carries it and handed to the launch
         // rather than re-derived inside it. Asking the adapter twice would let the
         // journal and the launch material disagree about the same turn.
@@ -3434,7 +3473,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     fn launch_held(&self, agent: AgentId) -> bool {
-        self.instructions.recovering()
+        !self.recovery_admission_allowed(agent)
+            || self.instructions.recovering()
             || self.instructions.pending_agents.contains(&agent)
             || self
                 .world
