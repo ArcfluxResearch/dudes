@@ -789,9 +789,56 @@ fn refuse_terminal(prefix: &mut Prefix, record: Record, work: RecoveryWork) {
     assert_eq!(ordinary(&prefix.world), selected);
 }
 
+fn refuse_unproven_terminal(prefix: &mut Prefix, work: RecoveryWork) {
+    for mode in [Mode::Managed, Mode::Attached] {
+        let mut record = terminal(work, dudes_proto::TurnOutcome::NoResult);
+        let Record::TurnEnded {
+            mode: actual,
+            provenance,
+            ..
+        } = &mut record
+        else {
+            unreachable!()
+        };
+        *actual = mode;
+        if mode == Mode::Managed {
+            *provenance = Provenance::Inferred;
+        }
+        refuse_terminal(prefix, record, work);
+    }
+    refuse_terminal(
+        prefix,
+        terminal(work, dudes_proto::TurnOutcome::Vanished),
+        work,
+    );
+    let mut record = terminal(work, dudes_proto::TurnOutcome::NoResult);
+    let Record::TurnEnded { outcome, .. } = &mut record else {
+        unreachable!()
+    };
+    *outcome = None;
+    refuse_terminal(prefix, record, work);
+}
+
 #[test]
 fn issue_bound_claims_consume_only_matching_no_spawn_terminal_evidence() {
-    for refused in [false, true] {
+    for outcome in [
+        dudes_proto::TurnOutcome::Completed,
+        dudes_proto::TurnOutcome::MaxTurns,
+        dudes_proto::TurnOutcome::BudgetExhausted,
+        dudes_proto::TurnOutcome::Failed {
+            reason: "observed child failure".into(),
+        },
+        dudes_proto::TurnOutcome::NoResult,
+        dudes_proto::TurnOutcome::Killed {
+            by: dudes_proto::KillReason::Halt,
+        },
+        dudes_proto::TurnOutcome::NotLaunched {
+            reason: "host failure".into(),
+        },
+        dudes_proto::TurnOutcome::LaunchRefused {
+            reason: "adapter refusal".into(),
+        },
+    ] {
         let (mut prefix, authorization, other) = collision_prefix(false);
         let at =
             prefix.recovery_append(Record::RecoveryAuthorized(Box::new(authorization.clone())));
@@ -808,20 +855,7 @@ fn issue_bound_claims_consume_only_matching_no_spawn_terminal_evidence() {
         };
         assert_eq!(issue.lsn, issue_lsn);
         assert_eq!(prefix.world.turns[&turn].spawn_lsn, None);
-        refuse_terminal(
-            &mut prefix,
-            terminal(work, dudes_proto::TurnOutcome::NoResult),
-            work,
-        );
-        let outcome = if refused {
-            dudes_proto::TurnOutcome::LaunchRefused {
-                reason: "adapter refusal".into(),
-            }
-        } else {
-            dudes_proto::TurnOutcome::NotLaunched {
-                reason: "host failure".into(),
-            }
-        };
+        refuse_unproven_terminal(&mut prefix, work);
         let mut unrelated = terminal(work, outcome.clone());
         if let Record::TurnEnded { agent, .. } = &mut unrelated {
             *agent = other.agent;

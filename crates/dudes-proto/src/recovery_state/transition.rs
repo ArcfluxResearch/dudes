@@ -814,10 +814,19 @@ fn validate_consumption(
         RecoveryEvidence::End {
             mode: Mode::Managed,
             provenance: Provenance::Observed,
-            outcome: RecoveryEndClass::NotLaunched | RecoveryEndClass::LaunchRefused,
+            outcome:
+                RecoveryEndClass::Completed
+                | RecoveryEndClass::MaxTurns
+                | RecoveryEndClass::BudgetExhausted
+                | RecoveryEndClass::Failed
+                | RecoveryEndClass::NoResult
+                | RecoveryEndClass::Other
+                | RecoveryEndClass::NotLaunched
+                | RecoveryEndClass::LaunchRefused,
             ..
         } if source.reference().kind == RecordKind::TurnEnded
-            && context.previous_spawn_lsn.is_none() =>
+            && context.previous_spawn_lsn.is_none()
+            && context.previous_end_lsn.is_none() =>
         {
             Ok(())
         }
