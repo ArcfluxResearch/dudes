@@ -211,6 +211,31 @@ fn an_issued_turn_is_reissued_unchanged_and_gains_no_baseline() {
             .all(|seen| !matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. })),
         "plain Resume does not supply recovery consent"
     );
+    let mut instructions = dudes_proto::instruction_state::InstructionState::default();
+    let hash = |bytes: &[u8]| Hex32::new(*blake3::hash(bytes).as_bytes());
+    for (index, entry) in harness.journal.iter().enumerate() {
+        instructions
+            .apply_validated(Lsn(u64::try_from(index).unwrap() + 1), entry, hash)
+            .unwrap();
+    }
+    let goal = harness.supervisor.world().turns[&turn].goal.unwrap();
+    assert!(instructions.pending_for_goal(goal));
+    let watermark = instructions
+        .watermark(card(), hash)
+        .unwrap()
+        .expect("the legacy issue needs review");
+    harness.append_replayed(dudes_proto::Entry {
+        at: harness.journal.last().unwrap().at,
+        record: Record::TicketInstructionReviewed {
+            card: card(),
+            by: dudes_proto::Actor::Peer { pid: 17, uid: None },
+            expected_seq: Seq(2),
+            watermark,
+            action: dudes_proto::instruction::InstructionReviewAction::Accept {
+                completion: dudes_proto::instruction::InstructionAcceptCompletion::Continue,
+            },
+        },
+    });
     let expected = harness
         .supervisor
         .recovery_opportunity(agent)
@@ -239,6 +264,7 @@ fn an_issued_turn_is_reissued_unchanged_and_gains_no_baseline() {
         })
         .collect();
     assert_eq!(spawned, vec![turn]);
+    assert_eq!(harness.supervisor.world().turns[&turn].task, "ship it");
 }
 
 #[test]
