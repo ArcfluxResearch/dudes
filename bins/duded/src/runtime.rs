@@ -3587,12 +3587,27 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 "the daemon is shutting down, so the goal's check was not run",
             ));
         }
-        let Some(cwd) = shared_folder::canonical_folder(&cwd) else {
+        let Some(resolved) = shared_folder::canonical_folder(&cwd) else {
             self.ctx.baselines.end(run);
-            return Err(refused(
-                "the completion check's execution folder cannot be resolved",
-            ));
+            let reason = if !cwd.exists() {
+                format!("{} does not exist", cwd.display())
+            } else {
+                format!(
+                    "the execution folder {} cannot be resolved as a directory",
+                    cwd.display()
+                )
+            };
+            return Ok(Answered::CheckRunning(Box::new(
+                crate::baseline::Ticket::refused(
+                    run,
+                    argv,
+                    timeout_s,
+                    cwd,
+                    crate::baseline::Refusal::CannotRun(reason),
+                ),
+            )));
         };
+        let cwd = resolved;
         if !self.ctx.baselines.bind_folder(run, cwd.clone()) {
             return Err(error(
                 ErrorCode::InternalError,
@@ -8266,10 +8281,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             );
             return;
         };
-        let Some(cwd) = shared_folder::canonical_folder(&cwd) else {
-            queue.push_back(Input::PredicateEndedWithoutVerdict { goal });
+        let Some(resolved) = shared_folder::canonical_folder(&cwd) else {
+            let failure = predicate::spec_for(
+                argv,
+                &cwd,
+                &self.predicate_env,
+                self.predicate_path.as_deref(),
+            )
+            .err()
+            .unwrap_or_else(|| {
+                std::io::Error::other(
+                    "the predicate execution folder cannot be resolved as a directory",
+                )
+            });
+            let (pass, evidence) = predicate::refused(argv, &failure);
+            queue.push_back(Input::PredicateDone {
+                goal,
+                pass,
+                evidence,
+            });
             return;
         };
+        let cwd = resolved;
         let folder = cwd.clone();
         let argv = argv.clone();
         let timeout = Duration::from_secs(*timeout_s);

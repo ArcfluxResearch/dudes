@@ -71,6 +71,16 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         &self,
         agent: AgentId,
     ) -> Result<RecoveryOpportunity, RecoveryRefusal> {
+        let view = self.recovery_boundary(agent)?;
+        if view.required.reason != RecoveryReason::MissingSpawn
+            && view.required.binding.model_selection.is_none()
+        {
+            return Err(RecoveryRefusal::NotRecoverable);
+        }
+        Ok(view)
+    }
+
+    fn recovery_boundary(&self, agent: AgentId) -> Result<RecoveryOpportunity, RecoveryRefusal> {
         let binding = self.recovery_binding(agent)?;
         let facts = self.world.recovery_facts(&binding).map_err(refusal)?;
         if facts.control.halted
@@ -132,17 +142,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 view.expected.source_lsn =
                     facts.control_lsn.ok_or(RecoveryRefusal::StaleControl)?;
             }
-            if view.required.reason != RecoveryReason::MissingSpawn
-                && view.required.binding.model_selection.is_none()
-            {
-                return Err(RecoveryRefusal::NotRecoverable);
-            }
             return Ok(view);
         }
         for (reason, origin, boundary) in candidates {
-            if reason != RecoveryReason::MissingSpawn && binding.model_selection.is_none() {
-                continue;
-            }
             let required = RecoveryRequired {
                 binding: binding.clone(),
                 origin,
@@ -539,7 +541,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 return false;
             };
             if matches!(receipt.state, RecoveryClaimState::Consumed { .. }) {
-                return self.recovery_opportunity(agent).is_err();
+                return self.recovery_boundary(agent).is_err();
             }
             let Ok(facts) = self.world.recovery_facts(&receipt.authorization.binding) else {
                 return false;
@@ -567,7 +569,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 RecoveryClaimState::IssueBound(issue) => {
                     self.live_issues.contains(&issue.issued.work.turn)
                 }
-                RecoveryClaimState::Consumed { .. } => self.recovery_opportunity(agent).is_err(),
+                RecoveryClaimState::Consumed { .. } => self.recovery_boundary(agent).is_err(),
                 RecoveryClaimState::Invalidated { .. } | RecoveryClaimState::Superseded { .. } => {
                     false
                 }
@@ -582,7 +584,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return true;
         }
-        match self.recovery_opportunity(agent) {
+        match self.recovery_boundary(agent) {
             Ok(view) => view.required.reason == RecoveryReason::HeldOrPausedFailure,
             Err(_) => true,
         }
@@ -595,7 +597,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if self.closing_active {
             return false;
         }
-        if let Ok(view) = self.recovery_opportunity(agent) {
+        if let Ok(view) = self.recovery_boundary(agent) {
             let existing = self
                 .world
                 .recovery_projection()

@@ -280,6 +280,26 @@ impl std::fmt::Debug for Ticket {
 }
 
 impl Ticket {
+    /// A known preparation refusal with no worker or active run remaining.
+    pub(crate) fn refused(
+        id: u64,
+        argv: Vec<String>,
+        timeout_s: u64,
+        cwd: PathBuf,
+        refusal: Refusal,
+    ) -> Self {
+        let (send, outcome) = mpsc::channel();
+        let _ = send.send(Baseline::Refused(refusal));
+        Self {
+            id,
+            argv,
+            cwd,
+            timeout_s,
+            outcome,
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Wait for the run. A daemon that is stopping answers [`Baseline::Unavailable`] at once, so a
     /// waiting connection never holds the exit path's join; the run's child is swept with every
     /// other predicate child. A caller that `hang_up` reports gone ends the run's child and gets
