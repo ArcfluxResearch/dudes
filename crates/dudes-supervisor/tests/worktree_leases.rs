@@ -342,9 +342,6 @@ fn recover_available_tree(control: &mut Harness, control_agent: AgentId) -> Reco
     expected
 }
 
-/// the hold for a missing tree lands before the first decide. An agent with a goal and
-/// an issued turn that never spawned is re-issued at start, so without the hold the daemon would
-/// launch a turn into a tree that is gone. The restart that is told nothing is the control.
 #[test]
 fn a_missing_tree_holds_the_agent_before_the_first_decide_launches_into_it() {
     let scenario = || {
