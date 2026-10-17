@@ -819,7 +819,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             || self.announce_session(agent, false),
             |context| context.session.clone(),
         );
-        let recovered_task = recovery::with_recap(
+        let recovered_task = with_recap(
             task,
             recovery
                 .as_ref()
