@@ -220,6 +220,10 @@ fn instruction_wait_views_distinguish_finished_shared_review_from_pending_compar
     use dudes_proto::record::samples;
     use dudes_proto::{Entry, Record, RecordKind};
     use dudes_types::{Lsn, Seq, Timestamp};
+    let card = dudes_types::CardId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAZ").unwrap();
+    let goal = dudes_types::GoalId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAX").unwrap();
+    let agent = dudes_types::AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    let turn = dudes_types::TurnId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap();
     let hash = |bytes: &[u8]| {
         use sha2::{Digest as _, Sha256};
         Hex32::new(Sha256::digest(bytes).into())
@@ -243,8 +247,8 @@ fn instruction_wait_views_distinguish_finished_shared_review_from_pending_compar
             .unwrap();
     }
     let ticket = I::InstructionTicketAssociation {
-        card: samples::card(),
-        goal: samples::goal(),
+        card,
+        goal,
         assignment_lsn: Lsn(2),
         seq_at_start: Seq(2),
     };
@@ -283,9 +287,9 @@ fn instruction_wait_views_distinguish_finished_shared_review_from_pending_compar
             )
             .unwrap();
     }
-    assert!(state.pending_for_goal(samples::goal()));
+    assert!(state.pending_for_goal(goal));
     assert_eq!(
-        instruction_waits(&state, Some(samples::card())),
+        instruction_waits(&state, Some(card)),
         (RecoveryWaitStatus::Ready, RecoveryWaitStatus::Waiting)
     );
     let change = I::InstructionPathChange {
@@ -294,7 +298,7 @@ fn instruction_wait_views_distinguish_finished_shared_review_from_pending_compar
         },
         context: I::InstructionPathContext::SharedProject,
         source: I::InstructionInputSource {
-            agent: samples::agent(),
+            agent,
             rule: 0,
             root: I::NativeInstructionPath::Utf8 {
                 value: "/work/project".into(),
@@ -313,7 +317,7 @@ fn instruction_wait_views_distinguish_finished_shared_review_from_pending_compar
         baseline: I::InstructionBaselineRef::Started { lsn: Lsn(4) },
         settlement: I::InstructionSettlement::Compared {
             end: I::InstructionEndBoundary::ManagedTurn {
-                turn: samples::turn(),
+                turn,
                 end_lsn: Lsn(6),
             },
             sampled_at: Timestamp::UNIX_EPOCH,
@@ -336,9 +340,9 @@ fn instruction_wait_views_distinguish_finished_shared_review_from_pending_compar
             hash,
         )
         .unwrap();
-    assert!(state.pending_for_goal(samples::goal()));
+    assert!(state.pending_for_goal(goal));
     assert_eq!(
-        instruction_waits(&state, Some(samples::card())),
+        instruction_waits(&state, Some(card)),
         (RecoveryWaitStatus::Waiting, RecoveryWaitStatus::Ready)
     );
     assert_eq!(

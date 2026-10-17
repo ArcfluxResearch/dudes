@@ -569,7 +569,7 @@ fn recovery_checkout_admission_uses_actual_check_folders_for_every_engine() {
         for (cwd, allowed) in [(&actual, false), (&other, true)] {
             let mut params = common::hire_params(cwd);
             params.provider = provider;
-            params.budget.tokens_per_day = Some(100_000);
+            params.budget.tokens_per_day = Some(dudes_types::Tokens::new(100_000));
             let Answered::Hired(hired) = daemon.ask(Ask::Hire(Box::new(params))).unwrap() else {
                 panic!("the candidate hire must return its recorded owner");
             };
