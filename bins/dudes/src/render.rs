@@ -2,11 +2,12 @@
 //!
 //! # Two modes, one source
 //!
-//! `--json` writes the **contract's own type**, serialised. Not a shape of this binary's invention
-//! and not the daemon's bytes echoed back: the value is deserialised into `dudes_proto`'s type first
-//! and re-serialised from there, so a `--json` run that succeeds is also a proof that the answer
-//! *was* that type. A caller parses `HireResult`, `WhyResult`, `PingResult` or
+//! `--json` writes command results as the contract's own types. The daemon's value is deserialised
+//! into `dudes_proto` and re-serialised. A caller parses `HireResult`, `WhyResult`, `PingResult` or
 //! `JournalAppendedParams` against `schemas/rpc.schema.json` and never scrapes a line of prose.
+//! Recovery submission has one client-only exception. A missing or malformed reply produces
+//! `{"state":"reply_unavailable","request_id":"..."}` rather than a daemon result. The retained ID
+//! supports a separate receipt read, and the CLI does not resend the submission.
 //!
 //! The human mode is prose and is not a contract. Nothing should parse it, which is why the
 //! machine-readable mode exists at all.
