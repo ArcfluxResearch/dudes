@@ -1,10 +1,10 @@
 //! What Linux and macOS do the same way: make every child a process-group leader, signal a
 //! process or a group, and ask whether a group still has anything in it.
 //!
-//! No `unsafe` here and none needed. Every syscall on this path is reached through `rustix`'s safe
-//! wrappers, and the group is established by [`CommandExt::process_group`], which is safe and needs
-//! no `pre_exec` closure — `pre_exec` is an `unsafe fn` because it runs between fork and exec, and
-//! nothing here has to.
+//! No `unsafe` in this module. Every syscall on this path is reached through `rustix`'s safe
+//! wrappers, and the group is established by [`CommandExt::process_group`], which is safe. The one
+//! `pre_exec` closure `prepare` installs, which clears the child's signal mask, lives in
+//! `sigmask.rs`, the module the unsafe grant names for it.
 
 use std::io;
 use std::os::unix::process::CommandExt as _;

@@ -22,10 +22,14 @@ use nix::sys::signal::{SigSet, Signal};
 mod common;
 
 /// Long enough that a run which waits it out is plainly the grace and not scheduling noise.
-const GRACE: Duration = Duration::from_secs(4);
+const GRACE: Duration = Duration::from_secs(10);
 
 /// Well under [`GRACE`], well over a polite stop on a loaded machine.
 const PROMPT: Duration = Duration::from_secs(2);
+
+/// The one-shot run's timeout. It starts at spawn, so it must outlast the shell starting and
+/// installing its trap, or a slow machine looks like the bug.
+const ONE_SHOT_TIMEOUT: Duration = Duration::from_millis(1500);
 
 fn block_sigterm() {
     let mut set = SigSet::empty();
@@ -99,7 +103,7 @@ fn a_one_shot_child_receives_the_stop_signal_the_daemon_thread_blocks() {
 
     let started = Instant::now();
     let outcome = runner
-        .run(&trapping_spec(dir.path()), Duration::from_millis(500))
+        .run(&trapping_spec(dir.path()), ONE_SHOT_TIMEOUT)
         .expect("run");
     let elapsed = started.elapsed();
 
@@ -114,11 +118,16 @@ fn a_one_shot_child_receives_the_stop_signal_the_daemon_thread_blocks() {
         "{outcome:?}"
     );
     assert!(
+        dir.path().join("ready").exists(),
+        "the shell had not started within the {ONE_SHOT_TIMEOUT:?} timeout; the machine is too slow \
+         for this test, which says nothing about the signal mask"
+    );
+    assert!(
         dir.path().join("term").exists(),
         "the child never saw SIGTERM; the run took {elapsed:?}"
     );
     assert!(
-        elapsed < PROMPT,
+        elapsed < ONE_SHOT_TIMEOUT + PROMPT,
         "the run took {elapsed:?}, so it waited out the grace"
     );
 }
