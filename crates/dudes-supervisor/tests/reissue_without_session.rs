@@ -4,10 +4,7 @@ use std::collections::BTreeMap;
 
 use dudes_proto::record::Hex32;
 use dudes_proto::recovery::RecoveryAttribution;
-use dudes_proto::{
-    AutomaticHold, Entry, ExitStatus, HoldReason, InstructionBaselineRef, LoopDecision, Record,
-    TurnOutcome,
-};
+use dudes_proto::{AutomaticHold, Entry, ExitStatus, InstructionBaselineRef, Record, TurnOutcome};
 use dudes_providers::claude::ClaudeAdapter;
 use dudes_providers::claude::config::ClaudeConfig;
 use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
@@ -369,12 +366,11 @@ fn replay_refusal_ends_without_child_clears_session_and_next_turn_is_first() {
     );
     assert!(harness.records().any(|record| matches!(
         record,
-        Record::LoopDecided {
-            decision: LoopDecision::Hold {
-                reason: HoldReason::LaunchRefused
-            },
-            ..
-        }
+        Record::AgentHeld {
+            agent: held,
+            provenance: Provenance::Observed,
+            cause: AutomaticHold::LaunchRefused { reason },
+        } if *held == agent && reason == "task contains a NUL byte at byte offset 4"
     )));
     consent(
         &mut harness,
