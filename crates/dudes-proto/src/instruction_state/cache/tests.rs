@@ -696,6 +696,72 @@ fn prior_run_key_survives_keyed_cache_and_settlement_replay() {
     );
 }
 
+#[test]
+fn prior_run_proof_requires_the_first_spawn_even_when_a_later_key_matches() {
+    let mut h = Harness::default();
+    let ticket = Some(h.ticket_prefix());
+    let initial = owner(samples::turn(), InstructionIssueAssociation::Prospective);
+    h.apply(3, start(initial, ticket), None);
+    h.apply(4, samples::record(RecordKind::TurnIssued), None);
+    let first = samples::record(RecordKind::TurnSpawned);
+    let mut later = first.clone();
+    if let Record::TurnSpawned {
+        pid, start_time, ..
+    } = &mut later
+    {
+        *pid += 1;
+        *start_time += 1;
+    }
+    h.apply(5, first.clone(), None);
+    h.apply(6, later.clone(), None);
+    for lsn in [Lsn(5), Lsn(6)] {
+        let native = &h.full.native_receipts[&lsn];
+        assert_eq!(native.started, Lsn(3));
+        assert_eq!(
+            native.receipt,
+            InstructionNativeBoundaryReceipt::Spawned { lsn }
+        );
+    }
+    let settlement = |lsn, spawned: &Record| {
+        let Record::TurnSpawned {
+            pid,
+            start_time,
+            boot,
+            ..
+        } = spawned
+        else {
+            unreachable!()
+        };
+        Record::InstructionAttemptBoundarySettled {
+            owner: initial,
+            started_lsn: Lsn(3),
+            proof: InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                receipt: InstructionNativeBoundaryReceipt::Spawned { lsn },
+                pid: *pid,
+                start_time: *start_time,
+                boot: boot.clone(),
+                leader: crate::PriorRunLeader::NoSuchProcess,
+            },
+        }
+    };
+    reject_boundary(
+        &h,
+        settlement(Lsn(6), &later),
+        InstructionStateError::Boundary,
+    );
+    let accepted = settlement(Lsn(5), &first);
+    let Record::InstructionAttemptBoundarySettled { proof, .. } = accepted.clone() else {
+        unreachable!()
+    };
+    h.apply(7, accepted, None);
+    let attempt = h.full.attempt(Lsn(3)).unwrap();
+    assert_eq!(attempt.spawn_lsn, Some(Lsn(5)));
+    assert_eq!(
+        attempt.boundary_settled,
+        Some(crate::instruction_state::InstructionBoundarySettlement { lsn: Lsn(7), proof })
+    );
+}
+
 fn unsettled_attachments() -> (Harness, InstructionObservationOwner, Record) {
     let mut h = Harness::default();
     h.apply(1, samples::record(RecordKind::Attached), None);
@@ -727,7 +793,7 @@ fn unsettled_attachments() -> (Harness, InstructionObservationOwner, Record) {
     (h, process, spawned)
 }
 
-fn reject_attached_boundary(h: &Harness, record: Record, expected: InstructionStateError) {
+fn reject_boundary(h: &Harness, record: Record, expected: InstructionStateError) {
     let entry = stamp(record);
     let mut full = h.full.clone();
     let rows = h.memory.rows.clone();
@@ -805,7 +871,7 @@ fn prior_run_pty_proof_requires_the_exact_attempt_receipt_and_adoption_key() {
         } else {
             InstructionStateError::Boundary
         };
-        reject_attached_boundary(
+        reject_boundary(
             &h,
             Record::InstructionAttemptBoundarySettled {
                 owner,
