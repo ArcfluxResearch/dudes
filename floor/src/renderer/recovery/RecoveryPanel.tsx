@@ -108,18 +108,24 @@ export function RecoveryReceiptsView({ floor, memory }: { readonly floor: FloorS
   return <>{[...memory.requests.entries()].map(([id, request]) => {
     const receipt = requestReceipt(request);
     return <section key={id} className="recovery-receipt" aria-live="polite"
-    aria-labelledby={`recovery-receipt-${id}`} data-recovery-outcome={request.outcome?.state ?? 'sending'}>
+    aria-labelledby={`recovery-receipt-${id}`} data-recovery-outcome={receipt === null ? request.outcome?.state ?? 'sending' : 'accepted'}>
     <h3 id={`recovery-receipt-${id}`} tabIndex={-1}>Recovery request · {request.name}</h3>
     <dl className="hire-facts"><div><dt>RequestId</dt><dd>{id}</dd></div>
       <div><dt>GoalId</dt><dd>{request.payload.expected.work.goal}</dd></div>
       <div><dt>Context choice</dt><dd>{CHOICES[request.payload.choice]}</dd></div></dl>
     <RequestOutcome request={request} />
     {receipt === null ? null : <ReceiptFacts receipt={receipt} />}
+    {receipt === null || !request.checking && (request.read === null || request.read.state === 'found') ? null : <p>These receipt facts are retained from an earlier response.
+      The current lifecycle has not been reconfirmed.</p>}
     {request.read?.state === 'absent' ? <p>No durable authorization was found for this request through record {request.read.checked_through}.
       A required barrier or Resume prefix may still have been recorded. This does not prove that nothing happened.
       Inspect explicitly and make a fresh choice before any new request.</p> : null}
-    {request.read?.state === 'unavailable' ? <p>Receipt presence and absence could not be certified. The retained request remains unchanged.</p> : null}
-    {request.read?.state === 'unknown' ? <p>The receipt reply was lost or unreadable. Its presence and absence remain unknown.</p> : null}
+    {request.read?.state === 'unavailable' ? <p>{receipt === null
+      ? 'Receipt presence and absence could not be certified. The retained request remains unchanged.'
+      : 'The latest lookup could not certify the current lifecycle. Earlier authorization facts are retained.'}</p> : null}
+    {request.read?.state === 'unknown' ? <p>{receipt === null
+      ? 'The receipt reply was lost or unreadable. Its presence and absence remain unknown.'
+      : 'The latest receipt reply was lost or unreadable. Its current lifecycle could not be read. Earlier authorization facts are retained.'}</p> : null}
     {request.read?.state === 'forbidden' ? <p>This reader cannot check the receipt. Paste a new link from dudes floor open into this tab,
       then press Check receipt explicitly. The earlier request is kept and is never resubmitted.</p> : null}
     <button type="button" aria-disabled={request.submitting || request.checking || !liveReader(floor)} aria-busy={request.checking}
@@ -133,13 +139,22 @@ export function RecoveryReceiptsView({ floor, memory }: { readonly floor: FloorS
 function RequestOutcome({ request }: { readonly request: RecoveryRequest }) {
   if (request.submitting) return <p role="status">Sending one recovery choice… The request identity is already retained.</p>;
   const outcome = request.outcome;
-  if (outcome?.state === 'accepted') return <p>Authorization recorded. Its durable claim does not by itself prove issuance, launch, success or restored history.</p>;
-  if (outcome?.state === 'refused') return <><p role="alert">Recovery refused. {REFUSALS[outcome.reason]} No authorization was acquired by this submission.</p>
+  const recorded = requestReceipt(request) !== null;
+  return <>
+    {recorded ? <p>Authorization recorded. Its durable claim does not by itself prove issuance, launch, success or restored history.</p> : null}
+    {outcome?.state === 'accepted' ? null : <SubmissionOutcome request={request} historical={recorded} />}
+  </>;
+}
+function SubmissionOutcome({ request, historical }: { readonly request: RecoveryRequest; readonly historical: boolean }) {
+  const outcome = request.outcome;
+  if (outcome?.state === 'refused') return <><p role="alert">{historical ? 'Original submission refused.' : 'Recovery refused.'} {REFUSALS[outcome.reason]} No authorization was acquired by this submission.</p>
     {outcome.prefix.required === null && outcome.prefix.resume === null ? null : <p>Acknowledged prefix. Recovery barrier {outcome.prefix.required ?? 'none'}.
       Resume {outcome.prefix.resume ?? 'none'}. These records do not authorize work.</p>}</>;
+  if (outcome?.state === 'forbidden' && historical) return <p>The original submission was refused under its Floor session. Its frozen request and outcome are kept.</p>;
   if (outcome?.state === 'forbidden') return <p role="alert">This Floor session could not authorize recovery. The frozen request is kept.
     Paste a new link from dudes floor open into this tab, then inspect explicitly. Nothing is resent automatically.</p>;
-  return <p role="status">Authorization is unknown. The daemon may have recorded this choice even though its reply was lost or unreadable.
+  if (historical) return <p>Original submission outcome was unknown. A later matching receipt established authorization. The original outcome is kept in this request's history.</p>;
+  return <p role="status">Authorization is unknown. The daemon may have recorded this choice, but the submission response did not establish it.
     Keep this request identity and check its receipt. This page never resubmits it.</p>;
 }
 function ReceiptFacts({ receipt }: { readonly receipt: Receipt }) {
@@ -148,7 +163,8 @@ function ReceiptFacts({ receipt }: { readonly receipt: Receipt }) {
     <h4>Last recorded receipt facts</h4>
     {status.state === 'pending' ? <p>Pending. The authorized new turn has not been issued. Remaining admission gates still apply.</p>
       : status.state === 'issue_bound' ? <p>Issue-bound. Turn {status.turn} is recorded at {status.issue_lsn}; no consuming physical receipt is established.</p>
-        : status.state === 'consumed' ? <p>Consumed. One authorized attempt closed at record {status.evidence_lsn}. This can include a terminal failure without a recorded launch.</p>
+        : status.state === 'consumed' ? <p>Consumed. Authorization was consumed at record {status.evidence_lsn}. This does not establish process termination.
+          It can also reflect a terminal failure without a recorded launch.</p>
           : status.state === 'invalidated' ? <p>Invalidated. {INVALIDATIONS[status.reason]} Unused consent is closed and cannot rearm.</p>
             : <p>Superseded. A later missing-launch episode replaced this consent at record {status.barrier_lsn}. A fresh explicit choice is required.</p>}
     <p>{receipt.attempt.spawn === null ? 'No launch is recorded in this receipt.' : `Launch recorded at ${receipt.attempt.spawn}.`}

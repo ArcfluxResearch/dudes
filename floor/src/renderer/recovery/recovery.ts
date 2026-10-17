@@ -34,6 +34,7 @@ export interface RecoveryRequest {
   readonly read: ReadOutcome | null;
   readonly lastReceipt: Receipt | null;
   readonly settledAfterInspection: number;
+  readonly finishedAfterInspection: number | null;
 }
 export interface RecoveryState {
   readonly inspections: ReadonlyMap<string, InspectionView>;
@@ -97,6 +98,8 @@ export function blocksDraft(draft: Draft, memory: RecoveryState = state): boolea
   if (draft.requestId !== null) return true;
   return [...memory.requests.values()].some(request => {
     if (!sameWork(request.payload.expected.work, draft.inspection.expected.work)) return false;
+    if (request.read?.state === 'absent' && draft.sequence <= request.settledAfterInspection) return true;
+    if (inspectedSuccessor(request, draft)) return false;
     const receipt = requestReceipt(request);
     if (request.read?.state === 'absent' || request.outcome?.state === 'refused' || request.outcome?.state === 'forbidden'
       || receipt?.status.state === 'invalidated' || receipt?.status.state === 'superseded') return draft.sequence <= request.settledAfterInspection;
@@ -104,6 +107,14 @@ export function blocksDraft(draft: Draft, memory: RecoveryState = state): boolea
       || JSON.stringify(request.payload.expected) === JSON.stringify(draft.inspection.expected);
     return true;
   });
+}
+function inspectedSuccessor(request: RecoveryRequest, draft: Draft): boolean {
+  if (request.submitting || request.finishedAfterInspection === null || draft.sequence <= request.finishedAfterInspection) return false;
+  const next = draft.inspection.expected;
+  if (next.episode === null || next.expected_predecessor !== null || !sameWork(next.episode.work, next.work)) return false;
+  const previous = request.lastReceipt?.claim.episode
+    ?? (request.payload.expected.expected_predecessor === null ? request.payload.expected.episode : null);
+  return previous !== null && sameWork(previous.work, next.work) && previous.origin !== next.episode.origin;
 }
 function init(body: string, csrf: string): RequestInit {
   return { method: 'POST', credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'no-referrer',
@@ -160,7 +171,7 @@ export async function submitRecovery(key: string, deps: RecoveryDeps): Promise<v
   const payload = freeze({ request_id: requestId, expected: draft.inspection.expected, choice: draft.choice });
   const row = deps.floor().agents.find(row => row.id === payload.expected.work.agent);
   const request: RecoveryRequest = Object.freeze({ payload, body: JSON.stringify(payload), name: typeof row?.name === 'string' ? row.name : payload.expected.work.agent,
-    submitting: true, outcome: null, checking: false, read: null, lastReceipt: null, settledAfterInspection: 0 });
+    submitting: true, outcome: null, checking: false, read: null, lastReceipt: null, settledAfterInspection: 0, finishedAfterInspection: null });
   commit({ ...state, drafts: new Map(state.drafts).set(key, Object.freeze({ ...draft, requestId: payload.request_id })),
     requests: new Map(state.requests).set(payload.request_id, request) });
   let outcome: SubmitOutcome = { state: 'unknown', request_id: payload.request_id };
@@ -173,7 +184,7 @@ export async function submitRecovery(key: string, deps: RecoveryDeps): Promise<v
     else if (decoded?.state === 'accepted' && receiptMatches(decoded.receipt, request)) outcome = freeze(decoded);
   } catch {}
   const lastReceipt = outcome.state === 'accepted' ? outcome.receipt : null;
-  updateRequest(payload.request_id, { submitting: false, outcome, lastReceipt,
+  updateRequest(payload.request_id, { submitting: false, outcome, lastReceipt, finishedAfterInspection: inspectionNumber,
     settledAfterInspection: outcome.state === 'refused' || outcome.state === 'forbidden' || closedReceipt(lastReceipt) ? inspectionNumber : 0 });
 }
 function closedReceipt(receipt: Receipt | null): boolean {
@@ -184,7 +195,7 @@ function receiptMatches(receipt: Receipt, request: RecoveryRequest): boolean {
   const known = requestReceipt(request);
   return receipt.request_id === request.payload.request_id && receipt.choice === request.payload.choice
     && sameWork(receipt.claim.episode.work, request.payload.expected.work)
-    && (expectedEpisode === null || receipt.claim.episode.origin === expectedEpisode.origin)
+    && (expectedEpisode === null || request.payload.expected.expected_predecessor !== null || receipt.claim.episode.origin === expectedEpisode.origin)
     && (known === null || receipt.claim.episode.origin === known.claim.episode.origin
       && receipt.claim.authorization_lsn === known.claim.authorization_lsn);
 }

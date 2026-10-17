@@ -111,6 +111,11 @@ test('strict recovery decoders retain literal decimal positions and reject priva
   assert.equal(wire.decodeSubmission(200, JSON.stringify({ state: 'unknown', request_id: ID })), null);
   assert.deepEqual(wire.decodeReceipt(`{"state":"absent","checked_through":"${MAX}"}`), { state: 'absent', checked_through: MAX });
   assert.deepEqual(wire.decodeReceipt('{"state":"unavailable","reason":"uncertified"}'), { state: 'unavailable', reason: 'uncertified' });
+  for (const invalidId of ['AB'.repeat(32), 'gg'.repeat(32), 'a'.repeat(63), 'a'.repeat(65), 123, null]) {
+    assert.equal(wire.decodeSubmission(202, JSON.stringify({ state: 'unknown', request_id: invalidId })), null);
+    assert.equal(wire.decodeSubmission(200, JSON.stringify({ state: 'accepted', receipt: receipt(invalidId) })), null);
+    assert.equal(wire.decodeReceipt(JSON.stringify({ state: 'found', receipt: receipt(invalidId) })), null);
+  }
 });
 
 test('inspection offers only advertised context choices, literal repeat warnings and remaining admission waits', async () => {
@@ -174,6 +179,43 @@ test('one explicit press freezes the full selector and request before await and 
   assert.match(receipts(), /does not by itself prove issuance, launch, success or restored history/);
 });
 
+test('a matching receipt establishes authorization after a lost submit reply and later lookup loss preserves historical facts', async () => {
+  floor();
+  const known = receipt();
+  const net = network([new TypeError('lost submission'), reply(200, { state: 'found', receipt: known }),
+    reply(200, { state: 'unavailable', reason: 'uncertified' }), new TypeError('lost lookup')]);
+  const original = await inspected(net); model.chooseRecovery(original.key, 'try_recorded'); await model.submitRecovery(original.key, net.deps);
+  assert.match(receipts(), /Authorization is unknown/);
+  await model.checkRecoveryReceipt(ID, net.deps);
+  let html = receipts();
+  assert.match(html, /Authorization recorded/);
+  assert.doesNotMatch(html, /Authorization is unknown/);
+  assert.match(html, /Original submission outcome was unknown/);
+  assert.match(html, /data-recovery-outcome="accepted"/);
+  for (let check = 0; check < 2; check++) {
+    await model.checkRecoveryReceipt(ID, net.deps); html = receipts();
+    assert.match(html, /Authorization recorded/);
+    assert.doesNotMatch(html, /Authorization is unknown/);
+    assert.match(html, /current lifecycle has not been reconfirmed/);
+    assert.doesNotMatch(html, /presence and absence remain unknown|Receipt presence and absence could not be certified/);
+    assert.deepEqual(model.getRecoveryState().requests.get(ID).lastReceipt, known);
+    assert.equal(model.getRecoveryState().requests.get(ID).outcome.state, 'unknown');
+  }
+});
+
+test('consumed consent with a recorded Spawn and no end never says the physical attempt closed', async () => {
+  floor();
+  const consumed = receipt(ID, { state: 'consumed', turn: OTHER, issue_lsn: '99', evidence_lsn: '100' },
+    { attempt: { spawn: '100', confirmation: null, end: null } });
+  const net = network([reply(200, { state: 'accepted', receipt: consumed })]);
+  const original = await inspected(net); model.chooseRecovery(original.key, 'try_recorded'); await model.submitRecovery(original.key, net.deps);
+  const html = receipts();
+  assert.match(html, /Consumed\. Authorization was consumed at record 100/);
+  assert.match(html, /Launch recorded at 100/);
+  assert.match(html, /No end is recorded/);
+  assert.doesNotMatch(html, /attempt closed|process ended|process terminated/);
+});
+
 test('off, stale, changed goal or control and fresh sign-in retain drafts without sending or rebinding selectors', async () => {
   floor(); const net = network(); const original = await inspected(net); model.chooseRecovery(original.key, 'try_recorded');
   for (const change of [() => floor({ enabled: false }), () => { floor(); store.noteTransport('close'); },
@@ -185,6 +227,41 @@ test('off, stale, changed goal or control and fresh sign-in retain drafts withou
     assert.deepEqual(model.getRecoveryState().drafts.get(original.key).inspection.expected, EXPECTED);
     assert.match(panel(), /kept|Inspect again/);
   }
+});
+
+test('same-epoch goal and control changes and session-only reauthentication each fence the old draft', async () => {
+  for (const changedRow of [{ ...ROW, goal: { ...ROW.goal, id: OTHER } }, { ...ROW, control_lsn: '91' }]) {
+    model.resetRecovery(); floor(); const net = network();
+    const original = await inspected(net); model.chooseRecovery(original.key, 'try_recorded');
+    const epoch = store.getFloorState().epoch;
+    store.applyServerFrame(JSON.stringify({ type: 'floor.delta', delta: { lsn: 92, agents: [changedRow] } }), epoch);
+    assert.equal(store.getFloorState().epoch, epoch);
+    assert.equal(store.getFloorState().snapshotEpoch, epoch);
+    assert.equal(store.getFloorState().stale, false);
+    assert.equal(model.draftProblem(original, store.getFloorState(), net.deps.session()),
+      'The inspected target changed. Inspect again and make a fresh choice. The earlier request keeps its original target.');
+    await model.submitRecovery(original.key, net.deps); assert.equal(net.calls.length, 0);
+    assert.deepEqual(model.getRecoveryState().drafts.get(original.key).inspection.expected, EXPECTED);
+  }
+  model.resetRecovery(); floor(); const sessionNet = network();
+  const original = await inspected(sessionNet); model.chooseRecovery(original.key, 'try_recorded');
+  const before = store.getFloorState(); sessionNet.reauth();
+  assert.equal(store.getFloorState(), before);
+  assert.equal(model.draftProblem(original, before, sessionNet.deps.session()),
+    'This page has a different Floor session or snapshot. Inspect again and make a fresh choice. Nothing is sent automatically.');
+  await model.submitRecovery(original.key, sessionNet.deps); assert.equal(sessionNet.calls.length, 0);
+});
+
+test('a live unchanged target remains submit-capable after a same-epoch projection update', async () => {
+  floor(); const net = network([reply(202, { state: 'unknown', request_id: ID })]);
+  const original = await inspected(net); model.chooseRecovery(original.key, 'try_recorded');
+  const epoch = store.getFloorState().epoch;
+  store.applyServerFrame(JSON.stringify({ type: 'floor.delta', delta: { lsn: 92, agents: [ROW] } }), epoch);
+  assert.equal(model.draftProblem(original, store.getFloorState(), net.deps.session()), null);
+  await model.submitRecovery(original.key, net.deps);
+  assert.deepEqual(net.calls.map(call => [call.url, call.body]), [
+    ['/floor/recovery/submit', { request_id: ID, expected: EXPECTED, choice: 'try_recorded' }],
+  ]);
 });
 
 test('lost or malformed submission is unknown, and authenticated receipt lookup works when grants are off without resending', async () => {
@@ -235,11 +312,201 @@ test('Absent permits only a fresh explicit inspection and choice, preserving old
   assert.equal(model.getRecoveryState().requests.get(ID).outcome.state, 'unknown');
 });
 
+test('an inspection started before Absent stays fenced even when its response arrives after the receipt', async () => {
+  floor(); const inspectionReply = held();
+  const net = network([new TypeError('lost'), () => inspectionReply.promise,
+    reply(200, { state: 'absent', checked_through: MAX }), reply(200, INSPECTION),
+    reply(202, { state: 'unknown', request_id: '02'.repeat(32) })]);
+  const original = await inspected(net); model.chooseRecovery(original.key, 'try_recorded'); await model.submitRecovery(original.key, net.deps);
+  const frozen = model.getRecoveryState().requests.get(ID).body;
+  const beforeAbsent = model.inspectRecovery(AGENT, net.deps);
+  assert.equal(model.getRecoveryState().inspections.get(AGENT).kind, 'loading');
+  await model.checkRecoveryReceipt(ID, net.deps);
+  assert.equal(model.getRecoveryState().requests.get(ID).read.state, 'absent');
+  inspectionReply.resolve(reply(200, INSPECTION)); await beforeAbsent;
+  const late = draft(); model.chooseRecovery(late.key, 'try_recorded');
+  await model.submitRecovery(late.key, net.deps);
+  assert.deepEqual(net.calls.map(call => call.url), ['/floor/recovery/submit', '/floor/recovery/inspect', '/floor/recovery/receipt']);
+  await model.inspectRecovery(AGENT, net.deps); const fresh = draft();
+  assert.equal(fresh.choice, null);
+  await model.submitRecovery(fresh.key, net.deps); assert.equal(net.calls.length, 4);
+  model.chooseRecovery(fresh.key, 'fresh_with_recap'); await model.submitRecovery(fresh.key, net.deps);
+  assert.deepEqual(net.calls.map(call => call.url), ['/floor/recovery/submit', '/floor/recovery/inspect', '/floor/recovery/receipt',
+    '/floor/recovery/inspect', '/floor/recovery/submit']);
+  assert.equal(model.getRecoveryState().requests.get(ID).body, frozen);
+  assert.equal(model.getRecoveryState().requests.get(ID).outcome.state, 'unknown');
+  assert.equal(model.getRecoveryState().requests.size, 2);
+});
+
+test('client lifecycle guards keep pending and issued consent exclusive and require new inspection and choice after terminal closure', async () => {
+  const issued = { state: 'issue_bound', turn: OTHER, issue_lsn: '95' };
+  const nextWork = { ...WORK, turn: OTHER };
+  const successor = { work: nextWork, origin: '99' };
+  const closures = [
+    { state: 'pending' }, issued,
+    { state: 'consumed', turn: OTHER, issue_lsn: '95', evidence_lsn: '96' },
+    { state: 'invalidated', invalidation_lsn: '97', reason: 'authority_unavailable' },
+    { state: 'superseded', turn: OTHER, issue_lsn: '95', successor, barrier_lsn: '99' },
+  ];
+  for (const status of closures) {
+    model.resetRecovery(); floor(); const answers = []; const net = network(answers);
+    answers.push(reply(200, INSPECTION)); await model.inspectRecovery(AGENT, net.deps);
+    const original = draft(); model.chooseRecovery(original.key, 'try_recorded');
+    answers.push(reply(200, { state: 'accepted', receipt: receipt() })); await model.submitRecovery(original.key, net.deps);
+    const frozen = model.getRecoveryState().requests.get(ID).body;
+    answers.push(reply(200, INSPECTION)); await model.inspectRecovery(AGENT, net.deps);
+    const earlierDraft = draft(); model.chooseRecovery(earlierDraft.key, 'try_recorded');
+    await model.submitRecovery(earlierDraft.key, net.deps); assert.equal(net.calls.length, 3);
+    answers.push(reply(200, { state: 'found', receipt: receipt(ID, status,
+      status.state === 'consumed' ? { attempt: { spawn: '96', confirmation: null, end: '97' } } : {}) }));
+    await model.checkRecoveryReceipt(ID, net.deps);
+    await model.submitRecovery(earlierDraft.key, net.deps); assert.equal(net.calls.length, 4);
+    if (status.state === 'pending' || status.state === 'issue_bound' || status.state === 'consumed') {
+      answers.push(reply(200, INSPECTION)); await model.inspectRecovery(AGENT, net.deps);
+      const same = draft(); model.chooseRecovery(same.key, 'try_recorded');
+      await model.submitRecovery(same.key, net.deps); assert.equal(net.calls.length, 5);
+      if (status.state !== 'consumed') {
+        assert.equal(model.getRecoveryState().requests.size, 1);
+        assert.equal(model.getRecoveryState().requests.get(ID).body, frozen);
+        continue;
+      }
+    }
+    const repeat = status.state === 'superseded';
+    const eligible = { ...INSPECTION, reason: repeat ? 'missing_spawn' : 'unconfirmed_context',
+      choices: repeat ? 'repeat_issued_fresh' : 'fresh_only', expected: { ...EXPECTED, work: repeat || status.state === 'consumed' ? nextWork : WORK,
+        issue_lsn: repeat || status.state === 'consumed' ? '95' : '20', source_lsn: '99',
+        episode: repeat || status.state === 'consumed' ? successor : { work: WORK, origin: '99' } } };
+    answers.push(reply(200, eligible)); await model.inspectRecovery(AGENT, net.deps);
+    const fresh = draft(); const beforeChoice = net.calls.length;
+    assert.equal(fresh.choice, null);
+    await model.submitRecovery(fresh.key, net.deps); assert.equal(net.calls.length, beforeChoice);
+    model.chooseRecovery(fresh.key, repeat ? 'repeat_issued_fresh' : 'fresh_with_recap');
+    answers.push(reply(202, { state: 'unknown', request_id: '02'.repeat(32) }));
+    await model.submitRecovery(fresh.key, net.deps);
+    assert.equal(net.calls.length, beforeChoice + 1);
+    assert.deepEqual(net.calls.at(-1).body, { request_id: '02'.repeat(32), expected: eligible.expected,
+      choice: repeat ? 'repeat_issued_fresh' : 'fresh_with_recap' });
+    assert.equal(model.getRecoveryState().requests.get(ID).body, frozen);
+    assert.equal(model.getRecoveryState().requests.get(ID).payload.request_id, ID);
+    assert.equal(model.getRecoveryState().requests.size, 2);
+  }
+});
+
+test('a fresh explicit successor episode permits one same-TurnId repeat after Unknown or known IssueBound without rewriting old requests', async () => {
+  const oldInspection = { ...INSPECTION, reason: 'missing_spawn', choices: 'repeat_issued_fresh' };
+  const nextExpected = { ...EXPECTED, source_lsn: MAX, episode: { work: WORK, origin: MAX } };
+  const nextInspection = { ...oldInspection, expected: nextExpected };
+  for (const outcome of [reply(202, { state: 'unknown', request_id: ID }),
+    reply(200, { state: 'accepted', receipt: receipt(ID, { state: 'issue_bound', turn: TURN, issue_lsn: '20' }, { choice: 'repeat_issued_fresh' }) })]) {
+    model.resetRecovery(); floor(); const net = network([outcome, reply(200, nextInspection),
+      reply(202, { state: 'unknown', request_id: '02'.repeat(32) })]);
+    const first = await inspected(net, oldInspection); model.chooseRecovery(first.key, 'repeat_issued_fresh'); await model.submitRecovery(first.key, net.deps);
+    const original = model.getRecoveryState().requests.get(ID);
+    await model.inspectRecovery(AGENT, net.deps); const successor = draft();
+    assert.equal(successor.choice, null);
+    await model.submitRecovery(successor.key, net.deps); assert.equal(net.calls.length, 2);
+    model.chooseRecovery(successor.key, 'repeat_issued_fresh');
+    assert.equal(net.calls.length, 2);
+    await model.submitRecovery(successor.key, net.deps);
+    assert.deepEqual(net.calls.map(call => [call.url, call.body]), [
+      ['/floor/recovery/submit', { request_id: ID, expected: EXPECTED, choice: 'repeat_issued_fresh' }],
+      ['/floor/recovery/inspect', { agent: AGENT }],
+      ['/floor/recovery/submit', { request_id: '02'.repeat(32), expected: nextExpected, choice: 'repeat_issued_fresh' }],
+    ]);
+    assert.equal(model.getRecoveryState().requests.get(ID), original);
+    assert.equal(model.getRecoveryState().requests.get(ID).body, JSON.stringify({ request_id: ID, expected: EXPECTED, choice: 'repeat_issued_fresh' }));
+    assert.equal(model.getRecoveryState().requests.get('02'.repeat(32)).payload.expected.work.turn, TURN);
+  }
+});
+
+test('successor inspection begun during submission never unlocks on its late response or the submission completing', async () => {
+  const oldInspection = { ...INSPECTION, reason: 'missing_spawn', choices: 'repeat_issued_fresh' };
+  const nextInspection = { ...oldInspection, expected: { ...EXPECTED, source_lsn: MAX, episode: { work: WORK, origin: MAX } } };
+  for (const lateInspection of [false, true]) {
+    model.resetRecovery(); floor(); const submitReply = held(), inspectReply = held();
+    const net = network([() => submitReply.promise, () => inspectReply.promise, reply(200, nextInspection),
+      reply(202, { state: 'unknown', request_id: '02'.repeat(32) })]);
+    const first = await inspected(net, oldInspection); model.chooseRecovery(first.key, 'repeat_issued_fresh');
+    const sending = model.submitRecovery(first.key, net.deps);
+    const inspecting = model.inspectRecovery(AGENT, net.deps);
+    if (!lateInspection) {
+      inspectReply.resolve(reply(200, nextInspection)); await inspecting;
+      model.chooseRecovery(draft().key, 'repeat_issued_fresh'); await model.submitRecovery(draft().key, net.deps);
+      assert.equal(net.calls.length, 2);
+    }
+    submitReply.resolve(reply(202, { state: 'unknown', request_id: ID })); await sending;
+    if (lateInspection) { inspectReply.resolve(reply(200, nextInspection)); await inspecting; }
+    const early = draft(); model.chooseRecovery(early.key, 'repeat_issued_fresh');
+    await model.submitRecovery(early.key, net.deps); assert.equal(net.calls.length, 2);
+    await model.inspectRecovery(AGENT, net.deps); const afterFinish = draft();
+    assert.equal(afterFinish.choice, null);
+    model.chooseRecovery(afterFinish.key, 'repeat_issued_fresh'); await model.submitRecovery(afterFinish.key, net.deps);
+    assert.equal(net.calls.length, 4);
+    assert.equal(model.getRecoveryState().requests.get(ID).payload.expected.episode.origin, UNSAFE);
+  }
+});
+
+test('same origin, changed control alone and ambiguous old or new episode identities do not permit another consent', async () => {
+  const oldInspection = { ...INSPECTION, reason: 'missing_spawn', choices: 'repeat_issued_fresh' };
+  const predecessor = { episode: { work: WORK, origin: '80' }, authorization_lsn: '81' };
+  const nextExpected = { ...EXPECTED, source_lsn: MAX, episode: { work: WORK, origin: MAX } };
+  const cases = [
+    [EXPECTED, EXPECTED, ROW],
+    [EXPECTED, { ...EXPECTED, control_lsn: '91', source_lsn: '91' }, { ...ROW, control_lsn: '91' }],
+    [{ ...EXPECTED, episode: null }, nextExpected, ROW],
+    [{ ...EXPECTED, expected_predecessor: predecessor }, nextExpected, ROW],
+    [EXPECTED, { ...nextExpected, episode: null }, ROW],
+    [EXPECTED, { ...nextExpected, expected_predecessor: predecessor }, ROW],
+  ];
+  for (const [oldExpected, newExpected, currentRow] of cases) {
+    model.resetRecovery(); floor(); const net = network([reply(202, { state: 'unknown', request_id: ID }),
+      reply(200, { ...oldInspection, expected: newExpected })]);
+    const original = await inspected(net, { ...oldInspection, expected: oldExpected });
+    model.chooseRecovery(original.key, 'repeat_issued_fresh'); await model.submitRecovery(original.key, net.deps);
+    const frozen = model.getRecoveryState().requests.get(ID).body;
+    store.applyServerFrame(JSON.stringify({ type: 'floor.delta', delta: { lsn: 92, agents: [currentRow] } }), store.getFloorState().epoch);
+    await model.inspectRecovery(AGENT, net.deps); const next = draft();
+    assert.equal(model.draftProblem(next, store.getFloorState(), net.deps.session()), null);
+    model.chooseRecovery(next.key, 'repeat_issued_fresh'); await model.submitRecovery(next.key, net.deps);
+    assert.deepEqual(net.calls.map(call => call.url), ['/floor/recovery/submit', '/floor/recovery/inspect']);
+    assert.equal(model.getRecoveryState().requests.size, 1);
+    assert.equal(model.getRecoveryState().requests.get(ID).body, frozen);
+  }
+});
+
+test('a predecessor-bearing selector accepts its first actual claim then binds all later receipt reads to that claim', async () => {
+  const predecessor = { episode: { work: WORK, origin: '70' }, authorization_lsn: '71' };
+  const expected = { ...EXPECTED, source_lsn: '80', episode: predecessor.episode, expected_predecessor: predecessor };
+  const actual = receipt(ID, { state: 'issue_bound', turn: OTHER, issue_lsn: '94' },
+    { claim: { episode: { work: WORK, origin: '91' }, authorization_lsn: '93' } });
+  const wrongOrigin = { ...actual, claim: { ...actual.claim, episode: predecessor.episode } };
+  const wrongAuthorization = { ...actual, claim: { ...actual.claim, authorization_lsn: '97' } };
+  for (const lost of [false, true]) {
+    model.resetRecovery(); floor();
+    const net = network([lost ? reply(202, { state: 'unknown', request_id: ID }) : reply(200, { state: 'accepted', receipt: actual }),
+      reply(200, { state: 'found', receipt: actual }), reply(200, { state: 'found', receipt: wrongOrigin }),
+      reply(200, { state: 'found', receipt: wrongAuthorization })]);
+    const original = await inspected(net, { ...INSPECTION, expected }); model.chooseRecovery(original.key, 'try_recorded');
+    await model.submitRecovery(original.key, net.deps);
+    assert.equal(model.getRecoveryState().requests.get(ID).outcome.state, lost ? 'unknown' : 'accepted');
+    assert.deepEqual(model.getRecoveryState().requests.get(ID).lastReceipt, lost ? null : actual);
+    await model.checkRecoveryReceipt(ID, net.deps);
+    assert.equal(model.getRecoveryState().requests.get(ID).read.state, 'found');
+    assert.deepEqual(model.getRecoveryState().requests.get(ID).lastReceipt, actual);
+    for (let read = 0; read < 2; read++) {
+      await model.checkRecoveryReceipt(ID, net.deps);
+      assert.equal(model.getRecoveryState().requests.get(ID).read.state, 'unknown');
+      assert.deepEqual(model.getRecoveryState().requests.get(ID).lastReceipt, actual);
+    }
+    assert.equal(net.calls.length, 4);
+  }
+});
+
 test('all finite receipt states describe only durable facts and survive drawer closure', async () => {
   const states = [
     [{ state: 'pending' }, 'Pending. The authorized new turn has not been issued'],
     [{ state: 'issue_bound', turn: TURN, issue_lsn: UNSAFE }, 'Issue-bound. Turn'],
-    [{ state: 'consumed', turn: TURN, issue_lsn: UNSAFE, evidence_lsn: MAX }, 'Consumed. One authorized attempt closed'],
+    [{ state: 'consumed', turn: TURN, issue_lsn: UNSAFE, evidence_lsn: MAX }, 'Consumed. Authorization was consumed'],
     [{ state: 'invalidated', invalidation_lsn: MAX, reason: 'authority_unavailable' }, 'Invalidated. The original browser authority became unavailable'],
     [{ state: 'superseded', turn: TURN, issue_lsn: UNSAFE, successor: EXPECTED.episode, barrier_lsn: MAX }, 'Superseded. A later missing-launch episode'],
   ];
