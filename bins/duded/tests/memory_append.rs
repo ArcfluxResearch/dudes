@@ -222,6 +222,65 @@ fn exact_code_line_position(source: &str, expected: &str) -> Option<usize> {
         .position(|line| line == expected)
 }
 
+fn assert_memory_publication_refuses_corruption(source: &str) {
+    let memory_entry = source
+        .split_once("    fn append_memory_entry(")
+        .and_then(|(_, tail)| tail.split_once("    fn command("))
+        .map(|(body, _)| body)
+        .expect("the memory entry's projection-only append path");
+    assert!(exact_code_line_position(memory_entry, ".append_projection_only(").is_some());
+    let projection_only = source
+        .split_once("    fn append_projection_only(")
+        .and_then(|(_, tail)| tail.split_once("    fn append_with_publication("))
+        .map(|(body, _)| body)
+        .expect("the projection-only publication adapter");
+    let publication = exact_code_line_position(
+        projection_only,
+        "self.append_with_publication(world, entry, FloorPublication::ProjectionOnly, None)",
+    )
+    .expect("projection-only work uses the shared publication boundary");
+    let projected_lsn =
+        exact_code_line_position(projection_only, ".map(|committed| committed.lsn())")
+            .expect("the projection-only result retains the caller's position");
+    assert!(publication < projected_lsn);
+
+    let append = source
+        .split_once("    fn append_with_publication(")
+        .and_then(|(_, tail)| tail.split_once("    fn index_browser_record("))
+        .map(|(body, _)| body)
+        .expect("the shared append and publication path");
+    let position = |line: &str| {
+        exact_code_line_position(append, line)
+            .unwrap_or_else(|| panic!("publication code line is absent: {line}"))
+    };
+    let committed = position("let committed = self.append_checked(entry, recovery)?;");
+    let projecting = position("let post_fsync = (|| -> Result<()> {");
+    let applied = position("let applied = self.memory.apply_entry(lsn, entry).inspect_err(|_| {");
+    let corrupt = position("MemoryApply::Corrupt(reason) => {");
+    let refused = position("return Err(anyhow::anyhow!(");
+    let handled = position("if let Err(error) = post_fsync {");
+    let returned = position("Ok(committed)");
+    assert!(
+        committed < projecting
+            && projecting < applied
+            && applied < corrupt
+            && corrupt < refused
+            && refused < handled
+            && handled < returned,
+        "the committed caller is returned only after the live memory fold and its error boundary"
+    );
+    let failure = append
+        .split_once("        if let Err(error) = post_fsync {")
+        .and_then(|(_, tail)| tail.split_once("        Ok(committed)"))
+        .map(|(body, _)| body)
+        .expect("the post-fsync failure branch before publication success");
+    let fenced = exact_code_line_position(failure, "self.fence_journal();")
+        .expect("post-fsync corruption fences the writer");
+    let propagated = exact_code_line_position(failure, "return Err(error);")
+        .expect("post-fsync corruption is propagated to the memory caller");
+    assert!(fenced < propagated);
+}
+
 #[test]
 fn daemon_revalidates_the_prepared_body_after_append_and_before_acknowledgement() {
     let source = include_str!("../src/runtime.rs").replace("\r\n", "\n");
@@ -244,22 +303,7 @@ fn daemon_revalidates_the_prepared_body_after_append_and_before_acknowledgement(
         "exact production statements are ordered prepare, durable append, guard revalidation, \
          acknowledgement"
     );
-
-    let append = source
-        .split_once("    fn append(")
-        .and_then(|(_, tail)| tail.split_once("    fn push_spend("))
-        .map(|(body, _)| body)
-        .expect("the production journal append path");
-    let corrupt = exact_code_line_position(append, "MemoryApply::Corrupt(reason) => {")
-        .expect("the live memory corruption arm");
-    let refused = exact_code_line_position(append, "return Err(anyhow::anyhow!(")
-        .expect("live memory corruption is returned");
-    let returned =
-        exact_code_line_position(append, "Ok(lsn)").expect("the journal append success return");
-    assert!(
-        corrupt < refused && refused < returned,
-        "a corrupt live memory fold returns before append success"
-    );
+    assert_memory_publication_refuses_corruption(&source);
 
     let planted = "prepare\nappend\n// revalidate\n/*\nrevalidate\n*/\nrevalidate\nacknowledge";
     assert_eq!(
