@@ -1209,27 +1209,11 @@ fn a_turn_killed_before_a_crash_is_re_adopted_and_ends_vanished() {
     );
 }
 
-/// **Invariant 2 across the re-issue that a cleared standing cause triggers.**
+/// A launch claim survives repeated control actions until its actual acknowledgment.
 ///
-/// Re-running crash rule (2) when a standing cause clears is a second constructor of
-/// `Effect::Spawn` for a turn the world still calls `Issued` — and the world calls it `Issued`
-/// whether or not a launch for it is already outstanding, because `TurnSpawned` is not folded
-/// until the host answers. Two launches for one `TurnId` is two vendor sessions and invariant 2
-/// gone, so the single private `spawn()` refuses a turn already in flight.
-///
-/// This is deliberately not folded into `a_halted_agent_is_not_relaunched_by_a_restart`: that test
-/// resumes with launches enabled, which drains the guard's set immediately, so it would pass with
-/// the guard deleted.
-///
-/// **The tail is not decoration — it is what stops the assertion from being vacuous.** A count of
-/// one is what you get in the world where the guard holds *and* in the world where nothing tries:
-/// revert `Command::Resume` to `Then::Decide` and `decide` returns at the open turn, so no second
-/// constructor of `Effect::Spawn` exists to be refused and the first two assertions stay green.
-/// The tail therefore makes the same command re-issue for real. Getting there needs a restart,
-/// because within one run there is no other way to hold a turn at `Issued` with the guard's set
-/// empty: every constructor of `Effect::Spawn` puts the turn in the set, and only a fresh run
-/// clears it. The halt is what keeps crash rule (2) from re-issuing at `Input::Started`, so the
-/// `Resume` is the only thing left that can.
+/// After restart, ordinary Resume still cannot authorize the owed issue. Explicit fresh-repeat
+/// consent must launch once, so duplicate checks cannot pass merely because every attempt was
+/// refused by the recovery barrier.
 #[test]
 fn a_second_spawn_is_never_emitted_for_a_turn_whose_launch_is_outstanding() {
     let mut harness = Harness::new();
@@ -1254,9 +1238,6 @@ fn a_second_spawn_is_never_emitted_for_a_turn_whose_launch_is_outstanding() {
         "one turn, one process (invariant 2)"
     );
 
-    // Now the other half: the command that was just refused is a re-issue, not a no-op. Halt, so
-    // that crash rule (2) skips this turn, and restart, so the run-local guard is empty and the
-    // turn is genuinely re-issuable.
     harness.drive(Input::Command(Command::Halt {
         agent,
         text: Some("stop".into()),
@@ -1275,8 +1256,49 @@ fn a_second_spawn_is_never_emitted_for_a_turn_whose_launch_is_outstanding() {
 
     assert_eq!(
         harness.spawns_of(turn).len(),
+        1,
+        "ordinary Resume retains the recovery barrier"
+    );
+    let opportunity = harness.supervisor.recovery_opportunity(agent).unwrap();
+    assert_eq!(opportunity.expected.work.turn, turn);
+    assert_eq!(
+        opportunity.required.reason,
+        dudes_proto::recovery::RecoveryReason::MissingSpawn
+    );
+    let report = harness.recover(dudes_supervisor::input::RecoveryCommand {
+        request_id: dudes_proto::record::Hex32::new([196; 32]),
+        digest: dudes_proto::record::Hex32::new([197; 32]),
+        expected: opportunity.expected,
+        choice: dudes_supervisor::input::RecoveryChoice::RepeatIssuedFresh,
+        attribution: dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+            pid: 17,
+            uid: None,
+        },
+    });
+    assert_eq!(report.recovery().unwrap().refusal, None);
+    assert_eq!(
+        harness.spawns_of(turn).len(),
         2,
-        "the cleared cause really does re-issue: what the guard refused above was an attempt"
+        "explicit consent releases one new run-local launch claim"
+    );
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert_eq!(
+        harness.spawns_of(turn).len(),
+        2,
+        "an outstanding authorized launch still cannot duplicate"
+    );
+    assert_eq!(
+        harness
+            .journal
+            .iter()
+            .filter(|entry| matches!(entry.record,
+                Record::TurnIssued { agent: owner, .. } if owner == agent
+            ))
+            .count(),
+        1
     );
 }
 
