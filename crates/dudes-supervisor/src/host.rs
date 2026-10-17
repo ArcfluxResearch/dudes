@@ -416,8 +416,10 @@ pub trait ProcessHost {
     fn alive(&self, key: &AdoptionKey) -> Liveness;
 
     /// Observe the recorded leader without adopting it or delivering a signal.
-    /// A missing table entry requires an independent direct-pid absence query because process
-    /// tables may hide live processes. Permission refusals and query errors remain uncertainty.
+    /// [`ProbeAnswer::NoSuchPid`] means confirmed direct pid absence, never only a missing
+    /// process-table entry. Tables may hide live processes, so an independent signal-zero
+    /// query must confirm absence. It delivers no signal. Permission refusals and query errors
+    /// remain uncertainty. [`ProbeAnswer::StartValue`] is raw observed native start evidence.
     fn probe_native_leader(&self, _key: &AdoptionKey) -> ProbeAnswer {
         ProbeAnswer::CouldNotAnswer
     }
