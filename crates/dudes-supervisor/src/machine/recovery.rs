@@ -3,7 +3,9 @@ use dudes_proto::recovery::{
     RecoveryEpisodeId, RecoveryFailure, RecoveryOrigin, RecoveryPlan, RecoveryReason,
     RecoveryRecap, RecoveryRequired, RecoveryWork,
 };
-use dudes_proto::recovery_state::history::{RecoveryEndClass, RecoveryEvidence};
+use dudes_proto::recovery_state::history::{
+    RecoveryEndClass, RecoveryEvidence, RecoveryHoldWitness,
+};
 use dudes_proto::recovery_state::transition::RecoveryTransition;
 use dudes_proto::recovery_state::{RecoveryClaimState, RecoveryStateError};
 use dudes_proto::{AutomaticHold, Entry, Record};
@@ -86,7 +88,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if facts.control.halted
             || matches!(
                 facts.control.hold,
-                Some(dudes_proto::recovery_state::history::RecoveryHoldWitness::Unknown)
+                Some(RecoveryHoldWitness::Unknown | RecoveryHoldWitness::WorktreeMissing(_))
             )
         {
             return Err(RecoveryRefusal::NotRecoverable);
@@ -382,7 +384,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if facts.control.paused || facts.control.hold.is_some() {
             if matches!(
                 facts.control.hold,
-                Some(dudes_proto::recovery_state::history::RecoveryHoldWitness::Unknown)
+                Some(RecoveryHoldWitness::Unknown | RecoveryHoldWitness::WorktreeMissing(_))
             ) {
                 return next.update(Some(RecoveryRefusal::NotRecoverable));
             }
