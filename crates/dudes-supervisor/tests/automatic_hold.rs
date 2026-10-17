@@ -618,7 +618,7 @@ fn a_new_goal_clears_the_hold_without_reopening_the_old_issued_turn() {
     }));
     let new_goal = h.supervisor.world().agents[&agent].goal.unwrap();
     assert_ne!(new_goal, old_goal);
-    assert!(h.supervisor.world().goals[&old_goal].cleared);
+    assert_eq!(h.supervisor.world().goals[&new_goal].last_turn, None);
     assert!(h.supervisor.world().agents[&agent].automatic_hold.is_none());
     assert!(!h.supervisor.recovery_launch_allowed(agent, turn));
     assert_eq!(
