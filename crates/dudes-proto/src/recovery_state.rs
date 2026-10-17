@@ -254,21 +254,30 @@ impl RecoveryState {
         request: Hex32,
         digest: Hex32,
     ) -> Result<Option<RecoveryReceipt<'_>>, RecoveryStateError> {
+        let receipt = self.receipt_by_request(request)?;
+        if receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.authorization.request_digest != digest)
+        {
+            return Err(RecoveryStateError::RequestConflict);
+        }
+        Ok(receipt)
+    }
+
+    /// Read an original receipt using only the identity retained before submission.
+    pub fn receipt_by_request(
+        &self,
+        request: Hex32,
+    ) -> Result<Option<RecoveryReceipt<'_>>, RecoveryStateError> {
         let Some(lsn) = self.requests.get(&request) else {
             return Ok(None);
         };
         let authorization = &self.authorizations[lsn];
-        if authorization.request_digest != digest {
-            return Err(RecoveryStateError::RequestConflict);
-        }
-        Ok(Some(RecoveryReceipt {
-            claim: RecoveryClaimRef {
-                episode: authorization.episode,
-                authorization_lsn: *lsn,
-            },
-            authorization,
-            state: &self.claims[lsn],
-        }))
+        self.claim_receipt(RecoveryClaimRef {
+            episode: authorization.episode,
+            authorization_lsn: *lsn,
+        })
+        .map(Some)
     }
 
     /// Check one transition without predicting its eventual physical append position.

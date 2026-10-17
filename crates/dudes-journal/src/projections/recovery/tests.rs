@@ -66,6 +66,8 @@ fn reason(error: &Error) -> RecoveryStoreError {
 fn ordinary_prefix_receipt_reads_are_inert_and_do_not_resurvey_history() {
     let mut fixture = Fixture::new(0);
     let before = fixture.projections.export().unwrap();
+    let journal = fixture.dir.path().join("journal");
+    let bytes = journal_bytes(&journal);
     let gateway = fixture
         .writer
         .checked_recovery(&mut fixture.projections)
@@ -73,9 +75,58 @@ fn ordinary_prefix_receipt_reads_are_inert_and_do_not_resurvey_history() {
     let counts = crate::reader::validation_counts();
     for _ in 0..4 {
         assert_eq!(gateway.receipt(request(), digest()).unwrap(), None);
+        assert_eq!(gateway.receipt_by_request(request()).unwrap(), None);
     }
     assert_eq!(crate::reader::validation_counts(), counts);
     assert_eq!(fixture.projections.export().unwrap(), before);
+    assert_eq!(journal_bytes(&journal), bytes);
+}
+
+#[test]
+fn request_only_reads_refuse_uncertified_stale_and_altered_metadata_cuts() {
+    for expected in [
+        RecoveryStoreError::Uncertified,
+        RecoveryStoreError::JournalAdvanced,
+        RecoveryStoreError::Metadata,
+    ] {
+        let mut fixture = Fixture::new(0);
+        let gateway = fixture
+            .writer
+            .checked_recovery(&mut fixture.projections)
+            .unwrap();
+        match expected {
+            RecoveryStoreError::Uncertified => gateway.projections.recovery_certification = None,
+            RecoveryStoreError::JournalAdvanced => {
+                gateway.writer.append(&entry(RecordKind::Pause)).unwrap();
+            }
+            RecoveryStoreError::Metadata => {
+                let txn = gateway.projections.db.begin_write().unwrap();
+                txn.open_table(META)
+                    .unwrap()
+                    .insert(LAST_APPLIED_CRC, &99u64)
+                    .unwrap();
+                txn.commit().unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let export = gateway.projections.export().unwrap();
+        let journal = fixture.dir.path().join("journal");
+        let bytes = journal_bytes(&journal);
+        let counts = crate::reader::validation_counts();
+        for _ in 0..2 {
+            assert_eq!(
+                reason(&gateway.receipt_by_request(request()).unwrap_err()),
+                expected
+            );
+            assert_eq!(
+                reason(&gateway.receipt(request(), digest()).unwrap_err()),
+                expected
+            );
+        }
+        assert_eq!(crate::reader::validation_counts(), counts);
+        assert_eq!(gateway.projections.export().unwrap(), export);
+        assert_eq!(journal_bytes(&journal), bytes);
+    }
 }
 
 #[test]
@@ -199,6 +250,10 @@ fn a_failed_main_write_leaves_projection_rows_unchanged_and_receipts_unavailable
         reason(&gateway.receipt(request(), digest()).unwrap_err()),
         RecoveryStoreError::JournalUncertain
     );
+    assert_eq!(
+        reason(&gateway.receipt_by_request(request()).unwrap_err()),
+        RecoveryStoreError::JournalUncertain
+    );
     assert_eq!(fixture.projections.export().unwrap(), before);
     assert!(fixture.projections.recovery_certification.is_none());
 }
@@ -219,6 +274,10 @@ fn an_ok_main_append_with_a_poisoned_checkpoint_cannot_certify_a_receipt() {
     );
     assert_eq!(
         reason(&gateway.receipt(request(), digest()).unwrap_err()),
+        RecoveryStoreError::JournalUncertain
+    );
+    assert_eq!(
+        reason(&gateway.receipt_by_request(request()).unwrap_err()),
         RecoveryStoreError::JournalUncertain
     );
     let first = fixture
@@ -1372,6 +1431,10 @@ fn denied_append_guard_changes_no_bytes_and_requires_recertification() {
     assert!(matches!(result, Err(GuardedAppendError::Acquire("denied"))));
     assert_eq!(
         reason(&gateway.receipt(request(), digest()).unwrap_err()),
+        RecoveryStoreError::Uncertified
+    );
+    assert_eq!(
+        reason(&gateway.receipt_by_request(request()).unwrap_err()),
         RecoveryStoreError::Uncertified
     );
     assert!(!after.get());

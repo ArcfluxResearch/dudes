@@ -152,13 +152,16 @@ fn fresh(checkpoints: u64) -> (Fixture, RecoveryAuthorized, Lsn) {
 }
 
 fn receipt(fixture: &mut Fixture) -> RecoveryReceipt {
-    fixture
+    let gateway = fixture
         .writer
         .checked_recovery(&mut fixture.projections)
-        .unwrap()
-        .receipt(request(), digest())
-        .unwrap()
-        .unwrap()
+        .unwrap();
+    let receipt = gateway.receipt(request(), digest()).unwrap().unwrap();
+    assert_eq!(
+        gateway.receipt_by_request(request()).unwrap(),
+        Some(receipt.clone())
+    );
+    receipt
 }
 
 fn assert_canonical(fixture: &mut Fixture) {
@@ -179,11 +182,14 @@ fn assert_canonical(fixture: &mut Fixture) {
 fn required_new_issue_and_spawn_fold_at_actual_positions_across_checkpoints() {
     for checkpoints in [0, 1] {
         let (mut fixture, authorization, at) = fresh(checkpoints);
-        assert_eq!(receipt(&mut fixture).state, RecoveryClaimState::Pending);
+        let pending = receipt(&mut fixture);
+        assert_eq!(pending.state, RecoveryClaimState::Pending);
+        assert_eq!(pending.authorization, authorization);
         assert_canonical(&mut fixture);
-        let RecoveryPlan::New { turn, .. } = authorization.plan else {
+        let RecoveryPlan::New { turn, .. } = &authorization.plan else {
             unreachable!()
         };
+        let turn = *turn;
         let mut issued = goal_entries().1;
         let Record::TurnIssued {
             turn: actual,
@@ -206,6 +212,7 @@ fn required_new_issue_and_spawn_fold_at_actual_positions_across_checkpoints() {
         }
         let issue_lsn = append(&mut fixture, issued.record);
         let bound = receipt(&mut fixture);
+        assert_eq!(bound.authorization, authorization);
         let RecoveryClaimState::IssueBound(issue) = bound.state else {
             panic!("new issue did not bind")
         };
@@ -220,6 +227,7 @@ fn required_new_issue_and_spawn_fold_at_actual_positions_across_checkpoints() {
                 evidence_lsn
             }
         );
+        assert_eq!(receipt(&mut fixture).authorization, authorization);
         assert_canonical(&mut fixture);
     }
 }
@@ -317,6 +325,7 @@ fn required_pending_invalidation_uses_the_named_actual_change_after_target_loss(
             evidence
         }
     );
+    assert_eq!(receipt(&mut fixture).authorization, authorization);
     assert_canonical(&mut fixture);
 }
 
@@ -331,6 +340,89 @@ fn cells(fixture: &Fixture) -> Vec<(Vec<u8>, Vec<u8>)> {
             (key.value().to_vec(), value.value().to_vec())
         })
         .collect()
+}
+
+#[test]
+fn request_only_receipt_refuses_a_dangling_claim_instead_of_reporting_absence() {
+    let (mut fixture, authorization, _) = fresh(0);
+    assert_eq!(receipt(&mut fixture).authorization, authorization);
+    let rows = cells(&fixture);
+    let claims: Vec<_> = rows
+        .iter()
+        .filter(|(_, value)| {
+            serde_json::from_slice::<serde_json::Value>(value).unwrap()["kind"] == "claim"
+        })
+        .collect();
+    assert_eq!(claims.len(), 1);
+    let txn = fixture.projections.db.begin_write().unwrap();
+    txn.open_table(RECOVERY)
+        .unwrap()
+        .remove(claims[0].0.as_slice())
+        .unwrap();
+    txn.commit().unwrap();
+    let before = cells(&fixture);
+    let bytes = journal_inventory(&fixture);
+    let gateway = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap();
+    let counts = crate::reader::validation_counts();
+    for result in [
+        gateway.receipt_by_request(request()),
+        gateway.receipt(request(), digest()),
+    ] {
+        assert!(
+            matches!(
+                result,
+                Err(Error::RecoveryCache(RecoveryCacheError::MissingCell))
+            ),
+            "{result:?}"
+        );
+    }
+    assert_eq!(crate::reader::validation_counts(), counts);
+    assert_eq!(cells(&fixture), before);
+    assert_eq!(journal_inventory(&fixture), bytes);
+}
+
+#[test]
+fn request_only_receipt_survives_reopen_and_later_control_without_rewriting_intent() {
+    let (mut fixture, authorization, authorization_lsn) = fresh(1);
+    append(
+        &mut fixture,
+        Record::Pause {
+            agent: authorization.binding.work.agent,
+            browser: None,
+        },
+    );
+    let path = fixture.dir.path().join("state.redb");
+    drop(fixture.projections);
+    fixture.projections = Projections::open_with(&path, Fsync::None).unwrap();
+    assert!(fixture.projections.recovery_certification.is_none());
+    let export = fixture.projections.export().unwrap();
+    let bytes = journal_inventory(&fixture);
+    let gateway = fixture
+        .writer
+        .checked_recovery(&mut fixture.projections)
+        .unwrap();
+    let counts = crate::reader::validation_counts();
+    for _ in 0..3 {
+        let receipt = gateway.receipt_by_request(request()).unwrap().unwrap();
+        assert_eq!(receipt.claim.authorization_lsn, authorization_lsn);
+        assert_eq!(receipt.authorization, authorization);
+        assert_eq!(receipt.state, RecoveryClaimState::Pending);
+        assert_eq!(gateway.receipt(request(), digest()).unwrap(), Some(receipt));
+        assert!(matches!(
+            gateway.receipt(request(), Hex32::new([99; 32])),
+            Err(Error::RecoveryState(RecoveryStateError::RequestConflict))
+        ));
+        assert_eq!(
+            gateway.receipt_by_request(Hex32::new([0; 32])).unwrap(),
+            None
+        );
+    }
+    assert_eq!(crate::reader::validation_counts(), counts);
+    assert_eq!(fixture.projections.export().unwrap(), export);
+    assert_eq!(journal_inventory(&fixture), bytes);
 }
 
 fn damaged_root(kind: &str) {
@@ -363,21 +455,19 @@ fn damaged_root(kind: &str) {
     fixture.projections.recovery_certification = None;
     let before = cells(&fixture);
     let bytes = journal_inventory(&fixture);
-    for lookup in [false, true] {
+    for lookup in [0, 1, 2] {
         let result = fixture
             .writer
             .checked_recovery(&mut fixture.projections)
-            .and_then(|mut gateway| {
-                if lookup {
-                    gateway.receipt(request(), digest()).map(|_| ())
-                } else {
-                    gateway
-                        .append(&Entry {
-                            at: Timestamp::UNIX_EPOCH,
-                            record: attempted.clone(),
-                        })
-                        .map(|_| ())
-                }
+            .and_then(|mut gateway| match lookup {
+                0 => gateway
+                    .append(&Entry {
+                        at: Timestamp::UNIX_EPOCH,
+                        record: attempted.clone(),
+                    })
+                    .map(|_| ()),
+                1 => gateway.receipt(request(), digest()).map(|_| ()),
+                _ => gateway.receipt_by_request(request()).map(|_| ()),
             });
         assert!(
             matches!(
@@ -680,6 +770,7 @@ fn assert_repeated_receipt_reads(
     claims: &[RecoveryClaimRef],
     barriers: &[Lsn],
     requests: &[(Hex32, Hex32)],
+    authorizations: &[RecoveryAuthorized],
     issue: &dudes_proto::recovery::RecoveryIssue,
     evidence_lsn: Lsn,
 ) {
@@ -694,7 +785,16 @@ fn assert_repeated_receipt_reads(
         for _ in 0..3 {
             for (index, (request, digest)) in requests.iter().enumerate() {
                 let receipt = gateway.receipt(*request, *digest).unwrap().unwrap();
+                assert_eq!(
+                    gateway.receipt_by_request(*request).unwrap(),
+                    Some(receipt.clone())
+                );
                 assert_eq!(receipt.claim, claims[index]);
+                assert_eq!(receipt.authorization, authorizations[index]);
+                assert!(matches!(
+                    gateway.receipt(*request, Hex32::new([99; 32])),
+                    Err(Error::RecoveryState(RecoveryStateError::RequestConflict))
+                ));
                 let expected = if index + 1 == requests.len() {
                     RecoveryClaimState::Consumed {
                         issue: issue.clone(),
@@ -709,6 +809,14 @@ fn assert_repeated_receipt_reads(
                 };
                 assert_eq!(receipt.state, expected);
             }
+            assert_eq!(
+                gateway.receipt_by_request(Hex32::new([0; 32])).unwrap(),
+                None
+            );
+            assert_eq!(
+                gateway.receipt(Hex32::new([0; 32]), digest()).unwrap(),
+                None
+            );
         }
         assert_eq!(crate::reader::validation_counts(), before_counts);
     }
@@ -736,6 +844,7 @@ fn repeated_missing_spawn_supersession_keeps_each_receipt_and_the_one_owed_issue
     let mut claims = Vec::new();
     let mut barriers = Vec::new();
     let mut requests = Vec::new();
+    let mut authorizations = Vec::new();
     for byte in [7, 9, 11] {
         let mut required = missing(&binding);
         required.predecessor = predecessor;
@@ -752,7 +861,7 @@ fn repeated_missing_spawn_supersession_keeps_each_receipt_and_the_one_owed_issue
             request_id,
             request_digest,
             attribution: RecoveryAttribution::LocalOperator {
-                pid: 42,
+                pid: u32::from(byte),
                 uid: Some(501),
             },
             expected_control: None,
@@ -765,8 +874,9 @@ fn repeated_missing_spawn_supersession_keeps_each_receipt_and_the_one_owed_issue
         };
         let authorization_lsn = append(
             &mut fixture,
-            Record::RecoveryAuthorized(Box::new(authorization)),
+            Record::RecoveryAuthorized(Box::new(authorization.clone())),
         );
+        authorizations.push(authorization);
         let claim = RecoveryClaimRef {
             episode: RecoveryEpisodeId {
                 work: binding.work,
@@ -785,6 +895,7 @@ fn repeated_missing_spawn_supersession_keeps_each_receipt_and_the_one_owed_issue
         &claims,
         &barriers,
         &requests,
+        &authorizations,
         &issue,
         evidence_lsn,
     );

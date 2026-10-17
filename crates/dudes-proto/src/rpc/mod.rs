@@ -60,6 +60,7 @@ pub mod journal;
 pub mod mail;
 pub mod memory;
 pub mod pty;
+pub mod recovery;
 mod secret;
 pub mod system;
 pub mod team;

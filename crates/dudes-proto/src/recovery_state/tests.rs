@@ -268,6 +268,157 @@ fn request_lookup_is_inert_and_changed_digest_conflicts_in_every_claim_phase() {
     );
 }
 
+fn assert_original_receipt(
+    state: &RecoveryState,
+    claim: RecoveryClaimRef,
+    authorization: &RecoveryAuthorized,
+    expected: &RecoveryClaimState,
+) {
+    let before = state.clone();
+    for _ in 0..3 {
+        let receipt = state
+            .receipt_by_request(authorization.request_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.claim, claim);
+        assert_eq!(receipt.authorization, authorization);
+        assert_eq!(receipt.state, expected);
+        assert_eq!(
+            state.receipt(authorization.request_id, authorization.request_digest),
+            Ok(Some(receipt))
+        );
+        assert_eq!(
+            state.receipt(authorization.request_id, Hex32::new([99; 32])),
+            Err(RecoveryStateError::RequestConflict)
+        );
+        assert_eq!(state.receipt_by_request(Hex32::new([0; 32])), Ok(None));
+        assert_eq!(
+            state.receipt(Hex32::new([0; 32]), authorization.request_digest),
+            Ok(None)
+        );
+    }
+    assert_eq!(*state, before);
+}
+
+#[test]
+fn request_only_receipts_keep_invalidated_intent_after_control_changes() {
+    let (mut state, mut facts, authorization) = barrier(RecoveryReason::HeldOrPausedFailure);
+    let claim = authorize(&mut state, &mut facts, &authorization);
+    let evidence = crate::recovery::RecoveryInvalidationEvidence::RecordedChange {
+        reason: crate::recovery::RecoveryInvalidationReason::ControlChanged,
+        lsn: Lsn(350),
+    };
+    facts.through = Lsn(350);
+    facts.control_lsn = Some(Lsn(350));
+    state
+        .apply(
+            Lsn(400),
+            RecoveryEvent::Invalidated { claim, evidence },
+            &facts,
+        )
+        .unwrap();
+    assert_original_receipt(
+        &state,
+        claim,
+        &authorization,
+        &RecoveryClaimState::Invalidated {
+            invalidation_lsn: Lsn(400),
+            evidence,
+        },
+    );
+}
+
+#[test]
+fn request_only_receipts_keep_original_intent_through_issue_consumption_and_supersession() {
+    let (mut state, mut facts, authorization) = barrier(RecoveryReason::HeldOrPausedFailure);
+    let claim = authorize(&mut state, &mut facts, &authorization);
+    assert_original_receipt(&state, claim, &authorization, &RecoveryClaimState::Pending);
+
+    let mut issued = facts.source_issue.issued.clone();
+    issued.work.turn = TurnId::from_parts(1, 9);
+    issued.task_digest = Hex32::new([11; 32]);
+    issued.answers.push(Lsn(250));
+    state
+        .apply(
+            Lsn(400),
+            RecoveryEvent::Issued {
+                claim,
+                issued: &issued,
+            },
+            &facts,
+        )
+        .unwrap();
+    facts.through = Lsn(400);
+    let issue = RecoveryIssue {
+        lsn: Lsn(400),
+        issued,
+    };
+    assert_original_receipt(
+        &state,
+        claim,
+        &authorization,
+        &RecoveryClaimState::IssueBound(issue.clone()),
+    );
+
+    let mut consumed = state.clone();
+    consumed
+        .apply(
+            Lsn(500),
+            RecoveryEvent::Consumed {
+                claim,
+                issue: &issue,
+                session: None,
+            },
+            &facts,
+        )
+        .unwrap();
+    assert_original_receipt(
+        &consumed,
+        claim,
+        &authorization,
+        &RecoveryClaimState::Consumed {
+            issue: issue.clone(),
+            evidence_lsn: Lsn(500),
+        },
+    );
+
+    facts.binding.work = issue.issued.work;
+    facts.binding.issue_lsn = issue.lsn;
+    facts.source_issue = issue.clone();
+    let mut next = required(&facts, RecoveryReason::MissingSpawn);
+    next.predecessor = Some(claim);
+    state
+        .apply(Lsn(500), RecoveryEvent::Required(&next), &facts)
+        .unwrap();
+    facts.through = Lsn(500);
+    let successor = state.current(facts.binding.work).unwrap().id;
+    let expected = RecoveryClaimState::Superseded {
+        issue,
+        successor,
+        barrier_lsn: Lsn(500),
+    };
+    assert_original_receipt(&state, claim, &authorization, &expected);
+    let mut replacement = new_authorization(state.current(facts.binding.work).unwrap(), &facts);
+    replacement.request_id = Hex32::new([13; 32]);
+    replacement.request_digest = Hex32::new([14; 32]);
+    replacement.attribution = crate::recovery::RecoveryAttribution::LocalOperator {
+        pid: 99,
+        uid: Some(501),
+    };
+    state
+        .apply(Lsn(600), RecoveryEvent::Authorized(&replacement), &facts)
+        .unwrap();
+    assert_original_receipt(&state, claim, &authorization, &expected);
+    assert_eq!(
+        state
+            .receipt_by_request(replacement.request_id)
+            .unwrap()
+            .unwrap()
+            .authorization,
+        &replacement
+    );
+}
+
 #[test]
 fn new_work_binds_only_the_planned_turn_model_and_context_then_consumes_once() {
     let (mut state, mut facts, authorization) = barrier(RecoveryReason::HeldOrPausedFailure);

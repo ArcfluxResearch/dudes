@@ -251,6 +251,19 @@ impl<'a> CheckedRecoveryStore<'a> {
 
     /// Look up an original request at a certain journal cut, without appending or retrying it.
     pub fn receipt(&self, request: Hex32, digest: Hex32) -> Result<Option<RecoveryReceipt>> {
+        self.read_receipt(request, Some(digest))
+    }
+
+    /// Read an original request at a certified cut using only its retained identity.
+    pub fn receipt_by_request(&self, request: Hex32) -> Result<Option<RecoveryReceipt>> {
+        self.read_receipt(request, None)
+    }
+
+    fn read_receipt(
+        &self,
+        request: Hex32,
+        digest: Option<Hex32>,
+    ) -> Result<Option<RecoveryReceipt>> {
         check(self.writer, self.projections)?;
         let txn = self.projections.db.begin_read()?;
         check_metadata(self.projections, &txn)?;
@@ -260,14 +273,15 @@ impl<'a> CheckedRecoveryStore<'a> {
             self.projections.last_applied,
             request,
         )?;
-        Ok(cache
-            .state()
-            .receipt(request, digest)?
-            .map(|receipt| RecoveryReceipt {
-                claim: receipt.claim,
-                authorization: receipt.authorization.clone(),
-                state: receipt.state.clone(),
-            }))
+        let receipt = match digest {
+            Some(digest) => cache.state().receipt(request, digest)?,
+            None => cache.state().receipt_by_request(request)?,
+        };
+        Ok(receipt.map(|receipt| RecoveryReceipt {
+            claim: receipt.claim,
+            authorization: receipt.authorization.clone(),
+            state: receipt.state.clone(),
+        }))
     }
 
     /// Validate folds, append that same entry under the configured sync policy, and commit its rows.
