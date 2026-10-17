@@ -114,6 +114,8 @@ mod unix_peer;
 mod reap_hold;
 
 #[cfg(unix)]
+mod sigmask;
+#[cfg(unix)]
 mod unix;
 
 #[cfg(target_os = "linux")]

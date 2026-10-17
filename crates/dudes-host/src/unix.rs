@@ -110,7 +110,8 @@ pub(crate) fn classify_presence(result: rustix::io::Result<()>) -> io::Result<Pr
     }
 }
 
-/// Put the child in a process group of its own, with the child as leader.
+/// Put the child in a process group of its own, with the child as leader, and give it an empty
+/// signal mask.
 ///
 /// `process_group(0)` establishes the child's initial group ID as its PID; a later live-process
 /// lookup can become unavailable after exit, even before reap. A signal to that group reaches its
@@ -121,6 +122,7 @@ pub(crate) fn classify_presence(result: rustix::io::Result<()>) -> io::Result<Pr
 /// descendant is orphaned.
 pub(crate) fn prepare(command: &mut Command) {
     command.process_group(0);
+    crate::sigmask::clear_in_child(command);
 }
 
 /// A pid as the signalling calls want it. `None` for 0 and for values that do not fit, both of

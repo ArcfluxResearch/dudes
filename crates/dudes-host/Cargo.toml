@@ -66,8 +66,8 @@ rustix = { workspace = true, features = ["fs"] }
 # `forbid` -> `deny`, plus the two `deny` lines below. The copy is forced, not stylistic: Cargo
 # rejects a `[lints]` table that both sets `workspace = true` and adds entries, and `forbid` cannot
 # be re-levelled from source, so a crate that inherits the workspace table can hold no `unsafe` at
-# all. The grant this buys is one module on one platform — `src/windows.rs`, which carries the only
-# `#[allow(unsafe_code)]` in the crate — and `tests/unsafe_grant.rs` is what fails when it spreads.
+# all. The grant this buys is two modules — `src/windows.rs` for process ownership on Windows and
+# `src/sigmask.rs` for the signal mask a Unix child starts with — and `tests/unsafe_grant.rs` is what fails when it spreads.
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
