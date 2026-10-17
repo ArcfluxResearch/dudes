@@ -274,34 +274,45 @@ impl World {
 
     fn assert_review_guidance(&self, card: &str, shown: &str, sequence: &str) {
         let refused = self.dudes(["ticket", "accept", card]);
-        assert!(
-        refused.stderr.contains(&format!(
-            "Read the current instruction review before acknowledging it. Run `dudes ticket show {card}` to read it. It ends with the exact command for what it shows."
-        )),
-        "{}",
-        refused.stderr
-    );
+        let expected = format!(
+            "Read the current instruction review before acknowledging it. \
+             Run `dudes ticket show {card}` to read it. \
+             It ends with the exact command for what it shows."
+        );
+        assert!(refused.stderr.contains(&expected), "{}", refused.stderr);
         assert!(
             !refused.stderr.contains("--expected-seq"),
             "{}",
             refused.stderr
         );
-        assert!(
-        shown.ends_with(&format!(
-            "To act on exactly this state:\n  dudes ticket accept {card} --expected-seq {sequence}\n  dudes ticket changes {card} --message \"<what to change>\" --expected-seq {sequence}\nIf the ticket changes first, Dudes refuses and you read it again.\n"
-        )),
-        "{shown}"
-    );
-        let stale = (sequence.parse::<u64>().unwrap() - 1).to_string();
-        let stale = self.dudes(["ticket", "accept", card, "--expected-seq", &stale]);
-        assert_eq!(stale.code(), 3, "{}", stale.output());
-        assert!(
-            stale
-                .stderr
-                .contains("This ticket changed while you were looking. Reload and try again."),
-            "{}",
-            stale.stderr
+        let expected = format!(
+            "To act on exactly this state:\n  \
+             dudes ticket accept {card} --expected-seq {sequence}\n  \
+             dudes ticket changes {card} --message \"<what to change>\" \
+             --expected-seq {sequence}\n\
+             If the ticket changes first, Dudes refuses and you read it again.\n"
         );
+        assert!(shown.ends_with(&expected), "{shown}");
+        let stale = (sequence.parse::<u64>().unwrap() - 1).to_string();
+        let stale_accept = self.dudes(["ticket", "accept", card, "--expected-seq", &stale]);
+        let stale_changes = self.dudes([
+            "ticket",
+            "changes",
+            card,
+            "--message",
+            "Cover the empty form.",
+            "--expected-seq",
+            &stale,
+        ]);
+        for run in [stale_accept, stale_changes] {
+            assert_eq!(run.code(), 3, "{}", run.output());
+            assert!(
+                run.stderr
+                    .contains("This ticket changed while you were looking. Reload and try again."),
+                "{}",
+                run.stderr
+            );
+        }
         let after = self.dudes(["ticket", "show", card]);
         assert!(
             after.stdout.contains("State: Needs you"),
@@ -313,13 +324,9 @@ impl World {
     fn assert_remove_refused_for_review(&self, card: &str) {
         let refused = self.dudes(["ticket", "remove", card]);
         assert_eq!(refused.code(), dudes::exit::REFUSED, "{}", refused.output());
-        assert!(
-        refused.stderr.contains(
-            "This ticket has an instruction review nobody has acknowledged yet. Accept it or ask for changes first, then remove the ticket."
-        ),
-        "{}",
-        refused.stderr
-    );
+        let expected = "This ticket has an instruction review nobody has acknowledged yet. \
+                        Accept it or ask for changes first, then remove the ticket.";
+        assert!(refused.stderr.contains(expected), "{}", refused.stderr);
     }
 
     fn assert_review_required<const N: usize>(&self, args: [&str; N]) {
