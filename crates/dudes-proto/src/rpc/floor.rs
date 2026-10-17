@@ -549,6 +549,10 @@ pub struct SettingsView {
     pub about: SettingsAbout,
 }
 
+/// The empty snapshot sibling advertising effective browser recovery for this subscription.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct RecoveryView {}
+
 /// The finite Floor switch allowlist.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[non_exhaustive]

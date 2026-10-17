@@ -717,9 +717,40 @@ impl From<HookReply> for HookAnswer {
     }
 }
 
+/// A Floor recovery read could not reach its authenticated checked reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloorRecoveryReadError {
+    /// The confirmed session is no longer valid in this listener's registry.
+    Forbidden,
+    /// The writer stopped or its reply was lost.
+    Unavailable,
+}
+
 /// One unit of work for the loop thread.
 #[derive(Debug)]
 pub enum Job {
+    /// Inspect recovery under one authenticated browser session.
+    InspectRecoveryFromFloor {
+        /// Registry-derived reader.
+        session: crate::floor_session::SessionIdentity,
+        /// Managed agent to inspect.
+        agent: dudes_types::AgentId,
+        /// Checked bounded view or a transport refusal.
+        reply: Sender<
+            Result<dudes_proto::rpc::recovery::RecoveryInspectResult, FloorRecoveryReadError>,
+        >,
+    },
+    /// Read one historical recovery receipt without advancing session activity.
+    RecoveryReceiptFromFloor {
+        /// Confirmed reader, independent of the claim's original authority.
+        reader: crate::floor_session::ReceiptSession,
+        /// Retained request identity.
+        request: dudes_proto::record::Hex32,
+        /// Checked historical view or a transport refusal.
+        reply: Sender<
+            Result<dudes_proto::rpc::recovery::RecoveryReceiptResult, FloorRecoveryReadError>,
+        >,
+    },
     /// One authenticated Floor recovery intent, without caller-supplied attribution.
     RecoverFromFloor {
         /// Registry-derived original session.
@@ -1146,6 +1177,38 @@ impl Handle {
         answers
             .recv()
             .map_err(|_| crate::floor_answer::AnswerRefusal::Unavailable)?
+    }
+
+    pub(crate) fn inspect_floor_recovery(
+        &self,
+        session: crate::floor_session::SessionIdentity,
+        agent: dudes_types::AgentId,
+    ) -> Result<dudes_proto::rpc::recovery::RecoveryInspectResult, FloorRecoveryReadError> {
+        let (reply, answers) = mpsc::channel();
+        self.send_floor(Job::InspectRecoveryFromFloor {
+            session,
+            agent,
+            reply,
+        })
+        .map_err(|_| FloorRecoveryReadError::Unavailable)?;
+        crate::baseline::recv_until_stopping(&self.stopping, &answers)
+            .unwrap_or(Err(FloorRecoveryReadError::Unavailable))
+    }
+
+    pub(crate) fn floor_recovery_receipt(
+        &self,
+        reader: crate::floor_session::ReceiptSession,
+        request: dudes_proto::record::Hex32,
+    ) -> Result<dudes_proto::rpc::recovery::RecoveryReceiptResult, FloorRecoveryReadError> {
+        let (reply, answers) = mpsc::channel();
+        self.send_floor(Job::RecoveryReceiptFromFloor {
+            reader,
+            request,
+            reply,
+        })
+        .map_err(|_| FloorRecoveryReadError::Unavailable)?;
+        crate::baseline::recv_until_stopping(&self.stopping, &answers)
+            .unwrap_or(Err(FloorRecoveryReadError::Unavailable))
     }
 
     /// Submit one explicit Floor recovery intent under its actual authenticated identity.
@@ -2848,5 +2911,99 @@ mod recovery_intent_tests {
             let changed: RecoverySubmitParams = serde_json::from_value(changed).unwrap();
             assert_ne!(recovery_digest(&changed).unwrap(), expected, "{pointer}");
         }
+    }
+
+    #[test]
+    fn dropped_floor_recovery_reply_keeps_the_original_request_unknown_without_retry() {
+        use super::{Handle, Job};
+        use dudes_proto::rpc::recovery::RecoverySubmitResult;
+        use std::sync::{Arc, mpsc};
+        let sessions = crate::floor_session::FloorSessions::new(
+            "127.0.0.1:43123".parse().unwrap(),
+            Arc::new(dudes_supervisor::testing::FakeClock::frozen(0)),
+        );
+        let exchange = sessions
+            .exchange(
+                "127.0.0.1:43123",
+                "http://127.0.0.1:43123",
+                sessions.issue().unwrap().bootstrap.as_bytes(),
+            )
+            .unwrap();
+        let identity = sessions
+            .authorize_onboard(
+                "127.0.0.1:43123",
+                "http://127.0.0.1:43123",
+                &exchange.cookie,
+                &exchange.csrf,
+            )
+            .unwrap();
+        let digest = identity.digest();
+        let intent: RecoverySubmitParams = serde_json::from_str(INTENT).unwrap();
+        let (sender, jobs) = mpsc::channel();
+        let handle = Handle::new(sender);
+        std::thread::scope(|scope| {
+            let call = scope.spawn(|| handle.submit_floor_recovery(identity, &intent));
+            let Job::RecoverFromFloor {
+                session,
+                intent: queued,
+                reply,
+            } = jobs
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+            else {
+                panic!("exact recovery job");
+            };
+            assert_eq!(session.digest(), digest);
+            assert_eq!(queued, intent);
+            drop(reply);
+            assert_eq!(
+                call.join().unwrap(),
+                RecoverySubmitResult::Unknown {
+                    request_id: intent.request_id
+                }
+            );
+            assert!(matches!(jobs.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        });
+    }
+
+    #[test]
+    fn unsent_floor_recovery_is_refused_with_no_acknowledged_prefix() {
+        use super::Handle;
+        use dudes_proto::rpc::recovery::{
+            RecoveryKnownPrefix, RecoverySubmitRefusal, RecoverySubmitResult,
+        };
+        use std::sync::{Arc, mpsc};
+        let sessions = crate::floor_session::FloorSessions::new(
+            "127.0.0.1:43123".parse().unwrap(),
+            Arc::new(dudes_supervisor::testing::FakeClock::frozen(0)),
+        );
+        let exchange = sessions
+            .exchange(
+                "127.0.0.1:43123",
+                "http://127.0.0.1:43123",
+                sessions.issue().unwrap().bootstrap.as_bytes(),
+            )
+            .unwrap();
+        let identity = sessions
+            .authorize_onboard(
+                "127.0.0.1:43123",
+                "http://127.0.0.1:43123",
+                &exchange.cookie,
+                &exchange.csrf,
+            )
+            .unwrap();
+        let intent: RecoverySubmitParams = serde_json::from_str(INTENT).unwrap();
+        let (sender, jobs) = mpsc::channel();
+        drop(jobs);
+        assert_eq!(
+            Handle::new(sender).submit_floor_recovery(identity, &intent),
+            RecoverySubmitResult::Refused {
+                reason: RecoverySubmitRefusal::Unavailable,
+                prefix: RecoveryKnownPrefix {
+                    required: None,
+                    resume: None
+                }
+            }
+        );
     }
 }

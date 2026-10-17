@@ -1280,3 +1280,5 @@ fn a_real_replay_admits_an_explicit_repeat_of_a_legacy_unspawned_issue() {
     assert!(entries.iter().any(|(_, entry)| matches!(&entry.record, Record::RecoveryAuthorized(authorization) if matches!(&authorization.plan, RecoveryPlan::RepeatIssued { issue, .. } if issue.issued.work.turn == turn && issue.lsn == original.issue_lsn))));
     running.stop(crate::ExitCause::Ended);
 }
+
+mod routes;

@@ -413,3 +413,28 @@ test('a listener stops being called once it unsubscribes', () => {
   apply(snapshot([{ id: ADA }, { id: GRACE }]));
   assert.equal(notified, 1);
 });
+
+
+test('recovery capability requires exact current recovery and control siblings and clears with the subscription', () => {
+  for (const [control, recovery, enabled] of [
+    [undefined, undefined, false], [{}, undefined, false], [undefined, {}, false],
+    [{}, {}, true], [{}, null, false], [{}, false, false], [{}, [], false],
+    [{}, { enabled: true }, false], [null, {}, false],
+  ]) {
+    apply(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 7, agents: [] }, control, recovery }));
+    assert.equal(getFloorState().recovery, enabled);
+    assert.equal(getFloorState().phase, 'live');
+  }
+  apply(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 8, agents: [] }, control: {}, recovery: {} }));
+  assert.equal(getFloorState().recovery, true);
+  const previous = getFloorState().epoch;
+  noteTransport('close');
+  assert.equal(getFloorState().recovery, false);
+  beginFloorEpoch();
+  applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 9, agents: [] }, control: {}, recovery: {} }), previous);
+  assert.equal(getFloorState().recovery, false);
+  apply(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 10, agents: [] }, control: {}, recovery: {} }));
+  assert.equal(getFloorState().recovery, true);
+  invalidateFloorEpoch();
+  assert.equal(getFloorState().recovery, false);
+});

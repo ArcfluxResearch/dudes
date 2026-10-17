@@ -89,6 +89,18 @@ pub struct ReadOnlySession {
     _private: (),
 }
 
+/// One confirmed reader, retained without extending its idle deadline.
+pub struct ReceiptSession {
+    identity: SessionIdentity,
+    csrf: [u8; 32],
+}
+
+impl fmt::Debug for ReceiptSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ReceiptSession(<redacted>)")
+    }
+}
+
 impl fmt::Debug for ReadOnlySession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("ReadOnlySession(<redacted>)")
@@ -108,6 +120,21 @@ impl fmt::Debug for FloorSessionAuthorizer {
 }
 
 impl FloorSessionAuthorizer {
+    pub(crate) fn validates_receipt(&self, reader: &ReceiptSession) -> bool {
+        let identity = &reader.identity;
+        if !Arc::ptr_eq(&self.0, &identity.inner) {
+            return false;
+        }
+        let registry::Locked { state, now } = self.0.registry.lock_at_now();
+        self.0.valid.load(Ordering::Acquire)
+            && !identity.revoked.load(Ordering::Acquire)
+            && state.sessions.get(&identity.cookie).is_some_and(|session| {
+                Arc::ptr_eq(&session.revoked, &identity.revoked)
+                    && session.csrf == Some(reader.csrf)
+                    && session.live_at(now)
+            })
+    }
+
     /// Revoke one presented session under the registry lock; test-only caller access.
     #[doc(hidden)]
     pub fn revoke_for_test(&self, cookie: &str) -> bool {
@@ -696,6 +723,31 @@ impl FloorSessions {
         cookie: &str,
         csrf: &str,
     ) -> Option<SessionIdentity> {
+        self.authenticate(host, origin, cookie, csrf, IdleClock::Advance)
+    }
+
+    pub(crate) fn authorize_receipt(
+        &self,
+        host: &str,
+        origin: &str,
+        cookie: &str,
+        csrf: &str,
+    ) -> Option<ReceiptSession> {
+        self.authenticate(host, origin, cookie, csrf, IdleClock::Hold)
+            .map(|identity| ReceiptSession {
+                identity,
+                csrf: digest(csrf.as_bytes()),
+            })
+    }
+
+    fn authenticate(
+        &self,
+        host: &str,
+        origin: &str,
+        cookie: &str,
+        csrf: &str,
+        idle: IdleClock,
+    ) -> Option<SessionIdentity> {
         if !self.0.authority_matches(host, origin) {
             return None;
         }
@@ -705,12 +757,19 @@ impl FloorSessions {
         if !self.0.valid.load(Ordering::Acquire) {
             return None;
         }
-        state.prune(now);
+        if idle == IdleClock::Advance {
+            state.prune(now);
+        }
         let session = state.sessions.get_mut(&cookie)?;
-        if session.csrf != Some(csrf) {
+        if session.csrf != Some(csrf)
+            || !session.live_at(now)
+            || session.revoked.load(Ordering::Acquire)
+        {
             return None;
         }
-        session.last_used = now;
+        if idle == IdleClock::Advance {
+            session.last_used = now;
+        }
         Some(SessionIdentity {
             inner: Arc::clone(&self.0),
             cookie,

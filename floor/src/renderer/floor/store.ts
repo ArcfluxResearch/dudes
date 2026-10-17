@@ -232,6 +232,7 @@ export interface FloorState {
    * that carried it.
    */
   readonly control: boolean;
+  readonly recovery: boolean;
   /**
    * The goal-change limits from the latest snapshot, or `null` when that
    * snapshot carried none or carried something unreadable. None is the
@@ -313,6 +314,7 @@ const EMPTY: FloorState = Object.freeze({
   checks: null,
   answering: null,
   control: false,
+  recovery: false,
   goalChange: null,
   terminal: false,
   retire: false,
@@ -369,6 +371,7 @@ export function noteTransport(event: 'open' | 'close'): void {
     checks: event === 'close' ? null : state.checks,
     answering: event === 'close' ? null : state.answering,
     control: event === 'close' ? false : state.control,
+    recovery: event === 'close' ? false : state.recovery,
     goalChange: event === 'close' ? null : state.goalChange,
     terminal: event === 'close' ? false : state.terminal,
     retire: event === 'close' ? false : state.retire,
@@ -466,6 +469,7 @@ export function invalidateFloorEpoch(): void {
     checks: null,
     answering: null,
     control: false,
+    recovery: false,
     goalChange: null,
     terminal: false,
     retire: false,
@@ -519,7 +523,7 @@ export function applyServerFrame(
         chat: null, output: emptyOutput(state.output, 'unavailable'),
         retiredAgents: Object.freeze([]),
         messages: Object.freeze([]),
-        threads: Object.freeze([]), messagesLsn: null, onboarding: null, checks: null, answering: null, control: false,
+        threads: Object.freeze([]), messagesLsn: null, onboarding: null, checks: null, answering: null, control: false, recovery: false,
         goalChange: null, terminal: false, retire: false, git: false, diff: false, ticket: false, daemon: null, settings: null, journalStopped: null,
         finishedToday: FINISHED_TODAY_UNAVAILABLE, closingTime: null });
       return;
@@ -550,6 +554,7 @@ interface ServerMessage {
   readonly checks?: unknown;
   readonly answer?: unknown;
   readonly control?: unknown;
+  readonly recovery?: unknown;
   readonly goal?: unknown;
   readonly terminal?: unknown;
   readonly retire?: unknown;
@@ -799,6 +804,7 @@ function fromSnapshot(message: ServerMessage): FloorState {
     checks: decodeCheckCatalog(message.checks),
     answering: decodeAnswerLimits(message.answer),
     control: decodeSwitchSibling(message.control),
+    recovery: decodeSwitchSibling(message.control) && decodeSwitchSibling(message.recovery),
     terminal: decodeSwitchSibling(message.terminal),
     retire: decodeSwitchSibling(message.retire),
     git: decodeSwitchSibling(message.git),
@@ -948,6 +954,7 @@ function unchanged(current: FloorState, next: FloorState): boolean {
     && current.checks === next.checks
     && current.answering === next.answering
     && current.control === next.control
+    && current.recovery === next.recovery
     && current.goalChange === next.goalChange
     && current.terminal === next.terminal
     && current.retire === next.retire

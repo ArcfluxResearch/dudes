@@ -51,6 +51,9 @@ use crate::floor_websocket::{Decoder, Message, accept_key, close_frame, pong_fra
 use crate::settings::{FloorControl, FloorSettings};
 use crate::{ExitCause, Handle};
 
+mod recovery;
+use recovery::RecoveryRoute;
+
 /// The configured public root for the first static shell.
 pub const BASE_PATH: &str = "/floor/";
 /// The browser-wire generation required by the daemon and its matching Floor bundle.
@@ -69,6 +72,9 @@ const MAX_HEADERS: usize = 64;
 const MAX_HTTP_CONNECTIONS: usize = 32;
 const STREAM_PATH: &str = "/floor/stream";
 const RECOVERY_PATH: &str = "/floor/session/recover";
+const INSPECT_RECOVERY_PATH: &str = "/floor/recovery/inspect";
+const SUBMIT_RECOVERY_PATH: &str = "/floor/recovery/submit";
+const RECEIPT_RECOVERY_PATH: &str = "/floor/recovery/receipt";
 const ONBOARD_PATH: &str = "/floor/onboard";
 /// Routed only when the operator enabled answering; otherwise a POST here is any
 /// unrouted POST.
@@ -221,6 +227,7 @@ pub struct PreparedAssets {
     /// Whether `POST /floor/answer` is routed at all: `[floor.answer] enabled`, fixed for the run.
     pub(crate) answer: bool,
     pub(crate) control: FloorControl,
+    recovery: bool,
     pub(crate) terminal: bool,
     /// `Some` exactly when `[floor.git] enabled`: the route's reader and limits.
     git: Option<Arc<GitReads>>,
@@ -497,6 +504,12 @@ impl PreparedAssets {
     }
 
     #[must_use]
+    pub(crate) const fn with_recovery(mut self, enabled: bool) -> Self {
+        self.recovery = enabled;
+        self
+    }
+
+    #[must_use]
     pub(crate) const fn with_terminal(mut self, enabled: bool) -> Self {
         self.terminal = enabled;
         self
@@ -654,6 +667,7 @@ impl PreparedAssets {
         let manifest = Arc::new(self.manifest);
         let answer = self.answer;
         let control = self.control;
+        let recovery = self.recovery && control.pause_resume();
         let terminal = self.terminal;
         let git = self.git;
         let diff = self.diff;
@@ -683,6 +697,7 @@ impl PreparedAssets {
                             manifest: &manifest,
                             answer,
                             control,
+                            recovery,
                             terminal,
                             git: git.as_deref(),
                             diff: diff.as_deref(),
@@ -1056,6 +1071,7 @@ struct Catalog<'a> {
     manifest: &'a [u8],
     answer: bool,
     control: FloorControl,
+    recovery: bool,
     terminal: bool,
     git: Option<&'a GitReads>,
     diff: Option<&'a DiffReads>,
@@ -1086,6 +1102,7 @@ enum ActionRoute {
     Memory(MemoryRoute),
     Chat(ChatVerb),
     Ticket(TicketRoute),
+    Recovery(RecoveryRoute),
 }
 
 impl ActionRoute {
@@ -1100,6 +1117,11 @@ impl ActionRoute {
             CHAT_SEND_PATH => Some(Self::Chat(ChatVerb::Send)),
             CHAT_CANCEL_PATH => Some(Self::Chat(ChatVerb::Cancel)),
             ONBOARD_PATH => Some(Self::Onboard),
+            INSPECT_RECOVERY_PATH if catalog.recovery => {
+                Some(Self::Recovery(RecoveryRoute::Inspect))
+            }
+            SUBMIT_RECOVERY_PATH if catalog.recovery => Some(Self::Recovery(RecoveryRoute::Submit)),
+            RECEIPT_RECOVERY_PATH => Some(Self::Recovery(RecoveryRoute::Receipt)),
             ANSWER_PATH if catalog.answer => Some(Self::Answer),
             PAUSE_PATH if catalog.control.pause_resume() => Some(Self::Control(ControlVerb::Pause)),
             RESUME_PATH if catalog.control.pause_resume() => {
@@ -1122,6 +1144,7 @@ impl ActionRoute {
     const fn max_body(self) -> usize {
         match self {
             Self::Onboard => MAX_ONBOARD_BODY,
+            Self::Recovery(_) => crate::floor_recovery::MAX_RECOVERY_BODY_BYTES,
             Self::Answer => MAX_ANSWER_BODY_BYTES,
             Self::Control(_) => MAX_CONTROL_BODY_BYTES,
             Self::Goal | Self::Renew => MAX_GOAL_BODY_BYTES,
@@ -1315,6 +1338,9 @@ fn read_request<'a>(
                         return Ok(None);
                     };
                     Ok(Some(ConnectionAction::Response(match route {
+                        ActionRoute::Recovery(route) => {
+                            recovery::response(route, sessions, handle, &action, &body)
+                        }
                         ActionRoute::Onboard => onboard_response(sessions, handle, &action, &body),
                         ActionRoute::Answer => answer_response(sessions, handle, &action, &body),
                         ActionRoute::Control(verb) => {
@@ -3126,6 +3152,7 @@ pub fn prepare(settings: &FloorSettings) -> Result<PreparedAssets> {
         remembered: None,
         answer: false,
         control: FloorControl::Off,
+        recovery: false,
         terminal: false,
         git: None,
         diff: None,
@@ -3415,6 +3442,7 @@ mod tests {
             manifest,
             answer: false,
             control: FloorControl::Off,
+            recovery: false,
             terminal: false,
             git: None,
             diff: None,

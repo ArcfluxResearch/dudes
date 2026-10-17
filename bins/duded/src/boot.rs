@@ -514,6 +514,7 @@ where
             prepared
                 .with_answer(settings.floor_answer_enabled)
                 .with_control(settings.floor_control)
+                .with_recovery(settings.floor_recovery_enabled)
                 .with_terminal(settings.floor_terminal_enabled)
                 .with_board(settings.floor_board_enabled)
                 .with_remembered_port(crate::floor_port::remembered(&settings.state_dir))

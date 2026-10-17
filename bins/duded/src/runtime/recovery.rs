@@ -217,6 +217,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         agent: AgentId,
         _admission: OperatorAdmission,
     ) -> Result<Answered, RpcError> {
+        self.recovery_inspect_checked(agent)
+    }
+
+    fn recovery_inspect_checked(&mut self, agent: AgentId) -> Result<Answered, RpcError> {
         let unavailable = |reason| {
             Ok(Answered::RecoveryInspected(
                 RecoveryInspectResult::Unavailable { reason },
@@ -300,6 +304,43 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 waiting,
             },
         ))
+    }
+
+    pub(super) fn recovery_inspect_browser(
+        &mut self,
+        session: &crate::floor_session::SessionIdentity,
+        agent: AgentId,
+    ) -> Result<RecoveryInspectResult, crate::ports::FloorRecoveryReadError> {
+        use crate::ports::FloorRecoveryReadError;
+        let attribution = RecoveryAttribution::BrowserSession {
+            session_digest: session.digest(),
+        };
+        let Some(authority) = self.ctx.recovery_authority.as_ref() else {
+            return Err(FloorRecoveryReadError::Unavailable);
+        };
+        let permit = authority
+            .permit_identity(session, &attribution, self.ctx.recovery_grants())
+            .map_err(|_| FloorRecoveryReadError::Forbidden)?;
+        drop(permit);
+        match self.recovery_inspect_checked(agent) {
+            Ok(Answered::RecoveryInspected(view)) => Ok(view),
+            _ => Err(FloorRecoveryReadError::Unavailable),
+        }
+    }
+
+    pub(super) fn recovery_receipt_browser(
+        &mut self,
+        reader: &crate::floor_session::ReceiptSession,
+        request: Hex32,
+    ) -> Result<RecoveryReceiptResult, crate::ports::FloorRecoveryReadError> {
+        use crate::ports::FloorRecoveryReadError;
+        let authorizer = self
+            .floor_session_authorizer()
+            .ok_or(FloorRecoveryReadError::Unavailable)?;
+        if !authorizer.validates_receipt(reader) {
+            return Err(FloorRecoveryReadError::Forbidden);
+        }
+        Ok(self.ctx.recovery_read(request))
     }
 
     pub(super) fn recovery_receipt(

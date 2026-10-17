@@ -1484,6 +1484,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     let answer = self.onboard_goal(&session, &request);
                     let _ = reply.send(OnboardStep::Answer(answer));
                 }
+                Job::InspectRecoveryFromFloor {
+                    session,
+                    agent,
+                    reply,
+                } => {
+                    let _ = reply.send(self.recovery_inspect_browser(&session, agent));
+                }
+                Job::RecoveryReceiptFromFloor {
+                    reader,
+                    request,
+                    reply,
+                } => {
+                    let _ = reply.send(self.recovery_receipt_browser(&reader, request));
+                }
                 Job::RecoverFromFloor {
                     session,
                     intent,
@@ -2116,6 +2130,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         .control
                         .pause_resume()
                         .then_some(&crate::floor_control::CONTROL_VIEW),
+                    recovery: switches
+                        .recovery
+                        .then_some(dudes_proto::rpc::floor::RecoveryView {}),
                     goal: goal.as_ref(),
                     retire: self
                         .ctx
@@ -6578,6 +6595,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         self.refuse_parked_pi();
         while let Ok(job) = self.jobs.try_recv() {
             match job {
+                Job::InspectRecoveryFromFloor { reply, .. } => {
+                    let _ = reply.send(Err(crate::ports::FloorRecoveryReadError::Unavailable));
+                }
+                Job::RecoveryReceiptFromFloor { reply, .. } => {
+                    let _ = reply.send(Err(crate::ports::FloorRecoveryReadError::Unavailable));
+                }
                 Job::RecoverFromFloor { reply, .. } => {
                     let _ = reply.send(dudes_proto::rpc::recovery::RecoverySubmitResult::Refused {
                         reason: dudes_proto::rpc::recovery::RecoverySubmitRefusal::Unavailable,

@@ -232,6 +232,8 @@ pub(crate) struct Siblings<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) control: Option<&'a ControlView>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) recovery: Option<dudes_proto::rpc::floor::RecoveryView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) goal: Option<&'a GoalView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) retire: Option<&'a RetireView>,
@@ -257,6 +259,7 @@ impl Siblings<'_> {
             && self.answer.is_none()
             && self.chat.is_none()
             && self.control.is_none()
+            && self.recovery.is_none()
             && self.goal.is_none()
             && self.retire.is_none()
             && self.terminal.is_none()
@@ -736,6 +739,7 @@ impl FloorStreams {
                 checks: siblings.checks,
                 answer: siblings.answer,
                 control: siblings.control,
+                recovery: siblings.recovery,
                 goal: siblings.goal,
                 retire: siblings.retire,
                 terminal: siblings.terminal,
