@@ -584,20 +584,41 @@ fn recovery_requires_explicit_nulls_and_the_existing_ticket_round_range() {
 fn recovery_rejects_array_shapes_at_each_authority_object() {
     let (dispatcher, control) = fixture();
     let original: serde_json::Value = serde_json::from_str(SUBMIT).unwrap();
-    for pointer in [
-        "",
-        "/expected",
-        "/expected/work",
-        "/expected/episode",
-        "/expected/episode/work",
-        "/expected/expected_predecessor",
-        "/expected/expected_predecessor/episode",
-        "/expected/expected_predecessor/episode/work",
-        "/expected/ticket",
+    for (pointer, fields) in [
+        ("", &["request_id", "expected", "choice"][..]),
+        (
+            "/expected",
+            &[
+                "work",
+                "issue_lsn",
+                "source_lsn",
+                "episode",
+                "expected_predecessor",
+                "control_lsn",
+                "ticket",
+            ][..],
+        ),
+        ("/expected/work", &["agent", "goal", "turn"][..]),
+        ("/expected/episode", &["work", "origin"][..]),
+        ("/expected/episode/work", &["agent", "goal", "turn"][..]),
+        (
+            "/expected/expected_predecessor",
+            &["episode", "authorization_lsn"][..],
+        ),
+        (
+            "/expected/expected_predecessor/episode",
+            &["work", "origin"][..],
+        ),
+        (
+            "/expected/expected_predecessor/episode/work",
+            &["agent", "goal", "turn"][..],
+        ),
+        ("/expected/ticket", &["card", "round"][..]),
     ] {
         let mut array = original.clone();
         let object = array.pointer_mut(pointer).unwrap();
-        *object = serde_json::Value::Array(object.as_object().unwrap().values().cloned().collect());
+        *object =
+            serde_json::Value::Array(fields.iter().map(|field| object[*field].clone()).collect());
         let response = admitted(
             &dispatcher,
             &frame(CurrentMethod::RecoverySubmit, &array.to_string()),
