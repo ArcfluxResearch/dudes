@@ -669,7 +669,7 @@ fn the_loop_gives_by_name_reviews_accepts_asks_for_changes_stops_and_removes() {
     );
     let stale = (sequence.parse::<u64>().unwrap() - 1).to_string();
     let stale = world.dudes(["ticket", "accept", &first, "--expected-seq", &stale]);
-    assert_eq!(stale.code(), 4, "{}", stale.output());
+    assert_eq!(stale.code(), 3, "{}", stale.output());
     assert!(
         stale
             .stderr
