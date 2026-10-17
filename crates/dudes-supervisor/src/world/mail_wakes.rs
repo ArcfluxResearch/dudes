@@ -1114,6 +1114,10 @@ mod tests {
             let mut prefix = Prefix::completed(None);
             let (mut h, mint) = live(&mut prefix);
             canonical_control(&mut h, control);
+            assert!(
+                !h.supervisor
+                    .recovery_launch_allowed(prefix.agent, prefix.turn)
+            );
             assert!(h.host.spawned.is_empty());
             assert_eq!(h.open_turn(prefix.agent), Some(prefix.turn));
             let resumed = one(h.step(Input::Command(Command::Resume {
@@ -1139,6 +1143,11 @@ mod tests {
                 agent: prefix.agent,
                 browser: None,
             },
+        );
+        assert!(
+            paused
+                .supervisor
+                .recovery_launch_allowed(prefix.agent, prefix.turn)
         );
         let spawn = ready_spawn(&mut paused, mint);
         launch(&mut paused, spawn);
@@ -1546,6 +1555,10 @@ mod tests {
                 agent: prefix.agent,
                 goal: prefix.goal,
             },
+        );
+        assert!(
+            h.supervisor
+                .recovery_launch_allowed(prefix.agent, prefix.turn)
         );
         let spawn = ready_spawn(&mut h, mint);
         launch(&mut h, spawn);

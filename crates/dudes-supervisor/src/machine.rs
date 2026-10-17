@@ -2591,9 +2591,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// Nothing decides while a turn is in flight: the loop is one turn deep per agent, and a
     /// second `Continue` would be a second process on one vendor session.
     fn decide(&mut self, agent: AgentId) {
-        if !self.ensure_recovery_admission(agent) {
-            return;
-        }
         if self.instructions.recovering() || self.instructions.pending_agents.contains(&agent) {
             return;
         }
@@ -2601,7 +2598,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return;
         }
         if self.closing_active {
-            self.decide_saving(agent);
+            if self.ensure_recovery_admission(agent) {
+                self.decide_saving(agent);
+            }
             return;
         }
         if self.closing_recovery {
@@ -2626,6 +2625,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return;
         }
         let Some(input) = self.loop_input_for(agent) else {
+            if !self.ensure_recovery_admission(agent) {
+                return;
+            }
             self.decide_conversation(agent);
             self.decide_completed_note(agent);
             self.request_mail_wake(agent);
@@ -2640,6 +2642,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Some(note) => dudes_policy::decide_with_browser_note(&input, note),
             None => dudes_policy::decide(&input),
         };
+        if !matches!(decision, LoopDecision::Done) && !self.ensure_recovery_admission(agent) {
+            return;
+        }
         if let Some(cause) = self
             .world
             .agents
@@ -3549,9 +3554,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     /// After a turn end: run the goal's predicate, or re-decide when the goal is gone.
     fn judge(&mut self, agent: AgentId, goal: GoalId) {
-        if !self.ensure_recovery_admission(agent) {
-            return;
-        }
         if self.protect_failures(agent) {
             return;
         }

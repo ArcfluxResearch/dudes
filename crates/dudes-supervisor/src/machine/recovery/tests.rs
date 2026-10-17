@@ -249,6 +249,25 @@ fn replayed_owed_work_is_held_while_live_first_issue_still_proceeds() {
     let turn = replayed.world.agents[&agent].open_turn.unwrap();
     assert!(!replayed.recovery_launch_allowed(agent, turn));
     replayed.handle(crate::Input::Started).unwrap();
+    let (token, entry) = emitted(&replayed);
+    assert!(matches!(
+        &entry.record,
+        Record::InstructionObservationFinished {
+            owner: dudes_proto::InstructionObservationOwner::Managed {
+                agent: owner, turn: source, ..
+            },
+            baseline: dudes_proto::InstructionBaselineRef::Started { .. },
+            settlement: dudes_proto::InstructionSettlement::Unknown {
+                reason: dudes_proto::InstructionUnknownReason::UnrecordedLaunchBoundary,
+                end: None,
+                recovery: true,
+                ..
+            },
+            ..
+        } if *owner == agent && *source == turn
+    ));
+    let settled = acknowledge(&mut replayed, token, entry, Lsn(10_001));
+    assert_eq!(settled.folded_through(), Some(Lsn(10_001)));
     assert!(replayed.effects().iter().any(|effect| matches!(
         effect,
         Effect::Persist {

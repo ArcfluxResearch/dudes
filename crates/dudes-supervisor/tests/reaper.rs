@@ -199,6 +199,17 @@ fn gone_after_crash_ends_observed_vanished_and_done_is_reachable() {
         harness.supervisor.world().turns[&turn].status,
         TurnStatus::Ended
     );
+    assert!(harness.trace.iter().all(|seen| !matches!(
+        seen,
+        Seen::Spawn { .. }
+            | Seen::Persist {
+                entry: dudes_proto::Entry {
+                    record: Record::TurnIssued { .. },
+                    ..
+                },
+                ..
+            }
+    )));
 
     // And the goal is judged, so `Done` is reachable after a crash rather than only after a
     // clean exit.
@@ -215,6 +226,77 @@ fn gone_after_crash_ends_observed_vanished_and_done_is_reachable() {
         evidence: evidence(),
     });
     assert_eq!(harness.supervisor.status_of(agent), AgentStatus::Done);
+    assert!(harness.records().any(|record| matches!(record,
+        Record::PredicateResult { goal: observed, pass: true, provenance: Provenance::Observed, .. }
+            if *observed == goal
+    )));
+    assert!(harness.records().any(|record| matches!(record,
+        Record::LoopDecided { agent: owner, decision: dudes_proto::LoopDecision::Done, .. }
+            if *owner == agent
+    )));
+    assert_eq!(spawn_records(&harness, turn), 1);
+    assert_eq!(
+        harness
+            .records()
+            .filter(|record| matches!(record,
+                Record::TurnIssued { agent: owner, .. } if *owner == agent
+            ))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn gone_after_crash_failed_predicate_keeps_recovery_before_any_new_work() {
+    let mut harness = Harness::new();
+    let (agent, goal) = harness.hire_with_goal(&["npm", "test"]);
+    let turn = harness.open_turn(agent).unwrap();
+    harness
+        .host
+        .answer(pid_of(&harness, turn), ProbeAnswer::NoSuchPid);
+    harness.trace.clear();
+    harness.restart();
+    assert!(harness.trace.iter().any(|seen| matches!(seen,
+        Seen::RunPredicate { goal: observed } if *observed == goal
+    )));
+    harness.trace.clear();
+    let mut failed = evidence();
+    let Evidence::Command { exit, .. } = &mut failed else {
+        unreachable!()
+    };
+    *exit = Some(1);
+    harness.drive(Input::PredicateDone {
+        goal,
+        pass: false,
+        evidence: failed,
+    });
+    assert!(harness.records().any(|record| matches!(record,
+        Record::PredicateResult { goal: observed, pass: false, provenance: Provenance::Observed, .. }
+            if *observed == goal
+    )));
+    assert!(harness.records().any(|record| matches!(record,
+        Record::RecoveryRequired(required)
+            if required.binding.work.agent == agent
+                && required.binding.work.turn == turn
+                && required.reason == dudes_proto::recovery::RecoveryReason::Vanished
+    )));
+    assert!(harness.trace.iter().all(|seen| !matches!(
+        seen,
+        Seen::Spawn { .. }
+            | Seen::Persist {
+                entry: dudes_proto::Entry {
+                    record: Record::TurnIssued { .. }
+                        | Record::LoopDecided {
+                            decision: dudes_proto::LoopDecision::Continue { .. },
+                            ..
+                        },
+                    ..
+                },
+                ..
+            }
+    )));
+    assert_eq!(spawn_records(&harness, turn), 1);
+    assert!(harness.supervisor.world().completed_goal(agent).is_none());
 }
 
 /// `Unknown` writes nothing, defers a standing kill once, and is re-asked on the

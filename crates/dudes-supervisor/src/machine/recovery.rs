@@ -621,10 +621,17 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if !row.is_issued_not_spawned() {
             return false;
         }
+        let finite = self.world.recovery_witness(row.issue_lsn).is_ok_and(|source| {
+            matches!(source.evidence(), RecoveryEvidence::Issue {
+                carrier: dudes_proto::recovery_state::history::RecoveryIssueCarrier::CompletedNote { .. }
+                    | dudes_proto::recovery_state::history::RecoveryIssueCarrier::MailWake { .. },
+                ..
+            })
+        });
         if self.world.agents.get(&agent).is_none_or(|owner| {
             owner.retired
                 || owner.halted
-                || owner.paused
+                || (owner.paused && !finite)
                 || owner.attached
                 || owner.open_question.is_some()
         }) || self.launch_held(agent)
@@ -643,6 +650,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return false;
         }
+        if finite {
+            return true;
+        }
         let Some(goal) = row.goal else {
             return self.recovery_admission_allowed(agent);
         };
@@ -660,7 +670,6 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if self.recovery_owed_saving(agent, turn) {
             return true;
         }
-        if self.world.recovery_witness(row.issue_lsn).is_ok_and(|source| matches!(source.evidence(), RecoveryEvidence::Issue { carrier: dudes_proto::recovery_state::history::RecoveryIssueCarrier::CompletedNote { .. } | dudes_proto::recovery_state::history::RecoveryIssueCarrier::MailWake { .. }, .. })) { return true; }
         if !self.live_issues.contains(&turn) {
             return false;
         }
