@@ -701,7 +701,7 @@ fn goal_set_refuses_a_check_that_already_passes() {
         format!(
             "the completion check already passes (`test -f hello.txt` exited 0 in {}), so it \
              cannot show when this goal is done",
-            daemon.tree.path().display()
+            daemon.tree.path().canonicalize().unwrap().display()
         )
     );
     assert_eq!(daemon.runner.runs(), 1, "the check ran once");
