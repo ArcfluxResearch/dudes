@@ -1062,7 +1062,6 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     'src/renderer/DoneNotices.tsx',
     ...Array(3).fill('src/renderer/LiveWork.tsx'),
     'src/renderer/BoardNotes.tsx',
-    'src/renderer/BoardPanel.tsx',
     ...Array(6).fill('src/renderer/OfficeCanvas.tsx'),
     'src/renderer/ReadError.tsx',
     ...Array(4).fill(ANSWER_FORM),
@@ -1130,8 +1129,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   const notes = await readFile(resolve(floor, 'src/renderer/BoardNotes.tsx'), 'utf8');
   assert.match(notes, /className="board-select"/);
   assert.match(notes, /onClick=\{onOpenTasks\}/);
-  const tasks = await readFile(resolve(floor, 'src/renderer/BoardPanel.tsx'), 'utf8');
-  assert.match(tasks, /onClick=\{\(\) => onSelect\(card\.id\)\}/);
+  const tasks = await readFile(resolve(floor, 'src/renderer/ticket/TicketBoard.tsx'), 'utf8');
+  assert.match(tasks, /onClick=\{\(event\) => onSelect\(card\.id, event\.currentTarget\)\}/);
   assert.match(center, /onSelect=\{openCard\}/);
   assert.match(strip, /className="crew-row"/);
   assert.match(strip, /onClick=\{\(\) => onSelectAgent\(row\.id\)\}/);

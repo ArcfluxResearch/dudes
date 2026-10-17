@@ -16,8 +16,8 @@ import type { WaitingItem } from './questions.ts';
 import { fieldsOf } from './scene/label.ts';
 import { SetupView } from './setup/SetupView.tsx';
 import { SettingsView } from './settings/SettingsView.tsx';
-import { Board, CardDetail } from './BoardPanel.tsx';
-import { drawsTickets, NewTicketForm, TicketBoard, TicketNotice } from './ticket/TicketBoard.tsx';
+import { CardDetail } from './BoardPanel.tsx';
+import { NewTicketForm, TicketBoard, TicketNotice } from './ticket/TicketBoard.tsx';
 import { viewConfirmed } from './ticket/model.ts';
 import { TicketOffHint } from './ticket/TicketGuidance.tsx';
 import { TicketPanel } from './ticket/TicketPanel.tsx';
@@ -264,10 +264,8 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
   const panels: Record<ControlView, ReactNode> = {
     overview: <OverviewSummary floor={floor} selectedId={selectedId} onOpenQuestion={onOpenQuestion}
       onOpenTicket={onOpenTicket} onHireAgain={onHireAgain} />,
-    board: drawsTickets(floor)
-      ? <TicketBoard floor={floor} selectedId={selectedCardId} onSelect={openCard}
-        forming={overlay?.kind === 'new'} onNewTicket={openNewTicket} />
-      : <Board floor={floor} selectedId={selectedCardId} onSelect={openCard} />,
+    board: <TicketBoard floor={floor} selectedId={selectedCardId} onSelect={openCard}
+      forming={overlay?.kind === 'new'} onNewTicket={openNewTicket} />,
     log: <LogPanel floor={floor} />,
     setup: <SetupView floor={floor} onGuide={onGuide} />,
     settings: <SettingsView floor={floor} onSetup={() => onView('setup')} />,

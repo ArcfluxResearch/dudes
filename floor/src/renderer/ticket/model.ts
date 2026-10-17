@@ -47,25 +47,42 @@ export function tickets(cards: readonly CardRow[] | undefined): readonly CardRow
   return (cards ?? []).filter((card) => card.ticket !== null);
 }
 
-export function plainCards(cards: readonly CardRow[]): readonly CardRow[] {
-  return cards.filter((card) => card.ticket === null);
+/**
+ * The column a card without a ticket is drawn in, or `null` when no column tells the truth about it.
+ * Review and Blocked say nothing about the operator, so they stay out of Ready for you and Needs
+ * you. A card marked done by an agent is that agent's word, so it stays out of Done.
+ */
+export function plainColumnOf(card: CardRow): TicketColumn | null {
+  switch (card.status) {
+    case 'todo':
+    case 'claimed': return 'todo';
+    case 'doing': return 'working';
+    case 'done': return card.status_by.kind === 'agent' ? null : 'done';
+    case 'review':
+    case 'blocked': return null;
+  }
+}
+
+/** Cards without a ticket that no column fits. */
+export function otherCards(cards: readonly CardRow[]): readonly CardRow[] {
+  return cards.filter((card) => card.ticket === null && plainColumnOf(card) === null);
 }
 
 export interface BoardColumns {
   readonly columns: Readonly<Record<TicketColumn, readonly CardRow[]>>;
   /** Tickets in Needs you. */
   readonly needsYou: readonly CardRow[];
-  /** Done tickets past the newest {@link DONE_SHOWN}. */
+  /** Done cards past the newest {@link DONE_SHOWN}. */
   readonly doneHidden: number;
 }
 
 /**
- * The board's columns. A queue shows in the order the daemon serves it, and the newest Done tickets
+ * The board's columns. A queue shows in the order the daemon serves it, and the newest Done cards
  * come first. `cards` arrive in id order, which is creation order.
  */
 export function boardColumns(cards: readonly CardRow[]): BoardColumns {
-  const all = tickets(cards);
-  const byColumn = (column: TicketColumn) => all.filter((card) => columnOf(card) === column);
+  const columnFor = (card: CardRow) => (card.ticket === null ? plainColumnOf(card) : columnOf(card));
+  const byColumn = (column: TicketColumn) => cards.filter((card) => columnFor(card) === column);
   const todo = [...byColumn('todo')].sort((a, b) => queueOrder(a) - queueOrder(b) || a.id.localeCompare(b.id));
   const done = [...byColumn('done')].sort((a, b) => b.id.localeCompare(a.id));
   return Object.freeze({
@@ -73,7 +90,7 @@ export function boardColumns(cards: readonly CardRow[]): BoardColumns {
       todo: Object.freeze(todo), working: Object.freeze(byColumn('working')), ready: Object.freeze(byColumn('ready')),
       done: Object.freeze(done.slice(0, DONE_SHOWN)),
     }),
-    needsYou: Object.freeze(all.filter((card) => card.status === 'blocked')),
+    needsYou: Object.freeze(tickets(cards).filter((card) => card.status === 'blocked')),
     doneHidden: Math.max(0, done.length - DONE_SHOWN),
   });
 }

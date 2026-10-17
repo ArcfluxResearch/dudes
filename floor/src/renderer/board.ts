@@ -50,12 +50,6 @@ export interface CardRow {
 
 import { readable } from './ticket/words.ts';
 
-export const COLUMNS = Object.freeze([
-  { key: 'todo', title: 'Todo' }, { key: 'doing', title: 'Doing' },
-  { key: 'blocked', title: 'Blocked' }, { key: 'done', title: 'Done' },
-] as const);
-export type Column = (typeof COLUMNS)[number]['key'];
-
 function object(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
@@ -129,10 +123,6 @@ export function decodeCards(value: unknown): { readonly rows: readonly CardRow[]
     else rows.set(row.id, row);
   }
   return { rows: Object.freeze([...rows.values()].sort((a, b) => a.id.localeCompare(b.id))), rejected };
-}
-
-export function cardsForColumn(cards: readonly CardRow[], column: Column): readonly CardRow[] {
-  return cards.filter((card) => (['claimed', 'doing', 'review'].includes(card.status) ? 'doing' : card.status) === column);
 }
 
 export function activeCard(cards: readonly CardRow[], agent: string): CardRow | null {
