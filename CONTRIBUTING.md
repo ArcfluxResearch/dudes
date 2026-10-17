@@ -152,8 +152,12 @@ request that changes one says so in its description.
    Everything else, such as the state database, the board, memory, the roster and the Floor, is a
    projection that can be rebuilt from the journal.
 2. **Persist before spawn.** A turn is journaled (`TurnIssued`) and fsynced before its process is
-   launched. Replay after a crash re-issues a turn that never spawned exactly once, unless the daemon
-   durably abandoned or cancelled it first.
+   launched. Replay after a crash re-issues a turn with no recorded spawn once, under the same
+   `TurnId` and task, except a browser-note issue the daemon durably abandoned, an owed reissue
+   durably cancelled first, a turn whose agent is retired, halted, or otherwise held by a standing
+   cause, or a ticket turn whose instruction review or comparison is still outstanding. Reissue
+   may launch a second process for one `TurnIssued`. It does not guarantee exactly-once process
+   execution or external effects.
 3. **Done is Observed.** `Done` requires a predicate result with `Provenance::Observed`: a command
    the daemon ran, a hash, a board state or a verifier verdict. An agent's report about its own work
    is evidence, never a verdict. An `Inferred` event may raise a breaker rung, but it is never the

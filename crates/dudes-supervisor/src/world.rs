@@ -345,8 +345,8 @@ pub enum AttachedTurnEndQueryStatus {
 }
 
 impl TurnRow {
-    /// `TurnIssued` is fsynced and no `TurnSpawned` followed: replay re-issues this turn exactly
-    /// once, under the same `TurnId`.
+    /// A durable issue with no recorded spawn or end.
+    /// This is owed work, not permission to launch or proof that no process ran.
     #[must_use]
     pub const fn is_issued_not_spawned(&self) -> bool {
         matches!(self.status, TurnStatus::Issued)

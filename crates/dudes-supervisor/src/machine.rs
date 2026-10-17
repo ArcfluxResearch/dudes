@@ -2019,31 +2019,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         //     let the ready filter below hold it. An empty *new* host is not `AlreadyClosed` for
         //     the old run's PTY. No lifecycle record or host effect is synthesized at startup.
 
-        // (2) A `TurnIssued` without a `TurnSpawned`: re-issue it **once**, under the same
-        //     `TurnId`, with no second `TurnIssued` — the record is already fsynced, so invariant
-        //     2 is already satisfied for this turn. `reissued: true` goes on the `TurnSpawned`,
-        //     which is why the flag lives there and not on `TurnIssued`.
-        //
-        //     **Filtered by standing cause, and here is why.** A journal holding `TurnIssued`
-        //     then `Halt` describes an agent a human stopped. Re-issuing regardless would launch
-        //     a real vendor process and kill it a moment later — `on_spawned` parks another
-        //     `KillStandingCause` — but only after the child exists and can act on the working
-        //     tree. Invariant 5's gate order is control-first, and a halt that a restart can
-        //     briefly undo is not a halt. So a turn whose agent is `halted` or `retired` — the
-        //     two causes `kill_standing_cause` acts on — is not re-issued, and `Pause` is
-        //     deliberately not among them because it kills no running turn either.
-        //
-        //     **The consequence, stated rather than discovered:** such a turn stays `Issued` with
-        //     `open_turn` set, so the agent decides nothing for as long as the cause stands. That
-        //     is the stuck-but-visible shape chosen over a wrong action, and
-        //     `system.doctor` is what shows it.
-        //
-        //     **`Started` is not the only place the rule runs.** `loop.resume` re-runs it for the
-        //     agent whose cause it lifted, through `Then::ClearedCause` and this same
-        //     `reissue_turn` — so the stuck state ends when the halt does rather than at the next
-        //     start. Both callers route through one function, which is what lets the exactly-once
-        //     spawn guard be one line: a re-issue here and a re-issue from a cleared cause can
-        //     otherwise reach the same `TurnId` while a launch for it is still outstanding.
+        // (2) A missing `TurnSpawned` does not prove that the prior process never ran.
         let reissue: Vec<(TurnId, AgentId, String, Option<ModelSelection>)> = self
             .world
             .issued_not_spawned()
