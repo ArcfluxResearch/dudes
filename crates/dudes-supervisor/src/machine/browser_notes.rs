@@ -194,7 +194,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         self.persist(record, Then::Fold);
     }
 
-    pub(super) fn browser_launch_allowed(&self, agent: AgentId, turn: TurnId) -> bool {
+    pub(super) fn browser_launch_allowed(
+        &self,
+        agent: AgentId,
+        turn: TurnId,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> bool {
         if self
             .world
             .browser_issue(turn)
@@ -212,7 +217,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         | BrowserLaunchPhase::ReplayRefused { .. }
                 )
             )
-            && !self.launch_held(agent)
+            && !self.launch_held(agent, operation)
             && self
                 .world
                 .turns
@@ -261,12 +266,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         turn: TurnId,
         generation: u64,
         prepared: Result<Box<LaunchSpec>, String>,
+        operation: &crate::RecoveryOperation<'_>,
     ) {
         let Some(row) = self.world.turns.get(&turn) else {
             return;
         };
         let agent = row.agent;
-        if !self.browser_launch_allowed(agent, turn) {
+        if !self.browser_launch_allowed(agent, turn, operation) {
             if !self.browser_turn_cancelled(turn)
                 && !matches!(
                     self.browser_launches.get(&turn),
@@ -338,17 +344,22 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 Then::ConversationRetryReserved { turn, generation },
             );
         } else {
-            self.record_browser_dispatch(turn, generation);
+            self.record_browser_dispatch(turn, generation, operation);
         }
     }
 
-    pub(super) fn record_browser_dispatch(&mut self, turn: TurnId, generation: u64) {
+    pub(super) fn record_browser_dispatch(
+        &mut self,
+        turn: TurnId,
+        generation: u64,
+        operation: &crate::RecoveryOperation<'_>,
+    ) {
         let Some(issue) = self.world.browser_issue(turn) else {
             return;
         };
         let agent = issue.agent;
         let note_lsn = issue.note_lsn;
-        if !self.browser_launch_allowed(agent, turn) {
+        if !self.browser_launch_allowed(agent, turn, operation) {
             if !self.browser_turn_cancelled(turn) {
                 self.browser_launches.remove(&turn);
                 self.spawning.remove(&turn);
@@ -376,6 +387,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         &self,
         token: crate::PersistToken,
         turn: TurnId,
+        operation: &crate::RecoveryOperation<'_>,
     ) -> Option<&LaunchSpec> {
         let parked = self.ledger.get(&token)?;
         let Then::BrowserDispatch {
@@ -399,7 +411,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return None;
         };
         let agent = self.world.turns.get(&turn)?.agent;
-        (generation == *prepared && self.browser_launch_allowed(agent, turn))
+        (generation == *prepared && self.browser_launch_allowed(agent, turn, operation))
             .then_some(spec.as_ref())
     }
 
@@ -407,18 +419,24 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         &mut self,
         token: crate::PersistToken,
         turn: TurnId,
+        operation: &crate::RecoveryOperation<'_>,
     ) {
-        if self.browser_dispatch_spec(token, turn).is_some() {
+        if self.browser_dispatch_spec(token, turn, operation).is_some() {
             let entry = self.ledger[&token].entry.clone();
             self.pending.push(Effect::Persist { token, entry });
         }
     }
 
-    pub(super) fn dispatch_browser_launch(&mut self, turn: TurnId, generation: u64) {
+    pub(super) fn dispatch_browser_launch(
+        &mut self,
+        turn: TurnId,
+        generation: u64,
+        operation: &crate::RecoveryOperation<'_>,
+    ) {
         let Some(agent) = self.world.turns.get(&turn).map(|row| row.agent) else {
             return;
         };
-        if !self.browser_launch_allowed(agent, turn) {
+        if !self.browser_launch_allowed(agent, turn, operation) {
             if !self.browser_turn_cancelled(turn)
                 && !matches!(
                     self.browser_launches.get(&turn),
@@ -458,11 +476,16 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// Claim actual host entry on the serialized executor, immediately before its host call.
     /// Ordinary turns retain their existing launch route.
     #[must_use]
-    pub fn claim_browser_dispatch(&mut self, turn: TurnId, generation: Option<u64>) -> bool {
+    pub fn claim_browser_dispatch(
+        &mut self,
+        turn: TurnId,
+        generation: Option<u64>,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> bool {
         let Some(issue) = self.world.browser_issue(turn) else {
             return true;
         };
-        if !self.browser_launch_allowed(issue.agent, turn) {
+        if !self.browser_launch_allowed(issue.agent, turn, operation) {
             return false;
         }
         if !matches!(self.browser_launches.get(&turn), Some(BrowserLaunchPhase::DispatchReady { generation: current, .. }) if Some(*current) == generation)
@@ -515,9 +538,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         true
     }
 
-    pub(super) fn retry_refused_browser_replays(&mut self, agent: AgentId) {
+    pub(super) fn retry_refused_browser_replays(
+        &mut self,
+        agent: AgentId,
+        operation: &crate::RecoveryOperation<'_>,
+    ) {
         if !self.browser_delivery_open
-            || self.launch_held(agent)
+            || self.launch_held(agent, operation)
             || self
                 .world
                 .agents
@@ -658,15 +685,23 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         );
     }
 
-    pub(super) fn answer_saved(&mut self, agent: AgentId) {
+    pub(super) fn answer_saved(
+        &mut self,
+        agent: AgentId,
+        operation: &crate::RecoveryOperation<'_>,
+    ) {
         if self.world.completed_goal(agent).is_none() {
-            self.decide(agent);
+            self.decide(agent, operation);
         }
     }
 
-    pub(super) fn completed_command_ended(&mut self, agent: AgentId) {
+    pub(super) fn completed_command_ended(
+        &mut self,
+        agent: AgentId,
+        operation: &crate::RecoveryOperation<'_>,
+    ) {
         if !self.protect_failures(agent) {
-            self.decide(agent);
+            self.decide(agent, operation);
         }
     }
 

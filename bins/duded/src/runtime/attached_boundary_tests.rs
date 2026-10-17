@@ -167,7 +167,13 @@ fn append(daemon: &mut TestDaemon, record: Record) -> Lsn {
     let through = append.through();
     let (main, checkpoint) = append.into_parts();
     for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
-        daemon.sup.handle(Input::Replayed { lsn, entry }).unwrap();
+        daemon
+            .sup
+            .handle(
+                Input::Replayed { lsn, entry },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .unwrap();
     }
     assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
     assert!(daemon.sup.take_effects().is_empty());
@@ -725,10 +731,13 @@ fn tick_retries_the_exact_attached_ack_after_its_spawn_index_has_retired() {
 fn tick_after_unfolded_pause(daemon: &mut TestDaemon, agent: AgentId) {
     daemon
         .sup
-        .handle(Input::Command(dudes_supervisor::Command::Pause {
-            agent,
-            browser: None,
-        }))
+        .handle(
+            Input::Command(dudes_supervisor::Command::Pause {
+                agent,
+                browser: None,
+            }),
+            &dudes_supervisor::RecoveryOperation::empty(),
+        )
         .unwrap();
     let mut queue = VecDeque::new();
     for effect in daemon.sup.take_effects() {

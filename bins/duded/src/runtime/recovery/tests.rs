@@ -143,7 +143,10 @@ fn append_history(daemon: &mut TestDaemon, record: dudes_proto::Record) {
     for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
         daemon
             .sup
-            .handle(dudes_supervisor::Input::Replayed { lsn, entry })
+            .handle(
+                dudes_supervisor::Input::Replayed { lsn, entry },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
             .unwrap();
     }
     assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
@@ -561,10 +564,13 @@ fn a_clean_refusal_drains_an_already_owed_durable_ack_before_returning() {
     };
     daemon
         .sup
-        .handle(Input::Command(Command::Pause {
-            agent: hired.agent,
-            browser: None,
-        }))
+        .handle(
+            Input::Command(Command::Pause {
+                agent: hired.agent,
+                browser: None,
+            }),
+            &dudes_supervisor::RecoveryOperation::empty(),
+        )
         .unwrap();
     let effects = daemon.sup.take_effects();
     let [Effect::Persist { token, entry }] = effects.as_slice() else {
@@ -594,7 +600,10 @@ fn a_clean_refusal_drains_an_already_owed_durable_ack_before_returning() {
             uid: Some(501),
         },
     };
-    let refusal = daemon.sup.recover(command.clone());
+    let refusal = daemon.sup.recover(
+        command.clone(),
+        &dudes_supervisor::RecoveryOperation::empty(),
+    );
     assert_eq!(
         refusal.recovery().unwrap().refusal,
         Some(RecoveryRefusal::StaleWork)

@@ -5,38 +5,51 @@ use crate::testing::{FakeClock, FakeRng, Harness};
 use dudes_proto::record::Hex32;
 use dudes_types::Timestamp;
 
+mod scoped;
+
 type Machine = Supervisor<FakeClock, FakeRng>;
 
 fn owed(paused: bool) -> (Machine, AgentId) {
+    let (machine, agent, _) = owed_prefix(paused);
+    (machine, agent)
+}
+
+fn owed_prefix(paused: bool) -> (Machine, AgentId, Vec<(Lsn, Entry)>) {
     let mut harness = Harness::new();
     harness.launch = false;
     let (agent, _) = harness.hire_with_goal(&["true"]);
     let mut rng = FakeRng::new();
     rng.reserve_entries(&harness.journal).unwrap();
     let mut machine = Supervisor::new(Harness::config(), FakeClock::frozen(1_787_394_700_000), rng);
-    for (entry, lsn) in harness.journal.into_iter().zip(1u64..) {
+    let mut prefix: Vec<_> = harness
+        .journal
+        .into_iter()
+        .zip(1u64..)
+        .map(|(entry, at)| (Lsn(at), entry))
+        .collect();
+    for (lsn, entry) in &prefix {
         machine
-            .handle(crate::Input::Replayed {
-                lsn: Lsn(lsn),
-                entry,
-            })
+            .handle(
+                crate::Input::Replayed {
+                    lsn: *lsn,
+                    entry: entry.clone(),
+                },
+                &crate::RecoveryOperation::empty(),
+            )
             .unwrap();
     }
     if paused {
-        machine
-            .handle(crate::Input::Replayed {
-                lsn: Lsn(9_000),
-                entry: Entry {
-                    at: Timestamp::UNIX_EPOCH,
-                    record: Record::Pause {
-                        agent,
-                        browser: None,
-                    },
-                },
-            })
-            .unwrap();
+        replay_record(
+            &mut machine,
+            &mut prefix,
+            9_000,
+            Record::Pause {
+                agent,
+                browser: None,
+            },
+        );
     }
-    (machine, agent)
+    (machine, agent, prefix)
 }
 
 fn command(machine: &Machine, agent: AgentId) -> RecoveryCommand {
@@ -70,10 +83,13 @@ fn emitted(machine: &Machine) -> (PersistToken, Entry) {
 
 fn acknowledge(machine: &mut Machine, token: PersistToken, entry: Entry, lsn: Lsn) -> Handled {
     machine
-        .handle(crate::Input::Persisted {
-            token,
-            append: RecordedAppend::try_new(lsn, (lsn, entry), None).unwrap(),
-        })
+        .handle(
+            crate::Input::Persisted {
+                token,
+                append: RecordedAppend::try_new(lsn, (lsn, entry), None).unwrap(),
+            },
+            &crate::RecoveryOperation::empty(),
+        )
         .unwrap()
 }
 
@@ -93,11 +109,14 @@ fn acknowledge_checkpointed(
         },
     };
     machine
-        .handle(crate::Input::Persisted {
-            token,
-            append: RecordedAppend::try_new(through, (lsn, entry), Some((through, checkpoint)))
-                .unwrap(),
-        })
+        .handle(
+            crate::Input::Persisted {
+                token,
+                append: RecordedAppend::try_new(through, (lsn, entry), Some((through, checkpoint)))
+                    .unwrap(),
+            },
+            &crate::RecoveryOperation::empty(),
+        )
         .unwrap()
 }
 
@@ -107,7 +126,7 @@ fn required_own_resume_and_authorization_advance_only_on_actual_acknowledgments(
     let intent = command(&machine, agent);
     let work = intent.expected.work;
     let old = machine.world.turns[&work.turn].clone();
-    let initial = machine.recover(intent);
+    let initial = machine.recover(intent, &crate::RecoveryOperation::empty());
     assert_eq!(
         initial.recovery().unwrap().prefix,
         RecoveryPrefix::default()
@@ -168,7 +187,7 @@ fn required_own_resume_and_authorization_advance_only_on_actual_acknowledgments(
 fn clean_executor_refusal_retires_only_the_exact_volatile_command() {
     let (mut machine, agent) = owed(false);
     let intent = command(&machine, agent);
-    machine.recover(intent);
+    machine.recover(intent, &crate::RecoveryOperation::empty());
     let (token, entry) = emitted(&machine);
     let metadata = machine.recovery_append(token, &entry).unwrap();
     let before = machine.world.recovery_projection().unwrap().0.clone();
@@ -198,7 +217,7 @@ fn clean_executor_refusal_retires_only_the_exact_volatile_command() {
 #[test]
 fn later_clean_refusal_retains_the_acknowledged_required_prefix() {
     let (mut machine, agent) = owed(true);
-    machine.recover(command(&machine, agent));
+    machine.recover(command(&machine, agent), &crate::RecoveryOperation::empty());
     let (token, entry) = emitted(&machine);
     acknowledge(&mut machine, token, entry, Lsn(10_001));
     let (token, entry) = emitted(&machine);
@@ -229,7 +248,7 @@ fn stale_predecessor_is_refused_before_a_barrier_or_rng_draw() {
         authorization_lsn: Lsn(2),
     });
     let drawn = machine.rng.drawn();
-    let handled = machine.recover(intent);
+    let handled = machine.recover(intent, &crate::RecoveryOperation::empty());
     assert_eq!(
         handled.recovery().unwrap().refusal,
         Some(RecoveryRefusal::StalePredecessor)
@@ -244,11 +263,17 @@ fn replayed_owed_work_is_held_while_live_first_issue_still_proceeds() {
     live.launch = false;
     let (agent, _) = live.hire_with_goal(&["true"]);
     let turn = live.open_turn(agent).unwrap();
-    assert!(live.supervisor.recovery_launch_allowed(agent, turn));
+    assert!(live.supervisor.recovery_launch_allowed(
+        agent,
+        turn,
+        &crate::RecoveryOperation::empty()
+    ));
     let (mut replayed, agent) = owed(false);
     let turn = replayed.world.agents[&agent].open_turn.unwrap();
-    assert!(!replayed.recovery_launch_allowed(agent, turn));
-    replayed.handle(crate::Input::Started).unwrap();
+    assert!(!replayed.recovery_launch_allowed(agent, turn, &crate::RecoveryOperation::empty()));
+    replayed
+        .handle(crate::Input::Started, &crate::RecoveryOperation::empty())
+        .unwrap();
     let (token, entry) = emitted(&replayed);
     assert!(matches!(
         &entry.record,
@@ -290,73 +315,88 @@ fn unclaimed_new_with_open_question() -> (Machine, RecoveryWork) {
     let (mut machine, agent) = owed(false);
     let work = machine.recovery_binding(agent).unwrap().work;
     machine
-        .handle(crate::Input::Replayed {
-            lsn: Lsn(9_000),
-            entry: Entry {
-                at: Timestamp::UNIX_EPOCH,
-                record: Record::TurnEnded {
-                    agent,
-                    turn: work.turn,
-                    mode: dudes_types::Mode::Managed,
-                    provenance: dudes_types::Provenance::Observed,
-                    elapsed_ms: None,
-                    exit: dudes_proto::ExitStatus::UNKNOWN,
-                    usage: None,
-                    session_usage: None,
-                    model_usage: std::collections::BTreeMap::new(),
-                    last_message: None,
-                    final_reply: None,
-                    session: None,
-                    outcome: Some(dudes_proto::TurnOutcome::NoResult),
+        .handle(
+            crate::Input::Replayed {
+                lsn: Lsn(9_000),
+                entry: Entry {
+                    at: Timestamp::UNIX_EPOCH,
+                    record: Record::TurnEnded {
+                        agent,
+                        turn: work.turn,
+                        mode: dudes_types::Mode::Managed,
+                        provenance: dudes_types::Provenance::Observed,
+                        elapsed_ms: None,
+                        exit: dudes_proto::ExitStatus::UNKNOWN,
+                        usage: None,
+                        session_usage: None,
+                        model_usage: std::collections::BTreeMap::new(),
+                        last_message: None,
+                        final_reply: None,
+                        session: None,
+                        outcome: Some(dudes_proto::TurnOutcome::NoResult),
+                    },
                 },
             },
-        })
+            &crate::RecoveryOperation::empty(),
+        )
         .unwrap();
     machine
-        .handle(crate::Input::Replayed {
-            lsn: Lsn(9_001),
-            entry: Entry {
-                at: Timestamp::UNIX_EPOCH,
-                record: Record::Pause {
-                    agent,
-                    browser: None,
+        .handle(
+            crate::Input::Replayed {
+                lsn: Lsn(9_001),
+                entry: Entry {
+                    at: Timestamp::UNIX_EPOCH,
+                    record: Record::Pause {
+                        agent,
+                        browser: None,
+                    },
                 },
             },
-        })
+            &crate::RecoveryOperation::empty(),
+        )
         .unwrap();
     let required = machine.recovery_opportunity(agent).unwrap().required;
     machine
-        .handle(crate::Input::Replayed {
-            lsn: Lsn(9_002),
-            entry: Entry {
-                at: Timestamp::UNIX_EPOCH,
-                record: Record::RecoveryRequired(required),
-            },
-        })
-        .unwrap();
-    machine
-        .handle(crate::Input::Replayed {
-            lsn: Lsn(9_003),
-            entry: Entry {
-                at: Timestamp::UNIX_EPOCH,
-                record: Record::Resume {
-                    agent,
-                    browser: None,
+        .handle(
+            crate::Input::Replayed {
+                lsn: Lsn(9_002),
+                entry: Entry {
+                    at: Timestamp::UNIX_EPOCH,
+                    record: Record::RecoveryRequired(required),
                 },
             },
-        })
+            &crate::RecoveryOperation::empty(),
+        )
         .unwrap();
     machine
-        .handle(crate::Input::Replayed {
-            lsn: Lsn(9_004),
-            entry: Entry {
-                at: Timestamp::UNIX_EPOCH,
-                record: Record::HumanQuestion {
-                    agent,
-                    text: "Which output?".into(),
+        .handle(
+            crate::Input::Replayed {
+                lsn: Lsn(9_003),
+                entry: Entry {
+                    at: Timestamp::UNIX_EPOCH,
+                    record: Record::Resume {
+                        agent,
+                        browser: None,
+                    },
                 },
             },
-        })
+            &crate::RecoveryOperation::empty(),
+        )
+        .unwrap();
+    machine
+        .handle(
+            crate::Input::Replayed {
+                lsn: Lsn(9_004),
+                entry: Entry {
+                    at: Timestamp::UNIX_EPOCH,
+                    record: Record::HumanQuestion {
+                        agent,
+                        text: "Which output?".into(),
+                    },
+                },
+            },
+            &crate::RecoveryOperation::empty(),
+        )
         .unwrap();
     (machine, work)
 }
@@ -368,7 +408,7 @@ fn pending_new_claim_is_exclusive_with_current_predecessor_and_an_open_question(
     let mut intent = command(&machine, agent);
     intent.choice = RecoveryChoice::FreshWithRecap;
     let first_expected = intent.expected;
-    machine.recover(intent);
+    machine.recover(intent, &crate::RecoveryOperation::empty());
     let (token, entry) = emitted(&machine);
     assert!(
         matches!(entry.record, Record::RecoveryAuthorized(_)),
@@ -394,16 +434,19 @@ fn pending_new_claim_is_exclusive_with_current_predecessor_and_an_open_question(
     let drawn = machine.rng.drawn();
     let mut current_expected = first_expected;
     current_expected.predecessor = Some(claim);
-    let second = machine.recover(RecoveryCommand {
-        request_id: Hex32::new([51; 32]),
-        digest: Hex32::new([52; 32]),
-        expected: current_expected,
-        choice: RecoveryChoice::FreshWithRecap,
-        attribution: dudes_proto::recovery::RecoveryAttribution::LocalOperator {
-            pid: 18,
-            uid: Some(501),
+    let second = machine.recover(
+        RecoveryCommand {
+            request_id: Hex32::new([51; 32]),
+            digest: Hex32::new([52; 32]),
+            expected: current_expected,
+            choice: RecoveryChoice::FreshWithRecap,
+            attribution: dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+                pid: 18,
+                uid: Some(501),
+            },
         },
-    });
+        &crate::RecoveryOperation::empty(),
+    );
     assert_eq!(
         second.recovery().unwrap().refusal,
         Some(RecoveryRefusal::Claimed)
@@ -415,37 +458,32 @@ fn pending_new_claim_is_exclusive_with_current_predecessor_and_an_open_question(
 
 #[test]
 fn unseen_issue_bound_claim_refuses_stale_none_but_fresh_exact_consent_supersedes() {
-    let (mut machine, agent) = owed(false);
-    machine
-        .handle(crate::Input::Replayed {
-            lsn: Lsn(8_000),
-            entry: Entry {
-                at: Timestamp::UNIX_EPOCH,
-                record: Record::HumanQuestion {
-                    agent,
-                    text: "Keep this question open".into(),
-                },
-            },
-        })
-        .unwrap();
+    let (mut machine, agent, mut prefix) = owed_prefix(false);
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        8_000,
+        Record::HumanQuestion {
+            agent,
+            text: "Keep this question open".into(),
+        },
+    );
     let required = machine.recovery_opportunity(agent).unwrap().required;
     let work = required.binding.work;
     let original = machine.world.turns[&work.turn].clone();
-    machine
-        .handle(crate::Input::Replayed {
-            lsn: Lsn(9_000),
-            entry: Entry {
-                at: Timestamp::UNIX_EPOCH,
-                record: Record::RecoveryRequired(required),
-            },
-        })
-        .unwrap();
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        9_000,
+        Record::RecoveryRequired(required),
+    );
     let first = command(&machine, agent);
     assert!(first.expected.episode.is_some());
     assert_eq!(first.expected.predecessor, None);
     let old_expected = first.expected;
-    machine.recover(first);
+    machine.recover(first, &crate::RecoveryOperation::empty());
     let (token, entry) = emitted(&machine);
+    prefix.push((Lsn(10_001), entry.clone()));
     acknowledge(&mut machine, token, entry, Lsn(10_001));
     let claim = machine
         .world
@@ -466,12 +504,14 @@ fn unseen_issue_bound_claim_refuses_stale_none_but_fresh_exact_consent_supersede
             .state,
         RecoveryClaimState::IssueBound(_)
     ));
+    machine = replay_machine(&prefix);
+    assert!(!machine.live_issues.contains(&work.turn));
     let before = machine.world.recovery_projection().unwrap().0.clone();
     let drawn = machine.rng.drawn();
     let mut stale = command(&machine, agent);
     stale.request_id = Hex32::new([61; 32]);
     stale.expected = old_expected;
-    let refused = machine.recover(stale);
+    let refused = machine.recover(stale, &crate::RecoveryOperation::empty());
     assert_eq!(
         refused.recovery().unwrap().refusal,
         Some(RecoveryRefusal::StalePredecessor)
@@ -482,7 +522,7 @@ fn unseen_issue_bound_claim_refuses_stale_none_but_fresh_exact_consent_supersede
     let mut fresh = command(&machine, agent);
     fresh.request_id = Hex32::new([62; 32]);
     assert_eq!(fresh.expected.predecessor, Some(claim));
-    machine.recover(fresh);
+    machine.recover(fresh, &crate::RecoveryOperation::empty());
     let (token, entry) = emitted(&machine);
     assert!(
         matches!(&entry.record, Record::RecoveryRequired(required) if required.predecessor == Some(claim))
@@ -521,47 +561,56 @@ fn a_single_confirmed_context_failure_without_hold_keeps_ordinary_admission() {
     let mut machine = Supervisor::new(Harness::config(), FakeClock::frozen(1_787_394_700_000), rng);
     for (entry, lsn) in harness.journal.into_iter().zip(1u64..) {
         machine
-            .handle(crate::Input::Replayed {
-                lsn: Lsn(lsn),
-                entry,
-            })
+            .handle(
+                crate::Input::Replayed {
+                    lsn: Lsn(lsn),
+                    entry,
+                },
+                &crate::RecoveryOperation::empty(),
+            )
             .unwrap();
     }
     machine
-        .handle(crate::Input::Replayed {
-            lsn: Lsn(9_000),
-            entry: Entry {
-                at: Timestamp::UNIX_EPOCH,
-                record: Record::SessionLearned {
-                    agent,
-                    turn,
-                    session,
+        .handle(
+            crate::Input::Replayed {
+                lsn: Lsn(9_000),
+                entry: Entry {
+                    at: Timestamp::UNIX_EPOCH,
+                    record: Record::SessionLearned {
+                        agent,
+                        turn,
+                        session,
+                    },
                 },
             },
-        })
+            &crate::RecoveryOperation::empty(),
+        )
         .unwrap();
     machine
-        .handle(crate::Input::Replayed {
-            lsn: Lsn(9_001),
-            entry: Entry {
-                at: Timestamp::UNIX_EPOCH,
-                record: Record::TurnEnded {
-                    agent,
-                    turn,
-                    mode: dudes_types::Mode::Managed,
-                    provenance: dudes_types::Provenance::Observed,
-                    elapsed_ms: Some(10_000),
-                    exit: dudes_proto::ExitStatus::UNKNOWN,
-                    usage: None,
-                    session_usage: None,
-                    model_usage: std::collections::BTreeMap::new(),
-                    last_message: None,
-                    final_reply: None,
-                    session: None,
-                    outcome: Some(dudes_proto::TurnOutcome::NoResult),
+        .handle(
+            crate::Input::Replayed {
+                lsn: Lsn(9_001),
+                entry: Entry {
+                    at: Timestamp::UNIX_EPOCH,
+                    record: Record::TurnEnded {
+                        agent,
+                        turn,
+                        mode: dudes_types::Mode::Managed,
+                        provenance: dudes_types::Provenance::Observed,
+                        elapsed_ms: Some(10_000),
+                        exit: dudes_proto::ExitStatus::UNKNOWN,
+                        usage: None,
+                        session_usage: None,
+                        model_usage: std::collections::BTreeMap::new(),
+                        last_message: None,
+                        final_reply: None,
+                        session: None,
+                        outcome: Some(dudes_proto::TurnOutcome::NoResult),
+                    },
                 },
             },
-        })
+            &crate::RecoveryOperation::empty(),
+        )
         .unwrap();
     assert!(machine.world.agents[&agent].session.is_some());
     assert!(machine.world.agents[&agent].automatic_hold.is_none());
@@ -569,8 +618,8 @@ fn a_single_confirmed_context_failure_without_hold_keeps_ordinary_admission() {
         machine.recovery_opportunity(agent),
         Err(RecoveryRefusal::NotRecoverable)
     );
-    assert!(machine.ensure_recovery_admission(agent));
-    machine.decide(agent);
+    assert!(machine.ensure_recovery_admission(agent, &crate::RecoveryOperation::empty()));
+    machine.decide(agent, &crate::RecoveryOperation::empty());
     assert!(machine.effects().iter().any(|effect| matches!(
         effect,
         Effect::Persist {
@@ -610,10 +659,13 @@ fn replay_machine(prefix: &[(Lsn, Entry)]) -> Machine {
         .with_adapters([adapter].into_iter().collect());
     for (lsn, entry) in prefix {
         machine
-            .handle(crate::Input::Replayed {
-                lsn: *lsn,
-                entry: entry.clone(),
-            })
+            .handle(
+                crate::Input::Replayed {
+                    lsn: *lsn,
+                    entry: entry.clone(),
+                },
+                &crate::RecoveryOperation::empty(),
+            )
             .unwrap();
         assert!(
             machine.effects().is_empty(),
@@ -629,10 +681,13 @@ fn replay_record(machine: &mut Machine, prefix: &mut Vec<(Lsn, Entry)>, lsn: u64
         record,
     };
     machine
-        .handle(crate::Input::Replayed {
-            lsn: Lsn(lsn),
-            entry: entry.clone(),
-        })
+        .handle(
+            crate::Input::Replayed {
+                lsn: Lsn(lsn),
+                entry: entry.clone(),
+            },
+            &crate::RecoveryOperation::empty(),
+        )
         .unwrap();
     assert!(machine.effects().is_empty());
     prefix.push((Lsn(lsn), entry));
@@ -721,7 +776,9 @@ fn drain_invalidations(
     machine: &mut Machine,
     mut lsn: u64,
 ) -> Vec<dudes_proto::recovery::RecoveryInvalidated> {
-    machine.handle(crate::Input::Started).unwrap();
+    machine
+        .handle(crate::Input::Started, &crate::RecoveryOperation::empty())
+        .unwrap();
     let mut invalidated = Vec::new();
     for _ in 0..16 {
         let emitted = machine
@@ -752,7 +809,9 @@ fn drain_invalidations(
         } else if !machine.recovery_discovery.busy() {
             break;
         } else {
-            machine.handle(crate::Input::Tick).unwrap();
+            machine
+                .handle(crate::Input::Tick, &crate::RecoveryOperation::empty())
+                .unwrap();
         }
     }
     assert!(!machine.recovery_discovery.busy());
@@ -1178,29 +1237,32 @@ fn deliver_recovery_start(machine: &mut Machine, agent: AgentId) {
         path: None,
     };
     machine
-        .handle(crate::Input::InstructionSampled {
-            request,
-            snapshot: Box::new(dudes_proto::InstructionSnapshot {
-                sampled_at: machine.clock.peek(),
-                source: dudes_proto::InstructionSnapshotSource::Fresh,
-                execution_folder: None,
-                participants: Vec::new(),
-                inputs: Vec::new(),
-                inventoried: Vec::new(),
-                gaps: vec![
-                    dudes_proto::InstructionCoverageGap {
-                        reason: dudes_proto::InstructionGapKind::PathUnresolved,
-                        ..gap.clone()
-                    },
-                    gap,
-                ],
-                usage: dudes_proto::InstructionSampleUsage::default(),
-                pid_namespace: None,
-                boot: None,
-            }),
-            ticket: None,
-            comparison: None,
-        })
+        .handle(
+            crate::Input::InstructionSampled {
+                request,
+                snapshot: Box::new(dudes_proto::InstructionSnapshot {
+                    sampled_at: machine.clock.peek(),
+                    source: dudes_proto::InstructionSnapshotSource::Fresh,
+                    execution_folder: None,
+                    participants: Vec::new(),
+                    inputs: Vec::new(),
+                    inventoried: Vec::new(),
+                    gaps: vec![
+                        dudes_proto::InstructionCoverageGap {
+                            reason: dudes_proto::InstructionGapKind::PathUnresolved,
+                            ..gap.clone()
+                        },
+                        gap,
+                    ],
+                    usage: dudes_proto::InstructionSampleUsage::default(),
+                    pid_namespace: None,
+                    boot: None,
+                }),
+                ticket: None,
+                comparison: None,
+            },
+            &crate::RecoveryOperation::empty(),
+        )
         .unwrap();
 }
 
@@ -1211,7 +1273,7 @@ fn prepare_recovered_new_issue(
 ) -> RecoveryAuthorized {
     let mut intent = command(machine, agent);
     intent.choice = choice;
-    machine.recover(intent);
+    machine.recover(intent, &crate::RecoveryOperation::empty());
     for at in [10_001, 10_003] {
         let (token, entry) = emitted(machine);
         acknowledge_checkpointed(machine, token, entry, Lsn(at));
@@ -1376,7 +1438,11 @@ fn legacy_unrecorded_model_new_is_unavailable_before_allocation_or_any_append() 
         Err(RecoveryRefusal::NotRecoverable)
     );
     assert_eq!(
-        legacy.recover(intent).recovery().unwrap().refusal,
+        legacy
+            .recover(intent, &crate::RecoveryOperation::empty())
+            .recovery()
+            .unwrap()
+            .refusal,
         Some(RecoveryRefusal::NotRecoverable)
     );
     assert_eq!(legacy.rng.drawn(), entropy);
@@ -1404,7 +1470,7 @@ fn legacy_unrecorded_model_repeat_keeps_the_original_issue_task_and_answers() {
             Hex32::new(*blake3::hash(bytes).as_bytes())
         });
     let hops = machine.world.goals[&original.work.goal].turns_on_goal;
-    machine.recover(command(&machine, agent));
+    machine.recover(command(&machine, agent), &crate::RecoveryOperation::empty());
     let (token, entry) = emitted(&machine);
     assert!(matches!(entry.record, Record::RecoveryRequired(_)));
     acknowledge(&mut machine, token, entry, Lsn(10_001));
@@ -1439,14 +1505,24 @@ fn historical_browser_claim(
     prefix: &mut Vec<(Lsn, Entry)>,
     agent: AgentId,
 ) -> RecoveryClaimRef {
+    historical_browser_claim_at(machine, prefix, agent, 9_000, 61)
+}
+
+fn historical_browser_claim_at(
+    machine: &mut Machine,
+    prefix: &mut Vec<(Lsn, Entry)>,
+    agent: AgentId,
+    start: u64,
+    tag: u8,
+) -> RecoveryClaimRef {
     let view = machine.recovery_opportunity(agent).unwrap();
     let reason = view.required.reason;
     let required = view.required;
     let binding = required.binding.clone();
-    replay_record(machine, prefix, 9_000, Record::RecoveryRequired(required));
-    let request_id = Hex32::new([61; 32]);
-    let request_digest = Hex32::new([62; 32]);
-    let session_digest = Hex32::new([63; 32]);
+    replay_record(machine, prefix, start, Record::RecoveryRequired(required));
+    let request_id = Hex32::new([tag; 32]);
+    let request_digest = Hex32::new([tag + 1; 32]);
+    let session_digest = Hex32::new([tag + 2; 32]);
     let resume = Record::Resume {
         agent,
         browser: Some(dudes_proto::record::BrowserControl {
@@ -1457,7 +1533,7 @@ fn historical_browser_claim(
         }),
     };
     let resume = serde_json::from_value(serde_json::to_value(resume).unwrap()).unwrap();
-    replay_record(machine, prefix, 9_001, resume);
+    replay_record(machine, prefix, start + 1, resume);
     let episode = machine
         .world
         .recovery_projection()
@@ -1487,8 +1563,8 @@ fn historical_browser_claim(
         request_digest,
         attribution: dudes_proto::recovery::RecoveryAttribution::BrowserSession { session_digest },
         expected_control: view.expected.control_lsn,
-        resulting_control: Some(Lsn(9_001)),
-        resume_lsn: Some(Lsn(9_001)),
+        resulting_control: Some(Lsn(start + 1)),
+        resume_lsn: Some(Lsn(start + 1)),
         plan,
     };
     assert_eq!(
@@ -1501,10 +1577,10 @@ fn historical_browser_claim(
         serde_json::to_value(Record::RecoveryAuthorized(Box::new(authorization))).unwrap(),
     )
     .unwrap();
-    replay_record(machine, prefix, 9_002, authorization);
+    replay_record(machine, prefix, start + 2, authorization);
     RecoveryClaimRef {
         episode,
-        authorization_lsn: Lsn(9_002),
+        authorization_lsn: Lsn(start + 2),
     }
 }
 
@@ -1539,10 +1615,17 @@ fn historical_browser_pending_and_issue_bound_claims_do_not_supply_live_dispatch
             matches!(receipt.state, RecoveryClaimState::IssueBound(_)),
             !pending
         );
-        assert!(!browser.recovery_dispatch_attribution_allowed(claim.episode.work));
-        assert!(!browser.recovery_admission_allowed(agent));
+        assert!(!browser.recovery_dispatch_attribution_allowed(
+            claim.episode.work,
+            &crate::RecoveryOperation::empty()
+        ));
+        assert!(!browser.recovery_admission_allowed(agent, &crate::RecoveryOperation::empty()));
         if !pending {
-            assert!(!browser.recovery_launch_allowed(agent, claim.episode.work.turn));
+            assert!(!browser.recovery_launch_allowed(
+                agent,
+                claim.episode.work.turn,
+                &crate::RecoveryOperation::empty()
+            ));
         }
         assert_eq!(browser.world.recovery_projection().unwrap().0, &before);
         assert!(browser.effects().is_empty());
@@ -1560,9 +1643,12 @@ fn historical_browser_pending_and_issue_bound_claims_do_not_supply_live_dispatch
             }
         }
         let local = replay_machine(&prefix);
-        assert!(local.recovery_dispatch_attribution_allowed(claim.episode.work));
+        assert!(local.recovery_dispatch_attribution_allowed(
+            claim.episode.work,
+            &crate::RecoveryOperation::empty()
+        ));
         if pending {
-            assert!(local.recovery_admission_allowed(agent));
+            assert!(local.recovery_admission_allowed(agent, &crate::RecoveryOperation::empty()));
         }
     }
 }
@@ -1720,10 +1806,13 @@ fn required_survives_restart_and_ordinary_resume(
     acknowledge(machine, token, entry, Lsn(10_001));
     let mut restarted = replay_machine(prefix);
     restarted
-        .handle(crate::Input::Command(crate::Command::Resume {
-            agent,
-            browser: None,
-        }))
+        .handle(
+            crate::Input::Command(crate::Command::Resume {
+                agent,
+                browser: None,
+            }),
+            &crate::RecoveryOperation::empty(),
+        )
         .unwrap();
     let (token, entry) = emitted(&restarted);
     assert!(matches!(entry.record, Record::Resume { .. }));
@@ -1731,7 +1820,7 @@ fn required_survives_restart_and_ordinary_resume(
     let (state, _) = restarted.world.recovery_projection().unwrap();
     let episode = state.current(work).unwrap();
     episode.authorization_lsn.is_none()
-        && !restarted.recovery_admission_allowed(agent)
+        && !restarted.recovery_admission_allowed(agent, &crate::RecoveryOperation::empty())
         && restarted.effects().iter().all(|effect| {
             !matches!(
                 effect,
@@ -1775,14 +1864,18 @@ fn legacy_uncertainty_keeps_a_durable_required_barrier_after_restart_and_ordinar
                 },
             };
             assert_eq!(
-                machine.recover(intent).recovery().unwrap().refusal,
+                machine
+                    .recover(intent, &crate::RecoveryOperation::empty())
+                    .recovery()
+                    .unwrap()
+                    .refusal,
                 Some(RecoveryRefusal::NotRecoverable)
             );
         }
         assert_eq!(machine.rng.drawn(), entropy);
         assert_eq!(format!("{:?}", machine.world()), before);
         assert!(machine.effects().is_empty());
-        let admitted = machine.ensure_recovery_admission(agent);
+        let admitted = machine.ensure_recovery_admission(agent, &crate::RecoveryOperation::empty());
         let actual = machine.effects().iter().find_map(|effect| match effect {
             Effect::Persist { token, entry }
                 if matches!(entry.record, Record::RecoveryRequired(_)) =>

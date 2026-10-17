@@ -934,7 +934,11 @@ mod tests {
         else {
             panic!("expected launch")
         };
-        assert!(h.supervisor.claim_browser_dispatch(turn, None));
+        assert!(h.supervisor.claim_browser_dispatch(
+            turn,
+            None,
+            &crate::RecoveryOperation::empty()
+        ));
         let SpawnResult::Spawned(key) = h.host.spawn(&spec, &install) else {
             panic!("fake launch failed")
         };
@@ -1115,10 +1119,11 @@ mod tests {
             let mut prefix = Prefix::completed(None);
             let (mut h, mint) = live(&mut prefix);
             canonical_control(&mut h, control);
-            assert!(
-                !h.supervisor
-                    .recovery_launch_allowed(prefix.agent, prefix.turn)
-            );
+            assert!(!h.supervisor.recovery_launch_allowed(
+                prefix.agent,
+                prefix.turn,
+                &crate::RecoveryOperation::empty()
+            ));
             assert!(h.host.spawned.is_empty());
             assert_eq!(h.open_turn(prefix.agent), Some(prefix.turn));
             let resumed = one(h.step(Input::Command(Command::Resume {
@@ -1145,11 +1150,11 @@ mod tests {
                 browser: None,
             },
         );
-        assert!(
-            paused
-                .supervisor
-                .recovery_launch_allowed(prefix.agent, prefix.turn)
-        );
+        assert!(paused.supervisor.recovery_launch_allowed(
+            prefix.agent,
+            prefix.turn,
+            &crate::RecoveryOperation::empty()
+        ));
         let spawn = ready_spawn(&mut paused, mint);
         launch(&mut paused, spawn);
         assert_eq!(paused.host.spawned.len(), 1);
@@ -1557,10 +1562,11 @@ mod tests {
                 goal: prefix.goal,
             },
         );
-        assert!(
-            h.supervisor
-                .recovery_launch_allowed(prefix.agent, prefix.turn)
-        );
+        assert!(h.supervisor.recovery_launch_allowed(
+            prefix.agent,
+            prefix.turn,
+            &crate::RecoveryOperation::empty()
+        ));
         let spawn = ready_spawn(&mut h, mint);
         launch(&mut h, spawn);
         let ended = one(h.step(exit(prefix.turn, 0, Usage::ZERO)));

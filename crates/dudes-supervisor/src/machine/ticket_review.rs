@@ -105,6 +105,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         goal: GoalId,
         then: Then,
         check_lsn: Lsn,
+        operation: &crate::RecoveryOperation<'_>,
     ) -> Option<crate::input::RecoveryUpdate> {
         let request = self.world.ticket_goal(goal).and_then(|(card, round)| {
             let agent = self
@@ -132,7 +133,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.pending.push(effect);
                 None
             }
-            None => self.resume_after(then, check_lsn),
+            None => self.resume_after(then, check_lsn, operation),
         }
     }
 
@@ -141,6 +142,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         goal: GoalId,
         check_lsn: Lsn,
         stamp: StampPayload,
+        operation: &crate::RecoveryOperation<'_>,
     ) -> Option<crate::input::RecoveryUpdate> {
         let (parked_lsn, then) = self.ticket_review.stamps_parked.remove(&goal)?;
         if parked_lsn != check_lsn {
@@ -161,7 +163,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.persist(record, *then);
                 None
             }
-            None => self.resume_after(*then, check_lsn),
+            None => self.resume_after(*then, check_lsn, operation),
         }
     }
 }

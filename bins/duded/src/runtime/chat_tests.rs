@@ -2172,11 +2172,14 @@ fn pump_proposed_dispatch(
     daemon.ctx.resolved_browser_turn = Some((turn, generation));
     daemon
         .sup
-        .handle(dudes_supervisor::Input::BrowserLaunchReady {
-            turn,
-            generation,
-            prepared,
-        })
+        .handle(
+            dudes_supervisor::Input::BrowserLaunchReady {
+                turn,
+                generation,
+                prepared,
+            },
+            &dudes_supervisor::RecoveryOperation::empty(),
+        )
         .unwrap();
     let effects = daemon.sup.take_effects();
     let [effect @ dudes_supervisor::Effect::Persist { token, entry }] = effects.as_slice() else {
@@ -3215,11 +3218,14 @@ fn an_injected_direct_browser_ack_fault_stops_before_host_dispatch() {
         daemon.ctx.resolved_browser_turn = Some((turn, generation));
         daemon
             .sup
-            .handle(dudes_supervisor::Input::BrowserLaunchReady {
-                turn,
-                generation,
-                prepared,
-            })
+            .handle(
+                dudes_supervisor::Input::BrowserLaunchReady {
+                    turn,
+                    generation,
+                    prepared,
+                },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
             .unwrap();
         let effects = daemon.sup.take_effects();
         let [effect @ dudes_supervisor::Effect::Persist { entry, .. }] = effects.as_slice() else {

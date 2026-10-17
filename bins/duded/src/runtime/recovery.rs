@@ -268,7 +268,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let mut report =
             PumpReport::Recovery(Box::new(CommandContext::new(admission, command.clone())));
         let result = self.pump_started(&mut report, PumpOrigin::Ordinary, move |sup| {
-            Ok(sup.recover(command))
+            Ok(sup.recover(command, &dudes_supervisor::RecoveryOperation::empty()))
         });
         let PumpReport::Recovery(context) = report else {
             unreachable!("owned recovery report")

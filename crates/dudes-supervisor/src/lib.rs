@@ -3,9 +3,9 @@
 //! One entry point, [`Supervisor::handle`], reports checked durable progress; [`Supervisor::effects`]
 //! and [`Supervisor::take_effects`] expose its effects. Handling performs no I/O, awaits nothing,
 //! and reads no clock except through the [`Clock`](host::Clock) seam.
-//! The runtime that executes the effects lives elsewhere; everything decided here is decided
-//! from values the supervisor has already journaled, which is what makes a decision reproducible
-//! from the log alone (invariant 5) and a crash test meaningful rather than decorative.
+//! The runtime that executes the effects lives elsewhere. The machine joins operation-scoped
+//! authority observations to confirmed journal state. The pure policy remains reproducible from
+//! its journal-derived inputs.
 //!
 //! The invariant the crate exists to protect is **invariant 2, persist before spawn**: a
 //! `Effect::Spawn` for turn *T* is emitted only in response to an `Input::Persisted` — for the
@@ -34,6 +34,8 @@
 //!   and no board, mail or memory state either, which arrive the same way on [`Input::Work`].
 //! - [`agent_fsm`] — the six agent states and the total transition function.
 //! - [`machine`] — [`Supervisor`] itself.
+//! - [`RecoveryOperation`] borrows exact recovery-subject observations for one invocation and
+//!   supplies no append permit. Neither the operation nor its observations enter [`World`].
 //! - [`predicate_evidence_eligible`] — the rule for which evidence may complete a goal,
 //!   applied by the machine to a live result and by [`world`] to a replayed one.
 //! - [`doctor`] — what `system.doctor` asks the machine about adoption keys and session recovery.
@@ -59,6 +61,7 @@ pub mod input;
 mod launch_admission;
 pub mod machine;
 mod predicate_evidence;
+mod recovery_operation;
 // Off in a default build. `src/testing.rs`'s header owns the reason; `cfg(test)` is here because
 // this crate's own unit tests reach the fakes through `crate::testing`, and a bare feature gate
 // would not compile.
@@ -82,4 +85,8 @@ pub use input::{
 pub use launch_admission::SharedFolderRefusal;
 pub use machine::{Config, InstructionSource, Supervisor};
 pub use predicate_evidence::predicate_evidence_eligible;
+pub use recovery_operation::{
+    RecoveryAvailability, RecoveryOperation, RecoverySubjectKey, RecoverySubjectUse,
+    with_recovery_operation,
+};
 pub use world::{MintedFor, WorktreeRow, WorktreeState, World};

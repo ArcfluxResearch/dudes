@@ -2,6 +2,7 @@ use super::work_test_support as common;
 use super::*;
 use crate::floor_stream::QueueRead;
 use crate::settings::FloorSettings;
+use dudes_supervisor::input::PersistToken;
 
 fn settings(fixture: &common::Fixture) -> crate::Settings {
     let mut settings = fixture.settings();
@@ -432,6 +433,25 @@ fn saving_memory_behind_a_checkpointed_policy_cut_drains_in_durable_order() {
     assert_memory_drain(Some(1));
 }
 
+fn pending_pause(daemon: &mut TestDaemon, agent: AgentId) -> (PersistToken, Entry) {
+    let _ = daemon
+        .sup
+        .handle(
+            Input::Command(Command::Pause {
+                agent,
+                browser: None,
+            }),
+            &dudes_supervisor::RecoveryOperation::empty(),
+        )
+        .unwrap();
+    let mut effects = daemon.sup.take_effects();
+    assert_eq!(effects.len(), 1);
+    let Effect::Persist { token, entry } = effects.pop().unwrap() else {
+        panic!("pause append");
+    };
+    (token, entry)
+}
+
 fn assert_memory_drain(cadence: Option<u64>) {
     let fixture = common::Fixture::new();
     let mut daemon = boot_with_checkpoints(&fixture, cadence);
@@ -446,18 +466,7 @@ fn assert_memory_drain(cadence: Option<u64>) {
         .unwrap()
         .subscribe()
         .unwrap();
-    let _ = daemon
-        .sup
-        .handle(Input::Command(Command::Pause {
-            agent: hired.agent,
-            browser: None,
-        }))
-        .unwrap();
-    let mut effects = daemon.sup.take_effects();
-    assert_eq!(effects.len(), 1);
-    let Effect::Persist { token, entry } = effects.pop().unwrap() else {
-        panic!("pause append");
-    };
+    let (token, entry) = pending_pause(&mut daemon, hired.agent);
     let policy_append = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
     let policy_lsn = policy_append.lsn();
     let policy_through = policy_append.through();

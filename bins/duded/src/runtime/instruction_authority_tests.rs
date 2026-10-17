@@ -22,7 +22,13 @@ fn append(daemon: &mut TestDaemon, record: Record) -> Lsn {
     let through = append.through();
     let (main, checkpoint) = append.into_parts();
     for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
-        daemon.sup.handle(Input::Replayed { lsn, entry }).unwrap();
+        daemon
+            .sup
+            .handle(
+                Input::Replayed { lsn, entry },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .unwrap();
     }
     assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
     assert!(daemon.sup.take_effects().is_empty());
@@ -38,10 +44,13 @@ fn observed_hook_end(daemon: &mut TestDaemon, agent: AgentId) -> AttachedTurnEnd
     .unwrap();
     daemon
         .sup
-        .handle(Input::Hook {
-            hook: HookId(71),
-            event,
-        })
+        .handle(
+            Input::Hook {
+                hook: HookId(71),
+                event,
+            },
+            &dudes_supervisor::RecoveryOperation::empty(),
+        )
         .unwrap();
     let persist = daemon.sup.take_effects().into_iter().find(|effect| {
         matches!(effect, Effect::Persist { entry, .. } if matches!(entry.record,
@@ -59,7 +68,10 @@ fn observed_hook_end(daemon: &mut TestDaemon, agent: AgentId) -> AttachedTurnEnd
         )
         .unwrap();
     while let Some(input) = queue.pop_front() {
-        daemon.sup.handle(input).unwrap();
+        daemon
+            .sup
+            .handle(input, &dudes_supervisor::RecoveryOperation::empty())
+            .unwrap();
     }
     let _ = daemon.sup.take_effects();
     let (mut ends, status) = daemon.sup.world().unmatched_attached_turn_ends(1);
@@ -319,7 +331,13 @@ fn a_later_ticket_cannot_rebind_an_actual_attached_hook_end_before_append() {
     let lsn = append.lsn();
     let (main, checkpoint) = append.into_parts();
     for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
-        daemon.sup.handle(Input::Replayed { lsn, entry }).unwrap();
+        daemon
+            .sup
+            .handle(
+                Input::Replayed { lsn, entry },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .unwrap();
     }
     assert_eq!(fixture.entries().len(), journal.len() + 1);
     assert_eq!(fixture.entries().last().unwrap().0, lsn);

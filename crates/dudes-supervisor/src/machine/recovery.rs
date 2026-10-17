@@ -16,6 +16,7 @@ use crate::input::{
     Handled, PersistToken, RecoveryAppend, RecoveryChoice, RecoveryCommand, RecoveryExpected,
     RecoveryOpportunity, RecoveryPrefix, RecoveryRefusal, RecoveryStage, RecoveryUpdate,
 };
+use crate::{RecoveryAvailability, RecoverySubjectKey, RecoverySubjectUse};
 
 #[cfg(test)]
 mod tests;
@@ -95,9 +96,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
         let (state, _) = self.world.recovery_projection().map_err(refusal)?;
         let current = state.current(binding.work);
-        if current.is_none()
-            && state.planned_claim(binding.work.turn).is_none()
-            && self.live_issues.contains(&binding.work.turn)
+        if self.live_issues.contains(&binding.work.turn)
             && self
                 .world
                 .turns
@@ -289,7 +288,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     /// Begin one admitted command. The executor must separately check every command-owned append.
-    pub fn recover(&mut self, command: RecoveryCommand) -> Handled {
+    pub fn recover(
+        &mut self,
+        command: RecoveryCommand,
+        _operation: &crate::RecoveryOperation<'_>,
+    ) -> Handled {
         self.pending.clear();
         let request_id = command.request_id;
         let result = self.begin_recovery(command);
@@ -337,7 +340,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         Ok(update)
     }
 
-    pub(super) fn recovery_after_ack(&mut self, then: RecoveryThen, lsn: Lsn) -> RecoveryUpdate {
+    pub(super) fn recovery_after_ack(
+        &mut self,
+        then: RecoveryThen,
+        lsn: Lsn,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> RecoveryUpdate {
         match then {
             RecoveryThen::Required(mut next) => {
                 next.prefix.required = Some(lsn);
@@ -364,9 +372,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     .cloned()
                 {
                     self.live_issues.insert(work.turn);
-                    self.reissue_turn(work.turn, work.agent, &turn.task, turn.model_selection);
+                    self.reissue_turn(
+                        work.turn,
+                        work.agent,
+                        &turn.task,
+                        turn.model_selection,
+                        operation,
+                    );
                 } else {
-                    self.decide(work.agent);
+                    self.decide(work.agent, operation);
                 }
                 next.update(None)
             }
@@ -515,14 +529,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         Ok(authorization)
     }
 
-    pub(super) fn recovery_admission_allowed(&self, agent: AgentId) -> bool {
+    pub(super) fn recovery_admission_allowed(
+        &self,
+        agent: AgentId,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> bool {
         if self.recovery_discovery.busy() {
             return false;
         }
         let Ok(binding) = self.recovery_binding(agent) else {
             return true;
         };
-        if !self.recovery_dispatch_attribution_allowed(binding.work) {
+        if !self.recovery_dispatch_attribution_allowed(binding.work, operation) {
             return false;
         }
         if self.recovery_owed_saving(agent, binding.work.turn) {
@@ -592,9 +610,31 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
     }
 
-    pub(super) fn ensure_recovery_admission(&mut self, agent: AgentId) -> bool {
-        if self.recovery_admission_allowed(agent) {
+    pub(super) fn ensure_recovery_admission(
+        &mut self,
+        agent: AgentId,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> bool {
+        if self.recovery_admission_allowed(agent, operation) {
             return true;
+        }
+        if let Ok(binding) = self.recovery_binding(agent)
+            && let Ok((state, _)) = self.world.recovery_projection()
+            && let Ok(Some(claim)) = state.work_claim(binding.work)
+            && let Ok(receipt) = state.claim_receipt(claim)
+            && matches!(
+                receipt.authorization.attribution,
+                dudes_proto::recovery::RecoveryAttribution::BrowserSession { .. }
+            )
+            && match receipt.state {
+                RecoveryClaimState::Pending => true,
+                RecoveryClaimState::IssueBound(issue) => {
+                    self.live_issues.contains(&issue.issued.work.turn)
+                }
+                _ => false,
+            }
+        {
+            return false;
         }
         if self.closing_active {
             return false;
@@ -616,7 +656,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// Common historical barrier at the final managed dispatch seam.
     /// Live native absence and checkout admission remain executor-owned checks.
     #[must_use]
-    pub fn recovery_launch_allowed(&self, agent: AgentId, turn: TurnId) -> bool {
+    pub fn recovery_launch_allowed(
+        &self,
+        agent: AgentId,
+        turn: TurnId,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> bool {
         let Some(row) = self.world.turns.get(&turn).filter(|row| row.agent == agent) else {
             return false;
         };
@@ -636,7 +681,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 || (owner.paused && !finite)
                 || owner.attached
                 || owner.open_question.is_some()
-        }) || self.launch_held(agent)
+        }) || self.launch_held(agent, operation)
         {
             return false;
         }
@@ -656,7 +701,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return true;
         }
         let Some(goal) = row.goal else {
-            return self.recovery_admission_allowed(agent);
+            return self.recovery_admission_allowed(agent, operation);
         };
         if self
             .world
@@ -666,7 +711,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return false;
         }
-        if !self.recovery_dispatch_attribution_allowed(RecoveryWork { agent, goal, turn }) {
+        if !self
+            .recovery_dispatch_attribution_allowed(RecoveryWork { agent, goal, turn }, operation)
+        {
             return false;
         }
         if self.recovery_owed_saving(agent, turn) {
@@ -702,7 +749,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .is_some_and(|owner| owner.control_lsn == receipt.authorization.resulting_control)
     }
 
-    fn recovery_dispatch_attribution_allowed(&self, work: RecoveryWork) -> bool {
+    fn recovery_dispatch_attribution_allowed(
+        &self,
+        work: RecoveryWork,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> bool {
         let Ok((state, _)) = self.world.recovery_projection() else {
             return false;
         };
@@ -714,13 +765,72 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Ok(receipt) = state.claim_receipt(claim) else {
             return false;
         };
-        !matches!(
-            receipt.state,
-            RecoveryClaimState::Pending | RecoveryClaimState::IssueBound(_)
-        ) || matches!(
+        match receipt.state {
+            RecoveryClaimState::Consumed { .. } => true,
+            RecoveryClaimState::Invalidated { .. } | RecoveryClaimState::Superseded { .. } => false,
+            RecoveryClaimState::Pending | RecoveryClaimState::IssueBound(_) => {
+                matches!(
+                    receipt.authorization.attribution,
+                    dudes_proto::recovery::RecoveryAttribution::LocalOperator { .. }
+                ) || self.recovery_browser_availability(work, operation)
+                    == RecoveryAvailability::Live
+            }
+        }
+    }
+
+    fn recovery_browser_availability(
+        &self,
+        work: RecoveryWork,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> RecoveryAvailability {
+        let Ok((state, _)) = self.world.recovery_projection() else {
+            return RecoveryAvailability::Indeterminate;
+        };
+        let Ok(Some(claim)) = state.work_claim(work) else {
+            return RecoveryAvailability::Indeterminate;
+        };
+        let Ok(receipt) = state.claim_receipt(claim) else {
+            return RecoveryAvailability::Indeterminate;
+        };
+        if !matches!(
             receipt.authorization.attribution,
-            dudes_proto::recovery::RecoveryAttribution::LocalOperator { .. }
-        )
+            dudes_proto::recovery::RecoveryAttribution::BrowserSession { .. }
+        ) || state
+            .receipt(
+                receipt.authorization.request_id,
+                receipt.authorization.request_digest,
+            )
+            .ok()
+            .flatten()
+            != Some(receipt.clone())
+        {
+            return RecoveryAvailability::Indeterminate;
+        }
+        let mut binding = receipt.authorization.binding.clone();
+        let purpose = match receipt.state {
+            RecoveryClaimState::Pending if work == binding.work => RecoverySubjectUse::AdmitNew,
+            RecoveryClaimState::IssueBound(issue)
+                if work == binding.work || work == issue.issued.work =>
+            {
+                binding.work = issue.issued.work;
+                binding.issue_lsn = issue.lsn;
+                RecoverySubjectUse::DispatchIssued(issue.clone())
+            }
+            _ => return RecoveryAvailability::Indeterminate,
+        };
+        let Ok(facts) = self.world.recovery_facts(&binding) else {
+            return RecoveryAvailability::Indeterminate;
+        };
+        if facts.control_lsn != receipt.authorization.resulting_control
+            || matches!(&purpose, RecoverySubjectUse::DispatchIssued(issue) if facts.source_issue != *issue)
+        {
+            return RecoveryAvailability::Indeterminate;
+        }
+        operation.availability_for(&RecoverySubjectKey::new(
+            claim,
+            receipt.authorization.clone(),
+            purpose,
+        ))
     }
 
     fn recovery_owed_saving(&self, agent: AgentId, turn: TurnId) -> bool {
@@ -734,23 +844,26 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             })
     }
 
-    pub(super) fn recovery_new_context(&self, agent: AgentId) -> Result<Option<NewContext>, ()> {
+    pub(super) fn recovery_new_context(
+        &self,
+        agent: AgentId,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> Result<Option<NewContext>, ()> {
         let Ok(binding) = self.recovery_binding(agent) else {
             return Ok(None);
         };
         let (state, _) = self.world.recovery_projection().map_err(|_| ())?;
-        let Some(episode) = state.current(binding.work) else {
+        let Some(claim) = state.work_claim(binding.work).map_err(|_| ())? else {
             return Ok(None);
-        };
-        let claim = RecoveryClaimRef {
-            episode: episode.id,
-            authorization_lsn: episode.authorization_lsn.ok_or(())?,
         };
         let receipt = state.claim_receipt(claim).map_err(|_| ())?;
         if matches!(receipt.state, RecoveryClaimState::Consumed { .. }) {
             return Ok(None);
         }
         if !matches!(receipt.state, RecoveryClaimState::Pending) {
+            return Err(());
+        }
+        if !self.recovery_dispatch_attribution_allowed(binding.work, operation) {
             return Err(());
         }
         if self.closing_active {
@@ -814,8 +927,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         agent: AgentId,
         row: &crate::world::AgentRow,
         task: &str,
+        operation: &crate::RecoveryOperation<'_>,
     ) -> Option<(TurnId, Box<PreparedLaunch>)> {
-        let recovery = self.recovery_new_context(agent).ok()?;
+        let recovery = self.recovery_new_context(agent, operation).ok()?;
         if recovery
             .as_ref()
             .is_some_and(|context| context.model.is_none())
@@ -861,8 +975,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         Some((turn, launch))
     }
 
-    pub(super) fn recovery_task(&self, agent: AgentId, task: &str) -> Option<String> {
-        let context = self.recovery_new_context(agent).ok()?;
+    pub(super) fn recovery_task(
+        &self,
+        agent: AgentId,
+        task: &str,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> Option<String> {
+        let context = self.recovery_new_context(agent, operation).ok()?;
         Some(match context {
             Some(context) => with_recap(task, &context.recap),
             None => task.to_owned(),
@@ -874,8 +993,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         agent: AgentId,
         turn: TurnId,
         session: &dudes_providers::adapter::TurnSession,
+        operation: &crate::RecoveryOperation<'_>,
     ) -> bool {
-        self.recovery_launch_allowed(agent, turn)
+        self.recovery_launch_allowed(agent, turn, operation)
             && self
                 .recovery_repeat_context(agent, turn)
                 .is_none_or(|expected| &expected == session)
@@ -1311,7 +1431,18 @@ impl Discovery {
 }
 
 impl<C: Clock, R: Rng> Supervisor<C, R> {
-    pub(super) fn drain_recovery_invalidations(&mut self) {
+    pub(super) fn drain_recovery_invalidations(
+        &mut self,
+        operation: &crate::RecoveryOperation<'_>,
+    ) {
+        if operation.unavailable_subjects().any(|key| {
+            matches!(key.purpose(), RecoverySubjectUse::AdmitNew)
+                && self.recovery_browser_availability(key.claim().episode.work, operation)
+                    == RecoveryAvailability::EstablishedUnavailable
+        }) {
+            self.recovery_discovery.again |= self.recovery_discovery.dirty;
+            self.recovery_discovery.dirty = true;
+        }
         for _ in 0..16 {
             let Some(claim) = self.recovery_discovery.next() else {
                 return;
@@ -1340,6 +1471,19 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         .validate_invalidation(&record, through, history)
                         .is_ok()
                         .then_some(record)
+                }).or_else(|| {
+                    if self.recovery_browser_availability(receipt.authorization.binding.work, operation)
+                        != RecoveryAvailability::EstablishedUnavailable {
+                        return None;
+                    }
+                    let dudes_proto::recovery::RecoveryAttribution::BrowserSession { session_digest } = receipt.authorization.attribution else {
+                        return None;
+                    };
+                    let record = dudes_proto::recovery::RecoveryInvalidated {
+                        claim,
+                        evidence: dudes_proto::recovery::RecoveryInvalidationEvidence::BrowserAuthorityUnavailable { session_digest },
+                    };
+                    state.validate_invalidation(&record, through, history).is_ok().then_some(record)
                 });
             if let Some(record) = candidate {
                 let agent = receipt.authorization.binding.work.agent;

@@ -38,7 +38,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         let lsn = append.lsn();
         let through = append.through();
         let handled = sup
-            .handle(Input::InstructionJournaled { append })
+            .handle(
+                Input::InstructionJournaled { append },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
             .inspect_err(|_| self.fence_journal())?;
         self.require_handled_through(sup.world(), &handled, through)?;
         anyhow::ensure!(

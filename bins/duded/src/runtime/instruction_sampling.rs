@@ -1248,13 +1248,16 @@ mod tests {
             let agent = AgentId::from_parts(1, ordinal as u128);
             harness
                 .supervisor
-                .handle(Input::Replayed {
-                    lsn: Lsn(u64::try_from(ordinal).unwrap()),
-                    entry: Entry {
-                        at: Timestamp::UNIX_EPOCH,
-                        record: hired(agent, path),
+                .handle(
+                    Input::Replayed {
+                        lsn: Lsn(u64::try_from(ordinal).unwrap()),
+                        entry: Entry {
+                            at: Timestamp::UNIX_EPOCH,
+                            record: hired(agent, path),
+                        },
                     },
-                })
+                    &dudes_supervisor::RecoveryOperation::empty(),
+                )
                 .unwrap();
             sample
                 .sources

@@ -447,7 +447,11 @@ fn hold_a_pending_token() -> (Harness, AgentId, GoalId, TurnId) {
             ..
         } if *captured == owner && *lsn == started && *proof_lsn == proof)));
     assert!(h.supervisor.world().agents[&agent].automatic_hold.is_some());
-    assert!(!h.supervisor.recovery_launch_allowed(agent, turn));
+    assert!(!h.supervisor.recovery_launch_allowed(
+        agent,
+        turn,
+        &dudes_supervisor::RecoveryOperation::empty()
+    ));
     assert_eq!(issued(&h), 1);
     (h, agent, goal, turn)
 }
@@ -620,7 +624,11 @@ fn a_new_goal_clears_the_hold_without_reopening_the_old_issued_turn() {
     assert_ne!(new_goal, old_goal);
     assert_eq!(h.supervisor.world().goals[&new_goal].last_turn, None);
     assert!(h.supervisor.world().agents[&agent].automatic_hold.is_none());
-    assert!(!h.supervisor.recovery_launch_allowed(agent, turn));
+    assert!(!h.supervisor.recovery_launch_allowed(
+        agent,
+        turn,
+        &dudes_supervisor::RecoveryOperation::empty()
+    ));
     assert_eq!(
         h.supervisor.recovery_opportunity(agent).err(),
         Some(dudes_supervisor::input::RecoveryRefusal::NotRecoverable)

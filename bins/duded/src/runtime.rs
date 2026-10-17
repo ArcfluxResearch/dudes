@@ -1317,7 +1317,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             self.detach_gone_attachments()?;
             for _ in 0..2 {
                 self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, |sup| {
-                    let _ = sup.closing_recover();
+                    let _ = sup.closing_recover(&dudes_supervisor::RecoveryOperation::empty());
                     Ok(Handled::default())
                 })?;
             }
@@ -3914,7 +3914,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             return Ok(());
         }
         self.pump_started(report, PumpOrigin::Ordinary, move |sup| {
-            sup.handle(input).map_err(anyhow::Error::new)
+            sup.handle(input, &dudes_supervisor::RecoveryOperation::empty())
+                .map_err(anyhow::Error::new)
         })
     }
 
@@ -4141,7 +4142,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 } = self;
                 let handling = if let Some(input) = queue.pop_front() {
                     let input = ctx.current_mail_response(input, sup);
-                    sup.handle(input).map_err(anyhow::Error::new)
+                    sup.handle(input, &dudes_supervisor::RecoveryOperation::empty())
+                        .map_err(anyhow::Error::new)
                 } else if let Some(start) = start.take() {
                     start(sup)
                 } else {
@@ -4267,7 +4269,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         self.ctx.ensure_journal_ready()?;
         for (agent, view) in self.composed_work()? {
             self.sup
-                .handle(Input::Work { agent, view })
+                .handle(
+                    Input::Work { agent, view },
+                    &dudes_supervisor::RecoveryOperation::empty(),
+                )
                 .inspect_err(|_| self.ctx.fence_journal())?;
             assert!(
                 self.sup.effects().is_empty(),
@@ -8825,10 +8830,13 @@ mod work_refresh_tests {
         };
         daemon
             .sup
-            .handle(Input::Work {
-                agent,
-                view: carrier.clone(),
-            })
+            .handle(
+                Input::Work {
+                    agent,
+                    view: carrier.clone(),
+                },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
             .unwrap();
         assert!(daemon.sup.effects().is_empty());
         daemon.refresh_work().unwrap();
@@ -8854,10 +8862,13 @@ mod work_refresh_tests {
         );
         daemon
             .sup
-            .handle(Input::Work {
-                agent,
-                view: carrier.clone(),
-            })
+            .handle(
+                Input::Work {
+                    agent,
+                    view: carrier.clone(),
+                },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
             .unwrap();
         assert!(daemon.sup.effects().is_empty());
         let frozen = fixture.records();
@@ -9007,17 +9018,28 @@ mod mail_wake_fence_tests {
             owned
                 .daemon
                 .sup
-                .handle(Input::Journaled { append })
+                .handle(
+                    Input::Journaled { append },
+                    &dudes_supervisor::RecoveryOperation::empty(),
+                )
                 .unwrap();
             let refresh = one(owned.daemon.sup.take_effects());
             let ready = owned.execute(&refresh);
-            owned.daemon.sup.handle(ready).unwrap();
+            owned
+                .daemon
+                .sup
+                .handle(ready, &dudes_supervisor::RecoveryOperation::empty())
+                .unwrap();
             let root = one(owned.daemon.sup.take_effects());
             assert!(
                 matches!(root.entry().map(|entry| &entry.record), Some(Record::MailWakeTurnDecided(value)) if matches!(value.purpose, MailWakePurpose::FreshPreparation { .. }))
             );
             let acknowledged = owned.execute(&root);
-            owned.daemon.sup.handle(acknowledged).unwrap();
+            owned
+                .daemon
+                .sup
+                .handle(acknowledged, &dudes_supervisor::RecoveryOperation::empty())
+                .unwrap();
             owned.pending = owned.daemon.sup.take_effects();
             assert!(matches!(
                 owned.pending.as_slice(),
@@ -9084,7 +9106,10 @@ mod mail_wake_fence_tests {
             for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
                 self.daemon
                     .sup
-                    .handle(Input::Replayed { lsn, entry })
+                    .handle(
+                        Input::Replayed { lsn, entry },
+                        &dudes_supervisor::RecoveryOperation::empty(),
+                    )
                     .unwrap();
             }
             assert!(self.daemon.sup.effects().is_empty());
@@ -9104,18 +9129,27 @@ mod mail_wake_fence_tests {
             assert_eq!(queue.len(), 1, "one real acknowledgment or refresh");
             queue.pop_front().unwrap()
         }
-        fn notify(&mut self) -> Effect {
+        fn refreshed_effect(&mut self) -> Effect {
             let effect = one(std::mem::take(&mut self.pending));
             let ready = self.execute(&effect);
-            self.daemon.sup.handle(ready).unwrap();
-            let notify = one(self.daemon.sup.take_effects());
+            self.daemon
+                .sup
+                .handle(ready, &dudes_supervisor::RecoveryOperation::empty())
+                .unwrap();
+            one(self.daemon.sup.take_effects())
+        }
+        fn notify(&mut self) -> Effect {
+            let notify = self.refreshed_effect();
             assert!(matches!(notify, Effect::MailWakeNotify { .. }));
             notify
         }
         fn make_ready(&mut self) {
             let notify = self.notify();
             let acknowledged = self.execute(&notify);
-            self.daemon.sup.handle(acknowledged).unwrap();
+            self.daemon
+                .sup
+                .handle(acknowledged, &dudes_supervisor::RecoveryOperation::empty())
+                .unwrap();
             self.pending = self.daemon.sup.take_effects();
         }
         fn post_fsync_failure(&mut self) {
@@ -9526,12 +9560,7 @@ mod mail_wake_fence_tests {
                 }
                 let effect = match kind {
                     0 => one(std::mem::take(&mut owned.pending)),
-                    1 => {
-                        let refresh = one(std::mem::take(&mut owned.pending));
-                        let ready = owned.execute(&refresh);
-                        owned.daemon.sup.handle(ready).unwrap();
-                        one(owned.daemon.sup.take_effects())
-                    }
+                    1 => owned.refreshed_effect(),
                     _ => owned.notify(),
                 };
                 if fence == 1 {
@@ -9622,7 +9651,11 @@ mod mail_wake_fence_tests {
         for floor in [Usd::from_dollars(10), Usd::from_micros(500_000)] {
             let mut owned = Owned::pending(floor);
             let (_, turn) = owned.fake_open_child();
-            owned.daemon.sup.handle(Input::Tick).unwrap();
+            owned
+                .daemon
+                .sup
+                .handle(Input::Tick, &dudes_supervisor::RecoveryOperation::empty())
+                .unwrap();
             let probe = one(owned.daemon.sup.take_effects());
             assert!(matches!(probe, Effect::Probe { turn: actual, .. } if actual == turn));
             let refresh = one(std::mem::take(&mut owned.pending));
@@ -9712,7 +9745,10 @@ mod mail_wake_fence_tests {
             owned
                 .daemon
                 .sup
-                .handle(Input::Replayed { lsn, entry })
+                .handle(
+                    Input::Replayed { lsn, entry },
+                    &dudes_supervisor::RecoveryOperation::empty(),
+                )
                 .unwrap();
         }
         let refresh = one(std::mem::take(&mut owned.pending));

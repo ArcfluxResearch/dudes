@@ -1213,7 +1213,10 @@ where
             if let Some(reason) = witness.take_replay_fold_refusal(lsn) {
                 return Err(dudes_supervisor::input::DurableInputError::Recovery { lsn, reason });
             }
-            sup.handle(Input::Replayed { lsn, entry })
+            sup.handle(
+                Input::Replayed { lsn, entry },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
         };
         let handled = replayed()?;
         anyhow::ensure!(
@@ -1230,7 +1233,10 @@ where
     let applied = replay(&reader, &mut projections).context("replaying into the projections")?;
     for (agent, view) in crate::work::compose(&projections, &memory, |agent| sup.work_input(agent))?
     {
-        let handled = sup.handle(Input::Work { agent, view })?;
+        let handled = sup.handle(
+            Input::Work { agent, view },
+            &dudes_supervisor::RecoveryOperation::empty(),
+        )?;
         debug_assert!(handled.folded_through().is_none());
         debug_assert!(
             sup.effects().is_empty(),

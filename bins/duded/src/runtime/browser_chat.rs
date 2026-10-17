@@ -250,7 +250,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             return Ok(());
         }
         let spec = sup
-            .browser_dispatch_spec(*token, *turn)
+            .browser_dispatch_spec(*token, *turn, &dudes_supervisor::RecoveryOperation::empty())
             .ok_or_else(|| anyhow::anyhow!("browser dispatch token is stale or mismatched"))?;
         let owner = sup
             .world()
@@ -285,10 +285,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             "browser dispatch journal stopped after its append"
         );
         let handled = sup
-            .handle(Input::Persisted {
-                token: *token,
-                append,
-            })
+            .handle(
+                Input::Persisted {
+                    token: *token,
+                    append,
+                },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
             .inspect_err(|_| self.fence_journal())?;
         self.require_handled_through(sup.world(), &handled, through)?;
         self.tokens.mark_folded();
@@ -367,12 +370,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         queue: &mut std::collections::VecDeque<Input>,
         sup: &mut Supervisor<super::Shared<C>, R>,
     ) -> Result<()> {
-        if sup
-            .world()
-            .turns
-            .get(&turn)
-            .is_none_or(|row| !sup.recovery_launch_allowed(row.agent, turn))
-            || !self.recovery_turn_checkout_clear(sup, turn)
+        if sup.world().turns.get(&turn).is_none_or(|row| {
+            !sup.recovery_launch_allowed(
+                row.agent,
+                turn,
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+        }) || !self.recovery_turn_checkout_clear(sup, turn)
         {
             return Ok(());
         }
@@ -380,7 +384,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .resolved_browser_turn
             .filter(|(prepared, _)| *prepared == turn)
             .map(|(_, generation)| generation);
-        if !sup.claim_browser_dispatch(turn, generation) {
+        if !sup.claim_browser_dispatch(
+            turn,
+            generation,
+            &dudes_supervisor::RecoveryOperation::empty(),
+        ) {
             return Ok(());
         }
         let prepared = self.prepare_owned_launch(turn, spec, mcp_grant, generation.is_some(), sup);

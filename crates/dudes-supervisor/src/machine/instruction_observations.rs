@@ -274,7 +274,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         Ok(Handled::folded(through))
     }
 
-    pub(super) fn recover_instruction_observations(&mut self) -> bool {
+    pub(super) fn recover_instruction_observations(
+        &mut self,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> bool {
         match self.instructions.recovery {
             Recovery::Complete => return false,
             Recovery::Awaiting | Recovery::Checking(_) => return true,
@@ -368,7 +371,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 continue;
             }
             self.instructions.recovery = Recovery::Checking(check.goal);
-            self.judge(check.agent, check.goal);
+            self.judge(check.agent, check.goal, operation);
             return true;
         }
         self.instructions.recovery = Recovery::Complete;
@@ -649,15 +652,22 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         self.instructions.recovering_check(goal)
     }
 
-    pub(super) fn predicate_ended_without_verdict(&mut self, goal: GoalId) {
+    pub(super) fn predicate_ended_without_verdict(
+        &mut self,
+        goal: GoalId,
+        operation: &crate::RecoveryOperation<'_>,
+    ) {
         if self.awaiting_recovered_predicate(goal) {
-            self.instruction_recovery_continue();
+            self.instruction_recovery_continue(operation);
         }
     }
 
-    pub(super) fn instruction_recovery_continue(&mut self) {
+    pub(super) fn instruction_recovery_continue(
+        &mut self,
+        operation: &crate::RecoveryOperation<'_>,
+    ) {
         self.instructions.recovery = Recovery::Scanning;
-        self.on_started();
+        self.on_started(operation);
     }
 
     fn resolve_instruction_ticket(&mut self, finish: UnknownFinish, then: Then) {
@@ -1103,7 +1113,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
     }
 
-    pub(super) fn instruction_baseline_saved(&mut self, starting: Starting, lsn: Lsn) {
+    pub(super) fn instruction_baseline_saved(
+        &mut self,
+        starting: Starting,
+        lsn: Lsn,
+        operation: &crate::RecoveryOperation<'_>,
+    ) {
         let InstructionObservationOwner::Managed { agent, turn, .. } = starting.owner else {
             return;
         };
@@ -1113,7 +1128,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 then,
                 closing,
             } => {
-                let allowed = self.recovery_admission_allowed(agent)
+                let allowed = self.recovery_admission_allowed(agent, operation)
                     && self.world.agents.get(&agent).is_some_and(|row| {
                         !row.retired
                             && !row.halted
@@ -1130,7 +1145,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     && !self.closing_recovery
                     && !self.protection_pending(agent)
                     && self.world.mail_wake_history_valid()
-                    && self.delayed_issue_admitted(agent, &entry, closing);
+                    && self.delayed_issue_admitted(agent, &entry, closing, operation);
                 if !allowed {
                     self.instructions.pending_agents.remove(&agent);
                     self.persist(
@@ -1154,29 +1169,35 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.persist_unobserved(at, record, *then);
             }
             StartAction::Retry { launch } => {
-                if !self.recovery_launch_allowed(agent, turn) {
+                if !self.recovery_launch_allowed(agent, turn, operation) {
                     self.spawning.remove(&turn);
                     return;
                 }
-                self.spawn_prepared(agent, turn, launch);
+                self.spawn_prepared(agent, turn, launch, operation);
             }
         }
     }
 
-    fn delayed_issue_admitted(&self, agent: AgentId, entry: &Entry, closing: Option<Lsn>) -> bool {
+    fn delayed_issue_admitted(
+        &self,
+        agent: AgentId,
+        entry: &Entry,
+        closing: Option<Lsn>,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> bool {
         match &entry.record {
             Record::TurnIssued { task, answers, .. } => match closing {
                 Some(announcement) => {
                     self.delayed_saving_admitted(agent, announcement, task, answers)
                 }
-                None => self.delayed_ordinary_admitted(agent, None, task, answers),
+                None => self.delayed_ordinary_admitted(agent, None, task, answers, operation),
             },
             Record::TurnIssuedWithBrowserNote {
                 note_lsn,
                 task,
                 answers,
                 ..
-            } => self.delayed_ordinary_admitted(agent, Some(*note_lsn), task, answers),
+            } => self.delayed_ordinary_admitted(agent, Some(*note_lsn), task, answers, operation),
             Record::ConversationTurnIssued {
                 note_lsn,
                 context_lsn,
@@ -1224,6 +1245,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         note_lsn: Option<Lsn>,
         task: &str,
         answers: &[Lsn],
+        operation: &crate::RecoveryOperation<'_>,
     ) -> bool {
         if self.closing_active || self.closing_recovery {
             return false;
@@ -1248,7 +1270,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Some(note) => dudes_policy::decide_with_browser_note(&input, &note),
             None => dudes_policy::decide(&input),
         };
-        matches!(&decided.decision, LoopDecision::Continue { task: current } if self.recovery_task(agent, current).as_deref() == Some(task))
+        matches!(&decided.decision, LoopDecision::Continue { task: current } if self.recovery_task(agent, current, operation).as_deref() == Some(task))
             && decided.answers.as_slice() == answers
     }
 
@@ -1294,15 +1316,16 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         turn: TurnId,
         then: Then,
         end_lsn: Lsn,
+        operation: &crate::RecoveryOperation<'_>,
     ) -> Option<crate::input::RecoveryUpdate> {
         let Some(row) = self.world.turns.get(&turn).cloned() else {
-            return self.resume_after(then, end_lsn);
+            return self.resume_after(then, end_lsn, operation);
         };
         let Some((started_lsn, attempt)) = self.world.instructions.current_for_turn(turn) else {
-            return self.resume_after(then, end_lsn);
+            return self.resume_after(then, end_lsn, operation);
         };
         let Some(snapshot) = attempt.snapshot.clone() else {
-            return self.resume_after(then, end_lsn);
+            return self.resume_after(then, end_lsn, operation);
         };
         let owner = attempt.owner;
         let ticket = attempt.ticket;
@@ -2025,7 +2048,9 @@ mod tests {
                 .contains_key(&agent)
         );
         let _ = harness.supervisor.take_effects();
-        harness.supervisor.decide(agent);
+        harness
+            .supervisor
+            .decide(agent, &crate::RecoveryOperation::empty());
         let effects: Vec<_> = harness
             .supervisor
             .effects()

@@ -339,7 +339,10 @@ impl Owned {
             let Some(input) = queue.pop_front() else {
                 break;
             };
-            self.daemon.sup.handle(input).unwrap();
+            self.daemon
+                .sup
+                .handle(input, &dudes_supervisor::RecoveryOperation::empty())
+                .unwrap();
             self.daemon
                 .ctx
                 .retire_recorded_native_launches(self.daemon.sup.world());
@@ -401,7 +404,10 @@ impl Owned {
                 .iter()
                 .any(|(written, stamped)| { *written == lsn && stamped.record == entry.record })
         );
-        self.daemon.sup.handle(input).unwrap();
+        self.daemon
+            .sup
+            .handle(input, &dudes_supervisor::RecoveryOperation::empty())
+            .unwrap();
         self.daemon
             .ctx
             .retire_recorded_native_launches(self.daemon.sup.world());
@@ -470,7 +476,10 @@ fn prepared(daemon: &mut TestDaemon, agent: AgentId) -> Effect {
                 _ => panic!("bounded preparation awaits the actual worker input"),
             }
         });
-        daemon.sup.handle(input).unwrap();
+        daemon
+            .sup
+            .handle(input, &dudes_supervisor::RecoveryOperation::empty())
+            .unwrap();
         for effect in daemon.sup.take_effects() {
             if matches!(effect, Effect::Spawn { .. }) {
                 return effect;
@@ -830,7 +839,14 @@ fn prior_run_append_failure_retains_the_candidate_until_one_durable_settlement()
     assert_eq!(queue.len(), 1);
     assert!(!owned.settle(&mut queue).unwrap());
     assert!(owned.host.acknowledgements().is_empty());
-    owned.daemon.sup.handle(queue.pop_front().unwrap()).unwrap();
+    owned
+        .daemon
+        .sup
+        .handle(
+            queue.pop_front().unwrap(),
+            &dudes_supervisor::RecoveryOperation::empty(),
+        )
+        .unwrap();
     assert!(owned.daemon.sup.take_effects().is_empty());
     assert!(
         owned

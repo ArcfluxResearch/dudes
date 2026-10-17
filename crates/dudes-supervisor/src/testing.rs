@@ -816,10 +816,13 @@ impl Harness {
         self.supervisor = Self::machine(self.config.clone(), clock, (self.adapter)(), rng);
         for (entry, position) in self.journal.iter().cloned().zip(1u64..) {
             self.supervisor
-                .handle(Input::Replayed {
-                    lsn: Lsn(position),
-                    entry,
-                })
+                .handle(
+                    Input::Replayed {
+                        lsn: Lsn(position),
+                        entry,
+                    },
+                    &crate::RecoveryOperation::empty(),
+                )
                 .expect("the durable harness prefix folds");
         }
     }
@@ -835,7 +838,7 @@ impl Harness {
     /// One `handle()` call. The effects go into [`Harness::trace`] and nothing is answered.
     pub fn step(&mut self, input: Input) -> Vec<Seen> {
         self.supervisor
-            .handle(input)
+            .handle(input, &crate::RecoveryOperation::empty())
             .expect("the harness input folds");
         self.capture_effects()
     }
@@ -913,7 +916,9 @@ impl Harness {
     /// Drive the caller's exact recovery intent through the ordinary effect queue.
     /// Returns the immediate command report. Durable outcomes remain in the journal and trace.
     pub fn recover(&mut self, command: RecoveryCommand) -> Handled {
-        let handled = self.supervisor.recover(command);
+        let handled = self
+            .supervisor
+            .recover(command, &crate::RecoveryOperation::empty());
         let mut queue = VecDeque::new();
         for seen in self.capture_effects() {
             if let Some(next) = self.follow_up(seen) {
@@ -952,7 +957,12 @@ impl Harness {
                 owner: _,
                 goal,
                 baseline,
-            } => Some(self.mock_instruction_sample(request, goal, baseline)),
+            } => Some(Self::mock_instruction_sample(
+                self.supervisor.world(),
+                request,
+                goal,
+                baseline,
+            )),
             Seen::PrepareBrowserLaunch {
                 turn,
                 generation,
@@ -996,6 +1006,7 @@ impl Harness {
                             None
                         }
                     }),
+                    &crate::RecoveryOperation::empty(),
                 ) =>
             {
                 match self.host.spawn(&spec, &install) {
@@ -1042,8 +1053,8 @@ impl Harness {
         }
     }
 
-    fn mock_instruction_sample(
-        &self,
+    pub(crate) fn mock_instruction_sample(
+        world: &crate::World,
         request: crate::input::InstructionRequest,
         goal: Option<GoalId>,
         baseline: Option<Box<dudes_proto::InstructionSnapshot>>,
@@ -1075,8 +1086,7 @@ impl Harness {
             boot: None,
         };
         let ticket = goal.and_then(|goal| {
-            self.supervisor
-                .world()
+            world
                 .instructions
                 .association_for_goal(goal, dudes_types::Seq::ZERO)
         });

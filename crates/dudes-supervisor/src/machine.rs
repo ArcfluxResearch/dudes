@@ -148,6 +148,16 @@ fn prepend_agent_bin(env: &mut [EnvVar], dir: &Path) {
     *path = EnvVar::new(path.name().to_owned(), joined);
 }
 
+#[derive(Clone, Copy)]
+enum IssueOrigin {
+    Ordinary,
+    Closing,
+    Browser {
+        note_lsn: Lsn,
+        completion_lsn: Option<Lsn>,
+    },
+}
+
 /// What an acknowledged `Persist` authorises. Parked under the persist token; run once, when the
 /// entry is on the disk.
 #[derive(Debug)]
@@ -1003,7 +1013,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     /// Reconcile only resources that belonged to a historical Complete before normal work.
-    pub fn closing_recover(&mut self) -> &[Effect] {
+    pub fn closing_recover(&mut self, operation: &crate::RecoveryOperation<'_>) -> &[Effect] {
         self.pending.clear();
         if !self.closing_recovery {
             return &self.pending;
@@ -1025,7 +1035,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 continue;
             };
             if row.is_issued_not_spawned() {
-                self.reissue_turn(turn, row.agent, &row.task, row.model_selection.clone());
+                self.reissue_turn(
+                    turn,
+                    row.agent,
+                    &row.task,
+                    row.model_selection.clone(),
+                    operation,
+                );
             } else if let Some(key) = row.adoption_key() {
                 if self
                     .liveness
@@ -1073,7 +1089,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 })
                 .collect();
             for agent in ready {
-                self.decide(agent);
+                self.decide(agent, operation);
             }
         }
         &self.pending
@@ -1107,12 +1123,16 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     ///
     /// # Errors
     /// Returns the actual journal position and fixed reason when a checked fold refuses.
-    pub fn handle(&mut self, input: Input) -> Result<Handled, DurableInputError> {
+    pub fn handle(
+        &mut self,
+        input: Input,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> Result<Handled, DurableInputError> {
         let replayed = matches!(&input, Input::Replayed { .. });
         let scheduling = matches!(&input, Input::Started | Input::Tick);
-        let handled = self.handle_input(input)?;
+        let handled = self.handle_input(input, operation)?;
         if !replayed && (scheduling || handled.folded_through().is_some()) {
-            self.drain_recovery_invalidations();
+            self.drain_recovery_invalidations(operation);
         }
         Ok(handled)
     }
@@ -1121,11 +1141,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         clippy::too_many_lines,
         reason = "the exhaustive typed input routing stays in one visible match"
     )]
-    fn handle_input(&mut self, input: Input) -> Result<Handled, DurableInputError> {
+    fn handle_input(
+        &mut self,
+        input: Input,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> Result<Handled, DurableInputError> {
         self.pending.clear();
         match input {
             Input::MissingWorktrees(agents) => self.set_missing_worktrees(agents),
-            Input::Started => self.on_started(),
+            Input::Started => self.on_started(operation),
             Input::InstructionLaunchCleanupUnconfirmed { turn } => {
                 self.instruction_launch_cleanup_unconfirmed(turn);
             }
@@ -1143,7 +1167,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     .is_some_and(|row| row.goal == Some(goal))
                     && !self.world.instructions.pending_for_goal(goal)
                 {
-                    self.decide(agent);
+                    self.decide(agent, operation);
                 }
             }
             Input::InstructionSampled {
@@ -1162,14 +1186,16 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 agent,
                 request,
                 result,
-            } => self.mail_wake_ready(agent, request, result),
+            } => self.mail_wake_ready(agent, request, result, operation),
             Input::Replayed { lsn, entry } => {
                 self.apply_entry(lsn, &entry)?;
                 return Ok(Handled::folded(lsn));
             }
             Input::Command(command) => self.on_command(command),
             Input::Hook { hook, event } => self.on_hook(hook, &event),
-            Input::Persisted { token, append } => return self.on_persisted(token, append),
+            Input::Persisted { token, append } => {
+                return self.on_persisted(token, append, operation);
+            }
             Input::Spawned {
                 turn,
                 key,
@@ -1200,7 +1226,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 turn,
                 refusal,
                 dispatch_token,
-            } => self.on_launch_admission_refused(agent, turn, &refusal, dispatch_token),
+            } => self.on_launch_admission_refused(agent, turn, &refusal, dispatch_token, operation),
             Input::InstructionAttachedOpenFailed {
                 started_lsn,
                 cleanup_unconfirmed,
@@ -1208,14 +1234,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.instruction_attached_open_failed(started_lsn, cleanup_unconfirmed);
             }
             Input::BrowserDispatchAdmissionReady { token, turn } => {
-                self.retry_browser_dispatch_admission(token, turn);
+                self.retry_browser_dispatch_admission(token, turn, operation);
             }
             Input::BrowserLaunchReady {
                 turn,
                 generation,
                 prepared,
             } => {
-                self.on_browser_launch_ready(turn, generation, prepared);
+                self.on_browser_launch_ready(turn, generation, prepared, operation);
             }
             Input::SessionLearned { turn, session } => self.on_session_learned(turn, &session),
             Input::ActivityObserved { turn, kind } => self.on_activity_observed(turn, kind),
@@ -1247,7 +1273,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 evidence,
             } => self.on_predicate_done(goal, pass, evidence),
             Input::PredicateEndedWithoutVerdict { goal } => {
-                self.predicate_ended_without_verdict(goal);
+                self.predicate_ended_without_verdict(goal, operation);
             }
             Input::BaselineCaptured { goal, baseline } => self.on_baseline_captured(goal, baseline),
             Input::StampCaptured {
@@ -1255,7 +1281,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 check_lsn,
                 stamp,
             } => {
-                let update = self.on_stamp_captured(goal, check_lsn, stamp);
+                let update = self.on_stamp_captured(goal, check_lsn, stamp, operation);
                 return Ok(Handled::default().with_recovery(update));
             }
             Input::PtyExited { agent } => {
@@ -1283,7 +1309,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.on_session_observed(turn, key, mcp_grant, observation);
             }
             Input::Signal { agent, signal } => self.on_signal(agent, signal),
-            Input::Tick => self.on_tick(),
+            Input::Tick => self.on_tick(operation),
             Input::Liveness { turn, liveness } => self.on_liveness(turn, liveness),
             Input::PtySpawned { agent, pty, key } => self.persist(
                 Record::PtySpawned {
@@ -1311,7 +1337,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.apply_recorded(append)?;
                 let goals: Vec<_> = self.world.held_board_goals(Some(card)).collect();
                 for (agent, goal) in goals {
-                    self.judge(agent, goal);
+                    self.judge(agent, goal, operation);
                 }
                 return Ok(Handled::folded(through));
             }
@@ -1696,6 +1722,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         &mut self,
         token: PersistToken,
         append: RecordedAppend,
+        operation: &crate::RecoveryOperation<'_>,
     ) -> Result<Handled, DurableInputError> {
         let Some(entry) = self.ledger.get(&token).map(|parked| parked.entry.clone()) else {
             return Ok(Handled::default());
@@ -1728,7 +1755,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if let Record::HookTokenMinted { agent, token_hash } = &parked.entry.record {
             self.tokens.confirm(*agent, token_hash);
         }
-        let recovery = self.resume_after(parked.then, lsn);
+        let recovery = self.resume_after(parked.then, lsn, operation);
         for agent in reconcile {
             self.request_mail_wake(agent);
         }
@@ -1739,15 +1766,20 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         clippy::too_many_lines,
         reason = "one exhaustive match resumes every fsynced continuation under its token"
     )]
-    fn resume_after(&mut self, then: Then, lsn: Lsn) -> Option<crate::input::RecoveryUpdate> {
+    fn resume_after(
+        &mut self,
+        then: Then,
+        lsn: Lsn,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> Option<crate::input::RecoveryUpdate> {
         match then {
-            Then::Recovery(then) => return Some(self.recovery_after_ack(then, lsn)),
-            Then::InstructionRecoveryContinue => self.instruction_recovery_continue(),
+            Then::Recovery(then) => return Some(self.recovery_after_ack(then, lsn, operation)),
+            Then::InstructionRecoveryContinue => self.instruction_recovery_continue(operation),
             Then::InstructionBaselineSaved { start } => {
-                self.instruction_baseline_saved(*start, lsn);
+                self.instruction_baseline_saved(*start, lsn, operation);
             }
             Then::InstructionTurnEnded { turn, then } => {
-                return self.observe_after_end(turn, *then, lsn);
+                return self.observe_after_end(turn, *then, lsn, operation);
             }
             Then::InstructionAttachedHookEnded => self.attached_hook_ended(lsn, false, Then::Fold),
             Then::InstructionPreHostEnded { attempt, then } => {
@@ -1766,11 +1798,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             }
             Then::InstructionCompared { baseline, then } => {
                 self.instructions.ending.remove(&baseline);
-                return self.resume_after(*then, lsn);
+                return self.resume_after(*then, lsn, operation);
             }
-            Then::ConversationStartupReserved => self.on_started(),
+            Then::ConversationStartupReserved => self.on_started(operation),
             Then::ConversationRetryReserved { turn, generation } => {
-                self.record_browser_dispatch(turn, generation);
+                self.record_browser_dispatch(turn, generation, operation);
             }
             Then::MailWakeContinue { agent } => self.request_mail_wake(agent),
             Then::MailWakeCheckIssue {
@@ -1794,7 +1826,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 note_lsn,
                 context_lsn,
                 task,
-            } => self.issue_conversation(agent, note_lsn, context_lsn, &task, lsn),
+            } => self.issue_conversation(agent, note_lsn, context_lsn, &task, lsn, operation),
             Then::BrowserIssue {
                 agent,
                 task,
@@ -1807,38 +1839,41 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     &task,
                     answers,
                     lsn,
-                    false,
-                    Some((note_lsn, completion_lsn)),
+                    IssueOrigin::Browser {
+                        note_lsn,
+                        completion_lsn,
+                    },
+                    operation,
                 );
             }
             Then::BrowserDispatch { turn, generation } => {
-                self.dispatch_browser_launch(turn, generation);
+                self.dispatch_browser_launch(turn, generation, operation);
             }
             Then::CompletedCommandEnded { agent } | Then::NoteEnded { agent } => {
-                self.completed_command_ended(agent);
+                self.completed_command_ended(agent, operation);
             }
             Then::AnswerSaved { agent } => {
-                self.answer_saved(agent);
+                self.answer_saved(agent, operation);
                 self.request_mail_wake(agent);
             }
             Then::ClosingIssue {
                 agent,
                 task,
                 answers,
-            } => self.issue_turn(agent, &task, answers, lsn, true, None),
+            } => self.issue_turn(agent, &task, answers, lsn, IssueOrigin::Closing, operation),
             Then::Fold => {}
             Then::Issue {
                 agent,
                 task,
                 answers,
-            } => self.issue_turn(agent, &task, answers, lsn, false, None),
+            } => self.issue_turn(agent, &task, answers, lsn, IssueOrigin::Ordinary, operation),
             Then::Spawn {
                 agent,
                 turn,
                 launch,
             } => {
                 self.live_issues.insert(turn);
-                self.spawn(agent, turn, launch);
+                self.spawn(agent, turn, launch, operation);
             }
             Then::McpGranted {
                 agent,
@@ -1846,20 +1881,22 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 launch,
             } => {
                 self.begin_mcp_attempt(turn, Some(lsn));
-                self.push_spawn(agent, turn, launch, Some(lsn));
+                self.push_spawn(agent, turn, launch, Some(lsn), operation);
             }
             Then::SpawnArmed {
                 agent,
                 turn,
                 launch,
                 mcp_grant,
-            } => self.push_spawn(agent, turn, launch, mcp_grant),
+            } => self.push_spawn(agent, turn, launch, mcp_grant, operation),
             Then::ReissueSpawned { agent, turn } => {
                 self.persist_held_reissue_confirmation(agent, turn);
             }
-            Then::Decide { agent } => self.decide(agent),
-            Then::TicketStamp { goal, then } => return self.request_stamp(goal, *then, lsn),
-            Then::ClearedCause { agent } => self.on_cause_cleared(agent),
+            Then::Decide { agent } => self.decide(agent, operation),
+            Then::TicketStamp { goal, then } => {
+                return self.request_stamp(goal, *then, lsn, operation);
+            }
+            Then::ClearedCause { agent } => self.on_cause_cleared(agent, operation),
             Then::LaunchAdmissionHeld {
                 agent,
                 turn,
@@ -1893,13 +1930,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         self.reissue_confirmations.remove(&turn);
                     }
                 }
-                self.decide(agent);
+                self.decide(agent, operation);
             }
             Then::Question { agent, text } => {
                 self.notify_question(agent, &text);
-                self.decide(agent);
+                self.decide(agent, operation);
             }
-            Then::Judge { agent, goal } => self.judge(agent, goal),
+            Then::Judge { agent, goal } => self.judge(agent, goal, operation),
             Then::HoldAfterRapidFailureBeat {
                 agent,
                 first,
@@ -1914,7 +1951,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         dudes_proto::AutomaticHold::RepeatedFastFailure { first, latest },
                     );
                 } else {
-                    self.decide(agent);
+                    self.decide(agent, operation);
                 }
             }
             Then::OpenPty {
@@ -1935,7 +1972,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 self.kill_standing_cause(agent);
                 let goals: Vec<_> = self.world.held_board_goals(None).collect();
                 for (agent, goal) in goals {
-                    self.judge(agent, goal);
+                    self.judge(agent, goal, operation);
                 }
             }
             Then::Reply { hook, reply } => self.pending.push(Effect::Reply { hook, reply }),
@@ -1970,8 +2007,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     /// The three crash rules, in order, then the first decisions of the run.
-    fn on_started(&mut self) {
-        if self.recover_instruction_observations() {
+    fn on_started(&mut self, operation: &crate::RecoveryOperation<'_>) {
+        if self.recover_instruction_observations(operation) {
             return;
         }
         self.hold_missing_worktrees();
@@ -2039,7 +2076,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             // is replayed exactly — which is why the two travel separately. The
             // standing-cause filter described above is applied inside `reissue_turn`, not here, so
             // every re-issue path inherits it.
-            self.reissue_turn(turn, agent, &task, selection);
+            self.reissue_turn(turn, agent, &task, selection, operation);
         }
 
         // (3) A `TurnSpawned` without a `TurnEnded`: ask the process table about it, and let the
@@ -2057,7 +2094,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
         let board_goals: Vec<_> = self.world.held_board_goals(None).collect();
         for (agent, goal) in board_goals {
-            self.judge(agent, goal);
+            self.judge(agent, goal, operation);
         }
 
         // Then decide for every agent that can be decided for. A replayed attachment without an
@@ -2073,7 +2110,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             if self.reissue_pending(agent) {
                 continue;
             }
-            self.decide(agent);
+            self.decide(agent, operation);
         }
     }
 
@@ -2100,15 +2137,18 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         agent: AgentId,
         task: &str,
         recorded: Option<ModelSelection>,
+        operation: &crate::RecoveryOperation<'_>,
     ) {
-        if !self.recovery_launch_allowed(agent, turn) {
-            self.ensure_recovery_admission(agent);
+        if !self.recovery_launch_allowed(agent, turn, operation) {
+            self.ensure_recovery_admission(agent, operation);
             return;
         }
         if !self.world.mail_wake_history_valid() {
             return;
         }
-        if self.world.browser_issue(turn).is_some() && !self.browser_launch_allowed(agent, turn) {
+        if self.world.browser_issue(turn).is_some()
+            && !self.browser_launch_allowed(agent, turn, operation)
+        {
             return;
         }
         if (self.closing_active || self.closing_recovery)
@@ -2128,7 +2168,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             || row.halted
             || row.paused
             || row.open_question.is_some()
-            || self.launch_held(agent)
+            || self.launch_held(agent, operation)
         {
             return;
         }
@@ -2140,7 +2180,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         };
         match self.launch(agent, &row, task, &session, &selection) {
             ManagedLaunch::Ready(launch) => {
-                if self.spawn(agent, turn, launch) {
+                if self.spawn(agent, turn, launch, operation) {
                     // Only a re-issue this run actually took claims the announced id. `spawn()`
                     // answers the claim and not the emission — a launch parked under a mint is
                     // `true` and lands on this session once the mint is acknowledged.
@@ -2173,7 +2213,13 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// under it. The window that opens is the one already documented on
     /// [`Self::spawning`]: a mint the disk never confirms leaves its turn claimed for the rest of
     /// the run, and the next start re-issues it once.
-    fn spawn(&mut self, agent: AgentId, turn: TurnId, launch: Box<PreparedLaunch>) -> bool {
+    fn spawn(
+        &mut self,
+        agent: AgentId,
+        turn: TurnId,
+        launch: Box<PreparedLaunch>,
+        operation: &crate::RecoveryOperation<'_>,
+    ) -> bool {
         if !self.world.mail_wake_history_valid() {
             return false;
         }
@@ -2185,7 +2231,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             self.observe_retry(agent, turn, launch);
             return true;
         }
-        self.spawn_prepared(agent, turn, launch)
+        self.spawn_prepared(agent, turn, launch, operation)
     }
 
     fn spawn_prepared(
@@ -2193,8 +2239,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         agent: AgentId,
         turn: TurnId,
         mut launch: Box<PreparedLaunch>,
+        operation: &crate::RecoveryOperation<'_>,
     ) -> bool {
-        if !self.recovery_launch_context_allowed(agent, turn, &launch.session) {
+        if !self.recovery_launch_context_allowed(agent, turn, &launch.session, operation) {
             self.spawning.remove(&turn);
             return false;
         }
@@ -2238,7 +2285,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             );
         } else {
             self.begin_mcp_attempt(turn, None);
-            self.push_spawn(agent, turn, launch, None);
+            self.push_spawn(agent, turn, launch, None, operation);
         }
         true
     }
@@ -2268,8 +2315,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         turn: TurnId,
         mut launch: Box<PreparedLaunch>,
         mcp_grant: Option<Lsn>,
+        operation: &crate::RecoveryOperation<'_>,
     ) {
-        if !self.recovery_launch_context_allowed(agent, turn, &launch.session) {
+        if !self.recovery_launch_context_allowed(agent, turn, &launch.session, operation) {
             self.spawning.remove(&turn);
             return;
         }
@@ -2277,12 +2325,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return;
         }
         let browser = self.world.browser_issue(turn).is_some();
-        if browser && !self.browser_launch_allowed(agent, turn) {
+        if browser && !self.browser_launch_allowed(agent, turn, operation) {
             self.spawning.remove(&turn);
             self.reissued.remove(&turn);
             return;
         }
-        if self.launch_held(agent) {
+        if self.launch_held(agent, operation) {
             self.spawning.remove(&turn);
             self.reissued.remove(&turn);
             return;
@@ -2484,8 +2532,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     ///
     /// The rule itself is not restated here — `reissue_turn` holds both halves of it, including
     /// the standing-cause filter, so an agent whose *other* cause still stands re-issues nothing.
-    fn on_cause_cleared(&mut self, agent: AgentId) {
-        self.retry_refused_browser_replays(agent);
+    fn on_cause_cleared(&mut self, agent: AgentId, operation: &crate::RecoveryOperation<'_>) {
+        self.retry_refused_browser_replays(agent, operation);
         let reissue: Vec<(TurnId, String, Option<ModelSelection>)> = self
             .world
             .issued_not_spawned()
@@ -2493,9 +2541,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             .map(|(turn, row)| (turn, row.task.clone(), row.model_selection.clone()))
             .collect();
         for (turn, task, selection) in reissue {
-            self.reissue_turn(turn, agent, &task, selection);
+            self.reissue_turn(turn, agent, &task, selection, operation);
         }
-        self.decide(agent);
+        self.decide(agent, operation);
     }
 
     /// **It takes the agent rather than a session, and that is the point.** The only resumable id
@@ -2573,7 +2621,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     ///
     /// Nothing decides while a turn is in flight: the loop is one turn deep per agent, and a
     /// second `Continue` would be a second process on one vendor session.
-    fn decide(&mut self, agent: AgentId) {
+    fn decide(&mut self, agent: AgentId, operation: &crate::RecoveryOperation<'_>) {
         if self.instructions.recovering() || self.instructions.pending_agents.contains(&agent) {
             return;
         }
@@ -2581,7 +2629,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return;
         }
         if self.closing_active {
-            if self.ensure_recovery_admission(agent) {
+            if self.ensure_recovery_admission(agent, operation) {
                 self.decide_saving(agent);
             }
             return;
@@ -2608,7 +2656,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             return;
         }
         let Some(input) = self.loop_input_for(agent) else {
-            if !self.ensure_recovery_admission(agent) {
+            if !self.ensure_recovery_admission(agent, operation) {
                 return;
             }
             self.decide_conversation(agent);
@@ -2625,7 +2673,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Some(note) => dudes_policy::decide_with_browser_note(&input, note),
             None => dudes_policy::decide(&input),
         };
-        if !matches!(decision, LoopDecision::Done) && !self.ensure_recovery_admission(agent) {
+        if !matches!(decision, LoopDecision::Done)
+            && !self.ensure_recovery_admission(agent, operation)
+        {
             return;
         }
         if let Some(cause) = self
@@ -2763,16 +2813,24 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         task: &str,
         answers: Vec<Lsn>,
         lsn_of_decision: Lsn,
-        closing: bool,
-        browser: Option<(Lsn, Option<Lsn>)>,
+        origin: IssueOrigin,
+        operation: &crate::RecoveryOperation<'_>,
     ) {
-        if (self.closing_active && !closing) || self.closing_recovery {
+        if (self.closing_active && !matches!(origin, IssueOrigin::Closing)) || self.closing_recovery
+        {
             return;
         }
+        let browser = match origin {
+            IssueOrigin::Browser {
+                note_lsn,
+                completion_lsn,
+            } => Some((note_lsn, completion_lsn)),
+            IssueOrigin::Ordinary | IssueOrigin::Closing => None,
+        };
         let Some(row) = self.world.agents.get(&agent).cloned() else {
             return;
         };
-        if self.launch_held(agent) {
+        if self.launch_held(agent, operation) {
             return;
         }
         let Some(goal) = row.goal else {
@@ -2795,7 +2853,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return;
         }
-        let Some((turn, launch)) = self.prepare_new_issue(agent, &row, task) else {
+        let Some((turn, launch)) = self.prepare_new_issue(agent, &row, task, operation) else {
             return;
         };
         let task = launch.task.as_str();
@@ -3031,8 +3089,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         turn: Option<TurnId>,
         refusal: &crate::SharedFolderRefusal,
         dispatch_token: Option<PersistToken>,
+        operation: &crate::RecoveryOperation<'_>,
     ) {
-        if self.launch_held(agent)
+        if self.launch_held(agent, operation)
             || self.world.agents.get(&agent).is_none_or(|row| row.retired)
             || turn.is_some_and(|turn| {
                 self.world
@@ -3456,8 +3515,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             })
     }
 
-    fn launch_held(&self, agent: AgentId) -> bool {
-        !self.recovery_admission_allowed(agent)
+    fn launch_held(&self, agent: AgentId, operation: &crate::RecoveryOperation<'_>) -> bool {
+        !self.recovery_admission_allowed(agent, operation)
             || self.instructions.recovering()
             || self.instructions.pending_agents.contains(&agent)
             || self
@@ -3536,7 +3595,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     /// After a turn end: run the goal's predicate, or re-decide when the goal is gone.
-    fn judge(&mut self, agent: AgentId, goal: GoalId) {
+    fn judge(&mut self, agent: AgentId, goal: GoalId, operation: &crate::RecoveryOperation<'_>) {
         if self.protect_failures(agent) {
             return;
         }
@@ -3559,7 +3618,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     predicate,
                 });
             }
-            _ => self.decide(agent),
+            _ => self.decide(agent, operation),
         }
     }
 
@@ -3854,7 +3913,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     /// A retired agent has no breaker: its ladder stops where it stood, and gate 5 never reads it
     /// again because `World::loop_input` decides nothing for a retired agent at all. `AgentRetired`
     /// is itself a standing kill cause, so a turn it left running is ended by that.
-    fn on_tick(&mut self) {
+    fn on_tick(&mut self, operation: &crate::RecoveryOperation<'_>) {
         let agents: Vec<AgentId> = self
             .world
             .agents
@@ -3879,7 +3938,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         // one beat's worth.
         self.signals.clear();
         self.reap();
-        self.re_examine_exhausted();
+        self.re_examine_exhausted(operation);
     }
 
     /// The third part of the beat: re-decide an `Exhausted` agent whose loop input
@@ -3940,7 +3999,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     ///   agent cannot be `Exhausted` and attached at once; the combination is unreachable.
     /// - `open_turn.is_none()` — [`Self::decide`] early-returns on an open turn, and issuing one
     ///   moves the status to `Running`, so this can never be the thing that stops a decision.
-    fn re_examine_exhausted(&mut self) {
+    fn re_examine_exhausted(&mut self, operation: &crate::RecoveryOperation<'_>) {
         let candidates: Vec<AgentId> = self
             .world
             .agents
@@ -3966,7 +4025,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     .and_then(conversations::conversation_digest)
                     && self.world.conversation_input_digest(agent) != Some(computed.as_str())
                 {
-                    self.decide(agent);
+                    self.decide(agent, operation);
                 }
                 continue;
             }
@@ -3986,7 +4045,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     row.contract == dudes_proto::NoteContract::Raw || row.input_digest != computed
                 });
                 if changed {
-                    self.decide(agent);
+                    self.decide(agent, operation);
                 }
                 continue;
             }
@@ -4021,7 +4080,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .get(&agent)
                 .and_then(|row| row.last_input_digest.as_deref());
             if digest_changed(stored, computed.as_deref()) {
-                self.decide(agent);
+                self.decide(agent, operation);
             }
         }
     }
@@ -5318,7 +5377,10 @@ mod tests {
                 "board" => Input::BoardChanged { append },
                 _ => unreachable!(),
             };
-            let handled = harness.supervisor.handle(input).unwrap();
+            let handled = harness
+                .supervisor
+                .handle(input, &crate::RecoveryOperation::empty())
+                .unwrap();
             assert_eq!(handled.folded_through(), Some(Lsn(1001)), "{carrier}");
             assert_eq!(
                 format!("{:?}", harness.supervisor.world()),
@@ -5352,10 +5414,13 @@ mod tests {
             browser: None,
         };
         let before = format!("{:?}", harness.supervisor.world());
-        let result = harness.supervisor.handle(Input::Persisted {
-            token,
-            append: checkpointed((Lsn(1000), wrong), Lsn(1001)),
-        });
+        let result = harness.supervisor.handle(
+            Input::Persisted {
+                token,
+                append: checkpointed((Lsn(1000), wrong), Lsn(1001)),
+            },
+            &crate::RecoveryOperation::empty(),
+        );
         assert_eq!(
             result,
             Err(crate::input::DurableInputError::PersistedEntryMismatch {
@@ -5390,10 +5455,13 @@ mod tests {
             Lsn(1001),
             dudes_proto::recovery_state::RecoveryStateError::Binding,
         );
-        let result = harness.supervisor.handle(Input::Persisted {
-            token: *token,
-            append: checkpointed((Lsn(1000), entry.clone()), Lsn(1001)),
-        });
+        let result = harness.supervisor.handle(
+            Input::Persisted {
+                token: *token,
+                append: checkpointed((Lsn(1000), entry.clone()), Lsn(1001)),
+            },
+            &crate::RecoveryOperation::empty(),
+        );
         assert_eq!(
             result,
             Err(crate::input::DurableInputError::Recovery {
@@ -5432,10 +5500,13 @@ mod tests {
         let main = harness.persisted_append(token, Lsn(1000)).into_parts().0;
         let handled = harness
             .supervisor
-            .handle(Input::Persisted {
-                token,
-                append: checkpointed(main, Lsn(1001)),
-            })
+            .handle(
+                Input::Persisted {
+                    token,
+                    append: checkpointed(main, Lsn(1001)),
+                },
+                &crate::RecoveryOperation::empty(),
+            )
             .unwrap();
         assert_eq!(handled.folded_through(), Some(Lsn(1001)));
         let request = harness
@@ -5516,10 +5587,13 @@ mod tests {
         assert_eq!(
             replay
                 .supervisor
-                .handle(Input::Replayed {
-                    lsn: dudes_types::Lsn(100),
-                    entry: entry.clone()
-                })
+                .handle(
+                    Input::Replayed {
+                        lsn: dudes_types::Lsn(100),
+                        entry: entry.clone()
+                    },
+                    &crate::RecoveryOperation::empty()
+                )
                 .unwrap()
                 .folded_through(),
             Some(dudes_types::Lsn(100))
@@ -5569,7 +5643,11 @@ mod tests {
             },
         ] {
             assert_eq!(
-                harness.supervisor.handle(input).unwrap().folded_through(),
+                harness
+                    .supervisor
+                    .handle(input, &crate::RecoveryOperation::empty())
+                    .unwrap()
+                    .folded_through(),
                 None
             );
             assert_eq!(harness.supervisor.world().last_applied_lsn, Some(through));
@@ -5578,10 +5656,13 @@ mod tests {
         assert_eq!(
             harness
                 .supervisor
-                .handle(Input::Command(Command::Pause {
-                    agent,
-                    browser: None
-                }))
+                .handle(
+                    Input::Command(Command::Pause {
+                        agent,
+                        browser: None
+                    }),
+                    &crate::RecoveryOperation::empty()
+                )
                 .unwrap()
                 .folded_through(),
             None
@@ -5626,7 +5707,9 @@ mod tests {
                 (Input::Replayed { lsn, entry }, None)
             };
             assert_eq!(
-                harness.supervisor.handle(input),
+                harness
+                    .supervisor
+                    .handle(input, &crate::RecoveryOperation::empty()),
                 Err(crate::input::DurableInputError::Recovery {
                     lsn,
                     reason: dudes_proto::recovery_state::RecoveryStateError::Binding
@@ -5683,10 +5766,13 @@ mod tests {
                     dudes_proto::recovery_state::RecoveryStateError::Binding,
                 );
             }
-            let result = harness.supervisor.handle(Input::Persisted {
-                token: *token,
-                append: crate::testing::recorded_append(lsn, entry.clone()),
-            });
+            let result = harness.supervisor.handle(
+                Input::Persisted {
+                    token: *token,
+                    append: crate::testing::recorded_append(lsn, entry.clone()),
+                },
+                &crate::RecoveryOperation::empty(),
+            );
             if refuse {
                 assert_eq!(
                     result,
@@ -5744,7 +5830,9 @@ mod tests {
             },
         );
         harness.supervisor.pending.clear();
-        harness.supervisor.judge(original, goal);
+        harness
+            .supervisor
+            .judge(original, goal, &crate::RecoveryOperation::empty());
         assert!(matches!(harness.supervisor.pending.as_slice(),
             [crate::Effect::RunPredicate { agent, .. }] if *agent == current));
     }
@@ -6676,16 +6764,19 @@ mod taught_notes_controls {
             },
         });
         h.supervisor
-            .handle(Input::Spend {
-                agent,
-                view: SpendView {
-                    goal: Spend {
-                        usd: dudes_types::Usd::from_dollars(6),
-                        ..Spend::default()
+            .handle(
+                Input::Spend {
+                    agent,
+                    view: SpendView {
+                        goal: Spend {
+                            usd: dudes_types::Usd::from_dollars(6),
+                            ..Spend::default()
+                        },
+                        ..SpendView::default()
                     },
-                    ..SpendView::default()
                 },
-            })
+                &crate::RecoveryOperation::empty(),
+            )
             .unwrap();
         (h, agent, goal)
     }
@@ -6820,10 +6911,15 @@ mod taught_notes_controls {
         );
         let append = h.persisted_append(token, Lsn(10_002));
         h.supervisor
-            .handle(Input::Persisted { token, append })
+            .handle(
+                Input::Persisted { token, append },
+                &crate::RecoveryOperation::empty(),
+            )
             .unwrap();
         for _ in 0..3 {
-            h.supervisor.handle(Input::Tick).unwrap();
+            h.supervisor
+                .handle(Input::Tick, &crate::RecoveryOperation::empty())
+                .unwrap();
             assert!(h.supervisor.effects().iter().all(|effect| !matches!(
                 effect,
                 Effect::Persist {

@@ -279,6 +279,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         agent: AgentId,
         request: MailWakeRequest,
         result: Result<(Timestamp, SpendView, Lsn), MailWakeRefreshFailure>,
+        operation: &crate::RecoveryOperation<'_>,
     ) {
         if self
             .mail_refreshes
@@ -316,7 +317,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 ..
             } = pending.phase
         {
-            self.issue_mail_wake(agent, root_lsn, decision_lsn, at);
+            self.issue_mail_wake(agent, root_lsn, decision_lsn, at, operation);
             return;
         }
         let Some(decided) = decided else {
@@ -467,8 +468,15 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
     }
 
-    fn issue_mail_wake(&mut self, agent: AgentId, root_lsn: Lsn, decision_lsn: Lsn, at: Timestamp) {
-        if !self.mail_wake_can_reconcile(agent) || self.launch_held(agent) {
+    fn issue_mail_wake(
+        &mut self,
+        agent: AgentId,
+        root_lsn: Lsn,
+        decision_lsn: Lsn,
+        at: Timestamp,
+        operation: &crate::RecoveryOperation<'_>,
+    ) {
+        if !self.mail_wake_can_reconcile(agent) || self.launch_held(agent, operation) {
             return;
         }
         let Some(row) = self.world.agents.get(&agent).cloned() else {
@@ -1195,7 +1203,8 @@ mod tests {
                 })
                 .is_empty()
             );
-            f.h.supervisor.re_examine_exhausted();
+            f.h.supervisor
+                .re_examine_exhausted(&crate::RecoveryOperation::empty());
             let retry: Vec<_> = f.h.supervisor.effects().iter().map(Seen::of).collect();
             let requested = matches!(retry.as_slice(), [Seen::MailWakeRefresh { agent, .. }] if *agent == f.agent);
             let issued_again = if requested {
@@ -1266,7 +1275,9 @@ mod tests {
                     dudes_proto::recovery_state::RecoveryStateError::Binding,
                 );
             }
-            let result = f.h.supervisor.handle(input);
+            let result =
+                f.h.supervisor
+                    .handle(input, &crate::RecoveryOperation::empty());
             if fault {
                 assert_eq!(
                     result,

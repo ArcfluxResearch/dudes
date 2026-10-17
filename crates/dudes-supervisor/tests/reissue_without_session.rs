@@ -281,10 +281,13 @@ fn a_replayed_turn_without_a_session_is_selected_as_issued_not_spawned() {
     for (entry, position) in entries.into_iter().zip(1u64..) {
         let _ = harness
             .supervisor
-            .handle(dudes_supervisor::Input::Replayed {
-                lsn: dudes_types::Lsn(position),
-                entry,
-            })
+            .handle(
+                dudes_supervisor::Input::Replayed {
+                    lsn: dudes_types::Lsn(position),
+                    entry,
+                },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
             .unwrap();
     }
     let selected: Vec<TurnId> = harness

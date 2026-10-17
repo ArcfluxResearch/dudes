@@ -42,13 +42,22 @@ fn replay_append(daemon: &mut TestDaemon, append: RecordedAppend) -> Handled {
     let (main, checkpoint) = append.into_parts();
     let mut handled = daemon
         .sup
-        .handle(Input::Replayed {
-            lsn: main.0,
-            entry: main.1,
-        })
+        .handle(
+            Input::Replayed {
+                lsn: main.0,
+                entry: main.1,
+            },
+            &dudes_supervisor::RecoveryOperation::empty(),
+        )
         .unwrap();
     if let Some((lsn, entry)) = checkpoint {
-        handled = daemon.sup.handle(Input::Replayed { lsn, entry }).unwrap();
+        handled = daemon
+            .sup
+            .handle(
+                Input::Replayed { lsn, entry },
+                &dudes_supervisor::RecoveryOperation::empty(),
+            )
+            .unwrap();
     }
     handled
 }
@@ -101,10 +110,13 @@ fn direct_and_pump_acknowledgments_require_some_and_the_exact_current_cut() {
             "none" => (
                 daemon
                     .sup
-                    .handle(Input::Spend {
-                        agent,
-                        view: SpendView::default(),
-                    })
+                    .handle(
+                        Input::Spend {
+                            agent,
+                            view: SpendView::default(),
+                        },
+                        &dudes_supervisor::RecoveryOperation::empty(),
+                    )
                     .unwrap(),
                 lsn,
             ),
