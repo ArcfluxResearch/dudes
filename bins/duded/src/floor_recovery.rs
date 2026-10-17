@@ -30,7 +30,7 @@ pub fn decode_inspect(bytes: &[u8]) -> Result<RecoveryInspectParams> {
     decode(bytes)
 }
 
-/// Decode one strict submission, preserving every reviewed position as a decimal string.
+/// Decode one strict submission, converting canonical decimal-string positions losslessly.
 ///
 /// # Errors
 /// Returns an error for invalid JSON, noncanonical positions, or incomplete authority fields.
