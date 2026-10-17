@@ -8,6 +8,10 @@ use duded::{ExitCause, boot};
 use dudes_proto::record::Hex32;
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::goal::{CompletionCheckDeclaration, GoalReplaceParams, GoalReplaceResult};
+use dudes_proto::rpc::recovery::{
+    RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectResult, RecoverySubmitParams,
+    RecoverySubmitResult,
+};
 use dudes_proto::rpc::{ErrorCode, Method, Request, RequestId, Response};
 use dudes_proto::{Predicate, Record};
 use dudes_rpc::Client;
@@ -1702,6 +1706,98 @@ fn replay_sample_seams(
     }
 }
 
+fn authorize_owed_replay(
+    settings: &duded::Settings,
+    agent: AgentId,
+    goal: GoalId,
+    turn: TurnId,
+    issue_lsn: Lsn,
+    request_id: Hex32,
+) {
+    let response = call(settings, Method::RecoveryInspect, json!({"agent":agent}));
+    assert!(response.error.is_none(), "{response:?}");
+    let inspection: RecoveryInspectResult =
+        serde_json::from_value(response.result.unwrap()).unwrap();
+    let RecoveryInspectResult::Available {
+        expected,
+        choices,
+        prior_effects_unknown,
+        ..
+    } = inspection
+    else {
+        panic!("the exact owed issue offers recovery: {inspection:?}");
+    };
+    assert_eq!(expected.work.agent, agent);
+    assert_eq!(expected.work.goal, goal);
+    assert_eq!(expected.work.turn, turn);
+    assert_eq!(expected.issue_lsn, issue_lsn);
+    assert_eq!(choices, RecoveryAllowedChoices::RepeatIssuedFresh);
+    assert!(prior_effects_unknown);
+    let response = call(
+        settings,
+        Method::RecoverySubmit,
+        serde_json::to_value(RecoverySubmitParams {
+            request_id,
+            expected: *expected,
+            choice: RecoveryChoice::RepeatIssuedFresh,
+        })
+        .unwrap(),
+    );
+    assert!(response.error.is_none(), "{response:?}");
+    let submitted: RecoverySubmitResult = serde_json::from_value(response.result.unwrap()).unwrap();
+    let RecoverySubmitResult::Accepted { receipt } = submitted else {
+        panic!("explicit owed-issue consent is accepted: {submitted:?}");
+    };
+    assert_eq!(receipt.request_id, request_id);
+    assert_eq!(receipt.choice, RecoveryChoice::RepeatIssuedFresh);
+    assert_eq!(receipt.claim.episode.work, expected.work);
+}
+
+fn assert_owed_issue_preserved(records: &[Record], original: &Record) {
+    let Record::TurnIssued {
+        agent, goal, turn, ..
+    } = original
+    else {
+        panic!("the original immutable issue")
+    };
+    assert_eq!(
+        records
+            .iter()
+            .find(|record| matches!(record, Record::TurnIssued { turn: seen, .. } if seen == turn)),
+        Some(original)
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::GoalSet { agent: owner, goal: set, .. } if owner == agent && set.id == *goal))
+            .count(),
+        1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::GoalSet { agent: owner, .. } if owner == agent)
+            )
+            .count(),
+        1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::TurnIssued { turn: seen, .. } if seen == turn)
+            )
+            .count(),
+        1
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|record| matches!(record, Record::TurnEnded { turn: seen, .. } if seen == turn))
+    );
+}
+
 #[test]
 fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_goal() {
     let fixture = Fixture::new();
@@ -1730,6 +1826,11 @@ fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_go
     };
     unconfirmed_instruction_attempt(&fixture, &running.handle, initial_owner, Lsn::ZERO);
     let before = fixture.records();
+    let original_issue = before
+        .iter()
+        .find(|record| matches!(record, Record::TurnIssued { turn, .. } if *turn == issued))
+        .unwrap()
+        .clone();
     assert_eq!(host.children(), 0);
     assert!(matches!(
         replace(&settings, &request(agent, goal, 55)),
@@ -1763,6 +1864,8 @@ fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_go
     .unwrap();
     let mut restarted = common::start(daemon);
     let release = early_release;
+    let recovery_request = Hex32::new([56; 32]);
+    authorize_owed_replay(&settings, agent, goal, issued, issue_lsn, recovery_request);
     clock.wait_held();
     restarted.handle.doctor().unwrap();
     assert_eq!(reissue.children(), 0);
@@ -1791,18 +1894,14 @@ fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_go
         }
     ));
     assert_eq!(fixture.records(), before);
-    assert_eq!(
-        before
-            .iter()
-            .filter(|record| matches!(record,Record::TurnIssued {turn,..} if *turn==issued))
-            .count(),
-        1
-    );
-    assert!(
-        !before
-            .iter()
-            .any(|record| matches!(record,Record::TurnEnded {turn,..} if *turn==issued))
-    );
+    assert_owed_issue_preserved(&before, &original_issue);
+    assert!(before.iter().any(|record| matches!(record,
+        Record::RecoveryAuthorized(authorization)
+            if authorization.request_id == recovery_request
+                && authorization.binding.work.agent == agent
+                && authorization.binding.work.goal == goal
+                && authorization.binding.work.turn == issued
+                && authorization.binding.issue_lsn == issue_lsn)));
     restarted.stop(ExitCause::Ended);
 }
 
