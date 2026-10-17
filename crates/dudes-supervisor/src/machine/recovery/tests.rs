@@ -267,8 +267,7 @@ fn replayed_owed_work_is_held_while_live_first_issue_still_proceeds() {
     );
 }
 
-#[test]
-fn pending_new_claim_is_exclusive_with_current_predecessor_and_an_open_question() {
+fn unclaimed_new_with_open_question() -> (Machine, RecoveryWork) {
     let (mut machine, agent) = owed(false);
     let work = machine.recovery_binding(agent).unwrap().work;
     machine
@@ -340,6 +339,13 @@ fn pending_new_claim_is_exclusive_with_current_predecessor_and_an_open_question(
             },
         })
         .unwrap();
+    (machine, work)
+}
+
+#[test]
+fn pending_new_claim_is_exclusive_with_current_predecessor_and_an_open_question() {
+    let (mut machine, work) = unclaimed_new_with_open_question();
+    let agent = work.agent;
     let mut intent = command(&machine, agent);
     intent.choice = RecoveryChoice::FreshWithRecap;
     let first_expected = intent.expected;
@@ -801,10 +807,12 @@ fn replay_retains_the_earlier_different_goal_witness_after_a_same_goal_set() {
     ));
 }
 
-#[test]
-fn crash_replay_discovers_multiple_stale_pending_claims_including_an_overwritten_last_turn() {
-    let (mut prefix, agent, first) = pending_history();
-    let mut machine = replay_machine(&prefix);
+fn replay_another_failed_goal(
+    machine: &mut Machine,
+    prefix: &mut Vec<(Lsn, Entry)>,
+    first: RecoveryClaimRef,
+) -> dudes_proto::Goal {
+    let agent = first.episode.work.agent;
     let mut goal = machine.world.goals[&first.episode.work.goal].goal.clone();
     goal.id = dudes_types::GoalId::from_parts(98, 12);
     let goal_id = goal.id;
@@ -813,8 +821,8 @@ fn crash_replay_discovers_multiple_stale_pending_claims_including_an_overwritten
         .clone();
     let turn = TurnId::from_parts(98, 13);
     replay_record(
-        &mut machine,
-        &mut prefix,
+        machine,
+        prefix,
         20_000,
         Record::GoalSet {
             agent,
@@ -825,8 +833,8 @@ fn crash_replay_discovers_multiple_stale_pending_claims_including_an_overwritten
         },
     );
     replay_record(
-        &mut machine,
-        &mut prefix,
+        machine,
+        prefix,
         20_001,
         Record::LoopDecided {
             agent,
@@ -838,8 +846,8 @@ fn crash_replay_discovers_multiple_stale_pending_claims_including_an_overwritten
         },
     );
     replay_record(
-        &mut machine,
-        &mut prefix,
+        machine,
+        prefix,
         20_002,
         Record::TurnIssued {
             agent,
@@ -848,14 +856,14 @@ fn crash_replay_discovers_multiple_stale_pending_claims_including_an_overwritten
             task: "original B".into(),
             session: None,
             mode: dudes_types::Mode::Managed,
-            model_selection: selection.clone(),
+            model_selection: selection,
             lsn_of_decision: Lsn(20_001),
             answers: Vec::new(),
         },
     );
     replay_record(
-        &mut machine,
-        &mut prefix,
+        machine,
+        prefix,
         20_003,
         Record::TurnEnded {
             agent,
@@ -876,20 +884,24 @@ fn crash_replay_discovers_multiple_stale_pending_claims_including_an_overwritten
             outcome: Some(dudes_proto::TurnOutcome::NoResult),
         },
     );
-    replay_record(
-        &mut machine,
-        &mut prefix,
-        20_004,
-        Record::Pause {
-            agent,
-            browser: None,
-        },
-    );
-    let second = replay_pending(&mut machine, &mut prefix, agent, 20_005, 93);
+    goal
+}
+
+fn replay_hidden_issue_and_goal_change(
+    machine: &mut Machine,
+    prefix: &mut Vec<(Lsn, Entry)>,
+    mut goal: dudes_proto::Goal,
+    second: RecoveryClaimRef,
+) -> TurnId {
+    let agent = second.episode.work.agent;
+    let goal_id = goal.id;
+    let selection = machine.world.turns[&second.episode.work.turn]
+        .model_selection
+        .clone();
     let hidden_by = TurnId::from_parts(98, 14);
     replay_record(
-        &mut machine,
-        &mut prefix,
+        machine,
+        prefix,
         20_008,
         Record::LoopDecided {
             agent,
@@ -901,8 +913,8 @@ fn crash_replay_discovers_multiple_stale_pending_claims_including_an_overwritten
         },
     );
     replay_record(
-        &mut machine,
-        &mut prefix,
+        machine,
+        prefix,
         20_009,
         Record::TurnIssued {
             agent,
@@ -922,8 +934,8 @@ fn crash_replay_discovers_multiple_stale_pending_claims_including_an_overwritten
     );
     goal.id = dudes_types::GoalId::from_parts(98, 15);
     replay_record(
-        &mut machine,
-        &mut prefix,
+        machine,
+        prefix,
         21_000,
         Record::GoalSet {
             agent,
@@ -933,6 +945,26 @@ fn crash_replay_discovers_multiple_stale_pending_claims_including_an_overwritten
             goal_replacement: None,
         },
     );
+    hidden_by
+}
+
+#[test]
+fn crash_replay_discovers_multiple_stale_pending_claims_including_an_overwritten_last_turn() {
+    let (mut prefix, agent, first) = pending_history();
+    let mut machine = replay_machine(&prefix);
+    let goal = replay_another_failed_goal(&mut machine, &mut prefix, first);
+    let goal_id = goal.id;
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        20_004,
+        Record::Pause {
+            agent,
+            browser: None,
+        },
+    );
+    let second = replay_pending(&mut machine, &mut prefix, agent, 20_005, 93);
+    let hidden_by = replay_hidden_issue_and_goal_change(&mut machine, &mut prefix, goal, second);
     let mut recovered = replay_machine(&prefix);
     let before = recovered.world.turns[&hidden_by].clone();
     let hops = recovered.world.goals[&goal_id].turns_on_goal;
@@ -1072,7 +1104,7 @@ fn failure_source(model: Option<&str>) -> (Vec<(Lsn, Entry)>, AgentId) {
             signal: None,
         },
         usage: None,
-        model_usage: Default::default(),
+        model_usage: std::collections::BTreeMap::new(),
         outcome: dudes_proto::TurnOutcome::NoResult,
         last_message: None,
     });
@@ -1143,7 +1175,7 @@ fn deliver_recovery_start(machine: &mut Machine, agent: AgentId) {
                     },
                     gap,
                 ],
-                usage: Default::default(),
+                usage: dudes_proto::InstructionSampleUsage::default(),
                 boot: None,
             }),
             ticket: None,
@@ -1584,7 +1616,7 @@ fn legacy_uncertainty_source(
                     signal: None,
                 },
                 usage: None,
-                model_usage: Default::default(),
+                model_usage: std::collections::BTreeMap::new(),
                 outcome: dudes_proto::TurnOutcome::NoResult,
                 last_message: None,
             });
@@ -1658,7 +1690,9 @@ fn legacy_uncertainty_keeps_a_durable_required_barrier_after_restart_and_ordinar
         let before = format!("{:?}", machine.world());
         let entropy = machine.rng.drawn();
         let public = machine.recovery_opportunity(agent);
-        if reason != RecoveryReason::MissingSpawn {
+        if reason == RecoveryReason::MissingSpawn {
+            assert!(public.is_ok());
+        } else {
             assert_eq!(public, Err(RecoveryRefusal::NotRecoverable));
             let intent = RecoveryCommand {
                 request_id: Hex32::new([71; 32]),
@@ -1674,8 +1708,6 @@ fn legacy_uncertainty_keeps_a_durable_required_barrier_after_restart_and_ordinar
                 machine.recover(intent).recovery().unwrap().refusal,
                 Some(RecoveryRefusal::NotRecoverable)
             );
-        } else {
-            assert!(public.is_ok());
         }
         assert_eq!(machine.rng.drawn(), entropy);
         assert_eq!(format!("{:?}", machine.world()), before);
