@@ -479,15 +479,59 @@ mod durable {
         }
     }
 
-    fn assert_published_cut_without_pump(backend: &Backend) {
+    fn assert_published_caller_without_pump(backend: &Backend, checkpoints: u64) {
         let before = snapshot(backend);
-        let through = backend.fixture.entries().last().unwrap().0;
+        let entries = backend.fixture.entries();
+        let (through, tail) = entries.last().unwrap();
+        let (caller, _) = entries
+            .iter()
+            .rev()
+            .find(|(_, entry)| !matches!(entry.record, Record::Checkpoint { .. }))
+            .unwrap();
+        if checkpoints == 0 {
+            assert_eq!(caller, through);
+        } else {
+            assert_eq!(checkpoints, 1);
+            let Record::Checkpoint {
+                segment, offset, ..
+            } = &tail.record
+            else {
+                panic!("cadence one must retain its actual checkpoint tail");
+            };
+            assert_eq!((*segment, *offset), (through.segment(), through.offset()));
+            assert!(through > caller);
+        }
         let settings = backend.fixture.settings();
         let mut client = Client::connect(settings.socket()).unwrap();
         let response = client.call(Method::SystemPing, None).unwrap();
         assert!(response.error.is_none(), "{response:?}");
         let ping: PingResult = serde_json::from_value(response.result.unwrap()).unwrap();
-        assert_eq!(ping.lsn, through);
+        assert_eq!(ping.lsn, *caller);
+        assert_eq!(snapshot(backend), before);
+    }
+
+    fn assert_claimed_inspection_is_inert(
+        backend: &Backend,
+        dispatcher: &Arc<Dispatcher>,
+        jobs: &mpsc::Receiver<Job>,
+        checkpoints: u64,
+    ) {
+        let before = snapshot(backend);
+        let response = forward(
+            backend,
+            dispatcher,
+            jobs,
+            "recovery.inspect",
+            json!({"agent":backend.agent}),
+        );
+        assert!(response.error.is_none(), "{response:?}");
+        assert_eq!(
+            serde_json::from_value::<RecoveryInspectResult>(response.result.unwrap()).unwrap(),
+            RecoveryInspectResult::Unavailable {
+                reason: dudes_proto::rpc::recovery::RecoveryInspectUnavailable::Claimed
+            }
+        );
+        assert_published_caller_without_pump(backend, checkpoints);
         assert_eq!(snapshot(backend), before);
     }
 
@@ -560,7 +604,6 @@ mod durable {
             let (dispatcher, jobs) = fixture();
             let before_inspect = snapshot(&backend);
             let request = inspect(&backend, &dispatcher, &jobs);
-            assert_published_cut_without_pump(&backend);
             assert_eq!(snapshot(&backend), before_inspect);
             let response = forward(
                 &backend,
@@ -569,15 +612,16 @@ mod durable {
                 "recovery.submit",
                 serde_json::to_value(request).unwrap(),
             );
-            assert_published_cut_without_pump(&backend);
             assert!(response.error.is_none(), "{response:?}");
             let accepted = assert_pending(
                 &backend,
                 &request,
                 serde_json::from_value(response.result.unwrap()).unwrap(),
             );
+            assert_published_caller_without_pump(&backend, checkpoints);
             let frozen = snapshot(&backend);
             assert!(frozen.rng > before_inspect.rng);
+            assert_claimed_inspection_is_inert(&backend, &dispatcher, &jobs, checkpoints);
             for _ in 0..2 {
                 let response = forward(
                     &backend,
@@ -586,7 +630,7 @@ mod durable {
                     "recovery.submit",
                     serde_json::to_value(request).unwrap(),
                 );
-                assert_published_cut_without_pump(&backend);
+                assert_published_caller_without_pump(&backend, checkpoints);
                 assert_eq!(
                     serde_json::from_value::<RecoverySubmitResult>(response.result.unwrap())
                         .unwrap(),
@@ -596,7 +640,7 @@ mod durable {
                 let mut changed = serde_json::to_value(request).unwrap();
                 changed["choice"] = json!("try_recorded");
                 let response = forward(&backend, &dispatcher, &jobs, "recovery.submit", changed);
-                assert_published_cut_without_pump(&backend);
+                assert_published_caller_without_pump(&backend, checkpoints);
                 assert_eq!(
                     response.result,
                     Some(
@@ -611,7 +655,7 @@ mod durable {
                     "recovery.receipt",
                     json!({"request_id":request.request_id}),
                 );
-                assert_published_cut_without_pump(&backend);
+                assert_published_caller_without_pump(&backend, checkpoints);
                 let RecoverySubmitResult::Accepted { receipt } = &accepted else {
                     unreachable!()
                 };

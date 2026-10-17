@@ -1384,7 +1384,7 @@ fn every_ask_variant_preserves_publication_before_reply() {
     let run_case = |ask: duded::ports::Ask| {
         let variant = match &ask {
             // Sealed Operator admission is obtained by the authenticated fixtures in
-            // tests/recovery.rs, which observe the daemon's published cut without pumping.
+            // tests/recovery.rs, which observe its published caller position without pumping.
             duded::ports::Ask::RecoveryInspect { .. } => "RecoveryInspect",
             duded::ports::Ask::Recover { .. } => "Recover",
             duded::ports::Ask::RecoveryReceipt { .. } => "RecoveryReceipt",
