@@ -62,6 +62,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use dudes_proto::rpc::{
@@ -117,6 +118,33 @@ pub type Handler = Box<dyn Fn(Call<'_>) -> Result<Value, RpcError> + Send + Sync
 /// already decided whether the call may run.
 type AuditedHandler = Box<dyn Fn(Call<'_>, Option<u32>) -> Result<Value, RpcError> + Send + Sync>;
 
+/// Captured transport attribution for a call admitted by [`Requirement::Operator`].
+///
+/// Only the dispatcher's Operator route constructs this value, after role admission. These
+/// transport facts do not independently identify or authorize the peer.
+#[derive(Debug)]
+pub struct OperatorAdmission {
+    pid: NonZeroU32,
+    uid: Option<u32>,
+}
+
+impl OperatorAdmission {
+    /// The nonzero process id captured from the transport.
+    #[must_use]
+    pub const fn pid(&self) -> u32 {
+        self.pid.get()
+    }
+
+    /// The user id captured from the transport, if it reported one.
+    #[must_use]
+    pub const fn uid(&self) -> Option<u32> {
+        self.uid
+    }
+}
+
+type OperatorHandler =
+    Box<dyn Fn(Call<'_>, OperatorAdmission) -> Result<Value, RpcError> + Send + Sync>;
+
 /// A registered method: what it requires, and what runs when it is allowed to.
 struct Registered {
     requires: Requirement,
@@ -127,6 +155,7 @@ struct Registered {
 enum Route {
     Ordinary(Handler),
     Audited(AuditedHandler),
+    Operator(OperatorHandler),
     BoundedQuestion(Handler),
     Conditioned(ConditionedRoute),
 }
@@ -282,6 +311,35 @@ impl Dispatcher {
             Registered {
                 requires,
                 route: Route::Audited(Box::new(handler)),
+                after_response: None,
+            },
+        );
+        self
+    }
+
+    /// Register a current method that requires an Operator and captured transport attribution.
+    ///
+    /// Missing or zero transport process ids refuse the call before the handler runs. A missing
+    /// transport user id stays absent.
+    ///
+    /// # Panics
+    ///
+    /// A conditioned method requires its dedicated registration route.
+    pub fn register_current_operator(
+        &mut self,
+        method: CurrentMethod,
+        handler: impl Fn(Call<'_>, OperatorAdmission) -> Result<Value, RpcError> + Send + Sync + 'static,
+    ) -> &mut Self {
+        assert!(
+            method.legacy().and_then(R5Method::from_method).is_none(),
+            "{} requires its dedicated conditioned registration route",
+            method.name()
+        );
+        self.methods.insert(
+            method,
+            Registered {
+                requires: Requirement::Operator,
+                route: Route::Operator(Box::new(handler)),
                 after_response: None,
             },
         );
@@ -641,6 +699,13 @@ impl Dispatcher {
         let result = match &entry.route {
             Route::Ordinary(handler) | Route::BoundedQuestion(handler) => handler(call),
             Route::Audited(handler) => handler(call, connection.peer_pid()),
+            Route::Operator(handler) => match connection
+                .peer_attribution()
+                .and_then(|(pid, uid)| NonZeroU32::new(pid).map(|pid| (pid, uid)))
+            {
+                Some((pid, uid)) => handler(call, OperatorAdmission { pid, uid }),
+                None => Err(error(ErrorCode::Unauthorized, "the call is not admitted")),
+            },
             Route::Conditioned(route) => route(request.params.as_ref(), &role, connection),
         };
         match result {
