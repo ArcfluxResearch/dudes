@@ -574,6 +574,65 @@ mod owed_retry_tests {
     use super::*;
     use dudes_supervisor::testing::Harness;
 
+    fn restart_owed_with_consent(harness: &mut Harness, agent: AgentId, turn: TurnId) {
+        let before_restart = harness.trace.len();
+        harness.restart();
+        assert!(
+            harness
+                .supervisor
+                .world()
+                .instructions
+                .current_for_turn(turn)
+                .is_none()
+        );
+        harness.drive(Input::Command(dudes_supervisor::Command::Resume {
+            agent,
+            browser: None,
+        }));
+        assert!(
+            harness
+                .supervisor
+                .world()
+                .instructions
+                .current_for_turn(turn)
+                .is_none()
+        );
+        assert!(
+            !harness.trace[before_restart..]
+                .iter()
+                .any(|seen| matches!(seen, dudes_supervisor::testing::Seen::Spawn { .. }))
+        );
+        let opportunity = harness.supervisor.recovery_opportunity(agent).unwrap();
+        assert_eq!(
+            opportunity.required.reason,
+            dudes_proto::recovery::RecoveryReason::MissingSpawn
+        );
+        assert_eq!(opportunity.expected.work.turn, turn);
+        let request_id = dudes_proto::record::Hex32::new([194; 32]);
+        let intent = dudes_supervisor::input::RecoveryCommand {
+            request_id,
+            digest: dudes_proto::record::Hex32::new([195; 32]),
+            expected: opportunity.expected,
+            choice: dudes_supervisor::input::RecoveryChoice::RepeatIssuedFresh,
+            attribution: dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+                pid: 17,
+                uid: None,
+            },
+        };
+        let report = harness.recover(intent);
+        assert_eq!(report.recovery().unwrap().refusal, None);
+        assert_eq!(
+            harness
+                .journal
+                .iter()
+                .filter(|entry| matches!(&entry.record,
+            Record::RecoveryAuthorized(authorized) if authorized.request_id == request_id
+                && authorized.binding.work.turn == turn))
+                .count(),
+            1
+        );
+    }
+
     #[test]
     fn an_owed_retry_requires_its_distinct_fresh_unspawned_owner() {
         let mut harness = Harness::new();
@@ -599,7 +658,7 @@ mod owed_retry_tests {
         assert!(historical.boundary_settled.is_none());
         assert!(owed_retry_observation(harness.supervisor.world(), agent, Some(turn)).is_none());
 
-        harness.restart();
+        restart_owed_with_consent(&mut harness, agent, turn);
         let world = harness.supervisor.world();
         let (fresh, current) = world.instructions.current_for_turn(turn).unwrap();
         let issue_lsn = world.instructions.issue_lsn(turn).unwrap();
