@@ -817,7 +817,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .is_none_or(|expected| &expected == session)
     }
 
-    fn recovery_repeat_context(
+    pub(super) fn recovery_repeat_context(
         &self,
         agent: AgentId,
         turn: TurnId,

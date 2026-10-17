@@ -686,31 +686,7 @@ fn replay_pending(
 }
 
 fn pending_history() -> (Vec<(Lsn, Entry)>, AgentId, RecoveryClaimRef) {
-    let mut harness = Harness::new();
-    let (agent, _) = harness.hire_with_goal(&["false"]);
-    harness.drive(crate::Input::ChildExited {
-        final_reply: None,
-        elapsed_ms: Some(10_000),
-        turn: harness.open_turn(agent).unwrap(),
-        exit: dudes_proto::ExitStatus {
-            code: Some(1),
-            signal: None,
-        },
-        usage: None,
-        model_usage: std::collections::BTreeMap::new(),
-        outcome: dudes_proto::TurnOutcome::NoResult,
-        last_message: None,
-    });
-    harness.drive(crate::Input::Command(crate::Command::Pause {
-        agent,
-        browser: None,
-    }));
-    let mut prefix = harness
-        .journal
-        .into_iter()
-        .zip(1u64..)
-        .map(|(entry, lsn)| (Lsn(lsn), entry))
-        .collect::<Vec<_>>();
+    let (mut prefix, agent) = failure_source(None);
     let mut machine = replay_machine(&prefix);
     let claim = replay_pending(&mut machine, &mut prefix, agent, 9_000, 91);
     (prefix, agent, claim)
@@ -1057,4 +1033,519 @@ fn generated_recap_is_bounded_utf8_from_the_exact_recorded_goal() {
         vec![harness.supervisor.world.goals[&binding.work.goal].installed_lsn]
     );
     assert!(recap.delivered_answers.is_empty());
+}
+
+fn failure_source(model: Option<&str>) -> (Vec<(Lsn, Entry)>, AgentId) {
+    let configured = model.map(str::to_owned);
+    let mut harness = Harness::with_adapter(
+        FakeClock::frozen(1_787_394_700_000),
+        crate::testing::FakeHost::wall_clock_anchored(),
+        move || {
+            Box::new(dudes_providers::claude::ClaudeAdapter::new(
+                dudes_providers::claude::config::ClaudeConfig {
+                    model: configured.clone(),
+                    ..Default::default()
+                },
+            ))
+        },
+    );
+    let (agent, _) = harness.hire_with_goal(&["false"]);
+    let source_turn = harness.open_turn(agent).unwrap();
+    let confirmed = harness.supervisor.world().turns[&source_turn]
+        .announced
+        .clone()
+        .unwrap();
+    harness.drive(crate::Input::SessionLearned {
+        turn: source_turn,
+        session: confirmed,
+    });
+    harness.drive(crate::Input::Command(crate::Command::Pause {
+        agent,
+        browser: None,
+    }));
+    harness.drive(crate::Input::ChildExited {
+        final_reply: None,
+        elapsed_ms: Some(10_000),
+        turn: source_turn,
+        exit: dudes_proto::ExitStatus {
+            code: Some(1),
+            signal: None,
+        },
+        usage: None,
+        model_usage: Default::default(),
+        outcome: dudes_proto::TurnOutcome::NoResult,
+        last_message: None,
+    });
+    let mut prefix = harness
+        .journal
+        .into_iter()
+        .zip(1u64..)
+        .map(|(entry, at)| (Lsn(at), entry))
+        .collect::<Vec<_>>();
+    let mut machine = replay_machine(&prefix);
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        8_000,
+        Record::Pause {
+            agent,
+            browser: None,
+        },
+    );
+    (prefix, agent)
+}
+
+fn current_named_adapter(machine: Machine) -> Machine {
+    let adapter: Box<dyn dudes_providers::adapter::Adapter> =
+        Box::new(dudes_providers::claude::ClaudeAdapter::new(
+            dudes_providers::claude::config::ClaudeConfig {
+                model: Some("current-different-choice".into()),
+                ..Default::default()
+            },
+        ));
+    machine.with_adapters([adapter].into_iter().collect())
+}
+
+fn deliver_recovery_start(machine: &mut Machine, agent: AgentId) {
+    let request = machine
+        .effects()
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::SampleInstructions {
+                request,
+                baseline: None,
+                ..
+            } => Some(*request),
+            _ => None,
+        })
+        .expect("the actual delayed starting sample");
+    let gap = dudes_proto::InstructionCoverageGap {
+        origin: dudes_proto::InstructionGapOrigin::Observed,
+        reason: dudes_proto::InstructionGapKind::DeclarationMissing,
+        context: dudes_proto::InstructionPathContext::Unresolved,
+        agent: Some(agent),
+        path: None,
+    };
+    machine
+        .handle(crate::Input::InstructionSampled {
+            request,
+            snapshot: Box::new(dudes_proto::InstructionSnapshot {
+                sampled_at: machine.clock.peek(),
+                source: dudes_proto::InstructionSnapshotSource::Fresh,
+                execution_folder: None,
+                participants: Vec::new(),
+                inputs: Vec::new(),
+                inventoried: Vec::new(),
+                gaps: vec![
+                    dudes_proto::InstructionCoverageGap {
+                        reason: dudes_proto::InstructionGapKind::PathUnresolved,
+                        ..gap.clone()
+                    },
+                    gap,
+                ],
+                usage: Default::default(),
+                boot: None,
+            }),
+            ticket: None,
+            comparison: None,
+        })
+        .unwrap();
+}
+
+fn prepare_recovered_new_issue(
+    machine: &mut Machine,
+    agent: AgentId,
+    choice: RecoveryChoice,
+) -> RecoveryAuthorized {
+    let mut intent = command(machine, agent);
+    intent.choice = choice;
+    machine.recover(intent);
+    for at in [10_001, 10_003] {
+        let (token, entry) = emitted(machine);
+        acknowledge_checkpointed(machine, token, entry, Lsn(at));
+    }
+    let (token, entry) = emitted(machine);
+    let Record::RecoveryAuthorized(authorization) = &entry.record else {
+        panic!("the actual authorization");
+    };
+    let authorization = (**authorization).clone();
+    acknowledge_checkpointed(machine, token, entry, Lsn(10_005));
+    let (token, entry) = emitted(machine);
+    assert!(matches!(
+        entry.record,
+        Record::LoopDecided {
+            decision: dudes_proto::LoopDecision::Continue { .. },
+            ..
+        }
+    ));
+    acknowledge_checkpointed(machine, token, entry, Lsn(10_007));
+    deliver_recovery_start(machine, agent);
+    let (token, entry) = emitted(machine);
+    assert!(matches!(
+        entry.record,
+        Record::InstructionObservationStarted { .. }
+    ));
+    acknowledge_checkpointed(machine, token, entry, Lsn(10_009));
+    authorization
+}
+
+#[test]
+fn recovered_new_issue_keeps_reserved_identity_recorded_model_and_current_answers() {
+    for configured in [None, Some("recorded-named-choice")] {
+        let (mut prefix, agent) = failure_source(configured);
+        let mut machine = current_named_adapter(replay_machine(&prefix));
+        let original = machine.recovery_binding(agent).unwrap();
+        let selection = Some(configured.map_or_else(
+            dudes_types::ModelSelection::provider_default,
+            dudes_types::ModelSelection::named,
+        ));
+        assert_eq!(original.model_selection, selection);
+        let answer = "Keep the green output exactly, including the current answer.";
+        replay_record(
+            &mut machine,
+            &mut prefix,
+            8_001,
+            Record::HumanQuestion {
+                agent,
+                text: "Which output?".into(),
+            },
+        );
+        replay_record(
+            &mut machine,
+            &mut prefix,
+            8_002,
+            Record::HumanAnswer {
+                agent,
+                text: answer.into(),
+                provenance: None,
+                browser_answer: None,
+            },
+        );
+        let old_turn = machine.world.turns[&original.work.turn].clone();
+        let old_hops = machine.world.goals[&original.work.goal].turns_on_goal;
+        let authorization =
+            prepare_recovered_new_issue(&mut machine, agent, RecoveryChoice::FreshWithRecap);
+        assert_eq!(authorization.binding.model_selection, selection);
+        let RecoveryPlan::New {
+            turn: reserved,
+            context: RecoveryContext::Fresh { session, recap },
+        } = &authorization.plan
+        else {
+            panic!("a fresh reserved New plan");
+        };
+        let (reserved, session, recap) = (*reserved, session.clone(), recap.clone());
+        let claim = RecoveryClaimRef {
+            episode: authorization.episode,
+            authorization_lsn: Lsn(10_005),
+        };
+        let (token, entry) = emitted(&machine);
+        let Record::TurnIssued {
+            turn,
+            task,
+            session: issued_session,
+            model_selection,
+            answers,
+            lsn_of_decision,
+            ..
+        } = &entry.record
+        else {
+            panic!("the delayed sample releases the exact reserved issue");
+        };
+        assert_eq!(*turn, reserved);
+        assert_eq!(issued_session, &session);
+        assert_eq!(model_selection, &selection);
+        assert_ne!(
+            model_selection.as_ref().unwrap().selector(),
+            Some("current-different-choice")
+        );
+        assert_eq!(answers, &[Lsn(8_002)]);
+        assert!(task.contains(answer));
+        assert!(task.ends_with(&recap.text));
+        assert!(!recap.text.is_empty());
+        assert_eq!(*lsn_of_decision, Lsn(10_007));
+        acknowledge_checkpointed(&mut machine, token, entry, Lsn(10_011));
+        assert!(
+            matches!(machine.world.recovery_projection().unwrap().0.claim_receipt(claim).unwrap().state, RecoveryClaimState::IssueBound(issue) if issue.issued.work.turn == reserved && issue.lsn == Lsn(10_011))
+        );
+        assert_eq!(
+            machine.world.goals[&original.work.goal].turns_on_goal,
+            old_hops + 1
+        );
+        let old = &machine.world.turns[&original.work.turn];
+        assert_eq!(
+            (&old.task, &old.answers, old.issue_lsn, old.status),
+            (
+                &old_turn.task,
+                &old_turn.answers,
+                old_turn.issue_lsn,
+                old_turn.status
+            )
+        );
+        assert!(
+            machine.world.agents[&agent]
+                .pending_answers
+                .iter()
+                .any(|pending| pending.lsn == Lsn(8_002))
+        );
+    }
+}
+
+fn without_recorded_model(prefix: &[(Lsn, Entry)]) -> Vec<(Lsn, Entry)> {
+    prefix
+        .iter()
+        .map(|(lsn, entry)| {
+            let mut json = serde_json::to_value(entry).unwrap();
+            if matches!(entry.record, Record::TurnIssued { .. }) {
+                let record = json.get_mut("record").unwrap().as_object_mut().unwrap();
+                record
+                    .remove("model_selection")
+                    .expect("the actual modern source recorded a choice");
+            }
+            (*lsn, serde_json::from_value(json).unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn legacy_unrecorded_model_new_is_unavailable_before_allocation_or_any_append() {
+    let (prefix, agent) = failure_source(None);
+    let modern = replay_machine(&prefix);
+    let mut intent = command(&modern, agent);
+    intent.choice = RecoveryChoice::FreshWithRecap;
+    let mut legacy = current_named_adapter(replay_machine(&without_recorded_model(&prefix)));
+    assert_eq!(
+        legacy.recovery_binding(agent).unwrap().model_selection,
+        None
+    );
+    let before = format!("{:?}", legacy.world());
+    let entropy = legacy.rng.drawn();
+    assert_eq!(
+        legacy.recovery_opportunity(agent),
+        Err(RecoveryRefusal::NotRecoverable)
+    );
+    assert_eq!(
+        legacy.recover(intent).recovery().unwrap().refusal,
+        Some(RecoveryRefusal::NotRecoverable)
+    );
+    assert_eq!(legacy.rng.drawn(), entropy);
+    assert_eq!(format!("{:?}", legacy.world()), before);
+    assert!(legacy.effects().is_empty());
+}
+
+#[test]
+fn legacy_unrecorded_model_repeat_keeps_the_original_issue_task_and_answers() {
+    let mut harness = Harness::new();
+    harness.launch = false;
+    let (agent, _) = harness.hire_with_goal(&["false"]);
+    let prefix = harness
+        .journal
+        .into_iter()
+        .zip(1u64..)
+        .map(|(entry, at)| (Lsn(at), entry))
+        .collect::<Vec<_>>();
+    let mut machine = current_named_adapter(replay_machine(&without_recorded_model(&prefix)));
+    let original = machine.recovery_binding(agent).unwrap();
+    assert_eq!(original.model_selection, None);
+    let owed = machine.world.turns[&original.work.turn].clone();
+    let hops = machine.world.goals[&original.work.goal].turns_on_goal;
+    machine.recover(command(&machine, agent));
+    let (token, entry) = emitted(&machine);
+    assert!(matches!(entry.record, Record::RecoveryRequired(_)));
+    acknowledge(&mut machine, token, entry, Lsn(10_001));
+    let (token, entry) = emitted(&machine);
+    let Record::RecoveryAuthorized(authorization) = &entry.record else {
+        panic!("same-issue legacy authorization");
+    };
+    assert!(
+        matches!(&authorization.plan, RecoveryPlan::RepeatIssued { issue, .. } if issue.issued.work == original.work && issue.issued.model_selection.is_none() && issue.issued.task == owed.task && issue.issued.answers == owed.answers)
+    );
+    acknowledge(&mut machine, token, entry, Lsn(10_003));
+    let row = &machine.world.turns[&original.work.turn];
+    assert_eq!(
+        (&row.task, &row.answers, row.issue_lsn),
+        (&owed.task, &owed.answers, owed.issue_lsn)
+    );
+    assert_eq!(machine.world.goals[&original.work.goal].turns_on_goal, hops);
+    assert!(!machine.effects().iter().any(|effect| matches!(
+        effect,
+        Effect::Persist {
+            entry: Entry {
+                record: Record::TurnIssued { .. },
+                ..
+            },
+            ..
+        }
+    )));
+}
+
+fn historical_browser_claim(
+    machine: &mut Machine,
+    prefix: &mut Vec<(Lsn, Entry)>,
+    agent: AgentId,
+) -> RecoveryClaimRef {
+    let view = machine.recovery_opportunity(agent).unwrap();
+    let reason = view.required.reason;
+    let required = view.required;
+    let binding = required.binding.clone();
+    replay_record(machine, prefix, 9_000, Record::RecoveryRequired(required));
+    let request_id = Hex32::new([61; 32]);
+    let request_digest = Hex32::new([62; 32]);
+    let session_digest = Hex32::new([63; 32]);
+    let resume = Record::Resume {
+        agent,
+        browser: Some(dudes_proto::record::BrowserControl {
+            request_id,
+            request_digest,
+            session_digest,
+            control_lsn: view.expected.control_lsn,
+        }),
+    };
+    let resume = serde_json::from_value(serde_json::to_value(resume).unwrap()).unwrap();
+    replay_record(machine, prefix, 9_001, resume);
+    let episode = machine
+        .world
+        .recovery_projection()
+        .unwrap()
+        .0
+        .current(binding.work)
+        .unwrap()
+        .id;
+    let plan = if reason == RecoveryReason::MissingSpawn {
+        RecoveryPlan::RepeatIssued {
+            issue: machine.world.recovery_facts(&binding).unwrap().source_issue,
+            session: machine.announce_session(agent, true).id().cloned(),
+        }
+    } else {
+        RecoveryPlan::New {
+            turn: TurnId::from_ulid(machine.rng.ulid()),
+            context: RecoveryContext::Fresh {
+                session: machine.announce_session(agent, true).id().cloned(),
+                recap: RecoveryRecap::default(),
+            },
+        }
+    };
+    let authorization = RecoveryAuthorized {
+        episode,
+        binding,
+        request_id,
+        request_digest,
+        attribution: dudes_proto::recovery::RecoveryAttribution::BrowserSession { session_digest },
+        expected_control: view.expected.control_lsn,
+        resulting_control: Some(Lsn(9_001)),
+        resume_lsn: Some(Lsn(9_001)),
+        plan,
+    };
+    assert_eq!(
+        machine
+            .world
+            .prepare_recovery(RecoveryTransition::Authorized(&authorization)),
+        Ok(())
+    );
+    let authorization = serde_json::from_value(
+        serde_json::to_value(Record::RecoveryAuthorized(Box::new(authorization))).unwrap(),
+    )
+    .unwrap();
+    replay_record(machine, prefix, 9_002, authorization);
+    RecoveryClaimRef {
+        episode,
+        authorization_lsn: Lsn(9_002),
+    }
+}
+
+#[test]
+fn historical_browser_pending_and_issue_bound_claims_do_not_supply_live_dispatch_authority() {
+    for pending in [true, false] {
+        let (mut prefix, agent) = if pending {
+            failure_source(None)
+        } else {
+            let mut harness = Harness::new();
+            harness.launch = false;
+            let (agent, _) = harness.hire_with_goal(&["false"]);
+            (
+                harness
+                    .journal
+                    .into_iter()
+                    .zip(1u64..)
+                    .map(|(entry, at)| (Lsn(at), entry))
+                    .collect(),
+                agent,
+            )
+        };
+        let mut browser = replay_machine(&prefix);
+        let claim = historical_browser_claim(&mut browser, &mut prefix, agent);
+        let before = browser.world.recovery_projection().unwrap().0.clone();
+        let receipt = before.claim_receipt(claim).unwrap();
+        assert_eq!(
+            matches!(receipt.state, RecoveryClaimState::Pending),
+            pending
+        );
+        assert_eq!(
+            matches!(receipt.state, RecoveryClaimState::IssueBound(_)),
+            !pending
+        );
+        assert!(!browser.recovery_dispatch_attribution_allowed(claim.episode.work));
+        assert!(!browser.recovery_admission_allowed(agent));
+        if !pending {
+            assert!(!browser.recovery_launch_allowed(agent, claim.episode.work.turn));
+        }
+        assert_eq!(browser.world.recovery_projection().unwrap().0, &before);
+        assert!(browser.effects().is_empty());
+        for (_, entry) in &mut prefix {
+            match &mut entry.record {
+                Record::Resume { browser, .. } => *browser = None,
+                Record::RecoveryAuthorized(authorization) => {
+                    authorization.attribution =
+                        dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+                            pid: 17,
+                            uid: None,
+                        }
+                }
+                _ => {}
+            }
+        }
+        let local = replay_machine(&prefix);
+        assert!(local.recovery_dispatch_attribution_allowed(claim.episode.work));
+        if pending {
+            assert!(local.recovery_admission_allowed(agent));
+        }
+    }
+}
+
+#[test]
+fn try_recorded_uses_the_confirmed_session_and_reserved_new_identity() {
+    let (prefix, agent) = failure_source(None);
+    let mut machine = current_named_adapter(replay_machine(&prefix));
+    let binding = machine.recovery_binding(agent).unwrap();
+    let expected_session = machine
+        .world
+        .recovery_facts(&binding)
+        .unwrap()
+        .confirmed_session
+        .unwrap();
+    assert!(
+        machine
+            .recovery_opportunity(agent)
+            .unwrap()
+            .recorded_available
+    );
+    let authorization =
+        prepare_recovered_new_issue(&mut machine, agent, RecoveryChoice::TryRecorded);
+    let RecoveryPlan::New {
+        turn: reserved,
+        context: RecoveryContext::TryRecorded { session },
+    } = authorization.plan
+    else {
+        panic!("the authorization must keep the confirmed context choice");
+    };
+    assert_eq!(session, expected_session);
+    let (token, entry) = emitted(&machine);
+    assert!(
+        matches!(&entry.record, Record::TurnIssued { turn, session: Some(issued), model_selection, .. }
+        if *turn == reserved && issued == &expected_session && model_selection == &binding.model_selection)
+    );
+    acknowledge_checkpointed(&mut machine, token, entry, Lsn(10_011));
+    assert_eq!(
+        machine.world.turns[&reserved].announced.as_ref(),
+        Some(&expected_session)
+    );
 }

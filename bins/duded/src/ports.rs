@@ -2681,6 +2681,26 @@ mod recovery_intent_tests {
         "\"issue_lsn\":5,\"source_lsn\":9,\"episode\":null,\"expected_predecessor\":null,\"control_lsn\":null,\"ticket\":null},\"choice\":\"fresh_with_recap\"}"
     );
 
+    fn fully_selected_intent() -> RecoverySubmitParams {
+        let original: RecoverySubmitParams = serde_json::from_str(INTENT).unwrap();
+        let mut full = original;
+        let episode = dudes_proto::recovery::RecoveryEpisodeId {
+            work: original.expected.work,
+            origin: dudes_types::Lsn(7),
+        };
+        full.expected.episode = Some(episode);
+        full.expected.expected_predecessor = Some(dudes_proto::recovery::RecoveryClaimRef {
+            episode,
+            authorization_lsn: dudes_types::Lsn(11),
+        });
+        full.expected.control_lsn = Some(dudes_types::Lsn(8));
+        full.expected.ticket = Some(dudes_proto::rpc::recovery::ReviewedTicketRound {
+            card: dudes_types::CardId::from_parts(1, 4),
+            round: 1,
+        });
+        full
+    }
+
     #[test]
     fn original_typed_intent_has_a_fixed_canonical_encoding_including_explicit_nulls() {
         let original: RecoverySubmitParams = serde_json::from_str(INTENT).unwrap();
@@ -2726,21 +2746,7 @@ mod recovery_intent_tests {
             round: 1,
         });
         edits.push(changed);
-        let mut full = original;
-        let episode = dudes_proto::recovery::RecoveryEpisodeId {
-            work: original.expected.work,
-            origin: dudes_types::Lsn(7),
-        };
-        full.expected.episode = Some(episode);
-        full.expected.expected_predecessor = Some(dudes_proto::recovery::RecoveryClaimRef {
-            episode,
-            authorization_lsn: dudes_types::Lsn(11),
-        });
-        full.expected.control_lsn = Some(dudes_types::Lsn(8));
-        full.expected.ticket = Some(dudes_proto::rpc::recovery::ReviewedTicketRound {
-            card: dudes_types::CardId::from_parts(1, 4),
-            round: 1,
-        });
+        let full = fully_selected_intent();
         assert_eq!(
             recovery_digest(&full).unwrap(),
             dudes_proto::record::Hex32::new([
@@ -2750,6 +2756,42 @@ mod recovery_intent_tests {
         );
         for changed in edits {
             assert_ne!(recovery_digest(&changed).unwrap(), digest, "{changed:?}");
+        }
+    }
+
+    #[test]
+    fn every_nested_selector_is_part_of_the_canonical_intent_digest() {
+        let original = fully_selected_intent();
+        let expected = recovery_digest(&original).unwrap();
+        let json = serde_json::to_value(original).unwrap();
+        for pointer in [
+            "/expected/work/agent",
+            "/expected/work/goal",
+            "/expected/work/turn",
+            "/expected/episode/work/agent",
+            "/expected/episode/work/goal",
+            "/expected/episode/work/turn",
+            "/expected/expected_predecessor/episode/work/agent",
+            "/expected/expected_predecessor/episode/work/goal",
+            "/expected/expected_predecessor/episode/work/turn",
+            "/expected/ticket/card",
+        ] {
+            let mut changed = json.clone();
+            *changed.pointer_mut(pointer).unwrap() =
+                serde_json::json!("00000000010000000000000009");
+            let changed: RecoverySubmitParams = serde_json::from_value(changed).unwrap();
+            assert_ne!(recovery_digest(&changed).unwrap(), expected, "{pointer}");
+        }
+        for pointer in [
+            "/expected/episode/origin",
+            "/expected/expected_predecessor/episode/origin",
+            "/expected/expected_predecessor/authorization_lsn",
+            "/expected/ticket/round",
+        ] {
+            let mut changed = json.clone();
+            *changed.pointer_mut(pointer).unwrap() = serde_json::json!(19);
+            let changed: RecoverySubmitParams = serde_json::from_value(changed).unwrap();
+            assert_ne!(recovery_digest(&changed).unwrap(), expected, "{pointer}");
         }
     }
 }

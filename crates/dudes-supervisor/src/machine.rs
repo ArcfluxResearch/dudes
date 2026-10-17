@@ -1875,7 +1875,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                             instruction_attempt: None,
                         },
                     );
-                    return;
+                    return None;
                 }
                 if let Some(turn) = turn {
                     self.mcp_attempts.remove(&turn);
@@ -2811,10 +2811,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             Ok(context) => context,
             Err(()) => return,
         };
-        if browser.is_some()
-            && recovery
-                .as_ref()
-                .is_some_and(|context| context.model.is_none())
+        if recovery
+            .as_ref()
+            .is_some_and(|context| context.model.is_none())
         {
             return;
         }
