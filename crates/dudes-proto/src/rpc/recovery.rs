@@ -774,12 +774,12 @@ mod tests {
         }
     }
 
-    fn assert_extensible_result<T>(schema: &Value, original: Value)
+    fn assert_extensible_result<T>(schema: &Value, original: &Value)
     where
         T: serde::de::DeserializeOwned + Serialize,
     {
         let validator = jsonschema::validator_for(schema).unwrap();
-        assert!(validator.is_valid(&original));
+        assert!(validator.is_valid(original));
         let mut extended = original.clone();
         extended["future"] = json!(true);
         if let Some(receipt) = extended.get_mut("receipt") {
@@ -789,7 +789,7 @@ mod tests {
         }
         assert!(validator.is_valid(&extended));
         let parsed: T = serde_json::from_value(extended).unwrap();
-        assert_eq!(serde_json::to_value(parsed).unwrap(), original);
+        assert_eq!(&serde_json::to_value(parsed).unwrap(), original);
     }
 
     #[test]
@@ -808,28 +808,28 @@ mod tests {
         for status in states {
             let view = json!({"request_id":"0".repeat(64),"claim":claim,"choice":"repeat_issued_fresh","status":status,"attempt":{"spawn":null,"confirmation":null,"end":null},"prior_effects_unknown":true});
             let found = json!({"state":"found","receipt":view});
-            assert_extensible_result::<RecoveryReceiptResult>(&receipt_schema, found);
+            assert_extensible_result::<RecoveryReceiptResult>(&receipt_schema, &found);
             let accepted = json!({"state":"accepted","receipt":view});
-            assert_extensible_result::<RecoverySubmitResult>(&submit_schema, accepted);
+            assert_extensible_result::<RecoverySubmitResult>(&submit_schema, &accepted);
         }
         for result in [
             json!({"state":"absent","checked_through":500}),
             json!({"state":"unavailable","reason":"invalid_history"}),
         ] {
-            assert_extensible_result::<RecoveryReceiptResult>(&receipt_schema, result);
+            assert_extensible_result::<RecoveryReceiptResult>(&receipt_schema, &result);
         }
         for result in [
             json!({"state":"refused","reason":"stale_predecessor","prefix":{"required":200,"resume":250}}),
             json!({"state":"unknown","request_id":"0".repeat(64)}),
         ] {
-            assert_extensible_result::<RecoverySubmitResult>(&submit_schema, result);
+            assert_extensible_result::<RecoverySubmitResult>(&submit_schema, &result);
         }
         let inspection_schema = schemars::schema_for!(RecoveryInspectResult).to_value();
         for result in [
             json!({"state":"available","through":500,"expected":submit.expected,"reason":"missing_spawn","choices":"repeat_issued_fresh","prior_effects_unknown":true,"waiting":{"open_question":"waiting","budget":"ready","hops":"ready","instruction_review":"ready","instruction_comparison":"waiting"}}),
             json!({"state":"unavailable","reason":"claimed"}),
         ] {
-            assert_extensible_result::<RecoveryInspectResult>(&inspection_schema, result);
+            assert_extensible_result::<RecoveryInspectResult>(&inspection_schema, &result);
         }
         for schema in [receipt_schema, submit_schema, inspection_schema] {
             let text = serde_json::to_string(&schema).unwrap();
