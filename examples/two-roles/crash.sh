@@ -1,5 +1,4 @@
 #!/bin/sh
-# Kill after an immutable issue but before native launch, then explicitly consent to its repeat.
 # --no-crash runs the ordinary completion control without any recovery request.
 set -u
 
@@ -97,9 +96,6 @@ STALL_NTH=${STALL_NTH:-2}
 ATTEMPT_ID=$(basename "$SANDBOX")
 
 if [ "$CRASH" = yes ]; then
-	# Stall before the *second* launch. The first turn must run and produce a child: without one,
-	# "one child after consent" would be a statement about a harness that never launches
-	# anything.
 	start_daemon "$MODE" \
 		DUDES_FAULT_STALL_BEFORE_SPAWN="$STALL_NTH" \
 		DUDES_FAULT_STALL_MARKER="$STALL_MARKER"
@@ -166,7 +162,7 @@ if [ "$CRASH" = yes ]; then
 	cp -R "$STATE_DIR" "$SANDBOX/at-kill-state" || fatal "could not copy the state the crash left"
 
 	header "the crash left a durable TurnIssued with no Spawn (invariant 2)"
-	unspawned=$(unspawned_turns "$at_kill")
+	unspawned=$(issues_without_spawn "$at_kill")
 	count=$(printf '%s' "$unspawned" | grep -c . || true)
 	if [ "$count" -eq 1 ]; then
 		pass "exactly one issued turn has no spawn: $unspawned"
@@ -269,10 +265,6 @@ else
 fi
 
 header "the control for that comparison: the export moves when the projection does"
-# Without this the equality above could be passing on two empty documents, or on a comparison that
-# never looks at a row. The crashed run has a second store to hand — the one the SIGKILL left,
-# copied with no daemon holding it. Recovery and completion then advance that projection.
-# The control run compares against the crashed run's export.
 if [ "$CRASH" = yes ]; then
 	behind="$GATE_OUT/$MODE.export.at-kill"
 	dump_export_of "$SANDBOX/at-kill-state" >"$behind" ||

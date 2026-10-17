@@ -855,9 +855,7 @@ goal_last_result() { grep '^goals ' "$1" | grep -o '"last_result":{[^}]*}' | hea
 # The `reissued` flag of every `turns` row, in key order, as one line.
 turn_reissued_flags() { grep '^turns ' "$1" | grep -o '"reissued":[a-z]*' | tr '\n' ' '; }
 
-# The turns a dump shows as issued and never spawned — the state a crash between the durable write
-# and the launch leaves, and the state requiring explicit repeat consent. One id per line.
-unspawned_turns() {
+issues_without_spawn() {
 	issued=$(records_of "$1" turn_issued | grep -o '"turn":"[^"]*"' | sort -u)
 	spawned=$(records_of "$1" turn_spawned | grep -o '"turn":"[^"]*"' | sort -u)
 	printf '%s\n' "$issued" | while read -r turn; do
@@ -1107,9 +1105,6 @@ await_standin() {
 
 # --- the control arm's own job: comparing the two runs ---------------------------------------------
 
-# The control, run from `crash.sh --no-crash` with the crashed run's kept artefacts beside it.
-#
-# Compare recorded issue and Spawn identities with an ordinary run that needed no consent.
 compare_with_the_crashed_run() {
 	mine=$1
 	theirs="$GATE_OUT/crash.journal"
@@ -1149,8 +1144,8 @@ compare_with_the_crashed_run() {
 	# carries a durable TurnIssued with no Spawn before its restart, and this one never does.
 	# That is the check. A bare `diff` of the two dumps would report "different" for two runs that
 	# were identical in every way that matters, because every id in them is freshly minted.
-	theirs_unspawned=$(unspawned_turns "$at_kill" | grep -c . || true)
-	mine_unspawned=$(unspawned_turns "$mine" | grep -c . || true)
+	theirs_unspawned=$(issues_without_spawn "$at_kill" | grep -c . || true)
+	mine_unspawned=$(issues_without_spawn "$mine" | grep -c . || true)
 	if [ "$theirs_unspawned" -eq 1 ] && [ "$mine_unspawned" -eq 0 ]; then
 		pass "the crashed run had one turn written and unlaunched; this run never had any"
 	else
@@ -1167,10 +1162,7 @@ compare_with_the_crashed_run() {
 	fi
 
 	header "the control on the comparator: it reads the journals rather than answering a constant"
-	# The same function over two dumps of the **same** crashed run — before its restart and after —
-	# must give different answers: one turn has no Spawn at the kill, none after explicit recovery. Without this, an `unspawned_turns` that always answered 1 (or always 0) would satisfy
-	# every assertion above.
-	theirs_after=$(unspawned_turns "$theirs" | grep -c . || true)
+	theirs_after=$(issues_without_spawn "$theirs" | grep -c . || true)
 	if [ "$theirs_unspawned" -eq 1 ] && [ "$theirs_after" -eq 0 ]; then
 		pass "the crashed run: 1 issue without a Spawn at the kill, 0 after consent"
 	else

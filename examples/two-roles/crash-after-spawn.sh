@@ -1,5 +1,4 @@
 #!/bin/sh
-# Keep the unrecorded child through restart, prove no automatic repeat, then stop it before consent.
 # Prior external effects remain unknown even when the replacement uses fresh context.
 set -u
 
@@ -120,7 +119,7 @@ else
 fi
 
 header "the crash left a durable TurnIssued with no Spawn (invariant 2)"
-unspawned=$(unspawned_turns "$at_kill")
+unspawned=$(issues_without_spawn "$at_kill")
 count=$(printf '%s' "$unspawned" | grep -c . || true)
 if [ "$count" -eq 1 ]; then
 	pass "exactly one issued turn has no spawn: $unspawned"
@@ -289,7 +288,6 @@ else
 	fail "$KIND_TURN_SPAWNED names $FIELD_PID ${spawned_pid:-none}; run 2 was $reissued_child"
 fi
 
-# --- distinct fresh context for the two sequential attempts ---------------------------
 
 sessions=$(transcript_sessions)
 present=$(printf '%s\n' "$sessions" | grep -c . || true)
@@ -303,8 +301,6 @@ else
 fi
 
 header "the two files match the original and consented fresh session identities"
-# A count of two says nothing about *which* two. This is what ties the files to the records: the
-# session the crashed turn announced, and the one explicitly authorized for its repeat.
 want=$(printf '%s\n%s\n' "$announced" "$launched" | sort)
 if [ "$sessions" = "$want" ]; then
 	pass "$(printf '%s' "$want" | tr '\n' ' ')"
