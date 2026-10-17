@@ -204,7 +204,6 @@ fn consent(
         Record::RecoveryAuthorized(authorization) if authorization.request_id == request_id)));
 }
 
-/// End the open turn with a failing predicate, so the loop decides again and issues the next one.
 fn end_and_check(harness: &mut Harness, goal: GoalId, open: TurnId) {
     harness.drive(Input::ChildExited {
         final_reply: None,
@@ -260,7 +259,6 @@ fn fresh_after_unconfirmed(
     next
 }
 
-/// An explicitly authorized repeat mints a new session and records the actual launch id.
 #[test]
 fn a_reissued_first_turn_mints_a_fresh_id() {
     let mut harness = Harness::new();

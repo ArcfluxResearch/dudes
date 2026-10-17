@@ -315,12 +315,6 @@ fn a_reissue_uses_the_recorded_selection_not_the_new_configuration() {
     );
 }
 
-/// **The control, and the half that carries the claim.** The same restart over a journal whose
-/// `TurnIssued` recorded **no** selection re-issues under the adapter's *current* configuration.
-///
-/// Without this the subject is satisfied by a machine that ignores configuration outright. With
-/// it, the pair says the recorded value is what decides — and that absence still means what it
-/// meant before the model was recorded, which is the only behaviour an old journal can support.
 #[test]
 fn a_legacy_issue_without_a_selection_reissues_under_current_configuration() {
     let cell = configured(Some("model-beta"));

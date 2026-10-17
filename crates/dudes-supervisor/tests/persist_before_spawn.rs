@@ -108,8 +108,6 @@ fn an_empty_goal_still_carries_both_reserved_instructions() {
     assert!(harness.open_turn(agent).is_some());
 }
 
-/// Explicit recovery repeats the same durable issue once, then a recorded child prevents
-/// a later restart from repeating it again.
 #[test]
 fn replay_reissues_unspawned_turn_exactly_once() {
     let mut harness = Harness::new();
@@ -272,10 +270,6 @@ fn an_unfsynced_turn_issued_never_existed() {
     assert_eq!(harness.spawns_of(turn).len(), 1);
 }
 
-/// The accepted indistinguishability, written down so nobody "fixes" it: a crash
-/// after `Spawn` but before `TurnSpawned` is fsynced looks exactly like a crash before `Spawn`,
-/// and both re-issue once. The cost is a possible second process for one turn, which is why
-/// `TurnSpawned` is emitted as soon as the key is read and nothing in the loop waits on it.
 #[test]
 fn a_crash_after_spawn_before_turn_spawned_is_the_same_re_issue() {
     let mut harness = Harness::new();
@@ -601,7 +595,6 @@ fn a_halted_agent_is_not_relaunched_by_a_restart() {
         "and nothing decides for it either: gate 1 would Hold, and open_turn is still set"
     );
 
-    // Resume lifts the halt, but the owed goal issue still needs explicit consent.
     harness.trace.clear();
     harness.drive(Input::Command(dudes_supervisor::Command::Resume {
         agent,

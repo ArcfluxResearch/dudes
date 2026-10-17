@@ -575,8 +575,6 @@ fn a_second_daemon_run_mints_again_for_a_live_agent() {
         "run 1 minted once for two launches: a token is per agent per run, not per launch"
     );
 
-    // The crash: turn 3 is issued, its launch goes out, and the host never answers — so the
-    // journal holds a `TurnIssued` with no `TurnSpawned` for crash rule (2) to re-issue.
     harness.launch = false;
     fail_turn(&mut harness, second, goal);
     let third = harness.open_turn(agent).expect("turn 3 was issued");

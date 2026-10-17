@@ -510,7 +510,6 @@ fn every_field_of_the_launch_context_comes_from_the_agent_it_is_built_for() {
          each in its own agent's repository"
     );
 
-    // A recovered third agent must use the restarted adapter factory too.
     let gamma = hire(&mut harness, "/repo/gamma", None);
     harness.launch = false;
     harness.set_goal(gamma, &["npm", "test"]);

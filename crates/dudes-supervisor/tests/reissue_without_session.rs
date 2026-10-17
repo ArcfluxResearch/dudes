@@ -1,5 +1,3 @@
-//! Owed issues with and without an announced session wait for exact operator consent.
-
 use std::collections::BTreeMap;
 
 use dudes_proto::record::Hex32;
@@ -307,8 +305,6 @@ fn a_replayed_turn_without_a_session_is_selected_as_issued_not_spawned() {
     );
 }
 
-/// Replay refusal ends once without a child and invalidates the confirmed session.
-/// The hold survives restart. Explicit fresh consent announces a new session.
 #[test]
 fn replay_refusal_ends_without_child_clears_session_and_next_turn_is_first() {
     let (entries, agent, _goal, refused_turn, session_a) =
@@ -434,8 +430,6 @@ fn assert_refused_end(harness: &Harness, agent: dudes_types::AgentId, refused_tu
     assert!(!reason.contains("ship"), "the reason copies no task bytes");
 }
 
-/// The otherwise-identical clean replay remains a spawn, proving that the
-/// new end is selected by typed refusal rather than by replay itself.
 #[test]
 fn replay_still_spawns_a_clean_task_after_refusal_end_is_added() {
     let (clean_entries, agent, _goal, clean_turn, _session) =

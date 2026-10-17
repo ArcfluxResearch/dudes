@@ -706,7 +706,6 @@ fn retirement_rejudges_held_board_goals_and_preserves_completed_goals() {
     assert_eq!(harness.supervisor.status_of(completed), AgentStatus::Done);
 }
 
-/// A completed goal retains its admitted issue and hop accounting without offering recovery.
 #[test]
 fn a_completed_goal_does_not_cancel_an_admitted_unspawned_turn() {
     let (mut entries, agent, turn) = journal_with_issued_turn(None, "admitted task");
