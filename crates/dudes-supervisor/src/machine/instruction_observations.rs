@@ -1999,6 +1999,7 @@ mod tests {
             .iter()
             .map(crate::testing::Seen::of)
             .collect();
+        harness.trace.extend(effects.iter().cloned());
         acknowledge_actual_persist(&mut harness, &effects);
         actual_turn_end_to_check(&mut harness, turn);
         assert!(
@@ -2019,6 +2020,7 @@ mod tests {
             .iter()
             .map(crate::testing::Seen::of)
             .collect();
+        harness.trace.extend(effects.iter().cloned());
         let effects = acknowledge_actual_persist(&mut harness, &effects);
         let request = actual_pending_request(&effects);
         let Some(Awaiting::Start(Starting {

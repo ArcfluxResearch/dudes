@@ -1453,19 +1453,24 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     fn apply_entry(&mut self, lsn: Lsn, entry: &Entry) -> Result<(), DurableInputError> {
         self.fold_world(lsn, entry)?;
-        self.apply_entry_effects(lsn, entry);
+        let mail_wake_accepted = self.world.mail_wake_entry_accepted(lsn);
+        self.apply_entry_effects(entry, mail_wake_accepted);
         Ok(())
     }
 
     fn apply_recorded(&mut self, append: RecordedAppend) -> Result<(), DurableInputError> {
         let (main, checkpoint) = append.into_parts();
         self.fold_world(main.0, &main.1)?;
-        if let Some((lsn, entry)) = &checkpoint {
+        let main_mail_wake_accepted = self.world.mail_wake_entry_accepted(main.0);
+        let checkpoint_mail_wake_accepted = if let Some((lsn, entry)) = &checkpoint {
             self.fold_world(*lsn, entry)?;
-        }
-        self.apply_entry_effects(main.0, &main.1);
-        if let Some((lsn, entry)) = checkpoint {
-            self.apply_entry_effects(lsn, &entry);
+            self.world.mail_wake_entry_accepted(*lsn)
+        } else {
+            false
+        };
+        self.apply_entry_effects(&main.1, main_mail_wake_accepted);
+        if let Some((_, entry)) = checkpoint {
+            self.apply_entry_effects(&entry, checkpoint_mail_wake_accepted);
         }
         Ok(())
     }
@@ -1487,7 +1492,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         clippy::too_many_lines,
         reason = "one exhaustive match applies each durable lifecycle carrier"
     )]
-    fn apply_entry_effects(&mut self, lsn: Lsn, entry: &Entry) {
+    fn apply_entry_effects(&mut self, entry: &Entry, mail_wake_accepted: bool) {
         self.fold_activity(entry);
         if let Record::PredicateResult { goal, .. } = &entry.record {
             self.goals_awaiting_board_result.remove(goal);
@@ -1530,10 +1535,10 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             | Record::TaughtNoteOnlyTurnIssued { agent, .. } => {
                 self.move_status(*agent, FsmEvent::Continued);
             }
-            Record::MailWakeOnlyTurnIssued(issue) if self.world.mail_wake_entry_accepted(lsn) => {
+            Record::MailWakeOnlyTurnIssued(issue) if mail_wake_accepted => {
                 self.move_status(issue.agent, FsmEvent::Continued);
             }
-            Record::MailWakeTurnDecided(decision) if self.world.mail_wake_entry_accepted(lsn) => {
+            Record::MailWakeTurnDecided(decision) if mail_wake_accepted => {
                 let event = match decision.decision {
                     dudes_proto::MailWakeAdmission::Issue { .. } => FsmEvent::Continued,
                     dudes_proto::MailWakeAdmission::Wait { .. } => FsmEvent::Waited,
@@ -5409,6 +5414,61 @@ mod tests {
             })
             .unwrap();
         assert_eq!(handled.folded_through(), Some(Lsn(1001)));
+        let request = harness
+            .supervisor
+            .effects()
+            .iter()
+            .find_map(|effect| match effect {
+                super::Effect::SampleInstructions {
+                    request,
+                    baseline: None,
+                    ..
+                } => Some(*request),
+                _ => None,
+            })
+            .expect("the actual starting sample follows the checkpointed decision");
+        let gap = dudes_proto::InstructionCoverageGap {
+            origin: dudes_proto::InstructionGapOrigin::Observed,
+            reason: dudes_proto::InstructionGapKind::DeclarationMissing,
+            context: dudes_proto::InstructionPathContext::Unresolved,
+            agent: Some(agent),
+            path: None,
+        };
+        let sampled = harness.step(Input::InstructionSampled {
+            request,
+            snapshot: Box::new(dudes_proto::InstructionSnapshot {
+                sampled_at: harness.supervisor.clock.peek(),
+                source: dudes_proto::InstructionSnapshotSource::Fresh,
+                execution_folder: None,
+                participants: Vec::new(),
+                inputs: Vec::new(),
+                inventoried: Vec::new(),
+                gaps: vec![
+                    dudes_proto::InstructionCoverageGap {
+                        reason: dudes_proto::InstructionGapKind::PathUnresolved,
+                        ..gap.clone()
+                    },
+                    gap,
+                ],
+                usage: dudes_proto::InstructionSampleUsage::default(),
+                boot: None,
+            }),
+            ticket: None,
+            comparison: None,
+        });
+        let baseline = sampled
+            .iter()
+            .find_map(|seen| match seen {
+                crate::testing::Seen::Persist { token, entry }
+                    if matches!(entry.record, Record::InstructionObservationStarted { .. }) =>
+                {
+                    Some(*token)
+                }
+                _ => None,
+            })
+            .expect("the actual sampled baseline must be acknowledged before the issue");
+        harness.step(harness.persisted(baseline, Lsn(1002)));
+        assert_eq!(harness.supervisor.world().last_applied_lsn, Some(Lsn(1002)));
         assert!(
             harness
                 .supervisor
