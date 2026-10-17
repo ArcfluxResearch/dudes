@@ -115,6 +115,7 @@ mod instruction_authority_tests;
 mod instruction_plan;
 pub(crate) mod instruction_sampling;
 mod native_boundaries;
+pub(crate) use native_boundaries::InheritedNativeBoundaries;
 #[cfg(all(test, unix))]
 mod native_boundaries_tests;
 #[cfg(all(test, unix))]
@@ -1027,6 +1028,7 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) pending_attached_calls: BTreeMap<Lsn, dudes_proto::InstructionObservationOwner>,
     pub(crate) attached_instruction_boundaries:
         BTreeMap<Lsn, attached_observations::AttachedBoundary>,
+    pub(super) inherited_native_boundaries: native_boundaries::InheritedNativeBoundaries,
     pub(super) pending_native_launches: BTreeMap<Lsn, native_boundaries::PendingNativeLaunch>,
     pub(super) native_acknowledgements:
         BTreeMap<Lsn, native_boundaries::PendingNativeAcknowledgement>,
@@ -1285,6 +1287,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     ///
     /// A journal append that did not become durable.
     pub(crate) fn started(&mut self) -> Result<()> {
+        self.ctx
+            .inherited_native_boundaries
+            .capture(self.sup.world());
         let missing = self.missing_worktrees();
         self.pump(Input::MissingWorktrees(missing))?;
         self.pump(Input::Started)?;

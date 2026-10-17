@@ -36,6 +36,7 @@ pub(super) struct SampleJob {
     pub(super) baseline: Option<Box<InstructionSnapshot>>,
     pub(super) ticket: Option<InstructionTicketAssociation>,
     pub(super) boot: Option<InstructionBootIdentity>,
+    pub(super) pid_namespace: Option<String>,
     pub(super) queued: Instant,
 }
 
@@ -655,7 +656,7 @@ fn unknown_seed(job: &SampleJob, sampled_at: Timestamp) -> InstructionSnapshot {
             path: None,
         }],
         usage: InstructionSampleUsage::default(),
-        pid_namespace: None,
+        pid_namespace: job.pid_namespace.clone(),
         boot: job.boot.clone(),
     }
 }
@@ -999,6 +1000,11 @@ impl<H: super::ProcessHost, P: super::PredicateRunner, C: super::Clock> super::C
             baseline: baseline.cloned().map(Box::new),
             ticket,
             boot,
+            pid_namespace: if cfg!(target_os = "linux") {
+                self.host.pid_namespace()
+            } else {
+                None
+            },
             queued: Instant::now(),
         })
     }
@@ -1162,6 +1168,7 @@ mod tests {
             baseline: None,
             ticket: None,
             boot: None,
+            pid_namespace: None,
             queued: Instant::now(),
         }
     }

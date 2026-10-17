@@ -1,18 +1,22 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::Result;
 use dudes_proto::{
     Entry, InstructionBootIdentity, InstructionBoundaryAbsenceProof,
-    InstructionNativeBoundaryReceipt, InstructionObservationOwner, Record,
+    InstructionNativeBoundaryReceipt, InstructionObservationOwner, PriorRunLeader, Record,
 };
 use dudes_supervisor::host::{
-    AdoptionKey, MAX_OWNED_TARGET_QUERY_ROWS, NativeBoundaryReceipt, OwnedTargetState,
+    AdoptionKey, MAX_OWNED_TARGET_QUERY_ROWS, NativeBoundaryReceipt, NativeGroupPresence,
+    OwnedTargetState, ProbeAnswer,
 };
 use dudes_supervisor::{Clock, Input, ProcessHost, Rng, Supervisor};
 use dudes_types::{AgentId, HostBoot, Lsn, TurnId};
 
 use super::{Ctx, Shared};
 use crate::predicate::PredicateRunner;
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+mod prior_run_tests;
 
 pub(super) fn same_key(left: &AdoptionKey, right: &AdoptionKey) -> bool {
     left.pid == right.pid && left.start_time == right.start_time && left.boot == right.boot
@@ -114,6 +118,123 @@ fn prior_boot<H: ProcessHost>(host: &H, world: &dudes_supervisor::World) -> Opti
         }
     }
     None
+}
+
+#[derive(Default)]
+pub(crate) enum InheritedNativeBoundaries {
+    #[default]
+    Uninitialized,
+    Disabled,
+    Captured(BTreeMap<Lsn, dudes_supervisor::world::ManagedNativeSpawnReceipt>),
+}
+
+impl InheritedNativeBoundaries {
+    pub(super) fn capture(&mut self, world: &dudes_supervisor::World) {
+        if !matches!(self, Self::Uninitialized) {
+            return;
+        }
+        *self = if world.managed_native_spawn_receipts().len() >= MAX_OWNED_TARGET_QUERY_ROWS {
+            Self::Disabled
+        } else {
+            Self::Captured(
+                world
+                    .managed_native_spawn_receipts()
+                    .map(|(started, spawn)| (*started, spawn.clone()))
+                    .collect(),
+            )
+        };
+    }
+
+    fn settled(&mut self, started: Lsn) {
+        if let Self::Captured(candidates) = self {
+            candidates.remove(&started);
+        }
+    }
+
+    fn settlement<H: ProcessHost>(
+        &self,
+        host: &H,
+        world: &dudes_supervisor::World,
+    ) -> Option<Settlement> {
+        let Self::Captured(candidates) = self else {
+            return None;
+        };
+        for (&started, captured) in candidates {
+            let Some(current) = world.managed_native_spawn_receipt(started) else {
+                continue;
+            };
+            let Some(attempt) = world.instructions.attempt(started) else {
+                continue;
+            };
+            if current.owner != captured.owner
+                || current.spawn_lsn != captured.spawn_lsn
+                || !same_key(&current.key, &captured.key)
+                || attempt.owner != captured.owner
+                || attempt.spawn_lsn != Some(captured.spawn_lsn)
+                || attempt.boundary_settled.is_some()
+                || !same_prior_run_scope(host, &captured.key, attempt.snapshot.as_ref())
+            {
+                continue;
+            }
+            let leader = match host.probe_native_leader(&captured.key) {
+                ProbeAnswer::NoSuchPid => PriorRunLeader::NoSuchProcess,
+                ProbeAnswer::StartValue(value) if value != captured.key.start_time => {
+                    PriorRunLeader::StartTimeDiffers
+                }
+                ProbeAnswer::StartValue(_) | ProbeAnswer::CouldNotAnswer => continue,
+            };
+            if host.native_group_presence(captured.key.pid) != NativeGroupPresence::Absent {
+                continue;
+            }
+            return Some(Settlement {
+                started,
+                owner: captured.owner,
+                proof: InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                    receipt: InstructionNativeBoundaryReceipt::Spawned {
+                        lsn: captured.spawn_lsn,
+                    },
+                    pid: captured.key.pid,
+                    start_time: captured.key.start_time,
+                    boot: captured.key.boot.clone(),
+                    leader,
+                },
+                acknowledgement: None,
+                launch_failure: false,
+            });
+        }
+        None
+    }
+}
+
+fn same_prior_run_scope<H: ProcessHost>(
+    host: &H,
+    key: &AdoptionKey,
+    snapshot: Option<&dudes_proto::InstructionSnapshot>,
+) -> bool {
+    if !(2..=i32::MAX as u32).contains(&key.pid) || key.start_time == 0 {
+        return false;
+    }
+    let Some(snapshot) = snapshot else {
+        return false;
+    };
+    if cfg!(target_os = "linux") {
+        let HostBoot::Read(current) = host.boot_identity() else {
+            return false;
+        };
+        key.boot.as_deref() == Some(current.as_str())
+            && snapshot.boot.as_ref()
+                == Some(&InstructionBootIdentity::LinuxKernelBootId { value: current })
+            && snapshot
+                .pid_namespace
+                .as_ref()
+                .is_some_and(|recorded| host.pid_namespace().as_ref() == Some(recorded))
+    } else if cfg!(target_os = "macos") {
+        matches!(host.boot_identity(), HostBoot::NotApplicable)
+            && key.boot.is_none()
+            && snapshot.boot.is_none()
+    } else {
+        false
+    }
 }
 
 fn owner_agent(owner: InstructionObservationOwner) -> dudes_types::AgentId {
@@ -527,6 +648,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .launch_failure_absence(world)
             .or_else(|| spawned_absence(&self.host, world))
             .or_else(|| prior_boot(&self.host, world))
+            .or_else(|| {
+                self.inherited_native_boundaries
+                    .settlement(&self.host, world)
+            })
             .filter(|settlement| {
                 !self
                     .native_acknowledgements
@@ -550,6 +675,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         };
         let append = self.append(world, &entry)?;
         let lsn = append.lsn();
+        self.inherited_native_boundaries.settled(settlement.started);
         if let Some((key, receipt)) = settlement.acknowledgement {
             self.native_acknowledgements.insert(
                 settlement.started,

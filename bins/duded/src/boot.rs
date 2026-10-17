@@ -657,6 +657,7 @@ where
             confirmed_launch_failures: BTreeMap::new(),
             pending_attached_calls: BTreeMap::new(),
             attached_instruction_boundaries: BTreeMap::new(),
+            inherited_native_boundaries: crate::runtime::InheritedNativeBoundaries::default(),
             pending_native_launches: BTreeMap::new(),
             native_acknowledgements: BTreeMap::new(),
             instruction_sampler: {
