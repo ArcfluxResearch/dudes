@@ -625,7 +625,7 @@ fn daemon_unknown_and_refused_outcomes_remain_distinct_from_a_missing_reply() {
     assert_eq!(code, exit::REFUSED);
     assert_eq!(
         String::from_utf8(out).unwrap(),
-        "Recovery refused: StalePredecessor.\nRequired barrier already acknowledged at 200.\nResume already acknowledged at 250.\n"
+        "Recovery refused: StalePredecessor.\nRequired barrier already acknowledged at 0:200.\nResume already acknowledged at 0:250.\n"
     );
     let mut out = Vec::new();
     render::recovery_submitted(
@@ -741,7 +741,7 @@ fn human_receipts_preserve_all_lifecycle_and_absence_meanings() {
                 turn,
                 issue_lsn: Lsn(20),
             },
-            "Issue-bound: turn 01ARZ3NDEKTSV4RRFFQ69G5FAX, issue 20; no consuming physical receipt is recorded.",
+            "Issue-bound: turn 01ARZ3NDEKTSV4RRFFQ69G5FAX, issue 0:20; no consuming physical receipt is recorded.",
         ),
         (
             RecoveryReceiptState::Consumed {
@@ -749,14 +749,14 @@ fn human_receipts_preserve_all_lifecycle_and_absence_meanings() {
                 issue_lsn: Lsn(20),
                 evidence_lsn: Lsn(400),
             },
-            "Consumed: turn 01ARZ3NDEKTSV4RRFFQ69G5FAX, issue 20, physical receipt 400.",
+            "Consumed: turn 01ARZ3NDEKTSV4RRFFQ69G5FAX, issue 0:20, physical receipt 0:400.",
         ),
         (
             RecoveryReceiptState::Invalidated {
                 invalidation_lsn: Lsn(400),
                 reason: RecoveryReceiptInvalidation::ControlChanged,
             },
-            "Invalidated at 400: ControlChanged.",
+            "Invalidated at 0:400: ControlChanged.",
         ),
         (
             RecoveryReceiptState::Superseded {
@@ -765,7 +765,7 @@ fn human_receipts_preserve_all_lifecycle_and_absence_meanings() {
                 successor: receipt.claim.episode,
                 barrier_lsn: Lsn(500),
             },
-            "Superseded by a new recovery episode at 500; the owed issue is retained.",
+            "Superseded by a new recovery episode at 0:500; the owed issue is retained.",
         ),
     ] {
         receipt.status = status;
@@ -793,7 +793,7 @@ fn human_receipts_preserve_all_lifecycle_and_absence_meanings() {
     .unwrap();
     assert_eq!(
         String::from_utf8(out).unwrap(),
-        "No authorization at checked cut 500. A Required or Resume prefix may still have been recorded.\n"
+        "No authorization at checked cut 0:500. A Required or Resume prefix may still have been recorded.\n"
     );
     let mut out = Vec::new();
     render::recovery_receipt(
