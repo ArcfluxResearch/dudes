@@ -1930,6 +1930,15 @@ pub(crate) mod tests {
 
     fn reject_wrong_native_key(store: &mut Projections, lsn: Lsn, crc: u32, settled: &Entry) {
         use dudes_proto::instruction_state::InstructionStateError;
+        let persisted_cursor = |store: &Projections| {
+            let txn = store.db.begin_read().unwrap();
+            let meta = txn.open_table(META).unwrap();
+            (
+                meta.get(LAST_APPLIED_LSN).unwrap().map(|v| v.value()),
+                meta.get(LAST_APPLIED_CRC).unwrap().map(|v| v.value()),
+            )
+        };
+        let cursor = persisted_cursor(store);
         let state = store.instruction_state().unwrap();
         let export = store.export().unwrap();
         let mut wrong = settled.clone();
@@ -1950,6 +1959,7 @@ pub(crate) mod tests {
         ));
         assert_eq!(store.instruction_state().unwrap(), state);
         assert_eq!(store.export().unwrap(), export);
+        assert_eq!(persisted_cursor(store), cursor);
     }
 
     #[test]
