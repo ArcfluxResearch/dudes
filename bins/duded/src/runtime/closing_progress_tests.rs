@@ -476,6 +476,17 @@ fn assert_memory_drain(cadence: Option<u64>) {
     let memory_lsn = daemon
         .append_memory_entry(prepared.record().clone(), "append")
         .unwrap();
+    let memory_through = daemon.ctx.projections.last_applied_lsn();
+    assert_eq!(
+        daemon.ctx.pending_floor[&memory_lsn].through,
+        memory_through
+    );
+    if cadence == Some(1) {
+        assert!(memory_through > memory_lsn);
+    } else {
+        assert_eq!(policy_through, policy_lsn);
+        assert_eq!(memory_through, memory_lsn);
+    }
     assert_eq!(daemon.ctx.pending_floor.len(), 2);
     assert!(matches!(
         opened.subscription.next(Duration::ZERO),
@@ -493,7 +504,7 @@ fn assert_memory_drain(cadence: Option<u64>) {
     );
     assert!(daemon.ctx.pending_floor_base.is_none());
     assert_eq!(daemon.sup.world().last_applied_lsn, Some(policy_through));
-    for expected in [policy_lsn, memory_lsn] {
+    for expected in [policy_through, memory_through] {
         let QueueRead::Frame(bytes) = opened.subscription.next(Duration::ZERO) else {
             panic!("ordered durable cut");
         };
@@ -511,7 +522,10 @@ fn assert_memory_drain(cadence: Option<u64>) {
     let frame: serde_json::Value =
         serde_json::from_slice(crate::floor_websocket::text_payload(&snapshot.snapshot).unwrap())
             .unwrap();
-    assert_eq!(frame["projection"]["lsn"], serde_json::json!(memory_lsn));
+    assert_eq!(
+        frame["projection"]["lsn"],
+        serde_json::json!(memory_through)
+    );
     let mut running = common::start(daemon);
     running.stop(ExitCause::ShutdownRpc);
 }
