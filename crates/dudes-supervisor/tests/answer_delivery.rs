@@ -526,13 +526,16 @@ fn a_reissue_replays_the_recorded_task_and_consumes_its_answers() {
         .recovery_opportunity(agent)
         .unwrap()
         .expected;
-    harness.recover(RecoveryCommand {
+    let handled = harness.recover(RecoveryCommand {
         request_id: Hex32::new([41; 32]),
         digest: Hex32::new([42; 32]),
         expected,
         choice: RecoveryChoice::RepeatIssuedFresh,
         attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
     });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     assert_eq!(
         issued(&harness),

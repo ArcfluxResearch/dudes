@@ -226,13 +226,16 @@ fn assert_reissued_refused(provider: Provider, adapter: fn() -> Box<dyn Adapter>
         .recovery_opportunity(agent)
         .unwrap()
         .expected;
-    second.recover(RecoveryCommand {
+    let handled = second.recover(RecoveryCommand {
         request_id: Hex32::new([41; 32]),
         digest: Hex32::new([42; 32]),
         expected,
         choice: RecoveryChoice::RepeatIssuedFresh,
         attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
     });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(second.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     let ended: Vec<&TurnOutcome> = second
         .records()
@@ -583,13 +586,16 @@ fn equal_replacement_does_not_activate_but_clear_gives_an_old_owed_turn_a_fresh_
         "Resume does not authorize the owed goal issue"
     );
     let expected = run.supervisor.recovery_opportunity(agent).unwrap().expected;
-    run.recover(RecoveryCommand {
+    let handled = run.recover(RecoveryCommand {
         request_id: Hex32::new([41; 32]),
         digest: Hex32::new([42; 32]),
         expected,
         choice: RecoveryChoice::RepeatIssuedFresh,
         attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
     });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(run.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     assert_eq!(run.open_turn(agent), Some(turn));
     assert_eq!(grants(&run).len(), 1);
@@ -642,13 +648,16 @@ fn an_unacknowledged_grant_never_spawns_and_recovery_admits_a_fresh_attempt() {
         "plain Resume does not supply recovery consent"
     );
     let expected = run.supervisor.recovery_opportunity(agent).unwrap().expected;
-    run.recover(RecoveryCommand {
+    let handled = run.recover(RecoveryCommand {
         request_id: Hex32::new([41; 32]),
         digest: Hex32::new([42; 32]),
         expected,
         choice: RecoveryChoice::RepeatIssuedFresh,
         attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
     });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(run.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     assert_eq!(spawned(&run), 1);
     assert_eq!(grants(&run).len(), 1);

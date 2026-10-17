@@ -359,13 +359,16 @@ fn the_mint_precedes_the_first_spawn_of_the_run() {
         .recovery_opportunity(agent)
         .unwrap()
         .expected;
-    harness.recover(RecoveryCommand {
+    let handled = harness.recover(RecoveryCommand {
         request_id: Hex32::new([41; 32]),
         digest: Hex32::new([42; 32]),
         expected,
         choice: RecoveryChoice::RepeatIssuedFresh,
         attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
     });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     let run_two = &harness.trace[boundary..];
     let mint = first_mint_position(run_two).expect("the second run mints");
@@ -610,13 +613,16 @@ fn a_second_daemon_run_mints_again_for_a_live_agent() {
         .recovery_opportunity(agent)
         .unwrap()
         .expected;
-    harness.recover(RecoveryCommand {
+    let handled = harness.recover(RecoveryCommand {
         request_id: Hex32::new([41; 32]),
         digest: Hex32::new([42; 32]),
         expected,
         choice: RecoveryChoice::RepeatIssuedFresh,
         attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
     });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     let run_two = mints(&harness.trace[boundary..], agent);
     assert_eq!(

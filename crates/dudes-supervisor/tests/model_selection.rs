@@ -296,13 +296,16 @@ fn a_reissue_uses_the_recorded_selection_not_the_new_configuration() {
         "plain Resume does not supply recovery consent"
     );
     let expected = h.supervisor.recovery_opportunity(agent).unwrap().expected;
-    h.recover(RecoveryCommand {
+    let handled = h.recover(RecoveryCommand {
         request_id: Hex32::new([41; 32]),
         digest: Hex32::new([42; 32]),
         expected,
         choice: RecoveryChoice::RepeatIssuedFresh,
         attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
     });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(h.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     assert_eq!(
         launched_under(&h, turn),
@@ -348,13 +351,16 @@ fn a_legacy_issue_without_a_selection_reissues_under_current_configuration() {
         "plain Resume does not supply recovery consent"
     );
     let expected = h.supervisor.recovery_opportunity(agent).unwrap().expected;
-    h.recover(RecoveryCommand {
+    let handled = h.recover(RecoveryCommand {
         request_id: Hex32::new([41; 32]),
         digest: Hex32::new([42; 32]),
         expected,
         choice: RecoveryChoice::RepeatIssuedFresh,
         attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
     });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(h.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     assert_eq!(
         launched_under(&h, turn),

@@ -311,13 +311,16 @@ fn recorded_run_limits_reach_the_first_launch_and_the_reissue() {
         .recovery_opportunity(capped)
         .unwrap()
         .expected;
-    harness.recover(RecoveryCommand {
+    let handled = harness.recover(RecoveryCommand {
         request_id: Hex32::new([41; 32]),
         digest: Hex32::new([42; 32]),
         expected,
         choice: RecoveryChoice::RepeatIssuedFresh,
         attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
     });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     let seen = log.seen();
     assert_eq!(
@@ -537,13 +540,16 @@ fn every_field_of_the_launch_context_comes_from_the_agent_it_is_built_for() {
         .recovery_opportunity(gamma)
         .unwrap()
         .expected;
-    harness.recover(RecoveryCommand {
+    let handled = harness.recover(RecoveryCommand {
         request_id: Hex32::new([41; 32]),
         digest: Hex32::new([42; 32]),
         expected,
         choice: RecoveryChoice::RepeatIssuedFresh,
         attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
     });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     let config = Harness::config();
     let expected = |agent: AgentId, cwd: &str, sandbox: Option<bool>| Built {
@@ -640,13 +646,16 @@ fn hire_trust_comes_from_the_record_not_the_config() {
         .recovery_opportunity(agent)
         .unwrap()
         .expected;
-    harness.recover(RecoveryCommand {
+    let handled = harness.recover(RecoveryCommand {
         request_id: Hex32::new([41; 32]),
         digest: Hex32::new([42; 32]),
         expected,
         choice: RecoveryChoice::RepeatIssuedFresh,
         attribution: RecoveryAttribution::LocalOperator { pid: 17, uid: None },
     });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.journal.iter().any(|entry| matches!(&entry.record,
+        Record::RecoveryAuthorized(authorization) if authorization.request_id == Hex32::new([41; 32]))));
 
     let seen = log.seen();
     assert_eq!(
