@@ -1609,6 +1609,7 @@ fn required_survives_restart_and_ordinary_resume(
         unreachable!()
     };
     let work = required.binding.work;
+    let agent = work.agent;
     prefix.push((Lsn(10_001), entry.clone()));
     acknowledge(machine, token, entry, Lsn(10_001));
     let mut restarted = replay_machine(prefix);
