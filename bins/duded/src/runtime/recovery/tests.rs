@@ -267,11 +267,23 @@ fn append_vanished_attempt(
                 agent,
                 turn: issued,
                 outcome,
+                exit,
+                usage,
+                session,
+                session_usage,
+                model_usage,
+                last_message,
                 ..
             } => {
                 *agent = owner;
                 *issued = turn;
                 *outcome = Some(dudes_proto::TurnOutcome::Vanished);
+                *exit = dudes_proto::ExitStatus::UNKNOWN;
+                *usage = None;
+                *session = None;
+                *session_usage = None;
+                model_usage.clear();
+                *last_message = None;
             }
             _ => unreachable!(),
         }
@@ -299,6 +311,12 @@ fn inspected_command(daemon: &mut TestDaemon, agent: dudes_types::AgentId) -> Re
     assert_eq!(choices, RecoveryAllowedChoices::FreshOnly);
     assert!(prior_effects_unknown);
     assert_eq!(expected.ticket.as_ref().unwrap().round, 1);
+    assert_eq!(
+        daemon.ctx.recovery_read(Hex32::new([91; 32])),
+        RecoveryReceiptResult::Absent {
+            checked_through: daemon.ctx.projections.last_applied_lsn()
+        }
+    );
     RecoveryCommand {
         request_id: Hex32::new([91; 32]),
         digest: Hex32::new([92; 32]),
@@ -333,8 +351,11 @@ fn assert_new_recovery_refused(
     let next = daemon.ctx.writer.next_lsn().unwrap();
     let through = daemon.sup.world().last_applied_lsn;
     let hops = daemon.sup.world().goals[&work.goal].turns_on_goal;
+    let completed = daemon.sup.world().completed_goal_lsn(work.goal);
+    let original_card = daemon.ctx.projections.card(card).unwrap().unwrap();
     let spawned = daemon.ctx.host.spawned();
     assert_eq!(round, 1);
+    assert_eq!(hops, 1);
     assert!(!entries.iter().any(|(_, entry)| matches!(
         &entry.record,
         dudes_proto::Record::RecoveryAuthorized(authorization)
@@ -384,7 +405,12 @@ fn assert_new_recovery_refused(
         Some(work.turn)
     );
     assert_eq!(daemon.sup.world().goals[&work.goal].turns_on_goal, hops);
+    assert_eq!(daemon.sup.world().completed_goal_lsn(work.goal), completed);
     assert_eq!(daemon.sup.world().ticket_goal(work.goal), Some((card, 1)));
+    assert_eq!(
+        daemon.ctx.projections.card(card).unwrap().unwrap(),
+        original_card
+    );
     assert_eq!(daemon.ctx.host.spawned(), spawned);
     assert!(daemon.sup.effects().is_empty());
 }
@@ -455,7 +481,7 @@ fn completed_and_ready_for_you_tickets_refuse_new_recovery_consent() {
                 provenance: Provenance::Observed,
                 pass: true,
                 evidence: dudes_proto::Evidence::Command {
-                    argv: vec!["ticket-check".into()],
+                    argv: vec!["cargo".into(), "test".into()],
                     program: None,
                     exit: Some(0),
                     output_tail: "ticket check passed".into(),
@@ -477,12 +503,28 @@ fn completed_and_ready_for_you_tickets_refuse_new_recovery_consent() {
             Record::CardTransition {
                 card,
                 from: CardStatus::Doing,
-                to: status,
+                to: CardStatus::Review,
                 by: Actor::System,
                 expected_seq: seq,
                 reason: None,
             },
         );
+        if status == CardStatus::Done {
+            append_history(
+                &mut daemon,
+                Record::CardTransition {
+                    card,
+                    from: CardStatus::Review,
+                    to: CardStatus::Done,
+                    by: Actor::Peer {
+                        pid: 4242,
+                        uid: Some(501),
+                    },
+                    expected_seq: seq.next(),
+                    reason: None,
+                },
+            );
+        }
         assert_eq!(
             daemon.ctx.projections.card(card).unwrap().unwrap().status,
             status
