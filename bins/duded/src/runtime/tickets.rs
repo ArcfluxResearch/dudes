@@ -503,10 +503,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             ));
         }
         if ticket.instruction_review.is_some() {
-            return Err(refusal(
-                TicketRefusal::InstructionReviewRequired,
-                view.status,
-            ));
+            return Err(RpcError {
+                message: "This ticket has an instruction review nobody has acknowledged yet. Accept it or ask for changes first, then remove the ticket.".to_owned(),
+                ..refusal(TicketRefusal::InstructionReviewRequired, view.status)
+            });
         }
         if view.status == CardStatus::Doing {
             return Err(refusal(TicketRefusal::WrongState, view.status));

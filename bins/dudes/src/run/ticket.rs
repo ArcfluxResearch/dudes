@@ -262,10 +262,9 @@ fn review_parameters(
         return Err(Failure::Refused(RpcError {
             code: ErrorCode::Refused.code(),
             message: format!(
-                "{} Read `dudes ticket show {}`, then retry with --expected-seq {}.",
+                "{} Run `dudes ticket show {}` to read it. It ends with the exact command for what it shows.",
                 TicketRefusal::InstructionReviewRequired.sentence(read.card.status),
                 read.card.id,
-                read.card.seq.0
             ),
             data: Some(
                 serde_json::json!({"reason":TicketRefusal::InstructionReviewRequired.code()}),
