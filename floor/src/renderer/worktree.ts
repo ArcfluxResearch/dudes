@@ -30,6 +30,10 @@ const STATE_TEXT: Readonly<Record<WorktreeState, string>> = Object.freeze({
   removed: 'removed',
 });
 
+export function worktreeStateText(state: WorktreeState): string {
+  return STATE_TEXT[state];
+}
+
 export function worktreeText(worktree: Worktree): string {
   return `Branch ${worktree.branch}, ${STATE_TEXT[worktree.state]}`;
 }

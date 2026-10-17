@@ -22,6 +22,7 @@ import { viewConfirmed } from './ticket/model.ts';
 import { TicketOffHint } from './ticket/TicketGuidance.tsx';
 import { TicketPanel } from './ticket/TicketPanel.tsx';
 import { workspaceGroups, workspaceLabel } from './workspace.ts';
+import { WorkersList } from './WorkersList.tsx';
 import { HireEntry } from './onboarding/HireEntry.tsx';
 
 export type ControlView = 'overview' | 'board' | 'log' | 'setup' | 'settings';
@@ -78,6 +79,7 @@ export function OverviewSummary({ floor, selectedId, onOpenQuestion, onOpenTicke
       <p>{selectedId === null
         ? 'Select an agent in the office or in Crew to open its details.'
         : 'The selected agent’s current projection and read-only Live work are open in its details.'}</p>
+      <WorkersList agents={floor.agents} />
       <ArchivedAgents floor={floor} onHireAgain={onHireAgain} />
     </div>
   );
