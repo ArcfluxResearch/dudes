@@ -132,6 +132,373 @@ fn operator_admission() -> OperatorAdmission {
     received.recv().unwrap()
 }
 
+fn append_history(daemon: &mut TestDaemon, record: dudes_proto::Record) {
+    let entry = dudes_proto::Entry {
+        at: daemon.ctx.clock.now(),
+        record,
+    };
+    let append = daemon.ctx.append(daemon.sup.world(), &entry).unwrap();
+    let through = append.through();
+    let (main, checkpoint) = append.into_parts();
+    for (lsn, entry) in std::iter::once(main).chain(checkpoint) {
+        daemon
+            .sup
+            .handle(dudes_supervisor::Input::Replayed { lsn, entry })
+            .unwrap();
+    }
+    assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
+    assert!(daemon.sup.effects().is_empty());
+}
+
+fn ticket_owner(daemon: &mut TestDaemon, fixture: &common::Fixture) -> dudes_types::AgentId {
+    use dudes_proto::record::samples;
+    use dudes_proto::{Record, RecordKind};
+    let mut hired = samples::record(RecordKind::AgentHired);
+    let Record::AgentHired {
+        id, cwd, workspace, ..
+    } = &mut hired
+    else {
+        unreachable!()
+    };
+    let agent = *id;
+    *cwd = fixture.state.path().to_path_buf();
+    *workspace = Some(dudes_proto::record::RecordedWorkspace {
+        id: "main".into(),
+        label: "Main".into(),
+    });
+    append_history(daemon, hired);
+    agent
+}
+
+fn recoverable_ticket(daemon: &mut TestDaemon, fixture: &common::Fixture) -> RecoveryCommand {
+    use dudes_proto::record::samples;
+    use dudes_proto::{Record, RecordKind};
+    use dudes_types::{Seq, TurnId};
+    let owner = ticket_owner(daemon, fixture);
+    let created = samples::record(RecordKind::TicketCreated);
+    let Record::TicketCreated {
+        card, done_when, ..
+    } = &created
+    else {
+        unreachable!()
+    };
+    let card = *card;
+    let check = crate::ticket_index::goal_check(done_when);
+    append_history(daemon, created);
+    append_history(
+        daemon,
+        Record::TicketAssigned {
+            card,
+            agent: owner,
+            by: dudes_proto::Actor::System,
+            message: None,
+            expected_seq: Seq(0),
+        },
+    );
+    let mut started = samples::record(RecordKind::TicketStarted);
+    let Record::TicketStarted {
+        agent,
+        goal,
+        expected_seq,
+        ..
+    } = &mut started
+    else {
+        unreachable!()
+    };
+    *agent = owner;
+    *expected_seq = Seq(1);
+    goal.completion_check = check;
+    let goal = goal.id;
+    append_history(daemon, started);
+    let decision = daemon.ctx.writer.next_lsn().unwrap();
+    append_history(
+        daemon,
+        Record::LoopDecided {
+            agent: owner,
+            input_digest: "ab".repeat(32),
+            decision: dudes_proto::LoopDecision::Continue {
+                task: "finish the recorded ticket".into(),
+            },
+            gate_trace: Vec::new(),
+        },
+    );
+    let turn = TurnId::from_parts(915, 1);
+    append_history(
+        daemon,
+        Record::TurnIssued {
+            agent: owner,
+            goal,
+            turn,
+            mode: dudes_types::Mode::Managed,
+            task: "finish the recorded ticket".into(),
+            session: None,
+            model_selection: Some(dudes_types::ModelSelection::provider_default()),
+            lsn_of_decision: decision,
+            answers: Vec::new(),
+        },
+    );
+    append_vanished_attempt(daemon, owner, turn);
+    inspected_command(daemon, owner)
+}
+
+fn append_vanished_attempt(
+    daemon: &mut TestDaemon,
+    owner: dudes_types::AgentId,
+    turn: dudes_types::TurnId,
+) {
+    use dudes_proto::record::samples;
+    use dudes_proto::{Record, RecordKind};
+    for kind in [RecordKind::TurnSpawned, RecordKind::TurnEnded] {
+        let mut record = samples::record(kind);
+        match &mut record {
+            Record::TurnSpawned {
+                agent,
+                turn: issued,
+                reissued,
+                session,
+                ..
+            } => {
+                *agent = owner;
+                *issued = turn;
+                *reissued = false;
+                *session = None;
+            }
+            Record::TurnEnded {
+                agent,
+                turn: issued,
+                outcome,
+                ..
+            } => {
+                *agent = owner;
+                *issued = turn;
+                *outcome = Some(dudes_proto::TurnOutcome::Vanished);
+            }
+            _ => unreachable!(),
+        }
+        append_history(daemon, record);
+    }
+}
+
+fn inspected_command(daemon: &mut TestDaemon, agent: dudes_types::AgentId) -> RecoveryCommand {
+    let Answered::RecoveryInspected(RecoveryInspectResult::Available {
+        expected,
+        reason,
+        choices,
+        prior_effects_unknown,
+        ..
+    }) = daemon
+        .ask(crate::runtime::Ask::RecoveryInspect {
+            agent,
+            admission: operator_admission(),
+        })
+        .unwrap()
+    else {
+        panic!("the original ticket must offer actual recovery")
+    };
+    assert_eq!(reason, dudes_proto::recovery::RecoveryReason::Vanished);
+    assert_eq!(choices, RecoveryAllowedChoices::FreshOnly);
+    assert!(prior_effects_unknown);
+    assert_eq!(expected.ticket.as_ref().unwrap().round, 1);
+    RecoveryCommand {
+        request_id: Hex32::new([91; 32]),
+        digest: Hex32::new([92; 32]),
+        expected: dudes_supervisor::input::RecoveryExpected {
+            work: expected.work,
+            issue_lsn: expected.issue_lsn,
+            source_lsn: expected.source_lsn,
+            episode: expected.episode,
+            predecessor: expected.expected_predecessor,
+            control_lsn: expected.control_lsn,
+            ticket: expected.ticket.map(|ticket| (ticket.card, ticket.round)),
+        },
+        choice: dudes_supervisor::input::RecoveryChoice::FreshWithRecap,
+        attribution: RecoveryAttribution::LocalOperator {
+            pid: 4242,
+            uid: Some(501),
+        },
+    }
+}
+
+fn assert_new_recovery_refused(
+    daemon: &mut TestDaemon,
+    fixture: &common::Fixture,
+    command: RecoveryCommand,
+    reason: RecoverySubmitRefusal,
+) {
+    use crate::runtime::Ask;
+    let work = command.expected.work;
+    let (card, round) = command.expected.ticket.unwrap();
+    let entries = fixture.entries();
+    let projection = daemon.ctx.projections.export().unwrap();
+    let next = daemon.ctx.writer.next_lsn().unwrap();
+    let through = daemon.sup.world().last_applied_lsn;
+    let hops = daemon.sup.world().goals[&work.goal].turns_on_goal;
+    let spawned = daemon.ctx.host.spawned();
+    assert_eq!(round, 1);
+    assert!(!entries.iter().any(|(_, entry)| matches!(
+        &entry.record,
+        dudes_proto::Record::RecoveryAuthorized(authorization)
+            if authorization.request_id == command.request_id
+    )));
+    let Answered::RecoveryInspected(inspected) = daemon
+        .ask(Ask::RecoveryInspect {
+            agent: work.agent,
+            admission: operator_admission(),
+        })
+        .unwrap()
+    else {
+        panic!("inspection response")
+    };
+    assert_eq!(
+        inspected,
+        RecoveryInspectResult::Unavailable {
+            reason: RecoveryInspectUnavailable::NotRecoverable
+        }
+    );
+    let Answered::RecoverySubmitted(submitted) = daemon
+        .ask(Ask::Recover {
+            command: Box::new(command),
+            admission: operator_admission(),
+        })
+        .unwrap()
+    else {
+        panic!("submission response")
+    };
+    assert_eq!(
+        submitted,
+        RecoverySubmitResult::Refused {
+            reason,
+            prefix: RecoveryKnownPrefix {
+                required: None,
+                resume: None
+            }
+        }
+    );
+    assert_eq!(fixture.entries(), entries);
+    assert_eq!(daemon.ctx.projections.export().unwrap(), projection);
+    assert_eq!(daemon.ctx.writer.next_lsn().unwrap(), next);
+    assert_eq!(daemon.sup.world().last_applied_lsn, through);
+    assert_eq!(daemon.sup.world().agents[&work.agent].goal, Some(work.goal));
+    assert_eq!(
+        daemon.sup.world().goals[&work.goal].last_turn,
+        Some(work.turn)
+    );
+    assert_eq!(daemon.sup.world().goals[&work.goal].turns_on_goal, hops);
+    assert_eq!(daemon.sup.world().ticket_goal(work.goal), Some((card, 1)));
+    assert_eq!(daemon.ctx.host.spawned(), spawned);
+    assert!(daemon.sup.effects().is_empty());
+}
+
+#[test]
+fn active_closing_refuses_inspection_and_new_recovery_consent() {
+    let fixture = common::Fixture::new();
+    let mut daemon = empty(&fixture);
+    let command = recoverable_ticket(&mut daemon, &fixture);
+    daemon
+        .closing_request(crate::closing::Request::Announce)
+        .unwrap();
+    assert!(daemon.sup.is_closing());
+    assert_eq!(daemon.sup.world().closing.as_ref().unwrap().complete, None);
+    assert_new_recovery_refused(
+        &mut daemon,
+        &fixture,
+        command,
+        RecoverySubmitRefusal::Unavailable,
+    );
+    let mut running = common::start(daemon);
+    running.stop(crate::ExitCause::Ended);
+}
+
+#[test]
+fn incomplete_closing_failure_refuses_inspection_and_new_recovery_consent() {
+    let fixture = common::Fixture::new();
+    let mut daemon = empty(&fixture);
+    let command = recoverable_ticket(&mut daemon, &fixture);
+    daemon
+        .closing_request(crate::closing::Request::Announce)
+        .unwrap();
+    let failure = daemon
+        .pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, |_| {
+            Err(anyhow::anyhow!("closing completion failed"))
+        })
+        .unwrap_err();
+    assert_eq!(failure.to_string(), "closing completion failed");
+    assert!(daemon.ctx.closing_failed_after.is_some());
+    assert!(daemon.ctx.journal_writes_stopped());
+    assert_eq!(daemon.sup.world().closing.as_ref().unwrap().complete, None);
+    assert_new_recovery_refused(
+        &mut daemon,
+        &fixture,
+        command,
+        RecoverySubmitRefusal::Unavailable,
+    );
+    let mut running = common::start(daemon);
+    running.stop(crate::ExitCause::Ended);
+}
+
+#[test]
+fn completed_and_ready_for_you_tickets_refuse_new_recovery_consent() {
+    use dudes_proto::{Actor, Record};
+    use dudes_types::{CardStatus, Provenance};
+
+    for status in [CardStatus::Review, CardStatus::Done] {
+        let fixture = common::Fixture::new();
+        let mut daemon = empty(&fixture);
+        let command = recoverable_ticket(&mut daemon, &fixture);
+        let work = command.expected.work;
+        let card = command.expected.ticket.unwrap().0;
+        append_history(
+            &mut daemon,
+            Record::PredicateResult {
+                goal: work.goal,
+                turn: Some(work.turn),
+                provenance: Provenance::Observed,
+                pass: true,
+                evidence: dudes_proto::Evidence::Command {
+                    argv: vec!["ticket-check".into()],
+                    program: None,
+                    exit: Some(0),
+                    output_tail: "ticket check passed".into(),
+                },
+            },
+        );
+        append_history(
+            &mut daemon,
+            Record::LoopDecided {
+                agent: work.agent,
+                input_digest: "cd".repeat(32),
+                decision: dudes_proto::LoopDecision::Done,
+                gate_trace: Vec::new(),
+            },
+        );
+        let seq = daemon.ctx.projections.card(card).unwrap().unwrap().seq;
+        append_history(
+            &mut daemon,
+            Record::CardTransition {
+                card,
+                from: CardStatus::Doing,
+                to: status,
+                by: Actor::System,
+                expected_seq: seq,
+                reason: None,
+            },
+        );
+        assert_eq!(
+            daemon.ctx.projections.card(card).unwrap().unwrap().status,
+            status
+        );
+        assert!(daemon.sup.world().completed_goal_lsn(work.goal).is_some());
+        assert_new_recovery_refused(
+            &mut daemon,
+            &fixture,
+            command,
+            RecoverySubmitRefusal::StaleWork,
+        );
+        let mut running = common::start(daemon);
+        running.stop(crate::ExitCause::Ended);
+    }
+}
+
 #[test]
 fn a_clean_refusal_drains_an_already_owed_durable_ack_before_returning() {
     use crate::runtime::{Ask, PumpOrigin, PumpReport};
