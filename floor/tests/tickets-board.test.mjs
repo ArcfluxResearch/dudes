@@ -262,6 +262,12 @@ test('an empty board with tickets off says how to turn them on', () => {
   assert.match(html, /Tickets are off\. Turn them on with <code>dudes config set floor.board on<\/code>, then restart the daemon\./);
   for (const name of ['Needs you', 'To do', 'Working', 'Ready for you', 'Done']) assert.ok(html.includes(`>${name} (0)<`), name);
   assert.doesNotMatch(html, /ticket-new-toggle/);
+  for (const text of ['Nothing is placed here while tickets are off.', 'No unclaimed or claimed cards.',
+    'No cards being worked on.', 'No cards marked done by you or the daemon.']) {
+    assert.ok(html.includes(`<p class="ticket-empty">${text}</p>`), text);
+  }
+  assert.equal(html.split('Nothing is placed here while tickets are off.').length - 1, 2);
+  assert.doesNotMatch(html, /Create a ticket|Tickets appear here|Tickets that need your next step|Accepted tickets|Review finished work/);
 });
 
 test('ticket switches are not called off before a snapshot or after the stream closes', () => {

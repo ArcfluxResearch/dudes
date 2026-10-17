@@ -25,6 +25,15 @@ const COLUMN_TONE: Readonly<Record<TicketColumn | 'needs', string>> = Object.fre
   todo: 'todo', working: 'doing', ready: 'review', done: 'done', needs: 'blocked',
 });
 
+/** With tickets off, only the daemon's recorded states can fill a column, and nothing here can wait on the operator. */
+const EMPTY_COLUMN_CARDS: Readonly<Record<TicketColumn | 'needs', string>> = Object.freeze({
+  needs: 'Nothing is placed here while tickets are off.',
+  todo: 'No unclaimed or claimed cards.',
+  working: 'No cards being worked on.',
+  ready: 'Nothing is placed here while tickets are off.',
+  done: 'No cards marked done by you or the daemon.',
+});
+
 const EMPTY_COLUMN: Readonly<Record<TicketColumn, string>> = Object.freeze({
   todo: 'Create a ticket, then give it to an agent.',
   working: 'Tickets appear here when an agent starts.',
@@ -220,7 +229,7 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
       data-lane="needs-you" aria-label="Needs you">
       <h3>Needs you ({needsYou.length})</h3>
       <ul>{needsYou.map(draw)}</ul>
-      {needsYou.length === 0 ? <p className="ticket-empty">Tickets that need your next step appear here.</p> : null}
+      {needsYou.length === 0 ? <p className="ticket-empty">{floor.ticket ? 'Tickets that need your next step appear here.' : EMPTY_COLUMN_CARDS.needs}</p> : null}
     </section>
     <div className="task-columns">
       {TICKET_COLUMNS.map((column) => {
@@ -229,7 +238,7 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
           data-ticket-column={column.key} aria-label={column.title}>
           <h3>{column.title} ({cards.length})</h3>
           <ul>{cards.map(draw)}</ul>
-          {cards.length === 0 ? <p className="ticket-empty">{EMPTY_COLUMN[column.key]}</p> : null}
+          {cards.length === 0 ? <p className="ticket-empty">{(floor.ticket ? EMPTY_COLUMN : EMPTY_COLUMN_CARDS)[column.key]}</p> : null}
           {column.key === 'done' && doneHidden > 0
             ? <p className="ticket-hint">{doneHidden} older card{doneHidden === 1 ? '' : 's'} not shown. List tickets with <code>dudes ticket list --status done</code> and other cards with <code>dudes board list</code>.</p> : null}
         </section>;
