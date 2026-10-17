@@ -1328,7 +1328,7 @@ fn without_recorded_model(prefix: &[(Lsn, Entry)]) -> Vec<(Lsn, Entry)> {
         .map(|(lsn, entry)| {
             let mut json = serde_json::to_value(entry).unwrap();
             if matches!(entry.record, Record::TurnIssued { .. }) {
-                let record = json.get_mut("record").unwrap().as_object_mut().unwrap();
+                let record = json.as_object_mut().unwrap();
                 record
                     .remove("model_selection")
                     .expect("the actual modern source recorded a choice");
