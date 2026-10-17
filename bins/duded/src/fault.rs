@@ -474,7 +474,8 @@ mod tests {
             assert!(parse_stop(&value).is_err());
         }
         let mut value = valid.clone();
-        value["marker"] = serde_json::json!(format!("{}\0marker", valid["marker"].as_str().unwrap()));
+        value["marker"] =
+            serde_json::json!(format!("{}\0marker", valid["marker"].as_str().unwrap()));
         assert!(parse_stop(&value).is_err());
         let mut value = valid.clone();
         value["target"]["work"] = serde_json::json!([
