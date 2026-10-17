@@ -942,4 +942,79 @@ mod tests {
             assert_eq!(value(&encode_submission(&result).unwrap()), expected);
         }
     }
+
+    #[test]
+    fn distinct_positions_keep_their_fields_across_input_and_output() {
+        let mut input: Value = serde_json::from_str(SUBMIT).unwrap();
+        input["expected"]["expected_predecessor"]["episode"]["origin"] = json!("91");
+        input["expected"]["control_lsn"] = json!("92");
+        let parsed = decode_submit(&bytes(&input)).unwrap();
+        assert_eq!(parsed.expected.issue_lsn, Lsn(20));
+        assert_eq!(parsed.expected.source_lsn, Lsn(80));
+        assert_eq!(parsed.expected.episode.unwrap().origin, Lsn(90));
+        assert_eq!(
+            parsed.expected.expected_predecessor.unwrap().episode.origin,
+            Lsn(91)
+        );
+        assert_eq!(
+            parsed
+                .expected
+                .expected_predecessor
+                .unwrap()
+                .authorization_lsn,
+            Lsn(300)
+        );
+        assert_eq!(parsed.expected.control_lsn, Some(Lsn(92)));
+        let waiting = json!({"open_question":"ready","budget":"ready","hops":"ready","instruction_review":"ready","instruction_comparison":"ready"});
+        let inspection = RecoveryInspectResult::Available {
+            through: Lsn(97),
+            expected: Box::new(parsed.expected),
+            reason: RecoveryReason::Vanished,
+            choices: RecoveryAllowedChoices::RecordedOrFresh,
+            prior_effects_unknown: false,
+            waiting: serde_json::from_value(waiting.clone()).unwrap(),
+        };
+        assert_eq!(
+            value(&encode_inspection(&inspection).unwrap()),
+            json!({
+                "state":"available","through":"97","expected":input["expected"],"reason":"vanished",
+                "choices":"recorded_or_fresh","prior_effects_unknown":false,"waiting":waiting
+            })
+        );
+        let work = expected().work;
+        let receipt: RecoveryReceiptView = serde_json::from_value(json!({
+            "request_id":REQUEST,"claim":{"episode":{"work":work,"origin":11},"authorization_lsn":13},
+            "choice":"fresh_with_recap","status":{"state":"superseded","turn":TURN,"issue_lsn":29,
+                "successor":{"work":work,"origin":37},"barrier_lsn":41},
+            "attempt":{"spawn":17,"confirmation":19,"end":23},"prior_effects_unknown":true
+        })).unwrap();
+        let wire = json!({
+            "request_id":REQUEST,"claim":{"episode":{"work":work,"origin":"11"},"authorization_lsn":"13"},
+            "choice":"fresh_with_recap","status":{"state":"superseded","turn":TURN,"issue_lsn":"29",
+                "successor":{"work":work,"origin":"37"},"barrier_lsn":"41"},
+            "attempt":{"spawn":"17","confirmation":"19","end":"23"},"prior_effects_unknown":true
+        });
+        assert_eq!(
+            value(
+                &encode_receipt(&RecoveryReceiptResult::Found {
+                    receipt: Box::new(receipt)
+                })
+                .unwrap()
+            ),
+            json!({"state":"found","receipt":wire})
+        );
+        assert_eq!(
+            value(
+                &encode_submission(&RecoverySubmitResult::Refused {
+                    reason: RecoverySubmitRefusal::StaleControl,
+                    prefix: dudes_proto::rpc::recovery::RecoveryKnownPrefix {
+                        required: Some(Lsn(43)),
+                        resume: Some(Lsn(47))
+                    }
+                })
+                .unwrap()
+            ),
+            json!({"state":"refused","reason":"stale_control","prefix":{"required":"43","resume":"47"}})
+        );
+    }
 }
