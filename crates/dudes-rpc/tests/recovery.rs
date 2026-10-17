@@ -1,3 +1,5 @@
+//! Recovery RPC admission and original-frame contract checks.
+
 use std::io::{self, Cursor, Write};
 use std::sync::{Arc, Mutex};
 

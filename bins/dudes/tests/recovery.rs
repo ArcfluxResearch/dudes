@@ -1,3 +1,5 @@
+//! Recovery command integration tests.
+
 #![cfg(unix)]
 
 use std::ffi::OsString;
@@ -108,7 +110,10 @@ impl RecoveryControl for Control {
         admission: OperatorAdmission,
     ) -> Result<RecoverySubmitResult, RpcError> {
         assert_eq!(admission.pid(), std::process::id());
-        *self.before_submit.lock().unwrap() = self.diagnostics.0.lock().unwrap().clone();
+        self.before_submit
+            .lock()
+            .unwrap()
+            .clone_from(&self.diagnostics.0.lock().unwrap());
         self.calls
             .lock()
             .unwrap()
@@ -371,7 +376,7 @@ fn submit_preserves_every_reviewed_condition_and_flushes_the_id_before_the_only_
                     choice: RecoveryChoice::TryRecorded
                 }))]
             );
-            let encoded = serde_json::to_value(&**expected).unwrap();
+            let encoded = serde_json::to_value(**expected).unwrap();
             if nullable {
                 for key in ["episode", "expected_predecessor", "control_lsn", "ticket"] {
                     assert_eq!(encoded[key], Value::Null);
@@ -723,7 +728,7 @@ fn binary_inspection_exports_one_json_value_usable_as_the_reviewed_file() {
 
 #[test]
 fn human_receipts_preserve_all_lifecycle_and_absence_meanings() {
-    let request:RecoverySubmitParams=serde_json::from_value(json!({"request_id":"0".repeat(64),"expected":match inspection(true,RecoveryAllowedChoices::FreshOnly) {RecoveryInspectResult::Available {expected,..}=>expected,_=>unreachable!()},"choice":"fresh_with_recap"})).unwrap();
+    let request:RecoverySubmitParams=serde_json::from_value(json!({"request_id":"0".repeat(64),"expected":match inspection(true,RecoveryAllowedChoices::FreshOnly) {RecoveryInspectResult::Available {expected,..}=>expected,RecoveryInspectResult::Unavailable { .. }=>unreachable!()},"choice":"fresh_with_recap"})).unwrap();
     let mut receipt = recorded(&request);
     let turn = request.expected.work.turn;
     for (status, literal) in [
