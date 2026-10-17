@@ -2,8 +2,8 @@
 //!
 //! The crate sets `unsafe_code = "deny"` rather than inheriting the workspace's `forbid`, because
 //! `forbid` cannot be re-levelled from source and therefore admits no module-scoped exemption at
-//! all. What that buys back is the ability to write `#[allow(unsafe_code)]` on exactly the named modules —
-//! and what stops it becoming a habit is this file. A grant that spreads by one module at a time
+//! all. What that buys back is the ability to write `#[allow(unsafe_code)]` on exactly the named
+//! modules — and what stops it becoming a habit is this file. A grant that spreads by one module at a time
 //! ends up as a platform surface nobody reads; a grant whose growth is a red test does not.
 //!
 //! The scan reads code lines only, and that is the whole reason it works here: every module in this
@@ -20,8 +20,8 @@
 //! change.
 //!
 //! It also matches by **file name**, not by path, so moving `src/windows.rs` to
-//! `src/plat/windows.rs` leaves [`the_unsafe_grant_covers_one_module_and_no_other`] green —
-//! measured, not supposed. The move does not get through this file, but only because
+//! `src/plat/windows.rs` leaves [`the_unsafe_grant_covers_the_named_modules_and_no_other`]
+//! green — measured, not supposed. The move does not get through this file, but only because
 //! [`the_windows_layer_never_claims_positive_absence`] reads a fixed path and goes red instead;
 //! that is luck, not design, and the two would come apart the moment the second test changed.
 //! Noted rather than fixed: widening the walk to match on path is its own change, and a hole
@@ -53,10 +53,10 @@ const GRANTS: &[&str] = &[
 ];
 
 /// `unsafe` appears in the Windows platform module and the signal-mask module and in no other file
-/// **under `src/`**. This is the test that goes red when the exemption spreads there; the module docs say
-/// what it does not reach.
+/// **under `src/`**. This is the test that goes red when the exemption spreads there; the module
+/// docs say what it does not reach.
 #[test]
-fn the_unsafe_grant_covers_one_module_and_no_other() {
+fn the_unsafe_grant_covers_the_named_modules_and_no_other() {
     let sources = common::rust_sources();
     assert!(
         sources.len() >= 5,
