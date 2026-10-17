@@ -5,6 +5,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use dudes_proto::record::Hex32;
+use dudes_proto::recovery::RecoveryAttribution;
 use dudes_proto::{Entry, ExitStatus, Record, RecordKind, TurnOutcome};
 use dudes_providers::adapter::{
     Adapter, AgentCtx, Arrival, Isolation, ManagedInstall, SessionAcquisition, TurnSession,
@@ -14,8 +16,9 @@ use dudes_providers::claude::SESSION_ACQUISITION;
 use dudes_providers::claude::stream::TurnStream;
 use dudes_providers::launch::{LaunchError, LaunchSpec};
 use dudes_providers::stream::TurnReader;
-use dudes_supervisor::Input;
+use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand};
 use dudes_supervisor::testing::{FakeClock, FakeHost, Harness, journal_with_issued_turn};
+use dudes_supervisor::{Command, Input};
 use dudes_types::{ModelSelection, Provider, SessionId, Tier, TurnId};
 
 const ASSIGNED: SessionAcquisition = SessionAcquisition::Assigned {
@@ -199,6 +202,38 @@ fn replay_crash(
     harness.journal = entries;
     before_restart(&mut harness);
     harness.restart();
+    assert!(received(&handed).is_empty(), "restart waits for consent");
+    harness.drive(Input::Command(Command::Resume {
+        agent,
+        browser: None,
+    }));
+    assert!(
+        received(&handed).is_empty(),
+        "ordinary Resume waits for consent"
+    );
+    let expected = harness
+        .supervisor
+        .recovery_opportunity(agent)
+        .expect("the missing spawn offers an exact repeat")
+        .expected;
+    assert_eq!(expected.work.turn, turn);
+    let request_id = Hex32::new([31; 32]);
+    let handled = harness.recover(RecoveryCommand {
+        request_id,
+        digest: Hex32::new([32; 32]),
+        expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+        attribution: RecoveryAttribution::LocalOperator {
+            pid: 7,
+            uid: Some(42),
+        },
+    });
+    assert_eq!(handled.recovery().expect("command progress").refusal, None);
+    assert!(harness.records().any(|record| matches!(
+        record,
+        Record::RecoveryAuthorized(authorization)
+            if authorization.request_id == request_id
+    )));
     (harness, handed, turn)
 }
 
