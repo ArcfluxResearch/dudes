@@ -104,7 +104,7 @@ impl RecoveryControl for Control {
     }
     fn submit_recovery(
         &self,
-        params: RecoverySubmitParams,
+        params: &RecoverySubmitParams,
         admission: OperatorAdmission,
     ) -> Result<RecoverySubmitResult, RpcError> {
         assert_eq!(admission.pid(), std::process::id());
@@ -112,10 +112,10 @@ impl RecoveryControl for Control {
         self.calls
             .lock()
             .unwrap()
-            .push(Call::Submit(Box::new(params)));
+            .push(Call::Submit(Box::new(*params)));
         let result = match self.outcome {
             Outcome::Accepted => {
-                let receipt = recorded(&params);
+                let receipt = recorded(params);
                 *self.receipt.lock().unwrap() = RecoveryReceiptResult::Found {
                     receipt: Box::new(receipt),
                 };

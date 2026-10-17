@@ -32,7 +32,7 @@ pub trait RecoveryControl: Send + Sync + 'static {
     /// A transport or daemon availability error, without storage details.
     fn submit_recovery(
         &self,
-        params: RecoverySubmitParams,
+        params: &RecoverySubmitParams,
         admission: OperatorAdmission,
     ) -> Result<RecoverySubmitResult, RpcError>;
 
@@ -60,9 +60,10 @@ pub fn register_recovery<C: RecoveryControl>(dispatcher: &mut Dispatcher, contro
             RecoveryParams::Inspect(params) => {
                 super::encode_current(method, &control.inspect_recovery(params, admission)?)
             }
-            RecoveryParams::Submit(params) => {
-                super::encode_current(method, &control.submit_recovery(*params, admission)?)
-            }
+            RecoveryParams::Submit(params) => super::encode_current(
+                method,
+                &control.submit_recovery(params.as_ref(), admission)?,
+            ),
             RecoveryParams::Receipt(params) => {
                 super::encode_current(method, &control.recovery_receipt(params, admission)?)
             }

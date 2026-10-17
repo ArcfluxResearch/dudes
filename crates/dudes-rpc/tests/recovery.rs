@@ -52,11 +52,11 @@ impl RecoveryControl for Control {
 
     fn submit_recovery(
         &self,
-        params: RecoverySubmitParams,
+        params: &RecoverySubmitParams,
         admission: OperatorAdmission,
     ) -> Result<RecoverySubmitResult, RpcError> {
         self.0.lock().unwrap().push(Invocation::Submit(
-            Box::new(params),
+            Box::new(*params),
             admission.pid(),
             admission.uid(),
         ));
