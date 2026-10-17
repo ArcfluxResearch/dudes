@@ -354,6 +354,7 @@ dependencies = [
  "dudes-supervisor",
  "dudes-win",
  "libproc",
+ "nix",
  "rustix",
  "tempfile",
  "tracing",
