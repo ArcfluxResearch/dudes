@@ -695,3 +695,171 @@ fn prior_run_key_survives_keyed_cache_and_settlement_replay() {
         Lsn(6)
     );
 }
+
+fn unsettled_attachments() -> (Harness, InstructionObservationOwner, Record) {
+    let mut h = Harness::default();
+    h.apply(1, samples::record(RecordKind::Attached), None);
+    let process = InstructionObservationOwner::AttachedProcess {
+        agent: samples::agent(),
+        attachment_lsn: Lsn(1),
+    };
+    h.apply(2, start(process, None), None);
+    let spawned = samples::record(RecordKind::PtySpawned);
+    h.apply(3, spawned.clone(), None);
+    h.apply(4, samples::record(RecordKind::Attached), None);
+    h.apply(
+        5,
+        start(
+            InstructionObservationOwner::AttachedProcess {
+                agent: samples::agent(),
+                attachment_lsn: Lsn(4),
+            },
+            None,
+        ),
+        None,
+    );
+    let mut other = spawned.clone();
+    if let Record::PtySpawned { pty, pid, .. } = &mut other {
+        *pty = crate::rpc::pty::PtyId(8);
+        *pid += 1;
+    }
+    h.apply(6, other, None);
+    (h, process, spawned)
+}
+
+fn reject_attached_boundary(h: &Harness, record: Record, expected: InstructionStateError) {
+    let entry = stamp(record);
+    let mut full = h.full.clone();
+    let rows = h.memory.rows.clone();
+    let mut cache = InstructionCache::load(&h.memory, h.through, &entry.record, &[]).unwrap();
+    let keyed = cache.state().clone();
+    for state in [&mut full, cache.state_mut()] {
+        assert_eq!(state.apply(Lsn(7), &entry, None, hash), Err(expected));
+    }
+    assert_eq!(full, h.full);
+    assert_eq!(cache.state(), &keyed);
+    assert!(cache.updates().unwrap().is_empty());
+    assert_eq!(h.memory.rows, rows);
+    assert_eq!(
+        InstructionCache::read_all(&h.memory, h.through).unwrap(),
+        h.full
+    );
+}
+
+#[test]
+fn prior_run_pty_proof_requires_the_exact_attempt_receipt_and_adoption_key() {
+    let (h, process, spawned) = unsettled_attachments();
+    let Record::PtySpawned {
+        pid,
+        start_time,
+        boot,
+        ..
+    } = spawned
+    else {
+        unreachable!()
+    };
+    for field in [
+        "pid",
+        "start_time",
+        "boot",
+        "agent",
+        "attachment",
+        "started",
+        "receipt",
+        "other",
+        "failed",
+    ] {
+        let mut owner = process;
+        let mut started_lsn = Lsn(2);
+        let mut receipt = InstructionNativeBoundaryReceipt::Spawned { lsn: Lsn(3) };
+        let mut key = (pid, start_time, boot.clone());
+        match field {
+            "pid" => key.0 += 1,
+            "start_time" => key.1 += 1,
+            "boot" => key.2 = None,
+            "agent" => {
+                owner = InstructionObservationOwner::AttachedProcess {
+                    agent: samples::other_agent(),
+                    attachment_lsn: Lsn(1),
+                };
+            }
+            "attachment" => {
+                owner = InstructionObservationOwner::AttachedProcess {
+                    agent: samples::agent(),
+                    attachment_lsn: Lsn(4),
+                };
+            }
+            "started" => started_lsn = Lsn(5),
+            "receipt" => receipt = InstructionNativeBoundaryReceipt::Spawned { lsn: Lsn(99) },
+            "other" => {
+                receipt = InstructionNativeBoundaryReceipt::Spawned { lsn: Lsn(6) };
+                key.0 += 1;
+            }
+            "failed" => {
+                receipt = InstructionNativeBoundaryReceipt::LaunchFailureEnded { lsn: Lsn(3) };
+            }
+            _ => unreachable!(),
+        }
+        let expected = if field == "failed" {
+            InstructionStateError::Contract(crate::InstructionValidationError::InvalidBoundary)
+        } else {
+            InstructionStateError::Boundary
+        };
+        reject_attached_boundary(
+            &h,
+            Record::InstructionAttemptBoundarySettled {
+                owner,
+                started_lsn,
+                proof: InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                    receipt,
+                    pid: key.0,
+                    start_time: key.1,
+                    boot: key.2,
+                    leader: crate::PriorRunLeader::NoSuchProcess,
+                },
+            },
+            expected,
+        );
+    }
+}
+
+#[test]
+fn exact_prior_run_pty_proof_settles_only_its_attachment_once() {
+    for leader in [
+        crate::PriorRunLeader::NoSuchProcess,
+        crate::PriorRunLeader::StartTimeDiffers,
+    ] {
+        let (mut h, process, spawned) = unsettled_attachments();
+        let Record::PtySpawned {
+            pid,
+            start_time,
+            boot,
+            ..
+        } = spawned
+        else {
+            unreachable!()
+        };
+        let other = h.full.attempt(Lsn(5)).unwrap().clone();
+        assert_eq!(other.spawn_lsn, Some(Lsn(6)));
+        assert!(other.boundary_settled.is_none());
+        let proof = InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+            receipt: InstructionNativeBoundaryReceipt::Spawned { lsn: Lsn(3) },
+            pid,
+            start_time,
+            boot,
+            leader,
+        };
+        let record = Record::InstructionAttemptBoundarySettled {
+            owner: process,
+            started_lsn: Lsn(2),
+            proof: proof.clone(),
+        };
+        h.apply(7, record.clone(), None);
+        h.apply(8, record, None);
+        assert_eq!(
+            h.full.attempt(Lsn(2)).unwrap().boundary_settled,
+            Some(crate::instruction_state::InstructionBoundarySettlement { lsn: Lsn(7), proof })
+        );
+        assert_eq!(h.full.attempt(Lsn(5)), Some(&other));
+    }
+}

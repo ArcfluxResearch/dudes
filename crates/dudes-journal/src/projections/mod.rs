@@ -1810,6 +1810,238 @@ pub(crate) mod tests {
         }
     }
 
+    fn native_receipt_entries() -> [Entry; 5] {
+        use dudes_proto::record::{RecordKind, samples};
+        let turn = TurnId::from_parts(4, 9);
+        let Record::InstructionObservationStarted { snapshot, .. } =
+            samples::record(RecordKind::InstructionObservationStarted)
+        else {
+            unreachable!()
+        };
+        let mut spawned = samples::record(RecordKind::TurnSpawned);
+        if let Record::TurnSpawned {
+            agent: id,
+            turn: spawned_turn,
+            reissued,
+            ..
+        } = &mut spawned
+        {
+            *id = agent();
+            *spawned_turn = turn;
+            *reissued = false;
+        }
+        [
+            hired(),
+            goal_set(agent(), goal_id()),
+            stamped(
+                0,
+                Record::InstructionObservationStarted {
+                    owner: dudes_proto::InstructionObservationOwner::Managed {
+                        agent: agent(),
+                        turn,
+                        issue: dudes_proto::InstructionIssueAssociation::Prospective,
+                    },
+                    ticket: None,
+                    snapshot,
+                },
+            ),
+            issued_on(agent(), turn, goal_id()),
+            stamped(0, spawned),
+        ]
+    }
+
+    fn install_flat_native_receipt(path: &Path, started: Lsn, spawn: Lsn, crc: u32) {
+        let db = Database::create(path).unwrap();
+        let txn = db.begin_write().unwrap();
+        let mut key = vec![15];
+        key.extend_from_slice(&spawn.0.to_be_bytes());
+        let row = serde_json::json!({
+            "kind": "native_receipt",
+            "lsn": spawn.0,
+            "started": started.0,
+            "receipt": {"kind": "spawned", "lsn": spawn.0},
+        });
+        {
+            let mut rows = txn.open_table(INSTRUCTIONS).unwrap();
+            assert!(rows.get(key.as_slice()).unwrap().is_some());
+            rows.insert(key.as_slice(), serde_json::to_vec(&row).unwrap().as_slice())
+                .unwrap();
+            let mut meta = txn.open_table(META).unwrap();
+            assert_eq!(
+                meta.get(LAST_APPLIED_LSN).unwrap().unwrap().value(),
+                spawn.0
+            );
+            assert_eq!(
+                meta.get(LAST_APPLIED_CRC).unwrap().unwrap().value(),
+                u64::from(crc)
+            );
+            meta.insert(SCHEMA_VERSION, &51).unwrap();
+        }
+        txn.commit().unwrap();
+        let txn = db.begin_read().unwrap();
+        let rows = txn.open_table(INSTRUCTIONS).unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(rows.get(key.as_slice()).unwrap().unwrap().value()).unwrap();
+        assert_eq!(stored, row);
+        assert_eq!(stored.as_object().unwrap().len(), 4);
+        let meta = txn.open_table(META).unwrap();
+        assert_eq!(meta.get(SCHEMA_VERSION).unwrap().unwrap().value(), 51);
+        assert_eq!(
+            meta.get(LAST_APPLIED_LSN).unwrap().unwrap().value(),
+            spawn.0
+        );
+        assert_eq!(
+            meta.get(LAST_APPLIED_CRC).unwrap().unwrap().value(),
+            u64::from(crc)
+        );
+    }
+
+    fn native_receipt_settlement(started: Lsn, spawn: Lsn, entry: &Entry) -> Entry {
+        let Record::TurnSpawned {
+            agent,
+            turn,
+            pid,
+            start_time,
+            boot,
+            ..
+        } = &entry.record
+        else {
+            unreachable!()
+        };
+        stamped(
+            0,
+            Record::InstructionAttemptBoundarySettled {
+                owner: dudes_proto::InstructionObservationOwner::Managed {
+                    agent: *agent,
+                    turn: *turn,
+                    issue: dudes_proto::InstructionIssueAssociation::Prospective,
+                },
+                started_lsn: started,
+                proof: dudes_proto::InstructionBoundaryAbsenceProof::PriorRunGroupAbsent {
+                    receipt: dudes_proto::InstructionNativeBoundaryReceipt::Spawned { lsn: spawn },
+                    pid: *pid,
+                    start_time: *start_time,
+                    boot: boot.clone(),
+                    leader: dudes_proto::PriorRunLeader::NoSuchProcess,
+                },
+            },
+        )
+    }
+
+    fn reject_wrong_native_key(store: &mut Projections, lsn: Lsn, crc: u32, settled: &Entry) {
+        use dudes_proto::instruction_state::InstructionStateError;
+        let state = store.instruction_state().unwrap();
+        let export = store.export().unwrap();
+        let mut wrong = settled.clone();
+        if let Record::InstructionAttemptBoundarySettled {
+            proof: dudes_proto::InstructionBoundaryAbsenceProof::PriorRunGroupAbsent { pid, .. },
+            ..
+        } = &mut wrong.record
+        {
+            *pid += 1;
+        }
+        assert!(matches!(
+            store.preflight_instruction(lsn, &wrong),
+            Err(Error::Instruction { lsn: found, reason: InstructionStateError::Boundary }) if found == lsn
+        ));
+        assert!(matches!(
+            store.apply(lsn, crc, &wrong),
+            Err(Error::Instruction { lsn: found, reason: InstructionStateError::Boundary }) if found == lsn
+        ));
+        assert_eq!(store.instruction_state().unwrap(), state);
+        assert_eq!(store.export().unwrap(), export);
+    }
+
+    #[test]
+    fn a_version_51_flat_native_receipt_rebuilds_its_spawn_key_from_the_journal() {
+        use dudes_proto::instruction_state::InstructionBoundarySettlement;
+        assert_eq!(PROJECTION_VERSION, 52);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.redb");
+        let journal = dir.path().join("journal");
+        let (mut writer, _) = crate::open(
+            &journal,
+            crate::JournalOptions {
+                fsync: Fsync::None,
+                checkpoint_every: 0,
+                ..crate::JournalOptions::default()
+            },
+        )
+        .unwrap();
+        let entries = native_receipt_entries();
+        let mut store = Projections::open_with(&path, Fsync::None).unwrap();
+        let mut positions = Vec::new();
+        for entry in &entries {
+            let (lsn, crc) = writer.append_witnessed(entry).unwrap();
+            store.apply(lsn, crc, entry).unwrap();
+            positions.push((lsn, crc));
+        }
+        let (started, _) = positions[2];
+        let (spawn, crc) = positions[4];
+        assert_ne!(spawn, Lsn::ZERO);
+        assert_ne!(crc, 0);
+        let expected_state = store.instruction_state().unwrap();
+        let expected_export = store.export().unwrap();
+        drop(store);
+        let store = Projections::open_with(&path, Fsync::None).unwrap();
+        assert_eq!(
+            (store.last_applied_lsn(), store.last_applied_crc()),
+            (spawn, Some(u64::from(crc)))
+        );
+        assert_eq!(store.export().unwrap(), expected_export);
+        drop(store);
+        install_flat_native_receipt(&path, started, spawn, crc);
+        let mut rebuilt = Projections::open_with(&path, Fsync::None).unwrap();
+        assert_eq!(
+            (rebuilt.last_applied_lsn(), rebuilt.last_applied_crc()),
+            (Lsn::ZERO, None)
+        );
+        assert_eq!(rebuilt.counts().unwrap(), (0, 0));
+        {
+            let txn = rebuilt.db.begin_read().unwrap();
+            assert_eq!(txn.open_table(INSTRUCTIONS).unwrap().len().unwrap(), 0);
+        }
+        assert_eq!(
+            crate::replay(&crate::Reader::new(&journal), &mut rebuilt)
+                .unwrap()
+                .applied,
+            5
+        );
+        assert_eq!(rebuilt.instruction_state().unwrap(), expected_state);
+        assert_eq!(rebuilt.export().unwrap(), expected_export);
+        let settled = native_receipt_settlement(started, spawn, &entries[4]);
+        reject_wrong_native_key(&mut rebuilt, Lsn(spawn.0 + 1), crc, &settled);
+        assert_eq!(rebuilt.instruction_state().unwrap(), expected_state);
+        assert_eq!(rebuilt.export().unwrap(), expected_export);
+        let (lsn, crc) = writer.append_witnessed(&settled).unwrap();
+        rebuilt.apply(lsn, crc, &settled).unwrap();
+        let Record::InstructionAttemptBoundarySettled { proof, .. } = settled.record else {
+            unreachable!()
+        };
+        assert_eq!(
+            rebuilt
+                .instruction_state()
+                .unwrap()
+                .attempt(started)
+                .unwrap()
+                .boundary_settled,
+            Some(InstructionBoundarySettlement { lsn, proof })
+        );
+        let mut fresh =
+            Projections::open_with(&dir.path().join("fresh.redb"), Fsync::None).unwrap();
+        assert_eq!(
+            crate::replay(&crate::Reader::new(&journal), &mut fresh)
+                .unwrap()
+                .applied,
+            6
+        );
+        assert_eq!(
+            fresh.instruction_state().unwrap(),
+            rebuilt.instruction_state().unwrap()
+        );
+        assert_eq!(fresh.export().unwrap(), rebuilt.export().unwrap());
+    }
+
     #[test]
     fn messages_preserve_original_metadata_and_replay_rebuilds_a_version_27_cache() {
         let dir = tempfile::tempdir().unwrap();
