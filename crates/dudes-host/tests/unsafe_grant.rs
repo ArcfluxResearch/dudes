@@ -1,9 +1,9 @@
-//! the `unsafe` grant is one module on one platform, and its size is a **test**.
+//! the `unsafe` grant is two named modules, and its size is a **test**.
 //!
 //! The crate sets `unsafe_code = "deny"` rather than inheriting the workspace's `forbid`, because
 //! `forbid` cannot be re-levelled from source and therefore admits no module-scoped exemption at
-//! all. What that buys back is the ability to write `#[allow(unsafe_code)]` on exactly one module —
-//! and what stops it becoming a habit is this file. A grant that spreads by one module at a time
+//! all. What that buys back is the ability to write `#[allow(unsafe_code)]` on exactly the named
+//! modules — and what stops it becoming a habit is this file. A grant that spreads by one module at a time
 //! ends up as a platform surface nobody reads; a grant whose growth is a red test does not.
 //!
 //! The scan reads code lines only, and that is the whole reason it works here: every module in this
@@ -20,8 +20,8 @@
 //! change.
 //!
 //! It also matches by **file name**, not by path, so moving `src/windows.rs` to
-//! `src/plat/windows.rs` leaves [`the_unsafe_grant_covers_one_module_and_no_other`] green —
-//! measured, not supposed. The move does not get through this file, but only because
+//! `src/plat/windows.rs` leaves [`the_unsafe_grant_covers_the_named_modules_and_no_other`]
+//! green — measured, not supposed. The move does not get through this file, but only because
 //! [`the_windows_layer_never_claims_positive_absence`] reads a fixed path and goes red instead;
 //! that is luck, not design, and the two would come apart the moment the second test changed.
 //! Noted rather than fixed: widening the walk to match on path is its own change, and a hole
@@ -31,9 +31,15 @@ mod common;
 
 use std::fs;
 
-/// The one file the grant covers, matched by name — see the module docs on what that does not
-/// catch. Changing this line is the visible cost of widening the grant.
+/// The Windows module, which owns the process-ownership grant and is the one measured below.
 const GRANTED: &str = "windows.rs";
+
+/// The Unix module that clears the signal mask between `fork` and `exec`: one block, nothing else.
+const SIGMASK: &str = "sigmask.rs";
+
+/// Every file the grant covers, matched by name — see the module docs on what that does not
+/// catch, in sorted order. Changing this line is the visible cost of widening the grant.
+const GRANTED_FILES: &[&str] = &[SIGMASK, GRANTED];
 
 /// The shapes `unsafe` takes in code. Deliberately not the bare word: the bare word appears all
 /// over the prose of this crate, and matching it there would make the guard unusable.
@@ -46,11 +52,11 @@ const GRANTS: &[&str] = &[
     "unsafe extern",
 ];
 
-/// `unsafe` appears in the Windows platform module and in no other file **under
-/// `src/`**. This is the test that goes red when the exemption spreads there; the module docs say
-/// what it does not reach.
+/// `unsafe` appears in the Windows platform module and the signal-mask module and in no other file
+/// **under `src/`**. This is the test that goes red when the exemption spreads there; the module
+/// docs say what it does not reach.
 #[test]
-fn the_unsafe_grant_covers_one_module_and_no_other() {
+fn the_unsafe_grant_covers_the_named_modules_and_no_other() {
     let sources = common::rust_sources();
     assert!(
         sources.len() >= 5,
@@ -65,10 +71,9 @@ fn the_unsafe_grant_covers_one_module_and_no_other() {
             continue;
         }
         let name = path.file_name().expect("a file name").to_string_lossy();
-        assert_eq!(
-            name,
-            GRANTED,
-            "{} contains {found:?}; the unsafe grant is `{GRANTED}` alone",
+        assert!(
+            GRANTED_FILES.contains(&&*name),
+            "{} contains {found:?}; the unsafe grant is {GRANTED_FILES:?} alone",
             path.display()
         );
         granted_files.push(name.into_owned());
@@ -76,10 +81,14 @@ fn the_unsafe_grant_covers_one_module_and_no_other() {
     // Not vacuous, and this is the deliberate strengthening: the scan reads files from disk rather
     // than compiling them, so `src/windows.rs` is scanned on every runner even where it is not
     // compiled. A grant added on a machine that never builds for Windows still goes red.
+    granted_files.sort();
     assert_eq!(
         granted_files,
-        vec![GRANTED.to_owned()],
-        "the granted module should be the one and only file using the grant"
+        GRANTED_FILES
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>(),
+        "the granted modules should be the only files using the grant"
     );
 }
 
@@ -228,6 +237,28 @@ fn the_grant_is_exactly_the_size_recorded_here() {
         sized, GRANTS,
         "GRANT_SIZE must hold exactly the shapes in GRANTS, once each and in that order; a shape \
          with no row is one the grant can grow in unmeasured"
+    );
+}
+
+/// The signal-mask module holds exactly one block and one module attribute, and nothing else.
+#[test]
+fn the_signal_mask_grant_is_one_block() {
+    let text = fs::read_to_string(common::src_dir().join(SIGMASK)).expect("read sigmask.rs");
+    let measured: Vec<(&str, usize)> = GRANTS
+        .iter()
+        .map(|shape| (*shape, common::count_in_code(&text, shape)))
+        .collect();
+    assert_eq!(
+        measured,
+        vec![
+            ("unsafe_code", 1),
+            ("unsafe {", 1),
+            ("unsafe fn", 0),
+            ("unsafe impl", 0),
+            ("unsafe trait", 0),
+            ("unsafe extern", 0),
+        ],
+        "the grant in src/{SIGMASK} changed; it is meant to hold one `pre_exec` block"
     );
 }
 

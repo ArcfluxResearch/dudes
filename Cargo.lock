@@ -354,6 +354,7 @@ dependencies = [
  "dudes-supervisor",
  "dudes-win",
  "libproc",
+ "nix",
  "rustix",
  "tempfile",
  "tracing",
@@ -420,6 +421,7 @@ version = "0.88.0"
 dependencies = [
  "dudes-proto",
  "dudes-providers",
+ "nix",
  "proc-macro2",
  "rustix",
  "tempfile",

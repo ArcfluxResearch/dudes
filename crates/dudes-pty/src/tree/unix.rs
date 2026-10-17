@@ -127,11 +127,16 @@ pub(crate) fn spawn(spec: LaunchSpec, size: PtySize) -> io::Result<Spawned> {
         command.env(env.name(), env.expose_value());
     }
     command.current_dir(spec.cwd);
-    // SAFETY: the closure runs after fork and before exec. It calls only direct rustix syscall
-    // wrappers over owned descriptors: setsid, TIOCSCTTY and dup2. It allocates nothing, locks
-    // nothing, touches no shared memory, and retains no borrowed pointer across exec.
+    // SAFETY: the closure runs after fork and before exec. It calls only direct syscall wrappers
+    // over owned descriptors and an empty signal set: pthread_sigmask, setsid, TIOCSCTTY and dup2.
+    // It allocates nothing, locks nothing, touches no shared memory, and retains no borrowed
+    // pointer across exec.
     unsafe {
         command.pre_exec(move || {
+            // The daemon blocks its stop signals on every thread, and the child would inherit them.
+            nix::sys::signal::SigSet::empty()
+                .thread_set_mask()
+                .map_err(io::Error::from)?;
             rustix::process::setsid().map_err(io::Error::from)?;
             rustix::process::ioctl_tiocsctty(&user).map_err(io::Error::from)?;
             rustix::stdio::dup2_stdin(&user).map_err(io::Error::from)?;
