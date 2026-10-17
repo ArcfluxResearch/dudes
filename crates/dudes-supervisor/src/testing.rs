@@ -1565,6 +1565,7 @@ mod tests {
         let (agent, _) = original.hire_with_goal(&["true"]);
         let mut harness = Harness::from_prefix(original.journal);
         harness.launch = false;
+        harness.drive(Input::Started);
         let command = RecoveryCommand {
             request_id: dudes_proto::record::Hex32::new([71; 32]),
             digest: dudes_proto::record::Hex32::new([72; 32]),
@@ -1589,7 +1590,7 @@ mod tests {
             .iter()
             .find_map(|seen| match seen {
                 Seen::Persist { token, entry }
-                    if entry.record.kind() == RecordKind::RecoveryRequired =>
+                    if entry.record.kind() == RecordKind::RecoveryAuthorized =>
                 {
                     Some(*token)
                 }
@@ -1616,15 +1617,30 @@ mod tests {
 
         let mut enabled = Harness::from_prefix(before);
         enabled.launch = false;
+        enabled.drive(Input::Started);
+        assert_eq!(
+            enabled
+                .supervisor
+                .recovery_opportunity(agent)
+                .unwrap()
+                .expected,
+            command.expected
+        );
         let prefix_len = enabled.journal.len();
+        let required = enabled
+            .journal
+            .iter()
+            .position(|entry| matches!(&entry.record, Record::RecoveryRequired(required) if required.binding.work == command.expected.work))
+            .unwrap();
+        assert!(required < prefix_len);
         let immediate = enabled.recover(command.clone());
         assert_eq!(immediate.recovery().unwrap().request_id, command.request_id);
         assert_eq!(immediate.recovery().unwrap().refusal, None);
         let appended = &enabled.journal[prefix_len..];
         let kinds: Vec<_> = appended.iter().map(|entry| entry.record.kind()).collect();
-        let expected = [RecordKind::RecoveryRequired, RecordKind::RecoveryAuthorized];
-        assert!(kinds.starts_with(&expected));
-        let Record::RecoveryAuthorized(authorization) = &appended[1].record else {
+        assert!(kinds.starts_with(&[RecordKind::RecoveryAuthorized]));
+        assert!(kinds.contains(&RecordKind::InstructionObservationStarted));
+        let Record::RecoveryAuthorized(authorization) = &appended[0].record else {
             unreachable!()
         };
         assert_eq!(authorization.request_id, command.request_id);
