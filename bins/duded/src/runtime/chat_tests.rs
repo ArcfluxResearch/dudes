@@ -1953,6 +1953,35 @@ impl HistoricalReplay {
     }
 }
 
+fn assert_historical_replay_is_unsettled(history: &HistoricalReplay, failure: &str) {
+    let mut after = dudes_supervisor::World::default();
+    for (lsn, entry) in history.fixture.entries() {
+        after.apply(lsn, &entry);
+    }
+    assert_eq!(
+        after.agents[&history.agent].open_turn,
+        Some(history.turn),
+        "{failure} failure cannot settle an old dispatch"
+    );
+    assert_eq!(
+        after.agents[&history.agent].pending_answers,
+        history.before.agents[&history.agent].pending_answers
+    );
+    assert_eq!(
+        after.agents[&history.agent].last_turn_end,
+        history.before.agents[&history.agent].last_turn_end
+    );
+    assert_eq!(
+        after.goals[&history.goal].turns_on_goal,
+        history.before.goals[&history.goal].turns_on_goal
+    );
+    assert!(
+        !history.fixture.records().iter().any(
+            |record| matches!(record, Record::TurnEnded { turn, .. } if *turn == history.turn)
+        )
+    );
+}
+
 fn assert_failed_replay_preserves_history(failure: &str) {
     let history = HistoricalReplay::new();
     let host = common::SharedHost::with(dudes_supervisor::testing::FakeHost {
@@ -2011,32 +2040,7 @@ fn assert_failed_replay_preserves_history(failure: &str) {
         assert!(pause.wait_returned(1, Duration::from_secs(5)));
     }
     restarted.handle.doctor().unwrap();
-    let mut after = dudes_supervisor::World::default();
-    for (lsn, entry) in history.fixture.entries() {
-        after.apply(lsn, &entry);
-    }
-    assert_eq!(
-        after.agents[&history.agent].open_turn,
-        Some(history.turn),
-        "{failure} failure cannot settle an old dispatch"
-    );
-    assert_eq!(
-        after.agents[&history.agent].pending_answers,
-        history.before.agents[&history.agent].pending_answers
-    );
-    assert_eq!(
-        after.agents[&history.agent].last_turn_end,
-        history.before.agents[&history.agent].last_turn_end
-    );
-    assert_eq!(
-        after.goals[&history.goal].turns_on_goal,
-        history.before.goals[&history.goal].turns_on_goal
-    );
-    assert!(
-        !history.fixture.records().iter().any(
-            |record| matches!(record, Record::TurnEnded { turn, .. } if *turn == history.turn)
-        )
-    );
+    assert_historical_replay_is_unsettled(&history, failure);
     let outcome = restarted
         .handle
         .chat(

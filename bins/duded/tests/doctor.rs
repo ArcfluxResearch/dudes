@@ -335,13 +335,13 @@ fn recover_unconfirmed(
         "ordinary resume does not invent recovery consent"
     );
 
-    submit_fresh_recovery(fixture, settings, *expected, Hex32::new([request_byte; 32]))
+    submit_fresh_recovery(fixture, settings, &expected, Hex32::new([request_byte; 32]))
 }
 
 fn submit_fresh_recovery(
     fixture: &Fixture,
     settings: &duded::Settings,
-    expected: ExpectedRecovery,
+    expected: &ExpectedRecovery,
     request_id: Hex32,
 ) -> TurnId {
     let mut client = Client::connect(settings.socket()).expect("connect as the operator");
@@ -351,7 +351,7 @@ fn submit_fresh_recovery(
             Some(
                 serde_json::to_value(RecoverySubmitParams {
                     request_id,
-                    expected,
+                    expected: *expected,
                     choice: RecoveryChoice::FreshWithRecap,
                 })
                 .unwrap(),
