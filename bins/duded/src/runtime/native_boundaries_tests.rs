@@ -884,9 +884,12 @@ fn prior_run_settlement_during_closing_replays_without_admitting_work() {
         .prior_run(&attempt.key, NativeGroupPresence::Absent);
     owned
         .daemon
-        .pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, |_| {
-            Ok(Handled::default())
-        })
+        .pump_started(
+            &mut PumpReport::Discard,
+            PumpOrigin::Closing,
+            &[],
+            |_, _operation| Ok(Handled::default()),
+        )
         .unwrap();
     assert_eq!(owned.settlements(), 1);
     assert!(owned.daemon.sup.is_closing());

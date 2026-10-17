@@ -317,7 +317,7 @@ test('with no project the new ticket form says how to set one up', () => {
 
 test('unavailable project choices do not imply missing agents or missing enrollment', () => {
   const settings = {
-    switches: { answer: false, control: true, goal: true, retire: false, terminal: false, hire: true, git: false, renew: false },
+    switches: { answer: false, control: true, recovery: false, goal: true, retire: false, terminal: false, hire: true, git: false, renew: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '250000', per_turn_tokens: '20000' },
     providers: ['claude'], about: { daemon_version: '0.85.0', browser_wire_version: 3 },
     workspaces: [{ workspace_id: 'service', label: 'Service', agent_usd_per_day_micros: null,

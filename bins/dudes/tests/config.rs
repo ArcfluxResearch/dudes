@@ -395,7 +395,7 @@ fn a_value_the_key_does_not_take_is_refused_before_any_write() {
         (
             &["floor.bogus", "on"],
             "`floor.bogus` is not a config key; the keys are providers.codex, providers.codex.streaming, providers.pi, \
-             floor.answer, floor.hire, floor.control, floor.goal, floor.renew, floor.retire, floor.board, floor.terminal, \
+             floor.answer, floor.hire, floor.control, floor.recovery, floor.goal, floor.renew, floor.retire, floor.board, floor.terminal, \
              floor.git, floor.diff, budget.floor_usd_per_day, budget.per_turn_floor.usd, budget.per_turn_floor.tokens"
                 .to_owned(),
         ),
@@ -464,6 +464,7 @@ providers.pi                  on
 floor.answer                  off
 floor.hire                    off
 floor.control                 on
+floor.recovery                off
 floor.goal                    off
 floor.renew                   off
 floor.retire                  off
@@ -652,6 +653,35 @@ fn turning_renewal_on_asks_for_a_restart() {
         restart(&config, "floor.renew")
     );
     assert_eq!(set(&cli, "floor.renew", "off"), no_restart(&config));
+}
+
+#[test]
+fn recovery_can_be_configured_without_control_but_requires_restart() {
+    let fixture = Fixture::new();
+    let home = fixture.state.path().join("home");
+    let config = config_for(&home);
+    let (_running, cli) = running_on(&fixture, &home, RUNNING, &home);
+    assert_eq!(
+        set(&cli, "floor.recovery", "on"),
+        restart(&config, "floor.recovery")
+    );
+    let loaded = duded::config::load_operator(&config).unwrap();
+    assert!(loaded.recovery_enabled);
+    let report = cli.clone().args(["workspace", "reload"]).run();
+    assert!(
+        report
+            .stdout
+            .contains("\nneeds a daemon restart: floor.recovery\n"),
+        "{}",
+        report.output()
+    );
+    assert_eq!(set(&cli, "floor.recovery", "off"), no_restart(&config));
+    let off = "[floor.recovery]\nenabled = true\n[memory]\ncondense_model_enabled = false\n";
+    std::fs::write(&config, off).unwrap();
+    assert!(Settings::read(&config).unwrap().problems().is_empty());
+    let loaded = duded::config::load_operator(&config).unwrap();
+    assert!(loaded.recovery_enabled);
+    assert!(!loaded.control.pause_resume());
 }
 
 /// A daemon that reads another file cannot say whether this one matches it, so the edit names

@@ -12,7 +12,7 @@ import { readGuideClosed, rememberGuideClosed } from '../src/renderer/view.ts';
 
 const ID = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
 const SETTINGS = {
-  switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false, git: false, renew: false },
+  switches: { answer: false, control: false, recovery: false, goal: false, retire: false, terminal: false, hire: false, git: false, renew: false },
   budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '0', per_turn_tokens: '0' },
   providers: ['claude'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 3 },
 };

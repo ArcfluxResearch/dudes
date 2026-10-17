@@ -25,16 +25,42 @@ use super::{Ctx, Daemon, PumpOrigin, PumpReport};
 use crate::ports::Answered;
 use crate::predicate::PredicateRunner;
 
+mod append;
+mod scope;
 #[cfg(test)]
 mod tests;
+pub(super) use append::{AppendSubject, IssueClassification};
+pub(super) use scope::input_works;
 
 pub(super) struct CommandContext {
-    admission: OperatorAdmission,
+    authority: CommandAuthority,
     command: RecoveryCommand,
     update: RecoveryUpdate,
 }
 
+enum CommandAuthority {
+    Local(OperatorAdmission),
+    Browser {
+        identity: crate::floor_session::SessionIdentity,
+        intent: Box<dudes_proto::rpc::recovery::RecoverySubmitParams>,
+    },
+}
+
+#[derive(Debug)]
+pub(super) struct NoWrite(pub(super) RecoveryRefusal);
+
+impl std::fmt::Display for NoWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "recovery append refused before writing: {:?}", self.0)
+    }
+}
+
+impl std::error::Error for NoWrite {}
+
 impl CommandContext {
+    pub(super) fn work(&self) -> dudes_proto::recovery::RecoveryWork {
+        self.command.expected.work
+    }
     fn new(admission: OperatorAdmission, command: RecoveryCommand) -> Self {
         let update = RecoveryUpdate {
             request_id: command.request_id,
@@ -42,42 +68,105 @@ impl CommandContext {
             refusal: None,
         };
         Self {
-            admission,
+            authority: CommandAuthority::Local(admission),
             command,
             update,
         }
     }
 
-    pub(super) fn join(&self, append: RecoveryAppend, entry: &dudes_proto::Entry) -> Result<()> {
+    fn browser(
+        identity: crate::floor_session::SessionIdentity,
+        intent: &dudes_proto::rpc::recovery::RecoverySubmitParams,
+    ) -> Result<Self, RpcError> {
+        let command = crate::ports::recovery_command(
+            intent,
+            RecoveryAttribution::BrowserSession {
+                session_digest: identity.digest(),
+            },
+        )?;
+        let update = RecoveryUpdate {
+            request_id: command.request_id,
+            prefix: RecoveryPrefix::default(),
+            refusal: None,
+        };
+        Ok(Self {
+            authority: CommandAuthority::Browser {
+                identity,
+                intent: Box::new(*intent),
+            },
+            command,
+            update,
+        })
+    }
+
+    pub(super) fn join(&self, append: &RecoveryAppend, entry: &dudes_proto::Entry) -> Result<()> {
         anyhow::ensure!(
             append.request_id == self.command.request_id
-                && append.work == self.command.expected.work,
+                && append.work == self.command.expected.work
+                && append.digest == self.command.digest
+                && append.expected == self.command.expected
+                && append.choice == self.command.choice
+                && append.attribution == self.command.attribution
+                && append.prefix == self.update.prefix,
             "recovery append escaped its admitted command"
         );
+        let attribution = match &self.authority {
+            CommandAuthority::Local(admission) => RecoveryAttribution::LocalOperator {
+                pid: admission.pid(),
+                uid: admission.uid(),
+            },
+            CommandAuthority::Browser { identity, intent } => {
+                let attribution = RecoveryAttribution::BrowserSession {
+                    session_digest: identity.digest(),
+                };
+                let original =
+                    crate::ports::recovery_command(intent, attribution).map_err(|_| {
+                        anyhow::anyhow!("original recovery intent could not be encoded")
+                    })?;
+                anyhow::ensure!(
+                    original == self.command,
+                    "recovery differs from its original browser intent"
+                );
+                attribution
+            }
+        };
         anyhow::ensure!(
-            self.command.attribution
-                == RecoveryAttribution::LocalOperator {
-                    pid: self.admission.pid(),
-                    uid: self.admission.uid()
-                },
-            "recovery attribution differs from admitted operator"
+            self.command.attribution == attribution,
+            "recovery attribution differs from its admitted actor"
         );
         let matched = match (&entry.record, append.stage) {
             (dudes_proto::Record::RecoveryRequired(required), RecoveryStage::Required) => {
                 required.binding.work == append.work
+                    && required.binding.issue_lsn == self.command.expected.issue_lsn
+                    && required.predecessor == self.command.expected.predecessor
             }
-            (
-                dudes_proto::Record::Resume {
-                    agent,
-                    browser: None,
-                },
-                RecoveryStage::Resume,
-            ) => *agent == append.work.agent,
+            (dudes_proto::Record::Resume { agent, browser }, RecoveryStage::Resume) => {
+                *agent == append.work.agent
+                    && match (browser, self.command.attribution) {
+                        (None, RecoveryAttribution::LocalOperator { .. }) => true,
+                        (Some(browser), RecoveryAttribution::BrowserSession { session_digest }) => {
+                            browser.request_id == self.command.request_id
+                                && browser.request_digest == self.command.digest
+                                && browser.control_lsn == self.command.expected.control_lsn
+                                && browser.session_digest == session_digest
+                        }
+                        _ => false,
+                    }
+            }
             (dudes_proto::Record::RecoveryAuthorized(authorized), RecoveryStage::Authorized) => {
                 authorized.request_id == append.request_id
                     && authorized.request_digest == self.command.digest
                     && authorized.binding.work == append.work
                     && authorized.attribution == self.command.attribution
+                    && authorized.binding.issue_lsn == self.command.expected.issue_lsn
+                    && authorized.expected_control == self.command.expected.control_lsn
+                    && authorized.resume_lsn == self.update.prefix.resume
+                    && authorized.resulting_control
+                        == self
+                            .update
+                            .prefix
+                            .resume
+                            .or(self.command.expected.control_lsn)
             }
             _ => false,
         };
@@ -86,6 +175,26 @@ impl CommandContext {
             "recovery append stage differs from its parked continuation"
         );
         Ok(())
+    }
+
+    pub(super) fn permit<'a>(
+        &'a self,
+        authority: Option<&crate::floor_session::FloorRecoveryAuthority>,
+        grants: crate::floor_session::RecoveryGrants,
+    ) -> Result<Option<crate::floor_session::MutationPermit<'a>>, NoWrite> {
+        match &self.authority {
+            CommandAuthority::Local(_) => Ok(None),
+            CommandAuthority::Browser { identity, .. } => {
+                if !grants.enabled() {
+                    return Err(NoWrite(RecoveryRefusal::AuthorityUnavailable));
+                }
+                let authority = authority.ok_or(NoWrite(RecoveryRefusal::Unavailable))?;
+                authority
+                    .permit_identity(identity, &self.command.attribution, grants)
+                    .map(Some)
+                    .map_err(|error| NoWrite(permit_refusal(error)))
+            }
+        }
     }
 
     pub(super) fn refused(&self) -> bool {
@@ -206,6 +315,26 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         command: RecoveryCommand,
         admission: OperatorAdmission,
     ) -> Answered {
+        self.recovery_submit_context(CommandContext::new(admission, command))
+    }
+
+    pub(super) fn recovery_submit_browser(
+        &mut self,
+        session: crate::floor_session::SessionIdentity,
+        intent: &dudes_proto::rpc::recovery::RecoverySubmitParams,
+    ) -> RecoverySubmitResult {
+        let request_id = intent.request_id;
+        let Ok(context) = CommandContext::browser(session, intent) else {
+            return RecoverySubmitResult::Unknown { request_id };
+        };
+        let Answered::RecoverySubmitted(result) = self.recovery_submit_context(context) else {
+            unreachable!("owned recovery result")
+        };
+        result
+    }
+
+    fn recovery_submit_context(&mut self, context: CommandContext) -> Answered {
+        let command = context.command.clone();
         let request = command.request_id;
         let prefix = RecoveryKnownPrefix {
             required: None,
@@ -265,11 +394,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         {
             return refused(RecoverySubmitRefusal::NotRecoverable);
         }
-        let mut report =
-            PumpReport::Recovery(Box::new(CommandContext::new(admission, command.clone())));
-        let result = self.pump_started(&mut report, PumpOrigin::Ordinary, move |sup| {
-            Ok(sup.recover(command, &dudes_supervisor::RecoveryOperation::empty()))
-        });
+        let mut report = PumpReport::Recovery(Box::new(context));
+        let result = self.pump_started(
+            &mut report,
+            PumpOrigin::Ordinary,
+            &[],
+            move |sup, operation| Ok(sup.recover(command, operation)),
+        );
         let PumpReport::Recovery(context) = report else {
             unreachable!("owned recovery report")
         };
@@ -483,6 +614,9 @@ fn recovery_waits<C: Clock, R: Rng>(
 }
 
 pub(super) fn known_no_write(error: &anyhow::Error) -> Option<RecoveryRefusal> {
+    if let Some(no_write) = error.downcast_ref::<NoWrite>() {
+        return Some(no_write.0);
+    }
     if error.downcast_ref::<super::KnownNoEffect>().is_some() {
         return Some(RecoveryRefusal::Unavailable);
     }
@@ -497,6 +631,17 @@ pub(super) fn known_no_write(error: &anyhow::Error) -> Option<RecoveryRefusal> {
             _ => RecoveryRefusal::StaleWork,
         }),
         _ => None,
+    }
+}
+
+pub(super) const fn permit_refusal(
+    error: crate::floor_session::RecoveryPermitFailure,
+) -> RecoveryRefusal {
+    match error {
+        crate::floor_session::RecoveryPermitFailure::AuthorityUnavailable => {
+            RecoveryRefusal::AuthorityUnavailable
+        }
+        crate::floor_session::RecoveryPermitFailure::Indeterminate => RecoveryRefusal::Unavailable,
     }
 }
 

@@ -5,7 +5,7 @@ import { applyServerFrame, beginFloorEpoch, getFloorState, noteTransport, resetF
 import { decodeSettingsReport } from '../src/renderer/settings/report.ts';
 
 const REPORT = {
-  switches: { answer: false, control: true, goal: false, retire: true, terminal: false, hire: true, git: true, renew: false },
+  switches: { answer: false, control: true, recovery: false, goal: false, retire: true, terminal: false, hire: true, git: true, renew: false },
   budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '1234', per_turn_tokens: '9007199254740993' },
   providers: ['claude', 'codex'],
   workspaces: [{ workspace_id: 'repo_1', label: '<Service>', agent_usd_per_day_micros: '10000000',
@@ -26,6 +26,8 @@ test('settings reads only the bounded allowlist and preserves large reserves', (
     { ...REPORT, switches: (({ git: _git, ...rest }) => rest)(REPORT.switches) },
     { ...REPORT, switches: (({ renew: _renew, ...rest }) => rest)(REPORT.switches) },
     { ...REPORT, switches: { ...REPORT.switches, renew: 'on' } },
+    { ...REPORT, switches: (({ recovery: _recovery, ...rest }) => rest)(REPORT.switches) },
+    { ...REPORT, switches: { ...REPORT.switches, recovery: 'on' } },
     { ...REPORT, switches: { ...REPORT.switches, git: 1 } },
     { ...REPORT, switches: { ...REPORT.switches, hire: 'on' } },
     { ...REPORT, budget: { ...REPORT.budget, per_turn_tokens: 9007199254740993 } },
@@ -65,4 +67,10 @@ test('settings belongs to its authenticated snapshot and clears on stream loss',
 test('the renew switch is read as a boolean, in either state', () => {
   assert.equal(decodeSettingsReport(REPORT)?.switches.renew, false);
   assert.equal(decodeSettingsReport({ ...REPORT, switches: { ...REPORT.switches, renew: true } })?.switches.renew, true);
+});
+
+
+test('the recovery switch is a required boolean in either state', () => {
+  assert.equal(decodeSettingsReport(REPORT)?.switches.recovery, false);
+  assert.equal(decodeSettingsReport({ ...REPORT, switches: { ...REPORT.switches, recovery: true } })?.switches.recovery, true);
 });

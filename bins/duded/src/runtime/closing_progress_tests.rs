@@ -197,7 +197,8 @@ fn failure_serializing_the_last_folded_patch_keeps_its_original_context() {
             &mut PumpReport::Discard,
             PumpOrigin::Ordinary,
             inputs,
-            |_| Ok(Handled::default()),
+            &[],
+            |_, _operation| Ok(Handled::default()),
         )
         .unwrap_err();
     assert_eq!(

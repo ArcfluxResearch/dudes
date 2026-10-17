@@ -138,9 +138,12 @@ fn direct_and_pump_acknowledgments_require_some_and_the_exact_current_cut() {
             _ => unreachable!(),
         };
         let result = if mismatch == "advanced" {
-            daemon.pump_started(&mut PumpReport::Discard, PumpOrigin::Ordinary, move |_| {
-                Ok(handled)
-            })
+            daemon.pump_started(
+                &mut PumpReport::Discard,
+                PumpOrigin::Ordinary,
+                &[],
+                move |_, _operation| Ok(handled),
+            )
         } else {
             daemon
                 .ctx
@@ -201,7 +204,8 @@ fn actual_world_refusal_fences_and_stops_later_queued_work() {
             &mut PumpReport::Discard,
             PumpOrigin::Ordinary,
             queue,
-            |_| Ok(Handled::default()),
+            &[],
+            |_, _operation| Ok(Handled::default()),
         )
         .unwrap_err();
     assert_eq!(
@@ -225,11 +229,16 @@ fn a_closing_start_refusal_keeps_its_original_error_identity() {
     let fixture = common::Fixture::new();
     let mut daemon = empty(&fixture);
     let failure = daemon
-        .pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, |_| {
-            Err(anyhow::Error::new(
-                dudes_supervisor::closing::ClosingError::LaunchPending,
-            ))
-        })
+        .pump_started(
+            &mut PumpReport::Discard,
+            PumpOrigin::Closing,
+            &[],
+            |_, _operation| {
+                Err(anyhow::Error::new(
+                    dudes_supervisor::closing::ClosingError::LaunchPending,
+                ))
+            },
+        )
         .unwrap_err();
     assert_eq!(
         failure.downcast_ref::<dudes_supervisor::closing::ClosingError>(),

@@ -420,6 +420,10 @@ fn not_applied(
         ),
         ("floor.hire", running.hire_enabled != file.hire_enabled),
         (
+            "floor.recovery",
+            running.recovery_enabled != file.recovery_enabled,
+        ),
+        (
             "floor.control",
             running.control.pause_resume() != file.control.pause_resume(),
         ),
@@ -777,6 +781,7 @@ mod tests {
             ),
             ("floor.answer", with(|file| file.answer_enabled = true)),
             ("floor.hire", with(|file| file.hire_enabled = true)),
+            ("floor.recovery", with(|file| file.recovery_enabled = true)),
             (
                 "floor.control",
                 with(|file| file.control = crate::settings::FloorControl::Off),

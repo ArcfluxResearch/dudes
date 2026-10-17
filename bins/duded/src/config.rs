@@ -67,6 +67,8 @@ pub struct OperatorConfig {
     /// `[floor.retire]` are refused at load without `[floor.control]`,
     /// and `[floor.renew]` without both `[floor.goal]` and `[floor.hire]`.
     pub control: FloorControl,
+    /// `[floor.recovery] enabled`: recovery also requires the running pause/resume grant.
+    pub recovery_enabled: bool,
     /// `[floor.board] enabled`: whether the Floor may create, give, accept, stop and remove
     /// tickets. Absent or `false` registers no route and sends no `ticket` sibling. It is refused
     /// at load without both `[floor.control]` and `[floor.goal]`.
@@ -328,6 +330,7 @@ struct FloorTable {
     answer: Option<AnswerTable>,
     hire: Option<HireTable>,
     control: Option<ControlTable>,
+    recovery: Option<RecoveryTable>,
     goal: Option<GoalTable>,
     retire: Option<RetireTable>,
     renew: Option<RenewTable>,
@@ -376,6 +379,12 @@ struct HireTable {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ControlTable {
+    enabled: bool,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RecoveryTable {
     enabled: bool,
 }
 
@@ -759,6 +768,7 @@ pub(crate) fn parse_operator_and_memory_with_options(
     let answer_enabled = floor.answer.unwrap_or_default().enabled;
     let hire_enabled = floor.hire.unwrap_or_default().enabled;
     let control_enabled = floor.control.unwrap_or_default().enabled;
+    let recovery_enabled = floor.recovery.unwrap_or_default().enabled;
     let goal_enabled = floor.goal.unwrap_or_default().enabled;
     let retire_enabled = floor.retire.unwrap_or_default().enabled;
     let renew_enabled = floor.renew.unwrap_or_default().enabled;
@@ -824,6 +834,7 @@ pub(crate) fn parse_operator_and_memory_with_options(
                 answer_enabled,
                 hire_enabled,
                 control,
+                recovery_enabled,
                 board_enabled,
                 terminal_enabled,
                 git_enabled,
@@ -1009,6 +1020,34 @@ mod tests {
     fn absolute(tail: &str) -> PathBuf {
         let root = if cfg!(windows) { r"C:\" } else { "/" };
         Path::new(root).join(tail)
+    }
+
+    #[test]
+    fn recovery_is_default_off_and_loads_independently_of_control() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        for (text, recovery, control) in [
+            ("", false, false),
+            ("[floor.recovery]\nenabled = false\n", false, false),
+            ("[floor.recovery]\nenabled = true\n", true, false),
+            (
+                "[floor.recovery]\nenabled = true\n[floor.control]\nenabled = true\n",
+                true,
+                true,
+            ),
+        ] {
+            std::fs::write(&path, text).unwrap();
+            let loaded = super::load_operator(&path).unwrap();
+            assert_eq!(loaded.recovery_enabled, recovery);
+            assert_eq!(loaded.control.pause_resume(), control);
+        }
+        for text in [
+            "[floor.recovery]\nenabled = 'yes'\n",
+            "[floor.recovery]\nother = true\n",
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert!(super::load_operator(&path).is_err());
+        }
     }
 
     fn resolve(

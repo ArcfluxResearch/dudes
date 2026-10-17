@@ -13809,7 +13809,7 @@ fn browser_settings_view_is_an_exact_read_only_allowlist() {
     assert_eq!(
         frame["settings"],
         json!({
-            "switches": { "answer": true, "hire": true, "control": true, "goal": true, "renew": true, "retire": true, "terminal": true, "git": true },
+            "switches": { "answer": true, "hire": true, "control": true, "recovery": false, "goal": true, "renew": true, "retire": true, "terminal": true, "git": true },
             "budget": { "floor_usd_per_day_micros": "100000000", "per_turn_usd_micros": "1234", "per_turn_tokens": "9007199254740993" },
             "providers": ["claude"],
             "workspaces": [{ "workspace_id": "repo_1", "label": "Service workspace",
@@ -13857,7 +13857,7 @@ fn browser_settings_survive_unavailable_hire_and_provider_check() {
     assert_eq!(
         frame["settings"]["switches"],
         json!({
-            "answer": false, "hire": false, "control": false, "goal": false, "renew": false,
+            "answer": false, "hire": false, "control": false, "recovery": false, "goal": false, "renew": false,
             "retire": false, "terminal": false, "git": false
         })
     );

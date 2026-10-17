@@ -249,9 +249,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             });
             return Ok(());
         }
-        let spec = sup
-            .browser_dispatch_spec(*token, *turn, &dudes_supervisor::RecoveryOperation::empty())
-            .ok_or_else(|| anyhow::anyhow!("browser dispatch token is stale or mismatched"))?;
+        if !self.recovery_dispatch_allowed(sup, *turn) {
+            return Ok(());
+        }
+        let spec = self.with_recovery_facts(sup, &[], |sup, operation| {
+            sup.browser_dispatch_spec(*token, *turn, operation).cloned()
+        });
+        let Some(spec) = spec else { return Ok(()) };
         let owner = sup
             .world()
             .agents
@@ -284,34 +288,45 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             self.writer.poisoned().is_none(),
             "browser dispatch journal stopped after its append"
         );
-        let handled = sup
-            .handle(
-                Input::Persisted {
-                    token: *token,
-                    append,
-                },
-                &dudes_supervisor::RecoveryOperation::empty(),
-            )
+        let input = Input::Persisted {
+            token: *token,
+            append,
+        };
+        let works = super::recovery::input_works(&input);
+        let handled = self
+            .with_recovery_facts(sup, &works, |sup, operation| sup.handle(input, operation))
             .inspect_err(|_| self.fence_journal())?;
         self.require_handled_through(sup.world(), &handled, through)?;
         self.tokens.mark_folded();
         self.publish_folded_floor(sup.world(), closing)?;
         let effects = sup.take_effects();
-        let [
-            dudes_supervisor::Effect::Spawn {
-                turn: issued,
-                spec,
-                install,
-                mcp_grant,
-            },
-        ] = effects.as_slice()
-        else {
-            anyhow::bail!("browser intent acknowledgment did not yield its one prepared launch");
-        };
-        anyhow::ensure!(*issued == *turn, "browser intent yielded a different turn");
-        self.tokens
-            .publish_completed_folds(|| sup.world().token_hash_owners());
-        self.spawn_owned(*issued, spec, install, *mcp_grant, queue, sup)
+        let mut spawned = false;
+        for effect in &effects {
+            match effect {
+                dudes_supervisor::Effect::Spawn {
+                    turn: issued,
+                    spec,
+                    install,
+                    mcp_grant,
+                } => {
+                    anyhow::ensure!(
+                        !spawned && *issued == *turn,
+                        "browser intent yielded a different or repeated turn"
+                    );
+                    spawned = true;
+                    self.tokens
+                        .publish_completed_folds(|| sup.world().token_hash_owners());
+                    self.spawn_owned(*issued, spec, install, *mcp_grant, queue, sup)?;
+                }
+                dudes_supervisor::Effect::Persist { entry, .. }
+                    if matches!(entry.record, dudes_proto::Record::RecoveryInvalidated(_)) =>
+                {
+                    self.execute(effect, queue, &mut super::PumpReport::Discard, sup, closing)?;
+                }
+                _ => anyhow::bail!("browser intent acknowledgment yielded an unrelated effect"),
+            }
+        }
+        Ok(())
     }
 
     fn prepare_owned_launch<R: Rng>(
@@ -370,32 +385,32 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         queue: &mut std::collections::VecDeque<Input>,
         sup: &mut Supervisor<super::Shared<C>, R>,
     ) -> Result<()> {
-        if sup.world().turns.get(&turn).is_none_or(|row| {
-            !sup.recovery_launch_allowed(
-                row.agent,
-                turn,
-                &dudes_supervisor::RecoveryOperation::empty(),
-            )
-        }) || !self.recovery_turn_checkout_clear(sup, turn)
-        {
+        if !self.recovery_dispatch_allowed(sup, turn) {
             return Ok(());
         }
         let generation = self
             .resolved_browser_turn
             .filter(|(prepared, _)| *prepared == turn)
             .map(|(_, generation)| generation);
-        if !sup.claim_browser_dispatch(
-            turn,
-            generation,
-            &dudes_supervisor::RecoveryOperation::empty(),
-        ) {
+        if !self.with_recovery_facts(sup, &[], |sup, operation| {
+            sup.claim_browser_dispatch(turn, generation, operation)
+        }) {
             return Ok(());
         }
         let prepared = self.prepare_owned_launch(turn, spec, mcp_grant, generation.is_some(), sup);
         let cwd = prepared.as_ref().ok().map(|spec| spec.cwd.clone());
         let actual_host_call = prepared.is_ok();
         match match prepared {
-            Ok(spec) => self.host.spawn(&spec, install),
+            Ok(spec) => {
+                #[cfg(test)]
+                if let Some(before) = self.before_recovery_dispatch.take() {
+                    before();
+                }
+                if !self.recovery_dispatch_allowed(sup, turn) {
+                    return Ok(());
+                }
+                self.host.spawn(&spec, install)
+            }
             Err(reason) => super::SpawnResult::NotLaunched { reason },
         } {
             super::SpawnResult::Spawned(key) => {

@@ -892,7 +892,7 @@ COMMANDS
         providers.codex.streaming opts in to streaming with a separate sign-in home;
         it defaults to off and requires macOS or Linux. After restarting, sign in with
         dudes login codex.
-        The Floor's actions: floor.answer, floor.hire, floor.control, floor.goal,
+        The Floor's actions: floor.answer, floor.hire, floor.control, floor.recovery, floor.goal,
         floor.renew, floor.retire, floor.board, floor.terminal, floor.git and floor.diff, on or off.
         Chat is always on and has no setting. The budget: budget.floor_usd_per_day and
         budget.per_turn_floor.usd in dollars, budget.per_turn_floor.tokens in tokens.

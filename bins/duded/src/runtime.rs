@@ -850,10 +850,7 @@ impl AcceptPanic {
 #[cfg(feature = "fault-injection")]
 fn recovery_stop_for_append<'stop>(
     stop: Option<&'stop crate::fault::RecoveryStop>,
-    recovery: Option<(
-        &recovery::CommandContext,
-        dudes_supervisor::input::RecoveryAppend,
-    )>,
+    recovery: Option<recovery::AppendSubject<'_>>,
     entry: &Entry,
 ) -> Option<(
     &'stop crate::fault::RecoveryStop,
@@ -863,7 +860,7 @@ fn recovery_stop_for_append<'stop>(
 )> {
     let stop = stop?;
     let (stage, target) = match (recovery, &entry.record) {
-        (Some((_, metadata)), _) => (
+        (Some(recovery::AppendSubject::Command { metadata, .. }), _) => (
             metadata.stage,
             RecoveryStopTarget::Command {
                 work: metadata.work,
@@ -885,6 +882,11 @@ fn recovery_stop_for_append<'stop>(
     };
     Some((stop, stage, target, point))
 }
+
+#[cfg(test)]
+type RecoveryRecordHook = Box<dyn FnMut(&Record) + Send>;
+#[cfg(test)]
+type RecoveryInputHook = Box<dyn FnMut(&Input) + Send>;
 
 #[expect(
     clippy::struct_excessive_bools,
@@ -919,6 +921,16 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) control_index: crate::floor_control::ControlIndex,
     /// Fixed for the run: whether snapshots carry the `control`, `goal` and `retire` siblings.
     pub(crate) control: crate::settings::FloorControl,
+    pub(crate) recovery_enabled: bool,
+    pub(crate) recovery_authority: Option<crate::floor_session::FloorRecoveryAuthority>,
+    #[cfg(test)]
+    pub(crate) before_recovery_dispatch: Option<Box<dyn FnOnce() + Send>>,
+    #[cfg(test)]
+    pub(crate) before_recovery_append: Option<RecoveryRecordHook>,
+    #[cfg(test)]
+    pub(crate) after_recovery_fsync: Option<RecoveryRecordHook>,
+    #[cfg(test)]
+    pub(crate) before_recovery_input: Option<RecoveryInputHook>,
     /// Only attributed durable goal changes populate this replayable request index.
     pub(crate) goal_index: crate::goal_replacement::GoalChanges,
     pub(crate) rename_index: crate::floor_rename::DurableRenameIndex,
@@ -1316,10 +1328,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
             self.detach_gone_attachments()?;
             for _ in 0..2 {
-                self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, |sup| {
-                    let _ = sup.closing_recover(&dudes_supervisor::RecoveryOperation::empty());
-                    Ok(Handled::default())
-                })?;
+                self.pump_started(
+                    &mut PumpReport::Discard,
+                    PumpOrigin::Closing,
+                    &[],
+                    |sup, operation| {
+                        let _ = sup.closing_recover(operation);
+                        Ok(Handled::default())
+                    },
+                )?;
             }
             anyhow::ensure!(
                 !self.sup.recovering_closing(),
@@ -1466,6 +1483,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 } => {
                     let answer = self.onboard_goal(&session, &request);
                     let _ = reply.send(OnboardStep::Answer(answer));
+                }
+                Job::RecoverFromFloor {
+                    session,
+                    intent,
+                    reply,
+                } => {
+                    let _ = reply.send(self.recovery_submit_browser(session, &intent));
                 }
                 Job::Answer {
                     session,
@@ -1757,49 +1781,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 announcement,
                 after,
             } => {
-                let session = self
-                    .sup
-                    .world()
-                    .closing
-                    .as_ref()
-                    .filter(|session| session.announcement == announcement)
-                    .ok_or_else(|| refused("the closing announcement does not match"))?;
-                let mut participants: Vec<_> = session
-                    .participants
-                    .iter()
-                    .filter(|(agent, _)| after.is_none_or(|after| **agent > after))
-                    .take(129)
-                    .map(
-                        |(agent, row)| dudes_proto::rpc::closing::ClosingParticipantStatus {
-                            agent: *agent,
-                            name: row.name.clone(),
-                            acknowledged: row.acknowledged.is_some(),
-                            saving_turn: row.saving_turn,
-                            settled: self.sup.world().closing_standing(*agent, row).reason(),
-                        },
-                    )
-                    .collect();
-                let next = if participants.len() > 128 {
-                    participants.pop();
-                    participants.last().map(|row| row.agent)
-                } else {
-                    None
-                };
-                let answer = Answer::Status(dudes_proto::rpc::closing::ClosingStatus {
-                    announcement,
-                    phase: session.phase,
-                    deadline: self.closing.wall_deadline(session.announced_at),
-                    acknowledged: session
-                        .participants
-                        .values()
-                        .filter(|row| row.acknowledged.is_some())
-                        .count(),
-                    total: session.participants.len(),
-                    participants,
-                    next,
-                });
-                self.closing.responses += 1;
-                return Ok(answer);
+                return self.closing_status(announcement, after);
             }
             Request::Ack {
                 announcement,
@@ -1807,20 +1789,30 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             } => {
                 self.refuse_retired(agent)?;
                 self.require_journal_writes()?;
-                self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, move |sup| {
-                    sup.closing_ack(announcement, agent)?;
-                    Ok(Handled::default())
-                })
+                self.pump_started(
+                    &mut PumpReport::Discard,
+                    PumpOrigin::Closing,
+                    &[],
+                    move |sup, _operation| {
+                        sup.closing_ack(announcement, agent)?;
+                        Ok(Handled::default())
+                    },
+                )
                 .map_err(|failure| closing_pump_error(&failure))?;
                 self.closing.responses += 1;
                 return Ok(Answer::Ack);
             }
             Request::Announce => {
                 self.require_journal_writes()?;
-                self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, |sup| {
-                    sup.closing_announce()?;
-                    Ok(Handled::default())
-                })
+                self.pump_started(
+                    &mut PumpReport::Discard,
+                    PumpOrigin::Closing,
+                    &[],
+                    |sup, _operation| {
+                        sup.closing_announce()?;
+                        Ok(Handled::default())
+                    },
+                )
                 .map_err(|failure| closing_pump_error(&failure))?;
             }
         }
@@ -1848,6 +1840,57 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         Ok(answer)
     }
 
+    fn closing_status(
+        &mut self,
+        announcement: Lsn,
+        after: Option<AgentId>,
+    ) -> std::result::Result<crate::closing::Answer, RpcError> {
+        use crate::closing::Answer;
+        let session = self
+            .sup
+            .world()
+            .closing
+            .as_ref()
+            .filter(|session| session.announcement == announcement)
+            .ok_or_else(|| refused("the closing announcement does not match"))?;
+        let mut participants: Vec<_> = session
+            .participants
+            .iter()
+            .filter(|(agent, _)| after.is_none_or(|after| **agent > after))
+            .take(129)
+            .map(
+                |(agent, row)| dudes_proto::rpc::closing::ClosingParticipantStatus {
+                    agent: *agent,
+                    name: row.name.clone(),
+                    acknowledged: row.acknowledged.is_some(),
+                    saving_turn: row.saving_turn,
+                    settled: self.sup.world().closing_standing(*agent, row).reason(),
+                },
+            )
+            .collect();
+        let next = if participants.len() > 128 {
+            participants.pop();
+            participants.last().map(|row| row.agent)
+        } else {
+            None
+        };
+        let answer = Answer::Status(dudes_proto::rpc::closing::ClosingStatus {
+            announcement,
+            phase: session.phase,
+            deadline: self.closing.wall_deadline(session.announced_at),
+            acknowledged: session
+                .participants
+                .values()
+                .filter(|row| row.acknowledged.is_some())
+                .count(),
+            total: session.participants.len(),
+            participants,
+            next,
+        });
+        self.closing.responses += 1;
+        Ok(answer)
+    }
+
     fn closing_tick(&mut self) -> Result<bool> {
         if !self.sup.is_closing()
             || self.ctx.journal_writes_stopped()
@@ -1868,12 +1911,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if !expired && (self.closing.responses != 0 || !session.ready(self.sup.world())) {
             return Ok(false);
         }
-        if let Err(error) =
-            self.pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, move |sup| {
+        if let Err(error) = self.pump_started(
+            &mut PumpReport::Discard,
+            PumpOrigin::Closing,
+            &[],
+            move |sup, _operation| {
                 sup.closing_finish(expired)?;
                 Ok(Handled::default())
-            })
-        {
+            },
+        ) {
             if error.downcast_ref::<dudes_supervisor::closing::ClosingError>()
                 == Some(&dudes_supervisor::closing::ClosingError::LaunchPending)
             {
@@ -1983,9 +2029,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if !fenced && !acknowledged.is_empty() {
             let mut report = PumpReport::Discard;
             if self
-                .pump_inputs(&mut report, PumpOrigin::Ordinary, acknowledged, |_| {
-                    Ok(Handled::default())
-                })
+                .pump_inputs(
+                    &mut report,
+                    PumpOrigin::Ordinary,
+                    acknowledged,
+                    &[],
+                    |_, _operation| Ok(Handled::default()),
+                )
                 .is_err()
             {
                 tracing::error!("mailbox acknowledgment continuation failed");
@@ -2031,6 +2081,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         switches.answer = self.ctx.answer_enabled;
         switches.hire = self.ctx.hire_enabled;
         switches.control = self.ctx.control.pause_resume();
+        switches.recovery = self.ctx.recovery_enabled && self.ctx.control.pause_resume();
         switches.goal = self.ctx.control.goal();
         switches.renew = self.ctx.control.renew();
         switches.retire = self.ctx.control.retire();
@@ -2116,6 +2167,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             answer_enabled: self.ctx.answer_enabled,
             hire_enabled: self.ctx.hire_enabled,
             control: self.ctx.control,
+            recovery_enabled: self.ctx.recovery_enabled,
             terminal_enabled: self.ctx.browser_grants.is_some(),
             git_enabled: self.ctx.git_enabled,
             diff_enabled: self.ctx.diff_enabled,
@@ -3913,19 +3965,26 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         {
             return Ok(());
         }
-        self.pump_started(report, PumpOrigin::Ordinary, move |sup| {
-            sup.handle(input, &dudes_supervisor::RecoveryOperation::empty())
-                .map_err(anyhow::Error::new)
-        })
+        let works = recovery::input_works(&input);
+        self.pump_started(
+            report,
+            PumpOrigin::Ordinary,
+            &works,
+            move |sup, operation| sup.handle(input, operation).map_err(anyhow::Error::new),
+        )
     }
 
     fn pump_started(
         &mut self,
         report: &mut PumpReport,
         origin: PumpOrigin,
-        start: impl FnOnce(&mut Supervisor<Shared<C>, R>) -> Result<Handled>,
+        start_works: &[dudes_proto::recovery::RecoveryWork],
+        start: impl FnOnce(
+            &mut Supervisor<Shared<C>, R>,
+            &dudes_supervisor::RecoveryOperation<'_>,
+        ) -> Result<Handled>,
     ) -> Result<()> {
-        self.pump_inputs(report, origin, VecDeque::new(), start)
+        self.pump_inputs(report, origin, VecDeque::new(), start_works, start)
     }
 
     fn prepare_pump_inputs(
@@ -3993,11 +4052,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         report: &mut PumpReport,
         origin: PumpOrigin,
         queue: VecDeque<Input>,
-        start: impl FnOnce(&mut Supervisor<Shared<C>, R>) -> Result<Handled>,
+        start_works: &[dudes_proto::recovery::RecoveryWork],
+        start: impl FnOnce(
+            &mut Supervisor<Shared<C>, R>,
+            &dudes_supervisor::RecoveryOperation<'_>,
+        ) -> Result<Handled>,
     ) -> Result<()> {
-        self.pump_inputs_with_work_refresh(report, origin, queue, start, |daemon, _| {
-            daemon.refresh_work()
-        })
+        self.pump_inputs_with_work_refresh(
+            report,
+            origin,
+            queue,
+            start_works,
+            start,
+            |daemon, _| daemon.refresh_work(),
+        )
     }
 
     fn execute_pump_effects(
@@ -4088,7 +4156,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         report: &mut PumpReport,
         origin: PumpOrigin,
         mut queue: VecDeque<Input>,
-        start: impl FnOnce(&mut Supervisor<Shared<C>, R>) -> Result<Handled>,
+        start_works: &[dudes_proto::recovery::RecoveryWork],
+        start: impl FnOnce(
+            &mut Supervisor<Shared<C>, R>,
+            &dudes_supervisor::RecoveryOperation<'_>,
+        ) -> Result<Handled>,
         mut refresh_work: impl FnMut(&mut Self, &VecDeque<Input>) -> Result<()>,
     ) -> Result<()> {
         let (mut mail_acknowledgments, mut mail_requests) = self.prepare_pump_inputs(&mut queue)?;
@@ -4140,12 +4212,16 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 let Self {
                     sup, ctx, closing, ..
                 } = self;
+                let command_work = match &*report {
+                    PumpReport::Recovery(context) => Some(context.work()),
+                    _ => None,
+                };
                 let handling = if let Some(input) = queue.pop_front() {
-                    let input = ctx.current_mail_response(input, sup);
-                    sup.handle(input, &dudes_supervisor::RecoveryOperation::empty())
-                        .map_err(anyhow::Error::new)
+                    ctx.handle_recovery_input(sup, input, command_work)
                 } else if let Some(start) = start.take() {
-                    start(sup)
+                    let mut works = start_works.to_vec();
+                    works.extend(command_work);
+                    ctx.with_recovery_facts(sup, &works, start)
                 } else {
                     break;
                 };
@@ -4268,11 +4344,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     fn refresh_work(&mut self) -> Result<()> {
         self.ctx.ensure_journal_ready()?;
         for (agent, view) in self.composed_work()? {
-            self.sup
-                .handle(
-                    Input::Work { agent, view },
-                    &dudes_supervisor::RecoveryOperation::empty(),
-                )
+            self.ctx
+                .with_recovery_facts(&mut self.sup, &[], |sup, operation| {
+                    sup.handle(Input::Work { agent, view }, operation)
+                })
                 .inspect_err(|_| self.ctx.fence_journal())?;
             assert!(
                 self.sup.effects().is_empty(),
@@ -6503,6 +6578,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         self.refuse_parked_pi();
         while let Ok(job) = self.jobs.try_recv() {
             match job {
+                Job::RecoverFromFloor { reply, .. } => {
+                    let _ = reply.send(dudes_proto::rpc::recovery::RecoverySubmitResult::Refused {
+                        reason: dudes_proto::rpc::recovery::RecoverySubmitRefusal::Unavailable,
+                        prefix: dudes_proto::rpc::recovery::RecoveryKnownPrefix {
+                            required: None,
+                            resume: None,
+                        },
+                    });
+                }
                 Job::Chat { reply, .. } => {
                     let _ = reply.send(Err(crate::floor_chat::ChatRefusal::UnavailableNoEffect));
                 }
@@ -7551,23 +7635,37 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         sup: &mut Supervisor<Shared<C>, R>,
         report: &mut PumpReport,
     ) -> Result<()> {
-        let metadata = sup.recovery_append(token, entry);
+        let Ok(metadata) = sup.recovery_append(token, entry) else {
+            return Ok(());
+        };
         if let Some(metadata) = metadata
             && !self.recovery_consent_checkout_clear(sup, metadata.work.agent)
         {
             let handled = sup.recovery_refused(
                 token,
                 entry,
-                metadata,
+                &metadata,
                 dudes_supervisor::input::RecoveryRefusal::NotRecoverable,
             );
             report.recovery_update(&handled)?;
             return Ok(());
         }
-        let admitted = match (metadata, &*report) {
-            (Some(metadata), PumpReport::Recovery(context)) => Some((&**context, metadata)),
-            (Some(_), _) => anyhow::bail!("command-owned append lacks its admitted context"),
-            (None, _) => None,
+        let issue = if metadata.is_some() {
+            None
+        } else {
+            match self.classify_recovery_issue(sup, token, entry) {
+                recovery::IssueClassification::Ordinary => None,
+                recovery::IssueClassification::Held => return Ok(()),
+                recovery::IssueClassification::Recovery(issue) => Some(issue),
+            }
+        };
+        let admitted = match (metadata.as_ref(), &*report, issue.as_ref()) {
+            (Some(metadata), PumpReport::Recovery(context), _) => {
+                Some(recovery::AppendSubject::Command { context, metadata })
+            }
+            (Some(_), _, _) => anyhow::bail!("command-owned append lacks its admitted context"),
+            (None, _, Some(issue)) => Some(recovery::AppendSubject::NewIssue(issue)),
+            (None, _, None) => None,
         };
         let committed =
             self.append_with_publication(sup.world(), entry, FloorPublication::AfterFold, admitted);
@@ -7575,10 +7673,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             Ok(committed) => committed,
             Err(error) => {
                 if let Some(metadata) = metadata
+                    && !self.journal_writes_stopped()
                     && let Some(reason) = recovery::known_no_write(&error)
                 {
-                    let handled = sup.recovery_refused(token, entry, metadata, reason);
+                    let handled = sup.recovery_refused(token, entry, &metadata, reason);
                     report.recovery_update(&handled)?;
+                    return Ok(());
+                }
+                if let Some(issue) = &issue
+                    && !self.journal_writes_stopped()
+                    && recovery::known_no_write(&error).is_some()
+                    && sup.recovery_issue_not_written(token, entry, &issue.parked)
+                {
                     return Ok(());
                 }
                 return Err(error);
@@ -7918,10 +8024,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         world: &dudes_supervisor::World,
         entry: &Entry,
         publication: FloorPublication,
-        recovery: Option<(
-            &recovery::CommandContext,
-            dudes_supervisor::input::RecoveryAppend,
-        )>,
+        recovery: Option<recovery::AppendSubject<'_>>,
     ) -> Result<CheckedAppend> {
         if matches!(
             entry.record,
@@ -8122,20 +8225,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .context("indexing durable browser retire record")
     }
 
-    fn append_checked(
-        &mut self,
+    fn append_browser_identity(
+        &self,
         entry: &Entry,
-        recovery: Option<(
-            &recovery::CommandContext,
-            dudes_supervisor::input::RecoveryAppend,
-        )>,
-    ) -> Result<CheckedAppend> {
-        self.ensure_memory_ready()?;
-        self.ensure_journal_ready()?;
-        if self.append_failure.take() {
-            return Err(anyhow::Error::new(KnownNoEffect));
-        }
-        let identity = browser_chat::attribution_session(&entry.record)
+        recovery: Option<recovery::AppendSubject<'_>>,
+    ) -> Result<Option<crate::floor_session::SessionIdentity>> {
+        recovery
+            .is_none()
+            .then(|| browser_chat::attribution_session(&entry.record))
+            .flatten()
             .map(|digest| {
                 let identity = self
                     .browser_session
@@ -8147,7 +8245,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 );
                 Ok::<_, anyhow::Error>(identity.clone())
             })
-            .transpose()?;
+            .transpose()
+    }
+
+    fn append_checked(
+        &mut self,
+        entry: &Entry,
+        recovery: Option<recovery::AppendSubject<'_>>,
+    ) -> Result<CheckedAppend> {
+        self.ensure_memory_ready()?;
+        self.ensure_journal_ready()?;
+        if self.append_failure.take() {
+            return Err(anyhow::Error::new(KnownNoEffect));
+        }
+        let identity = self.append_browser_identity(entry, recovery)?;
         #[cfg(debug_assertions)]
         if let Some((frames_to_skip, bytes)) = self
             .append_failure
@@ -8160,6 +8271,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
         let pause = &self.onboarding_pause;
         let failure = &self.onboarding_failure;
+        let grants = self.recovery_grants();
+        let authority = self.recovery_authority.as_ref();
+        #[cfg(test)]
+        let before_recovery = &mut self.before_recovery_append;
+        #[cfg(test)]
+        let after_recovery = &mut self.after_recovery_fsync;
         #[cfg(feature = "fault-injection")]
         let recovery_stop = recovery_stop_for_append(self.recovery_stop.as_ref(), recovery, entry);
         let written = (|| {
@@ -8171,22 +8288,39 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 entry,
                 || {
                     pause.at(&entry.record, AppendStage::BeforePermit);
-                    if let Some((context, metadata)) = recovery {
-                        context.join(metadata, entry)?;
+                    #[cfg(test)]
+                    if recovery.is_some()
+                        && let Some(before) = before_recovery.as_mut()
+                    {
+                        before(&entry.record);
+                    }
+                    if let Some(subject) = recovery {
+                        subject.join(entry).map_err(anyhow::Error::new)?;
                     }
                     #[cfg(feature = "fault-injection")]
                     if let Some((stop, RecoveryStage::Required, target, _)) = recovery_stop {
                         stop.park_if_matches(RecoveryStopPoint::BeforeRequired, target);
                     }
-                    let permit = identity
-                        .as_ref()
-                        .map(crate::floor_session::SessionIdentity::permit)
-                        .transpose()
-                        .map_err(anyhow::Error::new)?;
+                    let permit = match &recovery {
+                        Some(subject) => subject
+                            .permit(authority, grants)
+                            .map_err(anyhow::Error::new)?,
+                        None => identity
+                            .as_ref()
+                            .map(crate::floor_session::SessionIdentity::permit)
+                            .transpose()
+                            .map_err(anyhow::Error::new)?,
+                    };
                     pause.at(&entry.record, AppendStage::AfterPermit);
                     Ok::<_, anyhow::Error>(permit)
                 },
                 || {
+                    #[cfg(test)]
+                    if recovery.is_some()
+                        && let Some(after) = after_recovery.as_mut()
+                    {
+                        after(&entry.record);
+                    }
                     #[cfg(feature = "fault-injection")]
                     if let Some((stop, _, target, point)) = recovery_stop {
                         stop.park_if_matches(point, target);
@@ -8199,15 +8333,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                 },
             )
         })();
-        if let Some(lsn) = self.writer.poisoned() {
-            self.handle.publish_journal_stopped(lsn);
-            if let Some(streams) = &self.floor_streams
-                && let Err(error) = streams.publish_journal_stopped(lsn)
-            {
-                streams.end();
-                tracing::error!(%error, "stopped-journal Floor publication failed");
-            }
-        }
+        self.publish_poisoned_journal();
         match written {
             Ok(committed) => Ok(committed),
             Err(GuardedAppendError::Acquire(error)) => Err(error),
@@ -8225,6 +8351,18 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             Err(GuardedAppendError::AfterFsync { caller, source }) => {
                 self.fence_journal();
                 Err(source).with_context(|| format!("after fsync of caller at {caller:?}"))
+            }
+        }
+    }
+
+    fn publish_poisoned_journal(&self) {
+        if let Some(lsn) = self.writer.poisoned() {
+            self.handle.publish_journal_stopped(lsn);
+            if let Some(streams) = &self.floor_streams
+                && let Err(error) = streams.publish_journal_stopped(lsn)
+            {
+                streams.end();
+                tracing::error!(%error, "stopped-journal Floor publication failed");
             }
         }
     }
@@ -9528,7 +9666,8 @@ mod mail_wake_fence_tests {
                     &mut PumpReport::Discard,
                     PumpOrigin::Ordinary,
                     queue,
-                    |_| Ok(Handled::default())
+                    &[],
+                    |_, _operation| Ok(Handled::default())
                 )
                 .is_err()
         );
@@ -9689,7 +9828,8 @@ mod mail_wake_fence_tests {
                     &mut PumpReport::Discard,
                     PumpOrigin::Ordinary,
                     queue,
-                    |_| Ok(Handled::default()),
+                    &[],
+                    |_, _operation| Ok(Handled::default()),
                 )
                 .unwrap();
             assert_eq!(
@@ -9762,7 +9902,8 @@ mod mail_wake_fence_tests {
                 &mut PumpReport::Discard,
                 PumpOrigin::Ordinary,
                 VecDeque::from([ready]),
-                |_| Ok(Handled::default()),
+                &[],
+                |_, _operation| Ok(Handled::default()),
             )
             .unwrap();
         assert_eq!(
@@ -9804,7 +9945,8 @@ mod mail_wake_fence_tests {
             &mut PumpReport::Discard,
             PumpOrigin::Ordinary,
             queue,
-            |_| Ok(Handled::default()),
+            &[],
+            |_, _operation| Ok(Handled::default()),
             |daemon, queue| {
                 if let Some(Input::Journaled { append }) = queue.front()
                     && let Record::MailState {
@@ -9883,7 +10025,7 @@ mod mail_wake_fence_tests {
         let fixture = &owned.fixture;
         let mut reached = 0;
         let result = owned.daemon.pump_inputs_with_work_refresh(&mut PumpReport::Discard, PumpOrigin::Ordinary,
-            queue, |_| Ok(Handled::default()), |daemon, queue| {
+            queue, &[], |_, _operation| Ok(Handled::default()), |daemon, queue| {
                 if let Some(Input::Persisted { append, .. }) = queue.front() {
                     let lsn = append.lsn();
                     reached += 1;

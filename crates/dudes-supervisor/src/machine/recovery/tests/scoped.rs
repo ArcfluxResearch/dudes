@@ -198,6 +198,127 @@ fn drive_live(machine: &mut Machine) -> Driven {
     drive_until_hold(machine, None)
 }
 
+fn parked_new_issue(machine: &mut Machine) -> (PersistToken, Entry) {
+    let mut effects = std::collections::VecDeque::from(machine.take_effects());
+    let mut next = machine.world.last_applied_lsn.unwrap().0 + 1;
+    for _ in 0..128 {
+        let effect = effects
+            .pop_front()
+            .expect("the actual producer must reach its reserved issue");
+        let input = match effect {
+            Effect::Persist { token, entry } => {
+                if matches!(entry.record, Record::TurnIssued { .. }) {
+                    assert!(effects.is_empty());
+                    return (token, entry);
+                }
+                let lsn = Lsn(next);
+                next += 1;
+                crate::Input::Persisted {
+                    token,
+                    append: RecordedAppend::try_new(lsn, (lsn, entry), None).unwrap(),
+                }
+            }
+            Effect::SampleInstructions {
+                request,
+                goal,
+                baseline,
+                ..
+            } => Harness::mock_instruction_sample(machine.world(), request, goal, baseline),
+            Effect::Spawn { .. } => panic!("the issue must not be acknowledged or spawned"),
+            _ => continue,
+        };
+        scoped_handle(machine, input, |_| RecoveryAvailability::Live);
+        effects.extend(machine.take_effects());
+    }
+    panic!("the actual producer must settle within the fixture bound")
+}
+
+#[test]
+fn unwritten_issue_completion_requires_the_exact_parked_entry_and_claim() {
+    let (mut machine, agent, key, _) = authorize_live(true);
+    let (token, entry) = parked_new_issue(&mut machine);
+    let metadata = machine
+        .recovery_issue_append(token, &entry)
+        .unwrap()
+        .unwrap();
+    assert_eq!(metadata.subject(), &key);
+    let RecoveryPlan::New { turn, .. } = key.authorization().plan else {
+        unreachable!()
+    };
+    assert_eq!(metadata.turn(), turn);
+    assert!(matches!(machine.ledger[&token].then, Then::Spawn { .. }));
+    assert!(!machine.world.turns.contains_key(&turn));
+    let world = machine.world.clone();
+    let spend = machine.spend.clone();
+    let drawn = machine.rng.drawn();
+    let ledger = machine.ledger.keys().copied().collect::<Vec<_>>();
+    let unknown = PersistToken(u64::MAX);
+    assert_eq!(
+        machine.recovery_issue_append(unknown, &entry),
+        Err(RecoveryRefusal::Unavailable)
+    );
+    assert!(!machine.recovery_issue_not_written(unknown, &entry, &metadata));
+    let mut changed = entry.clone();
+    let Record::TurnIssued { task, .. } = &mut changed.record else {
+        unreachable!()
+    };
+    task.push_str(" changed");
+    assert_eq!(
+        machine.recovery_issue_append(token, &changed),
+        Err(RecoveryRefusal::Unavailable)
+    );
+    assert!(!machine.recovery_issue_not_written(token, &changed, &metadata));
+    let mut wrong = metadata.clone();
+    wrong.turn = key.claim().episode.work.turn;
+    assert!(!machine.recovery_issue_not_written(token, &entry, &wrong));
+    let mut wrong = metadata.clone();
+    let mut authorization = key.authorization().clone();
+    authorization.request_digest = Hex32::new([171; 32]);
+    wrong.subject =
+        RecoverySubjectKey::new(key.claim(), authorization, RecoverySubjectUse::AdmitNew);
+    assert!(!machine.recovery_issue_not_written(token, &entry, &wrong));
+    assert_eq!(machine.ledger.keys().copied().collect::<Vec<_>>(), ledger);
+    assert_eq!(
+        machine.recovery_issue_append(token, &entry),
+        Ok(Some(metadata.clone()))
+    );
+    assert!(machine.recovery_issue_not_written(token, &entry, &metadata));
+    assert_eq!(
+        machine.recovery_issue_append(token, &entry),
+        Err(RecoveryRefusal::Unavailable)
+    );
+    assert!(!machine.recovery_issue_not_written(token, &entry, &metadata));
+    assert_eq!(
+        machine.world.recovery_projection().unwrap().0,
+        world.recovery_projection().unwrap().0
+    );
+    assert_eq!(machine.world.instructions, world.instructions);
+    let current = &machine.world.turns[&key.claim().episode.work.turn];
+    let original = &world.turns[&key.claim().episode.work.turn];
+    assert_eq!(
+        (
+            &current.task,
+            &current.answers,
+            current.issue_lsn,
+            current.status
+        ),
+        (
+            &original.task,
+            &original.answers,
+            original.issue_lsn,
+            original.status
+        )
+    );
+    assert_eq!(
+        machine.world.goals[&key.claim().episode.work.goal].turns_on_goal,
+        world.goals[&key.claim().episode.work.goal].turns_on_goal
+    );
+    assert_eq!(machine.spend, spend);
+    assert_eq!(machine.rng.drawn(), drawn);
+    assert!(machine.effects().is_empty());
+    assert!(!machine.recovery_admission_allowed(agent, &crate::RecoveryOperation::empty()));
+}
+
 fn drive_until_hold(machine: &mut Machine, denied: Option<dudes_proto::RecordKind>) -> Driven {
     let mut trace = Driven::default();
     let mut effects = std::collections::VecDeque::from(machine.take_effects());

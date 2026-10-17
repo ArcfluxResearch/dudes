@@ -18,6 +18,7 @@ use crate::input::{
 };
 use crate::{RecoveryAvailability, RecoverySubjectKey, RecoverySubjectUse};
 
+mod append;
 #[cfg(test)]
 mod tests;
 
@@ -406,7 +407,17 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             self.persist(
                 Record::Resume {
                     agent: next.required.binding.work.agent,
-                    browser: None,
+                    browser: match next.command.attribution {
+                        dudes_proto::recovery::RecoveryAttribution::LocalOperator { .. } => None,
+                        dudes_proto::recovery::RecoveryAttribution::BrowserSession {
+                            session_digest,
+                        } => Some(dudes_proto::record::BrowserControl {
+                            request_id: next.command.request_id,
+                            request_digest: next.command.digest,
+                            control_lsn: next.command.expected.control_lsn,
+                            session_digest,
+                        }),
+                    },
                 },
                 Then::Recovery(RecoveryThen::Resumed(Box::new(next))),
             );
@@ -1030,21 +1041,32 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     }
 
     /// Identify only the actual parked command-owned entry; metadata is not authority.
-    #[must_use]
-    pub fn recovery_append(&self, token: PersistToken, entry: &Entry) -> Option<RecoveryAppend> {
-        let parked = self.ledger.get(&token)?;
+    pub fn recovery_append(
+        &self,
+        token: PersistToken,
+        entry: &Entry,
+    ) -> Result<Option<RecoveryAppend>, RecoveryRefusal> {
+        let parked = self
+            .ledger
+            .get(&token)
+            .ok_or(RecoveryRefusal::Unavailable)?;
         if &parked.entry != entry {
-            return None;
+            return Err(RecoveryRefusal::Unavailable);
         }
         let Then::Recovery(then) = &parked.then else {
-            return None;
+            return Ok(None);
         };
         let (next, stage) = then.continuing();
-        Some(RecoveryAppend {
+        Ok(Some(RecoveryAppend {
             request_id: next.command.request_id,
             work: next.required.binding.work,
             stage,
-        })
+            digest: next.command.digest,
+            expected: next.command.expected,
+            choice: next.command.choice,
+            attribution: next.command.attribution,
+            prefix: next.prefix,
+        }))
     }
 
     /// Complete only a matching command append proven by the executor not to have written.
@@ -1053,11 +1075,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         &mut self,
         token: PersistToken,
         entry: &Entry,
-        expected: RecoveryAppend,
+        expected: &RecoveryAppend,
         reason: RecoveryRefusal,
     ) -> Handled {
         self.pending.clear();
-        if self.recovery_append(token, entry) != Some(expected) {
+        if self.recovery_append(token, entry).as_ref() != Ok(&Some(*expected)) {
             return Handled::default();
         }
         let Some(super::Parked {

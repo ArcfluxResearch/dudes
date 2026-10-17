@@ -703,7 +703,7 @@ test('an unset ceiling reads No cap, and the hop cap and the engine bound the go
 });
 
 const SETTINGS = Object.freeze({
-  switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: true, git: false, renew: false },
+  switches: { answer: false, control: false, recovery: false, goal: false, retire: false, terminal: false, hire: true, git: false, renew: false },
   budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '250000', per_turn_tokens: '20000' },
   providers: ['claude', 'pi'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 3 },
 });

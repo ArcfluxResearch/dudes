@@ -189,19 +189,19 @@ fn clean_executor_refusal_retires_only_the_exact_volatile_command() {
     let intent = command(&machine, agent);
     machine.recover(intent, &crate::RecoveryOperation::empty());
     let (token, entry) = emitted(&machine);
-    let metadata = machine.recovery_append(token, &entry).unwrap();
+    let metadata = machine.recovery_append(token, &entry).unwrap().unwrap();
     let before = machine.world.recovery_projection().unwrap().0.clone();
     let mut wrong = metadata;
     wrong.request_id = Hex32::new([99; 32]);
     assert_eq!(
-        machine.recovery_refused(token, &entry, wrong, RecoveryRefusal::AuthorityUnavailable),
+        machine.recovery_refused(token, &entry, &wrong, RecoveryRefusal::AuthorityUnavailable),
         Handled::default()
     );
-    assert_eq!(machine.recovery_append(token, &entry), Some(metadata));
+    assert_eq!(machine.recovery_append(token, &entry), Ok(Some(metadata)));
     let handled = machine.recovery_refused(
         token,
         &entry,
-        metadata,
+        &metadata,
         RecoveryRefusal::AuthorityUnavailable,
     );
     assert_eq!(handled.folded_through(), None);
@@ -209,7 +209,10 @@ fn clean_executor_refusal_retires_only_the_exact_volatile_command() {
         handled.recovery().unwrap().refusal,
         Some(RecoveryRefusal::AuthorityUnavailable)
     );
-    assert_eq!(machine.recovery_append(token, &entry), None);
+    assert_eq!(
+        machine.recovery_append(token, &entry),
+        Err(RecoveryRefusal::Unavailable)
+    );
     assert_eq!(machine.world.recovery_projection().unwrap().0, &before);
     assert!(machine.effects().is_empty());
 }
@@ -221,9 +224,9 @@ fn later_clean_refusal_retains_the_acknowledged_required_prefix() {
     let (token, entry) = emitted(&machine);
     acknowledge(&mut machine, token, entry, Lsn(10_001));
     let (token, entry) = emitted(&machine);
-    let metadata = machine.recovery_append(token, &entry).unwrap();
+    let metadata = machine.recovery_append(token, &entry).unwrap().unwrap();
     let before = machine.world.recovery_projection().unwrap().0.clone();
-    let handled = machine.recovery_refused(token, &entry, metadata, RecoveryRefusal::Unavailable);
+    let handled = machine.recovery_refused(token, &entry, &metadata, RecoveryRefusal::Unavailable);
     assert_eq!(
         handled.recovery().unwrap().prefix,
         RecoveryPrefix {

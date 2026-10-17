@@ -1712,6 +1712,7 @@ pub(crate) fn settings_at(state: &Path, runtime: &Path) -> Settings {
         floor_answer_enabled: false,
         floor_hire_enabled: true,
         floor_control: duded::settings::FloorControl::Off,
+        floor_recovery_enabled: false,
         floor_terminal_enabled: false,
         floor_git_enabled: false,
         floor_diff_enabled: false,

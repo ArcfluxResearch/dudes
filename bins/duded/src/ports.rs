@@ -720,6 +720,15 @@ impl From<HookReply> for HookAnswer {
 /// One unit of work for the loop thread.
 #[derive(Debug)]
 pub enum Job {
+    /// One authenticated Floor recovery intent, without caller-supplied attribution.
+    RecoverFromFloor {
+        /// Registry-derived original session.
+        session: crate::floor_session::SessionIdentity,
+        /// Exact already-decoded intent.
+        intent: dudes_proto::rpc::recovery::RecoverySubmitParams,
+        /// Receipt or truthful refusal/uncertainty.
+        reply: Sender<dudes_proto::rpc::recovery::RecoverySubmitResult>,
+    },
     /// Stop one exact owned child whose bounded protocol failed.
     ProtocolFailed(dudes_supervisor::host::AdoptionKey),
     /// A private typed closing operation, after transport authentication.
@@ -1137,6 +1146,38 @@ impl Handle {
         answers
             .recv()
             .map_err(|_| crate::floor_answer::AnswerRefusal::Unavailable)?
+    }
+
+    /// Submit one explicit Floor recovery intent under its actual authenticated identity.
+    /// A lost or stopping reply is unknown and never causes resubmission.
+    pub fn submit_floor_recovery(
+        &self,
+        session: crate::floor_session::SessionIdentity,
+        intent: &dudes_proto::rpc::recovery::RecoverySubmitParams,
+    ) -> dudes_proto::rpc::recovery::RecoverySubmitResult {
+        use dudes_proto::rpc::recovery::{
+            RecoveryKnownPrefix, RecoverySubmitRefusal, RecoverySubmitResult,
+        };
+        let request_id = intent.request_id;
+        let (reply, answers) = mpsc::channel();
+        if self
+            .send_floor(Job::RecoverFromFloor {
+                session,
+                intent: *intent,
+                reply,
+            })
+            .is_err()
+        {
+            return RecoverySubmitResult::Refused {
+                reason: RecoverySubmitRefusal::Unavailable,
+                prefix: RecoveryKnownPrefix {
+                    required: None,
+                    resume: None,
+                },
+            };
+        }
+        crate::baseline::recv_until_stopping(&self.stopping, &answers)
+            .unwrap_or(RecoverySubmitResult::Unknown { request_id })
     }
     pub(crate) fn control(
         &self,
@@ -2607,39 +2648,13 @@ impl dudes_rpc::methods::recovery::RecoveryControl for Handle {
         params: &dudes_proto::rpc::recovery::RecoverySubmitParams,
         admission: dudes_rpc::dispatch::OperatorAdmission,
     ) -> Result<dudes_proto::rpc::recovery::RecoverySubmitResult, RpcError> {
-        use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand, RecoveryExpected};
-        let digest = recovery_digest(params)?;
-        let command = RecoveryCommand {
-            request_id: params.request_id,
-            digest,
-            expected: RecoveryExpected {
-                work: params.expected.work,
-                issue_lsn: params.expected.issue_lsn,
-                source_lsn: params.expected.source_lsn,
-                episode: params.expected.episode,
-                predecessor: params.expected.expected_predecessor,
-                control_lsn: params.expected.control_lsn,
-                ticket: params
-                    .expected
-                    .ticket
-                    .map(|ticket| (ticket.card, ticket.round)),
-            },
-            choice: match params.choice {
-                dudes_proto::rpc::recovery::RecoveryChoice::TryRecorded => {
-                    RecoveryChoice::TryRecorded
-                }
-                dudes_proto::rpc::recovery::RecoveryChoice::FreshWithRecap => {
-                    RecoveryChoice::FreshWithRecap
-                }
-                dudes_proto::rpc::recovery::RecoveryChoice::RepeatIssuedFresh => {
-                    RecoveryChoice::RepeatIssuedFresh
-                }
-            },
-            attribution: dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+        let command = recovery_command(
+            params,
+            dudes_proto::recovery::RecoveryAttribution::LocalOperator {
                 pid: admission.pid(),
                 uid: admission.uid(),
             },
-        };
+        )?;
         let request_id = command.request_id;
         match self.ask(Ask::Recover {
             command: Box::new(command),
@@ -2663,6 +2678,40 @@ impl dudes_rpc::methods::recovery::RecoveryControl for Handle {
             _ => Err(unavailable()),
         }
     }
+}
+
+pub(crate) fn recovery_command(
+    params: &dudes_proto::rpc::recovery::RecoverySubmitParams,
+    attribution: dudes_proto::recovery::RecoveryAttribution,
+) -> Result<dudes_supervisor::input::RecoveryCommand, RpcError> {
+    use dudes_supervisor::input::{RecoveryChoice, RecoveryCommand, RecoveryExpected};
+    let digest = recovery_digest(params)?;
+    Ok(RecoveryCommand {
+        request_id: params.request_id,
+        digest,
+        expected: RecoveryExpected {
+            work: params.expected.work,
+            issue_lsn: params.expected.issue_lsn,
+            source_lsn: params.expected.source_lsn,
+            episode: params.expected.episode,
+            predecessor: params.expected.expected_predecessor,
+            control_lsn: params.expected.control_lsn,
+            ticket: params
+                .expected
+                .ticket
+                .map(|ticket| (ticket.card, ticket.round)),
+        },
+        choice: match params.choice {
+            dudes_proto::rpc::recovery::RecoveryChoice::TryRecorded => RecoveryChoice::TryRecorded,
+            dudes_proto::rpc::recovery::RecoveryChoice::FreshWithRecap => {
+                RecoveryChoice::FreshWithRecap
+            }
+            dudes_proto::rpc::recovery::RecoveryChoice::RepeatIssuedFresh => {
+                RecoveryChoice::RepeatIssuedFresh
+            }
+        },
+        attribution,
+    })
 }
 
 fn recovery_digest(

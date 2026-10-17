@@ -22,6 +22,9 @@ use sha2::{Digest as _, Sha256};
 use crate::baseline::CheckRuns;
 use crate::floor_ticket::TicketLimits;
 
+mod recovery;
+pub(crate) use recovery::{FloorRecoveryAuthority, RecoveryGrants, RecoveryPermitFailure};
+
 /// Cookie name used by the read-only Floor session.
 pub const SESSION_COOKIE_NAME: &str = "dudes_floor_session";
 /// Header carrying the in-memory CSRF nonce on authenticated dynamic requests.

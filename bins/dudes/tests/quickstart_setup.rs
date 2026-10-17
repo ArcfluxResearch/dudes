@@ -253,6 +253,7 @@ fn assert_written(layout: &Layout, floor_on: &[Key], label: &str) {
         (Key::Answer, switch(Key::Answer)),
         (Key::Hire, switch(Key::Hire)),
         (Key::Control, switch(Key::Control)),
+        (Key::Recovery, "off"),
         (Key::Goal, switch(Key::Goal)),
         (Key::Renew, "off"),
         (Key::Retire, switch(Key::Retire)),

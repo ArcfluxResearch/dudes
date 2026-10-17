@@ -37,6 +37,8 @@ pub enum Key {
     Hire,
     /// `[floor.control] enabled`: the Floor pauses, resumes and renames an agent.
     Control,
+    /// `[floor.recovery] enabled`: the Floor recovers interrupted managed work.
+    Recovery,
     /// `[floor.goal] enabled`: the Floor changes an agent's goal.
     Goal,
     /// `[floor.renew] enabled`: the Floor gives an agent whose goal has nothing left a new goal
@@ -112,13 +114,14 @@ const RULES: [(Key, Key); 7] = [
 
 impl Key {
     /// Every key, in the order `dudes config` shows them.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Codex,
         Self::CodexStreaming,
         Self::Pi,
         Self::Answer,
         Self::Hire,
         Self::Control,
+        Self::Recovery,
         Self::Goal,
         Self::Renew,
         Self::Retire,
@@ -141,6 +144,7 @@ impl Key {
             Self::Answer => "floor.answer",
             Self::Hire => "floor.hire",
             Self::Control => "floor.control",
+            Self::Recovery => "floor.recovery",
             Self::Goal => "floor.goal",
             Self::Renew => "floor.renew",
             Self::Retire => "floor.retire",
@@ -172,6 +176,7 @@ impl Key {
             Self::Answer => Place::Switch(&["floor", "answer"], "enabled"),
             Self::Hire => Place::Switch(&["floor", "hire"], "enabled"),
             Self::Control => Place::Switch(&["floor", "control"], "enabled"),
+            Self::Recovery => Place::Switch(&["floor", "recovery"], "enabled"),
             Self::Goal => Place::Switch(&["floor", "goal"], "enabled"),
             Self::Renew => Place::Switch(&["floor", "renew"], "enabled"),
             Self::Retire => Place::Switch(&["floor", "retire"], "enabled"),

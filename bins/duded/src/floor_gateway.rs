@@ -787,6 +787,10 @@ impl FloorGateway {
         self.sessions.authorizer()
     }
 
+    pub(crate) fn recovery_authority(&self) -> crate::floor_session::FloorRecoveryAuthority {
+        self.sessions.recovery_authority()
+    }
+
     /// A read-only integration-test observation of live connection ownership.
     #[doc(hidden)]
     #[must_use]

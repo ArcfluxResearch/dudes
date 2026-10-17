@@ -764,7 +764,8 @@ fn tick_after_unfolded_pause(daemon: &mut TestDaemon, agent: AgentId) {
             &mut PumpReport::Discard,
             PumpOrigin::Ordinary,
             queue,
-            |_| Ok(Handled::default()),
+            &[],
+            |_, _operation| Ok(Handled::default()),
         )
         .unwrap();
     assert!(
@@ -1271,10 +1272,13 @@ impl FailedOpen {
             &mut self.daemon.sup,
             &mut self.daemon.closing,
         )?;
-        self.daemon
-            .pump_inputs(&mut report, PumpOrigin::Ordinary, queue, |_| {
-                Ok(Handled::default())
-            })
+        self.daemon.pump_inputs(
+            &mut report,
+            PumpOrigin::Ordinary,
+            queue,
+            &[],
+            |_, _operation| Ok(Handled::default()),
+        )
     }
 
     fn called(&self) -> CalledOpen {

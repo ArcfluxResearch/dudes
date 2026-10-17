@@ -173,6 +173,37 @@ pub struct RecoveryAppend {
     pub work: dudes_proto::recovery::RecoveryWork,
     /// Expected command-owned frame.
     pub stage: RecoveryStage,
+    /// Canonical original intent digest.
+    pub digest: Hex32,
+    /// Original reviewed selectors.
+    pub expected: RecoveryExpected,
+    /// Original context choice.
+    pub choice: RecoveryChoice,
+    /// Original admitting actor.
+    pub attribution: dudes_proto::recovery::RecoveryAttribution,
+    /// Only this command's acknowledged prefix.
+    pub prefix: RecoveryPrefix,
+}
+
+/// Exact private parked launch for a still-pending recovery issue. It grants no permission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryIssueAppend {
+    pub(crate) subject: crate::RecoverySubjectKey,
+    pub(crate) turn: TurnId,
+}
+
+impl RecoveryIssueAppend {
+    /// Original pending claim and immutable authorization.
+    #[must_use]
+    pub const fn subject(&self) -> &crate::RecoverySubjectKey {
+        &self.subject
+    }
+
+    /// Exact reserved turn carried by this unwritten issue.
+    #[must_use]
+    pub const fn turn(&self) -> TurnId {
+        self.turn
+    }
 }
 
 /// Historical opportunity derived without appending, allocating or dispatching work.

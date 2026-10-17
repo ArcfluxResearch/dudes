@@ -599,6 +599,16 @@ where
             hire_enabled: settings.floor_hire_enabled,
             control_index,
             control: settings.floor_control,
+            recovery_enabled: settings.floor_recovery_enabled,
+            recovery_authority: None,
+            #[cfg(test)]
+            before_recovery_dispatch: None,
+            #[cfg(test)]
+            before_recovery_append: None,
+            #[cfg(test)]
+            after_recovery_fsync: None,
+            #[cfg(test)]
+            before_recovery_input: None,
             goal_index,
             rename_index,
             look_index,
@@ -749,6 +759,7 @@ where
                 streams,
             )?,
         };
+        daemon.ctx.recovery_authority = Some(floor.recovery_authority());
         if let Err(error) = crate::floor_port::remember(&settings.state_dir, floor.addr().port()) {
             tracing::warn!(%error, "the Floor port is not kept for the next run");
         }

@@ -3,6 +3,8 @@ use crate::runtime::Witness;
 use crate::runtime::work_test_support as common;
 use std::sync::Arc;
 
+mod authority_tests;
+
 type TestDaemon =
     Daemon<common::SharedHost, common::ScriptedRunner, common::TestClock, common::FixtureRng>;
 
@@ -447,9 +449,12 @@ fn incomplete_closing_failure_refuses_inspection_and_new_recovery_consent() {
         .closing_request(crate::closing::Request::Announce)
         .unwrap();
     let failure = daemon
-        .pump_started(&mut PumpReport::Discard, PumpOrigin::Closing, |_| {
-            Err(anyhow::anyhow!("closing completion failed"))
-        })
+        .pump_started(
+            &mut PumpReport::Discard,
+            PumpOrigin::Closing,
+            &[],
+            |_, _operation| Err(anyhow::anyhow!("closing completion failed")),
+        )
         .unwrap_err();
     assert_eq!(failure.to_string(), "closing completion failed");
     assert!(daemon.ctx.closing_failed_after.is_some());
@@ -618,9 +623,13 @@ fn a_clean_refusal_drains_an_already_owed_durable_ack_before_returning() {
         append,
     }]);
     daemon
-        .pump_inputs(&mut report, PumpOrigin::Ordinary, queue, |_| {
-            Ok(dudes_supervisor::input::Handled::default())
-        })
+        .pump_inputs(
+            &mut report,
+            PumpOrigin::Ordinary,
+            queue,
+            &[],
+            |_, _operation| Ok(dudes_supervisor::input::Handled::default()),
+        )
         .unwrap();
     assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
     assert!(daemon.sup.world().agents[&hired.agent].paused);

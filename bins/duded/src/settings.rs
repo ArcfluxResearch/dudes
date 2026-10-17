@@ -276,6 +276,8 @@ pub struct Settings {
     /// `[floor.control]`, `[floor.goal]`, `[floor.retire]` and `[floor.renew]`: which of the
     /// Floor's loop-control routes and snapshot siblings exist.
     pub floor_control: FloorControl,
+    /// [`crate::config::OperatorConfig::recovery_enabled`].
+    pub floor_recovery_enabled: bool,
     /// [`crate::config::OperatorConfig::board_enabled`].
     pub floor_board_enabled: bool,
     /// [`crate::config::OperatorConfig::terminal_enabled`].
