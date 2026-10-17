@@ -34,10 +34,7 @@ use dudes_types::{
 /// Replay one record at `position`, the way the log hands it over: the entry carries no position
 /// of its own, so the caller supplies the one the frame sat at.
 fn replay(harness: &mut Harness, position: u64, at: Timestamp, record: Record) {
-    harness.drive(Input::Replayed {
-        lsn: Lsn(position),
-        entry: Entry { at, record },
-    });
+    assert_eq!(harness.append_replayed(Entry { at, record }), Lsn(position));
 }
 
 /// Every `BreakerBeat` the machine asked to have written, oldest first.

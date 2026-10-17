@@ -16,15 +16,12 @@ use dudes_supervisor::{ClientId, Command, Config, HookId, Input};
 use dudes_types::{AgentId, Lsn, Provenance, SessionId, Timestamp, TurnId};
 
 fn prime_attached_session(harness: &mut Harness, agent: AgentId) {
-    harness.drive(Input::Replayed {
-        lsn: Lsn(1),
-        entry: Entry {
-            at: Timestamp::from_unix_millis(1),
-            record: Record::SessionLearned {
-                agent,
-                turn: TurnId::NIL,
-                session: SessionId::from("550e8400-e29b-41d4-a716-446655440000"),
-            },
+    harness.append_replayed(Entry {
+        at: Timestamp::from_unix_millis(1),
+        record: Record::SessionLearned {
+            agent,
+            turn: TurnId::NIL,
+            session: SessionId::from("550e8400-e29b-41d4-a716-446655440000"),
         },
     });
 }

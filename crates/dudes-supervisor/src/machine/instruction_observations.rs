@@ -2249,14 +2249,7 @@ mod tests {
     }
 
     fn replay_prefix(entries: &[Entry]) -> Harness {
-        let mut harness = Harness::new();
-        for (lsn, entry) in (1u64..).zip(entries) {
-            harness.step(Input::Replayed {
-                lsn: Lsn(lsn),
-                entry: entry.clone(),
-            });
-        }
-        harness
+        Harness::from_prefix(entries.to_vec())
     }
 
     fn ended_legacy_ticket() -> (Vec<Entry>, AgentId, TurnId, GoalId) {

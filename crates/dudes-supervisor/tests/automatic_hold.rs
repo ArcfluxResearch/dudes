@@ -413,11 +413,8 @@ fn an_unacknowledged_hold_refuses_a_pending_token_spawn() {
             },
         },
     };
-    h.drive(Input::Replayed {
-        lsn: dudes_types::Lsn(900),
-        entry: held,
-    });
-    h.drive(h.persisted(mint, dudes_types::Lsn(901)));
+    h.append_replayed(held);
+    h.acknowledge(mint);
     assert!(
         !h.trace
             .iter()
@@ -575,20 +572,17 @@ fn a_new_goal_recovers_an_issued_turn_held_before_spawn() {
             _ => None,
         })
         .unwrap();
-    h.drive(Input::Replayed {
-        lsn: dudes_types::Lsn(900),
-        entry: dudes_proto::Entry {
-            at: dudes_types::Timestamp::from_unix_millis(1),
-            record: Record::AgentHeld {
-                agent,
-                provenance: Provenance::Observed,
-                cause: AutomaticHold::LaunchRefused {
-                    reason: "refused".into(),
-                },
+    h.append_replayed(dudes_proto::Entry {
+        at: dudes_types::Timestamp::from_unix_millis(1),
+        record: Record::AgentHeld {
+            agent,
+            provenance: Provenance::Observed,
+            cause: AutomaticHold::LaunchRefused {
+                reason: "refused".into(),
             },
         },
     });
-    h.drive(h.persisted(mint, dudes_types::Lsn(901)));
+    h.acknowledge(mint);
     assert!(!h.trace.iter().any(|s| matches!(s, Seen::Spawn { .. })));
     h.drive(Input::Command(Command::GoalSet {
         completion_check: None,
