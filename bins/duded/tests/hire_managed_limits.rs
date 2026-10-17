@@ -59,9 +59,9 @@ struct LoggingHost {
 }
 
 impl LoggingHost {
-    fn new(unconfirm_first: bool) -> Self {
+    fn new(unconfirm_first: bool, fixture: &Fixture) -> Self {
         Self {
-            inner: SharedHost::new(),
+            inner: SharedHost::with_native_evidence(fixture.journal_dir()),
             seen: Arc::new(Mutex::new(Vec::new())),
             unconfirm_next: Arc::new(AtomicBool::new(unconfirm_first)),
         }
@@ -102,6 +102,18 @@ impl ProcessHost for LoggingHost {
 
     fn boot_identity(&self) -> HostBoot {
         self.inner.boot_identity()
+    }
+
+    fn owned_targets(&self, limit: usize) -> dudes_supervisor::host::OwnedTargets {
+        self.inner.owned_targets(limit)
+    }
+
+    fn acknowledge_native_boundary_absence(
+        &mut self,
+        key: &AdoptionKey,
+        receipt: &dudes_supervisor::host::NativeBoundaryReceipt,
+    ) -> dudes_supervisor::host::NativeBoundaryAcknowledgement {
+        self.inner.acknowledge_native_boundary_absence(key, receipt)
     }
 
     fn shutdown(&mut self) -> io::Result<()> {
@@ -164,6 +176,28 @@ fn recorded_limits(fixture: &Fixture) -> Vec<(Option<u32>, Option<dudes_types::U
         .collect()
 }
 
+fn recovery_call(
+    settings: &duded::Settings,
+    method: dudes_proto::rpc::CurrentMethod,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    let credential = dudes_proto::rpc::cred::OperatorCredential::new(
+        std::fs::read_to_string(
+            settings
+                .runtime_dir
+                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+        )
+        .expect("the fixture daemon minted the operator credential"),
+    )
+    .expect("the operator credential is well formed");
+    let response = dudes_rpc::Client::connect(settings.socket())
+        .expect("the operator connects")
+        .call_current_as_operator(method, Some(params), credential)
+        .expect("one authenticated recovery request answers");
+    assert!(response.error.is_none(), "{response:?}");
+    response.result.expect("the published recovery result")
+}
+
 fn authorize_owed_issue(
     fixture: &Fixture,
     settings: &duded::Settings,
@@ -189,28 +223,12 @@ fn authorize_owed_issue(
             if required.binding.work.agent == agent && required.binding.work.turn == turn)
         .then_some(())
     });
-    let credential = || {
-        dudes_proto::rpc::cred::OperatorCredential::new(
-            std::fs::read_to_string(
-                settings
-                    .runtime_dir
-                    .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
-            )
-            .expect("the fixture daemon minted the operator credential"),
-        )
-        .expect("the operator credential is well formed")
-    };
-    let mut client = dudes_rpc::Client::connect(settings.socket()).expect("the operator connects");
-    let response = client
-        .call_current_as_operator(
-            CurrentMethod::RecoveryInspect,
-            Some(serde_json::to_value(RecoveryInspectParams { agent }).unwrap()),
-            credential(),
-        )
-        .expect("the authenticated inspection answers");
-    assert!(response.error.is_none(), "{response:?}");
-    let inspected: RecoveryInspectResult =
-        serde_json::from_value(response.result.unwrap()).unwrap();
+    let inspected: RecoveryInspectResult = serde_json::from_value(recovery_call(
+        settings,
+        CurrentMethod::RecoveryInspect,
+        serde_json::to_value(RecoveryInspectParams { agent }).unwrap(),
+    ))
+    .unwrap();
     let RecoveryInspectResult::Available {
         expected,
         reason,
@@ -239,22 +257,17 @@ fn authorize_owed_issue(
     );
     let work = expected.work;
     let request_id = dudes_proto::record::Hex32::new([233; 32]);
-    let response = client
-        .call_current_as_operator(
-            CurrentMethod::RecoverySubmit,
-            Some(
-                serde_json::to_value(RecoverySubmitParams {
-                    request_id,
-                    expected: *expected,
-                    choice: RecoveryChoice::RepeatIssuedFresh,
-                })
-                .unwrap(),
-            ),
-            credential(),
-        )
-        .expect("one explicit authenticated consent answers");
-    assert!(response.error.is_none(), "{response:?}");
-    let submitted: RecoverySubmitResult = serde_json::from_value(response.result.unwrap()).unwrap();
+    let submitted: RecoverySubmitResult = serde_json::from_value(recovery_call(
+        settings,
+        CurrentMethod::RecoverySubmit,
+        serde_json::to_value(RecoverySubmitParams {
+            request_id,
+            expected: *expected,
+            choice: RecoveryChoice::RepeatIssuedFresh,
+        })
+        .unwrap(),
+    ))
+    .unwrap();
     let RecoverySubmitResult::Accepted { receipt } = submitted else {
         panic!("explicit recovery must be durably accepted: {submitted:?}");
     };
@@ -284,6 +297,50 @@ fn authorize_owed_issue(
             ))
             .count(),
         1
+    );
+}
+
+fn settle_control(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    host: &LoggingHost,
+    agent: dudes_types::AgentId,
+) {
+    let response = Client::connect(settings.socket())
+        .unwrap()
+        .call_as_operator(
+            Method::LoopPause,
+            Some(serde_json::to_value(dudes_proto::rpc::agent::AgentRef { agent }).unwrap()),
+            credential_of(settings),
+        )
+        .unwrap();
+    assert!(response.error.is_none(), "{response:?}");
+    let turn = fixture
+        .records()
+        .into_iter()
+        .find_map(|record| match record {
+            Record::TurnSpawned {
+                agent: owner, turn, ..
+            } if owner == agent => Some(turn),
+            _ => None,
+        })
+        .unwrap();
+    common::end_turn_with_native_payload(
+        fixture,
+        &host.inner,
+        dudes_supervisor::Input::ChildExited {
+            final_reply: None,
+            elapsed_ms: None,
+            turn,
+            exit: dudes_proto::ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: None,
+            model_usage: std::collections::BTreeMap::new(),
+            outcome: dudes_proto::TurnOutcome::Completed,
+            last_message: None,
+        },
     );
 }
 
@@ -319,7 +376,7 @@ fn explicit_limits_reach_first_and_reissued_launch() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
 
-    let first_host = LoggingHost::new(true);
+    let first_host = LoggingHost::new(true, &fixture);
     let fixture_parts = seams(
         &settings,
         first_host.clone(),
@@ -327,6 +384,9 @@ fn explicit_limits_reach_first_and_reissued_launch() {
         Arc::new(TestClock::new()),
         Witness::default(),
     );
+    first_host
+        .inner
+        .bind_child_ends(Arc::clone(&fixture_parts.children));
     let daemon = boot(&settings, fixture_parts).expect("boot");
     let mut running = common::start(daemon);
     let mut client = Client::connect(settings.socket()).expect("connect to the daemon");
@@ -358,6 +418,7 @@ fn explicit_limits_reach_first_and_reissued_launch() {
         Record::TurnIssued { agent, turn, .. } if *agent == capped.agent => Some(*turn),
         _ => None,
     });
+    settle_control(&fixture, &settings, &first_host, plain.agent);
     running.stop(ExitCause::Ended);
 
     let first_run = first_host.argv();
@@ -379,7 +440,7 @@ fn explicit_limits_reach_first_and_reissued_launch() {
     );
 
     // Run two: the same journal, a different `[providers.claude]` table.
-    let second_host = LoggingHost::new(false);
+    let second_host = LoggingHost::new(false, &fixture);
     let mut seams = seams(
         &settings,
         second_host.clone(),
@@ -395,6 +456,9 @@ fn explicit_limits_reach_first_and_reissued_launch() {
     };
     claude.check(&[]).expect("an honourable table");
     seams.adapters = Adapters::new([Box::new(ClaudeAdapter::new(claude)) as Box<dyn Adapter>]);
+    second_host
+        .inner
+        .bind_child_ends(Arc::clone(&seams.children));
     let daemon = boot(&settings, seams).expect("the same state directory boots again");
     let mut running = common::start(daemon);
     authorize_owed_issue(&fixture, &settings, capped.agent, capped_turn);

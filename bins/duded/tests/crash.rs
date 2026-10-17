@@ -626,6 +626,28 @@ fn the_same_fixture_without_the_refusal_yields_exactly_one_child() {
     );
 }
 
+fn recovery_call(
+    settings: &duded::Settings,
+    method: dudes_proto::rpc::CurrentMethod,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    let credential = dudes_proto::rpc::cred::OperatorCredential::new(
+        std::fs::read_to_string(
+            settings
+                .runtime_dir
+                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+        )
+        .expect("the fixture daemon minted the operator credential"),
+    )
+    .expect("the operator credential is well formed");
+    let response = dudes_rpc::Client::connect(settings.socket())
+        .expect("the operator connects")
+        .call_current_as_operator(method, Some(params), credential)
+        .expect("one authenticated recovery request answers");
+    assert!(response.error.is_none(), "{response:?}");
+    response.result.expect("the published recovery result")
+}
+
 fn authorize_owed_issue(
     fixture: &Fixture,
     settings: &duded::Settings,
@@ -651,28 +673,12 @@ fn authorize_owed_issue(
             if required.binding.work.agent == agent && required.binding.work.turn == turn)
         .then_some(())
     });
-    let credential = || {
-        dudes_proto::rpc::cred::OperatorCredential::new(
-            std::fs::read_to_string(
-                settings
-                    .runtime_dir
-                    .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
-            )
-            .expect("the fixture daemon minted the operator credential"),
-        )
-        .expect("the operator credential is well formed")
-    };
-    let mut client = dudes_rpc::Client::connect(settings.socket()).expect("the operator connects");
-    let response = client
-        .call_current_as_operator(
-            CurrentMethod::RecoveryInspect,
-            Some(serde_json::to_value(RecoveryInspectParams { agent }).unwrap()),
-            credential(),
-        )
-        .expect("the authenticated inspection answers");
-    assert!(response.error.is_none(), "{response:?}");
-    let inspected: RecoveryInspectResult =
-        serde_json::from_value(response.result.unwrap()).unwrap();
+    let inspected: RecoveryInspectResult = serde_json::from_value(recovery_call(
+        settings,
+        CurrentMethod::RecoveryInspect,
+        serde_json::to_value(RecoveryInspectParams { agent }).unwrap(),
+    ))
+    .unwrap();
     let RecoveryInspectResult::Available {
         expected,
         reason,
@@ -697,22 +703,17 @@ fn authorize_owed_issue(
     );
     let work = expected.work;
     let request_id = dudes_proto::record::Hex32::new([233; 32]);
-    let response = client
-        .call_current_as_operator(
-            CurrentMethod::RecoverySubmit,
-            Some(
-                serde_json::to_value(RecoverySubmitParams {
-                    request_id,
-                    expected: *expected,
-                    choice: RecoveryChoice::RepeatIssuedFresh,
-                })
-                .unwrap(),
-            ),
-            credential(),
-        )
-        .expect("one explicit authenticated consent answers");
-    assert!(response.error.is_none(), "{response:?}");
-    let submitted: RecoverySubmitResult = serde_json::from_value(response.result.unwrap()).unwrap();
+    let submitted: RecoverySubmitResult = serde_json::from_value(recovery_call(
+        settings,
+        CurrentMethod::RecoverySubmit,
+        serde_json::to_value(RecoverySubmitParams {
+            request_id,
+            expected: *expected,
+            choice: RecoveryChoice::RepeatIssuedFresh,
+        })
+        .unwrap(),
+    ))
+    .unwrap();
     let RecoverySubmitResult::Accepted { receipt } = submitted else {
         panic!("explicit recovery must be durably accepted: {submitted:?}");
     };
