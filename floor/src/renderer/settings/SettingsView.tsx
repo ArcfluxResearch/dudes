@@ -9,7 +9,7 @@ import { formatUsdMicros } from '../onboarding/catalog.ts';
 import { ReadNotice, snapshotReadState } from '../ReadError.tsx';
 import { getOfficePin, setOfficePin, subscribeToOfficePin } from '../view.ts';
 import { desktopNotificationPreference } from '../desktopNotifications.ts';
-import { releaseNotesUrl } from '../releaseLinks.ts';
+import { releaseNotesLabel, releaseNotesUrl } from '../releaseLinks.ts';
 
 const SWITCHES = [
   ['answer', 'Answer questions'], ['control', 'Pause, resume and rename'], ['goal', 'Change goals'],
@@ -127,7 +127,7 @@ export function SettingsView({ floor, onSetup }: {
         <div><dt>Browser wire</dt><dd>browser-wire-v{report.about.browser_wire_version}</dd></div></dl>
       <ul>
         <li><a href={releaseNotesUrl(report.about.daemon_version)} target="_blank" rel="noopener noreferrer">
-          Release notes for {report.about.daemon_version}</a></li>
+          {releaseNotesLabel(report.about.daemon_version)}</a></li>
         <li><a href="https://github.com/ArcfluxResearch/dudes" target="_blank" rel="noopener noreferrer">Source repository</a></li>
         <li><a href="https://github.com/ArcfluxResearch/dudes/issues" target="_blank" rel="noopener noreferrer">Issue tracker</a></li>
       </ul>
