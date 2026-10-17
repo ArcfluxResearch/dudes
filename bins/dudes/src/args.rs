@@ -30,10 +30,12 @@ use std::path::PathBuf;
 
 use dudes_proto::budget::{AgentBudget, GoalBudget};
 use dudes_proto::goal::Predicate;
+use dudes_proto::record::Hex32;
 use dudes_proto::rpc::agent::{HireParams, LookParams, McpParams, RenameParams};
 use dudes_proto::rpc::board::{CardCreateParams, CardListParams};
 use dudes_proto::rpc::goal::{CompletionCheckDeclaration, GoalSetParams};
 use dudes_proto::rpc::journal::JournalTailParams;
+use dudes_proto::rpc::recovery::RecoveryChoice;
 use dudes_proto::rpc::ticket::TicketCreateParams;
 use dudes_types::{AgentId, CardId, CardStatus, Lsn, MailId, Provider, Seq, Tokens, Usd};
 
@@ -107,6 +109,8 @@ pub enum Command {
     Goal(Box<GoalSetParams>),
     /// Submit one locally reviewed replacement request file.
     GoalReplace(PathBuf),
+    /// Inspect recovery, submit a reviewed choice or read its receipt.
+    Recovery(RecoveryCommand),
     /// `agent.ask`. The token comes from the process environment; the daemon derives the agent.
     Ask {
         /// The question.
@@ -162,6 +166,22 @@ pub struct UpgradeOptions {
     pub check: bool,
     /// Restart a daemon whose agents are busy, with closing time.
     pub now: bool,
+}
+
+/// One deliberate recovery operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoveryCommand {
+    /// Inspect one agent without changing work.
+    Inspect(AgentId),
+    /// Submit the exact saved opportunity with an explicit context choice.
+    Submit {
+        /// Saved JSON inspection.
+        inspection: PathBuf,
+        /// Explicit offered choice.
+        choice: RecoveryChoice,
+    },
+    /// Read only the original request identity.
+    Receipt(Hex32),
 }
 
 /// The flags of `uninstall`.
@@ -567,6 +587,18 @@ COMMANDS
 
     ping
         Ask the daemon for its version, socket and journal position.
+
+    recovery inspect <agent>
+    recovery submit <inspection.json> --choice try-recorded|fresh-with-recap|repeat-issued-fresh
+    recovery receipt <request-id>
+        Save an inspection with --json, review it, then submit one offered choice.
+        Submit preserves that inspection exactly and never refreshes it automatically.
+        Try recorded conversation does not guarantee restored provider history.
+        Fresh context does not restore old conversation history. Repeating an issued
+        task keeps its original task, and prior effects may repeat.
+        Submit prints and flushes its request ID to stderr before sending, including
+        with --json. Keep that ID. If the reply is lost, use recovery receipt with
+        that ID; do not resend the submission. Authorization does not promise launch.
 
     doctor
         Show daemon health and any stopped-journal recovery guidance.
@@ -1042,6 +1074,7 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "look" => Command::Look(look(tail)?),
         "mcp" => Command::Mcp(mcp(tail, payload)?),
         "goal" => goal_command(tail, payload)?,
+        "recovery" => Command::Recovery(recovery(tail, payload)?),
         "ask" => ask(tail)?,
         "memory" => Command::Memory(memory(tail)?),
         "why" => why(tail)?,
@@ -2696,6 +2729,37 @@ fn goal_command(tail: &[OsString], payload: Option<&[OsString]>) -> Result<Comma
         return Ok(Command::GoalReplace(PathBuf::from(&tail[2])));
     }
     Ok(Command::Goal(Box::new(goal(tail, payload)?)))
+}
+
+fn recovery(tail: &[OsString], payload: Option<&[OsString]>) -> Result<RecoveryCommand, ArgError> {
+    if tail.first().is_some_and(|word| asks_for_help(word)) {
+        return Err(ArgError::HelpRequested);
+    }
+    if payload.is_some() {
+        return Err(ArgError::UnknownFlag("recovery takes no payload".into()));
+    }
+    match tail {
+        [command, agent] if command == "inspect" => Ok(RecoveryCommand::Inspect(
+            agent.to_str().ok_or(ArgError::NotUtf8("agent"))?.parse().map_err(|_| ArgError::BadValue {
+                flag: "agent", value: agent.to_string_lossy().into_owned(), what: "a canonical agent id",
+            })?,
+        )),
+        [command, inspection, flag, choice] if command == "submit" && flag == "--choice" && !inspection.is_empty() => {
+            let choice = match choice.to_str().ok_or(ArgError::NotUtf8("--choice"))? {
+                "try-recorded" => RecoveryChoice::TryRecorded,
+                "fresh-with-recap" => RecoveryChoice::FreshWithRecap,
+                "repeat-issued-fresh" => RecoveryChoice::RepeatIssuedFresh,
+                _ => return Err(ArgError::BadValue { flag: "--choice", value: choice.to_string_lossy().into_owned(), what: "try-recorded, fresh-with-recap or repeat-issued-fresh" }),
+            };
+            Ok(RecoveryCommand::Submit { inspection: PathBuf::from(inspection), choice })
+        }
+        [command, request] if command == "receipt" => {
+            let text = request.to_str().ok_or(ArgError::NotUtf8("request-id"))?;
+            let request = serde_json::from_value(serde_json::Value::String(text.into())).map_err(|_| ArgError::BadValue { flag: "request-id", value: text.into(), what: "64 lowercase hexadecimal characters" })?;
+            Ok(RecoveryCommand::Receipt(request))
+        }
+        _ => Err(ArgError::UnknownFlag("recovery requires inspect <agent>, submit <inspection.json> --choice <choice>, or receipt <request-id>".into())),
+    }
 }
 
 fn goal(tail: &[OsString], payload: Option<&[OsString]>) -> Result<GoalSetParams, ArgError> {

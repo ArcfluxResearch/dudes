@@ -64,6 +64,7 @@ use crate::setup::{self, Plan, Stopped, Terminal};
 use crate::workspace::{self, Edit, NewWorkspace};
 use crate::{exit, render};
 
+mod recovery;
 mod ticket;
 
 /// The client this binary drives: one local connection, buffered on the read side.
@@ -498,6 +499,9 @@ fn dispatch(
             return worktree_command(command, env, invocation.json, out, err);
         }
         Command::GoalReplace(path) => return replace_goal(path, env, invocation.json, out),
+        Command::Recovery(command) => {
+            return recovery::command(command, env, invocation.json, out, err);
+        }
         Command::PauseAll => return pause_all(env, out),
         Command::Stop => return stop_closing(invocation.json, env, out, err),
         Command::Goal(params) => return set_goal(params, invocation, env, out),
@@ -2053,6 +2057,7 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         | Command::Login(_)
         | Command::PauseAll
         | Command::GoalReplace(_)
+        | Command::Recovery(_)
         | Command::Ask { .. }
         | Command::Stop
         | Command::ClosingAck { .. }
