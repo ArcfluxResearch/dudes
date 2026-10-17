@@ -189,11 +189,14 @@ mod durable {
     use duded::settings::Seams;
     use dudes_journal::{Projections, Reader, Writer};
     use dudes_proto::record::samples;
+    use dudes_proto::rpc::Method;
     use dudes_proto::rpc::recovery::{
         RecoveryAllowedChoices, RecoveryInspectResult, RecoveryReceiptState, RecoverySubmitParams,
         RecoveryWaitStatus,
     };
+    use dudes_proto::rpc::system::PingResult;
     use dudes_proto::{Entry, Record, RecordKind};
+    use dudes_rpc::client::Client;
     use dudes_supervisor::Rng;
     use dudes_types::{AgentId, GoalId, Lsn, Mode, ModelSelection, Provenance, Timestamp, TurnId};
 
@@ -476,6 +479,18 @@ mod durable {
         }
     }
 
+    fn assert_published_cut_without_pump(backend: &Backend) {
+        let before = snapshot(backend);
+        let through = backend.fixture.entries().last().unwrap().0;
+        let settings = backend.fixture.settings();
+        let mut client = Client::connect(settings.socket()).unwrap();
+        let response = client.call(Method::SystemPing, None).unwrap();
+        assert!(response.error.is_none(), "{response:?}");
+        let ping: PingResult = serde_json::from_value(response.result.unwrap()).unwrap();
+        assert_eq!(ping.lsn, through);
+        assert_eq!(snapshot(backend), before);
+    }
+
     fn assert_pending(
         backend: &Backend,
         request: &RecoverySubmitParams,
@@ -545,6 +560,7 @@ mod durable {
             let (dispatcher, jobs) = fixture();
             let before_inspect = snapshot(&backend);
             let request = inspect(&backend, &dispatcher, &jobs);
+            assert_published_cut_without_pump(&backend);
             assert_eq!(snapshot(&backend), before_inspect);
             let response = forward(
                 &backend,
@@ -553,6 +569,7 @@ mod durable {
                 "recovery.submit",
                 serde_json::to_value(request).unwrap(),
             );
+            assert_published_cut_without_pump(&backend);
             assert!(response.error.is_none(), "{response:?}");
             let accepted = assert_pending(
                 &backend,
@@ -569,6 +586,7 @@ mod durable {
                     "recovery.submit",
                     serde_json::to_value(request).unwrap(),
                 );
+                assert_published_cut_without_pump(&backend);
                 assert_eq!(
                     serde_json::from_value::<RecoverySubmitResult>(response.result.unwrap())
                         .unwrap(),
@@ -578,6 +596,7 @@ mod durable {
                 let mut changed = serde_json::to_value(request).unwrap();
                 changed["choice"] = json!("try_recorded");
                 let response = forward(&backend, &dispatcher, &jobs, "recovery.submit", changed);
+                assert_published_cut_without_pump(&backend);
                 assert_eq!(
                     response.result,
                     Some(
@@ -592,6 +611,7 @@ mod durable {
                     "recovery.receipt",
                     json!({"request_id":request.request_id}),
                 );
+                assert_published_cut_without_pump(&backend);
                 let RecoverySubmitResult::Accepted { receipt } = &accepted else {
                     unreachable!()
                 };
