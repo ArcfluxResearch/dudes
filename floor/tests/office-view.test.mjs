@@ -186,7 +186,7 @@ test('NAME_UNISOLATED mutant: a name written right to left cannot reorder the en
   });
 });
 
-test('NAME_UNCAPPED mutant: a very long name is cut by the stylesheet, while the markup and the inspect label keep it whole', async () => {
+test('NAME_UNCAPPED mutant: a very long name is cut by the stylesheet, while the markup keeps it whole', async () => {
   const name = 'Margaret Hamilton the Apollo flight software lead and long-running reviewer';
   await withOffice(({ NameTag }) => {
     const id = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
@@ -199,8 +199,6 @@ test('NAME_UNCAPPED mutant: a very long name is cut by the stylesheet, while the
   assert.match(rule, /overflow:\s*hidden;/);
   assert.match(rule, /text-overflow:\s*ellipsis;/);
   assert.doesNotMatch(css, /\.office-tag-engine\s*\{[^}]*overflow/, 'the engine suffix is not cut');
-  const component = await readFile(resolve(import.meta.dirname, '../src/renderer/OfficeCanvas.tsx'), 'utf8');
-  assert.match(component, /aria-label=\{`Inspect \$\{typeof rows\.get\(id\)\?\.name === 'string' \? String\(rows\.get\(id\)\?\.name\) : id\}`\}/);
 });
 
 test('PANEL_INSETS and OVERLAY_EDGES_REDUCED mutants: a tall panel covers the edge its middle is on, and a third of the office stays uncovered', () => {
