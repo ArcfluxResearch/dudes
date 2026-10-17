@@ -64,8 +64,7 @@ fn call(
             &dispatcher,
         )
         .unwrap();
-        let response = serde_json::from_slice(&bytes.0.lock().unwrap()).unwrap();
-        response
+        serde_json::from_slice(&bytes.0.lock().unwrap()).unwrap()
     })
 }
 
@@ -372,8 +371,8 @@ mod durable {
         let daemon = duded::boot(&settings, seams).unwrap();
         let running = common::start(daemon);
         Backend {
-            fixture,
             running,
+            fixture,
             host,
             drawn,
             agent,
