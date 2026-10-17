@@ -268,6 +268,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         {
             return Ok(());
         }
+        self.admit_recovery_folder(sup, agent, cwd)
+    }
+
+    pub(super) fn admit_recovery_folder<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: Option<AgentId>,
+        cwd: &Path,
+    ) -> Result<(), SharedFolderRefusal> {
         let folder = canonical_folder(cwd).ok_or(SharedFolderRefusal::CandidateFolderUnresolved)?;
         let world = sup.world();
         let mut census = Census {

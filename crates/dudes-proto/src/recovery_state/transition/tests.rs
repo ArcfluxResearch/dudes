@@ -1154,6 +1154,15 @@ fn issued_source(fixture: &mut Fixture, at: u64, decision_at: u64, work: Recover
 }
 
 fn held_fixture(cause: AutomaticHold, first_end: Option<Record>, latest_end: Record) -> Fixture {
+    held_fixture_with_provenance(cause, first_end, latest_end, Provenance::Observed)
+}
+
+fn held_fixture_with_provenance(
+    cause: AutomaticHold,
+    first_end: Option<Record>,
+    latest_end: Record,
+    provenance: Provenance,
+) -> Fixture {
     let mut fixture = Fixture::new();
     let work = fixture.facts.binding.work;
     let first = RecoveryWork {
@@ -1210,7 +1219,7 @@ fn held_fixture(cause: AutomaticHold, first_end: Option<Record>, latest_end: Rec
         55,
         Record::AgentHeld {
             agent: work.agent,
-            provenance: Provenance::Observed,
+            provenance,
             cause,
         },
     );
@@ -1699,4 +1708,104 @@ fn authorization_without_own_resume_refuses_uncleared_pause_and_known_holds() {
             ("launch refused", Err(RecoveryStateError::Control), true)
         ]
     );
+}
+
+#[test]
+fn inferred_repeated_holds_keep_observed_qualified_named_ends_and_launch_holds_stay_observed() {
+    let work = Fixture::new().facts.binding.work;
+    let first = RecoveryWork {
+        turn: TurnId::from_parts(61, 9),
+        ..work
+    };
+    let fixture = held_fixture_with_provenance(
+        repeated_hold(first, work),
+        Some(failure_end(first, Some(TurnOutcome::NoResult))),
+        failure_end(work, Some(TurnOutcome::NoResult)),
+        Provenance::Inferred,
+    );
+    assert_eq!(
+        fixture.check(RecoveryTransition::Required(&fixture.required)),
+        Ok(())
+    );
+    let mut results = Vec::new();
+    for side in ["first", "latest"] {
+        for defect in ["inferred end", "attached end", "wrong agent", "wrong turn"] {
+            let mut first_end = failure_end(first, Some(TurnOutcome::NoResult));
+            let mut latest_end = failure_end(work, Some(TurnOutcome::NoResult));
+            let record = if side == "first" {
+                &mut first_end
+            } else {
+                &mut latest_end
+            };
+            if let Record::TurnEnded {
+                provenance,
+                mode,
+                agent,
+                turn,
+                ..
+            } = record
+            {
+                match defect {
+                    "inferred end" => *provenance = Provenance::Inferred,
+                    "attached end" => *mode = Mode::Attached,
+                    "wrong agent" => *agent = AgentId::from_parts(61, 99),
+                    "wrong turn" => *turn = TurnId::from_parts(61, 99),
+                    _ => unreachable!(),
+                }
+            }
+            let fixture = held_fixture_with_provenance(
+                repeated_hold(first, work),
+                Some(first_end),
+                latest_end,
+                Provenance::Inferred,
+            );
+            results.push((
+                side,
+                defect,
+                fixture.check(RecoveryTransition::Required(&fixture.required)),
+            ));
+        }
+    }
+    assert_eq!(
+        results,
+        vec![
+            ("first", "inferred end", Err(RecoveryStateError::Binding)),
+            ("first", "attached end", Err(RecoveryStateError::Binding)),
+            ("first", "wrong agent", Err(RecoveryStateError::Binding)),
+            ("first", "wrong turn", Err(RecoveryStateError::Binding)),
+            ("latest", "inferred end", Err(RecoveryStateError::Binding)),
+            ("latest", "attached end", Err(RecoveryStateError::Binding)),
+            ("latest", "wrong agent", Err(RecoveryStateError::Binding)),
+            ("latest", "wrong turn", Err(RecoveryStateError::Binding)),
+        ]
+    );
+    for (cause, outcome) in [
+        (
+            AutomaticHold::LaunchFailed {
+                reason: "host".into(),
+            },
+            TurnOutcome::NotLaunched {
+                reason: "host".into(),
+            },
+        ),
+        (
+            AutomaticHold::LaunchRefused {
+                reason: "adapter".into(),
+            },
+            TurnOutcome::LaunchRefused {
+                reason: "adapter".into(),
+            },
+        ),
+    ] {
+        let fixture = held_fixture_with_provenance(
+            cause,
+            None,
+            failure_end(work, Some(outcome)),
+            Provenance::Inferred,
+        );
+        assert_eq!(
+            fixture.check(RecoveryTransition::Required(&fixture.required)),
+            Err(RecoveryStateError::Binding)
+        );
+    }
 }

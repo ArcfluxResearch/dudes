@@ -18,6 +18,13 @@ use crate::input::{
 #[cfg(test)]
 mod tests;
 
+pub(super) struct NewContext {
+    pub(super) turn: TurnId,
+    pub(super) session: dudes_providers::adapter::TurnSession,
+    pub(super) recap: String,
+    pub(super) model: Option<dudes_types::ModelSelection>,
+}
+
 #[derive(Debug)]
 pub(super) struct Continuing {
     command: RecoveryCommand,
@@ -76,6 +83,17 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         }
         let (state, _) = self.world.recovery_projection().map_err(refusal)?;
         let current = state.current(binding.work);
+        if current.is_none()
+            && state.planned_claim(binding.work.turn).is_none()
+            && self.live_issues.contains(&binding.work.turn)
+            && self
+                .world
+                .turns
+                .get(&binding.work.turn)
+                .is_some_and(|turn| turn.is_issued_not_spawned())
+        {
+            return Err(RecoveryRefusal::NotRecoverable);
+        }
         let predecessor = current
             .and_then(|episode| {
                 episode
@@ -114,9 +132,17 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 view.expected.source_lsn =
                     facts.control_lsn.ok_or(RecoveryRefusal::StaleControl)?;
             }
+            if view.required.reason != RecoveryReason::MissingSpawn
+                && view.required.binding.model_selection.is_none()
+            {
+                return Err(RecoveryRefusal::NotRecoverable);
+            }
             return Ok(view);
         }
         for (reason, origin, boundary) in candidates {
+            if reason != RecoveryReason::MissingSpawn && binding.model_selection.is_none() {
+                continue;
+            }
             let required = RecoveryRequired {
                 binding: binding.clone(),
                 origin,
@@ -435,6 +461,11 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         if session.is_some() && facts.confirmed_session.is_none() {
             return Err(RecoveryRefusal::ChoiceUnavailable);
         }
+        if next.required.reason != RecoveryReason::MissingSpawn
+            && next.required.binding.model_selection.is_none()
+        {
+            return Err(RecoveryRefusal::ChoiceUnavailable);
+        }
         let plan = if next.required.reason == RecoveryReason::MissingSpawn {
             let session = self
                 .announce_session(episode.work.agent, true)
@@ -487,6 +518,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         let Ok(binding) = self.recovery_binding(agent) else {
             return true;
         };
+        if !self.recovery_dispatch_attribution_allowed(binding.work) {
+            return false;
+        }
         if self.recovery_owed_saving(agent, binding.work.turn) {
             return true;
         }
@@ -527,7 +561,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 return false;
             }
             return match receipt.state {
-                RecoveryClaimState::Pending => !self.closing_active,
+                RecoveryClaimState::Pending => {
+                    !self.closing_active && receipt.authorization.binding.model_selection.is_some()
+                }
                 RecoveryClaimState::IssueBound(issue) => {
                     self.live_issues.contains(&issue.issued.work.turn)
                 }
@@ -616,6 +652,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return false;
         }
+        if !self.recovery_dispatch_attribution_allowed(RecoveryWork { agent, goal, turn }) {
+            return false;
+        }
         if self.recovery_owed_saving(agent, turn) {
             return true;
         }
@@ -651,6 +690,27 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 .is_some_and(|owner| owner.control_lsn == receipt.authorization.resulting_control)
     }
 
+    fn recovery_dispatch_attribution_allowed(&self, work: RecoveryWork) -> bool {
+        let Ok((state, _)) = self.world.recovery_projection() else {
+            return false;
+        };
+        let claim = match state.work_claim(work) {
+            Ok(Some(claim)) => claim,
+            Ok(None) => return true,
+            Err(_) => return false,
+        };
+        let Ok(receipt) = state.claim_receipt(claim) else {
+            return false;
+        };
+        !matches!(
+            receipt.state,
+            RecoveryClaimState::Pending | RecoveryClaimState::IssueBound(_)
+        ) || matches!(
+            receipt.authorization.attribution,
+            dudes_proto::recovery::RecoveryAttribution::LocalOperator { .. }
+        )
+    }
+
     fn recovery_owed_saving(&self, agent: AgentId, turn: TurnId) -> bool {
         self.closing_active
             && self.world.closing.as_ref().is_some_and(|session| {
@@ -662,10 +722,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
             })
     }
 
-    pub(super) fn recovery_new_context(
-        &self,
-        agent: AgentId,
-    ) -> Result<Option<(TurnId, dudes_providers::adapter::TurnSession, String)>, ()> {
+    pub(super) fn recovery_new_context(&self, agent: AgentId) -> Result<Option<NewContext>, ()> {
         let Ok(binding) = self.recovery_binding(agent) else {
             return Ok(None);
         };
@@ -703,7 +760,12 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 recap.text.clone(),
             ),
         };
-        Ok(Some((*turn, session, recap)))
+        Ok(Some(NewContext {
+            turn: *turn,
+            session,
+            recap,
+            model: receipt.authorization.binding.model_selection.clone(),
+        }))
     }
 
     fn recovery_recap(&self, binding: &RecoveryBinding) -> RecoveryRecap {
@@ -738,7 +800,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
     pub(super) fn recovery_task(&self, agent: AgentId, task: &str) -> Option<String> {
         let context = self.recovery_new_context(agent).ok()?;
         Some(match context {
-            Some((_, _, recap)) => with_recap(task, &recap),
+            Some(context) => with_recap(task, &context.recap),
             None => task.to_owned(),
         })
     }

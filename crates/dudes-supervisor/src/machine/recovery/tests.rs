@@ -567,3 +567,494 @@ fn a_single_confirmed_context_failure_without_hold_keeps_ordinary_admission() {
         }
     )));
 }
+
+fn replay_machine(prefix: &[(Lsn, Entry)]) -> Machine {
+    let mut rng = FakeRng::new();
+    rng.reserve_entries(
+        &prefix
+            .iter()
+            .map(|(_, entry)| entry.clone())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let adapter: Box<dyn dudes_providers::adapter::Adapter> =
+        Box::new(dudes_providers::claude::ClaudeAdapter::new(
+            dudes_providers::claude::config::ClaudeConfig::default(),
+        ));
+    let mut machine = Supervisor::new(Harness::config(), FakeClock::frozen(1_787_394_700_000), rng)
+        .with_adapters([adapter].into_iter().collect());
+    for (lsn, entry) in prefix {
+        machine
+            .handle(crate::Input::Replayed {
+                lsn: *lsn,
+                entry: entry.clone(),
+            })
+            .unwrap();
+        assert!(
+            machine.effects().is_empty(),
+            "replay must not emit invalidations"
+        );
+    }
+    machine
+}
+
+fn replay_record(machine: &mut Machine, prefix: &mut Vec<(Lsn, Entry)>, lsn: u64, record: Record) {
+    let entry = Entry {
+        at: Timestamp::UNIX_EPOCH,
+        record,
+    };
+    machine
+        .handle(crate::Input::Replayed {
+            lsn: Lsn(lsn),
+            entry: entry.clone(),
+        })
+        .unwrap();
+    assert!(machine.effects().is_empty());
+    prefix.push((Lsn(lsn), entry));
+}
+
+fn replay_pending(
+    machine: &mut Machine,
+    prefix: &mut Vec<(Lsn, Entry)>,
+    agent: AgentId,
+    required_lsn: u64,
+    request: u8,
+) -> RecoveryClaimRef {
+    let view = machine.recovery_opportunity(agent).unwrap();
+    let binding = view.required.binding.clone();
+    replay_record(
+        machine,
+        prefix,
+        required_lsn,
+        Record::RecoveryRequired(view.required),
+    );
+    replay_record(
+        machine,
+        prefix,
+        required_lsn + 1,
+        Record::Resume {
+            agent,
+            browser: None,
+        },
+    );
+    let episode = machine
+        .world
+        .recovery_projection()
+        .unwrap()
+        .0
+        .current(binding.work)
+        .unwrap()
+        .id;
+    let turn = TurnId::from_ulid(machine.rng.ulid());
+    let session = machine.announce_session(agent, true).id().cloned();
+    let authorization = RecoveryAuthorized {
+        episode,
+        binding,
+        request_id: Hex32::new([request; 32]),
+        request_digest: Hex32::new([request + 1; 32]),
+        attribution: dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+            pid: 17,
+            uid: None,
+        },
+        expected_control: view.expected.control_lsn,
+        resulting_control: Some(Lsn(required_lsn + 1)),
+        resume_lsn: Some(Lsn(required_lsn + 1)),
+        plan: RecoveryPlan::New {
+            turn,
+            context: RecoveryContext::Fresh {
+                session,
+                recap: RecoveryRecap::default(),
+            },
+        },
+    };
+    assert_eq!(
+        machine
+            .world
+            .prepare_recovery(RecoveryTransition::Authorized(&authorization)),
+        Ok(())
+    );
+    replay_record(
+        machine,
+        prefix,
+        required_lsn + 2,
+        Record::RecoveryAuthorized(Box::new(authorization)),
+    );
+    RecoveryClaimRef {
+        episode,
+        authorization_lsn: Lsn(required_lsn + 2),
+    }
+}
+
+fn pending_history() -> (Vec<(Lsn, Entry)>, AgentId, RecoveryClaimRef) {
+    let mut harness = Harness::new();
+    let (agent, _) = harness.hire_with_goal(&["false"]);
+    harness.drive(crate::Input::ChildExited {
+        final_reply: None,
+        elapsed_ms: Some(10_000),
+        turn: harness.open_turn(agent).unwrap(),
+        exit: dudes_proto::ExitStatus {
+            code: Some(1),
+            signal: None,
+        },
+        usage: None,
+        model_usage: std::collections::BTreeMap::new(),
+        outcome: dudes_proto::TurnOutcome::NoResult,
+        last_message: None,
+    });
+    harness.drive(crate::Input::Command(crate::Command::Pause {
+        agent,
+        browser: None,
+    }));
+    let mut prefix = harness
+        .journal
+        .into_iter()
+        .zip(1u64..)
+        .map(|(entry, lsn)| (Lsn(lsn), entry))
+        .collect::<Vec<_>>();
+    let mut machine = replay_machine(&prefix);
+    let claim = replay_pending(&mut machine, &mut prefix, agent, 9_000, 91);
+    (prefix, agent, claim)
+}
+
+fn drain_invalidations(
+    machine: &mut Machine,
+    mut lsn: u64,
+) -> Vec<dudes_proto::recovery::RecoveryInvalidated> {
+    machine.handle(crate::Input::Started).unwrap();
+    let mut invalidated = Vec::new();
+    for _ in 0..16 {
+        let emitted = machine
+            .take_effects()
+            .into_iter()
+            .find_map(|effect| match effect {
+                Effect::Persist {
+                    token,
+                    entry:
+                        Entry {
+                            record: Record::RecoveryInvalidated(record),
+                            at,
+                        },
+                } => Some((
+                    token,
+                    Entry {
+                        at,
+                        record: Record::RecoveryInvalidated(record.clone()),
+                    },
+                    record,
+                )),
+                _ => None,
+            });
+        if let Some((token, entry, record)) = emitted {
+            acknowledge(machine, token, entry, Lsn(lsn));
+            invalidated.push(record);
+            lsn += 1;
+        } else if !machine.recovery_discovery.busy() {
+            break;
+        } else {
+            machine.handle(crate::Input::Tick).unwrap();
+        }
+    }
+    assert!(!machine.recovery_discovery.busy());
+    invalidated
+}
+
+#[test]
+fn replay_retains_the_earlier_different_goal_witness_after_a_same_goal_set() {
+    let (mut prefix, agent, claim) = pending_history();
+    let mut machine = replay_machine(&prefix);
+    let old_goal = machine.world.goals[&claim.episode.work.goal].goal.clone();
+    let mut other_goal = old_goal.clone();
+    other_goal.id = dudes_types::GoalId::from_parts(98, 11);
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        10_000,
+        Record::GoalSet {
+            agent,
+            goal: other_goal,
+            browser_onboarding: None,
+            browser_goal: None,
+            goal_replacement: None,
+        },
+    );
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        10_001,
+        Record::GoalSet {
+            agent,
+            goal: old_goal,
+            browser_onboarding: None,
+            browser_goal: None,
+            goal_replacement: None,
+        },
+    );
+    let mut replayed = replay_machine(&prefix);
+    assert!(matches!(
+        replayed
+            .world
+            .recovery_projection()
+            .unwrap()
+            .0
+            .claim_receipt(claim)
+            .unwrap()
+            .state,
+        RecoveryClaimState::Pending
+    ));
+    let invalidated = drain_invalidations(&mut replayed, 30_000);
+    assert_eq!(
+        invalidated,
+        vec![dudes_proto::recovery::RecoveryInvalidated {
+            claim,
+            evidence: dudes_proto::recovery::RecoveryInvalidationEvidence::RecordedChange {
+                reason: dudes_proto::recovery::RecoveryInvalidationReason::GoalChanged,
+                lsn: Lsn(10_000)
+            }
+        }]
+    );
+    assert!(matches!(
+        replayed
+            .world
+            .recovery_projection()
+            .unwrap()
+            .0
+            .claim_receipt(claim)
+            .unwrap()
+            .state,
+        RecoveryClaimState::Invalidated { .. }
+    ));
+}
+
+#[test]
+fn crash_replay_discovers_multiple_stale_pending_claims_including_an_overwritten_last_turn() {
+    let (mut prefix, agent, first) = pending_history();
+    let mut machine = replay_machine(&prefix);
+    let mut goal = machine.world.goals[&first.episode.work.goal].goal.clone();
+    goal.id = dudes_types::GoalId::from_parts(98, 12);
+    let goal_id = goal.id;
+    let selection = machine.world.turns[&first.episode.work.turn]
+        .model_selection
+        .clone();
+    let turn = TurnId::from_parts(98, 13);
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        20_000,
+        Record::GoalSet {
+            agent,
+            goal: goal.clone(),
+            browser_onboarding: None,
+            browser_goal: None,
+            goal_replacement: None,
+        },
+    );
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        20_001,
+        Record::LoopDecided {
+            agent,
+            input_digest: String::new(),
+            decision: dudes_proto::LoopDecision::Continue {
+                task: "original B".into(),
+            },
+            gate_trace: Vec::new(),
+        },
+    );
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        20_002,
+        Record::TurnIssued {
+            agent,
+            turn,
+            goal: goal_id,
+            task: "original B".into(),
+            session: None,
+            mode: dudes_types::Mode::Managed,
+            model_selection: selection.clone(),
+            lsn_of_decision: Lsn(20_001),
+            answers: Vec::new(),
+        },
+    );
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        20_003,
+        Record::TurnEnded {
+            agent,
+            turn,
+            mode: dudes_types::Mode::Managed,
+            provenance: dudes_types::Provenance::Observed,
+            elapsed_ms: Some(10_000),
+            exit: dudes_proto::ExitStatus {
+                code: Some(1),
+                signal: None,
+            },
+            usage: None,
+            session_usage: None,
+            model_usage: std::collections::BTreeMap::new(),
+            last_message: None,
+            final_reply: None,
+            session: None,
+            outcome: Some(dudes_proto::TurnOutcome::NoResult),
+        },
+    );
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        20_004,
+        Record::Pause {
+            agent,
+            browser: None,
+        },
+    );
+    let second = replay_pending(&mut machine, &mut prefix, agent, 20_005, 93);
+    let hidden_by = TurnId::from_parts(98, 14);
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        20_008,
+        Record::LoopDecided {
+            agent,
+            input_digest: String::new(),
+            decision: dudes_proto::LoopDecision::Continue {
+                task: "still owed B".into(),
+            },
+            gate_trace: Vec::new(),
+        },
+    );
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        20_009,
+        Record::TurnIssued {
+            agent,
+            turn: hidden_by,
+            goal: goal_id,
+            task: "still owed B".into(),
+            session: None,
+            mode: dudes_types::Mode::Managed,
+            model_selection: selection,
+            lsn_of_decision: Lsn(20_008),
+            answers: Vec::new(),
+        },
+    );
+    assert_ne!(
+        machine.world.goals[&goal_id].last_turn,
+        Some(second.episode.work.turn)
+    );
+    goal.id = dudes_types::GoalId::from_parts(98, 15);
+    replay_record(
+        &mut machine,
+        &mut prefix,
+        21_000,
+        Record::GoalSet {
+            agent,
+            goal,
+            browser_onboarding: None,
+            browser_goal: None,
+            goal_replacement: None,
+        },
+    );
+    let mut recovered = replay_machine(&prefix);
+    let before = recovered.world.turns[&hidden_by].clone();
+    let hops = recovered.world.goals[&goal_id].turns_on_goal;
+    for claim in [first, second] {
+        assert!(matches!(
+            recovered
+                .world
+                .recovery_projection()
+                .unwrap()
+                .0
+                .claim_receipt(claim)
+                .unwrap()
+                .state,
+            RecoveryClaimState::Pending
+        ));
+    }
+    let records = drain_invalidations(&mut recovered, 30_000);
+    assert_eq!(records.len(), 2);
+    for claim in [first, second] {
+        assert!(records.iter().any(|record| record.claim == claim));
+        assert!(matches!(
+            recovered
+                .world
+                .recovery_projection()
+                .unwrap()
+                .0
+                .claim_receipt(claim)
+                .unwrap()
+                .state,
+            RecoveryClaimState::Invalidated { .. }
+        ));
+    }
+    let after = &recovered.world.turns[&hidden_by];
+    assert_eq!(
+        (&after.task, &after.answers, after.issue_lsn, after.status),
+        (
+            &before.task,
+            &before.answers,
+            before.issue_lsn,
+            before.status
+        )
+    );
+    assert_eq!(recovered.world.goals[&goal_id].turns_on_goal, hops);
+}
+
+#[test]
+fn whole_utf8_recap_fits_only_after_all_mandatory_task_and_answers() {
+    let recap = "é".repeat(4_096);
+    assert_eq!(recap.len(), 8_192);
+    let separator = "\n\nPrevious work context:\n";
+    let answer = "Current answer: keep the green output exactly.\n";
+    let padding = dudes_policy::r#loop::NEXT_WORK_TASK_MAX_BYTES
+        - separator.len()
+        - recap.len()
+        - answer.len();
+    let mandatory = format!("{answer}{}", "m".repeat(padding));
+    let exact = with_recap(&mandatory, &recap);
+    assert_eq!(exact, format!("{mandatory}{separator}{recap}"));
+    assert_eq!(exact.len(), 65_536);
+    assert!(exact.starts_with(answer));
+    let over = format!("{mandatory}m");
+    assert_eq!(with_recap(&over, &recap), over);
+    let full = format!("{answer}{}", "m".repeat(65_536 - answer.len()));
+    assert_eq!(with_recap(&full, &recap), full);
+}
+
+#[test]
+fn generated_recap_is_bounded_utf8_from_the_exact_recorded_goal() {
+    let mut harness = Harness::new();
+    harness.launch = false;
+    let agent = harness.hire();
+    harness.drive(crate::Input::Command(crate::Command::GoalSet {
+        completion_check: None,
+        agent,
+        text: "é".repeat(8_192),
+        predicate: dudes_proto::Predicate::Command {
+            argv: vec!["false".into()],
+            timeout_s: 10,
+        },
+        budget: dudes_proto::GoalBudget {
+            usd: None,
+            tokens: None,
+        },
+        hop_cap: 8,
+        browser_goal: None,
+        goal_replacement: None,
+        baseline: None,
+    }));
+    let binding = harness.supervisor.recovery_binding(agent).unwrap();
+    let recap = harness.supervisor.recovery_recap(&binding);
+    assert!((8_189..=8_192).contains(&recap.text.len()));
+    assert!(recap.text.starts_with(
+        "Prior execution effects are unknown. This recap does not restore conversation history."
+    ));
+    assert!(recap.text.contains("Recorded goal: é"));
+    assert_eq!(
+        recap.sources,
+        vec![harness.supervisor.world.goals[&binding.work.goal].installed_lsn]
+    );
+    assert!(recap.delivered_answers.is_empty());
+}

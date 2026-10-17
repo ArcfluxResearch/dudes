@@ -329,6 +329,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             RecoveryPlan::New { turn, .. } => *turn,
             RecoveryPlan::RepeatIssued { issue, .. } => issue.issued.work.turn,
         };
+        let expected_issue = match &receipt.state {
+            RecoveryClaimState::IssueBound(issue)
+            | RecoveryClaimState::Consumed { issue, .. }
+            | RecoveryClaimState::Superseded { issue, .. } => Some((issue.lsn, issue.issued.work)),
+            RecoveryClaimState::Pending | RecoveryClaimState::Invalidated { .. } => None,
+        };
         let status = match receipt.state {
             RecoveryClaimState::Pending => RecoveryReceiptState::Pending,
             RecoveryClaimState::IssueBound(issue) => RecoveryReceiptState::IssueBound {
@@ -362,6 +368,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             },
         };
         let row = self.projections.turn(turn)?;
+        match (expected_issue, &row) {
+            (Some((issue, work)), Some(row))
+                if row.lsn_issued == issue
+                    && row.agent == work.agent
+                    && row.goal == Some(work.goal)
+                    && row.mode == dudes_types::Mode::Managed => {}
+            (None, None) => {}
+            _ => return Err(RecoveryStateError::Binding.into()),
+        }
         Ok(RecoveryReceiptView {
             request_id: authorization.request_id,
             claim: receipt.claim,
@@ -444,20 +459,18 @@ fn recovery_waits<C: Clock, R: Rng>(
     };
     let row = &sup.world().agents[&agent];
     let goal = row.goal.and_then(|id| sup.world().goals.get(&id));
+    let (instruction_review, instruction_comparison) = instruction_waits(
+        &sup.world().instructions,
+        row.goal
+            .and_then(|goal| sup.world().ticket_goal(goal))
+            .map(|(card, _)| card),
+    );
     RecoveryWaitSummary {
         open_question: ready(row.open_question.is_some()),
         budget: ready(budget_waiting),
         hops: ready(goal.is_some_and(|goal| goal.turns_on_goal >= goal.goal.hop_cap)),
-        instruction_review: ready(
-            row.goal
-                .and_then(|goal| sup.world().ticket_goal(goal))
-                .is_some_and(|(card, _)| sup.world().instructions.ticket_reason(card).is_some()),
-        ),
-        instruction_comparison: ready(
-            row.goal
-                .and_then(|goal| sup.world().ticket_goal(goal))
-                .is_some_and(|(card, _)| sup.world().instructions.observation_pending(card)),
-        ),
+        instruction_review,
+        instruction_comparison,
     }
 }
 
@@ -477,4 +490,21 @@ pub(super) fn known_no_write(error: &anyhow::Error) -> Option<RecoveryRefusal> {
         }),
         _ => None,
     }
+}
+
+fn instruction_waits(
+    instructions: &dudes_proto::instruction_state::InstructionState,
+    card: Option<dudes_types::CardId>,
+) -> (RecoveryWaitStatus, RecoveryWaitStatus) {
+    let waiting = |value| {
+        if value {
+            RecoveryWaitStatus::Waiting
+        } else {
+            RecoveryWaitStatus::Ready
+        }
+    };
+    (
+        waiting(card.is_some_and(|card| instructions.ticket_reason(card).is_some())),
+        waiting(card.is_some_and(|card| instructions.observation_pending(card))),
+    )
 }

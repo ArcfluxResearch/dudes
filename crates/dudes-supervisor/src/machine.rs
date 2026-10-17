@@ -2807,21 +2807,37 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
         {
             return;
         }
-        let (turn, session, recap) = match self.recovery_new_context(agent) {
-            Ok(Some(context)) => context,
-            Ok(None) => (
-                TurnId::from_ulid(self.rng.ulid()),
-                self.announce_session(agent, false),
-                String::new(),
-            ),
+        let recovery = match self.recovery_new_context(agent) {
+            Ok(context) => context,
             Err(()) => return,
         };
-        let recovered_task = recovery::with_recap(task, &recap);
+        if browser.is_some()
+            && recovery
+                .as_ref()
+                .is_some_and(|context| context.model.is_none())
+        {
+            return;
+        }
+        let turn = recovery.as_ref().map_or_else(
+            || TurnId::from_ulid(self.rng.ulid()),
+            |context| context.turn,
+        );
+        let session = recovery.as_ref().map_or_else(
+            || self.announce_session(agent, false),
+            |context| context.session.clone(),
+        );
+        let recovered_task = recovery::with_recap(
+            task,
+            recovery
+                .as_ref()
+                .map_or("", |context| context.recap.as_str()),
+        );
         let task = recovered_task.as_str();
-        // One selection, obtained **before** the record that carries it and handed to the launch
-        // rather than re-derived inside it. Asking the adapter twice would let the
-        // journal and the launch material disagree about the same turn.
-        let Some(selection) = self.model_selection(&row) else {
+        let Some(selection) = recovery
+            .as_ref()
+            .and_then(|context| context.model.clone())
+            .or_else(|| self.model_selection(&row))
+        else {
             return;
         };
         let launch = match self.launch(agent, &row, task, &session, &selection) {
@@ -3577,6 +3593,9 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
 
     /// After a turn end: run the goal's predicate, or re-decide when the goal is gone.
     fn judge(&mut self, agent: AgentId, goal: GoalId) {
+        if !self.ensure_recovery_admission(agent) {
+            return;
+        }
         if self.protect_failures(agent) {
             return;
         }
