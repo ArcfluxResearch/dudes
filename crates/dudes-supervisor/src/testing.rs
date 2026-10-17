@@ -1613,6 +1613,30 @@ mod tests {
         assert_eq!(authorizations[0].attribution, command.attribution);
         assert!(harness.host.spawned.is_empty());
         assert!(!harness.launch);
+
+        let mut enabled = Harness::from_prefix(before);
+        enabled.launch = false;
+        let prefix_len = enabled.journal.len();
+        let immediate = enabled.recover(command.clone());
+        assert_eq!(immediate.recovery().unwrap().request_id, command.request_id);
+        assert_eq!(immediate.recovery().unwrap().refusal, None);
+        let appended = &enabled.journal[prefix_len..];
+        let kinds: Vec<_> = appended.iter().map(|entry| entry.record.kind()).collect();
+        let expected = [RecordKind::RecoveryRequired, RecordKind::RecoveryAuthorized];
+        assert!(kinds.starts_with(&expected));
+        let Record::RecoveryAuthorized(authorization) = &appended[1].record else {
+            unreachable!()
+        };
+        assert_eq!(authorization.request_id, command.request_id);
+        assert_eq!(authorization.request_digest, command.digest);
+        assert_eq!(authorization.attribution, command.attribution);
+        assert_eq!(
+            enabled.supervisor.world().last_applied_lsn,
+            Some(Lsn(u64::try_from(enabled.journal.len()).unwrap()))
+        );
+        assert!(enabled.fsync);
+        assert!(enabled.host.spawned.is_empty());
+        assert!(!enabled.launch);
     }
 
     /// The clock is the only source of time, so a frozen one stamps every entry alike and a

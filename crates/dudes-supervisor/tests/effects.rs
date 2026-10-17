@@ -13,7 +13,7 @@ use dudes_proto::{
 use dudes_providers::launch::EnvVar;
 use dudes_supervisor::testing::{Harness, Seen};
 use dudes_supervisor::{ClientId, Command, Config, HookId, Input};
-use dudes_types::{AgentId, Lsn, Provenance, SessionId, Timestamp, TurnId};
+use dudes_types::{AgentId, Provenance, SessionId, Timestamp, TurnId};
 
 fn prime_attached_session(harness: &mut Harness, agent: AgentId) {
     harness.append_replayed(Entry {
