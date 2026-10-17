@@ -1,5 +1,3 @@
-//! Strict recovery requests reach bounded ports only after Operator admission.
-
 use std::io::{self, Cursor, Write};
 use std::sync::{Arc, Mutex};
 
