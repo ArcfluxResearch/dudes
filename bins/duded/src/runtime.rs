@@ -7498,7 +7498,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     ) -> Result<()> {
         let metadata = sup.recovery_append(token, entry);
         if let Some(metadata) = metadata
-            && !self.recovery_checkout_clear(sup, metadata.work.agent)
+            && !self.recovery_consent_checkout_clear(sup, metadata.work.agent)
         {
             let handled = sup.recovery_refused(
                 token,

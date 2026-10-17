@@ -24,6 +24,7 @@ struct Census<'a, H> {
     host: &'a H,
     world: &'a dudes_supervisor::World,
     candidate: Option<AgentId>,
+    recovery_consent: Option<&'a dudes_proto::recovery::RecoveryBinding>,
     folder: PathBuf,
     examined: usize,
     conflict: Option<(AgentId, String)>,
@@ -207,8 +208,15 @@ impl<H: ProcessHost> Census<'_, H> {
         live_ptys: &std::collections::BTreeMap<AgentId, dudes_proto::rpc::pty::PtyId>,
     ) -> Result<(), SharedFolderRefusal> {
         let world = self.world;
+        let retry = self.candidate.and_then(|agent| {
+            super::native_boundaries::owed_retry_observation(
+                world,
+                agent,
+                world.agents.get(&agent).and_then(|row| row.open_turn),
+            )
+        });
         for owner in world.instructions.unresolved_owners() {
-            for (_, attempt) in world.instructions.unresolved_launch_attempts(owner) {
+            for (started, attempt) in world.instructions.unresolved_launch_attempts(owner) {
                 if self.room().is_err() {
                     return Err(SharedFolderRefusal::ChildLimit);
                 }
@@ -225,7 +233,14 @@ impl<H: ProcessHost> Census<'_, H> {
                         }
                         dudes_proto::InstructionObservationOwner::AttachedTurn { .. } => false,
                     };
-                if !current_before_host {
+                let owed = super::native_boundaries::historical_owed_observation(
+                    world, retry, *started, attempt,
+                ) || self.recovery_consent.is_some_and(|binding| {
+                    super::native_boundaries::original_owed_observation(
+                        world, binding, *started, attempt,
+                    )
+                });
+                if !current_before_host && !owed {
                     let folder = attempt
                         .snapshot
                         .as_ref()
@@ -277,12 +292,23 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         agent: Option<AgentId>,
         cwd: &Path,
     ) -> Result<(), SharedFolderRefusal> {
+        self.admit_folder_children_for(sup, agent, cwd, None)
+    }
+
+    fn admit_folder_children_for<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: Option<AgentId>,
+        cwd: &Path,
+        recovery_consent: Option<&dudes_proto::recovery::RecoveryBinding>,
+    ) -> Result<(), SharedFolderRefusal> {
         let folder = canonical_folder(cwd).ok_or(SharedFolderRefusal::CandidateFolderUnresolved)?;
         let world = sup.world();
         let mut census = Census {
             host: &self.host,
             world,
             candidate: agent,
+            recovery_consent,
             folder,
             examined: 0,
             conflict: None,
@@ -340,10 +366,29 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
         census.result()
     }
+    pub(super) fn recovery_consent_checkout_clear<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: AgentId,
+    ) -> bool {
+        let turn = sup.world().agents.get(&agent).and_then(|row| row.open_turn);
+        let owed = super::native_boundaries::missing_spawn_binding(sup, agent, turn);
+        self.recovery_checkout_for(sup, agent, owed.as_ref())
+    }
+
     pub(super) fn recovery_checkout_clear<R: Rng>(
         &self,
         sup: &Supervisor<Shared<C>, R>,
         agent: AgentId,
+    ) -> bool {
+        self.recovery_checkout_for(sup, agent, None)
+    }
+
+    fn recovery_checkout_for<R: Rng>(
+        &self,
+        sup: &Supervisor<Shared<C>, R>,
+        agent: AgentId,
+        recovery_consent: Option<&dudes_proto::recovery::RecoveryBinding>,
     ) -> bool {
         let Some(row) = sup.world().agents.get(&agent) else {
             return false;
@@ -361,7 +406,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         if !self.recovery_checks_clear(&folder) {
             return false;
         }
-        self.admit_folder_children(sup, Some(agent), &folder)
+        self.admit_folder_children_for(sup, Some(agent), &folder, recovery_consent)
             .is_ok()
     }
 

@@ -132,7 +132,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         {
             return unavailable(RecoveryInspectUnavailable::TurnOpen);
         }
-        if !self.ctx.recovery_checkout_clear(&self.sup, agent) {
+        if !self.ctx.recovery_consent_checkout_clear(&self.sup, agent) {
             return unavailable(RecoveryInspectUnavailable::NotRecoverable);
         }
         let view = match self.sup.recovery_opportunity(agent) {
@@ -261,7 +261,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
         if !self
             .ctx
-            .recovery_checkout_clear(&self.sup, command.expected.work.agent)
+            .recovery_consent_checkout_clear(&self.sup, command.expected.work.agent)
         {
             return refused(RecoverySubmitRefusal::NotRecoverable);
         }

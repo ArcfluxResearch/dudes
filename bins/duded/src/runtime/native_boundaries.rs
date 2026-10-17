@@ -124,7 +124,7 @@ fn owner_agent(owner: InstructionObservationOwner) -> dudes_types::AgentId {
     }
 }
 
-fn owed_retry_observation(
+pub(super) fn owed_retry_observation(
     world: &dudes_supervisor::World,
     agent: AgentId,
     turn: Option<TurnId>,
@@ -189,7 +189,7 @@ fn finished_owed_observation(
     same_issue && attempt.finished.is_some() && attempt.spawn_lsn.is_none()
 }
 
-fn historical_owed_observation(
+pub(super) fn historical_owed_observation(
     world: &dudes_supervisor::World,
     retry: Option<(Lsn, InstructionObservationOwner)>,
     started: Lsn,
@@ -200,7 +200,7 @@ fn historical_owed_observation(
     })
 }
 
-fn original_owed_observation(
+pub(super) fn original_owed_observation(
     world: &dudes_supervisor::World,
     binding: &dudes_proto::recovery::RecoveryBinding,
     started: Lsn,
@@ -223,6 +223,20 @@ fn original_owed_observation(
         started,
         attempt,
     )
+}
+
+pub(super) fn missing_spawn_binding<C: Clock, R: Rng>(
+    sup: &Supervisor<C, R>,
+    agent: AgentId,
+    issued_turn: Option<TurnId>,
+) -> Option<dudes_proto::recovery::RecoveryBinding> {
+    sup.recovery_opportunity(agent)
+        .ok()
+        .filter(|view| {
+            view.required.reason == dudes_proto::recovery::RecoveryReason::MissingSpawn
+                && Some(view.required.binding.work.turn) == issued_turn
+        })
+        .map(|view| view.required.binding)
 }
 
 fn completed_owed_observation(
@@ -294,16 +308,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         agent: AgentId,
         issued_turn: Option<TurnId>,
     ) -> Result<(), dudes_supervisor::SharedFolderRefusal> {
-        let owed = sup.recovery_opportunity(agent).ok().filter(|view| {
-            view.required.reason == dudes_proto::recovery::RecoveryReason::MissingSpawn
-                && Some(view.required.binding.work.turn) == issued_turn
-        });
-        self.admit_prior_attempt_for(
-            sup,
-            agent,
-            issued_turn,
-            owed.as_ref().map(|view| &view.required.binding),
-        )
+        let owed = missing_spawn_binding(sup, agent, issued_turn);
+        self.admit_prior_attempt_for(sup, agent, issued_turn, owed.as_ref())
     }
 
     pub(super) fn admit_prior_attempt<R: Rng>(
