@@ -5,8 +5,7 @@
 //!
 //! `Writer::append` returns only after the fsync, and the machine parks the `Spawn` behind that
 //! acknowledgement. So the state a crash in that window leaves behind is exactly: a `TurnIssued`
-//! durable, and no `TurnSpawned`. That is the whole of it — the rest is what the next start does
-//! with it. The original issued task waits for explicit fresh-repeat consent before reissue.
+//! durable, and no `TurnSpawned`.
 //!
 //! # How the two exit arms construct that state
 //!
@@ -370,7 +369,6 @@ fn one_run(fixture: &Fixture, host: UnconfirmedHost, start_millis: i64) {
     running.stop(ExitCause::Ended);
 }
 
-/// Explicit recovery reissues the same turn exactly once after either daemon exit.
 #[test]
 fn cleanup_unconfirmed_is_run_local_across_any_daemon_exit() {
     let fixture = Fixture::new();

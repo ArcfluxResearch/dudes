@@ -362,8 +362,7 @@ fn carries(argv: &[OsString], flag: &str, value: &str) -> bool {
 /// The control agent's launch goes through. Both argvs are in the log either way, because the host
 /// records what it was asked for rather than what it completed.
 ///
-/// **Run two** boots over the same state directory with a **different** `[providers.claude]`
-/// table, and explicit fresh-repeat consent releases the un-spawned turn. The differing table is the arm that makes this
+/// The differing table is the arm that makes this
 /// a test about *history* rather than about repetition: an implementation that read current
 /// configuration instead of the replayed `AgentRow` would still be reading a table, and would still
 /// produce two flags, so the same-value assertion would pass. `--max-thinking-tokens 100` appearing
