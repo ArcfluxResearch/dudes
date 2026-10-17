@@ -343,6 +343,8 @@ where
     C: Clock + Send + Sync + 'static,
     R: Rng,
 {
+    #[cfg(feature = "fault-injection")]
+    let recovery_stop = options.recovery_stop().cloned();
     let Seams {
         host,
         pty_host,
@@ -615,6 +617,8 @@ where
             browser_session: None,
             onboarding_pause: crate::runtime::OnboardingPause::default(),
             onboarding_failure: crate::runtime::OnboardingFailure::default(),
+            #[cfg(feature = "fault-injection")]
+            recovery_stop,
             memory,
             memory_config,
             memory_condenses,

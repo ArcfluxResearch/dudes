@@ -67,6 +67,8 @@ use dudes_providers::launch::EnvVar;
 use dudes_providers::stream::TurnReader;
 use dudes_rpc::dispatch::error;
 use dudes_rpc::{StopFlag, Subscribers};
+#[cfg(feature = "fault-injection")]
+use dudes_supervisor::input::RecoveryStage;
 use dudes_supervisor::input::{
     BrowserAnswerCommand, BrowserOnboardGoal, BrowserOnboardHire, DurableInputError, Handled,
     MailWakeRefreshFailure, RecordedAppend, SpendView,
@@ -79,6 +81,8 @@ use dudes_types::{
     UtcDay,
 };
 
+#[cfg(feature = "fault-injection")]
+use crate::fault::{RecoveryStopPoint, RecoveryStopTarget};
 use crate::floor_actions::{OnboardOutcome, OnboardRefusal, OnboardRequest, OnboardStep, Profile};
 use crate::floor_answer::{AnswerOutcome, AnswerRefusal, AnswerRequest};
 use crate::floor_control::{ControlOutcome, ControlRefusal, ControlRequest, ControlVerb};
@@ -902,6 +906,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) browser_session: Option<crate::floor_session::SessionIdentity>,
     pub(crate) onboarding_pause: OnboardingPause,
     pub(crate) onboarding_failure: OnboardingFailure,
+    #[cfg(feature = "fault-injection")]
+    pub(crate) recovery_stop: Option<crate::fault::RecoveryStop>,
     /// Applied memory rebuilt solely from journal records and immutable bodies.
     pub(crate) memory: MemoryProjection,
     pub(crate) memory_config: dudes_journal::MemoryCondenseConfig,
@@ -8105,6 +8111,26 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
         }
         let pause = &self.onboarding_pause;
         let failure = &self.onboarding_failure;
+        #[cfg(feature = "fault-injection")]
+        let recovery_stop = self.recovery_stop.as_ref().and_then(|stop| {
+            let (stage, target) = match (recovery, &entry.record) {
+                (Some((_, metadata)), _) => (
+                    metadata.stage,
+                    RecoveryStopTarget::Command {
+                        work: metadata.work,
+                        request_id: metadata.request_id,
+                    },
+                ),
+                (None, Record::RecoveryRequired(required)) => (
+                    RecoveryStage::Required,
+                    RecoveryStopTarget::Startup {
+                        work: required.binding.work,
+                    },
+                ),
+                _ => return None,
+            };
+            Some((stop, stage, target))
+        });
         let written = (|| {
             let mut store = self
                 .writer
@@ -8117,6 +8143,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     if let Some((context, metadata)) = recovery {
                         context.join(metadata, entry)?;
                     }
+                    #[cfg(feature = "fault-injection")]
+                    if let Some((stop, RecoveryStage::Required, target)) = recovery_stop {
+                        stop.park_if_matches(RecoveryStopPoint::BeforeRequired, target);
+                    }
                     let permit = identity
                         .as_ref()
                         .map(crate::floor_session::SessionIdentity::permit)
@@ -8126,6 +8156,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
                     Ok::<_, anyhow::Error>(permit)
                 },
                 || {
+                    #[cfg(feature = "fault-injection")]
+                    if let Some((stop, stage, target)) = recovery_stop {
+                        let point = match stage {
+                            RecoveryStage::Required => RecoveryStopPoint::AfterRequired,
+                            RecoveryStage::Resume => RecoveryStopPoint::AfterResume,
+                            RecoveryStage::Authorized => RecoveryStopPoint::AfterAuthorized,
+                        };
+                        stop.park_if_matches(point, target);
+                    }
                     if failure.take(&entry.record) {
                         anyhow::bail!("injected post-fsync onboarding failure");
                     }
