@@ -14,6 +14,7 @@ export function StreamNotice({ floor }: { readonly floor: FloorState }) {
   </p>;
   if (away.kind === 'updated') return <p className="office-closed stream-notice" role="status">
     Dudes was updated. Reload this tab to continue.
+    {' '}<a href="https://github.com/ArcfluxResearch/dudes/releases" target="_blank" rel="noopener noreferrer">See the release notes</a>.
   </p>;
   if (away.kind === 'restarted') return <p className="office-closed stream-notice" role="status">
     Dudes restarted. Reload this tab to continue.
