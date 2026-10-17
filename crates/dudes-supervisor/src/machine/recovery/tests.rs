@@ -1550,7 +1550,9 @@ fn try_recorded_uses_the_confirmed_session_and_reserved_new_identity() {
     );
 }
 
-fn legacy_uncertainty_source(reason: RecoveryReason) -> (Vec<(Lsn, Entry)>, AgentId) {
+fn legacy_uncertainty_source(
+    reason: RecoveryReason,
+) -> (Vec<(Lsn, Entry)>, AgentId, RecoveryExpected) {
     let mut harness = Harness::new();
     harness.launch = reason != RecoveryReason::MissingSpawn;
     let (agent, _) = harness.hire_with_goal(&["false"]);
@@ -1592,15 +1594,50 @@ fn legacy_uncertainty_source(reason: RecoveryReason) -> (Vec<(Lsn, Entry)>, Agen
         .zip(1u64..)
         .map(|(entry, at)| (Lsn(at), entry))
         .collect::<Vec<_>>();
-    assert_eq!(
-        replay_machine(&prefix)
-            .recovery_opportunity(agent)
-            .unwrap()
-            .required
-            .reason,
-        reason
-    );
-    (without_recorded_model(&prefix), agent)
+    let modern = replay_machine(&prefix).recovery_opportunity(agent).unwrap();
+    assert_eq!(modern.required.reason, reason);
+    (without_recorded_model(&prefix), agent, modern.expected)
+}
+
+fn required_survives_restart_and_ordinary_resume(
+    machine: &mut Machine,
+    prefix: &mut Vec<(Lsn, Entry)>,
+    token: PersistToken,
+    entry: Entry,
+) -> bool {
+    let Record::RecoveryRequired(required) = &entry.record else {
+        unreachable!()
+    };
+    let work = required.binding.work;
+    prefix.push((Lsn(10_001), entry.clone()));
+    acknowledge(machine, token, entry, Lsn(10_001));
+    let mut restarted = replay_machine(prefix);
+    restarted
+        .handle(crate::Input::Command(crate::Command::Resume {
+            agent,
+            browser: None,
+        }))
+        .unwrap();
+    let (token, entry) = emitted(&restarted);
+    assert!(matches!(entry.record, Record::Resume { .. }));
+    acknowledge(&mut restarted, token, entry, Lsn(10_003));
+    let (state, _) = restarted.world.recovery_projection().unwrap();
+    let episode = state.current(work).unwrap();
+    episode.authorization_lsn.is_none()
+        && !restarted.recovery_admission_allowed(agent)
+        && restarted.effects().iter().all(|effect| {
+            !matches!(
+                effect,
+                Effect::Spawn { .. }
+                    | Effect::Persist {
+                        entry: Entry {
+                            record: Record::TurnIssued { .. } | Record::LoopDecided { .. },
+                            ..
+                        },
+                        ..
+                    }
+            )
+        })
 }
 
 #[test]
@@ -1611,26 +1648,17 @@ fn legacy_uncertainty_keeps_a_durable_required_barrier_after_restart_and_ordinar
         RecoveryReason::UnconfirmedContext,
         RecoveryReason::MissingSpawn,
     ] {
-        let (mut prefix, agent) = legacy_uncertainty_source(reason);
+        let (mut prefix, agent, expected) = legacy_uncertainty_source(reason);
         let mut machine = replay_machine(&prefix);
         let before = format!("{:?}", machine.world());
         let entropy = machine.rng.drawn();
         let public = machine.recovery_opportunity(agent);
         if reason != RecoveryReason::MissingSpawn {
             assert_eq!(public, Err(RecoveryRefusal::NotRecoverable));
-            let binding = machine.recovery_binding(agent).unwrap();
             let intent = RecoveryCommand {
                 request_id: Hex32::new([71; 32]),
                 digest: Hex32::new([72; 32]),
-                expected: RecoveryExpected {
-                    work: binding.work,
-                    issue_lsn: binding.issue_lsn,
-                    source_lsn: Lsn(1),
-                    episode: None,
-                    predecessor: None,
-                    control_lsn: None,
-                    ticket: None,
-                },
+                expected,
                 choice: RecoveryChoice::FreshWithRecap,
                 attribution: dudes_proto::recovery::RecoveryAttribution::LocalOperator {
                     pid: 17,
@@ -1658,40 +1686,15 @@ fn legacy_uncertainty_keeps_a_durable_required_barrier_after_restart_and_ordinar
         });
         let mut durable_after_resume = false;
         if let Some((token, entry)) = actual {
-            let Record::RecoveryRequired(required) = &entry.record else {
-                unreachable!()
-            };
-            assert_eq!(required.reason, reason);
-            let work = required.binding.work;
-            prefix.push((Lsn(10_001), entry.clone()));
-            acknowledge(&mut machine, token, entry, Lsn(10_001));
-            let mut restarted = replay_machine(&prefix);
-            restarted
-                .handle(crate::Input::Command(crate::Command::Resume {
-                    agent,
-                    browser: None,
-                }))
-                .unwrap();
-            let (token, entry) = emitted(&restarted);
-            assert!(matches!(entry.record, Record::Resume { .. }));
-            acknowledge(&mut restarted, token, entry, Lsn(10_003));
-            let (state, _) = restarted.world.recovery_projection().unwrap();
-            let episode = state.current(work).unwrap();
-            durable_after_resume = episode.authorization_lsn.is_none()
-                && !restarted.recovery_admission_allowed(agent)
-                && restarted.effects().iter().all(|effect| {
-                    !matches!(
-                        effect,
-                        Effect::Spawn { .. }
-                            | Effect::Persist {
-                                entry: Entry {
-                                    record: Record::TurnIssued { .. } | Record::LoopDecided { .. },
-                                    ..
-                                },
-                                ..
-                            }
-                    )
-                });
+            assert!(
+                matches!(&entry.record, Record::RecoveryRequired(required) if required.reason == reason)
+            );
+            durable_after_resume = required_survives_restart_and_ordinary_resume(
+                &mut machine,
+                &mut prefix,
+                token,
+                entry,
+            );
         }
         outcomes.push((reason, admitted, durable_after_resume));
     }
