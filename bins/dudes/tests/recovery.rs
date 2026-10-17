@@ -566,10 +566,17 @@ fn reply_loss_retains_one_id_and_a_later_receipt_never_resubmits() {
     };
     assert_eq!(serde_json::to_value(receipt.request_id).unwrap(), json!(id));
     let calls = fixture.control.calls.lock().unwrap();
-    assert!(matches!(
-        calls.as_slice(),
-        [Call::Submit(_), Call::Receipt(_)]
-    ));
+    let [Call::Submit(submitted), Call::Receipt(lookup)] = calls.as_slice() else {
+        panic!("one submit followed by one receipt")
+    };
+    let retained_id: Hex32 = serde_json::from_value(json!(id)).unwrap();
+    assert_eq!(submitted.request_id, retained_id);
+    assert_eq!(
+        *lookup,
+        RecoveryReceiptParams {
+            request_id: retained_id
+        }
+    );
 }
 
 #[test]
@@ -605,6 +612,33 @@ fn daemon_unknown_and_refused_outcomes_remain_distinct_from_a_missing_reply() {
             [Call::Submit(_)]
         ));
     }
+    let fixture = Fixture::new(
+        inspection(false, RecoveryAllowedChoices::FreshOnly),
+        Outcome::Refused,
+    );
+    let (code, out) = fixture.submit(false, "fresh-with-recap", &mut Vec::new());
+    assert_eq!(code, exit::REFUSED);
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "Recovery refused: StalePredecessor.\nRequired barrier already acknowledged at 200.\nResume already acknowledged at 250.\n"
+    );
+    let mut out = Vec::new();
+    render::recovery_submitted(
+        &mut out,
+        false,
+        &RecoverySubmitResult::Refused {
+            reason: RecoverySubmitRefusal::StalePredecessor,
+            prefix: RecoveryKnownPrefix {
+                required: None,
+                resume: None,
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "Recovery refused: StalePredecessor.\n"
+    );
 }
 
 #[test]
@@ -702,7 +736,7 @@ fn human_receipts_preserve_all_lifecycle_and_absence_meanings() {
                 turn,
                 issue_lsn: Lsn(20),
             },
-            "Issue-bound:",
+            "Issue-bound: turn 01ARZ3NDEKTSV4RRFFQ69G5FAX, issue 20; no consuming physical receipt is recorded.",
         ),
         (
             RecoveryReceiptState::Consumed {
@@ -710,7 +744,7 @@ fn human_receipts_preserve_all_lifecycle_and_absence_meanings() {
                 issue_lsn: Lsn(20),
                 evidence_lsn: Lsn(400),
             },
-            "Consumed:",
+            "Consumed: turn 01ARZ3NDEKTSV4RRFFQ69G5FAX, issue 20, physical receipt 400.",
         ),
         (
             RecoveryReceiptState::Invalidated {
