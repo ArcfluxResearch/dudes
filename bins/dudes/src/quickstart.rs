@@ -50,6 +50,9 @@ pub(crate) enum Error {
         configured: PathBuf,
         derived: PathBuf,
     },
+    /// The socket path cannot be bound on this platform.
+    #[error(transparent)]
+    SocketPath(#[from] SocketPathTooLong),
     /// A responding peer reported a different endpoint.
     #[error(
         "system.ping reported socket {reported}, which diverges from the endpoint {endpoint}",
@@ -166,6 +169,45 @@ fn validate_configuration(env: &Environment) -> Result<(), Error> {
         return Err(Error::ConfiguredSocketDiverges {
             configured: env.socket()?.to_path_buf(),
             derived,
+        });
+    }
+    check_socket_path(env.socket()?)?;
+    Ok(())
+}
+
+/// The longest Unix socket path, in bytes, that fits `sun_path` with its trailing NUL.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const MAX_SOCKET_PATH: Option<usize> = Some(107);
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+const MAX_SOCKET_PATH: Option<usize> = Some(103);
+#[cfg(not(unix))]
+const MAX_SOCKET_PATH: Option<usize> = None;
+
+/// A socket path longer than the platform's `sun_path`, which no daemon could bind.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "the daemon's socket path {path} is {length} bytes long, and this platform allows at most \
+     {limit}. Use a shorter home directory, or set DUDES_RUNTIME_DIR to a shorter directory",
+    path = .path.display()
+)]
+pub(crate) struct SocketPathTooLong {
+    path: PathBuf,
+    length: usize,
+    limit: usize,
+}
+
+pub(crate) fn check_socket_path(path: &Path) -> Result<(), SocketPathTooLong> {
+    check_socket_path_against(path, MAX_SOCKET_PATH)
+}
+
+fn check_socket_path_against(path: &Path, limit: Option<usize>) -> Result<(), SocketPathTooLong> {
+    let Some(limit) = limit else { return Ok(()) };
+    let length = path.as_os_str().len();
+    if length > limit {
+        return Err(SocketPathTooLong {
+            path: path.to_path_buf(),
+            length,
+            limit,
         });
     }
     Ok(())
@@ -330,7 +372,27 @@ fn stop_spawned(child: &mut Child) {
 mod tests {
     use std::io::Write;
 
-    use super::write_spawn_marker;
+    use super::{MAX_SOCKET_PATH, check_socket_path, write_spawn_marker};
+
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_path_one_byte_over_the_platform_limit_is_refused() {
+        let limit = MAX_SOCKET_PATH.expect("a Unix socket path has a limit");
+        let at_limit = std::path::PathBuf::from(format!("/{}", "a".repeat(limit - 1)));
+        assert_eq!(at_limit.as_os_str().len(), limit);
+        check_socket_path(&at_limit).expect("the longest path fits");
+
+        let over = std::path::PathBuf::from(format!("/{}", "a".repeat(limit)));
+        let refused = check_socket_path(&over).expect_err("one byte more is refused");
+        let message = refused.to_string();
+        assert!(
+            message.contains(&format!("{} bytes", limit + 1)),
+            "{message}"
+        );
+        assert!(message.contains(&format!("at most {limit}")), "{message}");
+        assert!(message.contains(&over.display().to_string()), "{message}");
+        assert!(message.contains("DUDES_RUNTIME_DIR"), "{message}");
+    }
 
     /// A sink that takes every buffer whole and counts the calls it took them in.
     ///

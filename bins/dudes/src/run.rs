@@ -2696,6 +2696,9 @@ fn connect(env: &Environment) -> Result<Socket, Failure> {
 
 fn connect_at(socket: &Path) -> Result<Socket, Failure> {
     LocalClient::connect(socket).map_err(|error| {
+        if let Err(too_long) = crate::quickstart::check_socket_path(socket) {
+            return Failure::Unreachable(format!("cannot reach the daemon: {too_long}"));
+        }
         Failure::Unreachable(format!(
             "cannot reach the daemon at {}: {error}",
             socket.display()

@@ -647,6 +647,32 @@ fn a_socket_runtime_divergence_leaves_no_daemon() {
     drop(guard);
 }
 
+/// A socket path longer than `sun_path` is refused with its length and the way out, for both
+/// `quickstart` and `start`, before any process is created.
+#[cfg(unix)]
+#[test]
+fn a_socket_path_too_long_to_bind_is_refused_before_a_daemon_starts() {
+    let root = tempfile::tempdir().expect("a long home");
+    let daemon = daemon_binary();
+    let runtime = root.path().join("r".repeat(110));
+    for command in ["quickstart", "start"] {
+        let run = cli(root.path(), &daemon)
+            .env("DUDES_RUNTIME_DIR", &runtime)
+            .args([command])
+            .run();
+        let guard = DaemonGuard::from_root(root.path());
+        assert_eq!(run.code(), dudes::exit::OTHER, "{command}: {run:?}");
+        assert!(run.stdout.is_empty(), "{command}: {run:?}");
+        assert!(run.stderr.contains("bytes long"), "{command}: {run:?}");
+        assert!(
+            run.stderr.contains("DUDES_RUNTIME_DIR"),
+            "{command}: {run:?}"
+        );
+        assert!(!runtime.exists(), "{command} created the directory");
+        drop(guard);
+    }
+}
+
 /// A `DUDES_CONFIG` the daemon would refuse is reported on the terminal with the daemon's own
 /// reason, and no daemon is started.
 #[test]
