@@ -20,6 +20,8 @@ const timeout = 30_000;
 export const navigateTimeout = 120_000;
 let interrupted = false;
 
+class WaitTimeout extends Error {}
+
 function check(value, message) {
   if (!value) throw new Error(message);
   return value;
@@ -45,7 +47,7 @@ async function waitFor(action, message, duration = timeout, allowInterrupted = f
     if (value) return value;
     await pause(100);
   }
-  throw new Error(message);
+  throw new WaitTimeout(message);
 }
 
 export async function chromePath(paths = [
@@ -140,7 +142,7 @@ export class ScratchRun {
     this.xtask = xtask;
     this.version = version;
     this.chromeProgram = chrome;
-    this.groups = new Set();
+    this.groups = new Map();
     this.owned = new Map();
     this.chromeChildren = new Map();
     this.prefix = join(root, 'prefix');
@@ -165,11 +167,29 @@ export class ScratchRun {
     try { process.kill(-pid, 0); return true; } catch { return false; }
   }
 
+  groupAbsent(pid) {
+    try { process.kill(-pid, 0); return false; } catch (error) {
+      if (error.code === 'ESRCH') return true;
+      throw error;
+    }
+  }
+
   signalGroup(pid, signal) {
     try { process.kill(-pid, signal); } catch {}
   }
 
-  async stopGroup(pid) {
+  signalChildGroup(child, signal) {
+    if (!child?.pid || this.groups.get(child.pid) !== child
+      || child.exitCode !== null || child.signalCode !== null) return false;
+    this.signalGroup(child.pid, signal);
+    return true;
+  }
+
+  signalChildren(signal) {
+    for (const child of this.groups.values()) this.signalChildGroup(child, signal);
+  }
+
+  async stopGroup(pid, child = this.groups.get(pid)) {
     if (!pid) return;
     const chrome = pid === this.chrome?.pid;
     if (chrome && !this.chromeIdentity) {
@@ -177,28 +197,31 @@ export class ScratchRun {
       return;
     }
     if (chrome && !await this.chromeGroupOwned()) return;
-    if (this.groupAlive(pid)) {
+    const absent = chrome ? () => !this.groupAlive(pid) : () => this.groupAbsent(pid);
+    if (!absent()) {
       if (chrome) await this.signalChrome('SIGTERM');
-      else this.signalGroup(pid, 'SIGTERM');
-      await waitFor(() => !this.groupAlive(pid), 'child group survived shutdown', 5000, true).catch(() => {
+      else check(child?.pid === pid && this.signalChildGroup(child, 'SIGTERM'), 'child group ownership is unproven');
+      await waitFor(absent, 'child group survived shutdown', 5000, true).catch((error) => {
+        if (!(error instanceof WaitTimeout)) throw error;
         if (chrome) return this.signalChrome('SIGKILL');
-        this.signalGroup(pid, 'SIGKILL');
+        check(this.signalChildGroup(child, 'SIGKILL'), 'child group ownership is unproven');
       });
-      await waitFor(() => !this.groupAlive(pid), 'child group survived kill', 5000, true);
+      await waitFor(absent, 'child group survived kill', 5000, true);
     }
-    this.groups.delete(pid);
+    if (this.groups.get(pid) === child) this.groups.delete(pid);
   }
 
   async capture(program, args, options) {
     const pending = execute(program, args, { ...options, detached: true, killSignal: 'SIGKILL', maxBuffer: 2_000_000 });
-    const pid = pending.child.pid;
-    if (pid) this.groups.add(pid);
+    const child = pending.child;
+    const pid = child.pid;
+    if (pid) this.groups.set(pid, child);
     try {
       return await pending;
     } catch {
       throw new Error(`${program.split('/').at(-1)} failed or timed out`);
     } finally {
-      await this.stopGroup(pid);
+      await this.stopGroup(pid, child);
     }
   }
 
@@ -255,14 +278,14 @@ exec /bin/sleep 120
     });
     await stage('release', async () => {
       const child = spawn(this.xtask, ['dist'], { cwd: this.workspace, env: this.buildEnv, detached: true, stdio: ['ignore', 'inherit', 'inherit'] });
-      if (child.pid) this.groups.add(child.pid);
-      const timer = setTimeout(() => this.signalGroup(child.pid, 'SIGKILL'), 20 * 60_000);
+      if (child.pid) this.groups.set(child.pid, child);
+      const timer = setTimeout(() => this.signalChildGroup(child, 'SIGKILL'), 20 * 60_000);
       try {
         const [code] = await once(child, 'exit');
         check(code === 0, 'release build failed');
       } finally {
         clearTimeout(timer);
-        await this.stopGroup(child.pid);
+        await this.stopGroup(child.pid, child);
       }
     });
     const { stdout } = await this.capture(this.buildEnv.CARGO, ['metadata', '--locked', '--format-version=1', '--no-deps'], {
@@ -551,7 +574,7 @@ exec /bin/sleep 120
       for (const identity of chromeIdentities) await clean(() => this.killOwned(identity));
       await clean(() => waitFor(async () => (await Promise.all(chromeIdentities.map((identity) => this.ownedAlive(identity)))).every((alive) => !alive), 'Chrome helper survived cleanup', 10_000, true));
     }
-    for (const pid of [...this.groups]) await clean(() => this.stopGroup(pid));
+    for (const child of [...this.groups.values()]) await clean(() => this.stopGroup(child.pid, child));
     await clean(() => this.rememberManaged());
     await this.cli(['stop', '--hard']).catch(() => {});
     const identities = [...this.owned.values()];
@@ -568,7 +591,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const interrupt = () => {
     interrupted = true;
     if (run?.chrome?.pid) void run.signalChrome('SIGTERM').catch(() => {});
-    for (const pid of run?.groups ?? []) run.signalGroup(pid, 'SIGTERM');
+    run?.signalChildren('SIGTERM');
   };
   process.once('SIGINT', interrupt);
   process.once('SIGTERM', interrupt);

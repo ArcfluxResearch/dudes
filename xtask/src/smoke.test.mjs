@@ -469,6 +469,195 @@ if (${JSON.stringify(stage)} === 'metadata') process.stdout.write(JSON.stringify
   }
 });
 
+test('generic child capture refuses a recycled group after its child exits', async (t) => {
+  const run = new ScratchRun('', process.cwd(), '', '', null);
+  const signals = [];
+  let observations = 0;
+  t.mock.method(run, 'groupAbsent', () => ++observations !== 1);
+  t.mock.method(run, 'signalGroup', (pid, signal) => signals.push({ pid, signal }));
+  const error = await run.capture(process.execPath, ['-e', 'process.stdout.write("owned recorder")'], {
+    cwd: process.cwd(), env: {}, timeout: 5000,
+  }).then(() => null, (failure) => failure);
+  assert.deepEqual(signals, []);
+  assert.match(error?.message ?? '', /child group ownership is unproven/);
+});
+
+test('generic child cleanup refuses lost or replaced anchors', async (t) => {
+  for (const [name, status] of [
+    ['exited', { exitCode: 0 }], ['signaled', { signalCode: 'SIGTERM' }],
+    ['unregistered', {}], ['replaced', {}],
+  ]) {
+    await t.test(name, async (subtest) => {
+      const child = { pid: 800001, exitCode: null, signalCode: null, ...status };
+      const run = new ScratchRun('', process.cwd(), '', '', null);
+      run.groups = new Map(name === 'unregistered' ? [] : [[child.pid,
+        name === 'replaced' ? { ...child } : child]]);
+      const signals = [];
+      let observations = 0;
+      subtest.mock.method(run, 'groupAbsent', () => ++observations !== 1);
+      subtest.mock.method(run, 'signalGroup', (pid, signal) => signals.push({ pid, signal }));
+      subtest.mock.method(run, 'processInfo', () => assert.fail('generic cleanup must not recurse through capture'));
+      const error = await run.stopGroup(child.pid, child).then(() => null, (failure) => failure);
+      assert.deepEqual(signals, []);
+      assert.match(error?.message ?? '', /child group ownership is unproven/);
+      assert.equal(run.groups.has(child.pid), name !== 'unregistered');
+    });
+  }
+});
+
+test('generic child cleanup rechecks its anchor before escalation', async (t) => {
+  for (const name of ['exited', 'replaced', 'live']) {
+    await t.test(name, async (subtest) => {
+      subtest.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+      const child = { pid: 800002, exitCode: null, signalCode: null };
+      const run = new ScratchRun('', process.cwd(), '', '', null);
+      run.groups = new Map([[child.pid, child]]);
+      const signals = [];
+      const waiting = Promise.withResolvers();
+      let alive = true;
+      subtest.mock.method(run, 'groupAbsent', () => {
+        if (signals.length) waiting.resolve();
+        return !alive;
+      });
+      subtest.mock.method(run, 'signalGroup', (_pid, signal) => {
+        signals.push(signal);
+        if (signal === 'SIGKILL') alive = false;
+      });
+      const pending = run.stopGroup(child.pid, child).then(() => null, (failure) => failure);
+      await waiting.promise;
+      assert.deepEqual(signals, ['SIGTERM']);
+      if (name === 'exited') child.exitCode = 0;
+      if (name === 'replaced') run.groups.set(child.pid, { ...child });
+      subtest.mock.timers.tick(5000);
+      const error = await pending;
+      assert.deepEqual(signals, name === 'live' ? ['SIGTERM', 'SIGKILL'] : ['SIGTERM']);
+      if (name === 'live') {
+        assert.equal(error, null);
+        assert.equal(run.groups.has(child.pid), false);
+      } else {
+        assert.match(error?.message ?? '', /child group ownership is unproven/);
+        assert.equal(run.groups.has(child.pid), true);
+      }
+    });
+  }
+});
+
+test('generic child interruption signals only the registered live child', (t) => {
+  const run = new ScratchRun('', process.cwd(), '', '', null);
+  const live = { pid: 800003, exitCode: null, signalCode: null };
+  const exited = { pid: 800004, exitCode: 0, signalCode: null };
+  const signaled = { pid: 800005, exitCode: null, signalCode: 'SIGTERM' };
+  const replaced = { pid: 800006, exitCode: null, signalCode: null };
+  run.groups = new Map([live, exited, signaled, replaced].map((child) => [child.pid, child]));
+  const signals = [];
+  t.mock.method(run, 'signalGroup', (pid, signal) => signals.push({ pid, signal }));
+  assert.equal(run.signalChildGroup({ ...replaced }, 'SIGKILL'), false);
+  run.signalChildren('SIGTERM');
+  assert.deepEqual(signals, [
+    { pid: live.pid, signal: 'SIGTERM' }, { pid: replaced.pid, signal: 'SIGTERM' },
+  ]);
+});
+
+test('generic child group observation accepts only ESRCH as absence', async (t) => {
+  for (const code of ['ESRCH', 'EPERM', 'EIO']) {
+    await t.test(code, async (subtest) => {
+      const child = { pid: 800007, exitCode: 0, signalCode: null };
+      const run = new ScratchRun('', process.cwd(), '', '', null);
+      run.groups = new Map([[child.pid, child]]);
+      const signals = [];
+      subtest.mock.method(process, 'kill', (pid, signal) => {
+        assert.equal(pid, -child.pid);
+        assert.equal(signal, 0);
+        throw Object.assign(new Error(`group observation ${code}`), { code });
+      });
+      subtest.mock.method(run, 'signalGroup', (pid, signal) => signals.push({ pid, signal }));
+      const error = await run.stopGroup(child.pid, child).then(() => null, (failure) => failure);
+      assert.deepEqual(signals, []);
+      if (code === 'ESRCH') {
+        assert.equal(error, null);
+        assert.equal(run.groups.has(child.pid), false);
+      } else {
+        assert.equal(error?.code, code);
+        assert.equal(run.groups.has(child.pid), true);
+      }
+    });
+  }
+});
+
+test('generic child observation failure during shutdown refuses escalation', async (t) => {
+  const child = { pid: 800010, exitCode: null, signalCode: null };
+  const run = new ScratchRun('', process.cwd(), '', '', null);
+  run.groups = new Map([[child.pid, child]]);
+  const signals = [];
+  let absent = false;
+  t.mock.method(process, 'kill', (pid, signal) => {
+    assert.equal(pid, -child.pid);
+    assert.equal(signal, 0);
+    if (signals.length === 0) return true;
+    throw Object.assign(new Error('group observation failed during shutdown'), { code: absent ? 'ESRCH' : 'EPERM' });
+  });
+  t.mock.method(run, 'signalGroup', (_pid, signal) => {
+    signals.push(signal);
+    if (signal === 'SIGKILL') absent = true;
+  });
+  const error = await run.stopGroup(child.pid, child).then(() => null, (failure) => failure);
+  assert.deepEqual(signals, ['SIGTERM']);
+  assert.equal(error?.code, 'EPERM');
+  assert.equal(run.groups.has(child.pid), true);
+});
+
+test('generic child live cleanup can stop its owned group', async (t) => {
+  const child = { pid: 800008, exitCode: null, signalCode: null };
+  const run = new ScratchRun('', process.cwd(), '', '', null);
+  run.groups = new Map([[child.pid, child]]);
+  const signals = [];
+  let alive = true;
+  t.mock.method(run, 'groupAbsent', () => !alive);
+  t.mock.method(run, 'signalGroup', (pid, signal) => {
+    signals.push({ pid, signal });
+    child.exitCode = 0;
+    alive = false;
+  });
+  await run.stopGroup(child.pid, child);
+  assert.deepEqual(signals, [{ pid: child.pid, signal: 'SIGTERM' }]);
+  assert.equal(run.groups.has(child.pid), false);
+});
+
+test('generic child release timer refuses a child that already exited', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dudes-smoke-test-'));
+  const run = new ScratchRun(root, process.cwd(), 'dist-stand-in', '', null);
+  const child = Object.assign(new EventEmitter(), { pid: 800009, exitCode: null, signalCode: null });
+  const spawned = Promise.withResolvers();
+  const signals = [];
+  t.mock.method(console, 'log', () => {});
+  t.mock.method(run, 'capture', async (_program, args) => ({
+    stdout: args[0] === 'metadata' ? JSON.stringify({ target_directory: root }) : '',
+  }));
+  t.mock.method(run, 'groupAbsent', () => true);
+  t.mock.method(run, 'signalGroup', (pid, signal) => signals.push({ pid, signal }));
+  t.mock.method(childProcess, 'spawn', () => {
+    spawned.resolve();
+    return child;
+  });
+  syncBuiltinESMExports();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const pending = run.build();
+    await spawned.promise;
+    child.exitCode = 0;
+    child.emit('exit', 0);
+    t.mock.timers.tick(20 * 60_000);
+    await pending;
+    assert.deepEqual(signals, []);
+    assert.equal(run.groups.has(child.pid), false);
+  } finally {
+    t.mock.timers.reset();
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('release build keeps the selected Rustup compiler in a dependency directory', async (t) => {
   t.mock.method(console, 'log', () => {});
   const root = await mkdtemp(join(tmpdir(), 'dudes-smoke-test-'));
