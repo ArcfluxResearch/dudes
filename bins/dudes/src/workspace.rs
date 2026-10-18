@@ -194,7 +194,10 @@ pub enum WorkspaceError {
     #[error(
         "The check program `{program}` is inside the project's repository. An agent working \
          there could change it, so it cannot be the judge of the agent's work. Use a program \
-         outside the repository instead, for example the project's usual test command."
+         installed outside the repository, such as the project's usual test command. To use a \
+         script from the repository, run it through its interpreter, for example \
+         `sh {program}`. The agent can still edit that script, so review its changes before \
+         you accept the work."
     )]
     CheckInsideRepository {
         /// The program as typed.

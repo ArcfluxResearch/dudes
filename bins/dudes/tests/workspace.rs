@@ -1105,7 +1105,9 @@ fn the_refusal_names_the_rule_and_a_way_out() {
         "{text}"
     );
     assert!(text.contains("could change it"), "{text}");
-    assert!(text.contains("outside the repository"), "{text}");
+    assert!(text.contains("installed outside the repository"), "{text}");
+    assert!(text.contains("`sh ./test.sh`"), "{text}");
+    assert!(text.contains("review its changes"), "{text}");
     workspace::add(&config, &new_workspace(&here, &["sh", "test.sh"])).expect("sh test.sh is fine");
 }
 

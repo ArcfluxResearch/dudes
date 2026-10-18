@@ -18645,7 +18645,7 @@
         },
         {
           "const": "check_cannot_run",
-          "description": "The check's program was not found.",
+          "description": "The check's program was not found, or it is a file inside the project that an agent could\nchange.",
           "type": "string"
         },
         {
