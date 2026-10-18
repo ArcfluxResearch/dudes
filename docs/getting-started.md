@@ -103,6 +103,8 @@ Dudes reads no engine's credentials or files.
    dudes agents
    ```
 
+   Use `--provider codex` or `--provider pi` instead if that is the CLI you have signed in.
+
    `--check-id` and `--check-label` name the check. The goal records that name and a revision of
    the check, and the Floor shows them in place of the command.
 

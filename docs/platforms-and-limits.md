@@ -6,8 +6,9 @@ configuration keys can still change between releases.
 ## Platforms
 
 The full first run, from `dudes quickstart` to a goal the daemon marks Done, has been rehearsed
-only on macOS on Apple silicon (arm64). Builds for Linux, Windows and Intel Macs have not had that
-rehearsal, so expect gaps there. Releases carry archives for macOS and Linux on x86_64 and arm64,
+on macOS on Apple silicon (arm64) and on Linux on arm64 (Ubuntu 24.04, with a stand-in for the
+agent CLI). Builds for Linux on x86_64, Windows and Intel Macs have not had that rehearsal, so
+expect gaps there. Releases carry archives for macOS and Linux on x86_64 and arm64,
 and `install.sh` installs them. On Linux it installs a static build that runs on any distribution;
 each release also carries a glibc build, which needs glibc 2.39 or newer and is not installed by
 the script. Windows builds produce the binaries but no archive, and a

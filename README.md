@@ -16,8 +16,9 @@ you see there is what the daemon knows.
 
 Dudes is an early preview (pre-alpha), and commands and configuration keys can still change between
 releases. Prebuilt releases for macOS and Linux on x86_64 and arm64 install with one command, as
-shown below. Windows can build the binaries but has no prebuilt release or installer. The full first run has been rehearsed only on macOS on Apple silicon. See
-[Platforms and known limits](docs/platforms-and-limits.md).
+shown below. Windows can build the binaries but has no prebuilt release or installer.
+[Platforms and known limits](docs/platforms-and-limits.md) says which platforms have had a full
+first-run rehearsal.
 
 ## Install
 
@@ -74,6 +75,7 @@ dudes goal --agent <agent id> --text "Create hello.txt that contains the word he
   --hop-cap 2 --check-id hello --check-label "hello.txt exists" -- /bin/test -f hello.txt
 ```
 
+Use `--provider codex` or `--provider pi` instead if that is the CLI you have signed in.
 The agent takes turns until `/bin/test -f hello.txt` passes. `dudes agents` lists every agent and
 its status, `dudes stop` stops the daemon and `dudes start` starts it again.
 [Get started](docs/getting-started.md) is the full walk-through.
