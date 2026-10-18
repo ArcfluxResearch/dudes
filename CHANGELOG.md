@@ -11,6 +11,31 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.89.0] - 2026-10-18
+
+### Highlights
+
+- **Choose how an interrupted goal continues.** Inspect an eligible Managed goal in the CLI or authenticated Floor, choose an offered context, and authorize one recovery attempt. Recovery keeps the same agent and unfinished goal. Ordinary Resume does not release its recovery barrier. (#89)
+- **Review recovered ticket attempts.** Recovery keeps the same ticket round. The Floor shows recovered attempts, earlier acknowledged reviews, and whether the last check applies to current work. An earlier check becomes Historical after later work is admitted. Unknown applicability is not a pass. (#89)
+
+### Changes
+
+- Offer **Try recorded conversation**, **Start fresh with recorded recap**, or **Repeat issued task in fresh context** when the inspected boundary permits them. Recorded context does not guarantee restored provider history. Fresh context does not restore history. A recorded recap may shrink or be omitted. Repeating an issued task preserves its task and answers without a recap. A context failure never automatically falls back to fresh work. Earlier effects may repeat. (#89)
+- Keep recovery subject to budgets, hop caps, questions, instruction review, and other admission gates. Authorization does not guarantee a launch. Floor recovery requires both `floor.recovery` and `floor.control`. Quickstart's bundled Floor actions do not enable recovery. (#89)
+- Keep the recovery request ID. If the reply is lost or authorization is unknown, read that request's receipt without resubmitting. Save the Floor's ID before reloading, then use `dudes recovery receipt <request-id>` afterward. (#89)
+- After unused browser consent becomes invalidated, ordinary Resume and waiting do not reopen it. For a last Observed Failed or NoResult turn, a later explicit Pause can permit a fresh inspection and a new offered choice. See [the recovery steps](docs/goals-and-stopping.md#make-a-new-choice-after-unused-consent-is-invalidated). (#89)
+- Use one Board with consistent ticket columns. Keep plain cards whose status does not match a ticket column under **Other board cards**. (#93)
+- Add a **Workers** list to Overview for agents with their own worktrees, with their branch, state, and starting point. (#91)
+- Link the running version's release notes from About and add a release-notes link to the Floor's post-update reload notice. (#90)
+- New required recovery records and process-absence settlement data change the journal. Dudes 0.88.0 and older refuse journals containing this new data. Downgrading after it is written is unsupported. (#89)
+
+### Fixes
+
+- Explain an unknown checkout comparison when either the recorded review sample or the current sample is incomplete. (#88)
+- Cap long agent names in office tags so they do not cover neighboring agents. (#92)
+- Print the exact ticket Accept and Ask for changes commands, including the expected sequence, after the instruction comparison settles. (#94)
+- Clear inherited blocked signals before starting agent, command-check, and terminal children on macOS and Linux, so they can receive graceful stop signals. (#95)
+
 ## [0.88.0] - 2026-10-16
 
 ### Highlights
@@ -191,7 +216,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.88.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.89.0...HEAD
+[0.89.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.88.0...v0.89.0
 [0.88.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.2...v0.88.0
 [0.87.2]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.1...v0.87.2
 [0.87.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.0...v0.87.1
