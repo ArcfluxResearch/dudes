@@ -7,6 +7,8 @@ use dudes_proto::{Record, RecordKind};
 use dudes_types::{AgentId, GoalId, Lsn, Mode, ModelSelection, Provenance, TurnId};
 use std::collections::BTreeMap;
 
+mod invalidated_progress;
+
 struct BrowserFixture {
     fixture: common::Fixture,
     daemon: TestDaemon,
