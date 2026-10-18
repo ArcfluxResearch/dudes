@@ -83,6 +83,37 @@ dudes recovery receipt <request-id>
 Receipt lookup is read-only and never retries recovery. Do not resend the submission.
 A later eligible recovery episode needs a fresh inspection and explicit choice.
 
+### Make a new choice after unused consent is invalidated
+
+If browser consent becomes `invalidated` before a turn is issued, keep its request ID and receipt.
+Ordinary Resume and waiting do not reopen that consent. Its unused planned turn cannot be issued.
+
+If the last turn ended with an Observed `Failed` or `NoResult` outcome, a later explicit Pause can
+make recovery available for the same unfinished Managed goal. Pause does not make an unstarted
+`NotLaunched` turn from a `LaunchFailed` hold eligible.
+
+After the invalidation, pause the agent:
+
+```sh
+dudes pause <agent-id>
+```
+
+Save a fresh inspection in a new file:
+
+```sh
+dudes --json recovery inspect <agent-id> > inspection-after-invalidation.json
+```
+
+Read the new file. Only if it offers recovery, choose an offered context and submit a new request:
+
+```sh
+dudes recovery submit inspection-after-invalidation.json --choice <offered-choice>
+```
+
+If no choice is offered, do not submit a recovery request. Do not reuse the old inspection or
+resend the old submission.
+The [recovery admission gates](#recover-an-interrupted-goal) still apply.
+
 ## Stop the daemon and closing time
 
 ```sh

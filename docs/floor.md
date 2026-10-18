@@ -68,6 +68,8 @@ the current page retains the request. It remains available to a live authenticat
 when recovery is off. After reloading the page, use `dudes recovery receipt <request-id>` with the
 saved ID. Both lookups are read-only and never resubmit recovery. See
 [Recover an interrupted goal](goals-and-stopping.md#recover-an-interrupted-goal) for the command-line steps.
+If unused consent is invalidated, see
+[Make a new choice after unused consent is invalidated](goals-and-stopping.md#make-a-new-choice-after-unused-consent-is-invalidated).
 
 For a ticket, recovery keeps the same goal and round. The ticket review shows recovered attempts
 and whether the last recorded check applies to the current work. After later work is admitted,
