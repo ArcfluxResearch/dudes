@@ -1122,8 +1122,27 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
             if (section) { section.open = true; section.focus(); }
           }
         }`;
-  assert.deepEqual(clicksIn(recovered), [historyClick]);
-  assert.match(recovered, /href="#earlier-acknowledged-reviews"/);
+  function expectHistoryLinks(text) {
+    assert.deepEqual(clicksIn(text), [historyClick]);
+    const anchors = [];
+    (function walk(node) {
+      if ((ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) && node.tagName.getText() === 'a') {
+        anchors.push(node.attributes.properties.filter((attribute) => ts.isJsxAttribute(attribute) && attribute.name.getText() === 'href')
+          .map((attribute) => attribute.initializer !== undefined && ts.isStringLiteral(attribute.initializer) ? attribute.initializer.text : null));
+      }
+      ts.forEachChild(node, walk);
+    })(parsedByExtension(text, RECOVERED_REVIEW));
+    assert.deepEqual(anchors, [['#earlier-acknowledged-reviews']]);
+  }
+  expectHistoryLinks(recovered);
+  for (const changed of [
+    recovered.replace('</section>;', '{fresh ? <a href="https://example.invalid">extra</a> : null}</section>;'),
+    recovered.replace('</section>;', '{fresh ? <a href="#extra">extra</a> : null}</section>;'),
+    recovered.replace('</section>;', '{fresh ? <a>extra</a> : null}</section>;'),
+    recovered.replace('href="#earlier-acknowledged-reviews"', 'href="https://example.invalid"'),
+    recovered.replace('href="#earlier-acknowledged-reviews"', 'href="#other-review"'),
+    recovered.replace('href="#earlier-acknowledged-reviews"', 'href={context.binding.card}'),
+  ]) assert.throws(() => expectHistoryLinks(changed));
   assert.notDeepEqual(clicksIn(recovered.replace('section.open = true', "void fetch('/floor/recovery/submit')")), [historyClick]);
   assert.deepEqual(clicksIn(readError), ['onRetry']);
   assert.match(readError, /onRetry = refreshFloorSnapshot/);

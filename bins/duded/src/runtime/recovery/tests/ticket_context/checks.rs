@@ -76,6 +76,10 @@ fn stamp(daemon: &mut TestDaemon, agent: AgentId, goal: GoalId, baseline: Lsn, c
 }
 
 fn context(daemon: &mut TestDaemon, card: CardId) -> TicketReadContext {
+    reading(daemon, card).context
+}
+
+fn reading(daemon: &mut TestDaemon, card: CardId) -> dudes_proto::rpc::ticket::TicketReadResult {
     let Answered::TicketRead(read) = daemon
         .ask(crate::runtime::Ask::Ticket(crate::ports::TicketAsk::Read(
             dudes_proto::rpc::ticket::TicketReadParams { card },
@@ -84,7 +88,7 @@ fn context(daemon: &mut TestDaemon, card: CardId) -> TicketReadContext {
     else {
         panic!("ticket context");
     };
-    read.context
+    *read
 }
 
 #[test]
@@ -329,8 +333,26 @@ fn exact_later_same_turn_spawn_and_unproven_attempt_invalidate_check_applicabili
 fn uncertified_journal_advancement_keeps_a_recorded_check_unconfirmed() {
     let fixture = common::Fixture::new();
     let mut daemon = empty(&fixture);
-    let command = recoverable_ticket(&mut daemon, &fixture);
-    let card = command.expected.ticket.unwrap().0;
+    let mut baseline_lsn = None;
+    let (agent, turn) = issued_ticket_with(&mut daemon, &fixture, |daemon, agent, goal, _| {
+        baseline_lsn = Some(baseline(daemon, agent, goal));
+    });
+    append_vanished_attempt(&mut daemon, agent, turn);
+    let goal = daemon.sup.world().turns[&turn].goal.unwrap();
+    let card = daemon.sup.world().ticket_goal(goal).unwrap().0;
+    let check = predicate(&mut daemon, agent, goal, turn);
+    stamp(&mut daemon, agent, goal, baseline_lsn.unwrap(), check);
+    let before = reading(&mut daemon, card);
+    assert!(
+        before.ticket.check.is_some(),
+        "the uncertainty test needs a retained check"
+    );
+    assert_eq!(
+        before.context.check,
+        TicketCheckApplicability::Current { check_lsn: check }
+    );
+    let applied = daemon.sup.world().last_applied_lsn;
+    let projected = daemon.ctx.projections.last_applied_lsn();
     let position = daemon.ctx.writer.next_lsn().unwrap();
     daemon
         .ctx
@@ -345,13 +367,16 @@ fn uncertified_journal_advancement_keeps_a_recorded_check_unconfirmed() {
         })
         .unwrap();
     let entries = fixture.entries();
-    let read = context(&mut daemon, card);
-    assert_eq!(read.check, TicketCheckApplicability::Unknown);
+    let read = reading(&mut daemon, card);
+    assert_eq!(read.context.check, TicketCheckApplicability::Unknown);
+    assert_eq!(read.ticket.check, before.ticket.check);
     assert_eq!(
-        read.recovered_review.state,
+        read.context.recovered_review.state,
         dudes_proto::rpc::ticket::TicketHistoryState::Unavailable
     );
     assert_eq!(fixture.entries(), entries);
+    assert_eq!(daemon.sup.world().last_applied_lsn, applied);
+    assert_eq!(daemon.ctx.projections.last_applied_lsn(), projected);
     let mut running = common::start(daemon);
     running.stop(crate::ExitCause::Ended);
 }

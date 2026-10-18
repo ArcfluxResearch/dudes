@@ -2,6 +2,8 @@ use super::*;
 use dudes_proto::record::samples;
 use dudes_types::Timestamp;
 
+mod grouping;
+
 fn attempt(reviewed: Lsn) -> InstructionAttempt {
     let Record::InstructionObservationStarted { owner, .. } =
         samples::record(RecordKind::InstructionObservationStarted)

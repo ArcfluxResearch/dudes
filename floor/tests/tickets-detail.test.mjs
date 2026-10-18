@@ -147,6 +147,20 @@ test('a ticket in Needs you shows its sentence, and a queued one the daemon\'s o
   assert.match(panel(), /Waiting for Ada to finish its current work\./);
 });
 
+test('recovery Needs you offers the local inspection command with either Floor grant off', async () => {
+  await open({ reason: 'recovery_required', summary: null }, { status: 'blocked' });
+  const state = store.getFloorState();
+  const card = { ...state.cards[0], ticket: { ...state.cards[0].ticket, reason: 'recovery_required' } };
+  for (const [recovery, control] of [[false, true], [true, false], [true, true]]) {
+    const floor = { ...state, cards: [card], recovery, control };
+    const html = renderToStaticMarkup(createElement(TicketPanel, { floor, card }));
+    assert.match(html, /Recovery keeps the same goal and ticket round\./);
+    assert.match(html, /Review recovery in the agent drawer when available, or run `dudes recovery inspect &lt;agent-id&gt;` in a terminal\./);
+    assert.match(html, /Earlier effects may repeat\./);
+    assert.doesNotMatch(html, /Open the agent and choose how to recover it/);
+  }
+});
+
 test('the decoder keeps exactly the daemon\'s members and refuses the rest', async () => {
   const decode = (value, card = NEW) => detail.decodeDetail(value, card);
   assert.deepEqual(decode(reply()), {

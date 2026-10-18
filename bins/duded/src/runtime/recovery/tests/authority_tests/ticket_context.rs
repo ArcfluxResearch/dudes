@@ -14,6 +14,39 @@ fn reading(handle: &crate::Handle, card: dudes_types::CardId) -> TicketReadResul
     *read
 }
 
+fn browser_ticket_fixture(
+    fixture: common::Fixture,
+    mut daemon: TestDaemon,
+    agent: AgentId,
+    card: dudes_types::CardId,
+    clock: Arc<common::TestClock>,
+) -> BrowserFixture {
+    let floor = daemon.floor.as_ref().unwrap();
+    let sessions = floor
+        .carry(crate::baseline::CheckRuns::default())
+        .sessions()
+        .clone();
+    let identity = sign_in(&sessions, &floor.addr().to_string());
+    let inspected = daemon.recovery_inspect_browser(&identity, agent).unwrap();
+    let RecoveryInspectResult::Available { expected, .. } = inspected else {
+        panic!("authenticated browser inspection: {inspected:?}");
+    };
+    assert_eq!(expected.ticket.unwrap().card, card);
+    assert_eq!(expected.work.agent, agent);
+    BrowserFixture {
+        fixture,
+        daemon,
+        sessions,
+        identity,
+        intent: RecoverySubmitParams {
+            request_id: Hex32::new([121; 32]),
+            expected: *expected,
+            choice: WireChoice::FreshWithRecap,
+        },
+        clock,
+    }
+}
+
 #[test]
 fn recovery_owned_status_changes_preserve_a_real_waiting_browser_claim() {
     let fixture = common::Fixture::new();
@@ -36,7 +69,7 @@ fn recovery_owned_status_changes_preserve_a_real_waiting_browser_claim() {
     );
     let question_lsn = daemon.ctx.writer.next_lsn().unwrap();
     wait_for_human(&mut daemon, agent);
-    let mut owned = signed_fixture(fixture, daemon, agent, clock);
+    let mut owned = browser_ticket_fixture(fixture, daemon, agent, card, clock);
     let submitted = owned
         .daemon
         .recovery_submit_browser(owned.identity.clone(), &owned.intent);
