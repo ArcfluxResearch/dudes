@@ -1,10 +1,10 @@
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { access, chmod, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, readlink, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
@@ -53,7 +53,14 @@ export async function chromePath(paths = [
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
   ...(process.env.PATH ?? '').split(delimiter).flatMap((dir) =>
     ['google-chrome', 'chromium', 'chromium-browser'].map((name) => join(dir, name))),
-], required = process.env.DUDES_SMOKE_REQUIRE_CHROME === '1') {
+], required = process.env.DUDES_SMOKE_REQUIRE_CHROME === '1', configured = process.env.DUDES_SMOKE_CHROME) {
+  if (configured !== undefined) {
+    check(isAbsolute(configured)
+      && await stat(configured).then((info) => info.isFile(), () => false)
+      && await access(configured, constants.X_OK).then(() => true, () => false),
+    'DUDES_SMOKE_CHROME must name an absolute executable file');
+    return configured;
+  }
   for (const path of paths) {
     if (await access(path, constants.X_OK).then(() => true, () => false)) return path;
   }
@@ -238,6 +245,8 @@ exec /bin/sleep 120
     if (process.env.RUSTUP_TOOLCHAIN !== undefined) this.buildEnv.RUSTUP_TOOLCHAIN = process.env.RUSTUP_TOOLCHAIN;
     if (process.env.DUDES_SMOKE_ORIGINAL_PATH) this.buildEnv.DUDES_SMOKE_ORIGINAL_PATH = process.env.DUDES_SMOKE_ORIGINAL_PATH;
     if (process.env.CARGO_TARGET_DIR) this.buildEnv.CARGO_TARGET_DIR = process.env.CARGO_TARGET_DIR;
+    if (process.env.CARGO_BUILD_JOBS !== undefined) this.buildEnv.CARGO_BUILD_JOBS = process.env.CARGO_BUILD_JOBS;
+    if (process.env.CARGO_INCREMENTAL !== undefined) this.buildEnv.CARGO_INCREMENTAL = process.env.CARGO_INCREMENTAL;
     if (process.env.MACOSX_DEPLOYMENT_TARGET) this.buildEnv.MACOSX_DEPLOYMENT_TARGET = process.env.MACOSX_DEPLOYMENT_TARGET;
     await stage('Floor build', async () => {
       await this.capture('npm', ['run', 'build'], {

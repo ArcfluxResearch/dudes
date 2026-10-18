@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import childProcess, { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -125,7 +125,9 @@ test('Chrome helper readlink denial preserves group cleanup and other identity f
 
 test('strict release check refuses missing Chrome', async () => {
   const previous = process.env.DUDES_SMOKE_REQUIRE_CHROME;
+  const previousChrome = process.env.DUDES_SMOKE_CHROME;
   try {
+    delete process.env.DUDES_SMOKE_CHROME;
     process.env.DUDES_SMOKE_REQUIRE_CHROME = '1';
     await assert.rejects(chromePath([]), /Chrome is required/);
     process.env.DUDES_SMOKE_REQUIRE_CHROME = '0';
@@ -133,6 +135,77 @@ test('strict release check refuses missing Chrome', async () => {
   } finally {
     if (previous === undefined) delete process.env.DUDES_SMOKE_REQUIRE_CHROME;
     else process.env.DUDES_SMOKE_REQUIRE_CHROME = previous;
+    if (previousChrome === undefined) delete process.env.DUDES_SMOKE_CHROME;
+    else process.env.DUDES_SMOKE_CHROME = previousChrome;
+  }
+});
+
+test('configured Chrome selects one executable path before discovery', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dudes-smoke-test-'));
+  const previous = process.env.DUDES_SMOKE_CHROME;
+  try {
+    const configured = join(root, 'selected Chrome');
+    const discovered = join(root, 'discovered Chrome');
+    for (const [program, name] of [[configured, 'configured'], [discovered, 'discovered']]) {
+      await writeFile(program, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ name: ${JSON.stringify(name)}, args: process.argv.slice(2) }));\n`, { mode: 0o700 });
+    }
+    process.env.DUDES_SMOKE_CHROME = configured;
+    assert.equal(await chromePath([discovered], false), configured);
+    const selected = await chromePath([discovered], true);
+    const { stdout } = await execute(selected, ['one argument', '--probe']);
+    assert.deepEqual(JSON.parse(stdout), { name: 'configured', args: ['one argument', '--probe'] });
+    const link = join(root, 'Chrome link');
+    await symlink(configured, link);
+    process.env.DUDES_SMOKE_CHROME = link;
+    assert.equal(await chromePath([discovered], false), link);
+    const linked = await execute(await chromePath([discovered], true), ['symlink argument']);
+    assert.deepEqual(JSON.parse(linked.stdout), { name: 'configured', args: ['symlink argument'] });
+    delete process.env.DUDES_SMOKE_CHROME;
+    assert.equal(await chromePath([discovered], false), discovered);
+    const fallback = await execute(await chromePath([discovered], true), ['discovery argument']);
+    assert.deepEqual(JSON.parse(fallback.stdout), { name: 'discovered', args: ['discovery argument'] });
+    assert.equal(await chromePath([], false), null);
+    await assert.rejects(chromePath([], true), /Chrome is required/);
+  } finally {
+    if (previous === undefined) delete process.env.DUDES_SMOKE_CHROME;
+    else process.env.DUDES_SMOKE_CHROME = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('configured Chrome refuses invalid paths without discovery fallback', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dudes-smoke-test-'));
+  const previous = process.env.DUDES_SMOKE_CHROME;
+  try {
+    const discovered = join(root, 'discovered Chrome');
+    const nonexecutable = join(root, 'nonexecutable');
+    const directory = join(root, 'directory');
+    const directoryLink = join(root, 'directory link');
+    const dangling = join(root, 'dangling');
+    await writeFile(discovered, `#!${process.execPath}\nprocess.stdout.write('discovered');\n`, { mode: 0o700 });
+    await writeFile(nonexecutable, 'not executable', { mode: 0o600 });
+    await mkdir(directory);
+    await symlink(directory, directoryLink);
+    await symlink(join(root, 'missing'), dangling);
+    for (const [name, configured] of [
+      ['empty', ''], ['relative', './chrome'], ['missing', join(root, 'missing')],
+      ['directory', directory], ['nonexecutable', nonexecutable],
+      ['directory symlink', directoryLink], ['dangling symlink', dangling],
+    ]) {
+      await t.test(name, async () => {
+        process.env.DUDES_SMOKE_CHROME = configured;
+        for (const required of [false, true]) {
+          await assert.rejects(chromePath([discovered], required), /DUDES_SMOKE_CHROME.*absolute executable file/);
+        }
+      });
+    }
+    delete process.env.DUDES_SMOKE_CHROME;
+    const { stdout } = await execute(await chromePath([discovered], false), []);
+    assert.equal(stdout, 'discovered');
+  } finally {
+    if (previous === undefined) delete process.env.DUDES_SMOKE_CHROME;
+    else process.env.DUDES_SMOKE_CHROME = previous;
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -322,6 +395,77 @@ test('cleanup requests hard stop without waiting through a saving interval', asy
     assert.deepEqual(calls, [['stop', '--hard']]);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('release build passes standard Cargo settings through isolated child environments', async (t) => {
+  t.mock.method(console, 'log', () => {});
+  const keys = ['HOME', 'PATH', 'CARGO', 'CARGO_HOME', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN',
+    'CARGO_TARGET_DIR', 'MACOSX_DEPLOYMENT_TARGET', 'DUDES_SMOKE_ORIGINAL_PATH',
+    'CARGO_BUILD_JOBS', 'CARGO_INCREMENTAL', 'DUDES_SMOKE_TEST_UNRELATED'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const [name, settings] of [
+      ['defined', { CARGO_BUILD_JOBS: '3', CARGO_INCREMENTAL: '0' }],
+      ['absent', {}],
+      ['empty', { CARGO_BUILD_JOBS: '', CARGO_INCREMENTAL: '' }],
+    ]) {
+      await t.test(name, async () => {
+        const root = await realpath(await mkdtemp(join(tmpdir(), 'dudes-smoke-test-')));
+        try {
+          const workspace = join(root, 'workspace');
+          const bin = join(root, 'tools');
+          const originalPath = join(root, 'original tools');
+          const xtask = join(bin, 'dist recorder');
+          const cargo = join(bin, 'cargo recorder');
+          const target = join(root, 'target');
+          const run = new ScratchRun(root, workspace, xtask, '', null);
+          for (const path of [bin, originalPath, run.home, run.env.TMPDIR, join(workspace, 'floor')]) {
+            await mkdir(path, { recursive: true });
+          }
+          for (const [program, stage] of [[join(bin, 'npm'), 'floor'], [xtask, 'dist'], [cargo, 'metadata']]) {
+            await writeFile(program, `#!${process.execPath}
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(join(root, `${stage}.json`))}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), env: process.env }));
+if (${JSON.stringify(stage)} === 'metadata') process.stdout.write(JSON.stringify({ target_directory: ${JSON.stringify(target)} }));
+`, { mode: 0o700 });
+          }
+          for (const key of keys) delete process.env[key];
+          Object.assign(process.env, {
+            HOME: join(root, 'parent home'), PATH: bin, CARGO: cargo,
+            CARGO_HOME: join(root, 'parent cargo'), RUSTUP_HOME: join(root, 'rustup'),
+            RUSTUP_TOOLCHAIN: 'selected-toolchain', CARGO_TARGET_DIR: target,
+            MACOSX_DEPLOYMENT_TARGET: '12.0', DUDES_SMOKE_ORIGINAL_PATH: originalPath,
+            DUDES_SMOKE_TEST_UNRELATED: 'must stay outside the child', ...settings,
+          });
+          await run.build();
+          const expected = {
+            HOME: run.home, TMPDIR: run.env.TMPDIR, PATH: originalPath, CARGO: cargo,
+            CARGO_HOME: join(root, 'cargo'), RUSTUP_HOME: join(root, 'rustup'),
+            CARGO_NET_OFFLINE: 'true', NPM_CONFIG_OFFLINE: 'true', NPM_CONFIG_UPDATE_NOTIFIER: 'false',
+            RUSTUP_TOOLCHAIN: 'selected-toolchain', DUDES_SMOKE_ORIGINAL_PATH: originalPath,
+            CARGO_TARGET_DIR: target, MACOSX_DEPLOYMENT_TARGET: '12.0', ...settings,
+          };
+          for (const [stage, args, cwd] of [
+            ['floor', ['run', 'build'], join(workspace, 'floor')],
+            ['dist', ['dist'], workspace],
+            ['metadata', ['metadata', '--locked', '--format-version=1', '--no-deps'], workspace],
+          ]) {
+            const observed = JSON.parse(await readFile(join(root, `${stage}.json`), 'utf8'));
+            if (process.platform === 'darwin') delete observed.env.__CF_USER_TEXT_ENCODING;
+            assert.deepEqual(observed, { args, cwd, env: { ...expected, PATH: stage === 'floor' ? bin : originalPath } });
+          }
+          assert.equal(run.dist, join(target, 'dist'));
+        } finally {
+          await rm(root, { recursive: true, force: true });
+        }
+      });
+    }
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 

@@ -82,6 +82,10 @@ Chromium and fails if neither is installed. For a local install check, omit
 `DUDES_SMOKE_REQUIRE_CHROME=1` to permit `SKIP browser (Chrome absent)`. The command uses no paid
 engine turn and contacts only loopback addresses. Chrome DevTools uses inherited pipes.
 
+To select a browser executable, set `DUDES_SMOKE_CHROME` to its absolute path. The path must name
+an executable file. An invalid explicit value fails the check without falling back to discovery.
+The build preserves `CARGO_BUILD_JOBS` and `CARGO_INCREMENTAL` when you set them.
+
 macOS builds default `MACOSX_DEPLOYMENT_TARGET` to `12.0` through `.cargo/config.toml`. An explicit
 lower value is refused by `dudes-host`'s build script; `12.0` and higher are accepted.
 
