@@ -168,7 +168,7 @@ export function AgentDetail({
         </div>
         {selection}
         {automaticHold === null ? null : <p className="agent-detail-hold" role="status">
-          {automaticHoldText(automaticHold)}
+          {automaticHoldText(automaticHold, row.provider)}
         </p>}
         <div className="agent-detail-actions">{control}{retire}{terminal}{enable}</div>
         {fields.question === '' ? null : (

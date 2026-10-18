@@ -59,7 +59,7 @@ function activityOf(question: string, goal: string): Activity {
 export function crewRowOf(row: AgentRow, cards: readonly CardRow[] = [], context?: LiveActivityContext): CrewRow {
   const fields = fieldsOf(row, context);
   const automaticHold = automaticHoldOf(row);
-  const reason = automaticHold === null ? null : automaticHoldText(automaticHold);
+  const reason = automaticHold === null ? null : automaticHoldText(automaticHold, row.provider);
   const activity: Activity = reason === null ? activityOf(fields.question, fields.goal)
     : { kind: 'hold', line: reason, text: reason, spoken: reason };
   const hold = row.halted === true ? 'halted' : row.paused === true ? 'paused'
