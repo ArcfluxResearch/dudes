@@ -3197,3 +3197,12 @@ samp,
 .workers-list dd {
   font-weight: 400;
 }
+
+.shell-signed-out {
+  align-content: start;
+}
+
+.signed-out-line {
+  margin: 1rem;
+  color: var(--muted-ink);
+}

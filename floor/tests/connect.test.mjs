@@ -309,11 +309,16 @@ test('a refused first link leads with the used-or-expired line, names no secret,
   const html = page();
   assert.match(html, new RegExp(`<p class="link-refused" role="alert">${USED}</p>`));
   assert.doesNotMatch(html, /Disconnected/, 'the stream notice sits beside the refusal');
+  assert.match(html, /This tab is not signed in, so the Floor shows no agents yet\./);
+  for (const live of [/crew-list/, /hire-open/, /office-canvas|<canvas/, /View unconfirmed/, /Checks passed today/, /control-nav/]) {
+    assert.doesNotMatch(html, live, `a signed-out page drew ${live}`);
+  }
   assert.doesNotMatch(html, /stream-notice/, 'the stream notice sits beside the refusal');
   assert.equal(html.includes(BOOTSTRAP), false, 'the refusal line carries the bootstrap');
 
   await entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_A }), session), ports);
   assert.doesNotMatch(page(), /already used or has expired/, 'a link that signed the page in left the refusal up');
+  assert.match(page(), /id="crew-list"/, 'a signed-in page lost its crew list');
 });
 
 test('a page whose address holds no usable link says so instead of Disconnected', async () => {

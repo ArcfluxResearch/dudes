@@ -93,7 +93,29 @@ export function PastedLinkNotice() {
   );
 }
 
+/**
+ * What a page with no session shows: the reason and its remedy, and nothing
+ * that reads as a live office. The crew, hire, checks and board panels would
+ * all be empty for want of a session, which looks like a daemon that is down.
+ */
+function SignedOutShell() {
+  return (
+    <main className="shell shell-signed-out" aria-labelledby="floor-title" data-theme={readViewPreferences().theme}>
+      <header className="top-bar">
+        <h1 id="floor-title" className="wordmark">dudes</h1>
+        <PastedLinkNotice />
+      </header>
+      <p className="signed-out-line" role="status">This tab is not signed in, so the Floor shows no agents yet.</p>
+    </main>
+  );
+}
+
 export function WebFloorShell() {
+  const firstLink = useSyncExternalStore(subscribeToPastedLink, firstLinkProblem, firstLinkProblem);
+  return firstLink === null ? <SignedInShell /> : <SignedOutShell />;
+}
+
+function SignedInShell() {
   const floor = useSyncExternalStore(subscribeToFloor, getFloorState, getFloorState);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hiring, setHiring] = useState(false);
@@ -101,7 +123,6 @@ export function WebFloorShell() {
   const [archiveHireKept, setArchiveHireKept] = useState(false);
   const [officeBar, setOfficeBar] = useState<HTMLDivElement | null>(null);
   const hire = useSyncExternalStore(subscribeToHire, getHireState, getHireState);
-  const firstLink = useSyncExternalStore(subscribeToPastedLink, firstLinkProblem, firstLinkProblem);
   const [view, setView] = useState<ControlView | null>(null);
   const [answerAsked, setAnswerAsked] = useState<{ readonly id: string } | null>(null);
   const [crewOpen, setCrewOpen] = useState(true);
@@ -357,7 +378,7 @@ export function WebFloorShell() {
         <JournalStoppedBanner stopped={floor.journalStopped} />
         <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
         <TicketBanner floor={floor} onOpen={() => openView('board')} />
-        {firstLink === null ? <StreamNotice floor={floor} /> : null}
+        <StreamNotice floor={floor} />
         <div className="office-bar" ref={setOfficeBar} />
       </header>
       <div className="floor-stage"
