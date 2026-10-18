@@ -72,7 +72,7 @@ function RecoveryDraft({ draft, memory, floor, session }: {
   const blocked = blocksDraft(draft, memory);
   const waiting = (Object.keys(WAIT_LABELS) as (keyof Waits)[]).filter(key => inspection.waiting[key] === 'waiting');
   return <div className="recovery-draft" data-recovery-reason={inspection.reason}>
-    <dl className="hire-facts">
+    <dl className="recovery-facts">
       <div><dt>AgentId</dt><dd>{inspection.expected.work.agent}</dd></div>
       <div><dt>GoalId</dt><dd>{inspection.expected.work.goal}</dd></div>
       <div><dt>Source turn</dt><dd>{inspection.expected.work.turn}</dd></div>
@@ -110,7 +110,7 @@ export function RecoveryReceiptsView({ floor, memory }: { readonly floor: FloorS
     return <section key={id} className="recovery-receipt" aria-live="polite"
     aria-labelledby={`recovery-receipt-${id}`} data-recovery-outcome={receipt === null ? request.outcome?.state ?? 'sending' : 'accepted'}>
     <h3 id={`recovery-receipt-${id}`} tabIndex={-1}>Recovery request · {request.name}</h3>
-    <dl className="hire-facts"><div><dt>RequestId</dt><dd>{id}</dd></div>
+    <dl className="recovery-facts"><div><dt>RequestId</dt><dd>{id}</dd></div>
       <div><dt>GoalId</dt><dd>{request.payload.expected.work.goal}</dd></div>
       <div><dt>Context choice</dt><dd>{CHOICES[request.payload.choice]}</dd></div></dl>
     <RequestOutcome request={request} />

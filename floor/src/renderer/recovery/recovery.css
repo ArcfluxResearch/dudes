@@ -5,6 +5,32 @@
   border-radius: .5rem;
   margin-block: 1rem;
   padding: 1rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+dl.recovery-facts,
+.drawer-frame .agent-detail dl.recovery-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  margin: 0;
+}
+dl.recovery-facts > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: .2rem;
+  min-width: 0;
+  padding: .35rem 0;
+  border-top: 1px solid var(--line);
+}
+dl.recovery-facts dt {
+  font-size: .75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+dl.recovery-facts dd {
+  min-width: 0;
+  margin: 0;
   overflow-wrap: anywhere;
 }
 .recovery-panel h3, .recovery-receipt h3 { margin-top: 0; }
