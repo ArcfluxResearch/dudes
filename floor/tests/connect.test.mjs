@@ -321,6 +321,24 @@ test('a refused first link leads with the used-or-expired line, names no secret,
   assert.match(page(), /id="crew-list"/, 'a signed-in page lost its crew list');
 });
 
+test('a good pasted link tells the signed-out page its first-link problem is gone', async () => {
+  const session = await server.ssrLoadModule('/src/session.ts');
+  const entry = await server.ssrLoadModule('/src/connect.ts');
+  session.resetFloorSession();
+  entry.resetPastedLink();
+  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers() };
+  let told = 0;
+  entry.subscribeToPastedLink(() => { told += 1; });
+  entry.noteFirstLinkRefused();
+  assert.equal(told, 1);
+  assert.equal(entry.firstLinkProblem(), 'refused');
+  await entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_A }), session), ports);
+  assert.equal(told, 2, 'a link that signed the page in did not tell the page');
+  assert.equal(entry.firstLinkProblem(), null);
+  session.resetFloorSession();
+  assert.equal(entry.firstLinkProblem(), null, 'a later loss of the session showed the stale first-link problem');
+});
+
 test('a page whose address holds no usable link says so instead of Disconnected', async () => {
   const entry = await server.ssrLoadModule('/src/connect.ts');
   const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');

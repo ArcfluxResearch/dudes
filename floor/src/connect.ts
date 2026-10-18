@@ -27,6 +27,7 @@ export interface StreamPorts {
  */
 export function connect(session: FloorSession, ports: StreamPorts): void {
   if (session !== currentFloorSession()) return;
+  clearFirstLinkProblem();
   if (reauthenticateFloorStream(session)) return;
   openFloorStream(session, ports.location, ports.socket, ports.timers);
 }
@@ -71,6 +72,13 @@ export function firstLinkProblem(): FirstLinkProblem | null {
 
 function noteFirstLinkProblem(problem: FirstLinkProblem): void {
   firstProblem = problem;
+  for (const listener of [...listeners]) listener();
+}
+
+/** A session is held now: the page was not opened signed out for good, so tell whatever drew the problem. */
+function clearFirstLinkProblem(): void {
+  if (firstProblem === null) return;
+  firstProblem = null;
   for (const listener of [...listeners]) listener();
 }
 
