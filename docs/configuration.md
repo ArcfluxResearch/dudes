@@ -44,8 +44,10 @@ runs differently, which a restart applies: `dudes stop`, then `dudes start`.
 
 Recovery inspection and submission need both `floor.recovery` and `floor.control` on. Recovery is
 separate from the bundled Floor actions that `quickstart` offers and stays off unless you enable
-it. **Check receipt** is read-only and remains available to a live authenticated Floor reader when
-recovery is off. See [Recover an interrupted goal](goals-and-stopping.md#recover-an-interrupted-goal).
+it. **Check receipt** is read-only. With a live authenticated Floor reader, it remains available
+when recovery is off while the current page retains the request. After reloading the page, use
+`dudes recovery receipt <request-id>` with the saved ID. Receipt lookup never resubmits recovery.
+See [Recover an interrupted goal](goals-and-stopping.md#recover-an-interrupted-goal).
 
 An edit that takes a per-turn reserve to zero is written with a warning, because the daemon refuses
 to start while an agent it has hired has a ceiling in that unit.

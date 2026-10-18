@@ -63,9 +63,10 @@ bundled Floor actions. Press **Inspect recovery**, read the warning, choose one 
 and press **Authorize one recovery**. Ordinary Resume does not release a recovery barrier.
 Authorization does not guarantee a launch or restored conversation history, and earlier effects may repeat.
 
-Keep the request ID shown in the receipt. If the outcome is unknown, press **Check receipt**.
-It only reads that request and never resubmits recovery. Receipt lookup remains available to a live
-authenticated Floor reader when recovery is off. See
+Keep the request ID shown in the receipt. If the outcome is unknown, press **Check receipt** while
+the current page retains the request. It remains available to a live authenticated Floor reader
+when recovery is off. After reloading the page, use `dudes recovery receipt <request-id>` with the
+saved ID. Both lookups are read-only and never resubmit recovery. See
 [Recover an interrupted goal](goals-and-stopping.md#recover-an-interrupted-goal) for the command-line steps.
 
 For a ticket, recovery keeps the same goal and round. The ticket review shows recovered attempts
