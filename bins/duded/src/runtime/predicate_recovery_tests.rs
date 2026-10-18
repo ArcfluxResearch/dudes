@@ -1,10 +1,15 @@
 use super::work_test_support as common;
 use super::*;
 use crate::predicate::PredicateOutcome;
+use dudes_proto::rpc::recovery::{
+    ExpectedRecovery, RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectResult,
+    RecoveryKnownPrefix, RecoverySubmitRefusal, RecoverySubmitResult, RecoveryWaitStatus,
+    RecoveryWaitSummary,
+};
 use dudes_proto::{ExitStatus, TurnOutcome};
 use dudes_providers::launch::LaunchSpec;
 use dudes_supervisor::testing::FakeHost;
-use dudes_types::Usage;
+use dudes_types::{Provenance, Usage};
 use std::io;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Condvar, Mutex, PoisonError};
@@ -17,6 +22,7 @@ type TestDaemon =
 enum RunnerReply {
     Blocked,
     Error,
+    False,
     Swept,
 }
 
@@ -90,6 +96,7 @@ impl PredicateRunner for ControlledRunner {
         }
         match selected(&reply) {
             RunnerReply::Error => Err(io::Error::other("controlled predicate runner failure")),
+            RunnerReply::False => Ok(common::fails()),
             RunnerReply::Swept => Ok(PredicateOutcome::Swept),
             RunnerReply::Blocked => unreachable!("the runner waits until released"),
         }
@@ -111,6 +118,15 @@ fn boot(
     let mut fake = FakeHost::wall_clock_anchored();
     fake.next_pid = if reserved.is_some() { 9_000 } else { 1_000 };
     let host = common::SharedHost::with(fake);
+    boot_with_host(fixture, runner, host, false)
+}
+
+fn boot_with_host(
+    fixture: &common::Fixture,
+    runner: &Arc<ControlledRunner>,
+    host: common::SharedHost,
+    native_children: bool,
+) -> (TestDaemon, common::SharedHost) {
     let settings = fixture.settings();
     let mut seams = common::seams(
         &settings,
@@ -135,6 +151,9 @@ fn boot(
     ]
     .into_iter()
     .collect();
+    if native_children {
+        host.bind_child_ends(Arc::clone(&seams.children));
+    }
     (crate::boot(&settings, seams).unwrap(), host)
 }
 
@@ -364,6 +383,290 @@ fn take_predicate_end(daemon: &TestDaemon, goal: GoalId) -> PathBuf {
         }
     }
     panic!("the actual predicate completion must arrive within the fixture bound");
+}
+
+fn operator_admission() -> dudes_rpc::dispatch::OperatorAdmission {
+    let (sent, received) = std::sync::mpsc::channel();
+    let credential = "C".repeat(43);
+    let mut dispatcher = dudes_rpc::Dispatcher::new(dudes_rpc::PeerClassifier::new(
+        dudes_proto::rpc::cred::OperatorCredential::new(credential.clone()).unwrap(),
+        Arc::new(crate::classify::WorldTokens::new()),
+    ));
+    dispatcher.register_current_operator(
+        dudes_proto::rpc::Method::SystemPing.into(),
+        move |_, admission| {
+            sent.send(admission).unwrap();
+            Ok(serde_json::Value::Null)
+        },
+    );
+    dudes_rpc::server::serve_stream(
+        std::io::Cursor::new(
+            format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system.ping\",\"cred\":\"{credential}\"}}\n"
+            )
+            .into_bytes(),
+        ),
+        &Arc::new(dudes_rpc::Outbound::sink()),
+        dudes_rpc::PeerIdentity {
+            uid: Some(501),
+            gid: None,
+            pid: dudes_rpc::PeerPid::Reported {
+                pid: 4242,
+                pidversion: None,
+            },
+        },
+        dudes_rpc::PeerProvenance::NoRecordedAgent,
+        &dispatcher,
+    )
+    .unwrap();
+    received.recv().unwrap()
+}
+
+fn end_native_turn(daemon: &mut TestDaemon, host: &common::SharedHost, turn: TurnId) {
+    let row = &daemon.sup.world().turns[&turn];
+    let key = dudes_supervisor::AdoptionKey {
+        pid: row.pid.unwrap(),
+        start_time: row.start_time.unwrap(),
+        boot: row.boot.clone(),
+    };
+    host.mark_native_reaped(&key);
+    host.finish_owned_child(
+        &key,
+        Input::ChildExited {
+            final_reply: None,
+            elapsed_ms: Some(6_000),
+            turn,
+            exit: ExitStatus {
+                code: Some(0),
+                signal: None,
+            },
+            usage: None,
+            model_usage: BTreeMap::new(),
+            outcome: TurnOutcome::Completed,
+            last_message: None,
+        },
+    );
+    let Job::Input(input) = daemon.jobs.recv_timeout(Duration::from_secs(5)).unwrap() else {
+        panic!("the actual owned child completion must arrive");
+    };
+    assert!(matches!(input.as_ref(), Input::ChildExited { turn: ended, .. } if *ended == turn));
+    daemon.pump(*input).unwrap();
+    assert!(host.native_acknowledged(&key));
+}
+
+fn take_ending_sample(daemon: &mut TestDaemon) -> Input {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    for _ in 0..64 {
+        let Job::Input(input) = daemon
+            .jobs
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("the actual ending sample must arrive")
+        else {
+            panic!("the ending sample precedes its predicate run");
+        };
+        if matches!(
+            input.as_ref(),
+            Input::InstructionSampled {
+                comparison: Some(_),
+                ..
+            }
+        ) {
+            return *input;
+        }
+        daemon.pump(*input).unwrap();
+    }
+    panic!("the actual ending sample must arrive within the fixture bound");
+}
+
+fn take_false_completion(daemon: &TestDaemon, goal: GoalId) -> (PathBuf, Evidence) {
+    let Job::PredicateEnded {
+        goal: ended,
+        folder,
+        verdict: Some((pass, evidence)),
+    } = daemon.jobs.recv_timeout(Duration::from_secs(5)).unwrap()
+    else {
+        panic!("the actual predicate must complete with its observed verdict");
+    };
+    assert_eq!(ended, goal);
+    assert!(!pass);
+    (folder, evidence)
+}
+
+fn inspect_unconfirmed(daemon: &mut TestDaemon, agent: AgentId) -> ExpectedRecovery {
+    let Answered::RecoveryInspected(RecoveryInspectResult::Available {
+        expected,
+        reason,
+        choices,
+        waiting,
+        ..
+    }) = daemon
+        .recovery_inspect(agent, operator_admission())
+        .unwrap()
+    else {
+        panic!("the settled unconfirmed turn offers recovery");
+    };
+    assert_eq!(
+        reason,
+        dudes_proto::recovery::RecoveryReason::UnconfirmedContext
+    );
+    assert_eq!(choices, RecoveryAllowedChoices::FreshOnly);
+    assert_eq!(
+        waiting,
+        RecoveryWaitSummary {
+            open_question: RecoveryWaitStatus::Ready,
+            budget: RecoveryWaitStatus::Ready,
+            hops: RecoveryWaitStatus::Ready,
+            instruction_review: RecoveryWaitStatus::Ready,
+            instruction_comparison: RecoveryWaitStatus::Ready,
+        }
+    );
+    *expected
+}
+
+fn fresh_consent(expected: &ExpectedRecovery) -> dudes_supervisor::input::RecoveryCommand {
+    crate::ports::recovery_command(
+        &dudes_proto::rpc::recovery::RecoverySubmitParams {
+            request_id: dudes_proto::record::Hex32::new([83; 32]),
+            expected: *expected,
+            choice: RecoveryChoice::FreshWithRecap,
+        },
+        dudes_proto::recovery::RecoveryAttribution::LocalOperator {
+            pid: 4242,
+            uid: Some(501),
+        },
+    )
+    .unwrap()
+}
+
+fn assert_one_fresh_launch(
+    daemon: &mut TestDaemon,
+    host: &common::SharedHost,
+    fixture: &common::Fixture,
+    expected: &ExpectedRecovery,
+    launches: usize,
+) {
+    let fresh = inspect_unconfirmed(daemon, expected.work.agent);
+    assert_eq!(fresh, *expected);
+    assert!(matches!(
+        daemon.recovery_submit(fresh_consent(&fresh), operator_admission()),
+        Answered::RecoverySubmitted(RecoverySubmitResult::Accepted { .. })
+    ));
+    let recovered = await_spawn(daemon, expected.work.agent);
+    assert_ne!(recovered, expected.work.turn);
+    assert_eq!(host.spawned().len(), launches + 1);
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record, Record::RecoveryAuthorized(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record, Record::TurnIssued { .. }))
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn an_ending_predicate_can_refuse_previously_available_fresh_consent() {
+    let fixture = common::Fixture::new();
+    let runner = ControlledRunner::new(RunnerReply::False);
+    let (mut daemon, host) = boot_with_host(
+        &fixture,
+        &runner,
+        common::SharedHost::with_native_evidence(fixture.journal_dir()),
+        true,
+    );
+    let agent = hire(&mut daemon, fixture.state.path());
+    let goal = goal(&mut daemon, agent, 8);
+    let first = await_spawn(&mut daemon, agent);
+    let session = daemon.sup.world().turns[&first].announced.clone().unwrap();
+    daemon
+        .pump(Input::SessionLearned {
+            turn: first,
+            session,
+        })
+        .unwrap();
+    assert!(daemon.sup.world().turns[&first].session_confirmed);
+    end_native_turn(&mut daemon, &host, first);
+    let sample = take_ending_sample(&mut daemon);
+    daemon.pump(sample).unwrap();
+    let (folder, evidence) = take_false_completion(&daemon, goal);
+    daemon
+        .predicate_ended(goal, &folder, Some((false, evidence)))
+        .unwrap();
+    let interrupted = await_spawn(&mut daemon, agent);
+    assert_ne!(interrupted, first);
+    assert!(!daemon.sup.world().turns[&interrupted].session_confirmed);
+    end_native_turn(&mut daemon, &host, interrupted);
+    let ending = take_ending_sample(&mut daemon);
+    daemon
+        .pump(Input::Command(Command::Resume {
+            agent,
+            browser: None,
+        }))
+        .unwrap();
+    let expected = inspect_unconfirmed(&mut daemon, agent);
+    assert_eq!(expected.work.goal, goal);
+    assert_eq!(expected.work.turn, interrupted);
+    assert!(daemon.ctx.predicate_runs.is_empty());
+    daemon.pump(ending).unwrap();
+    let (folder, evidence) = take_false_completion(&daemon, goal);
+    assert_eq!(daemon.ctx.predicate_runs.get(&goal), Some(&1));
+    assert_eq!(
+        daemon.ctx.predicate_folders.get(&(goal, folder.clone())),
+        Some(&1)
+    );
+    assert!(daemon.sup.recovery_opportunity(agent).is_ok());
+    assert!(
+        daemon
+            .ctx
+            .admit_recovery_prior_attempt(&daemon.sup, agent, Some(interrupted))
+            .is_ok()
+    );
+    assert!(
+        !daemon
+            .ctx
+            .recovery_consent_checkout_clear(&daemon.sup, agent)
+    );
+    let before = fixture.entries();
+    let launches = host.spawned().len();
+    let submitted = daemon.recovery_submit(fresh_consent(&expected), operator_admission());
+    let Answered::RecoverySubmitted(submitted) = submitted else {
+        panic!("explicit recovery consent returns its published result");
+    };
+    assert_eq!(
+        submitted,
+        RecoverySubmitResult::Refused {
+            reason: RecoverySubmitRefusal::NotRecoverable,
+            prefix: RecoveryKnownPrefix {
+                required: None,
+                resume: None
+            },
+        }
+    );
+    assert_eq!(fixture.entries(), before);
+    assert_eq!(host.spawned().len(), launches);
+    daemon
+        .predicate_ended(goal, &folder, Some((false, evidence)))
+        .unwrap();
+    assert!(daemon.ctx.predicate_runs.is_empty());
+    assert!(daemon.ctx.predicate_folders.is_empty());
+    assert!(fixture.records().iter().any(|record| matches!(record,
+        Record::PredicateResult { goal: checked, turn: Some(turn), provenance: Provenance::Observed, pass: false, .. }
+        if *checked == goal && *turn == interrupted)));
+    assert!(
+        daemon
+            .ctx
+            .recovery_consent_checkout_clear(&daemon.sup, agent)
+    );
+    assert_one_fresh_launch(&mut daemon, &host, &fixture, &expected, launches);
+    daemon.exit(ExitCause::Ended);
 }
 
 #[test]

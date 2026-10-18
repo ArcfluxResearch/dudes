@@ -264,6 +264,25 @@ fn recover_unconfirmed(
     interrupted: TurnId,
     request_byte: u8,
 ) -> TurnId {
+    let goal = fixture
+        .records()
+        .iter()
+        .find_map(|record| match record {
+            Record::TurnIssued {
+                agent: owner,
+                turn,
+                goal,
+                ..
+            } if *owner == agent && *turn == interrupted => Some(*goal),
+            _ => None,
+        })
+        .expect("the exact interrupted goal");
+    fixture.await_record("the interrupted turn's observed false check", |record| {
+        matches!(record, Record::PredicateResult {
+            goal: checked, turn: Some(turn), provenance: Provenance::Observed, pass: false, ..
+        } if *checked == goal && *turn == interrupted)
+        .then_some(())
+    });
     let before = issued_turns(fixture, agent);
     let launches = host.spawned().len();
     let mut client = Client::connect(settings.socket()).expect("connect as the operator");
