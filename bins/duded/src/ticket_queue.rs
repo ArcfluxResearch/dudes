@@ -260,6 +260,24 @@ impl Facts<'_> {
             .iter()
             .filter_map(|(view, ticket)| {
                 let goal = ticket.goal?;
+                let recovery = crate::ticket_recovery::binding(self.world, view, ticket)
+                    .map_or(crate::ticket_recovery::RecoveryProgress::None, |binding| {
+                        crate::ticket_recovery::progress(self.world, binding)
+                    });
+                let waiting = recovery == crate::ticket_recovery::RecoveryProgress::Waiting;
+                if waiting
+                    && matches!(view.status, CardStatus::Doing | CardStatus::Blocked)
+                    && ticket.reason != Some(TicketReason::RecoveryRequired)
+                    && self.world.completed_goal_lsn(goal).is_none()
+                {
+                    return Some(Owed {
+                        card: view.id,
+                        from: view.status,
+                        to: CardStatus::Blocked,
+                        seq: view.seq,
+                        reason: Some(TicketReason::RecoveryRequired),
+                    });
+                }
                 if self.world.instructions.pending_for_goal(goal) {
                     return None;
                 }
@@ -267,6 +285,14 @@ impl Facts<'_> {
                     && self.world.completed_goal_lsn(goal).is_some()
                 {
                     (CardStatus::Review, None)
+                } else if view.status == CardStatus::Blocked
+                    && ticket.reason == Some(TicketReason::RecoveryRequired)
+                    && recovery == crate::ticket_recovery::RecoveryProgress::Admitted
+                    && self.stall(view, goal).is_none()
+                {
+                    (CardStatus::Doing, None)
+                } else if view.status == CardStatus::Doing && waiting {
+                    (CardStatus::Blocked, Some(TicketReason::RecoveryRequired))
                 } else if view.status == CardStatus::Doing {
                     (CardStatus::Blocked, Some(self.stall(view, goal)?))
                 } else {

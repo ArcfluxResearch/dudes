@@ -6471,6 +6471,11 @@
           "const": "shared_instructions_unknown",
           "description": "Shared instruction coverage is incomplete and needs Operator review.",
           "type": "string"
+        },
+        {
+          "const": "recovery_required",
+          "description": "Interrupted work requires an explicit recovery choice.",
+          "type": "string"
         }
       ]
     },

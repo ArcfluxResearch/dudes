@@ -17860,6 +17860,67 @@
       },
       "type": "object"
     },
+    "TicketAcknowledgedReview": {
+      "description": "A historical Operator acknowledgment. It supplies no current review watermark.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/TicketAcknowledgmentAction",
+          "description": "Finite action, without assignment message text."
+        },
+        "at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Actual record time."
+        },
+        "expected_seq": {
+          "$ref": "#/$defs/Seq",
+          "description": "Card sequence admitted by that frame."
+        },
+        "intervals": {
+          "description": "Exact earlier intervals linked to this acknowledgment.",
+          "items": {
+            "$ref": "#/$defs/InstructionBaselineRef"
+          },
+          "type": "array"
+        },
+        "lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Actual acknowledgment frame position."
+        },
+        "watermark": {
+          "$ref": "#/$defs/InstructionReviewWatermark",
+          "description": "Complete original review watermark."
+        }
+      },
+      "required": [
+        "lsn",
+        "expected_seq",
+        "watermark",
+        "at",
+        "action",
+        "intervals"
+      ],
+      "type": "object"
+    },
+    "TicketAcknowledgmentAction": {
+      "description": "The earlier review's distinct action.",
+      "oneOf": [
+        {
+          "const": "accepted_continuing",
+          "description": "Instructions were acknowledged while work continued.",
+          "type": "string"
+        },
+        {
+          "const": "accepted_completed",
+          "description": "Completed work was accepted.",
+          "type": "string"
+        },
+        {
+          "const": "changes_requested",
+          "description": "Changes were requested.",
+          "type": "string"
+        }
+      ]
+    },
     "TicketAssignOutcome": {
       "description": "What became of an assigned ticket.",
       "oneOf": [
@@ -17981,6 +18042,36 @@
       ],
       "type": "object"
     },
+    "TicketBinding": {
+      "description": "The ticket round a payload belongs to.",
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/CardId",
+          "description": "Ticket identity."
+        },
+        "claimant": {
+          "$ref": "#/$defs/AgentId",
+          "description": "Claimant when the capture began."
+        },
+        "goal": {
+          "$ref": "#/$defs/GoalId",
+          "description": "Installed goal."
+        },
+        "round": {
+          "description": "Installed round.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "card",
+        "round",
+        "goal",
+        "claimant"
+      ],
+      "type": "object"
+    },
     "TicketCheck": {
       "description": "The check a ticket is finished by, as it was when the ticket was made or last edited. Storing\nthe resolved predicate means a later enrollment edit cannot change what an existing ticket is\nchecked by.",
       "properties": {
@@ -18003,6 +18094,65 @@
         "predicate"
       ],
       "type": "object"
+    },
+    "TicketCheckApplicability": {
+      "description": "Whether the recorded check describes the current work.",
+      "oneOf": [
+        {
+          "description": "The exact check and round stamp follow all admitted work.",
+          "properties": {
+            "check_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Actual predicate result position."
+            },
+            "state": {
+              "const": "current",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "check_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Later work makes this a historical result.",
+          "properties": {
+            "check_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Actual predicate result position."
+            },
+            "reason": {
+              "$ref": "#/$defs/TicketHistoricalCheckReason",
+              "description": "Exact kind of later work."
+            },
+            "state": {
+              "const": "historical",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "check_lsn",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The required identities or physical attempt cannot be established.",
+          "properties": {
+            "state": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "TicketCheckResult": {
       "description": "What the daemon's latest run of a ticket's check found.",
@@ -18225,6 +18375,199 @@
       ],
       "type": "object"
     },
+    "TicketHistoricalCheckReason": {
+      "description": "Admitted work after a recorded check.",
+      "oneOf": [
+        {
+          "const": "new_issue",
+          "description": "A new immutable turn was issued.",
+          "type": "string"
+        },
+        {
+          "const": "later_attempt",
+          "description": "An existing issue has a later exact physical attempt.",
+          "type": "string"
+        }
+      ]
+    },
+    "TicketHistoryState": {
+      "description": "Completeness of a bounded history read.",
+      "oneOf": [
+        {
+          "const": "complete",
+          "description": "All relevant relationships fit.",
+          "type": "string"
+        },
+        {
+          "const": "truncated",
+          "description": "A count, byte or traversal bound omitted history.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "An exact source or relationship could not be read.",
+          "type": "string"
+        }
+      ]
+    },
+    "TicketPriorBoundary": {
+      "description": "Native-boundary status does not describe historical external effects.",
+      "oneOf": [
+        {
+          "description": "This exact attempt has a positive no-host-call proof, without a native boundary receipt.",
+          "properties": {
+            "proof_lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Actual supporting observed record."
+            },
+            "state": {
+              "const": "no_host_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "proof_lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No exact earlier attempt was established.",
+          "properties": {
+            "state": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The exact attempt lacks a durable boundary settlement.",
+          "properties": {
+            "state": {
+              "const": "unsettled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A durable receipt settled the exact tracked boundary.",
+          "properties": {
+            "lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Actual settlement position."
+            },
+            "state": {
+              "const": "settled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "lsn"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TicketPriorReview": {
+      "description": "Lookup outcome for an exact earlier attempt's acknowledgment.",
+      "oneOf": [
+        {
+          "description": "The actual frame is retained in the acknowledgment section.",
+          "properties": {
+            "lsn": {
+              "$ref": "#/$defs/Lsn",
+              "description": "Actual acknowledgment position."
+            },
+            "state": {
+              "const": "found",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "lsn"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The positively identified earlier attempt has no acknowledgment.",
+          "properties": {
+            "state": {
+              "const": "none",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Its frame or relationship could not be established.",
+          "properties": {
+            "state": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The acknowledgment was omitted by an explicit bound.",
+          "properties": {
+            "state": {
+              "const": "truncated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TicketReadContext": {
+      "description": "Derived ticket facts, without changing review or completion authority.",
+      "properties": {
+        "binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exact current round, when independently joined."
+        },
+        "check": {
+          "$ref": "#/$defs/TicketCheckApplicability",
+          "description": "Applicability of the retained recorded check."
+        },
+        "recovered_review": {
+          "$ref": "#/$defs/TicketRecoveredReview",
+          "description": "Path-free relationships for the pending review."
+        }
+      },
+      "required": [
+        "check",
+        "recovered_review"
+      ],
+      "type": "object"
+    },
     "TicketReadParams": {
       "additionalProperties": false,
       "description": "`ticket.read` params.",
@@ -18245,6 +18588,21 @@
         "card": {
           "$ref": "#/$defs/CardView",
           "description": "The card as the board shows it."
+        },
+        "context": {
+          "$ref": "#/$defs/TicketReadContext",
+          "default": {
+            "binding": null,
+            "check": {
+              "state": "unknown"
+            },
+            "recovered_review": {
+              "acknowledgments": [],
+              "relations": [],
+              "state": "unavailable"
+            }
+          },
+          "description": "Derived recovery and check display facts at this read's cut."
         },
         "position": {
           "description": "Its place in its holder's queue, counting from 1, while it waits there.",
@@ -18349,8 +18707,91 @@
           "const": "shared_instructions_unknown",
           "description": "Shared instruction coverage is incomplete and needs Operator review.",
           "type": "string"
+        },
+        {
+          "const": "recovery_required",
+          "description": "Interrupted work requires an explicit recovery choice.",
+          "type": "string"
         }
       ]
+    },
+    "TicketRecoveredRelation": {
+      "description": "One recovered interval and its earlier tracked attempt.",
+      "properties": {
+        "acknowledgment": {
+          "$ref": "#/$defs/TicketPriorReview",
+          "description": "Earlier review lookup result."
+        },
+        "authorization_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Actual authorization of this recovery."
+        },
+        "boundary": {
+          "$ref": "#/$defs/TicketPriorBoundary",
+          "description": "Independent tracked native-boundary status."
+        },
+        "earlier": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstructionBaselineRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exact earlier attempt, when one source identifies it."
+        },
+        "interval": {
+          "$ref": "#/$defs/InstructionBaselineRef",
+          "description": "Exact current review interval."
+        },
+        "issue_lsn": {
+          "$ref": "#/$defs/Lsn",
+          "description": "Exact immutable issued task."
+        },
+        "turn": {
+          "$ref": "#/$defs/TurnId",
+          "description": "Immutable turn of the recovered work."
+        }
+      },
+      "required": [
+        "interval",
+        "turn",
+        "authorization_lsn",
+        "issue_lsn",
+        "boundary",
+        "acknowledgment"
+      ],
+      "type": "object"
+    },
+    "TicketRecoveredReview": {
+      "description": "Earlier reviews and exact recovered intervals, without paths or provider data.",
+      "properties": {
+        "acknowledgments": {
+          "description": "Actual earlier acknowledgment frames, grouped by their own position.",
+          "items": {
+            "$ref": "#/$defs/TicketAcknowledgedReview"
+          },
+          "type": "array"
+        },
+        "relations": {
+          "description": "Qualified recovered intervals only, including within a mixed review set.",
+          "items": {
+            "$ref": "#/$defs/TicketRecoveredRelation"
+          },
+          "type": "array"
+        },
+        "state": {
+          "$ref": "#/$defs/TicketHistoryState",
+          "description": "Completeness of the retained history."
+        }
+      },
+      "required": [
+        "state",
+        "relations",
+        "acknowledgments"
+      ],
+      "type": "object"
     },
     "TicketRemoveParams": {
       "additionalProperties": false,

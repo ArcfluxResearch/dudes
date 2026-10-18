@@ -13,12 +13,12 @@ export type CardActor = { readonly kind: 'peer'; readonly pid: number }
 /** Why the daemon moved a ticket into Needs you. */
 export type TicketReason = 'project_unavailable' | 'check_cannot_run' | 'ceiling_required' | 'reserve_missing'
   | 'goal_changed' | 'limit_goal' | 'slowed' | 'no_turns' | 'held_launch' | 'held_failing' | 'held_unsure'
-  | 'worktree_missing' | 'shared_instructions_changed' | 'shared_instructions_unknown';
+  | 'worktree_missing' | 'shared_instructions_changed' | 'shared_instructions_unknown' | 'recovery_required';
 
 export const TICKET_REASONS: readonly TicketReason[] = Object.freeze([
   'project_unavailable', 'check_cannot_run', 'ceiling_required', 'reserve_missing', 'goal_changed', 'limit_goal',
   'slowed', 'no_turns', 'held_launch', 'held_failing', 'held_unsure', 'worktree_missing',
-  'shared_instructions_changed', 'shared_instructions_unknown',
+  'shared_instructions_changed', 'shared_instructions_unknown', 'recovery_required',
 ]);
 
 /**

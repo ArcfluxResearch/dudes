@@ -122,6 +122,71 @@ fn barrier(reason: RecoveryReason) -> (RecoveryState, RecoveryFacts, RecoveryAut
     (state, facts, authorization)
 }
 
+#[test]
+fn ticket_history_keeps_exact_binding_and_reports_a_scan_limit() {
+    let (mut state, mut facts, authorization) = barrier(RecoveryReason::Vanished);
+    authorize(&mut state, &mut facts, &authorization);
+    let binding = facts.binding.ticket.unwrap();
+    let (rows, truncated) = state.ticket_episodes(binding, 8);
+    assert!(!truncated);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].authorization_lsn, Some(Lsn(300)));
+    let mut wrong = binding;
+    wrong.round += 1;
+    assert!(state.ticket_episodes(wrong, 8).0.is_empty());
+    assert!(state.ticket_episodes(binding, 0).1);
+    assert_eq!(
+        state
+            .receipt_by_request(authorization.request_id)
+            .unwrap()
+            .unwrap()
+            .claim
+            .authorization_lsn,
+        Lsn(300)
+    );
+}
+
+#[test]
+fn ticket_history_reports_incomplete_traversal_without_changing_the_state() {
+    let mut state = RecoveryState::default();
+    let mut facts = facts();
+    let binding = facts.binding.ticket.unwrap();
+    for index in 0..513 {
+        facts.binding.work.turn = TurnId::from_parts(9, index);
+        facts.source_issue.issued.work = facts.binding.work;
+        facts.through = Lsn(199 + u64::try_from(index).unwrap());
+        let boundary = required(&facts, RecoveryReason::Vanished);
+        state
+            .apply(
+                Lsn(facts.through.0 + 1),
+                RecoveryEvent::Required(&boundary),
+                &facts,
+            )
+            .unwrap();
+    }
+    let before = state.clone();
+    let (rows, truncated) = state.ticket_episodes(binding, 8);
+    assert_eq!(rows.len(), 8);
+    assert!(truncated);
+    let works = || {
+        (0..513).map(|index| RecoveryWork {
+            turn: TurnId::from_parts(9, index),
+            ..facts.binding.work
+        })
+    };
+    assert_eq!(
+        state
+            .latest_ticket_episode(binding, works())
+            .unwrap()
+            .barrier_lsn,
+        Lsn(712)
+    );
+    let mut wrong = binding;
+    wrong.round += 1;
+    assert!(state.latest_ticket_episode(wrong, works()).is_none());
+    assert_eq!(state, before);
+}
+
 fn authorize(
     state: &mut RecoveryState,
     facts: &mut RecoveryFacts,

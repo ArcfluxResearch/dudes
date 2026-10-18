@@ -354,7 +354,9 @@ pub(super) fn apply_instruction(
             }
             ticket.instruction_review = review;
             if let Some(reason) = reason {
-                ticket.reason = Some(reason);
+                if ticket.reason != Some(dudes_proto::TicketReason::RecoveryRequired) {
+                    ticket.reason = Some(reason);
+                }
                 row.view.status = CardStatus::Blocked;
                 row.view.status_by = Actor::System;
             }
@@ -389,11 +391,21 @@ fn review_ticket(
             row.view.seq = expected_seq.next();
             row.view.status_by = by;
             let ticket = row.ticket.as_mut().expect("ticket was checked");
-            ticket.reason = None;
+            let recovery_wait = ticket.reason == Some(dudes_proto::TicketReason::RecoveryRequired);
+            if !recovery_wait
+                || matches!(
+                    completion,
+                    dudes_proto::InstructionAcceptCompletion::Completed { .. }
+                )
+            {
+                ticket.reason = None;
+            }
             row.view.status = match completion {
                 dudes_proto::InstructionAcceptCompletion::Completed { .. } => CardStatus::Done,
                 dudes_proto::InstructionAcceptCompletion::Continue => {
-                    if ticket.queue.is_some() {
+                    if recovery_wait {
+                        CardStatus::Blocked
+                    } else if ticket.queue.is_some() {
                         CardStatus::Claimed
                     } else if ticket.goal.is_some() && row.view.claimed_by.is_some() {
                         CardStatus::Doing

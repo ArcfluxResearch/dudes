@@ -16,7 +16,8 @@ import { getGitState, loadGit, refusalText, subscribeToGit } from '../git/git.ts
 import type { GitChangeKind } from '../git/git.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
-import { editableDetail, getDetailState, loadDetail, needsDetail, reviewedWatermark, subscribeToDetail } from './detail.ts';
+import { checkDisplayCurrent, editableDetail, getDetailState, loadDetail, needsDetail, reviewedWatermark, subscribeToDetail } from './detail.ts';
+import { RecoveredReview } from './RecoveredReview.tsx';
 import type { TicketDetail, TruncatedTicketField } from './detail.ts';
 import { ACTION_LABEL, actionsOf, agentChoiceSentence, agentRow, cardWords, noProjects, projectOf, requiresInstructionReview } from './model.ts';
 import type { TicketAction } from './model.ts';
@@ -303,12 +304,13 @@ export function TicketPanel({ floor, card, onHire }: {
   const open = ticketActionsOpen(floor);
   useEffect(() => {
     if (floor.ticket && needsDetail(getDetailState(), card)) void loadDetail(card);
-  }, [floor.ticket, card.id, card.seq]);
+  }, [floor.ticket, card.id, card.seq, floor.epoch, floor.messagesLsn]);
   // The ticket moved, so the form that was open for its old state no longer fits it.
   useEffect(() => { setMode('none'); }, [card.id, card.status, card.seq]);
   const actions = open ? actionsOf(card) : [];
   const changesView = floor.diff && (card.status === 'review' || card.status === 'blocked');
   const loaded = detail.card === card.id ? detail.detail : null;
+  const fresh = checkDisplayCurrent(detail, card, floor);
   const editable = editableDetail(detail, card);
   const ordinary = actions.filter((action) => action !== 'remove' && action !== 'stop');
   const destructive = actions.filter((action) => action === 'remove' || action === 'stop');
@@ -345,6 +347,7 @@ export function TicketPanel({ floor, card, onHire }: {
       data-focus-on-leave="view-board">{card.title}</h3>
     <TicketNotice card={card.id} />
     <Facts floor={floor} card={card} />
+    {loaded?.context == null ? null : <RecoveredReview context={loaded.context} fresh={fresh} />}
     {loaded?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={loaded.instruction_review} />}
     {(requiresInstructionReview(card) && !reviewReady) || (detail.card === card.id && detail.phase === 'failed')
       || (actions.includes('edit') && detail.phase === 'ready' && editable === null) ? <div>
@@ -359,10 +362,14 @@ export function TicketPanel({ floor, card, onHire }: {
     {card.status === 'review' && !changesView ? <ChangedFiles floor={floor} card={card} /> : null}
     {changesView
       ? <DiffPanel card={card.id} expectedSeq={card.seq} transport={browserDiffTransport} /> : null}
-    {loaded?.result == null ? null : <section aria-label="Check result"><h4>Check result</h4>
+    {loaded?.result == null ? null : <section aria-label="Check result"><h4>Last recorded check</h4>
       <p>{loaded.result.pass ? 'The check passed' : 'The check failed'}
         {loaded.result.exit === null ? '' : `, exit status ${loaded.result.exit}`}
         {' '}at {recordedTime(loaded.result.at)}.</p>
+      <p>{!fresh ? 'This retained result is history. Its applicability to the current work is unconfirmed.'
+        : loaded.context?.check.state === 'current' ? 'This result applies to the current recorded work.'
+          : loaded.context?.check.state === 'historical' ? 'Later work was admitted. This result is history and does not check that work.'
+            : 'Dudes could not establish whether this result applies to the current work.'}</p>
     </section>}
     {!floor.ticket ? <TicketOffHint floor={floor} /> : null}
     {actions.length === 0 ? null : <div className="ticket-actions" role="group" aria-label="Ticket actions" aria-busy={sending}>

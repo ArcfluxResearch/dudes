@@ -265,6 +265,7 @@ const RETIRE_MODULE = 'src/renderer/retire/retire.ts';
 const TICKET_MODULE = 'src/renderer/ticket/ticket.ts';
 const TICKET_BOARD = 'src/renderer/ticket/TicketBoard.tsx';
 const TICKET_PANEL = 'src/renderer/ticket/TicketPanel.tsx';
+const RECOVERED_REVIEW = 'src/renderer/ticket/RecoveredReview.tsx';
 const ADMITTED_IN_TICKET_FORM = Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler', 'a submit handler']);
 const GIT_MODULE = 'src/renderer/git/git.ts';
 const GIT_PANEL = 'src/renderer/git/GitPanel.tsx';
@@ -300,6 +301,7 @@ const HIRE_ENTRY = 'src/renderer/onboarding/HireEntry.tsx';
 const STREAM_NOTICE = 'src/renderer/StreamNotice.tsx';
 const ADMITTED_WITHOUT_HANDLER = new Map([
   [SETUP_VIEW, Object.freeze(['a link'])], [SETTINGS_VIEW, Object.freeze(['a link'])], [STREAM_NOTICE, Object.freeze(['a link'])],
+  [RECOVERED_REVIEW, Object.freeze(['a link'])],
 ]);
 /**
  * The `FORBIDDEN` kinds each listed file may carry. "the floor ships no
@@ -1052,7 +1054,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
 test('the only activators are named selection, retry, view, Hire, answer, Chat, pause, Pause all, resume, goal change, look edit and dismiss buttons, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, Retire\'s own four, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
-  + 'Settings\' office layout and desktop notification choices, recovery inspection, context choices, one authorization and inert receipt lookup, the guide\'s navigation and Hire opener, '
+  + 'Settings\' office layout and desktop notification choices, recovery inspection, context choices, one authorization and inert receipt lookup, earlier acknowledged-review disclosure, the guide\'s navigation and Hire opener, '
   + 'and checkout differences\' explicit show, refresh, hide, open and more-files controls', async () => {
   const buttons = [];
   const clicks = [];
@@ -1103,6 +1105,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
+  clickExpected.push(RECOVERED_REVIEW);
   assert.deepEqual(clicks.sort(), clickExpected.sort());
   const readError = await readFile(resolve(source, 'renderer/ReadError.tsx'), 'utf8');
   assert.deepEqual(clicksIn(await readFile(resolve(floor, RECOVERY_PANEL), 'utf8')), [
@@ -1111,6 +1114,17 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '(event) => { if (event.detail < 2) void submitRecovery(draft.key, browserRecoveryDeps); }',
     '(event) => { if (event.detail < 2) void checkRecoveryReceipt(id, browserRecoveryDeps); }',
   ]);
+  const recovered = await readFile(resolve(floor, RECOVERED_REVIEW), 'utf8');
+  const historyClick = `(event) => {
+          event.preventDefault();
+          if (row.acknowledgment.state === 'found') {
+            const section = acknowledged.current.get(row.acknowledgment.lsn);
+            if (section) { section.open = true; section.focus(); }
+          }
+        }`;
+  assert.deepEqual(clicksIn(recovered), [historyClick]);
+  assert.match(recovered, /href="#earlier-acknowledged-reviews"/);
+  assert.notDeepEqual(clicksIn(recovered.replace('section.open = true', "void fetch('/floor/recovery/submit')")), [historyClick]);
   assert.deepEqual(clicksIn(readError), ['onRetry']);
   assert.match(readError, /onRetry = refreshFloorSnapshot/);
   const archive = await readFile(resolve(floor, ARCHIVED_AGENTS), 'utf8');

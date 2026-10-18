@@ -202,10 +202,44 @@ pub struct RecoveryState {
 }
 
 impl RecoveryState {
+    /// Bounded immutable ticket history. An incomplete scan cannot establish absence.
+    #[must_use]
+    pub fn ticket_episodes(
+        &self,
+        binding: crate::diff_stamp::TicketBinding,
+        limit: usize,
+    ) -> (Vec<&RecoveryEpisode>, bool) {
+        const SCAN_LIMIT: usize = 512;
+        let mut rows: Vec<_> = self
+            .episodes
+            .values()
+            .take(SCAN_LIMIT)
+            .filter(|episode| episode.binding.ticket == Some(binding))
+            .collect();
+        rows.sort_unstable_by_key(|episode| std::cmp::Reverse(episode.barrier_lsn));
+        let truncated = self.episodes.len() > SCAN_LIMIT || rows.len() > limit;
+        rows.truncate(limit);
+        (rows, truncated)
+    }
+
     /// Canonical latest episode, retained even after its claim closes.
     #[must_use]
     pub fn current(&self, work: RecoveryWork) -> Option<&RecoveryEpisode> {
         self.episodes.get(self.current.get(&work)?)
+    }
+
+    /// Latest current episode among recorded works with this exact ticket binding.
+    #[must_use]
+    pub fn latest_ticket_episode(
+        &self,
+        binding: crate::diff_stamp::TicketBinding,
+        works: impl IntoIterator<Item = RecoveryWork>,
+    ) -> Option<&RecoveryEpisode> {
+        works
+            .into_iter()
+            .filter_map(|work| self.current(work))
+            .filter(|episode| episode.binding.ticket == Some(binding))
+            .max_by_key(|episode| episode.barrier_lsn)
     }
 
     /// Original reservation for an actual new issue, without admitting that issue.

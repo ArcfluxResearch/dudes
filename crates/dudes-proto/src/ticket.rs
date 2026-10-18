@@ -143,6 +143,8 @@ pub enum TicketReason {
     SharedInstructionsChanged,
     /// Shared instruction coverage is incomplete and needs Operator review.
     SharedInstructionsUnknown,
+    /// Interrupted work requires an explicit recovery choice.
+    RecoveryRequired,
 }
 
 impl TicketReason {
@@ -150,6 +152,9 @@ impl TicketReason {
     #[must_use]
     pub const fn sentence(self) -> &'static str {
         match self {
+            Self::RecoveryRequired => {
+                "This work was interrupted. Open the agent and choose how to recover it. Earlier work may have had effects."
+            }
             Self::ProjectUnavailable => {
                 "This project is not set up any more. Enroll it again with `dudes workspace add`, then Give to agent, or Remove the ticket."
             }

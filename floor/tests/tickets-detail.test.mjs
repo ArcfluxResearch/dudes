@@ -113,7 +113,7 @@ test('with no summary the panel says so', async () => {
 
 test('the check result says pass or fail, its exit status and when', async () => {
   await open({ check_result: { pass: false, exit: 2, at: 1_787_394_600_000 } });
-  assert.match(panel(), /<h4>Check result<\/h4><p>The check failed, exit status 2 at [^<]+\.<\/p>/);
+  assert.match(panel(), /<h4>Last recorded check<\/h4><p>The check failed, exit status 2 at [^<]+\.<\/p>/);
   detail.resetDetail();
   await open({ check_result: { pass: true, at: 1_787_394_600_000 } });
   assert.match(panel(), /The check passed at /);
@@ -150,7 +150,7 @@ test('a ticket in Needs you shows its sentence, and a queued one the daemon\'s o
 test('the decoder keeps exactly the daemon\'s members and refuses the rest', async () => {
   const decode = (value, card = NEW) => detail.decodeDetail(value, card);
   assert.deepEqual(decode(reply()), {
-    instruction_review: null, coverage: null, truncated: [], note: 'Fix the flaky test', project: 'service', check: { id: 'default', label: 'default passes' }, round: 1, reason: null,
+    context: null, instruction_review: null, coverage: null, truncated: [], note: 'Fix the flaky test', project: 'service', check: { id: 'default', label: 'default passes' }, round: 1, reason: null,
     summary: 'I fixed the test.', result: { pass: true, exit: 0, at: 1_787_394_600_000 }, position: null, waiting: null,
   });
   assert.equal(decode(reply(), cardId(2)), null, 'another ticket\'s reply');

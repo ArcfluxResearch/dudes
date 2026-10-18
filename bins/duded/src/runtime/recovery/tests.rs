@@ -4,6 +4,7 @@ use crate::runtime::work_test_support as common;
 use std::sync::Arc;
 
 mod authority_tests;
+mod ticket_context;
 
 type TestDaemon =
     Daemon<common::SharedHost, common::ScriptedRunner, common::TestClock, common::FixtureRng>;
@@ -160,12 +161,17 @@ fn ticket_owner(daemon: &mut TestDaemon, fixture: &common::Fixture) -> dudes_typ
     use dudes_proto::{Record, RecordKind};
     let mut hired = samples::record(RecordKind::AgentHired);
     let Record::AgentHired {
-        id, cwd, workspace, ..
+        id,
+        cwd,
+        workspace,
+        mcp_servers,
+        ..
     } = &mut hired
     else {
         unreachable!()
     };
     let agent = *id;
+    mcp_servers.clear();
     *cwd = fixture.state.path().to_path_buf();
     *workspace = Some(dudes_proto::record::RecordedWorkspace {
         id: "main".into(),
@@ -176,6 +182,21 @@ fn ticket_owner(daemon: &mut TestDaemon, fixture: &common::Fixture) -> dudes_typ
 }
 
 fn recoverable_ticket(daemon: &mut TestDaemon, fixture: &common::Fixture) -> RecoveryCommand {
+    let (owner, turn) = issued_ticket_with(daemon, fixture, |_, _, _, _| {});
+    append_vanished_attempt(daemon, owner, turn);
+    inspected_command(daemon, owner)
+}
+
+fn issued_ticket_with(
+    daemon: &mut TestDaemon,
+    fixture: &common::Fixture,
+    before_issue: impl FnOnce(
+        &mut TestDaemon,
+        dudes_types::AgentId,
+        dudes_types::GoalId,
+        dudes_types::TurnId,
+    ),
+) -> (dudes_types::AgentId, dudes_types::TurnId) {
     use dudes_proto::record::samples;
     use dudes_proto::{Record, RecordKind};
     use dudes_types::{Seq, TurnId};
@@ -228,6 +249,7 @@ fn recoverable_ticket(daemon: &mut TestDaemon, fixture: &common::Fixture) -> Rec
         },
     );
     let turn = TurnId::from_parts(915, 1);
+    before_issue(daemon, owner, goal, turn);
     append_history(
         daemon,
         Record::TurnIssued {
@@ -242,8 +264,7 @@ fn recoverable_ticket(daemon: &mut TestDaemon, fixture: &common::Fixture) -> Rec
             answers: Vec::new(),
         },
     );
-    append_vanished_attempt(daemon, owner, turn);
-    inspected_command(daemon, owner)
+    (owner, turn)
 }
 
 fn append_vanished_attempt(

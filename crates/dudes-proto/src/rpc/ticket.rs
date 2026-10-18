@@ -12,6 +12,9 @@ use crate::projection::CardView;
 use crate::record::Hex32;
 use crate::ticket::{TicketReason, TicketRow, TicketWaiting};
 
+mod context;
+pub use context::*;
+
 /// `ticket.create` params. Only the title is required.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -161,6 +164,9 @@ pub struct TicketCheckoutResult {
 /// `ticket.read` result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TicketReadResult {
+    /// Derived recovery and check display facts at this read's cut.
+    #[serde(default)]
+    pub context: TicketReadContext,
     /// The card as the board shows it.
     pub card: CardView,
     /// What the board keeps of the ticket.

@@ -430,6 +430,9 @@ pub fn read_body(read: &TicketReadResult) -> Value {
         if size <= MAX_TICKET_BODY_BYTES {
             return body;
         }
+        if trim_recovered_history(&mut body["ticket"]["context"]) {
+            continue;
+        }
         if let Some(summary) = body["ticket"]["summary"].as_str().map(str::to_owned) {
             let mut cut = summary.len() / 2;
             while !summary.is_char_boundary(cut) {
@@ -558,6 +561,7 @@ fn trim_instruction_evidence(review: &mut Value) -> bool {
 
 fn read_value(read: &TicketReadResult) -> Value {
     let TicketReadResult {
+        context,
         card,
         ticket,
         position,
@@ -585,6 +589,7 @@ fn read_value(read: &TicketReadResult) -> Value {
             "claimed_by": card.claimed_by,
         },
         "ticket": {
+            "context": context_value(context),
             "note": description,
             "project": project,
             "check": {"id": done_when.id, "label": done_when.label},
@@ -603,6 +608,71 @@ fn read_value(read: &TicketReadResult) -> Value {
         body["ticket"]["coverage"] = json!(coverage);
     }
     body
+}
+
+fn context_value(context: &dudes_proto::rpc::ticket::TicketReadContext) -> Value {
+    fn positions(value: &mut Value) {
+        match value {
+            Value::Object(fields) => {
+                for (key, value) in fields {
+                    if (key == "lsn" || key.ends_with("_lsn")) && value.is_u64() {
+                        *value = json!(value.as_u64().expect("position").to_string());
+                    } else {
+                        positions(value);
+                    }
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    positions(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut body = serde_json::to_value(context).expect("typed ticket context");
+    positions(&mut body);
+    while serde_json::to_vec(&body).map_or(usize::MAX, |bytes| bytes.len()) > 4096 {
+        if !trim_recovered_history(&mut body) {
+            break;
+        }
+    }
+    body
+}
+
+fn trim_recovered_history(context: &mut Value) -> bool {
+    let history = &mut context["recovered_review"];
+    let Some(relations) = history["relations"].as_array_mut() else {
+        return false;
+    };
+    if relations.pop().is_some() {
+        history["state"] = json!("truncated");
+        let retained: Vec<_> = history["relations"]
+            .as_array()
+            .expect("relations")
+            .iter()
+            .filter_map(|relation| relation["acknowledgment"]["lsn"].as_str())
+            .map(str::to_owned)
+            .collect();
+        history["acknowledgments"]
+            .as_array_mut()
+            .expect("acknowledgments")
+            .retain(|ack| {
+                retained
+                    .iter()
+                    .any(|lsn| ack["lsn"].as_str() == Some(lsn.as_str()))
+            });
+        true
+    } else if history["acknowledgments"]
+        .as_array()
+        .is_some_and(|rows| !rows.is_empty())
+    {
+        history["acknowledgments"] = json!([]);
+        history["state"] = json!("truncated");
+        true
+    } else {
+        false
+    }
 }
 
 fn instruction_interval_value(interval: &InstructionReviewInterval) -> Value {
@@ -908,6 +978,7 @@ mod tests {
             ],
         };
         TicketReadResult {
+            context: dudes_proto::rpc::ticket::TicketReadContext::default(),
             card: CardView {
                 id: card,
                 title: "Review instructions".to_owned(),
@@ -961,6 +1032,73 @@ mod tests {
         assert!(
             gaps.iter()
                 .all(|gap| gap["origin"] == "observed" && gap["holds"].is_boolean())
+        );
+    }
+
+    #[test]
+    fn optional_recovered_history_yields_before_current_review_evidence() {
+        use dudes_proto::rpc::ticket::{
+            TicketAcknowledgedReview, TicketAcknowledgmentAction, TicketHistoryState,
+            TicketPriorBoundary, TicketPriorReview, TicketRecoveredRelation,
+        };
+        let mut read = instruction_read_fixture();
+        read.context.recovered_review.state = TicketHistoryState::Complete;
+        let without_history = read_body(&read);
+        let watermark = read.ticket.instruction_review.as_ref().unwrap().watermark;
+        read.context
+            .recovered_review
+            .acknowledgments
+            .push(TicketAcknowledgedReview {
+                lsn: Lsn(u64::MAX),
+                expected_seq: Seq(42),
+                watermark,
+                at: dudes_types::Timestamp::UNIX_EPOCH,
+                action: TicketAcknowledgmentAction::AcceptedContinuing,
+                intervals: vec![InstructionBaselineRef::Started { lsn: Lsn(10) }],
+            });
+        for index in 0..8 {
+            read.context
+                .recovered_review
+                .relations
+                .push(TicketRecoveredRelation {
+                    interval: InstructionBaselineRef::Started {
+                        lsn: Lsn(100 + index),
+                    },
+                    turn: dudes_types::TurnId::from_parts(1, 9),
+                    authorization_lsn: Lsn(42),
+                    issue_lsn: Lsn(44),
+                    earlier: Some(InstructionBaselineRef::Started { lsn: Lsn(10) }),
+                    boundary: TicketPriorBoundary::Unsettled,
+                    acknowledgment: TicketPriorReview::Found { lsn: Lsn(u64::MAX) },
+                });
+        }
+        let body = read_body(&read);
+        assert!(serde_json::to_vec(&body).unwrap().len() <= MAX_TICKET_BODY_BYTES);
+        assert_eq!(
+            body["ticket"]["context"]["recovered_review"]["state"],
+            "truncated"
+        );
+        assert_eq!(
+            body["ticket"]["context"]["recovered_review"]["relations"],
+            json!([])
+        );
+        assert_eq!(
+            body["ticket"]["instruction_review"],
+            without_history["ticket"]["instruction_review"]
+        );
+        assert_eq!(
+            body["ticket"]["instruction_review"]["watermark"]["through_lsn"],
+            "9007199254740993"
+        );
+        let encoded = context_value(&read.context);
+        assert!(serde_json::to_vec(&encoded).unwrap().len() <= 4096);
+        assert_eq!(
+            encoded["recovered_review"]["acknowledgments"][0]["lsn"],
+            u64::MAX.to_string()
+        );
+        assert_eq!(
+            encoded["recovered_review"]["acknowledgments"][0]["watermark"]["through_lsn"],
+            watermark.through_lsn.0.to_string()
         );
     }
 

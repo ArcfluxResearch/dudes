@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::floor_session::Exchange;
 use serde_json::{Value, json};

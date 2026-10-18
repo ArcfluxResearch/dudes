@@ -12,7 +12,7 @@ use dudes_proto::instruction::{
 use dudes_proto::rpc::Empty;
 use dudes_proto::rpc::ticket::{
     TicketAcceptOutcome, TicketAcceptResult, TicketAssignOutcome, TicketAssignResult,
-    TicketCreateResult, TicketReadResult,
+    TicketCheckApplicability, TicketCreateResult, TicketReadResult,
 };
 use dudes_proto::{TicketCheckResult, TicketWait};
 use dudes_types::{AgentId, CardStatus};
@@ -192,7 +192,19 @@ where
         }
     }
     if let Some(check) = read.ticket.check {
-        writeln!(out, "Check: {}", check_line(check, zone))?;
+        writeln!(out, "Last recorded check: {}", check_line(check, zone))?;
+        writeln!(
+            out,
+            "{}",
+            match read.context.check {
+                TicketCheckApplicability::Current { .. } =>
+                    "Check applicability: current recorded work.",
+                TicketCheckApplicability::Historical { .. } =>
+                    "Check applicability: historical. Later work was admitted.",
+                TicketCheckApplicability::Unknown =>
+                    "Check applicability: unknown. The daemon could not establish the exact relationship to current work.",
+            }
+        )?;
     }
     if let Some(summary) = &read.ticket.summary {
         writeln!(out, "The agent says:")?;
@@ -598,6 +610,40 @@ where
 #[cfg(test)]
 mod instruction_tests {
     use super::*;
+
+    #[test]
+    fn recorded_check_copy_uses_only_the_daemons_finite_applicability() {
+        let mut read: TicketReadResult = serde_json::from_value(serde_json::json!({
+            "card":{"id":"01JBQ8XK2M3N4P5Q6R7S8T9VWX","title":"Keep the result","department":"engineering","status":"doing","status_by":{"kind":"system"},"seq":7},
+            "ticket":{"description":"","project":"service","round":1,"done_when":{"id":"default","label":"passes","predicate":{"command":{"argv":["false"],"timeout_s":1}}},"check":{"pass":true,"exit":0,"at":100}}
+        })).unwrap();
+        for (applicability, expected) in [
+            (
+                TicketCheckApplicability::Current {
+                    check_lsn: dudes_types::Lsn(100),
+                },
+                "Check applicability: current recorded work.",
+            ),
+            (
+                TicketCheckApplicability::Historical {
+                    check_lsn: dudes_types::Lsn(100),
+                    reason: dudes_proto::rpc::ticket::TicketHistoricalCheckReason::LaterAttempt,
+                },
+                "Check applicability: historical. Later work was admitted.",
+            ),
+            (
+                TicketCheckApplicability::Unknown,
+                "Check applicability: unknown. The daemon could not establish the exact relationship to current work.",
+            ),
+        ] {
+            read.context.check = applicability;
+            let mut output = Vec::new();
+            show(&mut output, false, &read, &AgentNames::new(), &chrono::Utc).unwrap();
+            let output = String::from_utf8(output).unwrap();
+            assert!(output.contains("Last recorded check: passed, exit status 0, "));
+            assert!(output.contains(expected), "{output}");
+        }
+    }
 
     #[test]
     fn ordinary_acceptance_keeps_the_empty_machine_reply_and_completed_copy() {
