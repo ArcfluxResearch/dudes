@@ -34,6 +34,7 @@ export interface RecoveryRequest {
   readonly read: ReadOutcome | null;
   readonly lastReceipt: Receipt | null;
   readonly settledAfterInspection: number;
+  readonly absentAfterInspection: number;
   readonly finishedAfterInspection: number | null;
 }
 export interface RecoveryState {
@@ -98,7 +99,7 @@ export function blocksDraft(draft: Draft, memory: RecoveryState = state): boolea
   if (draft.requestId !== null) return true;
   return [...memory.requests.values()].some(request => {
     if (!sameWork(request.payload.expected.work, draft.inspection.expected.work)) return false;
-    if (request.read?.state === 'absent' && draft.sequence <= request.settledAfterInspection) return true;
+    if (draft.sequence <= request.absentAfterInspection) return true;
     if (inspectedSuccessor(request, draft)) return false;
     const receipt = requestReceipt(request);
     if (request.read?.state === 'absent' || request.outcome?.state === 'refused' || request.outcome?.state === 'forbidden'
@@ -171,7 +172,7 @@ export async function submitRecovery(key: string, deps: RecoveryDeps): Promise<v
   const payload = freeze({ request_id: requestId, expected: draft.inspection.expected, choice: draft.choice });
   const row = deps.floor().agents.find(row => row.id === payload.expected.work.agent);
   const request: RecoveryRequest = Object.freeze({ payload, body: JSON.stringify(payload), name: typeof row?.name === 'string' ? row.name : payload.expected.work.agent,
-    submitting: true, outcome: null, checking: false, read: null, lastReceipt: null, settledAfterInspection: 0, finishedAfterInspection: null });
+    submitting: true, outcome: null, checking: false, read: null, lastReceipt: null, settledAfterInspection: 0, absentAfterInspection: 0, finishedAfterInspection: null });
   commit({ ...state, drafts: new Map(state.drafts).set(key, Object.freeze({ ...draft, requestId: payload.request_id })),
     requests: new Map(state.requests).set(payload.request_id, request) });
   let outcome: SubmitOutcome = { state: 'unknown', request_id: payload.request_id };
@@ -218,6 +219,7 @@ export async function checkRecoveryReceipt(id: string, deps: RecoveryDeps): Prom
     }
   } catch {}
   updateRequest(id, { checking: false, read, lastReceipt: read.state === 'found' ? read.receipt : request.lastReceipt,
+    absentAfterInspection: read.state === 'absent' ? inspectionNumber : request.absentAfterInspection,
     settledAfterInspection: read.state === 'absent' || read.state === 'found' && closedReceipt(read.receipt)
       ? inspectionNumber : request.settledAfterInspection });
 }

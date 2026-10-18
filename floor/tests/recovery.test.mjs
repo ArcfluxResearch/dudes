@@ -338,6 +338,42 @@ test('an inspection started before Absent stays fenced even when its response ar
   assert.equal(model.getRecoveryState().requests.size, 2);
 });
 
+test('observed Absent keeps its inspection fence after a later Unknown or unavailable lookup', async () => {
+  const oldInspection = { ...INSPECTION, reason: 'missing_spawn', choices: 'repeat_issued_fresh' };
+  const nextExpected = { ...EXPECTED, source_lsn: MAX, episode: { work: WORK, origin: MAX } };
+  const nextInspection = { ...oldInspection, expected: nextExpected };
+  for (const failedRead of [new TypeError('lost receipt'), reply(200, { state: 'unavailable', reason: 'uncertified' })]) {
+    model.resetRecovery(); floor();
+    const net = network([reply(202, { state: 'unknown', request_id: ID }), reply(200, nextInspection),
+      reply(200, { state: 'absent', checked_through: MAX }), failedRead, reply(200, nextInspection),
+      reply(202, { state: 'unknown', request_id: '02'.repeat(32) })]);
+    const original = await inspected(net, oldInspection); model.chooseRecovery(original.key, 'repeat_issued_fresh');
+    await model.submitRecovery(original.key, net.deps);
+    const frozen = model.getRecoveryState().requests.get(ID).body;
+    await model.inspectRecovery(AGENT, net.deps); const beforeAbsent = draft();
+    model.chooseRecovery(beforeAbsent.key, 'repeat_issued_fresh');
+    await model.checkRecoveryReceipt(ID, net.deps);
+    assert.equal(model.getRecoveryState().requests.get(ID).read.state, 'absent');
+    await model.submitRecovery(beforeAbsent.key, net.deps); assert.equal(net.calls.length, 3);
+    await model.checkRecoveryReceipt(ID, net.deps);
+    assert.equal(model.getRecoveryState().requests.get(ID).read.state, failedRead instanceof Error ? 'unknown' : 'unavailable');
+    await model.submitRecovery(beforeAbsent.key, net.deps);
+    assert.equal(net.calls.length, 4, 'a failed lookup cannot erase the observed-Absent inspection order');
+    await model.inspectRecovery(AGENT, net.deps); const afterAbsent = draft();
+    assert.equal(afterAbsent.choice, null);
+    await model.submitRecovery(afterAbsent.key, net.deps); assert.equal(net.calls.length, 5);
+    model.chooseRecovery(afterAbsent.key, 'repeat_issued_fresh');
+    assert.equal(net.calls.length, 5);
+    await model.submitRecovery(afterAbsent.key, net.deps);
+    assert.deepEqual(net.calls.map(call => call.url), ['/floor/recovery/submit', '/floor/recovery/inspect', '/floor/recovery/receipt',
+      '/floor/recovery/receipt', '/floor/recovery/inspect', '/floor/recovery/submit']);
+    assert.deepEqual(net.calls.at(-1).body, { request_id: '02'.repeat(32), expected: nextExpected, choice: 'repeat_issued_fresh' });
+    assert.equal(model.getRecoveryState().requests.get(ID).body, frozen);
+    assert.equal(model.getRecoveryState().requests.get(ID).payload.request_id, ID);
+    assert.equal(model.getRecoveryState().requests.size, 2);
+  }
+});
+
 test('client lifecycle guards keep pending and issued consent exclusive and require new inspection and choice after terminal closure', async () => {
   const issued = { state: 'issue_bound', turn: OTHER, issue_lsn: '95' };
   const nextWork = { ...WORK, turn: OTHER };
@@ -357,9 +393,13 @@ test('client lifecycle guards keep pending and issued consent exclusive and requ
     answers.push(reply(200, INSPECTION)); await model.inspectRecovery(AGENT, net.deps);
     const earlierDraft = draft(); model.chooseRecovery(earlierDraft.key, 'try_recorded');
     await model.submitRecovery(earlierDraft.key, net.deps); assert.equal(net.calls.length, 3);
-    answers.push(reply(200, { state: 'found', receipt: receipt(ID, status,
-      status.state === 'consumed' ? { attempt: { spawn: '96', confirmation: null, end: '97' } } : {}) }));
+    const observedReceipt = receipt(ID, status, status.state === 'consumed' ? { attempt: { spawn: '96', confirmation: null, end: '97' } } : {});
+    answers.push(reply(200, { state: 'found', receipt: observedReceipt }));
     await model.checkRecoveryReceipt(ID, net.deps);
+    const retained = model.getRecoveryState().requests.get(ID);
+    assert.deepEqual(retained.read, { state: 'found', receipt: observedReceipt });
+    assert.deepEqual(retained.lastReceipt, observedReceipt);
+    assert.deepEqual(model.requestReceipt(retained).status, status);
     await model.submitRecovery(earlierDraft.key, net.deps); assert.equal(net.calls.length, 4);
     if (status.state === 'pending' || status.state === 'issue_bound' || status.state === 'consumed') {
       answers.push(reply(200, INSPECTION)); await model.inspectRecovery(AGENT, net.deps);
@@ -500,6 +540,42 @@ test('a predecessor-bearing selector accepts its first actual claim then binds a
     }
     assert.equal(net.calls.length, 4);
   }
+});
+
+test('successor consent compares against the retained actual claim instead of its inspected predecessor', async () => {
+  floor();
+  const predecessor = { episode: { work: WORK, origin: '70' }, authorization_lsn: '71' };
+  const expected = { ...EXPECTED, source_lsn: '80', episode: predecessor.episode, expected_predecessor: predecessor };
+  const oldInspection = { ...INSPECTION, reason: 'missing_spawn', choices: 'repeat_issued_fresh', expected };
+  const actualEpisode = { work: WORK, origin: '91' };
+  const actualReceipt = receipt(ID, { state: 'issue_bound', turn: TURN, issue_lsn: '20' },
+    { choice: 'repeat_issued_fresh', claim: { episode: actualEpisode, authorization_lsn: '93' } });
+  const sameExpected = { ...expected, source_lsn: '91', episode: actualEpisode, expected_predecessor: null };
+  const nextExpected = { ...sameExpected, source_lsn: '99', episode: { work: WORK, origin: '99' } };
+  const net = network([reply(202, { state: 'unknown', request_id: ID }), reply(200, { state: 'found', receipt: actualReceipt }),
+    reply(200, { ...oldInspection, expected: sameExpected }), reply(200, { ...oldInspection, expected: nextExpected }),
+    reply(202, { state: 'unknown', request_id: '02'.repeat(32) })]);
+  const original = await inspected(net, oldInspection); model.chooseRecovery(original.key, 'repeat_issued_fresh');
+  await model.submitRecovery(original.key, net.deps);
+  const frozen = model.getRecoveryState().requests.get(ID).body;
+  await model.checkRecoveryReceipt(ID, net.deps);
+  assert.deepEqual(model.getRecoveryState().requests.get(ID).read, { state: 'found', receipt: actualReceipt });
+  assert.deepEqual(model.getRecoveryState().requests.get(ID).lastReceipt, actualReceipt);
+  await model.inspectRecovery(AGENT, net.deps); const same = draft();
+  model.chooseRecovery(same.key, 'repeat_issued_fresh'); await model.submitRecovery(same.key, net.deps);
+  assert.equal(net.calls.length, 3, 'the retained actual episode is already claimed even though its origin differs from the original predecessor');
+  await model.inspectRecovery(AGENT, net.deps); const next = draft();
+  assert.equal(next.choice, null);
+  await model.submitRecovery(next.key, net.deps); assert.equal(net.calls.length, 4);
+  model.chooseRecovery(next.key, 'repeat_issued_fresh'); assert.equal(net.calls.length, 4);
+  await model.submitRecovery(next.key, net.deps);
+  assert.deepEqual(net.calls.map(call => call.url), ['/floor/recovery/submit', '/floor/recovery/receipt', '/floor/recovery/inspect',
+    '/floor/recovery/inspect', '/floor/recovery/submit']);
+  assert.deepEqual(net.calls.at(-1).body, { request_id: '02'.repeat(32), expected: nextExpected, choice: 'repeat_issued_fresh' });
+  assert.equal(model.getRecoveryState().requests.get(ID).body, frozen);
+  assert.equal(model.getRecoveryState().requests.get(ID).payload.request_id, ID);
+  assert.deepEqual(model.getRecoveryState().requests.get(ID).lastReceipt, actualReceipt);
+  assert.equal(model.getRecoveryState().requests.size, 2);
 });
 
 test('all finite receipt states describe only durable facts and survive drawer closure', async () => {
