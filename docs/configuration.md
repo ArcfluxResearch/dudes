@@ -32,8 +32,8 @@ runs differently, which a restart applies: `dudes stop`, then `dudes start`.
 - `providers.codex.streaming` opts in to Codex streaming with a separate sign-in home. It defaults
   to off and requires macOS or Linux. After restarting, sign in with `dudes login codex`. See
   [Chat](chat.md).
-- `floor.answer`, `floor.hire`, `floor.control`, `floor.goal`, `floor.renew`, `floor.retire`,
-  `floor.board`, `floor.terminal`, `floor.git` and `floor.diff`, on or off, are the Floor's
+- `floor.answer`, `floor.hire`, `floor.control`, `floor.recovery`, `floor.goal`, `floor.renew`,
+  `floor.retire`, `floor.board`, `floor.terminal`, `floor.git` and `floor.diff`, on or off, are the Floor's
   actions. Each is off unless you turn it on. Chat is always on and has no setting. `floor.board`
   lets the Floor make tickets and give them to agents, which then run and spend under your account,
   so it needs `floor.control` and `floor.goal` on. `floor.diff` lets the Floor show the files a
@@ -41,6 +41,11 @@ runs differently, which a restart applies: `dudes stop`, then `dudes start`.
   [The Floor](floor.md#tickets).
 - `budget.floor_usd_per_day` and `budget.per_turn_floor.usd` are in dollars, and
   `budget.per_turn_floor.tokens` is in tokens. See [Budgets](#budgets).
+
+Recovery inspection and submission need both `floor.recovery` and `floor.control` on. Recovery is
+separate from the bundled Floor actions that `quickstart` offers and stays off unless you enable
+it. **Check receipt** is read-only and remains available to a live authenticated Floor reader when
+recovery is off. See [Recover an interrupted goal](goals-and-stopping.md#recover-an-interrupted-goal).
 
 An edit that takes a per-turn reserve to zero is written with a warning, because the daemon refuses
 to start while an agent it has hired has a ceiling in that unit.

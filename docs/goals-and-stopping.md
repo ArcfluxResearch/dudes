@@ -46,6 +46,43 @@ defaults to no. Scripts and `--json` require explicit `--yes`. Resume cannot und
 A halt or retirement acknowledgement confirms the recorded control; owned-child teardown may
 still be in progress.
 
+## Recover an interrupted goal
+
+Recovery keeps the same Managed agent and unfinished goal. Ordinary `dudes resume` does not
+release a recovery barrier. Inspect the opportunity and save its JSON before choosing context:
+
+```sh
+dudes --json recovery inspect <agent-id> > inspection.json
+```
+
+Read `inspection.json`, then submit one choice that the inspection offers:
+
+```sh
+dudes recovery submit inspection.json --choice <offered-choice>
+```
+
+Replace `<offered-choice>` with one of the offered names:
+
+- `try-recorded` attempts the recorded conversation. It does not guarantee restored provider history.
+- `fresh-with-recap` starts fresh with a recorded recap, which may shrink or be omitted to fit the task.
+  Old conversation history is not restored.
+- `repeat-issued-fresh` repeats the exact already-issued task in fresh context. A child may have run
+  before its launch was recorded, so earlier effects may repeat. The task and answers stay unchanged,
+  and no recap is added.
+
+Submission uses the saved inspection without refreshing it. Authorization does not guarantee a
+launch. Budgets, hop caps, questions, instruction review, and other admission gates still apply.
+
+Submit prints its request ID to standard error before sending. Keep that ID. If the reply is lost
+or authorization is unknown, read the receipt with the retained ID:
+
+```sh
+dudes recovery receipt <request-id>
+```
+
+Receipt lookup is read-only and never retries recovery. Do not resend the submission.
+A later eligible recovery episode needs a fresh inspection and explicit choice.
+
 ## Stop the daemon and closing time
 
 ```sh
