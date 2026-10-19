@@ -523,11 +523,7 @@ fn a_running_daemon_adopts_only_the_edit_the_command_made() {
     );
     assert!(listed.stdout.contains("repo_2  in the file and running"));
 
-    let checked = cli
-        .clone()
-        .arg("--json")
-        .args(["project", "reload"])
-        .run();
+    let checked = cli.clone().arg("--json").args(["project", "reload"]).run();
     let check: EnrollmentReloadResult = checked.json();
     assert_eq!(check.added, ["stray"]);
     let applied = cli
