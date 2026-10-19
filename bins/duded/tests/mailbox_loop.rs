@@ -186,8 +186,11 @@ fn hooks_until(mut done: impl FnMut() -> bool, mut hook: impl FnMut()) {
     }
 }
 
+/// More than one pass moves: a pass takes at most 16 fsynced items.
+const PER_SENDER: usize = 8;
+
 #[test]
-fn a_queued_hook_runs_before_an_eight_by_thirty_two_backlog_drains() {
+fn a_queued_hook_runs_before_an_eight_by_eight_backlog_drains() {
     let mut floor = Floor::new(8);
     assert!(matches!(
         floor
@@ -216,11 +219,11 @@ fn a_queued_hook_runs_before_an_eight_by_thirty_two_backlog_drains() {
         .to_owned();
     for (n, sender) in floor.agents.iter().enumerate() {
         let recipient = floor.agents[(n + 1) % floor.agents.len()];
-        for k in 0..32 {
+        for k in 0..PER_SENDER {
             floor.send(
                 *sender,
                 recipient,
-                MailId::from_parts(7, (n * 32 + k) as u128),
+                MailId::from_parts(7, (n * PER_SENDER + k) as u128),
             );
         }
     }
@@ -252,7 +255,7 @@ fn a_queued_hook_runs_before_an_eight_by_thirty_two_backlog_drains() {
     ));
     let socket_denials = paused_socket_denials();
     hooks_until(
-        || floor.delivered() == 8 * 32,
+        || floor.delivered() == 8 * PER_SENDER,
         || {
             let reply = floor.hook();
             assert!(
@@ -283,10 +286,10 @@ fn a_queued_hook_runs_before_an_eight_by_thirty_two_backlog_drains() {
         .filter(|record| matches!(record, Record::Mail { .. }))
         .count();
     assert!(
-        (1..8 * 32).contains(&before_hook_marker),
+        (1..8 * PER_SENDER).contains(&before_hook_marker),
         "the queued hook must run during mailbox progress, before all {before_hook_marker} messages drain"
     );
-    assert_eq!(floor.delivered(), 8 * 32);
+    assert_eq!(floor.delivered(), 8 * PER_SENDER);
 }
 
 #[test]

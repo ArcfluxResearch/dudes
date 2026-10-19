@@ -668,20 +668,7 @@ fn a_zero_read_wait_still_fails() {
 }
 
 #[test]
-fn browser_terminal_grant_is_tuple_bound_and_revoked() {
-    assert_each_tuple_field_is_compared();
-    assert_wrong_and_cross_connection_handles_write_nothing();
-    assert_idle_expiry_writes_nothing();
-    assert_output_after_absolute_expiry_sends_no_frame();
-    assert_a_silent_expired_channel_closes_within_two_seconds();
-    assert_browser_close_and_pty_exit_revoke_and_close();
-    assert_output_past_the_wire_bound_closes_the_channel();
-    assert_restart_leaves_no_grant();
-    assert_resync_keeps_the_terminal_and_slots_hold_recovery();
-    assert_retire_and_halt_revoke_and_refuse();
-}
-
-fn assert_each_tuple_field_is_compared() {
+fn grant_each_tuple_field_is_compared() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
@@ -729,7 +716,8 @@ fn assert_each_tuple_field_is_compared() {
     floor.stop();
 }
 
-fn assert_wrong_and_cross_connection_handles_write_nothing() {
+#[test]
+fn grant_wrong_and_cross_connection_handles_write_nothing() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
@@ -762,7 +750,8 @@ fn assert_wrong_and_cross_connection_handles_write_nothing() {
     floor.stop();
 }
 
-fn assert_idle_expiry_writes_nothing() {
+#[test]
+fn grant_idle_expiry_writes_nothing() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
@@ -786,7 +775,8 @@ fn assert_idle_expiry_writes_nothing() {
 
 /// Each output frame is checked under the session lock, so output after the absolute expiry and
 /// before the two-second recheck reaches the browser as no frame.
-fn assert_output_after_absolute_expiry_sends_no_frame() {
+#[test]
+fn grant_output_after_absolute_expiry_sends_no_frame() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
@@ -809,7 +799,8 @@ fn assert_output_after_absolute_expiry_sends_no_frame() {
     floor.stop();
 }
 
-fn assert_a_silent_expired_channel_closes_within_two_seconds() {
+#[test]
+fn grant_a_silent_expired_channel_closes_within_two_seconds() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
@@ -828,7 +819,8 @@ fn assert_a_silent_expired_channel_closes_within_two_seconds() {
     floor.stop();
 }
 
-fn assert_browser_close_and_pty_exit_revoke_and_close() {
+#[test]
+fn grant_browser_close_and_pty_exit_revoke_and_close() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
@@ -854,7 +846,8 @@ fn assert_browser_close_and_pty_exit_revoke_and_close() {
 
 /// A full channel reaches the browser within the 8 MiB wire bound; one byte more closes the
 /// channel instead of dropping bytes.
-fn assert_output_past_the_wire_bound_closes_the_channel() {
+#[test]
+fn grant_output_past_the_wire_bound_closes_the_channel() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
@@ -892,7 +885,8 @@ fn assert_output_past_the_wire_bound_closes_the_channel() {
     floor.stop();
 }
 
-fn assert_restart_leaves_no_grant() {
+#[test]
+fn grant_restart_leaves_no_grant() {
     let fixture = Fixture::new();
     let mut first = floor(&fixture, true);
     let agent = attachable(&first, &fixture);
@@ -923,7 +917,8 @@ fn assert_restart_leaves_no_grant() {
     second.stop();
 }
 
-fn assert_resync_keeps_the_terminal_and_slots_hold_recovery() {
+#[test]
+fn grant_resync_keeps_the_terminal_and_slots_hold_recovery() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
@@ -976,7 +971,8 @@ fn stop_agent(agent: AgentId, reason: &str) -> Ask {
     }
 }
 
-fn assert_retire_and_halt_revoke_and_refuse() {
+#[test]
+fn grant_retire_and_halt_revoke_and_refuse() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let halted = attachable(&floor, &fixture);

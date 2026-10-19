@@ -40,8 +40,14 @@
 # no finite threshold lets one through, while a child outliving its test by more than five seconds
 # is still reported. What the threshold cannot be is a bound on the runner's scheduling, which is
 # unbounded; it can only be set far enough past it to stop reading as a defect in the tests.
+#
+# # `slow-timeout`
+#
+# No test may run longer than a minute. A test is reported slow after 30 seconds and terminated at
+# 60. A test that needs longer is doing too much: shrink its scale or split it.
 [profile.default]
 leak-timeout = "5s"
+slow-timeout = { period = "30s", terminate-after = 2 }
 
 [[profile.default.overrides]]
 filter = 'package(=dudes) & binary(=quickstart) & test(=capture_timeout_reaps_a_retained_handle_daemon_at_an_alternate_root)'

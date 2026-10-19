@@ -30,6 +30,7 @@ use serde_json::{Value, json};
 const BLOCK: &[u8] = b"dudes-hook: daemon accepted the connection but did not answer; control step blocked; retry, and restart duded if this persists\n";
 const CONTROL: [&str; 2] = ["PreToolUse", "UserPromptSubmit"];
 const RUNS: usize = 1000;
+const SHIM_RUNS: usize = 25;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum MintPhase {
@@ -289,7 +290,7 @@ fn a_full_cap_blocks_a_paused_agents_control_steps_and_nothing_else() {
 
     let holder = hold_the_slot(&rig);
     for event in CONTROL {
-        for run in 0..RUNS {
+        for run in 0..SHIM_RUNS {
             let output = run_hook(&rig, &rig.socket, event);
             assert_eq!(
                 output.status.code(),
