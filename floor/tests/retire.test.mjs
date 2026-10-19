@@ -272,7 +272,7 @@ async function withBrowser(reply, run) {
   const calls = [];
   const answer = async () => ({ ok: true, status: 200, json: async () => ({ csrf: CSRF }) });
   await session.openFloorSessionWith({ hash: '', pathname: '/floor/', search: '' }, { replaceState() {} }, answer,
-    async () => {});
+    { read: () => CSRF, write() {} });
   globalThis.window = {
     async fetch(url, init) {
       calls.push({ url, init });

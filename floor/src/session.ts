@@ -4,7 +4,37 @@ const SECRET = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 const BOOTSTRAP_PREFIX = '#bootstrap=';
 const ASSET_PREFIX = '/floor/assets/';
 
-export const RECOVERY_DELAYS_MS = Object.freeze([250, 500, 1_000, 2_000, 4_000]);
+const SECRET_KEY = 'dudes.floor.secret';
+
+/**
+ * Where the page keeps the session secret between loads. The browser keeps
+ * this storage apart for each port, so a page another program serves on a
+ * different port of this machine cannot read it, though the browser sends it
+ * the cookie.
+ */
+export interface SecretStore {
+  read(): string | null;
+  write(secret: string): void;
+}
+
+function browserStorage(): Storage {
+  return window.localStorage;
+}
+
+export const browserSecretStore: SecretStore = Object.freeze({
+  read(): string | null {
+    try {
+      return browserStorage().getItem(SECRET_KEY);
+    } catch {
+      return null;
+    }
+  },
+  write(secret: string): void {
+    try {
+      browserStorage().setItem(SECRET_KEY, secret);
+    } catch {}
+  },
+});
 
 export interface FloorSession {
   readonly csrf: string;
@@ -28,7 +58,6 @@ interface ExchangeResponse {
 }
 
 type FetchPort = (url: string, init: RequestInit) => Promise<ExchangeResponse>;
-type WaitPort = (delayMs: number) => Promise<void>;
 
 let current: FloorSession | null = null;
 
@@ -76,7 +105,7 @@ export async function establishFloorSession(): Promise<FloorSession | null> {
     window.location,
     window.history,
     floorFetch,
-    (delayMs) => new Promise((resolve) => window.setTimeout(resolve, delayMs)),
+    browserSecretStore,
   );
 }
 
@@ -90,10 +119,10 @@ export async function openFloorSessionWith(
   location: LocationPort,
   history: HistoryPort,
   fetch: FetchPort,
-  wait: WaitPort,
+  store: SecretStore,
 ): Promise<FloorSession | null> {
   const ticket = ++started;
-  const session = await establishFloorSessionWith(location, history, fetch, wait);
+  const session = await establishFloorSessionWith(location, history, fetch, store);
   settle(ticket, session, false);
   return session;
 }
@@ -162,9 +191,10 @@ export async function reauthenticateFloorSessionWith(
   history: HistoryPort,
   fetch: FetchPort,
   ownRefs: readonly string[],
+  store: SecretStore = browserSecretStore,
 ): Promise<FloorSession | null> {
   const ticket = ++started;
-  const session = await exchangeBootstrap(location, history, fetch, ownRefs);
+  const session = await exchangeBootstrap(location, history, fetch, ownRefs, store);
   // A link that was not a bootstrap changes nothing; a stale one is discarded.
   settle(ticket, session, true);
   return session;
@@ -174,13 +204,16 @@ export async function establishFloorSessionWith(
   location: LocationPort,
   history: HistoryPort,
   fetch: FetchPort,
-  wait: WaitPort,
+  store: SecretStore,
 ): Promise<FloorSession | null> {
   if (location.hash.startsWith(BOOTSTRAP_PREFIX)) {
-    return exchangeBootstrap(location, history, fetch);
+    return exchangeBootstrap(location, history, fetch, undefined, store);
   }
   if (location.hash !== '') return null;
-  return recoverFloorSession(fetch, wait);
+  // A reload keeps the secret and the cookie. A cookie with no secret gets no session, so a page
+  // that holds no secret is signed out and says so.
+  const secret = store.read();
+  return secret !== null && SECRET.test(secret) ? Object.freeze({ csrf: secret }) : null;
 }
 
 /** The daemon answered the exchange and refused the link. */
@@ -212,6 +245,7 @@ export async function exchangeBootstrap(
   history: HistoryPort,
   fetch: FetchPort,
   ownRefs?: readonly string[],
+  store: SecretStore = browserSecretStore,
 ): Promise<FloorSession | null> {
   if (!location.hash.startsWith(BOOTSTRAP_PREFIX)) return null;
 
@@ -229,7 +263,9 @@ export async function exchangeBootstrap(
     headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
   });
   if (!response.ok) throw new LinkRefused();
-  return floorSession(await response.json(), 'exchange');
+  const session = floorSession(await response.json());
+  store.write(session.csrf);
+  return session;
 }
 
 async function requireSameBuild(
@@ -249,26 +285,7 @@ async function requireSameBuild(
   if (!sameBuild(ownRefs, served)) throw new BuildMismatch();
 }
 
-export async function recoverFloorSession(
-  fetch: FetchPort,
-  wait: WaitPort,
-): Promise<FloorSession | null> {
-  for (let attempt = 0; ; attempt += 1) {
-    const response = await fetch('/floor/session/recover', {
-      method: 'POST',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      referrerPolicy: 'no-referrer',
-    });
-    if (response.ok) return floorSession(await response.json(), 'recovery');
-    if (response.status !== 403) throw new Error('Floor session recovery failed');
-    const delay = RECOVERY_DELAYS_MS[attempt];
-    if (delay === undefined) return null;
-    await wait(delay);
-  }
-}
-
-function floorSession(payload: unknown, operation: 'exchange' | 'recovery'): FloorSession {
+function floorSession(payload: unknown): FloorSession {
   if (
     typeof payload !== 'object'
     || payload === null
@@ -276,7 +293,7 @@ function floorSession(payload: unknown, operation: 'exchange' | 'recovery'): Flo
     || typeof payload.csrf !== 'string'
     || !SECRET.test(payload.csrf)
   ) {
-    throw new Error(`Floor session ${operation} returned an invalid CSRF nonce`);
+    throw new Error('Floor session exchange returned an invalid session secret');
   }
   return Object.freeze({ csrf: payload.csrf });
 }

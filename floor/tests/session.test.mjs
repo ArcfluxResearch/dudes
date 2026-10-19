@@ -10,14 +10,13 @@ import {
   floorSessionGeneration,
   openFloorSessionWith,
   reauthenticateFloorSessionWith,
-  recoverFloorSession,
   resetFloorSession,
 } from '../src/session.ts';
 import { streamProtocols } from '../src/renderer/floor/stream.ts';
 
 const BOOTSTRAP = `A${'b'.repeat(41)}E`;
 const CSRF = `C${'d'.repeat(41)}I`;
-const RECOVERED_CSRF = `F${'g'.repeat(41)}M`;
+const OTHER_CSRF = `F${'g'.repeat(41)}M`;
 
 const OWN = ['/floor/assets/index-aaaa1111.js', '/floor/assets/index-bbbb2222.css'];
 
@@ -33,6 +32,20 @@ function servingBuild(fetch, refs = OWN) {
 
 function reauth(location, history, fetch, served = OWN) {
   return reauthenticateFloorSessionWith(location, history, servingBuild(fetch, served), OWN);
+}
+
+/** A secret store the test can read back. */
+function memoryStore(held = null) {
+  const store = {
+    held,
+    writes: [],
+    read: () => store.held,
+    write(secret) {
+      store.held = secret;
+      store.writes.push(secret);
+    },
+  };
+  return store;
 }
 
 function answer(status, payload = {}) {
@@ -71,11 +84,12 @@ test('bootstrap fragment is scrubbed before the same-origin exchange', async () 
     return answer(200, { csrf: CSRF });
   };
 
-  const session = await establishFloorSessionWith(location, history, fetch, async () => {
-    throw new Error('bootstrap startup must not enter recovery');
-  });
+  const store = memoryStore();
+  const session = await establishFloorSessionWith(location, history, fetch, store);
   assert.deepEqual(events, ['replace:/floor/', 'fetch:/floor/session']);
   assert.deepEqual(session, { csrf: CSRF });
+  assert.deepEqual(store.writes, [CSRF], 'the page keeps the secret for the next load');
+  assert.equal(JSON.stringify(store.writes).includes(BOOTSTRAP), false);
   assert.equal(Object.isFrozen(session), true);
   assert.equal(JSON.stringify(session).includes(BOOTSTRAP), false);
 });
@@ -98,91 +112,47 @@ test('a malformed named fragment is scrubbed and never fetched', async () => {
   assert.equal(session, null);
 });
 
-test('no-fragment startup recovers once and keeps the two stream protocols', async () => {
-  const requests = [];
-  const waits = [];
-  const statuses = [403, 403, 200];
+test('a reload reads the stored secret, sends nothing, and keeps the two stream protocols', async () => {
+  const store = memoryStore(CSRF);
   const session = await establishFloorSessionWith(
     { hash: '', pathname: '/floor/', search: '' },
-    { replaceState() { throw new Error('recovery must not touch history'); } },
-    async (url, init) => {
-      requests.push({ url, init });
-      const status = statuses.shift();
-      return answer(status, { csrf: RECOVERED_CSRF });
-    },
-    async (delayMs) => { waits.push(delayMs); },
-  );
-
-  assert.deepEqual(waits, [250, 500]);
-  assert.equal(requests.length, 3);
-  for (const { url, init } of requests) {
-    assert.equal(url, '/floor/session/recover');
-    assert.deepEqual(init, {
-      method: 'POST',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      referrerPolicy: 'no-referrer',
-    });
-    assert.equal('body' in init, false, 'recovery has an exactly empty body');
-  }
-  assert.deepEqual(session, { csrf: RECOVERED_CSRF });
-  assert.equal(Object.isFrozen(session), true);
-  assert.deepEqual(streamProtocols(session.csrf), [
-    'dudes-floor-v3',
-    `dudes-csrf.${RECOVERED_CSRF}`,
-  ]);
-});
-
-test('recovery exhausts only the five bounded waits and returns no session', async () => {
-  let requests = 0;
-  const waits = [];
-  const session = await recoverFloorSession(
+    { replaceState() { throw new Error('a reload must not touch history'); } },
     async () => {
-      requests += 1;
-      return answer(403);
+      throw new Error('a reload sends no request before the stream');
     },
-    async (delayMs) => { waits.push(delayMs); },
+    store,
   );
-
-  assert.equal(requests, 6, 'one immediate request and five bounded retries');
-  assert.deepEqual(waits, [250, 500, 1_000, 2_000, 4_000]);
-  assert.equal(session, null);
+  assert.deepEqual(session, { csrf: CSRF });
+  assert.equal(Object.isFrozen(session), true);
+  assert.deepEqual(store.writes, [], 'a reload writes nothing');
+  assert.deepEqual(streamProtocols(session.csrf), ['dudes-floor-v3', `dudes-csrf.${CSRF}`]);
 });
 
-test('a generic recovery transport failure never sends another recovery', async () => {
-  let requests = 0;
-  let waits = 0;
-  await assert.rejects(
-    recoverFloorSession(
+test('a page that holds no usable secret gets no session, and a cookie alone cannot make one', async () => {
+  for (const held of [null, '', 'not-canonical', `${CSRF}x`]) {
+    const session = await establishFloorSessionWith(
+      { hash: '', pathname: '/floor/', search: '' },
+      KEEP,
       async () => {
-        requests += 1;
-        throw new Error('connection reset');
+        throw new Error('nothing is asked of the daemon with a cookie alone');
       },
-      async () => { waits += 1; },
-    ),
-    /connection reset/,
-  );
-  assert.equal(requests, 1);
-  assert.equal(waits, 0);
+      memoryStore(held),
+    );
+    assert.equal(session, null, `held ${JSON.stringify(held)}`);
+  }
 });
 
-test('a non-refusal status and an invalid success both stop recovery', async () => {
-  for (const response of [answer(400), answer(200, { csrf: 'not-canonical' })]) {
-    let requests = 0;
-    let waits = 0;
-    await assert.rejects(
-      recoverFloorSession(
-        async () => {
-          requests += 1;
-          return response;
-        },
-        async () => { waits += 1; },
-      ),
-      /Floor session recovery/,
-    );
-    assert.equal(requests, 1);
-    assert.equal(waits, 0);
-  }
+test('a link that is not a bootstrap does not read the stored secret', async () => {
+  const store = memoryStore(CSRF);
+  const session = await establishFloorSessionWith(
+    { hash: '#section', pathname: '/floor/', search: '' },
+    KEEP,
+    async () => {
+      throw new Error('a fragment that is not a bootstrap was exchanged');
+    },
+    store,
+  );
+  assert.equal(session, null);
 });
 
 test('the entry point opens one stream or surfaces the closed phase', async () => {
@@ -238,11 +208,11 @@ test('a fresh bootstrap pasted into the open page is scrubbed, exchanged, and be
     events.push(`fetch:${url}`);
     assert.equal(location.hash, '', 'the fragment was removed before fetch');
     assert.equal(init.body, BOOTSTRAP);
-    return answer(200, { csrf: RECOVERED_CSRF });
+    return answer(200, { csrf: OTHER_CSRF });
   };
   const session = await reauth(location, history, fetch);
   assert.deepEqual(events, ['replace:/floor/', 'fetch:/floor/session']);
-  assert.deepEqual(session, { csrf: RECOVERED_CSRF });
+  assert.deepEqual(session, { csrf: OTHER_CSRF });
   assert.equal(currentFloorSession(), session, 'the fresh session did not become the page’s');
   assert.equal(JSON.stringify(session).includes(BOOTSTRAP), false);
 
@@ -272,52 +242,35 @@ function pasted() {
 const NOWHERE = { hash: '', pathname: '/floor/', search: '' };
 const KEEP = { replaceState() {} };
 
-test('a slow on-load recovery that settles after a pasted link cannot replace the fresher session', async () => {
+test('a slow on-load exchange that settles after a pasted link cannot replace the fresher session', async () => {
   resetFloorSession();
   let release;
   const slow = new Promise((done) => { release = done; });
-  const loading = openFloorSessionWith(NOWHERE, KEEP, async (url) => {
-    assert.equal(url, '/floor/session/recover');
+  const onLoad = pasted();
+  const loading = openFloorSessionWith(onLoad.location, onLoad.history, async (url) => {
+    assert.equal(url, '/floor/session');
     await slow;
     return answer(200, { csrf: CSRF });
-  }, async () => {});
+  }, memoryStore());
   const { location, history } = pasted();
-  const fresh = await reauth(location, history, async () => answer(200, { csrf: RECOVERED_CSRF }));
+  const fresh = await reauth(location, history, async () => answer(200, { csrf: OTHER_CSRF }));
   assert.equal(currentFloorSession(), fresh);
   const held = floorSessionGeneration();
 
   release();
   const stale = await loading;
   assert.deepEqual(stale, { csrf: CSRF }, 'the on-load call still reports its own result');
-  assert.equal(currentFloorSession(), fresh, 'a slow on-load recovery replaced the session a pasted link signed in');
+  assert.equal(currentFloorSession(), fresh, 'a slow on-load exchange replaced the session a pasted link signed in');
   assert.equal(floorSessionGeneration(), held);
   assert.notEqual(stale, currentFloorSession(), 'the entry point would act on the stale result');
 });
 
-test('an on-load recovery that gives up after a pasted link cannot wipe the fresher session', async () => {
+test('with no pasted link the on-load result is the page’s, and a later non-link leaves it', async () => {
   resetFloorSession();
-  let release;
-  const slow = new Promise((done) => { release = done; });
-  let waits = 0;
-  const loading = openFloorSessionWith(NOWHERE, KEEP, async () => answer(403), async () => {
-    waits += 1;
-    if (waits === 1) await slow;
-  });
-  const { location, history } = pasted();
-  const fresh = await reauth(location, history, async () => answer(200, { csrf: RECOVERED_CSRF }));
-
-  release();
-  const exhausted = await loading;
-  assert.equal(exhausted, null, 'the control: the on-load recovery did give up');
-  assert.equal(waits, 5);
-  assert.equal(currentFloorSession(), fresh, 'an on-load recovery that gave up wiped a session a pasted link signed in');
-  assert.notEqual(exhausted, currentFloorSession(), 'the entry point would close a live page');
-
-  // The control for the guard itself: with no pasted link, the on-load result is the page's.
-  resetFloorSession();
-  const alone = await openFloorSessionWith(NOWHERE, KEEP, async () => answer(200, { csrf: CSRF }), async () => {});
+  const alone = await openFloorSessionWith(NOWHERE, KEEP, async () => {
+    throw new Error('a reload sends nothing');
+  }, memoryStore(CSRF));
   assert.equal(currentFloorSession(), alone);
-  // And a later link that is not a bootstrap leaves it where it is.
   assert.equal(await reauth({ ...NOWHERE, hash: '#section' }, KEEP, async () => {
     throw new Error('a fragment that is not a bootstrap was exchanged');
   }), null);

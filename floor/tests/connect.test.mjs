@@ -355,7 +355,7 @@ test('a page whose address holds no usable link says so instead of Disconnected'
   assert.doesNotMatch(html, /Disconnected/);
 });
 
-test('a recovery that stays refused says the sign-in expired instead of Disconnected', async () => {
+test('a page that holds no secret says the sign-in expired instead of Disconnected', async () => {
   const entry = await server.ssrLoadModule('/src/connect.ts');
   const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   const session = await server.ssrLoadModule('/src/session.ts');
@@ -365,10 +365,14 @@ test('a recovery that stays refused says the sign-in expired instead of Disconne
   entry.resetPastedLink();
   store.resetFloorStore();
 
-  let asked = 0;
-  const found = await session.recoverFloorSession(async () => { asked += 1; return reply(403); }, async () => {});
-  assert.equal(found, null, 'recovery gave up');
-  assert.equal(asked, session.RECOVERY_DELAYS_MS.length + 1, 'every retry was refused');
+  const forgotten = { read: () => null, write() { throw new Error('nothing is written'); } };
+  const found = await session.establishFloorSessionWith(
+    { hash: '', pathname: '/floor/', search: '' },
+    { replaceState() {} },
+    async () => { throw new Error('a reload sends nothing'); },
+    forgotten,
+  );
+  assert.equal(found, null, 'no secret, no session');
   entry.noteSignInExpired();
   store.noteTransport('close');
   const html = page();

@@ -1562,10 +1562,10 @@ const REQUESTS = {
     fetches: [],
   },
   'src/session.ts': {
-    paths: ['/floor/assets/', '/floor/session', 'text/plain;charset=UTF-8', '/floor/', '/floor/session/recover'],
-    methods: ['POST', 'GET', 'POST'],
+    paths: ['/floor/assets/', '/floor/session', 'text/plain;charset=UTF-8', '/floor/'],
+    methods: ['POST', 'GET'],
     fetches: ['floorFetch', 'floorFetch', 'FetchPort', 'fetch', 'floorFetch', 'FetchPort', 'fetch', 'FetchPort', 'fetch',
-      'fetch', 'FetchPort', 'fetch', "fetch('/floor/session')", 'FetchPort', "fetch('/floor/')", 'FetchPort', "fetch('/floor/session/recover')"],
+      'FetchPort', 'fetch', "fetch('/floor/session')", 'FetchPort', "fetch('/floor/')"],
   },
 };
 
@@ -1856,11 +1856,11 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
   const targets = [...session.matchAll(/fetch\(\s*'([^']+)'/g)].map((match) => match[1]);
   assert.deepEqual(
     targets,
-    ['/floor/session', '/floor/', '/floor/session/recover'],
+    ['/floor/session', '/floor/'],
     'session startup calls somewhere else too',
   );
   const methods = [...session.matchAll(/method:\s*'([A-Z]+)'/g)].map((match) => match[1]);
-  assert.deepEqual(methods, ['POST', 'GET', 'POST'], 'session startup uses a method other than POST, or the one index GET');
+  assert.deepEqual(methods, ['POST', 'GET'], 'session startup uses a method other than POST, or the one index GET');
 
   assert.equal(valueBindingsIn(parsedByExtension(controlText, CONTROL_MODULE)).filter(({ name }) => name === 'ROUTES')
     .length, 1, 'control.ts binds ROUTES more than once, so the pinned routes may not be the ones it fetches');
@@ -1922,6 +1922,7 @@ function domUrlSinksIn(text) {
 }
 
 const ADMITTED_VIEW_STORAGE = Object.freeze({ path: 'src/renderer/view.ts', line: 'return window.localStorage;' });
+const ADMITTED_SESSION_STORAGE = Object.freeze({ path: 'src/session.ts', line: 'return window.localStorage;' });
 const ADMITTED_FONT_STORAGE = Object.freeze({ path: TERMINAL_CONTROLS,
   line: "return typeof window === 'undefined' ? null : window.localStorage;" });
 const TERMINAL_CONTROL_FUNCTIONS = [
@@ -2114,6 +2115,22 @@ test('font preference storage admits one exact getter in its own module and stil
   }
 });
 
+test('the session secret is kept in one localStorage key, written only from the exchange', async () => {
+  const text = await readFile(resolve(source, 'session.ts'), 'utf8');
+  const clean = unadmittedSinksIn(text, ADMITTED_SESSION_STORAGE.path);
+  assert.deepEqual(clean.found, []);
+  assert.equal(clean.sessionStorageHits, 1);
+  assert.deepEqual([...text.matchAll(/\b(?:getItem|setItem|removeItem|clear|key)\(([^)]*)\)/g)].map((match) => match[0]),
+    ['getItem(SECRET_KEY)', 'setItem(SECRET_KEY, secret)']);
+  assert.deepEqual([...text.matchAll(/\bstore\.write\(([^)]*)\)/g)].map((match) => match[1]), ['session.csrf']);
+  assert.deepEqual(unadmittedSinksIn(text, 'src/other.ts').found, ['localStorage']);
+  for (const extra of ["localStorage.setItem('csrf', secret);", 'sessionStorage.csrf = secret;', 'console.log(secret);']) {
+    assert.ok(unadmittedSinksIn(text + '\n' + extra, ADMITTED_SESSION_STORAGE.path).found.length > 0, extra);
+  }
+  assert.equal(unadmittedSinksIn(text + '\n' + ADMITTED_SESSION_STORAGE.line, ADMITTED_SESSION_STORAGE.path)
+    .sessionStorageHits, 2);
+});
+
 function unadmittedSinksIn(text, relative) {
   let assets;
   let scanned = text.replace(ASSET_URL_CALL, (whole, name) => {
@@ -2122,6 +2139,7 @@ function unadmittedSinksIn(text, relative) {
   });
   let viewStorageHits = 0;
   let fontStorageHits = 0;
+  let sessionStorageHits = 0;
   if (relative === ADMITTED_VIEW_STORAGE.path) {
     scanned = scanned.replace(/^.*$/gm, (line) => {
       if (line.trim() === ADMITTED_VIEW_STORAGE.line) {
@@ -2140,8 +2158,17 @@ function unadmittedSinksIn(text, relative) {
       return line;
     });
   }
+  if (relative === ADMITTED_SESSION_STORAGE.path) {
+    scanned = scanned.replace(/^.*$/gm, (line) => {
+      if (line.trim() === ADMITTED_SESSION_STORAGE.line) {
+        sessionStorageHits += 1;
+        return '';
+      }
+      return line;
+    });
+  }
   return { found: [...sessionMaterialSinksIn(scanned), ...domUrlSinksIn(scanned)],
-    viewStorageHits, fontStorageHits };
+    viewStorageHits, fontStorageHits, sessionStorageHits };
 }
 
 test('session material has no browser persistence, URL, argv or log sink', async () => {
@@ -2214,17 +2241,21 @@ test('session material has no browser persistence, URL, argv or log sink', async
   const carrying = [];
   let viewStorageHits = 0;
   let fontStorageHits = 0;
+  let sessionStorageHits = 0;
   for (const path of await filesUnder(source, ['.ts', '.tsx'])) {
     const relative = path.slice(floor.length + 1);
     const text = await readFile(path, 'utf8');
-    const { found, viewStorageHits: storageHits, fontStorageHits: fontHits } = unadmittedSinksIn(text, relative);
+    const { found, viewStorageHits: storageHits, fontStorageHits: fontHits, sessionStorageHits: sessionHits } =
+      unadmittedSinksIn(text, relative);
     viewStorageHits += storageHits;
     fontStorageHits += fontHits;
+    sessionStorageHits += sessionHits;
     if (found.length > 0) carrying.push(`${relative}: ${found.join(', ')}`);
   }
   assert.deepEqual(carrying, [], 'session material gained a browser, URL, argv or log sink');
   assert.equal(viewStorageHits, 1, 'the view-only storage getter moved, disappeared, or was duplicated');
   assert.equal(fontStorageHits, 1, 'the font-only storage getter moved, disappeared, or was duplicated');
+  assert.equal(sessionStorageHits, 1, 'the session secret storage getter moved, disappeared, or was duplicated');
   const viewText = await readFile(resolve(floor, ADMITTED_VIEW_STORAGE.path), 'utf8');
   const viewSyntax = parsedByExtension(viewText, ADMITTED_VIEW_STORAGE.path);
   const imports = viewSyntax.statements.filter(ts.isImportDeclaration);
@@ -3293,7 +3324,6 @@ test('the session module reads the served index with no credentials and sends ea
   assert.deepEqual(credentialsByPath(text), {
     '/floor/session': 'same-origin',
     '/floor/': 'omit',
-    '/floor/session/recover': 'same-origin',
   });
   assert.equal(credentialsByPath(text.replace("credentials: 'omit'", "credentials: 'same-origin'"))['/floor/'], 'same-origin',
     'the pin does not see the served-index read take credentials');
