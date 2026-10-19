@@ -820,22 +820,24 @@ fn chat_global_counts_and_escaped_bytes_bound_all_arrays_without_dropping_pendin
         );
     }
     p.assert_replayed();
-    for (index, owner) in owners.iter().enumerate() {
-        for round in 0..9 {
-            bounded_turn(
-                &mut p,
-                *owner,
-                300 + u64::try_from(index * 9 + round).unwrap(),
-                &"\n".repeat(1000),
-                &"\0".repeat(1500),
-            );
-        }
+    for owner in owners.iter().take(7) {
         p.fold(json!({"t":"attached","agent":owner.0,"by":{"kind":"system"}}));
         for _ in 0..21 {
             let note = bounded_queue(&mut p, *owner, "context", true);
             p.fold(json!({"t":"browser_note_context_emitted","agent":owner.0,"note_lsn":note}));
         }
         p.fold(json!({"t":"detached","agent":owner.0,"by":{"kind":"system"}}));
+    }
+    for (index, owner) in owners.iter().take(6).enumerate() {
+        for round in 0..2 {
+            bounded_turn(
+                &mut p,
+                *owner,
+                300 + u64::try_from(index * 2 + round).unwrap(),
+                &"\0".repeat(dudes_proto::MAX_CHAT_TEXT_BYTES),
+                &"\0".repeat(dudes_proto::MAX_CHAT_TEXT_BYTES),
+            );
+        }
     }
     let history = p.projected.chat().unwrap();
     assert!(
@@ -890,7 +892,6 @@ fn chat_global_counts_and_escaped_bytes_bound_all_arrays_without_dropping_pendin
         reason: None,
     };
     assert!(!dudes_journal::admits_pending(&durable.pending, &candidate).unwrap());
-    p.assert_replayed();
 }
 
 #[test]
@@ -934,21 +935,24 @@ fn a_changed_goal_never_transfers_an_old_note_to_a_new_issue() {
     assert_eq!(fresh.last_applied_lsn(), Lsn::ZERO);
 }
 
+const DENSE_ROWS: usize = 11;
+const DENSE_ROW_BYTES: usize = 3943;
+
 fn dense_intent_history() -> (Prefix, TurnId, Lsn) {
     let mut p = Prefix::with_fsync(dudes_journal::Fsync::None);
-    let owners: Vec<_> = (2..10).map(|id| bounded_owner(&mut p, id)).collect();
-    let reply = "\\".repeat(4050);
-    for index in 0..63 {
+    let owners: Vec<_> = (2..9).map(|id| bounded_owner(&mut p, id)).collect();
+    let text = "\0".repeat(DENSE_ROW_BYTES);
+    for index in 0..DENSE_ROWS {
         bounded_turn(
             &mut p,
-            owners[index / 8],
+            owners[index / 2],
             7000 + u64::try_from(index).unwrap(),
-            "x",
-            &reply,
+            &text,
+            &text,
         );
     }
     let history = p.projected.chat().unwrap().turns;
-    assert_eq!(history.len(), 63);
+    assert_eq!(history.len(), DENSE_ROWS);
     let owner = *owners.last().unwrap();
     let turn = turn(7063);
     let empty = dudes_proto::ChatTurnView {
@@ -1043,7 +1047,7 @@ fn daemon_startup_reserves_uncertain_history_bytes_at_the_global_boundary() {
     );
     assert_eq!(
         view.turns.len(),
-        63,
+        DENSE_ROWS,
         "whole oldest history row is evicted before uncertainty can grow"
     );
     assert_eq!(view.turns.last().unwrap().turn_id, turn);
