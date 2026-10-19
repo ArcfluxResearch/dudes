@@ -1120,15 +1120,17 @@ fn a_responding_daemon_without_a_config_defaults_hiring_to_no() {
 }
 
 #[test]
-fn yes_takes_the_floor_default_and_leaves_git_views_off() {
+fn yes_turns_on_five_floor_actions_and_leaves_the_rest_off() {
     let layout = Layout::new();
     let started = layout.cli().args(["quickstart", "--yes"]).run();
     assert_eq!(started.code(), 0, "{started:?}");
     let file = Settings::read(&layout.config()).unwrap();
-    for key in [Key::Answer, Key::Hire, Key::Board, Key::Terminal] {
+    for key in [Key::Answer, Key::Hire, Key::Control, Key::Goal, Key::Board] {
         assert!(file.satisfies(key), "{key}");
     }
-    assert!(!file.satisfies(Key::Git) && !file.satisfies(Key::Diff));
+    for key in [Key::Terminal, Key::Retire, Key::Git, Key::Diff] {
+        assert!(!file.satisfies(key), "{key}");
+    }
 }
 
 #[test]

@@ -565,9 +565,10 @@ COMMANDS
         paste into any browser.
         With options it asks nothing and prints no Floor link: it prints, last, dudes
         floor open, after dudes login <engine> for each engine that is signed out. --yes
-        takes every default, including the guide's Yes to letting the Floor act (unless
-        the file already chooses its own mix; the git and diff views stay off), --set is
-        `config set`, --enroll enrolls the current repository, --hire hires a first
+        takes every default, including turning on the Floor's hire, goal, control, answer
+        and board actions when the file turns none on (terminal, renew, retire and the
+        git and diff views stay off), --set is `config set`, --enroll enrolls the
+        current repository, --hire hires a first
         agent there, and everything after `--` is
         the completion check that the workspace and the goal share (default: at
         most 5 turns a goal, 600 seconds a check). A running daemon with other

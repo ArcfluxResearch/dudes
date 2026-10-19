@@ -44,8 +44,8 @@ pub struct Plan {
     /// The operator agreed that a running daemon with other settings is stopped and started
     /// again, which ends any turn it is running.
     pub restart: bool,
-    /// `--yes`: turn the Floor's actions on, as the guided question's default does, unless the
-    /// file already chooses its own mix.
+    /// `--yes`: turn on the Floor actions the first task needs, unless the file already turns
+    /// any Floor action on.
     pub floor_default: bool,
 }
 
@@ -390,6 +390,27 @@ pub fn floor_is_uniform(settings: &Settings) -> bool {
         .filter(|key| settings.satisfies(**key))
         .count();
     on == 0 || on == FLOOR_ACTIONS.len()
+}
+
+/// The Floor actions `--yes` turns on. Terminal, renew and retire stay as they are.
+const YES_ACTIONS: [Key; 5] = [Key::Answer, Key::Hire, Key::Control, Key::Goal, Key::Board];
+
+/// Turn on [`YES_ACTIONS`] when the file turns no Floor action on yet.
+///
+/// # Errors
+///
+/// [`Stopped`] when the file refuses a change.
+pub fn set_yes_floor(draft: &mut Draft, plan: &mut Plan) -> Result<(), Stopped> {
+    if FLOOR_ACTIONS
+        .iter()
+        .any(|key| draft.settings().satisfies(*key))
+    {
+        return Ok(());
+    }
+    for key in YES_ACTIONS {
+        set(draft, plan, key, true)?;
+    }
+    Ok(())
 }
 
 /// Turn every Floor action on or off, and Renew off with them.
@@ -1008,21 +1029,19 @@ mod tests {
         assert!(run.draft.settings().problems().is_empty(), "{shown}");
     }
 
-    /// `--yes` takes the guide's default: every Floor action on, ticket board included, and an
-    /// explicit later `--set` still wins. The git and diff views are not among them.
+    /// `--yes` turns on what the first task needs; terminal, renew, retire and the git views stay off.
     #[test]
-    fn the_floor_default_turns_the_actions_on_and_leaves_git_views_off() {
+    fn the_yes_floor_turns_on_five_actions_only() {
         let home = tempfile::tempdir().expect("a home");
         let mut draft = Draft::open(&home.path().join("config.toml")).expect("opens");
-        assert!(floor_is_uniform(draft.settings()));
         let mut plan = Plan::default();
-        set_floor(&mut draft, &mut plan, true).expect("sets");
-        for key in ACTIONS {
+        set_yes_floor(&mut draft, &mut plan).expect("sets");
+        for key in YES_ACTIONS {
             assert!(draft.settings().satisfies(key), "{key}");
         }
-        assert!(draft.settings().satisfies(Key::Board));
-        assert!(!draft.settings().satisfies(Key::Git));
-        assert!(!draft.settings().satisfies(Key::Diff));
+        for key in [Key::Terminal, Key::Retire, Key::Renew, Key::Git, Key::Diff] {
+            assert!(!draft.settings().satisfies(key), "{key}");
+        }
     }
 
     /// A file that already mixes the switches keeps its mix and is told so, with no question.

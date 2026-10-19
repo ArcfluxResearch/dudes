@@ -1580,8 +1580,8 @@ fn start(env: &Environment, err: &mut dyn Write) -> Result<PingResult, Failure> 
 /// when the draft is written, before anything is.
 fn scripted(mut plan: Plan, draft: &mut Draft) -> Result<Plan, Failure> {
     let explicit = std::mem::take(&mut plan.changes);
-    if plan.floor_default && setup::floor_is_uniform(draft.settings()) {
-        setup::set_floor(draft, &mut plan, true).map_err(local)?;
+    if plan.floor_default {
+        setup::set_yes_floor(draft, &mut plan).map_err(local)?;
     }
     for change in explicit {
         draft.apply(&change).map_err(local)?;
