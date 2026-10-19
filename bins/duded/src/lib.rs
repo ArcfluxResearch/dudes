@@ -90,6 +90,8 @@ mod floor_websocket;
 pub mod git_read;
 pub mod hooks;
 mod instruction_sample;
+#[cfg(unix)]
+pub mod keeper;
 pub mod local_day;
 pub mod lock;
 mod mailbox;

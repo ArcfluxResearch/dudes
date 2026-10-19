@@ -617,6 +617,12 @@ fn invocation() -> anyhow::Result<duded::ExitCause> {
 
     let mut args = std::env::args_os().skip(1);
     if let Some(option) = args.next() {
+        // Before any daemon start-up: no lock, journal, runtime directory or tracing is touched.
+        #[cfg(unix)]
+        if option == "keeper" {
+            anyhow::ensure!(args.next().is_none(), "keeper takes no arguments");
+            return duded::keeper::run();
+        }
         if (option == "--version" || option == "-V") && args.next().is_none() {
             write_line(
                 &mut io::stdout(),
