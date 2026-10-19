@@ -1099,7 +1099,7 @@ fn detached_closing_transport(
         .name("closing time".to_owned())
         .spawn(move || {
             let result = (|| {
-                let mut client = connect_at(&socket)?;
+                let mut client = connect_at(&socket, Some(&runtime))?;
                 let credential = read_operator_credential(&runtime).map_err(local)?;
                 let params = Some(encode(&ClosingParams::Announce)?);
                 let response =
@@ -1366,7 +1366,13 @@ fn login(
 ) -> Result<u8, Failure> {
     let doctor = operator_call(env, Method::SystemDoctor, None)
         .map_err(|failure| match failure {
-            Failure::Unreachable(_) => failure.noted("start it with dudes start"),
+            Failure::Unreachable(_)
+                if env.socket().is_ok_and(|socket| {
+                    crate::quickstart::check_socket_path(socket, false).is_ok()
+                }) =>
+            {
+                failure.noted("start it with dudes start")
+            }
             other => other,
         })
         .and_then(typed::<DoctorResult>)?;
@@ -2691,12 +2697,13 @@ fn connect(env: &Environment) -> Result<Socket, Failure> {
     let socket = env
         .socket()
         .map_err(|missing| Failure::Other(Message::Local(missing.to_string())))?;
-    connect_at(socket)
+    connect_at(socket, env.runtime_dir().ok())
 }
 
-fn connect_at(socket: &Path) -> Result<Socket, Failure> {
+fn connect_at(socket: &Path, runtime_dir: Option<&Path>) -> Result<Socket, Failure> {
     LocalClient::connect(socket).map_err(|error| {
-        if let Err(too_long) = crate::quickstart::check_socket_path(socket) {
+        let derived = crate::quickstart::is_derived_socket(socket, runtime_dir);
+        if let Err(too_long) = crate::quickstart::check_socket_path(socket, derived) {
             return Failure::Unreachable(format!("cannot reach the daemon: {too_long}"));
         }
         Failure::Unreachable(format!(
