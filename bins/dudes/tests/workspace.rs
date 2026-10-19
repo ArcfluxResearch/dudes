@@ -1106,9 +1106,24 @@ fn the_refusal_names_the_rule_and_a_way_out() {
     );
     assert!(text.contains("could change it"), "{text}");
     assert!(text.contains("installed outside the repository"), "{text}");
-    assert!(text.contains("`sh ./test.sh`"), "{text}");
+    assert!(text.contains("`sh ./test.sh` for a shell script"), "{text}");
     assert!(text.contains("review its changes"), "{text}");
     workspace::add(&config, &new_workspace(&here, &["sh", "test.sh"])).expect("sh test.sh is fine");
+}
+
+#[test]
+fn the_example_command_quotes_a_program_with_whitespace() {
+    let root = tempfile::tempdir().expect("a root");
+    let here = repo(root.path(), "app");
+    std::fs::write(here.join("my check.sh"), "").unwrap();
+    let config = root.path().join("operator.toml");
+    let error = workspace::add(&config, &new_workspace(&here, &["./my check.sh"]))
+        .expect_err("a program inside the repository");
+    let text = error.to_string();
+    assert!(
+        text.contains("`sh './my check.sh'` for a shell script"),
+        "{text}"
+    );
 }
 
 #[test]
