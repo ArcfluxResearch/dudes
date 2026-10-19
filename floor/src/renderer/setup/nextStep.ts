@@ -43,7 +43,8 @@ export function firstTaskOffer(floor: FloorState): FirstTaskOffer | null {
   if (!floor.ticket || tickets(floor.cards).some((card) => card.status !== 'done')) return null;
   const free = floor.agents.filter((row) => {
     const fields = fieldsOf(row);
-    return fields.status === 'idle' && fields.goal === '' && row.retired !== true && row.paused !== true
+    return (fields.status === 'idle' || fields.status === 'done') && (fields.goal === '' || fields.goalStatus === 'achieved'
+      || fields.goalStatus === 'abandoned') && row.retired !== true && row.paused !== true
       && row.halted !== true;
   });
   const agents: FirstTaskAgent[] = [];

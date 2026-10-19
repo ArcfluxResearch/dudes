@@ -424,7 +424,7 @@ test('the four sections show only enrolled choices and the configured limits', (
     sections[key] = render();
   }
   const index = [...sections.identity.matchAll(/class="hire-index-label">([^<]+)</g)].map((match) => match[1]);
-  assert.deepEqual(index, ['Name', 'Project', 'App', 'First task']);
+  assert.deepEqual(index, ['Who', 'Project', 'App', 'First task']);
   assert.equal((sections.identity.match(/aria-current="step"/g) ?? []).length, 1);
 
   const names = (html) => [...html.matchAll(/<(?:input|textarea)[^>]*name="([^"]+)"/g)].map((match) => match[1]);

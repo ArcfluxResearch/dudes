@@ -55,7 +55,17 @@ test('an idle agent is offered one text box and a Start button, with the check n
   assert.match(html, /Give Kim a task/);
   assert.match(html, /<textarea/);
   assert.match(html, />Start<\/button>/);
-  assert.match(html, /Dudes runs <code>default passes<\/code>/);
+  assert.match(html, /Dudes checks it itself: <code>default passes<\/code>/);
+});
+
+test('an agent whose last goal was achieved is free for the next task, one with a live goal is not', () => {
+  const goal = (status) => ({ id: '01JBQ8XK2M3N4P5Q6R7S8T9VWY', text: 'Make it pass', status });
+  open({ projection: { lsn: 1, agents: [agent(ADA, 'Kim', { status: 'done', goal: goal('achieved') })], cards: [] } },
+    found(true, false));
+  assert.match(card(), /Give Kim a task/);
+  open({ projection: { lsn: 2, agents: [agent(ADA, 'Kim', { status: 'idle', goal: goal('in_progress') })], cards: [] } },
+    found(true, false));
+  assert.equal(card(), '');
 });
 
 test('the offer waits while any ticket is open, and names the install command when the engine is missing', () => {

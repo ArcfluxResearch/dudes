@@ -44,7 +44,7 @@ export type SectionKey = 'identity' | 'workspace' | 'engine' | 'briefing';
 /** The four sections, in order; one is shown at a time. */
 export const SECTIONS: readonly { readonly key: SectionKey; readonly label: string; readonly hint: string }[] =
   Object.freeze([
-    { key: 'identity', label: 'Name', hint: 'Who you are hiring' },
+    { key: 'identity', label: 'Who', hint: 'Name and look' },
     { key: 'workspace', label: 'Project', hint: 'Where they work' },
     { key: 'engine', label: 'App', hint: 'Claude, Codex or Pi' },
     { key: 'briefing', label: 'First task', hint: 'What to do first' },

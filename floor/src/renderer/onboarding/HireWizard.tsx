@@ -174,7 +174,7 @@ function HireForm({ hire, floor, onClose }: {
           {hire.section !== 'identity' ? null : (
             <>
               <div className="hire-field">
-                <label htmlFor="hire-name">What is this agent called?</label>
+                <label htmlFor="hire-name">Name</label>
                 <input id="hire-name" name="name" type="text" autoComplete="off" spellCheck={false}
                   value={hire.draft.name} disabled={frozen}
                   aria-invalid={invalid('name')} aria-describedby={described('name')}
