@@ -55,7 +55,7 @@ test('an idle agent is offered one text box and a Start button, with the check n
   assert.match(html, /Give Kim a task/);
   assert.match(html, /<textarea/);
   assert.match(html, />Start<\/button>/);
-  assert.match(html, /Dudes checks it itself: <code>default passes<\/code>/);
+  assert.match(html, /Dudes checks it itself \(default passes\) before you review it\./);
 });
 
 test('an agent whose last goal was achieved is free for the next task, one with a live goal is not', () => {
@@ -88,4 +88,17 @@ test('with no agent the card says how to hire one, and Hire preselects the one p
   assert.equal(draft.engine, 'codex', 'Claude is not installed, so Codex is the choice');
   open({}, found(false, false));
   assert.match(card(), /Install one, then press Recheck/);
+});
+
+test('Hire says nothing about length until a field is near its limit, then says plainly that it is too long', () => {
+  const { lengthNote } = hire;
+  assert.equal(lengthNote('Kim', 128), null);
+  assert.equal(lengthNote('k'.repeat(116), 128), 'This is almost too long.');
+  assert.equal(lengthNote('k'.repeat(129), 128), 'This is too long. Shorten it.');
+  assert.equal(lengthNote('é'.repeat(65), 128), 'This is too long. Shorten it.');
+});
+
+test('Hire asks for the first task in plain words', () => {
+  const problems = hire.problemsIn({ name: 'Kim', role: '', workspaceId: '', goalText: '' }, { onboarding: null, checks: null });
+  assert.ok(problems.some((entry) => entry.message === 'Say what the agent should do first.'), JSON.stringify(problems));
 });

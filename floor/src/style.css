@@ -845,7 +845,7 @@ samp,
 
   .office-slot {
     order: -1;
-    height: 20rem;
+    min-height: 20rem;
   }
 
   .crew-list,
@@ -3208,7 +3208,15 @@ samp,
 }
 
 /* The first next step: one card over the office, where an empty floor needs a person to act. */
-.floor-stage > .first-task {
+/* Over the office only, so it never covers the strip of who needs you below it. */
+.office-area {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+.office-area > .first-task {
   position: absolute;
   inset: auto 0 1.25rem 0;
   z-index: var(--layer-panels);
@@ -3270,6 +3278,7 @@ samp,
 .hire-install { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
 @media (max-width: 800px) {
   .hire-dialog { height: 100dvh; }
+}
 
 .office-tag small.office-tag-need[data-need='true'] {
   color: #ffd27a;
@@ -3457,6 +3466,13 @@ samp,
   .needs-strip {
     order: -1;
     margin: 0;
+  }
+
+  .office-area > .first-task {
+    position: static;
+    width: auto;
+    max-height: none;
+    margin: 0.5rem;
   }
 
   .needs-cards {

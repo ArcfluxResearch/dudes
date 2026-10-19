@@ -19,10 +19,10 @@ import { HIRE_ENGINES, formatUsdMicros, isHireEngine } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
 import { checkRefusalText, checksFor, choiceLabel } from './checks.ts';
 import {
-  LIMITS, NO_CHECK, PARTIAL_REASONS, SECTIONS, browserHireDeps, checkHireStatus, chosenCheck, chosenWorkspace,
+  LIMITS, NO_CHECK, lengthNote, PARTIAL_REASONS, SECTIONS, browserHireDeps, checkHireStatus, chosenCheck, chosenWorkspace,
   chosenEngine, editDraft, freshSince, getHireState, mayCheckRecorded, moveSection, presenceOf, releasable,
   releaseAttempt,
-  sessionAfterRefusal, showSection, startAnotherHire, submitHire, subscribeToHire, trimAsciiSpace, utf8Bytes,
+  sessionAfterRefusal, showSection, startAnotherHire, submitHire, subscribeToHire,
 } from './hire.ts';
 import type { FieldName, HireAttempt, HireDraft, HireOutcome, HireState } from './hire.ts';
 
@@ -49,8 +49,9 @@ function goalLine(row: AgentRow): string {
   return `${text(goal.text)} · ${text(goal.status)}`;
 }
 
-function bytesOf(value: string): number {
-  return utf8Bytes(trimAsciiSpace(value));
+function LengthNote({ value, limit }: { value: string; limit: number }) {
+  const note = lengthNote(value, limit);
+  return note === null ? null : <p className="hire-count" role="status">{note}</p>;
 }
 
 function cap(value: string | null, unit: 'usd' | 'tokens', perDay = false): string {
@@ -179,7 +180,7 @@ function HireForm({ hire, floor, onClose }: {
                   value={hire.draft.name} disabled={frozen}
                   aria-invalid={invalid('name')} aria-describedby={described('name')}
                   onChange={(event) => editDraft({ name: event.target.value })} />
-                <p className="hire-count">{bytesOf(hire.draft.name)} of {LIMITS.name} bytes</p>
+                <LengthNote value={hire.draft.name} limit={LIMITS.name} />
               </div>
               <details className="hire-more" open={invalid('role')}>
               <summary>Role and look</summary>
@@ -215,7 +216,8 @@ function HireForm({ hire, floor, onClose }: {
                   value={hire.draft.role} disabled={frozen}
                   aria-invalid={invalid('role')} aria-describedby={described('role')}
                   onChange={(event) => editDraft({ role: event.target.value })} />
-                <p className="hire-count">{bytesOf(hire.draft.role)} of {LIMITS.role} bytes. Left empty, the role is engineer.</p>
+                <LengthNote value={hire.draft.role} limit={LIMITS.role} />
+                <p className="hire-count">Left empty, the role is engineer.</p>
               </div>
               </details>
             </>
@@ -288,7 +290,7 @@ function HireForm({ hire, floor, onClose }: {
                   value={hire.draft.goalText} disabled={frozen}
                   aria-invalid={invalid('goal_text')} aria-describedby={described('goal_text')}
                   onChange={(event) => editDraft({ goalText: event.target.value })} />
-                <p className="hire-count">{bytesOf(hire.draft.goalText)} of {LIMITS.goal_text} bytes</p>
+                <LengthNote value={hire.draft.goalText} limit={LIMITS.goal_text} />
               </div>
               {workspace === null || catalog === null ? (
                 <p className="hire-note">Choose a project to see how this task is checked.</p>

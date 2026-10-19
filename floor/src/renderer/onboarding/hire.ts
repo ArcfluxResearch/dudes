@@ -56,6 +56,13 @@ export const DEFAULT_ROLE = 'engineer';
 /** Field limits in UTF-8 bytes, measured after trimming ASCII whitespace. */
 export const LIMITS = Object.freeze({ name: 128, role: 512, goal_text: 2048 });
 
+/** What to tell the person about a field's length: nothing until it is near the limit. */
+export function lengthNote(value: string, limit: number): string | null {
+  const used = utf8Bytes(trimAsciiSpace(value));
+  if (used > limit) return 'This is too long. Shorten it.';
+  return used >= limit * 0.9 ? 'This is almost too long.' : null;
+}
+
 export type FieldName = 'name' | 'role' | 'workspace_id' | 'engine' | 'check_id' | 'goal_text';
 
 /** What the page offers a Hire from: the enrolled workspaces, and the checks each offers. */
@@ -261,10 +268,10 @@ export function utf8Bytes(value: string): number {
   return UTF8.encode(value).length;
 }
 
-function bounded(label: string, value: string, limit: number): string | null {
+function bounded(label: string, value: string, limit: number, empty = `${label} is required.`): string | null {
   const bytes = utf8Bytes(trimAsciiSpace(value));
-  if (bytes === 0) return `${label} is required.`;
-  if (bytes > limit) return `${label} is ${bytes} UTF-8 bytes; the limit is ${limit}.`;
+  if (bytes === 0) return empty;
+  if (bytes > limit) return `${label} is too long. Shorten it.`;
   return null;
 }
 
@@ -296,7 +303,7 @@ export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldPr
   const name = bounded('Name', draft.name, LIMITS.name);
   if (name !== null) problems.push({ field: 'name', section: 'identity', message: name });
   if (utf8Bytes(trimAsciiSpace(draft.role)) > LIMITS.role) {
-    problems.push({ field: 'role', section: 'identity', message: `Role is longer than ${LIMITS.role} UTF-8 bytes.` });
+    problems.push({ field: 'role', section: 'identity', message: 'The role is too long. Shorten it.' });
   }
   const workspace = chosenWorkspace(draft, catalog);
   if (catalog === null) {
@@ -313,7 +320,7 @@ export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldPr
   if (workspace !== null && chosenCheck(draft, offer.checks) === null) {
     problems.push({ field: 'check_id', section: 'briefing', message: NO_CHECK });
   }
-  const goal = bounded('Initial goal', draft.goalText, LIMITS.goal_text);
+  const goal = bounded('The first task', draft.goalText, LIMITS.goal_text, 'Say what the agent should do first.');
   if (goal !== null) problems.push({ field: 'goal_text', section: 'briefing', message: goal });
   return problems;
 }

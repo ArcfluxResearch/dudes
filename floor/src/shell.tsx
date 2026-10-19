@@ -390,13 +390,15 @@ function SignedInShell() {
           onHire={openHire} onHireAgain={hireAgain}
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
         <div className="office-slot">
-          <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
-            onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} />
+          <div className="office-area">
+            <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
+              onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} />
+            <FirstTask floor={floor} onHire={openHire} />
+          </div>
           {focused ? null : <NeedsStrip agents={floor.agents} cards={floor.cards} selectedId={currentSelectedId}
             selectable={selectable} stale={floor.stale} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
             onOpenTicket={openCard} />}
         </div>
-        <FirstTask floor={floor} onHire={openHire} />
         <DoneNotices notices={floor.doneNotices} leaveFocusTo={home} />
         <div className="stage-center">
           <TerminalPanel floor={floor} theme={effectiveTheme} />

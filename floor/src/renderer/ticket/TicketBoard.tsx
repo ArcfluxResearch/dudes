@@ -121,8 +121,7 @@ export function FirstTaskForm({ floor, agents }: { readonly floor: FloorState; r
     <textarea id={`${ids}-task`} rows={3} maxLength={8192} value={task} autoFocus
       placeholder="For example: add a dark mode switch to the settings page"
       onChange={(event) => setTask(event.target.value)} />
-    <p className="first-task-note">When {agent.name} says it is finished, Dudes checks it itself: <code>{agent.check.label}</code>.
-      You review the result before it counts.</p>
+    <p className="first-task-note">When {agent.name} says it is finished, Dudes checks it itself ({agent.check.label}) before you review it.</p>
     <TicketNotice />
     <button type="submit" className="first-task-start" disabled={!ready}>{sending ? 'Starting…' : 'Start'}</button>
   </form>;
