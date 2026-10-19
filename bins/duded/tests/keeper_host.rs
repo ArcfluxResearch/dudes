@@ -15,7 +15,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use dudes_host::RealHost;
@@ -25,6 +25,9 @@ use dudes_supervisor::ProcessHost as _;
 use dudes_supervisor::host::{
     AdoptionKey, ContainmentUnproven, KillOutcome, Liveness, SpawnResult,
 };
+use tracing::field::{Field, Visit};
+use tracing::span::{Attributes, Id, Record as SpanRecord};
+use tracing::{Event, Level, Metadata, Subscriber};
 
 const DUDED: &str = env!("CARGO_BIN_EXE_duded");
 const HELPER_DIR: &str = "KEEPER_HOST_HELPER_DIR";
@@ -232,6 +235,92 @@ fn a_keeper_that_cannot_start_fails_the_launch_and_no_task_is_written() {
         fs::read(&task).map_or(true, |bytes| bytes.is_empty()),
         "a task reached an agent whose keeper could not start"
     );
+}
+
+#[derive(Clone, Default)]
+struct Warnings(Arc<Mutex<Vec<String>>>);
+
+struct Fields(Vec<String>);
+
+impl Visit for Fields {
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        self.0.push(format!("{}={value:?}", field.name()));
+    }
+}
+
+impl Subscriber for Warnings {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        *metadata.level() <= Level::WARN
+    }
+
+    fn new_span(&self, _: &Attributes<'_>) -> Id {
+        Id::from_u64(1)
+    }
+
+    fn record(&self, _: &Id, _: &SpanRecord<'_>) {}
+
+    fn record_follows_from(&self, _: &Id, _: &Id) {}
+
+    fn event(&self, event: &Event<'_>) {
+        let mut fields = Fields(Vec::new());
+        event.record(&mut fields);
+        self.0
+            .lock()
+            .expect("warnings lock")
+            .push(fields.0.join(" "));
+    }
+
+    fn enter(&self, _: &Id) {}
+
+    fn exit(&self, _: &Id) {}
+}
+
+/// The keeper runs on a thread of the host's own, so the subscriber is the process's default.
+#[test]
+fn a_keeper_that_ends_while_its_agent_runs_is_reported() {
+    let warnings = Warnings::default();
+    tracing::subscriber::set_global_default(warnings.clone()).expect("the only subscriber");
+
+    let dir = tempfile::tempdir().expect("scratch");
+    let keeper = dir.path().join("keeper");
+    fs::write(&keeper, "#!/bin/sh\nexit 3\n").expect("keeper script");
+    fs::set_permissions(&keeper, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("executable");
+
+    let mut host = RealHost::with_grace(Duration::from_secs(5)).with_keeper(keeper);
+    let key = launch(&mut host, "exec sleep 300", dir.path());
+
+    let reported = |pid: u32| {
+        warnings
+            .0
+            .lock()
+            .expect("warnings")
+            .iter()
+            .find(|report| report.contains(&format!("agent_pid={pid}")))
+            .cloned()
+    };
+    let deadline = Instant::now() + BOUND;
+    let report = loop {
+        if let Some(report) = reported(key.pid) {
+            break report;
+        }
+        assert!(Instant::now() < deadline, "no report of the early keeper");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(report.contains("exit status: 3"), "{report}");
+
+    let mut kept = keeping_host(Duration::from_secs(5));
+    let ended = launch(&mut kept, "exec sleep 300", dir.path());
+    shut_down(&mut kept);
+    await_group_empty(ended.pid, Duration::from_secs(5));
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        reported(ended.pid),
+        None,
+        "a keeper's own ending was reported"
+    );
+
+    shut_down(&mut host);
 }
 
 #[test]

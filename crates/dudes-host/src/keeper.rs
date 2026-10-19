@@ -11,13 +11,14 @@
 //! it to the agent's group and owns it; what it does lives with the daemon.
 
 use std::io;
-use std::os::unix::process::CommandExt as _;
+use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
 
 use nix::sys::signal::{SigSet, SigmaskHow};
+use rustix::process::Signal;
 
 /// The write end of a running keeper's pipe.
 ///
@@ -78,8 +79,10 @@ pub(crate) fn start(executable: &Path, leader: u32) -> io::Result<Lifeline> {
     match thread::Builder::new()
         .name(format!("dudes-keeper-{leader}"))
         .spawn(move || {
-            if let Ok(mut child) = received.recv() {
-                let _ = child.wait();
+            if let Ok(mut child) = received.recv()
+                && let Ok(status) = child.wait()
+            {
+                report_unexpected_end(leader, status);
             }
         }) {
         Ok(_) => match handover.send(child) {
@@ -95,6 +98,19 @@ pub(crate) fn start(executable: &Path, leader: u32) -> io::Result<Lifeline> {
             end(child);
             Err(error)
         }
+    }
+}
+
+/// A keeper ends the group, itself included, with `SIGKILL`, and so does the host's own sweep, so
+/// that is the only ending that is silent. Any other ending leaves the agent running with nothing
+/// to end it when the daemon dies.
+fn report_unexpected_end(leader: u32, status: ExitStatus) {
+    if status.signal() != Some(Signal::KILL.as_raw()) {
+        tracing::warn!(
+            agent_pid = leader,
+            %status,
+            "the keeper ended without ending the agent's group, so the agent no longer ends with the daemon"
+        );
     }
 }
 
