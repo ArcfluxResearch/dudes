@@ -25,22 +25,20 @@ export function automaticHoldOf(row: Readonly<Record<string, unknown>>): Automat
   return null;
 }
 
-/** The program each hireable engine runs, and the config table that can point it elsewhere. */
-const ENGINES: Readonly<Record<string, { readonly name: string; readonly program: string; readonly table?: string }>> = Object.freeze({
+/** The program each hireable engine runs. */
+const ENGINES: Readonly<Record<string, { readonly name: string; readonly program: string }>> = Object.freeze({
   claude: { name: 'Claude Code', program: 'claude' },
-  codex: { name: 'Codex', program: 'codex', table: 'providers.codex' },
-  pi: { name: 'Pi', program: 'pi', table: 'providers.pi' },
+  codex: { name: 'Codex', program: 'codex' },
+  pi: { name: 'Pi', program: 'pi' },
 });
 
-/** The recorded reason ends in the error kind and names no engine, so a missing program is named here. */
+/** The recorded reason ends in the error kind and names no engine, and other not-found errors share it, so the program is only the usual cause. */
 function missingEngineHint(hold: AutomaticHold, provider: unknown): string {
   if (hold.kind !== 'launch_failed' || !hold.reason.endsWith('(NotFound)')) return '';
   const engine = typeof provider === 'string' && Object.hasOwn(ENGINES, provider) ? ENGINES[provider] : undefined;
   if (engine === undefined) return '';
-  const found = engine.table === undefined ? `\`${engine.program}\``
-    : `\`${engine.program}\`, or the command set under [${engine.table}]`;
-  return `. Dudes could not find ${engine.name} (${found}). Install it and sign in, then resume this agent, `
-    + 'or hire an agent with an engine you have.';
+  return `. Dudes could not start ${engine.name}, usually because ${engine.program} is not installed. `
+    + 'Install it and sign in, then resume this agent, or hire an agent with an engine you have.';
 }
 
 export function automaticHoldText(hold: AutomaticHold, provider?: unknown): string {

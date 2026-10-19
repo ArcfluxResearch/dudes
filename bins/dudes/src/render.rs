@@ -797,16 +797,16 @@ pub fn agents(out: &mut dyn Write, machine: bool, agents: &[AgentView]) -> io::R
     Ok(())
 }
 
-/// The engines a newcomer may hire, with the program the daemon looks for and the config table
-/// that can point it elsewhere.
-const ENGINES: [(Provider, &str, &str, Option<&str>); 3] = [
-    (Provider::Claude, "Claude Code", "claude", None),
-    (Provider::Codex, "Codex", "codex", Some("providers.codex")),
-    (Provider::Pi, "Pi", "pi", Some("providers.pi")),
+/// The engines a newcomer may hire and the program the daemon looks for.
+const ENGINES: [(Provider, &str, &str); 3] = [
+    (Provider::Claude, "Claude Code", "claude"),
+    (Provider::Codex, "Codex", "codex"),
+    (Provider::Pi, "Pi", "pi"),
 ];
 
-/// What to do about a launch that failed because the engine's program was not found. The recorded
-/// reason ends in the error kind and names no engine.
+/// What to do about a launch that failed with a not-found error. The recorded reason ends in the
+/// error kind and names no engine, and other not-found errors share it, so the program is only
+/// the usual cause.
 fn missing_engine_hint(provider: Provider, cause: &AutomaticHold, agent: &str) -> Option<String> {
     let AutomaticHold::LaunchFailed { reason } = cause else {
         return None;
@@ -814,13 +814,9 @@ fn missing_engine_hint(provider: Provider, cause: &AutomaticHold, agent: &str) -
     if !reason.ends_with("(NotFound)") {
         return None;
     }
-    let (_, name, program, table) = ENGINES.into_iter().find(|(known, ..)| *known == provider)?;
-    let found = match table {
-        Some(table) => format!("`{program}`, or the command set under [{table}]"),
-        None => format!("`{program}`"),
-    };
+    let (_, name, program) = ENGINES.into_iter().find(|(known, ..)| *known == provider)?;
     Some(format!(
-        "Dudes could not find {name} ({found}). Install it and sign in, then run `dudes resume {agent}`, or hire an agent with an engine you have."
+        "Dudes could not start {name}, usually because `{program}` is not installed. Install it and sign in, then run `dudes resume {agent}`, or hire an agent with an engine you have."
     ))
 }
 
@@ -1525,26 +1521,28 @@ mod tests {
         assert_eq!(
             human,
             format!(
-                "{id}  Hector  infra  Claude  Hold\n  held: launch failed: managed process could not launch (NotFound); fix the cause and resume\n  Dudes could not find Claude Code (`claude`). Install it and sign in, then run `dudes resume {id}`, or hire an agent with an engine you have.\n",
+                "{id}  Hector  infra  Claude  Hold\n  held: launch failed: managed process could not launch (NotFound); fix the cause and resume\n  Dudes could not start Claude Code, usually because `claude` is not installed. Install it and sign in, then run `dudes resume {id}`, or hire an agent with an engine you have.\n",
                 id = an_agent()
             )
         );
     }
 
     #[test]
-    fn a_missing_configurable_engine_names_its_config_table() {
-        let agent: AgentView = serde_json::from_value(serde_json::json!({
-            "id": an_agent(), "name": "Hector", "role": "infra", "department": "infra",
-            "provider": "codex", "status": "idle", "mode": "managed",
-            "automatic_hold": { "kind": "launch_failed", "reason": "managed process could not launch (NotFound)" }
-        })).expect("agent view");
-        let human = text(|out| agents(out, false, &[agent]));
-        assert!(
-            human.contains(
-                "Dudes could not find Codex (`codex`, or the command set under [providers.codex])."
-            ),
-            "{human}"
-        );
+    fn a_not_found_launch_names_the_usual_program() {
+        for (provider, name, program) in [("codex", "Codex", "codex"), ("pi", "Pi", "pi")] {
+            let agent: AgentView = serde_json::from_value(serde_json::json!({
+                "id": an_agent(), "name": "Hector", "role": "infra", "department": "infra",
+                "provider": provider, "status": "idle", "mode": "managed",
+                "automatic_hold": { "kind": "launch_failed", "reason": "managed process could not launch (NotFound)" }
+            })).expect("agent view");
+            let human = text(|out| agents(out, false, &[agent]));
+            assert!(
+                human.contains(&format!(
+                    "Dudes could not start {name}, usually because `{program}` is not installed. Install it"
+                )),
+                "{human}"
+            );
+        }
     }
 
     #[test]
@@ -1554,7 +1552,7 @@ mod tests {
             "provider": "claude", "status": "idle", "mode": "managed",
             "automatic_hold": { "kind": "launch_failed", "reason": "managed process could not launch (PermissionDenied)" }
         })).expect("agent view");
-        assert!(!text(|out| agents(out, false, &[agent])).contains("Dudes could not find"));
+        assert!(!text(|out| agents(out, false, &[agent])).contains("Dudes could not start"));
     }
 
     /// OSC 52 (writes the clipboard), a CSI and its one-byte C1 form, DEL, a newline that starts a
