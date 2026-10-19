@@ -601,6 +601,22 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Delete a whole folder, its license notices last: they mark it as part of an install, so a run that
+/// stops early must leave them for the rerun to recognise the install and keep the programs.
+fn remove_whole(path: &Path) -> std::io::Result<()> {
+    if !std::fs::symlink_metadata(path)?.is_dir() {
+        return remove_path(path);
+    }
+    let (notices, ordinary): (Vec<_>, Vec<_>) = std::fs::read_dir(path)?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .partition(|child| NOTICES.iter().any(|name| child.file_name() == *name));
+    for child in ordinary.iter().chain(&notices) {
+        remove_path(&child.path())?;
+    }
+    std::fs::remove_dir(path)
+}
+
 /// Delete the known entries of a folder a setting chose, markers last, then the folder if empty.
 fn remove_known(entry: &Entry, known: Known, outcome: &mut Outcome) {
     let Ok(listing) = std::fs::read_dir(&entry.path) else {
@@ -659,12 +675,19 @@ fn remove(entry: &Entry, home: &Path, outcome: &mut Outcome) {
     }
     match entry.removal {
         Removal::Known(known) => remove_known(entry, known, outcome),
-        Removal::Whole | Removal::File => match remove_path(&entry.path) {
-            Ok(()) => outcome.removed += 1,
-            Err(error) => outcome
-                .failed
-                .push(format!("{}: {error}", entry.path.display())),
-        },
+        Removal::Whole | Removal::File => {
+            let result = if entry.removal == Removal::Whole {
+                remove_whole(&entry.path)
+            } else {
+                remove_path(&entry.path)
+            };
+            match result {
+                Ok(()) => outcome.removed += 1,
+                Err(error) => outcome
+                    .failed
+                    .push(format!("{}: {error}", entry.path.display())),
+            }
+        }
     }
 }
 

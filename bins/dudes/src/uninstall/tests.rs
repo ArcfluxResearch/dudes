@@ -729,6 +729,7 @@ fn a_partial_failure_lists_what_remains_keeps_the_programs_and_a_rerun_finishes(
     ));
     assert!(out.contains(&format!("removed {}\n", l.runtime_dir.display())));
     assert!(fixture.bin().join("dudes").exists());
+    assert!(NOTICES.iter().all(|name| l.state_dir.join(name).exists()));
     let (code, out, err) = fixture.run(yes(), None, &Fake::default());
     assert_eq!((code, err.as_str()), (exit::SUCCESS, ""), "{out}");
     assert!(!l.state_dir.exists() && !fixture.bin().join("dudes").exists());
