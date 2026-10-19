@@ -1939,6 +1939,7 @@ impl World {
             // here would give one fact two owners.
             Record::BudgetDecision { .. } => {} // history, read from the journal
             Record::MemoryCondenseModelAdmitted { .. } => {} // history, read from the journal
+            Record::FloorPeerRefused { .. } => {} // audit only
             // The goal was installed above, through the one accessor every goal carrier shares.
             Record::GoalSet { .. } => {}
             // An edit changes words, not a card's status, so no board result it could hold moves.

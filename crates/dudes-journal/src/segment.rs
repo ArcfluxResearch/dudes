@@ -531,6 +531,7 @@ mod tests {
             | Record::LoopDecided { .. }
             | Record::BudgetDecision { .. }
             | Record::MemoryCondenseModelAdmitted { .. }
+            | Record::FloorPeerRefused { .. }
             | Record::BreakerBeat { .. }
             | Record::CardCreated { .. }
             | Record::CardTransition { .. }

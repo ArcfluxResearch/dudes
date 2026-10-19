@@ -116,9 +116,9 @@ pub use question_history::{
 pub use record::{
     Actor, BodyPath, BrowserNoteAttribution, BrowserNoteDestination, ClosingPhase,
     ConditionedMethod, ConditionedTarget, ConversationAnswerAuthority, ConversationChargeScope,
-    ConversationQuestionOrigin, Entry, ExitStatus, KillDeferredReason, KillReason, MailAct,
-    MailFrom, MailTo, PayloadDigest, PayloadRef, PeerProvenance, PtyCloseOutcome, PtyWriteOutcome,
-    Record, RecordKind, TurnOutcome, WorktreeRemoval,
+    ConversationQuestionOrigin, Entry, ExitStatus, FloorPeerRefusal, KillDeferredReason,
+    KillReason, MailAct, MailFrom, MailTo, PayloadDigest, PayloadRef, PeerProvenance,
+    PtyCloseOutcome, PtyWriteOutcome, Record, RecordKind, TurnOutcome, WorktreeRemoval,
 };
 pub use reply::{HookDecision, HookReply, VendorReply};
 pub use rpc::hook::{HookToken, InvalidHookToken};

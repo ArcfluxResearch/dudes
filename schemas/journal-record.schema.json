@@ -1615,6 +1615,31 @@
         }
       ]
     },
+    "FloorPeerRefusal": {
+      "description": "Why the Floor refused a request on the strength of its connection's owner.",
+      "oneOf": [
+        {
+          "const": "agent",
+          "description": "The owner lies inside a live agent's process tree or shares its process group.",
+          "type": "string"
+        },
+        {
+          "const": "no_owner",
+          "description": "No owner could be found for the connection.",
+          "type": "string"
+        },
+        {
+          "const": "other_user",
+          "description": "The owner runs as a different user from the daemon.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "This platform cannot find the owner, so the Floor only shows.",
+          "type": "string"
+        }
+      ]
+    },
     "Gate": {
       "description": "The seven gates of `decide()`, in the order they are consulted (invariant 5).",
       "oneOf": [
@@ -10223,6 +10248,40 @@
         "t",
         "claim",
         "evidence"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The Floor refused one request because the process on the other end of its connection\ncould not be shown to be outside every agent. Audit only: it changes no projection.\n\nThe daemon writes at most one per agent per minute, and one more for refusals that name no\nagent, so a looping agent cannot fill the journal.",
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The agent whose process tree held the connection's owner, when the refusal found one."
+        },
+        "reason": {
+          "$ref": "#/$defs/FloorPeerRefusal",
+          "description": "Why the request was refused."
+        },
+        "route": {
+          "description": "The Floor route the request asked for.",
+          "type": "string"
+        },
+        "t": {
+          "const": "floor_peer_refused",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "route",
+        "reason"
       ],
       "type": "object"
     }

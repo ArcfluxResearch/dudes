@@ -179,6 +179,8 @@ fn placement(kind: RecordKind) -> Placement {
         // The daemon's own pre-spawn admission audit for a memory-condense model call
         //: inert in every projection for the same reason `BudgetDecision` is.
         RecordKind::MemoryCondenseModelAdmitted => At(45),
+        // A Floor audit record: inert in every projection, like the admission audit above.
+        RecordKind::FloorPeerRefused => At(46),
         RecordKind::WorktreeLeased | RecordKind::WorktreeRemoved => Placement::Out(
             "the lease lifecycle needs its own agent and removal order; tests/worktrees.rs replays it with and without checkpoints",
         ),

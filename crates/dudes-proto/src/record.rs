@@ -1807,6 +1807,20 @@ pub enum Record {
     RecoveryAuthorized(Box<crate::recovery::RecoveryAuthorized>),
     /// Durable closure of unused recovery consent on exact evidence.
     RecoveryInvalidated(crate::recovery::RecoveryInvalidated),
+    /// The Floor refused one request because the process on the other end of its connection
+    /// could not be shown to be outside every agent. Audit only: it changes no projection.
+    ///
+    /// The daemon writes at most one per agent per minute, and one more for refusals that name no
+    /// agent, so a looping agent cannot fill the journal.
+    FloorPeerRefused {
+        /// The Floor route the request asked for.
+        route: String,
+        /// The agent whose process tree held the connection's owner, when the refusal found one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<AgentId>,
+        /// Why the request was refused.
+        reason: FloorPeerRefusal,
+    },
 }
 
 /// Who removed a worktree.
@@ -1863,6 +1877,20 @@ pub enum PtyCloseOutcome {
         /// Host error retained for the retry audit.
         error: String,
     },
+}
+
+/// Why the Floor refused a request on the strength of its connection's owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FloorPeerRefusal {
+    /// The owner lies inside a live agent's process tree or shares its process group.
+    Agent,
+    /// No owner could be found for the connection.
+    NoOwner,
+    /// The owner runs as a different user from the daemon.
+    OtherUser,
+    /// This platform cannot find the owner, so the Floor only shows.
+    Unsupported,
 }
 
 /// Which agent tree, if any, the daemon independently resolved for a socket peer.
@@ -2077,6 +2105,7 @@ impl Record {
             Self::RecoveryRequired(_) => RecordKind::RecoveryRequired,
             Self::RecoveryAuthorized(_) => RecordKind::RecoveryAuthorized,
             Self::RecoveryInvalidated(_) => RecordKind::RecoveryInvalidated,
+            Self::FloorPeerRefused { .. } => RecordKind::FloorPeerRefused,
         }
     }
 
@@ -2272,6 +2301,8 @@ pub enum RecordKind {
     RecoveryAuthorized = 83,
     /// [`Record::RecoveryInvalidated`].
     RecoveryInvalidated = 84,
+    /// [`Record::FloorPeerRefused`].
+    FloorPeerRefused = 85,
 }
 
 impl RecordKind {
@@ -2328,8 +2359,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 84] {
-        let mut kinds = [Self::AgentHired; 84];
+    const fn known_kinds() -> [Self; 85] {
+        let mut kinds = [Self::AgentHired; 85];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2373,6 +2404,7 @@ impl RecordKind {
         kinds[81] = Self::RecoveryRequired;
         kinds[82] = Self::RecoveryAuthorized;
         kinds[83] = Self::RecoveryInvalidated;
+        kinds[84] = Self::FloorPeerRefused;
         kinds
     }
 
@@ -3253,6 +3285,11 @@ pub mod samples {
                     },
                 })
             }
+            RecordKind::FloorPeerRefused => Record::FloorPeerRefused {
+                route: "/floor/answer".to_owned(),
+                agent: Some(agent()),
+                reason: FloorPeerRefusal::Agent,
+            },
             RecordKind::AgentRenamed => Record::AgentRenamed {
                 id: agent(),
                 name: "Kim renamed".to_owned(),
@@ -3664,7 +3701,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 84);
+        assert_eq!(RecordKind::KNOWN.len(), 85);
         for &kind in &RecordKind::KNOWN[46..66] {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys() {
@@ -4167,7 +4204,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            84,
+            85,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -5165,8 +5202,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 84);
-        assert_eq!(RecordKind::from_tag(85), None);
+        assert_eq!(RecordKind::KNOWN.len(), 85);
+        assert_eq!(RecordKind::from_tag(86), None);
     }
 
     const TICKET_KINDS: [(RecordKind, u16); 5] = [
@@ -5437,6 +5474,38 @@ mod tests {
 }
 
 #[cfg(test)]
+mod floor_peer_record_tests {
+    use super::{Entry, Record, RecordKind, samples};
+    use dudes_types::Timestamp;
+
+    #[test]
+    fn the_peer_refusal_is_a_compatible_audit_kind_with_a_fixed_tag() {
+        let kind = RecordKind::FloorPeerRefused;
+        assert_eq!(kind.tag(), 85);
+        assert_eq!(RecordKind::from_tag(85), Some(kind));
+        assert!(
+            !kind.requires_required_frame(),
+            "an older reader must skip it by length"
+        );
+        let entry = Entry {
+            at: Timestamp::UNIX_EPOCH,
+            record: samples::record(kind),
+        };
+        let encoded = serde_json::to_value(&entry).unwrap();
+        assert_eq!(encoded["t"], "floor_peer_refused");
+        assert_eq!(encoded["reason"], "agent");
+        assert_eq!(serde_json::from_value::<Entry>(encoded).unwrap(), entry);
+        let bare = serde_json::json!({
+            "at": 0, "t": "floor_peer_refused", "route": "/floor/stream", "reason": "no_owner"
+        });
+        assert!(matches!(
+            serde_json::from_value::<Entry>(bare).unwrap().record,
+            Record::FloorPeerRefused { agent: None, .. }
+        ));
+    }
+}
+
+#[cfg(test)]
 mod recovery_record_tests {
     use super::{Entry, RecordKind, samples};
     use dudes_types::Timestamp;
@@ -5467,6 +5536,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(85), None);
+        assert_eq!(RecordKind::from_tag(86), None);
     }
 }
