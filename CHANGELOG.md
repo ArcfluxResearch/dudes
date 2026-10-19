@@ -11,6 +11,25 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.91.0] - 2026-10-20
+
+### Highlights
+
+- **Give an agent a task from the first screen.** When an agent has nothing to do, the Floor shows "Give Kim a task" with one box and a Start button. Start creates the ticket and gives it to that agent in one step. With no agent yet, it says how to hire one, and with no coding app installed, it shows the install command. (#113)
+- **See who needs you at a glance.** A strip of agent cards under the office puts agents whose work is ready for you first, then those that need you, each with one button to review, answer or chat. Tags over the agents in the office say the same, and on a phone a ticket opens full screen with Accept and Ask for changes always in reach. (#114)
+- **Start in any repository.** Hiring from the Floor works where the project's tests already pass, and quick start in a repository with no test command offers a check that passes once the agent has changed a file, then you review the change. (#117)
+
+### Changes
+
+- Hire preselects an installed coding app and the only project, folds the role and look away, and keeps Hire on screen on a phone. A second agent in the same project gets a plain note on why its tickets wait for review, and how to avoid it. (#113)
+- The Floor uses plain words: "Dudes ran it" for a check the daemon ran, "Checks passed today", and the journal position only behind Details. (#113, #116)
+- `dudes quickstart --yes` turns on the Floor's hire, goal, control, answer and board actions when none are on yet. The terminal, renew, retire, changed-files and diff views stay off. (#115)
+
+### Fixes
+
+- The review sheet says in one sentence what Dudes could not check, the "is working on it" notice clears once a ticket is ready, and the sign-in and tab-limit messages say what to do. (#116)
+- Hire counts no bytes, and the task card says plainly how Dudes checks the work. (#115)
+
 ## [0.90.0] - 2026-10-19
 
 ### Highlights
@@ -250,7 +269,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.90.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.91.0...HEAD
+[0.91.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.90.0...v0.91.0
 [0.90.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.89.1...v0.90.0
 [0.89.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.89.0...v0.89.1
 [0.89.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.88.0...v0.89.0
