@@ -157,13 +157,13 @@ impl TicketReason {
                 "This work was interrupted. Recovery keeps the same goal and ticket round. Review recovery in the agent drawer when available, or run `dudes recovery inspect <agent-id>` in a terminal. Earlier effects may repeat."
             }
             Self::ProjectUnavailable => {
-                "This project is not set up any more. Enroll it again with `dudes workspace add`, then Give to agent, or Remove the ticket."
+                "This project is not set up any more. Enroll it again with `dudes project add`, then Give to agent, or Remove the ticket."
             }
             Self::CheckCannotRun => {
                 "The check cannot run: its program is missing, or it is a file inside the project that an agent could change. Install the program, or use one outside the project's repository. To use a script from the repository, run it through its interpreter, for example `sh test.sh` for a shell script; an agent can still edit that script, so review its changes before you accept the work. Then Give to agent. If the check itself is wrong, Remove this ticket and create it again."
             }
             Self::CeilingRequired => {
-                "Set a spending limit first, because your account bills per use. Add one to the project's enrollment (`dudes workspace add`) or the agent's hire, then Give to agent."
+                "Set a spending limit first, because your account bills per use. Add one to the project's enrollment (`dudes project add`) or the agent's hire, then Give to agent."
             }
             Self::ReserveMissing => {
                 "A per-turn spending reserve is missing. Run `dudes config set budget.per_turn_floor.usd <dollars>` (or `budget.per_turn_floor.tokens <count>`), then Give to agent."

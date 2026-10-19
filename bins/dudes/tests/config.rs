@@ -780,7 +780,7 @@ fn an_edit_names_workspace_changes_apart_and_points_to_the_reload() {
     assert_eq!(
         written,
         format!(
-            "{}the running daemon has not adopted the file's workspace changes (workspace repo_1 \
+            "{}the running daemon has not adopted the file's project changes (project repo_1 \
              added); `dudes project reload --apply {}` adopts them without a restart\n",
             restart(&config, "floor.answer"),
             check.sha256

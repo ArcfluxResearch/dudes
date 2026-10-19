@@ -152,9 +152,9 @@ fn default_enrollment_refuses_a_non_repo_and_falls_back_to_files_changed() {
     let unknown = cli.clone().args(["project", "add", "--id", "alpha"]).run();
     assert_eq!(unknown.code(), exit::SUCCESS, "{}", unknown.output());
     assert!(
-        unknown
-            .stdout
-            .starts_with("No test command was found here."),
+        unknown.stdout.contains(
+            "No test command was found here. The default check passes once the agent has edited"
+        ),
         "{}",
         unknown.output()
     );

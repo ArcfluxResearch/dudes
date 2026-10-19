@@ -363,7 +363,7 @@ fn a_script_whose_check_cannot_run_hires_without_a_goal() {
              give Kim a goal with: dudes goal --agent {agent} --text <text> --hop-cap 5 -- \
              <program> [args...]; project repo is enrolled with the same check, so the Floor \
              offers no hire there until you change its predicate_argv in {} and run dudes \
-             workspace reload, then dudes project reload --apply <sha256> (-32602)\n",
+             project reload, then dudes project reload --apply <sha256> (-32602)\n",
             layout.config().display()
         )
     );
