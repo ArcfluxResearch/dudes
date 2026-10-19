@@ -905,25 +905,25 @@ mod pty_tests {
     fn opening_a_terminal_waits_for_any_other_child_being_started() {
         let cwd = tempfile::tempdir().expect("scratch");
         let cwd = cwd.path().to_path_buf();
-        let (opened, opens) = std::sync::mpsc::channel();
-        let (early, opener) = dudes_host::serialize_spawn(|| {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (early, starter) = dudes_host::serialize_spawn(|| {
             let mut host = MainPtyHost::new();
-            let opener = std::thread::spawn(move || {
+            let starter = std::thread::spawn(move || {
                 let pty = open(&mut host, &cwd, &["/bin/sleep", "30"]);
-                let _ = opened.send(());
+                let _ = done_tx.send(());
                 (host, pty)
             });
-            let early = opens.recv_timeout(Duration::from_millis(300)).is_ok();
-            (early, opener)
+            let early = done_rx.recv_timeout(Duration::from_millis(300)).is_ok();
+            (early, starter)
         });
         assert!(
             !early,
             "the terminal forked while another child was being started"
         );
-        opens
+        done_rx
             .recv_timeout(WAIT)
             .expect("the terminal opens once the lock is free");
-        let (mut host, pty) = opener.join().expect("opener");
+        let (mut host, pty) = starter.join().expect("starter");
         assert!(matches!(host.close(pty), PtyCloseOutcome::Closed));
     }
 
