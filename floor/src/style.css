@@ -3206,3 +3206,268 @@ samp,
   margin: 1rem;
   color: var(--muted-ink);
 }
+
+.office-tag small.office-tag-need[data-need='true'] {
+  color: #ffd27a;
+  font-weight: 700;
+}
+
+.office-tag[data-compact='true'] small.office-tag-need[data-need='true'] {
+  display: block;
+}
+
+/* Who needs you: one card per agent under the office, the ones that need the operator first. */
+.needs-strip {
+  z-index: var(--layer-panels);
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  padding: 0.6rem 0.8rem 0.8rem;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.needs-strip-title {
+  margin: 0 0 0.45rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.needs-strip[data-waiting='0'] .needs-strip-title {
+  color: var(--muted-ink);
+  font-weight: 600;
+}
+
+.needs-cards {
+  display: flex;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0 0 0.2rem;
+  overflow-x: auto;
+  list-style: none;
+}
+
+.needs-card {
+  --state-ink: var(--status-idle);
+  display: flex;
+  flex: 1 0 12.5rem;
+  max-width: 17rem;
+  flex-direction: column;
+  gap: 0.4rem;
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card-background);
+}
+
+.needs-card[data-state='working'] { --state-ink: var(--status-running); }
+.needs-card[data-state='ready'] { --state-ink: var(--status-done); }
+.needs-card[data-state='needs-you'] { --state-ink: var(--status-waiting); }
+
+.needs-card[data-state='ready'],
+.needs-card[data-state='needs-you'] {
+  border-color: var(--state-ink);
+  box-shadow: 0 0 0 1px var(--state-ink);
+}
+
+.needs-card[data-state='ready'] { background: var(--success-background); }
+.needs-card[data-state='needs-you'] { background: var(--question); }
+
+.needs-card[data-selected='true'] {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 1px;
+}
+
+.needs-main {
+  display: grid;
+  grid-template-columns: 2.6rem minmax(0, 1fr);
+  grid-template-areas: 'face who' 'doing doing';
+  gap: 0.3rem 0.55rem;
+  align-items: center;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.needs-main:disabled {
+  cursor: default;
+}
+
+.needs-main:focus-visible,
+.needs-act:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+
+.needs-face {
+  grid-area: face;
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 50%;
+  background-color: var(--surface);
+  box-shadow: inset 0 0 0 2px var(--agent, var(--line));
+}
+
+.needs-who {
+  display: flex;
+  grid-area: who;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.needs-name {
+  overflow: hidden;
+  font-size: 0.9rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.needs-chip {
+  align-self: flex-start;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid var(--state-ink);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--state-ink);
+  font-size: 0.7rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.needs-doing {
+  display: -webkit-box;
+  grid-area: doing;
+  overflow: hidden;
+  font-size: 0.78rem;
+  line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+.needs-acts {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: auto;
+}
+
+.needs-act {
+  flex: 1 1 auto;
+  min-height: 2.25rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: var(--button-background);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.needs-chat {
+  flex: 0 0 auto;
+}
+
+.needs-act[data-primary='true'] {
+  border-color: var(--accent-ink);
+  background: var(--accent-ink);
+  color: var(--on-accent);
+}
+
+.needs-act:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* On a phone the panels follow the office down the page: the strip becomes a stacked list, and the sheets cover the screen. */
+@media (max-width: 800px) {
+  .needs-strip {
+    order: -1;
+    margin: 0;
+  }
+
+  .needs-cards {
+    flex-direction: column;
+    overflow-x: visible;
+  }
+
+  .needs-card {
+    flex: 0 0 auto;
+    max-width: none;
+  }
+
+  .needs-act {
+    min-height: 2.75rem;
+  }
+
+  .floor-stage:has(.needs-strip) > .crew-list,
+  .shell:has(.needs-strip) .crew-toggle {
+    display: none;
+  }
+
+  .stage-side:has(.agent-drawer) {
+    z-index: calc(var(--layer-top-bar) + 1);
+  }
+
+  .agent-drawer {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    width: auto;
+    margin: 0;
+    padding: 1rem 1rem 2rem;
+    border-width: 0;
+    border-radius: 0;
+    overflow-y: auto;
+  }
+
+  .ticket-dialog:not([data-composer='true']) {
+    width: 100vw;
+    border-left: 0;
+  }
+
+  .ticket-dialog > .card-detail {
+    padding: 1rem 1rem 0;
+  }
+
+  .ticket-dialog .ticket-panel > h3 {
+    padding-right: 0;
+    font-size: 1.4rem;
+  }
+
+  .ticket-panel[data-mode='none'] .ticket-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    margin: 1rem -1rem 0;
+    padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  .ticket-panel[data-mode='none'] .ticket-action-pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+  }
+
+  .ticket-panel[data-mode='none'] .ticket-action {
+    min-height: 2.9rem;
+    font-size: 0.95rem;
+  }
+
+  .ticket-panel[data-mode='none'] .ticket-action[data-action='accept'] {
+    border-color: var(--accent-ink);
+    background: var(--accent-ink);
+    color: var(--on-accent);
+  }
+}

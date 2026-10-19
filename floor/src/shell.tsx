@@ -9,6 +9,7 @@ import { CrewList, drawerHandBack } from './renderer/CrewList';
 import { CrewStats } from './renderer/CrewTotals.tsx';
 import { PauseAllControl } from './renderer/control/PauseAllControl';
 import { DoneNotices } from './renderer/DoneNotices';
+import { NeedsStrip } from './renderer/NeedsStrip';
 import { OfficeCanvas } from './renderer/OfficeCanvas';
 import { getFloorState, selectOutputAgent, subscribeToFloor } from './renderer/floor/store';
 import { refreshFloorSnapshot } from './renderer/floor/stream';
@@ -394,6 +395,9 @@ function SignedInShell() {
         <div className="office-slot">
           <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
             onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} />
+          {focused ? null : <NeedsStrip agents={floor.agents} cards={floor.cards} selectedId={currentSelectedId}
+            selectable={selectable} stale={floor.stale} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
+            onOpenTicket={openCard} />}
         </div>
         <DoneNotices notices={floor.doneNotices} leaveFocusTo={home} />
         <div className="stage-center">

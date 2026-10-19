@@ -38,6 +38,7 @@ import { castFrom } from './scene/cast.ts';
 import { cardNotesAt, placeCardNotes, planCardNotes } from './scene/cardNotes.ts';
 import type { CardNoteMotion, NoteAnchors } from './scene/cardNotes.ts';
 import { fieldsOf } from './scene/label.ts';
+import { NEED_LABEL, needsOf } from './needs.ts';
 import type { CastMotion } from './scene/motion.ts';
 import { activeEnvelopes, envelopesAt, planEnvelopes } from './scene/mailEnvelopes.ts';
 import type { EnvelopeMotion } from './scene/mailEnvelopes.ts';
@@ -385,13 +386,20 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
     return new Set(floor.agents.filter((row) => asksOpenQuestion(row, activity)).map((row) => row.id));
   }, [floor.agents, live, activityExpiry]);
 
+  const needWords = useMemo(() => new Map(needsOf(floor.agents, floor.cards, { live, now: performance.now(), wallNow: Date.now() })
+    .filter((need) => need.state === 'needs-you' || need.state === 'ready')
+    .map((need) => [need.id, NEED_LABEL[need.state]] as const)), [floor.agents, floor.cards, live, activityExpiry]);
+
   useEffect(() => {
-    const members = floor.agents.map((row) => ({ id: row.id, look: lookOf(row), accessory: accessoryOf(row.role),
-      badge: STATIONS[states.get(row.id) ?? 'idle'].badge }));
+    const members = floor.agents.map((row) => {
+      const station = STATIONS[states.get(row.id) ?? 'idle'].badge;
+      return { id: row.id, look: lookOf(row), accessory: accessoryOf(row.role),
+        badge: station === null && needWords.has(row.id) ? 'review' as const : station };
+    });
     crewRef.current = { members, goals, shipped: shelfParcels(shelf) };
     drawCrew();
     scheduleRef.current();
-  }, [floor.agents, states, goals, shelf]);
+  }, [floor.agents, states, goals, shelf, needWords]);
 
   useEffect(() => {
     selectedRef.current = selectedId;
@@ -760,7 +768,7 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
             data-badge={STATIONS[states.get(id) ?? 'idle'].badge ?? ''}
             ref={(tag) => { if (tag === null) tagsRef.current.delete(id); else tagsRef.current.set(id, tag); }}>
             <NameTag row={rows.get(id)} id={id} />
-            {fields.get(id)?.liveActivity ? <small>{fields.get(id)?.liveActivity}</small> : null}
+            {needWords.get(id) ?? fields.get(id)?.liveActivity ? <small className="office-tag-need" data-need={needWords.has(id)}>{needWords.get(id) ?? fields.get(id)?.liveActivity}</small> : null}
           </span>
         )) : null}
         {drawn && selectable ? desks.map(({ agentId: id }) => (

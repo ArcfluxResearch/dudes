@@ -342,7 +342,7 @@ export function TicketPanel({ floor, card, onHire }: {
   }
 
   return <section className="card-detail ticket-panel" aria-labelledby="card-detail-title" data-selected-card-id={card.id}
-    data-ticket-status={card.status}>
+    data-ticket-status={card.status} data-mode={mode}>
     <h3 id="card-detail-title" ref={focusHeading} tabIndex={-1}
       data-focus-on-leave="view-board">{card.title}</h3>
     <TicketNotice card={card.id} />

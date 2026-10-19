@@ -18,6 +18,7 @@ export const BADGE_COLOURS: Readonly<Record<Badge, string>> = Object.freeze({
   exhausted: '#8d8f93',
   paused: '#8d8f93',
   halted: '#8d8f93',
+  review: '#d9602b',
 });
 
 export type BadgeSurface = Pick<CanvasRenderingContext2D, 'beginPath' | 'arc' | 'fill' | 'stroke' | 'moveTo' | 'lineTo'
@@ -113,6 +114,9 @@ export function drawBadge(surface: BadgeSurface, badge: Badge): void {
       return;
     case 'question':
       surface.fillText('?', 48, 48);
+      return;
+    case 'review':
+      surface.fillText('!', 48, 49);
       return;
     case 'attached':
       surface.font = 'bold 34px ui-monospace, monospace';

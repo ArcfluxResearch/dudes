@@ -1051,7 +1051,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
   assert.match(form, /const choose = \(choice: CheckChoice\) => \{\s*if \(!blocked\) chooseGoalCheck\(gate\.agent, gate\.goal, choice\);\s*\};/);
 });
 
-test('the only activators are named selection, retry, view, Hire, answer, Chat, pause, Pause all, resume, goal change, look edit and dismiss buttons, '
+test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Pause all, resume, goal change, look edit and dismiss buttons, '
   + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, Retire\'s own four, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, context choices, one authorization and inert receipt lookup, earlier acknowledged-review disclosure, the guide\'s navigation and Hire opener, '
@@ -1067,6 +1067,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   const expected = [
     'src/renderer/AgentDetail.tsx',
     ...Array(2).fill('src/renderer/CrewList.tsx'),
+    ...Array(3).fill('src/renderer/NeedsStrip.tsx'),
     ...Array(3).fill(ARCHIVED_AGENTS),
     ...Array(7).fill('src/renderer/Control.tsx'),
     'src/renderer/DoneNotices.tsx',
