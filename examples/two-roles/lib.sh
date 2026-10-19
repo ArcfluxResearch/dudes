@@ -167,14 +167,14 @@ kill_daemon_hard() {
 # It filters on the **current** daemon's pid, and `start_daemon` re-reads that pid on a restart. A
 # child that outlived a `SIGKILL` is re-parented away from the dead pid and is not a child of the
 # new one, so **an orphan is invisible here** — and an orphan beside a re-issued turn is precisely
-# the "not two" that arm 2 exists to exclude. Nothing in a parent-pid walk can close that; it is the
-# same hole the Windows side has, for the same reason.
+# the "not two" that arm 2 exists to exclude. Nothing in a parent-pid walk can close that.
 #
 # What closes it is elsewhere and is load-bearing: `crash.sh`'s assertion that **zero** children are
 # live in the stall window, taken immediately before the kill. Nothing can be orphaned by a kill
 # that lands when nothing is running. Move that assertion, weaken it, or arm the fault at a launch
 # for which it does not hold, and this count stops being exact — the arm goes quiet rather than red.
-# Treat the two as one mechanism.
+# Treat the two as one mechanism. On macOS and Linux a second mechanism backs it: the keeper beside
+# each agent ends the agent's group when the daemon dies, and `crash-after-spawn.sh` asserts that.
 #
 # On Windows, the same direct-parent query is made outside the daemon through CIM. It only runs
 # while `daemon_pid` names a live daemon. The parent row has to exist, and a child whose creation
@@ -251,7 +251,11 @@ live_child_pids() {
 		windows_live_child_pids
 		;;
 	*)
-		ps -A -o ppid=,pid= | awk -v parent="$daemon_pid" '$1 == parent { print $2 }'
+		# A keeper (`duded keeper`) is the process the daemon starts beside each agent so that the
+		# agent's group ends with the daemon. It does none of the agent's work, so it is not a turn's
+		# child and is left out of the count.
+		ps -A -o ppid=,pid=,command= |
+			awk -v parent="$daemon_pid" '$1 == parent && !($3 == "duded" && $4 == "keeper") { print $2 }'
 	esac
 }
 

@@ -81,18 +81,20 @@ It runs the same feature-built daemon without an armed fault. The ordinary turn 
 complete the goal with no recovery event or authority cell. It compares its journal and projection
 with a recent, single-use crashed run's retained artifacts.
 
-**The post-launch arm, `crash-after-spawn.sh`, keeps the old child across the first restart.**
+**The post-launch arm, `crash-after-spawn.sh`, shows the old child ending with the daemon.**
 The fault parks after the first native child exists and before its Spawn record. The stand-in's
 own marker and the process table establish that a child exists; the offline journal must contain
-its issue and no Spawn or session confirmation. The child remains held while the daemon restarts
-and the script checks the Required barrier and absence of an automatic replacement.
+its issue and no Spawn or session confirmation.
 
-The script then releases the old child and waits until the OS no longer reports that PID. This is
-an OS-observed absence, not this shell reaping a process it did not parent. Only then does the
+After the SIGKILL the script waits until the OS no longer reports that child's PID. On macOS and
+Linux the keeper the daemon started beside the child ends the child's process group within
+milliseconds of the daemon's death, so no record is needed to find it. This is an OS-observed
+absence, not this shell reaping a process it did not parent. The daemon then restarts, and the
+script checks the Required barrier and the absence of an automatic replacement. Only then does the
 script submit one explicit fresh repeat and verify the retained request's receipt. The two
 sequential physical attempts must use distinct session files, each containing only its own
 process's events. The journal must retain the original issue and identify the replacement Spawn.
-There is no deliberate overlap between the old child and its replacement.
+There is no overlap between the old child and its replacement.
 
 These stand-ins verify session identifiers and file separation. They do not prove that a real
 provider restored conversation history, or that the old child had no earlier external effects.

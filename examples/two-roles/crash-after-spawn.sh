@@ -128,11 +128,14 @@ else
 	note "${unspawned:-none}"
 fi
 
-header "and this arm's difference from arm 2: that turn has a child, which outlived the daemon"
-if kill -0 "$orphan" 2>/dev/null; then
-	pass "the process table still reports the old child pid $orphan"
+header "and this arm's difference from arm 2: that turn had a child, which the daemon's death ended"
+# A process group selects processes and does not bound their lifetime, so without a guard the child
+# would outlive the daemon. The keeper the daemon started beside it ends the group when the kernel
+# closes the keeper's pipe, which is within milliseconds of the kill.
+if await "the old child to disappear from the process table" 60 process_gone "$orphan"; then
+	pass "the OS no longer reports the old child pid $orphan; the daemon's death ended it"
 else
-	fail "the child did not survive the kill: this arm is then arm 2's window under another name"
+	fail "the old child survived the kill: nothing ended it with its daemon"
 fi
 
 header "no record names that child"
@@ -179,20 +182,14 @@ header "the daemon restarts on the state the crash left"
 start_daemon "$MODE-restart"
 pass "restarted on $STATE_DIR"
 
-header "restart keeps the missing-Spawn barrier while the old child remains alive"
+header "restart keeps the missing-Spawn barrier, and no replacement is launched on its own"
 inspect_missing_spawn "$at_kill" 2
-if kill -0 "$orphan" 2>/dev/null; then
-	pass "the old child survived the first restart; no replacement was launched"
-else
-	fail "the old child ended before the no-repeat observation"
-fi
 
-header "release the old child and observe its absence before consenting"
-release_standin 1
-if await "the old child to disappear from the process table" 60 process_gone "$orphan"; then
-	pass "the OS no longer reports pid $orphan; this shell did not waitpid that orphan"
+header "observe the old child's absence before consenting"
+if process_gone "$orphan"; then
+	pass "the OS still reports no pid $orphan; this shell did not waitpid that child"
 else
-	fatal "the old child remains present; no repeat consent will be sent"
+	fatal "the old child is present again; no repeat consent will be sent"
 fi
 submit_fresh_repeat
 

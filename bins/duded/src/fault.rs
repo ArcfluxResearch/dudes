@@ -246,8 +246,9 @@ impl<H: ProcessHost> ProcessHost for StallBeforeSpawn<H> {
 /// was launched on (`Ctx::execute`). Nor any other record: the parked thread is the loop, and the
 /// loop is the single writer, so whatever else arrives waits in a queue nobody drains.
 ///
-/// The child itself is untouched and outlives the `SIGKILL`, because on Unix every child leads a
-/// process group of its own and a killed daemon runs no exit path.
+/// This wrapper leaves the child untouched. Whether it outlives the `SIGKILL` is the host's doing:
+/// a killed daemon runs no exit path, so on Unix only the keeper beside each child ends it, and a
+/// host built without a keeper leaves it running.
 #[derive(Debug)]
 pub struct StallAfterSpawn<H: ProcessHost> {
     inner: H,
