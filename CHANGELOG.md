@@ -11,6 +11,24 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.89.1] - 2026-10-19
+
+### Highlights
+
+- **Clearer first-run failures.** When an agent cannot launch because its engine is not installed, `dudes agents` and the Floor name the engine and the next step. When the daemon's socket path is too long for the platform, `dudes quickstart` and `dudes start` say so before anything starts. (#101, #103)
+- **A Floor tab that is not signed in says so.** A refused, expired or missing sign-in link shows the problem and its remedy instead of an empty office, and the full page returns once a fresh link is pasted. (#102)
+
+### Changes
+
+- The README and Get started say to use `--provider codex` or `--provider pi` in the hire example when that is the CLI you have signed in, and the platforms page lists the Linux arm64 first-run rehearsal. (#100)
+
+### Fixes
+
+- Under a launch failure of kind NotFound, say that Dudes could not start the agent's engine, usually because its program is not installed, and give the next step, in `dudes agents` and in the Floor's drawer and crew row. (#101)
+- Refuse `dudes quickstart` and `dudes start` before the daemon starts when its socket path is longer than the platform allows, naming the path, its length and the limit. Commands that connect to the daemon report the same limit. (#103)
+- Show only the sign-in problem and its remedy on a Floor tab that holds no session, and show the full page as soon as a pasted link signs it in. (#102)
+- When a check program is inside the project's repository, suggest running a shell script through its interpreter, for example `sh test.sh`, and say that the agent can still edit that script. A ticket's Needs you reason gives the same advice. (#104)
+
 ## [0.89.0] - 2026-10-18
 
 ### Highlights
@@ -216,7 +234,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.89.0...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.89.1...HEAD
+[0.89.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.89.0...v0.89.1
 [0.89.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.88.0...v0.89.0
 [0.88.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.2...v0.88.0
 [0.87.2]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.1...v0.87.2
