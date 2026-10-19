@@ -93,11 +93,13 @@ Dudes reads no engine's credentials or files.
 5. Hire more agents. On the Floor, click **Hire an agent**, choose the workspace and an engine it
    offers, and write the briefing. The Floor offers Claude Code, and Codex or Pi once they are
    turned on. From the command line, hire an agent, then give it a goal with the id that `hire`
-   prints:
+   prints. This one gets a folder of its own, because two agents in one repository can change the
+   same files, and Dudes then holds that repository's tickets in **Needs you** for review:
 
    ```sh
+   mkdir -p ~/dudes-hello
    dudes hire --name Cody --role "docs writer" --department docs --provider claude \
-     --cwd /absolute/path/to/repo
+     --cwd ~/dudes-hello
    dudes goal --agent <agent id> --text "Create hello.txt that contains the word hello." \
      --hop-cap 2 --check-id hello --check-label "hello.txt exists" -- /bin/test -f hello.txt
    dudes agents
@@ -108,8 +110,11 @@ Dudes reads no engine's credentials or files.
    `--check-id` and `--check-label` name the check. The goal records that name and a revision of
    the check, and the Floor shows them in place of the command.
 
-   Omit `--cwd` to use the only enrolled project or choose one on a terminal when several exist.
-   With no project, the CLI warns that the agent cannot take tickets.
+   That folder is not an enrolled project, so `dudes hire` warns that Cody can't take tickets; the
+   goal does not need one. Omit `--cwd` to use the only enrolled project or choose one on a terminal
+   when several exist. With no project, the CLI warns the same way. To give a second agent in the
+   same repository a tree of its own instead, hire a Claude Code agent with `--worktree` in a
+   repository you mark with `--trusted`.
 
    The role is a label. Dudes shows it on the Floor, in `dudes agents` and in `dudes team`, which
    agents use to find colleagues. It does not put the role in the agent's own task, so describe

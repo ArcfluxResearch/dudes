@@ -66,17 +66,20 @@ dudes floor open
 hire a first agent. Paste the link into any browser; `dudes floor open` prints a new one later. On a remote
 machine, forward the link's port over SSH first, because the link is a loopback address. To hire an agent
 yourself and give it
-a goal, use the id that `dudes hire` prints:
+a goal, use the id that `dudes hire` prints. Give a second agent a folder of its own: two agents in one
+repository can change the same files, so Dudes holds that repository's tickets in Needs you for review.
 
 ```sh
+mkdir -p ~/dudes-hello
 dudes hire --name Cody --role "docs writer" --department docs --provider claude \
-  --cwd /absolute/path/to/repo
+  --cwd ~/dudes-hello
 dudes goal --agent <agent id> --text "Create hello.txt that contains the word hello." \
   --hop-cap 2 --check-id hello --check-label "hello.txt exists" -- /bin/test -f hello.txt
 ```
 
 Use `--provider codex` or `--provider pi` instead if that is the CLI you have signed in.
-The agent takes turns until `/bin/test -f hello.txt` passes. `dudes agents` lists every agent and
+That folder is not an enrolled project, so `dudes hire` warns that Cody can't take tickets; the goal
+does not need one. The agent takes turns until `/bin/test -f hello.txt` passes. `dudes agents` lists every agent and
 its status, `dudes stop` stops the daemon and `dudes start` starts it again.
 [Get started](docs/getting-started.md) is the full walk-through.
 
