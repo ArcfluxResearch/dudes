@@ -76,6 +76,7 @@ pub mod floor_git;
 pub mod floor_goal;
 pub mod floor_look;
 pub mod floor_memory;
+mod floor_peer;
 mod floor_port;
 pub mod floor_recovery;
 pub mod floor_rename;

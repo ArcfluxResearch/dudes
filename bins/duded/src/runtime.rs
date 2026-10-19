@@ -1634,6 +1634,20 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         }
                     }
                 }
+                Job::FloorPeerRefused {
+                    route,
+                    agent,
+                    reason,
+                } => {
+                    if !self.ctx.journal_writes_stopped()
+                        && let Err(error) = self.floor_peer_refused(route, agent, reason)
+                    {
+                        if !self.ctx.journal_writes_stopped() {
+                            return Err(error);
+                        }
+                        tracing::error!(%error, "journal stopped; awaiting operator restart");
+                    }
+                }
                 Job::BaselineEnded { id } => self.ctx.baselines.end(id),
                 Job::PredicateEnded {
                     goal,
@@ -5381,6 +5395,28 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .map(Answered::MemoryAppended)
     }
 
+    /// Write the audit record for a Floor request refused because of its connection's owner.
+    fn floor_peer_refused(
+        &mut self,
+        route: &'static str,
+        agent: Option<AgentId>,
+        reason: dudes_proto::FloorPeerRefusal,
+    ) -> Result<()> {
+        self.ctx
+            .append_projection_only(
+                self.sup.world(),
+                &Entry {
+                    at: self.ctx.clock.now(),
+                    record: Record::FloorPeerRefused {
+                        route: route.to_owned(),
+                        agent,
+                        reason,
+                    },
+                },
+            )
+            .map(drop)
+    }
+
     fn append_memory_entry(&mut self, record: Record, action: &str) -> Result<Lsn, RpcError> {
         self.ctx
             .append_projection_only(
@@ -6662,6 +6698,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         tracing::error!(%error, "a predicate verdict could not be journaled during shutdown");
                     }
                 }
+                Job::FloorPeerRefused { .. } => {}
                 Job::MemoryCondenseModelEnded {
                     agent,
                     plan,

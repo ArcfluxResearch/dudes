@@ -1,4 +1,4 @@
-use super::{ActionHead, FloorSessions, Handle, Response, error_response, json_response};
+use super::{Admitted, Handle, Response, error_response, json_response};
 use crate::floor_recovery::{
     decode_inspect, decode_receipt, decode_submit, encode_inspection, encode_receipt,
     encode_submission,
@@ -14,16 +14,13 @@ pub(super) enum RecoveryRoute {
 
 pub(super) fn response<'a>(
     route: RecoveryRoute,
-    sessions: &FloorSessions,
+    admitted: Admitted,
     handle: &Handle,
-    head: &ActionHead,
     body: &[u8],
 ) -> Response<'a> {
     let mut code = 200;
     let encoded = if route == RecoveryRoute::Receipt {
-        let Some(reader) =
-            sessions.authorize_receipt(&head.host, &head.origin, &head.cookie, &head.csrf)
-        else {
+        let Admitted::Receipt(reader) = admitted else {
             return error_response(403, "Forbidden");
         };
         let Ok(request) = decode_receipt(body) else {
@@ -34,9 +31,7 @@ pub(super) fn response<'a>(
             Err(error) => return read_error(error),
         }
     } else {
-        let Some(session) =
-            sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
-        else {
+        let Admitted::Session(session) = admitted else {
             return error_response(403, "Forbidden");
         };
         match route {
@@ -88,6 +83,7 @@ fn read_error(error: FloorRecoveryReadError) -> Response<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::floor_session::FloorSessions;
     use crate::ports::Job;
     use std::sync::{Arc, mpsc};
 
@@ -104,19 +100,26 @@ mod tests {
                 sessions.issue().unwrap().bootstrap.as_bytes(),
             )
             .unwrap();
-        let head = ActionHead {
-            content_length: 0,
-            host: "127.0.0.1:43123".into(),
-            origin: "http://127.0.0.1:43123".into(),
-            cookie: exchange.cookie,
-            csrf: exchange.csrf,
-        };
+        let session = sessions
+            .authorize_onboard(
+                "127.0.0.1:43123",
+                "http://127.0.0.1:43123",
+                &exchange.cookie,
+                &exchange.csrf,
+            )
+            .unwrap();
         let body = br#"{"request_id":"8484848484848484848484848484848484848484848484848484848484848484","expected":{"work":{"agent":"01ARZ3NDEKTSV4RRFFQ69G5FAV","goal":"01ARZ3NDEKTSV4RRFFQ69G5FAW","turn":"01ARZ3NDEKTSV4RRFFQ69G5FAX"},"issue_lsn":"9007199254740993","source_lsn":"18446744073709551615","episode":null,"expected_predecessor":null,"control_lsn":null,"ticket":null},"choice":"fresh_with_recap"}"#;
         let (sender, jobs) = mpsc::channel();
         let handle = Handle::new(sender);
         std::thread::scope(|scope| {
-            let call =
-                scope.spawn(|| response(RecoveryRoute::Submit, &sessions, &handle, &head, body));
+            let call = scope.spawn(|| {
+                response(
+                    RecoveryRoute::Submit,
+                    Admitted::Session(session),
+                    &handle,
+                    body,
+                )
+            });
             let Job::RecoverFromFloor { intent, reply, .. } = jobs
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap()

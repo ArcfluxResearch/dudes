@@ -311,17 +311,6 @@ fn raw_response(addr: SocketAddr, request: &str) -> Vec<u8> {
     response
 }
 
-fn recover(floor: &Floor, cookie: &str) -> String {
-    let host = floor.addr.to_string();
-    let response = raw_response(
-        floor.addr,
-        &format!(
-            "POST /floor/session/recover HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nContent-Length: 0\r\n\r\n"
-        ),
-    );
-    String::from_utf8_lossy(&response).into_owned()
-}
-
 #[derive(Debug, PartialEq)]
 enum Frame {
     Message(Value),
@@ -929,7 +918,7 @@ fn grant_restart_leaves_no_grant() {
 }
 
 #[test]
-fn grant_resync_keeps_the_terminal_and_slots_hold_recovery() {
+fn grant_resync_keeps_the_terminal_and_the_slots_hold() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
@@ -954,19 +943,13 @@ fn grant_resync_keeps_the_terminal_and_slots_hold_recovery() {
     };
     assert!(refused("/floor/stream", "dudes-floor-v3").starts_with("HTTP/1.1 403"));
     assert!(refused("/floor/terminal", "dudes-terminal-v1").starts_with("HTTP/1.1 403"));
-    assert!(recover(&floor, &cookie).starts_with("HTTP/1.1 403"));
 
     drop(resynced);
     drop(overlap);
     floor.await_connections(1);
-    assert!(
-        recover(&floor, &cookie).starts_with("HTTP/1.1 403"),
-        "the terminal alone holds recovery"
-    );
     terminal.close();
     await_system_detach(&fixture, agent, 1);
     floor.await_connections(0);
-    assert!(recover(&floor, &cookie).starts_with("HTTP/1.1 200"));
     floor.stop();
 }
 

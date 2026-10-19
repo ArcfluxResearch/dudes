@@ -37,11 +37,12 @@ use crate::floor_git::{GitReads, GitRequest, MAX_GIT_BODY_BYTES};
 use crate::floor_goal::{GoalOutcome, GoalRefusal, GoalRequest, MAX_GOAL_BODY_BYTES};
 use crate::floor_look::{LookOutcome, LookRefusal, LookRequest, MAX_LOOK_BODY_BYTES};
 use crate::floor_memory::{MAX_MEMORY_BODY_BYTES, MemoryReads, MemoryRequest, MemoryRoute};
+use crate::floor_peer::{AgentRoots, PeerGate};
 use crate::floor_rename::{MAX_RENAME_BODY_BYTES, RenameOutcome, RenameRefusal, RenameRequest};
 use crate::floor_retire::{MAX_RETIRE_BODY_BYTES, RetireOutcome, RetireRefusal, RetireRequest};
 use crate::floor_session::{
-    ActionKind, FloorSessionAuthorizer, FloorSessions, ReserveResult, SESSION_COOKIE_NAME,
-    StreamSession, TerminalSession,
+    ActionKind, FloorSessionAuthorizer, FloorSessions, ReceiptSession, ReserveResult,
+    SESSION_COOKIE_NAME, SessionIdentity, StreamSession, TerminalSession,
 };
 use crate::floor_stream::{ClientMessage, FloorStreams, QueueRead, decode_client};
 use crate::floor_switches::{SharedSwitches, Switches};
@@ -52,7 +53,11 @@ use crate::floor_websocket::{Decoder, Message, accept_key, close_frame, pong_fra
 use crate::settings::FloorSettings;
 use crate::{ExitCause, Handle};
 
+mod guard;
+#[cfg(test)]
+mod guard_tests;
 mod recovery;
+use guard::{Admitted, Credentials, Endpoints, Guard, Head, Route, SignIn};
 use recovery::RecoveryRoute;
 
 /// The configured public root for the first static shell.
@@ -72,7 +77,7 @@ const MAX_BOOTSTRAP_BODY: usize = 4 * 1024;
 const MAX_HEADERS: usize = 64;
 const MAX_HTTP_CONNECTIONS: usize = 32;
 const STREAM_PATH: &str = "/floor/stream";
-const RECOVERY_PATH: &str = "/floor/session/recover";
+const SIGN_IN_PATH: &str = "/floor/session";
 const INSPECT_RECOVERY_PATH: &str = "/floor/recovery/inspect";
 const SUBMIT_RECOVERY_PATH: &str = "/floor/recovery/submit";
 const RECEIPT_RECOVERY_PATH: &str = "/floor/recovery/receipt";
@@ -236,6 +241,8 @@ pub struct PreparedAssets {
     diff: Option<Arc<DiffReads>>,
     /// The ticket routes' per-session limits, served only while `[floor.board]` is on.
     board: Arc<TicketLimits>,
+    /// Who may use the Floor, decided from the process on the other end of each connection.
+    peer: Arc<PeerGate>,
 }
 
 impl PreparedAssets {
@@ -511,6 +518,13 @@ impl PreparedAssets {
         self
     }
 
+    /// Refuse requests from inside any of these agent processes, read afresh on every request.
+    #[must_use]
+    pub(crate) fn with_agent_roots(mut self, roots: Arc<dyn AgentRoots>) -> Self {
+        self.peer = Arc::new(PeerGate::system(roots));
+        self
+    }
+
     #[must_use]
     pub(crate) const fn with_remembered_port(mut self, port: Option<u16>) -> Self {
         self.remembered = port;
@@ -645,6 +659,7 @@ impl PreparedAssets {
         let diff = self.diff;
         let board = self.board;
         let tickets = Some(Arc::clone(&board));
+        let peer = self.peer;
         let memory = fault
             .0
             .memory_interval
@@ -673,6 +688,7 @@ impl PreparedAssets {
                             diff: diff.as_deref(),
                             board: &board,
                             memory: &memory,
+                            peer: &peer,
                         },
                         &thread_sessions,
                         &thread_streams,
@@ -989,7 +1005,13 @@ fn handle_connection(
     phase: &AtomicU8,
     handle: &Handle,
 ) {
-    match read_request(&mut stream, catalog, sessions, phase, handle) {
+    let guard = Guard {
+        catalog,
+        sessions,
+        handle,
+        clock,
+    };
+    match read_request(&mut stream, guard, phase) {
         Ok(Some(ConnectionAction::Response(response))) => {
             if write_response(&mut stream, &response, catalog.csp(), phase).is_ok()
                 && response.code >= 400
@@ -1045,6 +1067,7 @@ struct Catalog<'a> {
     diff: Option<&'a DiffReads>,
     board: &'a TicketLimits,
     memory: &'a MemoryReads,
+    peer: &'a PeerGate,
 }
 
 impl<'a> Catalog<'a> {
@@ -1146,15 +1169,6 @@ impl ActionRoute {
     }
 }
 
-/// One authenticated browser action's admitted head, carried to its body and session checks.
-struct ActionHead {
-    content_length: usize,
-    host: String,
-    origin: String,
-    cookie: String,
-    csrf: String,
-}
-
 struct Response<'a> {
     code: u16,
     reason: &'static str,
@@ -1222,33 +1236,27 @@ impl SocketRoute {
 
 enum Parsed<'a> {
     Response(Response<'a>),
-    Exchange {
-        content_length: usize,
-        host: String,
-        origin: String,
-    },
-    Recover {
-        host: String,
-        origin: String,
-        cookie: String,
-    },
-    Action {
-        route: ActionRoute,
-        head: ActionHead,
-    },
-    Upgrade {
-        accept: String,
-        session: SocketSession,
+    /// A dynamic route whose head is well formed. Nothing about the sender is believed yet.
+    Dynamic {
+        route: Route,
+        head: Head,
     },
 }
 
 trait RequestReader: Read {
     fn set_request_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
+
+    /// The client's address and the listener's, when the transport has them.
+    fn endpoints(&self) -> Option<Endpoints>;
 }
 
 impl RequestReader for TcpStream {
     fn set_request_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.set_read_timeout(timeout)
+    }
+
+    fn endpoints(&self) -> Option<Endpoints> {
+        Some((self.peer_addr().ok()?, self.local_addr().ok()?))
     }
 }
 
@@ -1258,10 +1266,8 @@ impl RequestReader for TcpStream {
 )]
 fn read_request<'a>(
     stream: &mut impl RequestReader,
-    catalog: Catalog<'a>,
-    sessions: &FloorSessions,
+    guard: Guard<'a>,
     phase: &AtomicU8,
-    handle: &Handle,
 ) -> io::Result<Option<ConnectionAction<'a>>> {
     let deadline = Instant::now() + REQUEST_HEAD_DEADLINE;
     let mut head = Vec::with_capacity(MAX_REQUEST_HEAD);
@@ -1277,99 +1283,36 @@ fn read_request<'a>(
                     "Request Header Fields Too Large",
                 ))));
             }
-            return match parse_request(&head[..end], catalog, sessions) {
+            return match parse_request(&head[..end], guard.catalog, guard.sessions) {
                 Parsed::Response(response) => Ok(Some(ConnectionAction::Response(response))),
-                Parsed::Exchange {
-                    content_length,
-                    host,
-                    origin,
-                } => {
-                    let Some(body) =
-                        read_body(stream, &head[end..], content_length, deadline, phase)?
-                    else {
-                        return Ok(None);
-                    };
-                    Ok(Some(ConnectionAction::Response(exchange_response(
-                        sessions, &host, &origin, &body,
-                    ))))
-                }
-                Parsed::Recover {
-                    host,
-                    origin,
-                    cookie,
-                } => {
-                    if !head[end..].is_empty() {
-                        return Ok(Some(ConnectionAction::Response(error_response(
-                            400,
-                            "Bad Request",
-                        ))));
-                    }
-                    Ok(Some(ConnectionAction::Response(recover_response(
-                        sessions, &host, &origin, &cookie,
-                    ))))
-                }
-                Parsed::Action {
+                Parsed::Dynamic {
                     route,
-                    head: action,
+                    head: parsed,
                 } => {
-                    if head[end..].len() > action.content_length {
-                        return Ok(Some(ConnectionAction::Response(error_response(
-                            400,
-                            "Bad Request",
-                        ))));
-                    }
-                    let Some(body) =
-                        read_body(stream, &head[end..], action.content_length, deadline, phase)?
-                    else {
-                        return Ok(None);
+                    let buffered = &head[end..];
+                    let body = if route.has_body() {
+                        if buffered.len() > parsed.content_length {
+                            return Ok(Some(ConnectionAction::Response(error_response(
+                                400,
+                                "Bad Request",
+                            ))));
+                        }
+                        let Some(body) =
+                            read_body(stream, buffered, parsed.content_length, deadline, phase)?
+                        else {
+                            return Ok(None);
+                        };
+                        body
+                    } else {
+                        Vec::new()
                     };
-                    Ok(Some(ConnectionAction::Response(match route {
-                        ActionRoute::Recovery(route) => {
-                            recovery::response(route, sessions, handle, &action, &body)
-                        }
-                        ActionRoute::Onboard => onboard_response(sessions, handle, &action, &body),
-                        ActionRoute::Answer => answer_response(sessions, handle, &action, &body),
-                        ActionRoute::Control(verb) => {
-                            control_response(verb, sessions, handle, &action, &body)
-                        }
-                        ActionRoute::Goal => {
-                            goal_response(GoalRoute::Change, sessions, handle, &action, &body)
-                        }
-                        ActionRoute::Renew => {
-                            goal_response(GoalRoute::Renew, sessions, handle, &action, &body)
-                        }
-                        ActionRoute::Rename => rename_response(sessions, handle, &action, &body),
-                        ActionRoute::Look => look_response(sessions, handle, &action, &body),
-                        ActionRoute::Retire => retire_response(sessions, handle, &action, &body),
-                        ActionRoute::Git => {
-                            return Ok(git_response(
-                                sessions, handle, catalog, phase, &action, &body,
-                            )
-                            .map(ConnectionAction::Response));
-                        }
-                        ActionRoute::Diff => {
-                            return Ok(diff_response(
-                                sessions, handle, catalog, phase, &action, &body,
-                            )
-                            .map(ConnectionAction::Response));
-                        }
-                        ActionRoute::Memory(route) => {
-                            memory_response(route, sessions, handle, catalog.memory, &action, &body)
-                        }
-                        ActionRoute::Chat(verb) => {
-                            chat_response(verb, sessions, handle, &action, &body)
-                        }
-                        ActionRoute::Ticket(route) => {
-                            ticket_response(route, sessions, handle, catalog, &action, &body)
-                        }
-                    })))
-                }
-                Parsed::Upgrade { accept, session } => {
-                    Ok(Some(ConnectionAction::Upgrade(Upgrade {
-                        accept,
-                        session,
-                        buffered: head[end..].to_vec(),
-                    })))
+                    let admitted = match guard.admit(route, &parsed, &body, stream.endpoints()) {
+                        Ok(admitted) => admitted,
+                        Err(refusal) => return Ok(Some(ConnectionAction::Response(refusal))),
+                    };
+                    Ok(dispatch(
+                        admitted, route, parsed, body, buffered, guard, phase,
+                    ))
                 }
             };
         }
@@ -1411,6 +1354,86 @@ fn read_request<'a>(
             Err(_) => return Ok(None),
         }
     }
+}
+
+/// Run an admitted request's handler. This is the only caller of any route's handler, and every
+/// handler takes what [`Guard::admit`] returned.
+fn dispatch<'a>(
+    admitted: Admitted,
+    route: Route,
+    head: Head,
+    body: Vec<u8>,
+    buffered: &[u8],
+    guard: Guard<'a>,
+    phase: &AtomicU8,
+) -> Option<ConnectionAction<'a>> {
+    let Guard {
+        catalog,
+        sessions,
+        handle,
+        ..
+    } = guard;
+    let response = match (admitted, route.action()) {
+        (Admitted::SignIn(sign_in), _) => exchange_response(sessions, &sign_in, &body),
+        (Admitted::Socket(session), _) => {
+            return Some(ConnectionAction::Upgrade(Upgrade {
+                accept: head.accept,
+                session,
+                buffered: buffered.to_vec(),
+            }));
+        }
+        (admitted @ (Admitted::Session(_) | Admitted::Receipt(_)), Some(action)) => {
+            match (action, admitted) {
+                (ActionRoute::Recovery(route), admitted) => {
+                    recovery::response(route, admitted, handle, &body)
+                }
+                (ActionRoute::Onboard, Admitted::Session(session)) => {
+                    onboard_response(session, handle, &body)
+                }
+                (ActionRoute::Answer, Admitted::Session(session)) => {
+                    answer_response(session, handle, &body)
+                }
+                (ActionRoute::Control(verb), Admitted::Session(session)) => {
+                    control_response(verb, session, handle, &body)
+                }
+                (ActionRoute::Goal, Admitted::Session(session)) => {
+                    goal_response(GoalRoute::Change, session, handle, &body)
+                }
+                (ActionRoute::Renew, Admitted::Session(session)) => {
+                    goal_response(GoalRoute::Renew, session, handle, &body)
+                }
+                (ActionRoute::Rename, Admitted::Session(session)) => {
+                    rename_response(session, handle, &body)
+                }
+                (ActionRoute::Look, Admitted::Session(session)) => {
+                    look_response(session, handle, &body)
+                }
+                (ActionRoute::Retire, Admitted::Session(session)) => {
+                    retire_response(session, handle, &body)
+                }
+                (ActionRoute::Git, Admitted::Session(session)) => {
+                    return git_response(session, handle, catalog, phase, &body)
+                        .map(ConnectionAction::Response);
+                }
+                (ActionRoute::Diff, Admitted::Session(session)) => {
+                    return diff_response(session, handle, catalog, phase, &body)
+                        .map(ConnectionAction::Response);
+                }
+                (ActionRoute::Memory(route), Admitted::Session(session)) => {
+                    memory_response(route, session, handle, catalog.memory, &body)
+                }
+                (ActionRoute::Chat(verb), Admitted::Session(session)) => {
+                    chat_response(verb, session, handle, &body)
+                }
+                (ActionRoute::Ticket(route), Admitted::Session(session)) => {
+                    ticket_response(route, session, handle, catalog, &body)
+                }
+                _ => error_response(403, "Forbidden"),
+            }
+        }
+        _ => error_response(403, "Forbidden"),
+    };
+    Some(ConnectionAction::Response(response))
 }
 
 fn read_body(
@@ -1475,17 +1498,14 @@ fn parse_request<'a>(head: &[u8], catalog: Catalog<'a>, sessions: &FloorSessions
     let Some(path) = request.path else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
-    if method == "POST" && path == format!("{BASE_PATH}session") {
-        return exchange_request(request.version, request.headers, sessions);
-    }
-    if method == "POST" && path == RECOVERY_PATH {
-        return recover_request(request.version, request.headers);
-    }
-    if let Some(route) = ActionRoute::of(method, path, catalog) {
-        return action_request(route, request.version, request.headers, sessions);
-    }
-    if let Some(route) = SocketRoute::of(method, path, catalog) {
-        return upgrade_request(route, request.version, request.headers, sessions);
+    if let Some(route) = Route::of(method, path, catalog) {
+        return if let Some(socket) = route.socket() {
+            upgrade_request(route, socket, request.version, request.headers, sessions)
+        } else if route.is_sign_in() {
+            exchange_request(route, request.version, request.headers, sessions)
+        } else {
+            action_request(route, request.version, request.headers)
+        };
     }
     if !valid_static_framing(request.version, request.headers) {
         return Parsed::Response(error_response(400, "Bad Request"));
@@ -1522,6 +1542,7 @@ fn parse_request<'a>(head: &[u8], catalog: Catalog<'a>, sessions: &FloorSessions
 }
 
 fn exchange_request(
+    route: Route,
     version: Option<u8>,
     headers: &[httparse::Header<'_>],
     sessions: &FloorSessions,
@@ -1557,20 +1578,20 @@ fn exchange_request(
     if content_length > MAX_BOOTSTRAP_BODY {
         return Parsed::Response(error_response(413, "Content Too Large"));
     }
-    Parsed::Exchange {
-        content_length,
-        host: host.to_owned(),
-        origin: origin.to_owned(),
+    Parsed::Dynamic {
+        route,
+        head: Head {
+            host: host.to_owned(),
+            origin: origin.to_owned(),
+            credentials: None,
+            content_length,
+            accept: String::new(),
+        },
     }
 }
 
-fn exchange_response<'a>(
-    sessions: &FloorSessions,
-    host: &str,
-    origin: &str,
-    body: &[u8],
-) -> Response<'a> {
-    let Some(exchange) = sessions.exchange(host, origin, body) else {
+fn exchange_response<'a>(sessions: &FloorSessions, sign_in: &SignIn, body: &[u8]) -> Response<'a> {
+    let Some(exchange) = sessions.exchange(&sign_in.host, &sign_in.origin, body) else {
         return error_response(403, "Forbidden");
     };
     let body = serde_json::to_vec(&serde_json::json!({ "csrf": exchange.csrf }))
@@ -1589,79 +1610,18 @@ fn exchange_response<'a>(
     }
 }
 
-fn recover_request(version: Option<u8>, headers: &[httparse::Header<'_>]) -> Parsed<'static> {
-    if version != Some(1) || forbidden_framing(headers) {
-        return Parsed::Response(error_response(400, "Bad Request"));
-    }
-    let Ok(Some(content_length)) = unique_header(headers, "content-length") else {
-        return Parsed::Response(error_response(400, "Bad Request"));
-    };
-    if content_length != b"0" {
-        return Parsed::Response(error_response(400, "Bad Request"));
-    }
-    let host = match unique_header(headers, "host") {
-        Ok(Some(value)) => value,
-        Ok(None) => return Parsed::Response(error_response(403, "Forbidden")),
-        Err(()) => return Parsed::Response(error_response(400, "Bad Request")),
-    };
-    let origin = match unique_header(headers, "origin") {
-        Ok(Some(value)) => value,
-        Ok(None) => return Parsed::Response(error_response(403, "Forbidden")),
-        Err(()) => return Parsed::Response(error_response(400, "Bad Request")),
-    };
-    let cookie = match unique_header(headers, "cookie") {
-        Ok(Some(value)) => value,
-        Ok(None) => return Parsed::Response(error_response(403, "Forbidden")),
-        Err(()) => return Parsed::Response(error_response(400, "Bad Request")),
-    };
-    let Some(host) = std::str::from_utf8(host).ok() else {
-        return Parsed::Response(error_response(403, "Forbidden"));
-    };
-    let Some(origin) = std::str::from_utf8(origin).ok() else {
-        return Parsed::Response(error_response(403, "Forbidden"));
-    };
-    let Some(cookie) = std::str::from_utf8(cookie).ok().and_then(session_cookie) else {
-        return Parsed::Response(error_response(403, "Forbidden"));
-    };
-    Parsed::Recover {
-        host: host.to_owned(),
-        origin: origin.to_owned(),
-        cookie: cookie.to_owned(),
-    }
-}
-
-fn recover_response<'a>(
-    sessions: &FloorSessions,
-    host: &str,
-    origin: &str,
-    cookie: &str,
-) -> Response<'a> {
-    let Some(recovery) = sessions.recover(host, origin, cookie) else {
-        return error_response(403, "Forbidden");
-    };
-    let body = serde_json::to_vec(&serde_json::json!({ "csrf": recovery.csrf }))
-        .expect("a string-only Floor recovery response serializes");
-    Response {
-        code: 200,
-        reason: "OK",
-        body: Cow::Owned(body),
-        content_type: Some("application/json"),
-        cache: "no-store",
-        allow: None,
-        set_cookie: None,
-    }
-}
-
-/// The transport admission every browser action shares:
-/// HTTP/1.1; one Host, Origin, Cookie and CSRF each, the first two exactly this listener's; JSON;
+/// The shape of a browser action's head: HTTP/1.1; one Host, Origin, Cookie and secret each; JSON;
 /// and a decimal `Content-Length` within the route's cap, refused with `413` before any body is
-/// read.
+/// read. Whether the cookie and the secret name a live session, and who sent the request, are
+/// for [`Guard::admit`].
 fn action_request(
-    route: ActionRoute,
+    route: Route,
     version: Option<u8>,
     headers: &[httparse::Header<'_>],
-    sessions: &FloorSessions,
 ) -> Parsed<'static> {
+    let Some(action) = route.action() else {
+        return Parsed::Response(error_response(403, "Forbidden"));
+    };
     if version != Some(1) || forbidden_framing(headers) {
         return Parsed::Response(error_response(400, "Bad Request"));
     }
@@ -1680,7 +1640,7 @@ fn action_request(
         Ok(None) => return Parsed::Response(error_response(403, "Forbidden")),
         Err(()) => return Parsed::Response(error_response(400, "Bad Request")),
     };
-    let csrf = match unique_header(headers, crate::floor_session::CSRF_HEADER_NAME) {
+    let secret = match unique_header(headers, crate::floor_session::CSRF_HEADER_NAME) {
         Ok(Some(value)) => value,
         Ok(None) => return Parsed::Response(error_response(403, "Forbidden")),
         Err(()) => return Parsed::Response(error_response(400, "Bad Request")),
@@ -1691,25 +1651,15 @@ fn action_request(
     let Some(origin) = std::str::from_utf8(origin).ok() else {
         return Parsed::Response(error_response(403, "Forbidden"));
     };
-    if !sessions.authority_matches(host, origin) {
-        return Parsed::Response(error_response(403, "Forbidden"));
-    }
     let Some(cookie) = std::str::from_utf8(cookie).ok().and_then(session_cookie) else {
         return Parsed::Response(error_response(403, "Forbidden"));
     };
-    let Some(csrf) = std::str::from_utf8(csrf)
+    let Some(secret) = std::str::from_utf8(secret)
         .ok()
         .filter(|value| valid_nonce(value))
     else {
         return Parsed::Response(error_response(403, "Forbidden"));
     };
-    if matches!(route, ActionRoute::Chat(_))
-        && sessions
-            .authorize_onboard(host, origin, cookie, csrf)
-            .is_none()
-    {
-        return Parsed::Response(error_response(403, "Forbidden"));
-    }
     let Some(content_type) = one_header(headers, "content-type") else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
@@ -1723,32 +1673,25 @@ fn action_request(
     else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
-    if content_length > route.max_body() {
+    if content_length > action.max_body() {
         return Parsed::Response(error_response(413, "Content Too Large"));
     }
-    Parsed::Action {
+    Parsed::Dynamic {
         route,
-        head: ActionHead {
-            content_length,
+        head: Head {
             host: host.to_owned(),
             origin: origin.to_owned(),
-            cookie: cookie.to_owned(),
-            csrf: csrf.to_owned(),
+            credentials: Some(Credentials {
+                cookie: cookie.to_owned(),
+                secret: secret.to_owned(),
+            }),
+            content_length,
+            accept: String::new(),
         },
     }
 }
 
-fn onboard_response<'a>(
-    sessions: &FloorSessions,
-    handle: &Handle,
-    head: &ActionHead,
-    body: &[u8],
-) -> Response<'a> {
-    let Some(session) =
-        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
-    else {
-        return error_response(403, "Forbidden");
-    };
+fn onboard_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -> Response<'a> {
     let Ok(request) = OnboardRequest::parse(body) else {
         return error_response(400, "Bad Request");
     };
@@ -1831,17 +1774,7 @@ fn onboard_response<'a>(
 
 /// The connection-thread steps, then the writer's job; each outcome is one
 /// of the fixed refusal reasons or the applied result. Only an uncertain append keeps its reservation.
-fn answer_response<'a>(
-    sessions: &FloorSessions,
-    handle: &Handle,
-    head: &ActionHead,
-    body: &[u8],
-) -> Response<'a> {
-    let Some(session) =
-        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
-    else {
-        return error_response(403, "Forbidden");
-    };
+fn answer_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -> Response<'a> {
     let Ok(request) = AnswerRequest::parse(body) else {
         return error_response(400, "Bad Request");
     };
@@ -1895,16 +1828,10 @@ fn answer_response<'a>(
 /// meets the other as a conflict. Only an uncertain append keeps its reservation.
 fn control_response<'a>(
     verb: ControlVerb,
-    sessions: &FloorSessions,
+    session: SessionIdentity,
     handle: &Handle,
-    head: &ActionHead,
     body: &[u8],
 ) -> Response<'a> {
-    let Some(session) =
-        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
-    else {
-        return error_response(403, "Forbidden");
-    };
     let Ok(request) = ControlRequest::parse(verb, body) else {
         return error_response(400, "Bad Request");
     };
@@ -1954,17 +1881,7 @@ fn control_response<'a>(
     }
 }
 
-fn rename_response<'a>(
-    sessions: &FloorSessions,
-    handle: &Handle,
-    head: &ActionHead,
-    body: &[u8],
-) -> Response<'a> {
-    let Some(session) =
-        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
-    else {
-        return error_response(403, "Forbidden");
-    };
+fn rename_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -> Response<'a> {
     let Ok(request) = RenameRequest::parse(body) else {
         return error_response(400, "Bad Request");
     };
@@ -2012,17 +1929,7 @@ fn rename_response<'a>(
     }
 }
 
-fn look_response<'a>(
-    sessions: &FloorSessions,
-    handle: &Handle,
-    head: &ActionHead,
-    body: &[u8],
-) -> Response<'a> {
-    let Some(session) =
-        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
-    else {
-        return error_response(403, "Forbidden");
-    };
+fn look_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -> Response<'a> {
     let Ok(request) = LookRequest::parse(body) else {
         return error_response(400, "Bad Request");
     };
@@ -2081,16 +1988,10 @@ enum GoalRoute {
 /// of the fixed refusal reasons or the applied result. Only an uncertain append keeps its reservation.
 fn goal_response<'a>(
     route: GoalRoute,
-    sessions: &FloorSessions,
+    session: SessionIdentity,
     handle: &Handle,
-    head: &ActionHead,
     body: &[u8],
 ) -> Response<'a> {
-    let Some(session) =
-        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
-    else {
-        return error_response(403, "Forbidden");
-    };
     let (parsed, kind, applied) = match route {
         GoalRoute::Change => (GoalRequest::parse(body), ActionKind::Goal, "changed"),
         GoalRoute::Renew => (
@@ -2144,17 +2045,7 @@ fn goal_response<'a>(
 
 /// The connection-thread steps, then the writer's job; each outcome is one
 /// of the fixed refusal reasons or the applied result. Only an uncertain append keeps its reservation.
-fn retire_response<'a>(
-    sessions: &FloorSessions,
-    handle: &Handle,
-    head: &ActionHead,
-    body: &[u8],
-) -> Response<'a> {
-    let Some(session) =
-        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
-    else {
-        return error_response(403, "Forbidden");
-    };
+fn retire_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -> Response<'a> {
     let Ok(request) = RetireRequest::parse(body) else {
         return error_response(400, "Bad Request");
     };
@@ -2207,19 +2098,13 @@ fn retire_response<'a>(
 /// worker this thread waits for, and every outcome is one finite [`dudes_proto::GitView`]. The read
 /// changes nothing, so it keeps no request identity and writes no journal record.
 fn git_response<'a>(
-    sessions: &FloorSessions,
+    session: SessionIdentity,
     handle: &Handle,
     catalog: Catalog<'_>,
     phase: &AtomicU8,
-    head: &ActionHead,
     body: &[u8],
 ) -> Option<Response<'a>> {
     let reads = catalog.git()?;
-    let Some(session) =
-        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
-    else {
-        return Some(error_response(403, "Forbidden"));
-    };
     let Ok(request) = GitRequest::parse(body) else {
         return Some(error_response(400, "Bad Request"));
     };
@@ -2243,19 +2128,13 @@ fn git_response<'a>(
 /// Every refusal is one finite reply with no repository data. A session that ends while the read
 /// runs gets `403` and no reply.
 fn diff_response<'a>(
-    sessions: &FloorSessions,
+    session: SessionIdentity,
     handle: &Handle,
     catalog: Catalog<'_>,
     phase: &AtomicU8,
-    head: &ActionHead,
     body: &[u8],
 ) -> Option<Response<'a>> {
     let reads = catalog.diff()?;
-    let Some(session) =
-        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
-    else {
-        return Some(error_response(403, "Forbidden"));
-    };
     let Ok(request) = DiffRequest::parse(body) else {
         return Some(error_response(400, "Bad Request"));
     };
@@ -2278,17 +2157,11 @@ fn diff_response<'a>(
 /// ending drops the read, and the route answers `503`.
 fn memory_response<'a>(
     route: MemoryRoute,
-    sessions: &FloorSessions,
+    session: SessionIdentity,
     handle: &Handle,
     reads: &MemoryReads,
-    head: &ActionHead,
     body: &[u8],
 ) -> Response<'a> {
-    let Some(session) =
-        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
-    else {
-        return error_response(403, "Forbidden");
-    };
     let Ok(request) = MemoryRequest::parse(route, body) else {
         return error_response(400, "Bad Request");
     };
@@ -2309,19 +2182,13 @@ fn memory_response<'a>(
 /// request carries an identity.
 fn ticket_response<'a>(
     route: TicketRoute,
-    sessions: &FloorSessions,
+    session: SessionIdentity,
     handle: &Handle,
     catalog: Catalog<'_>,
-    head: &ActionHead,
     body: &[u8],
 ) -> Response<'a> {
     // A lost answer to a create is not retried; Remove clears a duplicate.
     let Some(limits) = catalog.board() else {
-        return error_response(403, "Forbidden");
-    };
-    let Some(session) =
-        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
-    else {
         return error_response(403, "Forbidden");
     };
     let Ok(request) = TicketRequest::parse(route, body) else {
@@ -2355,16 +2222,10 @@ fn ticket_response<'a>(
 
 fn chat_response<'a>(
     verb: ChatVerb,
-    sessions: &FloorSessions,
+    session: SessionIdentity,
     handle: &Handle,
-    head: &ActionHead,
     body: &[u8],
 ) -> Response<'a> {
-    let Some(session) =
-        sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
-    else {
-        return error_response(403, "Forbidden");
-    };
     let Ok(request) = ChatRequest::parse(verb, body) else {
         return error_response(400, "Bad Request");
     };
@@ -2464,7 +2325,8 @@ const fn json_response<'a>(code: u16, reason: &'static str, body: Vec<u8>) -> Re
 }
 
 fn upgrade_request(
-    route: SocketRoute,
+    route: Route,
+    socket: SocketRoute,
     version: Option<u8>,
     headers: &[httparse::Header<'_>],
     sessions: &FloorSessions,
@@ -2524,7 +2386,7 @@ fn upgrade_request(
         || offered.iter().any(|item| item.is_empty())
         || offered
             .iter()
-            .filter(|item| **item == route.protocol())
+            .filter(|item| **item == socket.protocol())
             .count()
             != 1
     {
@@ -2540,19 +2402,19 @@ fn upgrade_request(
     let Some(cookie) = header_text(headers, "cookie").and_then(session_cookie) else {
         return Parsed::Response(error_response(403, "Forbidden"));
     };
-    let authorizer = sessions.authorizer();
-    let session = match route {
-        SocketRoute::Stream => authorizer
-            .authorize_stream(host, origin, cookie, csrf)
-            .map(SocketSession::Stream),
-        SocketRoute::Terminal => authorizer
-            .authorize_terminal(host, origin, cookie, csrf)
-            .map(SocketSession::Terminal),
-    };
-    let Some(session) = session else {
-        return Parsed::Response(error_response(403, "Forbidden"));
-    };
-    Parsed::Upgrade { accept, session }
+    Parsed::Dynamic {
+        route,
+        head: Head {
+            host: host.to_owned(),
+            origin: origin.to_owned(),
+            credentials: Some(Credentials {
+                cookie: cookie.to_owned(),
+                secret: csrf.to_owned(),
+            }),
+            content_length: 0,
+            accept,
+        },
+    }
 }
 
 fn header_text<'a>(headers: &'a [httparse::Header<'a>], name: &str) -> Option<&'a str> {
@@ -3141,6 +3003,7 @@ pub fn prepare(settings: &FloorSettings) -> Result<PreparedAssets> {
         git: None,
         diff: None,
         board: Arc::new(TicketLimits::new()),
+        peer: Arc::new(PeerGate::system(Arc::new(crate::floor_peer::NoAgents))),
     })
 }
 
@@ -3331,18 +3194,6 @@ mod tests {
         )
     }
 
-    fn session_credentials(sessions: &FloorSessions) -> (String, String) {
-        let issued = sessions.issue().expect("one bootstrap");
-        let exchange = sessions
-            .exchange(
-                "127.0.0.1:43123",
-                "http://127.0.0.1:43123",
-                issued.bootstrap.as_bytes(),
-            )
-            .expect("one live session");
-        (exchange.cookie, exchange.csrf)
-    }
-
     #[test]
     fn refused_request_discard_never_reads_past_65536_bytes() {
         let mut input = RequestInput {
@@ -3390,6 +3241,10 @@ mod tests {
             self.timeout.set(timeout.expect("bounded discard read"));
             Ok(())
         }
+
+        fn endpoints(&self) -> Option<Endpoints> {
+            None
+        }
     }
 
     #[test]
@@ -3407,15 +3262,24 @@ mod tests {
         );
     }
 
-    #[derive(Debug, PartialEq, Eq)]
-    struct CapturedResponse {
-        code: u16,
-        reason: &'static str,
-        body: Vec<u8>,
-        content_type: Option<&'static str>,
-        cache: &'static str,
-        allow: Option<&'static str>,
-        set_cookie: Option<String>,
+    /// A peer gate that finds this process, user 1, outside every agent.
+    fn open_gate() -> &'static PeerGate {
+        static OPEN: std::sync::LazyLock<PeerGate> = std::sync::LazyLock::new(|| {
+            PeerGate::with(
+                Arc::new(crate::floor_peer::NoAgents),
+                Box::new(|_, _| allowed_owner()),
+                Box::new(|_| None),
+                Some(1),
+            )
+        });
+        &OPEN
+    }
+
+    fn allowed_owner() -> crate::floor_peer::SocketOwnerLookup {
+        crate::floor_peer::SocketOwnerLookup::Found(crate::floor_peer::SocketOwner {
+            uid: 1,
+            lineage: Vec::new(),
+        })
     }
 
     /// The catalog these unit tests serve: no answer route, as in the default configuration.
@@ -3433,200 +3297,8 @@ mod tests {
             diff: None,
             board: &BOARD,
             memory: &MEMORY,
+            peer: open_gate(),
         }
-    }
-
-    fn response_for(request: Vec<u8>, sessions: &FloorSessions) -> CapturedResponse {
-        let mut input = RequestInput {
-            bytes: io::Cursor::new(request),
-            reads: 0,
-        };
-        let assets = BTreeMap::new();
-        let phase = AtomicU8::new(READY);
-        let action = read_request(
-            &mut input,
-            catalog(&assets, &[]),
-            sessions,
-            &phase,
-            &Handle::new(std::sync::mpsc::channel().0),
-        )
-        .expect("request parse")
-        .expect("one response");
-        let ConnectionAction::Response(response) = action else {
-            panic!("the request unexpectedly upgraded");
-        };
-        CapturedResponse {
-            code: response.code,
-            reason: response.reason,
-            body: response.body.into_owned(),
-            content_type: response.content_type,
-            cache: response.cache,
-            allow: response.allow,
-            set_cookie: response.set_cookie,
-        }
-    }
-
-    fn recover_head(cookie: &str) -> String {
-        format!(
-            "POST /floor/session/recover HTTP/1.1\r\nHost: 127.0.0.1:43123\r\nOrigin: http://127.0.0.1:43123\r\nCookie: {SESSION_COOKIE_NAME}={cookie}\r\nContent-Length: 0\r\n\r\n"
-        )
-    }
-
-    fn upgrade_head(cookie: &str, csrf: &str) -> Vec<u8> {
-        format!(
-            "GET {STREAM_PATH} HTTP/1.1\r\nHost: 127.0.0.1:43123\r\nOrigin: http://127.0.0.1:43123\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: {FLOOR_PROTOCOL}, {CSRF_PROTOCOL_PREFIX}{csrf}\r\nCookie: {SESSION_COOKIE_NAME}={cookie}\r\n\r\n"
-        )
-        .into_bytes()
-    }
-
-    #[test]
-    fn recover_route_is_exact_http11_empty_post() {
-        let sessions = sessions();
-        let (cookie, _) = session_credentials(&sessions);
-        assert_eq!(
-            response_for(recover_head(&cookie).into_bytes(), &sessions).code,
-            200
-        );
-
-        for malformed in [
-            recover_head(&cookie).replace("HTTP/1.1", "HTTP/1.0"),
-            recover_head(&cookie).replace("Content-Length: 0\r\n", ""),
-            recover_head(&cookie).replace("Content-Length: 0", "Content-Length: 00"),
-            recover_head(&cookie).replace(
-                "Content-Length: 0\r\n",
-                "Content-Length: 0\r\nTransfer-Encoding: chunked\r\n",
-            ),
-            recover_head(&cookie).replace(
-                "Content-Length: 0\r\n",
-                "Content-Length: 0\r\nExpect: 100-continue\r\n",
-            ),
-            recover_head(&cookie).replace("\r\n\r\n", "\r\n\r\nx"),
-            recover_head(&cookie).replace(
-                "Host: 127.0.0.1:43123\r\n",
-                "Host: 127.0.0.1:43123\r\nHost: 127.0.0.1:43123\r\n",
-            ),
-            recover_head(&cookie).replace(
-                "Origin: http://127.0.0.1:43123\r\n",
-                "Origin: http://127.0.0.1:43123\r\nOrigin: http://127.0.0.1:43123\r\n",
-            ),
-            recover_head(&cookie).replace(
-                "Cookie: ",
-                &format!("Cookie: {SESSION_COOKIE_NAME}={cookie}\r\nCookie: "),
-            ),
-        ] {
-            assert_eq!(
-                response_for(malformed.into_bytes(), &sessions).code,
-                400,
-                "malformed recovery framing must be 400"
-            );
-        }
-
-        for other in [
-            recover_head(&cookie).replace("/floor/session/recover", "/floor/session/recover/"),
-            recover_head(&cookie).replace("/floor/session/recover", "/floor/session/recover?x=1"),
-            recover_head(&cookie).replace("/floor/session/recover", "/floor/recover"),
-            recover_head(&cookie).replace("POST", "GET"),
-        ] {
-            let code = response_for(other.into_bytes(), &sessions).code;
-            assert!(!(200..400).contains(&code), "route alias returned {code}");
-        }
-
-        let long_path = format!(
-            "POST /{} HTTP/1.1\r\nHost: 127.0.0.1:43123\r\n\r\n",
-            "x".repeat(MAX_REQUEST_LINE)
-        );
-        assert_eq!(response_for(long_path.into_bytes(), &sessions).code, 414);
-
-        let mut too_many = recover_head(&cookie);
-        too_many = too_many.replace(
-            "\r\n\r\n",
-            &format!("\r\n{}\r\n", "X-Bound: one\r\n".repeat(MAX_HEADERS)),
-        );
-        assert_eq!(response_for(too_many.into_bytes(), &sessions).code, 431);
-
-        let oversized = format!(
-            "POST {RECOVERY_PATH} HTTP/1.1\r\nHost: 127.0.0.1:43123\r\nX-Fill: {}",
-            "x".repeat(MAX_REQUEST_HEAD)
-        );
-        assert_eq!(response_for(oversized.into_bytes(), &sessions).code, 431);
-    }
-
-    #[test]
-    fn recover_cookie_only_requires_exact_origin() {
-        let sessions = sessions();
-        let (cookie, old_csrf) = session_credentials(&sessions);
-        let refusal = CapturedResponse {
-            code: 403,
-            reason: "Forbidden",
-            body: Vec::new(),
-            content_type: None,
-            cache: "no-store",
-            allow: None,
-            set_cookie: None,
-        };
-        for refused in [
-            recover_head(&cookie).replace("Host: 127.0.0.1:43123\r\n", ""),
-            recover_head(&cookie).replace("127.0.0.1:43123", "localhost.invalid:43123"),
-            recover_head(&cookie).replace("Origin: http://127.0.0.1:43123\r\n", ""),
-            recover_head(&cookie).replace(
-                "Origin: http://127.0.0.1:43123",
-                "Origin: http://localhost.invalid:43123",
-            ),
-            recover_head(&cookie)
-                .replace(&format!("Cookie: {SESSION_COOKIE_NAME}={cookie}\r\n"), ""),
-            recover_head(&cookie).replace(&cookie, &"A".repeat(43)),
-        ] {
-            assert_eq!(response_for(refused.into_bytes(), &sessions), refusal);
-        }
-
-        let success = response_for(recover_head(&cookie).into_bytes(), &sessions);
-        assert_eq!(success.code, 200);
-        assert_eq!(success.reason, "OK");
-        assert_eq!(success.content_type, Some("application/json"));
-        assert_eq!(success.cache, "no-store");
-        assert_eq!(success.allow, None);
-        assert_eq!(success.set_cookie, None);
-        let value: serde_json::Value =
-            serde_json::from_slice(&success.body).expect("one recovery JSON object");
-        assert_eq!(value.as_object().map(serde_json::Map::len), Some(1));
-        let csrf = value["csrf"].as_str().expect("one CSRF string");
-        assert!(valid_nonce(csrf));
-        assert_eq!(success.body, format!(r#"{{"csrf":"{csrf}"}}"#).as_bytes());
-
-        assert_eq!(
-            response_for(recover_head(&cookie).into_bytes(), &sessions),
-            refusal,
-            "the pending window returns the same refusal"
-        );
-        let assets = BTreeMap::new();
-        assert!(matches!(
-            parse_request(&upgrade_head(&cookie, &old_csrf), catalog(&assets, &[]), &sessions),
-            Parsed::Response(response) if response.code == 403
-        ));
-        assert!(matches!(
-            parse_request(
-                &upgrade_head(&cookie, csrf),
-                catalog(&assets, &[]),
-                &sessions
-            ),
-            Parsed::Upgrade { .. }
-        ));
-
-        let next = response_for(recover_head(&cookie).into_bytes(), &sessions);
-        let next_value: serde_json::Value =
-            serde_json::from_slice(&next.body).expect("second recovery JSON");
-        let next_csrf = next_value["csrf"].as_str().expect("second CSRF");
-        let held = parse_request(
-            &upgrade_head(&cookie, next_csrf),
-            catalog(&assets, &[]),
-            &sessions,
-        );
-        assert!(matches!(&held, Parsed::Upgrade { .. }));
-        assert_eq!(
-            response_for(recover_head(&cookie).into_bytes(), &sessions),
-            refusal,
-            "an open socket returns the same refusal"
-        );
     }
 
     struct ScriptedReader {
@@ -3667,6 +3339,10 @@ mod tests {
             self.sets.fetch_add(1, Ordering::SeqCst);
             Err(io::Error::other("injected timeout setup failure"))
         }
+
+        fn endpoints(&self) -> Option<Endpoints> {
+            None
+        }
     }
 
     struct RequestInput {
@@ -3685,6 +3361,17 @@ mod tests {
         fn set_request_timeout(&self, _timeout: Option<Duration>) -> io::Result<()> {
             Ok(())
         }
+
+        fn endpoints(&self) -> Option<Endpoints> {
+            Some(loopback_pair())
+        }
+    }
+
+    fn loopback_pair() -> Endpoints {
+        (
+            "127.0.0.1:50000".parse().expect("a client address"),
+            "127.0.0.1:43123".parse().expect("the listener address"),
+        )
     }
 
     #[test]
@@ -3695,13 +3382,16 @@ mod tests {
         };
         let assets = BTreeMap::new();
         let phase = AtomicU8::new(READY);
-        let Err(error) = read_request(
-            &mut stream,
-            catalog(&assets, &[]),
-            &sessions(),
-            &phase,
-            &Handle::new(std::sync::mpsc::channel().0),
-        ) else {
+        let clock = dudes_supervisor::testing::FakeClock::frozen(0);
+        let handle = Handle::new(std::sync::mpsc::channel().0);
+        let registry = sessions();
+        let guard = |manifest| Guard {
+            catalog: catalog(&assets, manifest),
+            sessions: &registry,
+            handle: &handle,
+            clock: &clock,
+        };
+        let Err(error) = read_request(&mut stream, guard(&[]), &phase) else {
             panic!("timeout setup error returned a response instead of propagating");
         };
         assert_eq!(error.kind(), io::ErrorKind::Other);
@@ -3719,15 +3409,9 @@ mod tests {
             ),
             reads: 0,
         };
-        let response = read_request(
-            &mut valid,
-            catalog(&assets, b"manifest"),
-            &sessions(),
-            &phase,
-            &Handle::new(std::sync::mpsc::channel().0),
-        )
-        .expect("a following request has no connection-local error")
-        .expect("a following valid request returns a response");
+        let response = read_request(&mut valid, guard(b"manifest"), &phase)
+            .expect("a following request has no connection-local error")
+            .expect("a following valid request returns a response");
         let ConnectionAction::Response(response) = response else {
             panic!("a static request cannot upgrade");
         };

@@ -1,7 +1,7 @@
-//! Run-local authentication for the read-only web Floor.
+//! Run-local authentication for the web Floor.
 //!
 //! The local RPC route and the loopback HTTP listener share this module. Raw bootstrap, cookie and
-//! CSRF values leave only at their one required response; the retained state contains SHA-256
+//! secret values leave only at their one required response; the retained state contains SHA-256
 //! digests. Stopping the owning listener invalidates and clears the complete state before the run
 //! releases its transport.
 
@@ -27,13 +27,12 @@ pub(crate) use recovery::{FloorRecoveryAuthority, RecoveryGrants, RecoveryPermit
 
 /// Cookie name used by the read-only Floor session.
 pub const SESSION_COOKIE_NAME: &str = "dudes_floor_session";
-/// Header carrying the in-memory CSRF nonce on authenticated dynamic requests.
+/// Header carrying the session secret on every authenticated request that changes state.
 pub const CSRF_HEADER_NAME: &str = "X-Dudes-CSRF";
 
 const BOOTSTRAP_EXPIRES_MS: i64 = 60_000;
 const IDLE_EXPIRES_MS: i64 = 30 * 60_000;
 const ABSOLUTE_EXPIRES_MS: i64 = 8 * 60 * 60_000;
-const RECOVERY_WINDOW_MS: i64 = 2_000;
 const MAX_PENDING_BOOTSTRAPS: usize = 4;
 const MAX_LIVE_SESSIONS: usize = 4;
 const MAX_WEBSOCKETS_PER_SESSION: usize = 2;
@@ -66,19 +65,6 @@ impl fmt::Debug for Exchange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Exchange")
             .field("cookie", &"<redacted>")
-            .field("csrf", &"<redacted>")
-            .finish()
-    }
-}
-
-/// The one fresh secret returned by a successful recovery.
-pub(crate) struct Recovery {
-    pub(crate) csrf: String,
-}
-
-impl fmt::Debug for Recovery {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Recovery")
             .field("csrf", &"<redacted>")
             .finish()
     }
@@ -259,7 +245,6 @@ impl FloorSessionAuthorizer {
         }
         let taken = take(session)?;
         session.last_used = now;
-        session.recovery_pending_until = None;
         Some((taken, cookie, Arc::clone(&session.revoked)))
     }
 }
@@ -688,14 +673,13 @@ struct State {
 
 struct Session {
     revoked: Arc<AtomicBool>,
-    /// `None` for a session imported from the previous run, which matches no secret until the
-    /// recovery route issues one.
+    /// The digest of the secret the page sends with every request that changes state. `None` for
+    /// a session imported from an export that carried none, which can never act.
     csrf: Option<[u8; 32]>,
     created: Timestamp,
     last_used: Timestamp,
     websockets: usize,
     terminal: Option<TerminalSlot>,
-    recovery_pending_until: Option<Timestamp>,
 }
 
 impl Session {
@@ -876,38 +860,9 @@ impl FloorSessions {
                 last_used: now,
                 websockets: 0,
                 terminal: None,
-                recovery_pending_until: None,
             },
         );
         Some(Exchange { cookie, csrf })
-    }
-
-    /// Rotate the CSRF carrier for one live, exact-origin session.
-    #[must_use]
-    pub(crate) fn recover(&self, host: &str, origin: &str, cookie: &str) -> Option<Recovery> {
-        if !self.0.authority_matches(host, origin) || !self.0.valid.load(Ordering::Acquire) {
-            return None;
-        }
-        let cookie = digest(cookie.as_bytes());
-        let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
-        if !self.0.valid.load(Ordering::Acquire) {
-            return None;
-        }
-        state.prune(now);
-        let session = state.sessions.get_mut(&cookie)?;
-        if session.websockets != 0
-            || session.terminal.is_some()
-            || session
-                .recovery_pending_until
-                .is_some_and(|until| now < until)
-        {
-            return None;
-        }
-        let csrf = mint_secret();
-        session.csrf = Some(digest(csrf.as_bytes()));
-        session.last_used = now;
-        session.recovery_pending_until = Some(now.saturating_add_millis(RECOVERY_WINDOW_MS));
-        Some(Recovery { csrf })
     }
 
     /// End this run's authority before its listener and connection owners are released.
@@ -952,8 +907,8 @@ impl FloorCarry {
         &self.sessions
     }
 
-    /// Every live session as this run holds it. Nothing is refreshed, and no cookie, CSRF secret,
-    /// pending bootstrap, terminal grant or reservation leaves.
+    /// Every live session as this run holds it. Nothing is refreshed, and no cookie, secret,
+    /// pending bootstrap, terminal grant or reservation leaves: only their digests do.
     ///
     /// A run with no identity exports nothing: an import could not tell its own run from another.
     pub(crate) fn export(&self, run: Option<&str>) -> SessionExport {
@@ -981,6 +936,7 @@ impl FloorCarry {
                     .map_or((0, 0), |tickets| tickets.counts(*cookie));
                 ExportedSession {
                     digest: Hex32::new(*cookie),
+                    secret: session.csrf.map(Hex32::new),
                     created: session.created,
                     last_used: session.last_used,
                     ticket_creates,
@@ -993,8 +949,7 @@ impl FloorCarry {
     }
 
     /// Admit the sessions an earlier run exported, and say how many were admitted. Each one
-    /// becomes the session it was, except that it matches no CSRF secret until recovery issues
-    /// one. A run takes one import, from a run other than itself, and any attempt that passes the run check uses it up,
+    /// becomes the session it was, and keeps acting with the secret its page already holds. A run takes one import, from a run other than itself, and any attempt that passes the run check uses it up,
     /// whatever else it is refused for.
     pub(crate) fn import(&self, run: Option<&str>, exported: &SessionExport) -> u32 {
         let Some(run) = run else {
@@ -1015,12 +970,11 @@ impl FloorCarry {
             let key = entry.digest.bytes();
             let session = Session {
                 revoked: Arc::new(AtomicBool::new(false)),
-                csrf: None,
+                csrf: entry.secret.map(|secret| secret.bytes()),
                 created: entry.created,
                 last_used: entry.last_used,
                 websockets: 0,
                 terminal: None,
-                recovery_pending_until: None,
             };
             if now.millis_since(entry.created) < 0
                 || now.millis_since(entry.last_used) < 0
@@ -1533,317 +1487,6 @@ mod tests {
     }
 
     #[test]
-    fn absolute_expired_recovery_after_registry_lock_wait_is_refused() {
-        let (clock, sessions) = probe_registry();
-        let recovering = probe_session(&sessions);
-        let authorizer = sessions.authorizer();
-        for _ in 0..16 {
-            clock.inner.advance(29 * 60_000);
-            assert!(
-                authorizer
-                    .authorize_read(
-                        PROBE_HOST,
-                        PROBE_ORIGIN,
-                        &recovering.cookie,
-                        &recovering.csrf
-                    )
-                    .is_some(),
-                "activity keeps the idle deadline fresh"
-            );
-        }
-        // One minute short of the absolute bound, fifteen minutes idle.
-        clock
-            .inner
-            .advance(ABSOLUTE_EXPIRES_MS - 16 * 29 * 60_000 - 60_000);
-        let holder = probe_holder(&sessions);
-        let held = holder.permit().expect("other session holds registry lock");
-        let (recovered, sampled_while_held) = behind_permit(&clock, held, 60_000, || {
-            sessions
-                .recover(PROBE_HOST, PROBE_ORIGIN, &recovering.cookie)
-                .is_some()
-        });
-        assert!(
-            !sampled_while_held,
-            "recovery sampled expiry before the registry lock"
-        );
-        assert!(
-            !recovered,
-            "a session that reached its absolute bound during the wait cannot recover"
-        );
-    }
-
-    fn live_session(
-        clock: Arc<FakeClock>,
-    ) -> (FloorSessions, &'static str, &'static str, Exchange) {
-        let sessions =
-            FloorSessions::new("127.0.0.1:43123".parse().expect("loopback address"), clock);
-        let host = "127.0.0.1:43123";
-        let origin = "http://127.0.0.1:43123";
-        let issued = sessions.issue().expect("one bootstrap");
-        let exchange = sessions
-            .exchange(host, origin, issued.bootstrap.as_bytes())
-            .expect("one live session");
-        (sessions, host, origin, exchange)
-    }
-
-    #[test]
-    fn recover_installs_rotated_digest_before_return() {
-        let clock = Arc::new(FakeClock::frozen(0));
-        let (sessions, host, origin, exchange) = live_session(clock);
-
-        let recovered = sessions
-            .recover(host, origin, &exchange.cookie)
-            .expect("the live zero-socket session recovers");
-
-        assert_eq!(recovered.csrf.len(), 43);
-        assert!(
-            sessions
-                .authorizer()
-                .authorize_read(host, origin, &exchange.cookie, &recovered.csrf)
-                .is_some(),
-            "the returned nonce is installed before it can cross the response seam"
-        );
-    }
-
-    #[test]
-    fn recover_retries_wait_for_delayed_socket_drop() {
-        let clock = Arc::new(FakeClock::frozen(0));
-        let (sessions, host, origin, exchange) = live_session(Arc::clone(&clock));
-        let held = sessions
-            .authorizer()
-            .authorize_stream(host, origin, &exchange.cookie, &exchange.csrf)
-            .expect("the old page owns one socket");
-
-        for delay in [0, 250, 500] {
-            clock.advance(delay);
-            assert!(
-                sessions.recover(host, origin, &exchange.cookie).is_none(),
-                "recovery waits while the old socket is still owned"
-            );
-        }
-        drop(held);
-
-        let recovered = sessions
-            .recover(host, origin, &exchange.cookie)
-            .expect("the first retry after drop wins");
-        let winner = sessions
-            .authorizer()
-            .authorize_stream(host, origin, &exchange.cookie, &recovered.csrf)
-            .expect("the winner opens with its rotated nonce");
-        for delay in [1_000, 2_000, 4_000] {
-            clock.advance(delay);
-            assert!(
-                sessions.recover(host, origin, &exchange.cookie).is_none(),
-                "loser retries cannot rotate underneath the winner"
-            );
-        }
-        drop(winner);
-    }
-
-    #[test]
-    fn recover_serializes_simultaneous_callers() {
-        let clock = Arc::new(FakeClock::frozen(0));
-        let (sessions, host, origin, exchange) = live_session(Arc::clone(&clock));
-        let barrier = Arc::new(Barrier::new(3));
-        let mut workers = Vec::new();
-        for _ in 0..2 {
-            let sessions = sessions.clone();
-            let barrier = Arc::clone(&barrier);
-            let cookie = exchange.cookie.clone();
-            workers.push(thread::spawn(move || {
-                barrier.wait();
-                sessions.recover(host, origin, &cookie)
-            }));
-        }
-        barrier.wait();
-        let recovered: Vec<_> = workers
-            .into_iter()
-            .map(|worker| worker.join().expect("recovery worker"))
-            .collect();
-        assert_eq!(
-            recovered.iter().filter(|result| result.is_some()).count(),
-            1,
-            "one lock admission produces one winning page"
-        );
-
-        clock.advance(1_999);
-        assert!(sessions.recover(host, origin, &exchange.cookie).is_none());
-        clock.advance(1);
-        assert!(
-            sessions.recover(host, origin, &exchange.cookie).is_some(),
-            "an unused winner can be replaced at window equality"
-        );
-    }
-
-    #[test]
-    fn recover_rejects_old_csrf_after_rotation() {
-        let clock = Arc::new(FakeClock::frozen(0));
-        let (sessions, host, origin, exchange) = live_session(clock);
-        let recovered = sessions
-            .recover(host, origin, &exchange.cookie)
-            .expect("recovery rotates the nonce");
-
-        assert!(
-            sessions
-                .authorizer()
-                .authorize_stream(host, origin, &exchange.cookie, &exchange.csrf)
-                .is_none(),
-            "the previous nonce fails immediately"
-        );
-        assert!(
-            sessions
-                .authorizer()
-                .authorize_stream(host, origin, &exchange.cookie, &recovered.csrf)
-                .is_some(),
-            "the returned nonce is the only current nonce"
-        );
-    }
-
-    #[test]
-    fn recover_winner_stream_clears_pending_window() {
-        let clock = Arc::new(FakeClock::frozen(0));
-        let (sessions, host, origin, exchange) = live_session(clock);
-        let recovered = sessions
-            .recover(host, origin, &exchange.cookie)
-            .expect("one recovery");
-        let winner = sessions
-            .authorizer()
-            .authorize_stream(host, origin, &exchange.cookie, &recovered.csrf)
-            .expect("the recovery winner opens");
-        drop(winner);
-
-        assert!(
-            sessions.recover(host, origin, &exchange.cookie).is_some(),
-            "a successful winner clears serialization before two seconds"
-        );
-    }
-
-    #[test]
-    fn recover_churn_preserves_absolute_age_capacity_and_two_slots() {
-        let clock = Arc::new(FakeClock::frozen(0));
-        let (sessions, host, origin, exchange) = live_session(Arc::clone(&clock));
-        let mut csrf = exchange.csrf;
-
-        for _ in 0..3 {
-            clock.advance(2_000);
-            csrf = sessions
-                .recover(host, origin, &exchange.cookie)
-                .expect("zero-socket churn stays in one session row")
-                .csrf;
-        }
-        for _ in 1..MAX_LIVE_SESSIONS {
-            let issued = sessions.issue().expect("remaining session capacity");
-            assert!(
-                sessions
-                    .exchange(host, origin, issued.bootstrap.as_bytes())
-                    .is_some(),
-                "recovery did not grow the live-session table"
-            );
-        }
-        let overflow = sessions.issue().expect("one pending bootstrap");
-        assert!(
-            sessions
-                .exchange(host, origin, overflow.bootstrap.as_bytes())
-                .is_none(),
-            "four live sessions remain the bound"
-        );
-
-        let first = sessions
-            .authorizer()
-            .authorize_stream(host, origin, &exchange.cookie, &csrf)
-            .expect("first overlap slot");
-        let second = sessions
-            .authorizer()
-            .authorize_stream(host, origin, &exchange.cookie, &csrf)
-            .expect("second overlap slot");
-        assert!(
-            sessions
-                .authorizer()
-                .authorize_stream(host, origin, &exchange.cookie, &csrf)
-                .is_none(),
-            "recovery does not expand the two-slot bound"
-        );
-        drop(first);
-        drop(second);
-
-        for _ in 0..16 {
-            clock.advance(29 * 60_000);
-            let _ = sessions
-                .recover(host, origin, &exchange.cookie)
-                .expect("activity below both lifetime bounds");
-        }
-        clock.advance(16 * 60_000 - 6_000);
-        assert!(
-            sessions.recover(host, origin, &exchange.cookie).is_none(),
-            "recovery never resets the eight-hour creation boundary"
-        );
-    }
-
-    #[test]
-    fn recover_refuses_idle_absolute_and_invalidated_with_fresh_controls() {
-        let idle_clock = Arc::new(FakeClock::frozen(0));
-        let (idle, host, origin, idle_exchange) = live_session(Arc::clone(&idle_clock));
-        idle_clock.advance(30 * 60_000);
-        assert!(idle.recover(host, origin, &idle_exchange.cookie).is_none());
-        let fresh = idle.issue().expect("fresh bootstrap beside idle refusal");
-        assert!(
-            idle.exchange(host, origin, fresh.bootstrap.as_bytes())
-                .is_some()
-        );
-
-        let absolute_clock = Arc::new(FakeClock::frozen(0));
-        let (absolute, host, origin, absolute_exchange) = live_session(Arc::clone(&absolute_clock));
-        for _ in 0..16 {
-            absolute_clock.advance(29 * 60_000);
-            assert!(
-                absolute
-                    .recover(host, origin, &absolute_exchange.cookie)
-                    .is_some()
-            );
-        }
-        absolute_clock.advance(16 * 60_000);
-        assert!(
-            absolute
-                .recover(host, origin, &absolute_exchange.cookie)
-                .is_none()
-        );
-        let fresh = absolute
-            .issue()
-            .expect("fresh bootstrap beside absolute refusal");
-        assert!(
-            absolute
-                .exchange(host, origin, fresh.bootstrap.as_bytes())
-                .is_some()
-        );
-
-        let ended_clock = Arc::new(FakeClock::frozen(0));
-        let (ended, host, origin, ended_exchange) = live_session(Arc::clone(&ended_clock));
-        ended.invalidate();
-        assert!(
-            ended.0.registry.lock().sessions.is_empty(),
-            "invalidation carries no session row into ended run state"
-        );
-        assert!(
-            ended
-                .recover(host, origin, &ended_exchange.cookie)
-                .is_none()
-        );
-        let (successor, host, origin, successor_exchange) = live_session(ended_clock);
-        assert!(
-            successor
-                .authorizer()
-                .authorize_read(
-                    host,
-                    origin,
-                    &successor_exchange.cookie,
-                    &successor_exchange.csrf,
-                )
-                .is_some(),
-            "a fresh successor bootstrap succeeds beside invalidation"
-        );
-    }
-
-    #[test]
     fn live_and_pending_tables_are_bounded_at_four() {
         let clock = Arc::new(FakeClock::frozen(0));
         let sessions = FloorSessions::new(
@@ -1962,6 +1605,7 @@ mod carry_tests {
                 "created",
                 "digest",
                 "last_used",
+                "secret",
                 "ticket_assigns",
                 "ticket_creates"
             ]
@@ -1975,15 +1619,18 @@ mod carry_tests {
         assert_eq!(value["origin"], ORIGIN);
         assert!(!text.contains(&one.cookie) && !text.contains(&one.csrf));
         let digest = row["digest"].as_str().expect("digest");
+        let secret = row["secret"].as_str().expect("the secret's digest");
         assert!(
-            !format!("{exported:?}").contains(digest),
+            !format!("{exported:?}").contains(digest) && !format!("{exported:?}").contains(secret),
             "Debug lists no digest"
         );
         assert_eq!(digest.len(), 64, "the digest, not the cookie");
+        assert_eq!(secret.len(), 64, "the digest, not the secret");
+        assert_ne!(secret, digest);
     }
 
     #[test]
-    fn an_import_restores_the_session_with_its_counts_and_no_csrf() {
+    fn an_import_restores_the_session_with_its_counts_and_its_secret() {
         let clock = Arc::new(FakeClock::frozen(1_000));
         let old = run(&clock, HOST);
         let one = sign_in(&old);
@@ -1995,16 +1642,14 @@ mod carry_tests {
         assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 1);
 
         assert!(
-            !can_read(&new, &one, &one.csrf),
-            "the old CSRF secret matches nothing"
+            can_read(&new, &one, &one.csrf),
+            "the secret the page holds still works"
         );
-        assert!(!can_read(&new, &one, ""), "neither does an empty one");
-        let recovery = new
-            .carry
-            .sessions()
-            .recover(HOST, ORIGIN, &one.cookie)
-            .expect("the cookie recovers");
-        assert!(can_read(&new, &one, &recovery.csrf));
+        assert!(!can_read(&new, &one, ""), "an empty one does not");
+        assert!(
+            !can_read(&new, &one, &"A".repeat(43)),
+            "nor does a wrong one"
+        );
         assert_eq!(new.tickets.counts(key(&one)), (3, 2));
         assert_eq!(new.checks.started(Hex32::new(key(&one))), 5);
         let state = new.carry.sessions().0.registry.lock();
@@ -2023,6 +1668,7 @@ mod carry_tests {
             origin: ORIGIN.to_owned(),
             sessions: vec![ExportedSession {
                 digest: Hex32::new(digest(cookie.as_bytes())),
+                secret: Some(Hex32::new(digest(b"the-secret"))),
                 created: Timestamp::from_unix_millis(now - (ABSOLUTE_EXPIRES_MS - 10_000)),
                 last_used: Timestamp::from_unix_millis(now - 1_000),
                 ticket_creates: 0,
@@ -2032,9 +1678,16 @@ mod carry_tests {
         };
         let new = run(&clock, HOST);
         assert_eq!(new.carry.import(Some(NEW_RUN), &exported), 1);
+        let authorizer = new.carry.sessions().authorizer();
+        let admits = || {
+            authorizer
+                .authorize_read(HOST, ORIGIN, cookie, "the-secret")
+                .is_some()
+        };
+        assert!(admits());
         clock.advance(10_001);
         assert!(
-            new.carry.sessions().recover(HOST, ORIGIN, cookie).is_none(),
+            !admits(),
             "eight hours after the original sign-in the imported session is gone"
         );
     }
@@ -2063,12 +1716,7 @@ mod carry_tests {
             0,
             "a second import admits nothing, not even a session the first one lacked"
         );
-        assert!(
-            new.carry
-                .sessions()
-                .recover(HOST, ORIGIN, &later.cookie)
-                .is_none()
-        );
+        assert!(!can_read(&new, &later, &later.csrf));
 
         let other = run(&clock, HOST);
         let mut moved = exported.clone();
@@ -2078,13 +1726,7 @@ mod carry_tests {
             0,
             "another origin"
         );
-        assert!(
-            other
-                .carry
-                .sessions()
-                .recover(HOST, ORIGIN, &one.cookie)
-                .is_none()
-        );
+        assert!(!can_read(&other, &one, &one.csrf));
     }
 
     #[test]
@@ -2113,6 +1755,7 @@ mod carry_tests {
         let clock = Arc::new(FakeClock::frozen(now));
         let entry = |created: i64, last_used: i64| ExportedSession {
             digest: Hex32::new([9; 32]),
+            secret: Some(Hex32::new([8; 32])),
             created: Timestamp::from_unix_millis(created),
             last_used: Timestamp::from_unix_millis(last_used),
             ticket_creates: 0,
@@ -2166,10 +1809,7 @@ mod carry_tests {
         assert!(old.carry.export(Some(OLD_RUN)).sessions.is_empty());
         let new = run(&clock, HOST);
         assert!(
-            new.carry
-                .sessions()
-                .recover(HOST, ORIGIN, &one.cookie)
-                .is_none(),
+            !can_read(&new, &one, &one.csrf),
             "a plain restart signs everyone out"
         );
     }

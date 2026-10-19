@@ -350,7 +350,7 @@ fn http_recovery_decodes_original_bodies_and_refuses_hidden_authority_fields() {
 }
 
 #[test]
-fn http_recovery_authentication_refuses_foreign_expired_revoked_and_unconfirmed_sessions() {
+fn http_recovery_authentication_refuses_foreign_expired_and_revoked_sessions() {
     let owned = HttpFixture::new(true, true);
     let inspect = serde_json::to_vec(&json!({"agent": owned.agent})).unwrap();
     let receipt = serde_json::to_vec(&json!({"request_id": "80".repeat(32)})).unwrap();
@@ -404,23 +404,18 @@ fn http_recovery_authentication_refuses_foreign_expired_revoked_and_unconfirmed_
         crate::baseline::CheckRuns::default(),
     );
     assert_eq!(current.import(Some("after"), &exported), 1);
-    for route in [
-        "/floor/recovery/inspect",
-        "/floor/recovery/submit",
-        "/floor/recovery/receipt",
-    ] {
-        assert_eq!(
-            post(
-                owned.addr,
-                &foreign_exchange.cookie,
-                &foreign_exchange.csrf,
-                route,
-                &inspect
-            )
-            .0,
-            403
-        );
-    }
+    assert_eq!(
+        post(
+            owned.addr,
+            &foreign_exchange.cookie,
+            &foreign_exchange.csrf,
+            "/floor/recovery/receipt",
+            &receipt
+        )
+        .0,
+        200,
+        "a carried session keeps working with the secret its page holds"
+    );
     assert!(
         owned
             .sessions
@@ -449,7 +444,7 @@ fn http_recovery_authentication_refuses_foreign_expired_revoked_and_unconfirmed_
 }
 
 #[test]
-fn serialized_receipt_read_revalidates_current_registry_confirmation_and_csrf() {
+fn serialized_receipt_read_revalidates_current_registry_and_expiry() {
     let owned = HttpFixture::new(true, true);
     let host = owned.addr.to_string();
     let origin = format!("http://{host}");
@@ -472,26 +467,11 @@ fn serialized_receipt_read_revalidates_current_registry_confirmation_and_csrf() 
             .floor_recovery_receipt(foreign_reader, Hex32::new([81; 32])),
         Err(crate::ports::FloorRecoveryReadError::Forbidden)
     );
-    let reader = owned
-        .sessions
-        .authorize_receipt(&host, &origin, &owned.exchange.cookie, &owned.exchange.csrf)
-        .unwrap();
-    let recovered = owned
-        .sessions
-        .recover(&host, &origin, &owned.exchange.cookie)
-        .unwrap();
-    assert_eq!(
-        owned
-            .running
-            .handle
-            .floor_recovery_receipt(reader, Hex32::new([81; 32])),
-        Err(crate::ports::FloorRecoveryReadError::Forbidden)
-    );
     assert_eq!(
         post(
             owned.addr,
             &owned.exchange.cookie,
-            &recovered.csrf,
+            &owned.exchange.csrf,
             "/floor/recovery/receipt",
             &serde_json::to_vec(&json!({"request_id": "81".repeat(32)})).unwrap()
         )
@@ -500,7 +480,7 @@ fn serialized_receipt_read_revalidates_current_registry_confirmation_and_csrf() 
     );
     let reader = owned
         .sessions
-        .authorize_receipt(&host, &origin, &owned.exchange.cookie, &recovered.csrf)
+        .authorize_receipt(&host, &origin, &owned.exchange.cookie, &owned.exchange.csrf)
         .unwrap();
     owned.clock.advance(30 * 60_000);
     assert_eq!(

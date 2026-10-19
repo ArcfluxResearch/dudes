@@ -80,38 +80,6 @@ fn raw_exchange(addr: SocketAddr, host: &str, origin: Option<&str>, bootstrap: &
     response
 }
 
-fn raw_recover(
-    addr: SocketAddr,
-    host: &str,
-    origin: Option<&str>,
-    cookie: Option<&str>,
-) -> Vec<u8> {
-    let mut stream = TcpStream::connect(addr).expect("connect to the Floor gateway");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .expect("read timeout");
-    let mut request =
-        format!("POST /floor/session/recover HTTP/1.1\r\nHost: {host}\r\nContent-Length: 0\r\n");
-    if let Some(origin) = origin {
-        use std::fmt::Write as _;
-        let _ = write!(&mut request, "Origin: {origin}\r\n");
-    }
-    if let Some(cookie) = cookie {
-        use std::fmt::Write as _;
-        let _ = write!(&mut request, "Cookie: dudes_floor_session={cookie}\r\n");
-    }
-    request.push_str("\r\n");
-    stream
-        .write_all(request.as_bytes())
-        .expect("write recovery");
-    stream.shutdown(Shutdown::Write).expect("finish recovery");
-    let mut response = Vec::new();
-    if let Err(error) = stream.read_to_end(&mut response) {
-        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset, "{error}");
-    }
-    response
-}
-
 fn response_parts(response: &[u8]) -> (&str, &[u8]) {
     let end = response
         .windows(4)
@@ -430,7 +398,7 @@ fn wait_for_live(probe: &FloorGatewayProbe, expected: usize) {
 }
 
 #[test]
-fn recover_cookie_only_reaches_snapshot() {
+fn the_page_secret_reaches_the_snapshot_and_a_cookie_alone_does_not() {
     let fixture = Fixture::new();
     let port = free_port();
     let settings = settings(&fixture, Some(port));
@@ -452,48 +420,22 @@ fn recover_cookie_only_reaches_snapshot() {
 
     let agent = common::hire(&running.handle, fixture.state.path());
     let issued = issue(&settings);
-    let (cookie, old_csrf) = exchange(addr, &host, &origin, &issued.bootstrap);
+    let (cookie, csrf) = exchange(addr, &host, &origin, &issued.bootstrap);
 
-    assert_empty_refusal(&raw_recover(addr, &host, None, Some(&cookie)));
-    assert_empty_refusal(&raw_recover(
-        addr,
-        &host,
-        Some("http://localhost.invalid"),
-        Some(&cookie),
-    ));
-
-    let response = raw_recover(addr, &host, Some(&origin), Some(&cookie));
-    let (head, body) = response_parts(&response);
-    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head:?}");
-    assert!(head.contains("Cache-Control: no-store\r\n"), "{head:?}");
-    assert!(head.contains("Content-Security-Policy: "), "{head:?}");
-    assert!(
-        head.contains("X-Content-Type-Options: nosniff\r\n"),
-        "{head:?}"
-    );
-    assert!(
-        head.contains("Referrer-Policy: no-referrer\r\n"),
-        "{head:?}"
-    );
-    assert!(
-        head.contains("Cross-Origin-Resource-Policy: same-origin\r\n"),
-        "{head:?}"
-    );
-    assert!(!head.contains("Set-Cookie:"), "{head:?}");
-    assert!(!head.to_ascii_lowercase().contains("access-control-allow"));
-    let json: serde_json::Value = serde_json::from_slice(body).expect("recovery JSON");
-    assert_eq!(json.as_object().map(serde_json::Map::len), Some(1));
-    let csrf = json["csrf"].as_str().expect("rotated CSRF");
-    assert_eq!(csrf.len(), SESSION_BOOTSTRAP_LEN);
-    assert_eq!(body, format!(r#"{{"csrf":"{csrf}"}}"#).as_bytes());
-
-    let old_protocols = format!("dudes-floor-v3, dudes-csrf.{old_csrf}");
-    let (old, old_head) = raw_upgrade(addr, &host, &origin, Some(&cookie), &old_protocols);
-    assert!(
-        old_head.starts_with("HTTP/1.1 403 Forbidden"),
-        "{old_head:?}"
-    );
-    drop(old);
+    for refused in [
+        format!(
+            "dudes-floor-v3, dudes-csrf.{}",
+            "A".repeat(SESSION_BOOTSTRAP_LEN)
+        ),
+        "dudes-floor-v3, dudes-csrf.".to_owned(),
+    ] {
+        let (socket, head) = raw_upgrade(addr, &host, &origin, Some(&cookie), &refused);
+        assert!(
+            head.starts_with("HTTP/1.1 403 Forbidden"),
+            "the cookie without the page's secret gets no stream: {head:?}"
+        );
+        drop(socket);
+    }
 
     let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
     let (mut browser, upgrade) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
@@ -786,14 +728,6 @@ fn carry_daemon(
     .expect("daemon boot")
 }
 
-fn recovered_csrf(addr: SocketAddr, host: &str, origin: &str, cookie: &str) -> String {
-    let response = raw_recover(addr, host, Some(origin), Some(cookie));
-    let (head, body) = response_parts(&response);
-    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head:?}");
-    let json: serde_json::Value = serde_json::from_slice(body).expect("recovery JSON");
-    json["csrf"].as_str().expect("rotated CSRF").to_owned()
-}
-
 /// What `dudes upgrade` does: export from the old run, stop it, start the next, import. A plain
 /// restart between two other runs restores nothing.
 #[test]
@@ -819,7 +753,7 @@ fn an_upgrade_carries_open_sign_ins_through_the_operator_door_and_a_plain_restar
     let first = issue(&settings);
     let (cookie, csrf) = exchange(addr, &host, &origin, &first.bootstrap);
     let second = issue(&settings);
-    let (other_cookie, _) = exchange(addr, &host, &origin, &second.bootstrap);
+    let (other_cookie, other_csrf) = exchange(addr, &host, &origin, &second.bootstrap);
 
     let operator = || Some(credential_of(&settings));
     let exported = carry_call(
@@ -855,6 +789,7 @@ fn an_upgrade_carries_open_sign_ins_through_the_operator_door_and_a_plain_restar
                 "created",
                 "digest",
                 "last_used",
+                "secret",
                 "ticket_assigns",
                 "ticket_creates"
             ]
@@ -882,7 +817,12 @@ fn an_upgrade_carries_open_sign_ins_through_the_operator_door_and_a_plain_restar
     assert_eq!(daemon.floor_addr(), Some(addr));
     let authorizer = daemon.floor_session_authorizer().expect("authorizer");
     let mut running = common::start(daemon);
-    assert_empty_refusal(&raw_recover(addr, &host, Some(&origin), Some(&cookie)));
+    assert!(
+        authorizer
+            .authorize_read(&host, &origin, &cookie, &csrf)
+            .is_none(),
+        "a plain restart before the import has signed everyone out"
+    );
 
     let imported = carry_call(
         &settings,
@@ -895,16 +835,16 @@ fn an_upgrade_carries_open_sign_ins_through_the_operator_door_and_a_plain_restar
     assert!(
         authorizer
             .authorize_read(&host, &origin, &cookie, &csrf)
-            .is_none(),
-        "the old CSRF secret is refused"
+            .is_some(),
+        "the secret the page holds still works"
     );
-    let rotated = recovered_csrf(addr, &host, &origin, &cookie);
     assert!(
         authorizer
-            .authorize_read(&host, &origin, &cookie, &rotated)
-            .is_some()
+            .authorize_read(&host, &origin, &cookie, &"A".repeat(SESSION_BOOTSTRAP_LEN))
+            .is_none(),
+        "and no other does"
     );
-    let protocols = format!("dudes-floor-v3, dudes-csrf.{rotated}");
+    let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
     let (mut browser, upgrade) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
     assert!(upgrade.starts_with("HTTP/1.1 101 "), "{upgrade:?}");
     browser
@@ -929,9 +869,15 @@ fn an_upgrade_carries_open_sign_ins_through_the_operator_door_and_a_plain_restar
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
     let daemon = carry_daemon(&settings, &clock, &column);
+    let authorizer = daemon.floor_session_authorizer().expect("authorizer");
     let mut running = common::start(daemon);
-    for carried in [&cookie, &other_cookie] {
-        assert_empty_refusal(&raw_recover(addr, &host, Some(&origin), Some(carried)));
+    for (carried, secret) in [(&cookie, &csrf), (&other_cookie, &other_csrf)] {
+        assert!(
+            authorizer
+                .authorize_read(&host, &origin, carried, secret)
+                .is_none(),
+            "a plain restart signs everyone out"
+        );
     }
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }

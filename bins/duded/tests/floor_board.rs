@@ -1716,52 +1716,6 @@ fn a_ticket_diff_is_served_from_the_recorded_baseline_and_stamp() {
     board.stop();
 }
 
-/// The session's interval and allowance follow the cookie, so rotating the CSRF token, which is
-/// what a reload does, does not start them over.
-#[test]
-fn the_diff_limits_follow_the_session_through_csrf_rotation() {
-    let fixture = Fixture::new();
-    let (settings, repo) = diff_settings(&fixture, true, true);
-    let board = Board::boot(settings, repo, vec![common::passes()]);
-    let page = board.page();
-    let body = manifest_body("01J00000000000000000000000", 0);
-    assert_eq!(
-        page.post("/floor/diff", &body).json(),
-        refusal_body("stale_ticket")
-    );
-
-    let host = page.addr.to_string();
-    let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("timeout");
-    let request = format!(
-        "POST /floor/session/recover HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        page.cookie
-    );
-    stream.write_all(request.as_bytes()).expect("recover");
-    let mut response = String::new();
-    let _ = stream.read_to_string(&mut response);
-    let (head, recovered) = response.split_once("\r\n\r\n").expect("a response");
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    let rotated = Page {
-        csrf: serde_json::from_str::<Value>(recovered).unwrap()["csrf"]
-            .as_str()
-            .expect("a new token")
-            .to_owned(),
-        ..page.clone()
-    };
-    assert_ne!(rotated.csrf, page.csrf);
-
-    assert_eq!(page.post("/floor/diff", &body).status, 403, "the old token");
-    assert_eq!(
-        rotated.post("/floor/diff", &body).json(),
-        refusal_body("busy"),
-        "the rotated token is the same session, still inside its interval"
-    );
-    board.stop();
-}
-
 /// A ticket the daemon has no baseline for has no diff.
 #[test]
 fn a_ticket_that_never_started_has_no_baseline_to_diff() {

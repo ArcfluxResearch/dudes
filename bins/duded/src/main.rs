@@ -360,6 +360,11 @@ impl duded::classify::ProcessRelation for HostPeerProcesses {
     fn track_external(&self, slot: u64) -> Box<dyn duded::classify::ExternalChild> {
         Box::new(HostExternalChild(self.0.track_external(slot)))
     }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn live_pids(&self) -> Vec<u32> {
+        self.0.live_pids()
+    }
 }
 
 /// The host relation's hold on one attached PTY child, behind the daemon's port.

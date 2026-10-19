@@ -516,6 +516,7 @@ where
         .map(|prepared| {
             prepared
                 .with_switches(switches.clone())
+                .with_agent_roots(resolver.agent_roots())
                 .with_remembered_port(crate::floor_port::remembered(&settings.state_dir))
         });
     if prepared_floor.is_some() {

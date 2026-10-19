@@ -909,6 +909,16 @@ pub enum Job {
         /// The run's count among the loop's runs.
         id: u64,
     },
+    /// The Floor refused a request because of the process on the other end of its connection.
+    /// Fire and forget: the loop only writes the audit record, and the refusal does not wait.
+    FloorPeerRefused {
+        /// The Floor route the request asked for.
+        route: &'static str,
+        /// The agent whose process tree held the connection, when known.
+        agent: Option<AgentId>,
+        /// Why it was refused.
+        reason: dudes_proto::FloorPeerRefusal,
+    },
     /// One memory-condense model-summary call ended, with the plan it was admitted for and
     /// whatever its one-shot child reported. Sent exactly once per call by its own thread, never
     /// by the loop thread (mirrors [`Job::PredicateEnded`]'s one-send rule).
@@ -1460,6 +1470,20 @@ impl Handle {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         self.stopping.store(true, Ordering::Release);
+    }
+
+    /// A Floor request was refused for its connection's owner; see [`Job::FloorPeerRefused`].
+    pub(crate) fn floor_peer_refused(
+        &self,
+        route: &'static str,
+        agent: Option<AgentId>,
+        reason: dudes_proto::FloorPeerRefusal,
+    ) {
+        let _ = self.jobs.send(Job::FloorPeerRefused {
+            route,
+            agent,
+            reason,
+        });
     }
 
     /// One goal's check run before the first turn ended, however it ended.

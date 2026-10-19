@@ -271,6 +271,19 @@ impl Resolver {
         }
     }
 
+    /// The agent processes alive now, read afresh by each caller.
+    #[must_use]
+    pub(crate) fn agent_roots(&self) -> Arc<dyn crate::floor_peer::AgentRoots> {
+        #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+        if let Some(owners) = &self.owners {
+            return Arc::new(ResolverRoots {
+                owners: owners.clone(),
+                processes: self.processes.clone(),
+            });
+        }
+        Arc::new(crate::floor_peer::NoAgents)
+    }
+
     /// Arm the publication barrier before the host starts creating the child.
     #[doc(hidden)]
     #[must_use]
@@ -522,6 +535,41 @@ struct ProcessResolver {
     owners: WorldChildren,
 }
 
+/// The agent processes the daemon knows: the recorded children, plus any the host already tracks.
+#[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+#[derive(Debug)]
+struct ResolverRoots {
+    owners: WorldChildren,
+    processes: Option<Arc<dyn ProcessRelation>>,
+}
+
+#[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
+impl crate::floor_peer::AgentRoots for ResolverRoots {
+    fn live(&self) -> Vec<crate::floor_peer::AgentRoot> {
+        let mut roots: Vec<_> = self
+            .owners
+            .snapshot()
+            .map(|recorded| {
+                recorded
+                    .agents
+                    .iter()
+                    .zip(&recorded.keys)
+                    .map(|(agent, key)| crate::floor_peer::AgentRoot {
+                        pid: key.pid,
+                        agent: Some(*agent),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for pid in self.processes.iter().flat_map(|host| host.live_pids()) {
+            if roots.iter().all(|root| root.pid != pid) {
+                roots.push(crate::floor_peer::AgentRoot { pid, agent: None });
+            }
+        }
+        roots
+    }
+}
+
 /// The process-host result the daemon maps to a peer-classification column.
 ///
 /// The daemon's mirror of `dudes_host::PeerRelation`, one hop across the crate boundary. Two enums
@@ -558,6 +606,11 @@ pub trait ProcessRelation: std::fmt::Debug + Send + Sync {
     fn published(&self, children: &[AdoptionKey]) -> Vec<(u64, usize)>;
     /// Resolve `peer` against the aligned recorded-child key slice.
     fn resolve(&self, peer: u32, pidversion: Option<u32>, children: &[AdoptionKey]) -> Relation;
+    /// Every child process the host tracks now, including one spawned a moment ago whose agent
+    /// the `World` has not yet recorded. The Floor refuses requests from inside any of them.
+    fn live_pids(&self) -> Vec<u32> {
+        Vec::new()
+    }
     /// Activate `slot` for a child another owner is about to create.
     ///
     /// The default registers nothing, so a PTY opened through a relation without it is refused.

@@ -8156,6 +8156,13 @@
           "$ref": "#/$defs/Timestamp",
           "description": "When the session was last used, not refreshed by the export."
         },
+        "secret": {
+          "description": "SHA-256 of the session secret the page sends on every request that changes state. Absent\nfrom an export an older daemon made, and a session without it cannot act.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "ticket_assigns": {
           "description": "Tickets the session assigned in the run.",
           "format": "uint32",

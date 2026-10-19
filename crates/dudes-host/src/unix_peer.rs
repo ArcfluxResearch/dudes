@@ -117,6 +117,13 @@ impl PeerProcesses {
         }
     }
 
+    /// Every child this relation tracks now, by pid. A child is here from the moment it is
+    /// registered, before any record names its agent.
+    #[must_use]
+    pub fn live_pids(&self) -> Vec<u32> {
+        self.state().children.keys().copied().collect()
+    }
+
     pub(crate) fn registered(&self) -> usize {
         self.state().children.len()
     }

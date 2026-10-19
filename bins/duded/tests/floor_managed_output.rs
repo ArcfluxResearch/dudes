@@ -758,32 +758,21 @@ fn selected_output_read_is_epoch_scoped_and_bounded() {
 
     drop(first);
     drop(second);
+    let fresh_csrf = csrf.to_owned();
     let deadline = Instant::now() + Duration::from_secs(3);
-    let fresh_csrf = loop {
-        let mut stream = TcpStream::connect(addr).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let request = format!(
-            "POST /floor/session/recover HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nCookie: dudes_floor_session={cookie}\r\nContent-Length: 0\r\n\r\n"
-        );
-        stream.write_all(request.as_bytes()).unwrap();
-        let head = read_head(&mut stream);
-        if head.starts_with("HTTP/1.1 200 OK") {
-            break response_body(&mut stream, &head)["csrf"]
-                .as_str()
-                .unwrap()
-                .to_owned();
+    let reconnect = || loop {
+        let (stream, head) = upgrade(addr, Some(&cookie), Some(&fresh_csrf), None);
+        if head.starts_with("HTTP/1.1 101 Switching Protocols") {
+            break WebSocket(stream);
         }
         assert!(
             Instant::now() < deadline,
-            "recovery never released sockets: {head}"
+            "the closed sockets never released their slots: {head}"
         );
         std::thread::sleep(Duration::from_millis(20));
     };
-    assert_ne!(fresh_csrf, csrf);
-    let mut stolen_first = WebSocket::connect(addr, &cookie, &fresh_csrf);
-    let mut stolen_second = WebSocket::connect(addr, &cookie, &fresh_csrf);
+    let mut stolen_first = reconnect();
+    let mut stolen_second = reconnect();
     for (socket, agent) in [(&mut stolen_first, a), (&mut stolen_second, b)] {
         socket.send(r#"{"type":"floor.subscribe"}"#);
         assert_eq!(socket.json()["type"], "floor.snapshot");

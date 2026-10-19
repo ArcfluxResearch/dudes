@@ -4103,11 +4103,7 @@ fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
         Some(json!({ "exported": exported })),
     );
     assert_eq!(imported, json!({ "restored": 1 }));
-    let recovered = raw_recover(addr, &cookie);
-    let rotated = serde_json::from_str::<Value>(recovered.1.trim()).expect("recovery JSON")["csrf"]
-        .as_str()
-        .expect("rotated CSRF")
-        .to_owned();
+    let rotated = csrf;
     let head = hire(addr, &cookie, &rotated, "U");
     assert!(
         head.starts_with("HTTP/1.1 403 Forbidden"),
@@ -4121,26 +4117,6 @@ fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
         "the carried session is offered no further hire"
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
-
-/// `POST /floor/session/recover` for `cookie`, as the status head and the body.
-fn raw_recover(addr: SocketAddr, cookie: &str) -> (String, String) {
-    let host = addr.to_string();
-    let mut stream = TcpStream::connect(addr).expect("Floor listener");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .expect("timeout");
-    let request = format!(
-        "POST /floor/session/recover HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-    );
-    stream.write_all(request.as_bytes()).expect("recover");
-    let mut response = String::new();
-    let _ = stream.read_to_string(&mut response);
-    let (head, body) = response
-        .split_once("\r\n\r\n")
-        .expect("a complete response");
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    (head.to_owned(), body.to_owned())
 }
 
 /// The browser's first hire ends the pre-agent operator epoch exactly as a local hire does.

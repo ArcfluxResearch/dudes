@@ -172,6 +172,7 @@ impl Restart for Fake {
             sessions: (0..self.sign_ins)
                 .map(|index| ExportedSession {
                     digest: Hex32::new([u8::try_from(index).expect("a few"); 32]),
+                    secret: None,
                     created: Timestamp::from_unix_millis(1_000),
                     last_used: Timestamp::from_unix_millis(2_000),
                     ticket_creates: 0,

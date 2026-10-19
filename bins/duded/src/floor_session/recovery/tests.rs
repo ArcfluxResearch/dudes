@@ -122,61 +122,34 @@ fn recovery_requires_both_effective_grants_and_the_actual_original_identity() {
 }
 
 #[test]
-fn imported_original_is_unavailable_until_confirmed_in_the_current_registry() {
+fn an_imported_original_is_live_with_its_carried_secret_and_unavailable_without_one() {
     let clock = Arc::new(FakeClock::frozen(0));
     let old = new_sessions(&clock);
-    let (identity, exchange) = sign_in(&old);
+    let (identity, _) = sign_in(&old);
     let origin = attribution(&identity);
     let old_carry = FloorCarry::new(old.clone(), None, crate::baseline::CheckRuns::default());
     let exported = old_carry.export(Some("old"));
     old.invalidate();
+
     let current = new_sessions(&clock);
     let carry = FloorCarry::new(current.clone(), None, crate::baseline::CheckRuns::default());
     assert_eq!(carry.import(Some("new"), &exported), 1);
     let authority = current.recovery_authority();
     assert_eq!(
         authority.observe_original(&origin, GRANTS),
-        RecoveryAvailability::EstablishedUnavailable
-    );
-    assert!(
-        authority
-            .permit_identity(&identity, &origin, GRANTS)
-            .is_err()
-    );
-    let imported = {
-        let state = current.0.registry.lock();
-        let row = &state.sessions[&identity.cookie];
-        assert!(row.csrf.is_none());
-        SessionIdentity {
-            inner: Arc::clone(&current.0),
-            cookie: identity.cookie,
-            revoked: Arc::clone(&row.revoked),
-        }
-    };
-    drop(imported.permit().unwrap());
-    assert!(imported.recovery_permit(GRANTS).is_err());
-    let recovered = current.recover(HOST, ORIGIN, &exchange.cookie).unwrap();
-    let confirmed = current
-        .authorize_onboard(HOST, ORIGIN, &exchange.cookie, &recovered.csrf)
-        .unwrap();
-    assert_eq!(
-        authority.observe_original(&origin, GRANTS),
         RecoveryAvailability::Live
     );
-    drop(
-        authority
-            .permit_identity(&confirmed, &origin, GRANTS)
-            .unwrap(),
-    );
-    assert!(
-        authority
-            .permit_identity(&identity, &origin, GRANTS)
-            .is_err()
-    );
-    current.invalidate();
+
+    let mut older = exported;
+    older.sessions[0].secret = None;
+    let current = new_sessions(&clock);
+    let carry = FloorCarry::new(current.clone(), None, crate::baseline::CheckRuns::default());
+    assert_eq!(carry.import(Some("newer"), &older), 1);
     assert_eq!(
-        authority.observe_original(&origin, GRANTS),
-        RecoveryAvailability::EstablishedUnavailable
+        current
+            .recovery_authority()
+            .observe_original(&origin, GRANTS),
+        RecoveryAvailability::EstablishedUnavailable,
+        "an export that carried no secret cannot confirm the session"
     );
-    assert!(confirmed.recovery_permit(GRANTS).is_err());
 }

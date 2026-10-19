@@ -100,6 +100,7 @@ struct Installed {
     floor: PathBuf,
     origin: String,
     cookie: String,
+    secret: String,
 }
 
 impl Installed {
@@ -141,6 +142,7 @@ impl Installed {
             floor,
             origin: String::new(),
             cookie: String::new(),
+            secret: String::new(),
         };
         let (code, out, err) = installed.cli(&["start"]);
         assert_eq!(code, 0, "{out}{err}");
@@ -171,12 +173,17 @@ impl Installed {
             .strip_prefix("http://")
             .expect("loopback")
             .clone_into(&mut self.origin);
-        let (head, _) = http(
+        let (head, body) = http(
             &self.origin,
             "POST /floor/session",
             "Content-Type: text/plain;charset=UTF-8\r\n",
             bearer,
         );
+        let signed_in: serde_json::Value = serde_json::from_str(&body).expect("a JSON body");
+        signed_in["csrf"]
+            .as_str()
+            .expect("the session secret")
+            .clone_into(&mut self.secret);
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
         head.lines()
             .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
@@ -194,14 +201,19 @@ impl Installed {
             .to_owned()
     }
 
-    fn recovers(&self) -> bool {
+    /// Whether the cookie and the secret the page holds still name a session. An empty JSON body is
+    /// a bad request for any route that got past authentication, and a refusal for one that did not.
+    fn acts(&self) -> bool {
         let (head, _) = http(
             &self.origin,
-            "POST /floor/session/recover",
-            &format!("Cookie: dudes_floor_session={}\r\n", self.cookie),
-            "",
+            "POST /floor/memory/page",
+            &format!(
+                "Content-Type: application/json\r\nCookie: dudes_floor_session={}\r\nX-Dudes-CSRF: {}\r\n",
+                self.cookie, self.secret
+            ),
+            "{}",
         );
-        head.starts_with("HTTP/1.1 200 OK")
+        !head.starts_with("HTTP/1.1 403")
     }
 
     fn plain_restart(&self) {
@@ -223,7 +235,7 @@ fn an_upgrade_keeps_the_open_sign_in_and_a_plain_restart_does_not() {
     let installed = Installed::start();
     let before = installed.build();
     assert!(
-        installed.recovers(),
+        installed.acts(),
         "control: the sign-in works before the upgrade"
     );
 
@@ -247,13 +259,13 @@ fn an_upgrade_keeps_the_open_sign_in_and_a_plain_restart_does_not() {
         "the new run serves the new build"
     );
     assert!(
-        installed.recovers(),
+        installed.acts(),
         "the sign-in from before the upgrade reaches the new run"
     );
 
     installed.plain_restart();
     assert!(
-        !installed.recovers(),
+        !installed.acts(),
         "a plain stop and start signs the browser out"
     );
 }
@@ -273,7 +285,7 @@ fn a_restart_with_no_open_sign_in_says_nothing_about_sign_ins() {
     assert_eq!(code, Ok(0), "{out}");
     assert!(!out.contains("sign-in"), "{out}");
     installed.sign_in();
-    assert!(installed.recovers());
+    assert!(installed.acts());
 }
 
 #[test]
@@ -293,7 +305,7 @@ fn an_upgrade_that_dies_after_the_export_and_before_the_import_restores_nothing(
     assert_eq!(exported["sessions"].as_array().map(Vec::len), Some(1));
     installed.plain_restart();
     assert!(
-        !installed.recovers(),
+        !installed.acts(),
         "an export that never reached an import signs nobody back in"
     );
 }
