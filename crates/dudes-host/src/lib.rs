@@ -2374,19 +2374,26 @@ mod spawn_failure_tests {
     }
 }
 
-/// Spawn `command` while no other child of this process is being created.
+/// Run `start` while no other child of this process is being created.
 ///
 /// A descriptor is only close-on-exec once it has been marked, and on macOS the standard library
 /// creates a pipe and marks it in two steps. A child forked by another thread between them would
 /// inherit the pipe's write end, and a stray copy of a keeper's write end or an agent's stdin write
 /// end would keep that pipe open after its owner is gone. Every child this crate starts goes
 /// through here so that no fork can fall inside another spawn's two steps.
-pub(crate) fn spawn_serialized(command: &mut Command) -> io::Result<Child> {
+///
+/// Code in this process that forks a child without this crate, such as the attached terminal host,
+/// takes the same lock around its fork. `start` must not start a child through this crate.
+pub fn serialize_spawn<T>(start: impl FnOnce() -> T) -> T {
     static SPAWNING: Mutex<()> = Mutex::new(());
     let _one_at_a_time = SPAWNING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    command.spawn()
+    start()
+}
+
+pub(crate) fn spawn_serialized(command: &mut Command) -> io::Result<Child> {
+    serialize_spawn(|| command.spawn())
 }
 
 /// End an agent that has no keeper and was never reported as launched: its whole group, then the

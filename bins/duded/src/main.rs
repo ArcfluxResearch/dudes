@@ -164,7 +164,9 @@ impl duded::ports::PtyHostPort for MainPtyHost {
         cols: u16,
         rows: u16,
     ) -> Result<duded::ports::OpenedPty, duded::ports::PtyOpenFailure> {
-        let opened = match self.host.open(spec, dudes_pty::PtySize { cols, rows }) {
+        let opened = match dudes_host::serialize_spawn(|| {
+            self.host.open(spec, dudes_pty::PtySize { cols, rows })
+        }) {
             Ok(opened) => opened,
             Err(dudes_pty::OpenError::Failed(error)) => {
                 return Err(duded::ports::PtyOpenFailure::Failed(error));
@@ -894,6 +896,32 @@ mod pty_tests {
                 ),
             }
         }
+    }
+
+    /// A terminal child forked while another thread sits between a pipe's creation and its
+    /// close-on-exec mark would inherit the pipe's write end, so the terminal waits for the same
+    /// lock every other child waits for.
+    #[test]
+    fn opening_a_terminal_waits_for_any_other_child_being_started() {
+        let cwd = tempfile::tempdir().expect("scratch");
+        let cwd = cwd.path().to_path_buf();
+        let (opened, opens) = std::sync::mpsc::channel();
+        let early = dudes_host::serialize_spawn(|| {
+            let mut host = MainPtyHost::new();
+            std::thread::spawn(move || {
+                let pty = open(&mut host, &cwd, &["/usr/bin/true"]);
+                let _ = opened.send(());
+                (host, pty)
+            });
+            opens.recv_timeout(Duration::from_millis(300)).is_ok()
+        });
+        assert!(
+            !early,
+            "the terminal forked while another child was being started"
+        );
+        opens
+            .recv_timeout(WAIT)
+            .expect("the terminal opens once the lock is free");
     }
 
     #[test]
