@@ -11,6 +11,22 @@ refuses a tag whose version has no section here, and builds the GitHub Release b
 
 ## [Unreleased]
 
+## [0.90.0] - 2026-10-19
+
+### Highlights
+
+- **Agents end when the daemon crashes, on macOS and Linux.** A daemon that dies hard, from a crash, an out-of-memory kill or `kill -9`, now takes its agents with it within milliseconds, as it already did on Windows. Before, an agent kept working with nobody watching it. A restarted daemon ends that turn as vanished, and restart and continue resumes it. (#106, #107, #108)
+- **The hire example gives a second agent a folder of its own.** The README and Get started no longer hire a second agent into the repository that quick start set up, so the first agent's tickets keep reaching Ready for you. (#109)
+
+### Changes
+
+- On macOS and Linux, the daemon starts a small keeper process beside each agent. The keeper ends the agent's process group when the daemon dies, however it dies. A restarted daemon no longer adopts an agent that outlived its daemon, because none does. A launch whose keeper cannot start fails before any task reaches the agent, and a daemon that cannot find its own executable refuses to start. (#106, #107)
+- The README and Get started hire the example's second agent into `~/dudes-hello` and say why, and Get started names `--worktree` as the way to share one repository. (#109)
+
+### Fixes
+
+- On macOS, open an attached terminal under the same lock as every other child the daemon starts, so a terminal cannot inherit a keeper's pipe and stop its agent from ending with the daemon. Log a warning when a keeper ends on its own while its agent runs. (#108)
+
 ## [0.89.1] - 2026-10-19
 
 ### Highlights
@@ -234,7 +250,8 @@ been tested and what is missing.
 - **Guided setup.** `dudes quickstart` turns on engines, starts the daemon, opens the Floor and can
   hire a first agent. `install.sh --from` installs a local build into `~/.local` without `sudo`.
 
-[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.89.1...HEAD
+[Unreleased]: https://github.com/ArcfluxResearch/dudes/compare/v0.90.0...HEAD
+[0.90.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.89.1...v0.90.0
 [0.89.1]: https://github.com/ArcfluxResearch/dudes/compare/v0.89.0...v0.89.1
 [0.89.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.88.0...v0.89.0
 [0.88.0]: https://github.com/ArcfluxResearch/dudes/compare/v0.87.2...v0.88.0
