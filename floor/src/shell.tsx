@@ -9,6 +9,7 @@ import { CrewList, drawerHandBack } from './renderer/CrewList';
 import { CrewStats } from './renderer/CrewTotals.tsx';
 import { PauseAllControl } from './renderer/control/PauseAllControl';
 import { DoneNotices } from './renderer/DoneNotices';
+import { NeedsStrip } from './renderer/NeedsStrip';
 import { OfficeCanvas } from './renderer/OfficeCanvas';
 import { getFloorState, selectOutputAgent, subscribeToFloor } from './renderer/floor/store';
 import { refreshFloorSnapshot } from './renderer/floor/stream';
@@ -374,7 +375,7 @@ function SignedInShell() {
         <PastedLinkNotice />
         <JournalStoppedBanner stopped={floor.journalStopped} />
         <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
-        <TicketBanner floor={floor} onOpen={() => openView('board')} />
+        {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
         <StreamNotice floor={floor} />
         <div className="office-bar" ref={setOfficeBar} />
       </header>
@@ -391,6 +392,9 @@ function SignedInShell() {
         <div className="office-slot">
           <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
             onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} />
+          {focused ? null : <NeedsStrip agents={floor.agents} cards={floor.cards} selectedId={currentSelectedId}
+            selectable={selectable} stale={floor.stale} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
+            onOpenTicket={openCard} />}
         </div>
         <FirstTask floor={floor} onHire={openHire} />
         <DoneNotices notices={floor.doneNotices} leaveFocusTo={home} />

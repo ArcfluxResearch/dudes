@@ -25,7 +25,7 @@ export type Place = 'desk' | 'board' | 'lounge' | 'kitchen' | 'bell' | 'stay';
 export type Pose = 'type' | 'point' | 'raise' | 'sit' | 'ring' | 'ponder' | 'wander' | 'still' | 'visit';
 
 export type Badge = 'working' | 'checking' | 'question' | 'held' | 'exhausted' | 'done' | 'attached'
-  | 'paused' | 'halted';
+  | 'paused' | 'halted' | 'review';
 
 export interface Station {
   readonly place: Place;
