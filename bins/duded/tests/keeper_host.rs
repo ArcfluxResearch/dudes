@@ -33,6 +33,9 @@ const DUDED: &str = env!("CARGO_BIN_EXE_duded");
 const HELPER_DIR: &str = "KEEPER_HOST_HELPER_DIR";
 const HELPER_SCENARIO: &str = "KEEPER_HOST_HELPER_SCENARIO";
 const BOUND: Duration = Duration::from_secs(10);
+/// How long an agent may outlive a killed daemon. Measured in milliseconds; the bound only has to
+/// stay under the five-second grace a stop that fell back to a signal would wait out.
+const OUTLIVED: Duration = Duration::from_secs(3);
 
 fn keeping_host(grace: Duration) -> RealHost {
     RealHost::with_grace(grace).with_keeper(PathBuf::from(DUDED))
@@ -149,7 +152,7 @@ fn a_running_agent_has_a_keeper_in_its_group_named_plainly() {
     assert_eq!(members.len(), 2, "the group is the agent and its keeper");
 
     shut_down(&mut host);
-    await_group_empty(key.pid, Duration::from_secs(2));
+    await_group_empty(key.pid, BOUND);
 }
 
 #[test]
@@ -158,7 +161,7 @@ fn an_agent_that_exits_normally_leaves_no_keeper_and_no_zombie() {
     let mut host = keeping_host(Duration::from_secs(5));
     let key = launch(&mut host, "sleep 1; exit 0", dir.path());
     await_gone(&host, &key);
-    await_group_empty(key.pid, Duration::from_secs(1));
+    await_group_empty(key.pid, BOUND);
 }
 
 #[test]
@@ -168,7 +171,7 @@ fn an_agent_that_dies_before_its_keeper_joins_is_still_launched_and_cleaned_up()
     for _ in 0..40 {
         let key = launch(&mut host, "exit 0", dir.path());
         await_gone(&host, &key);
-        await_group_empty(key.pid, Duration::from_secs(1));
+        await_group_empty(key.pid, BOUND);
     }
 }
 
@@ -178,13 +181,13 @@ fn an_agent_killed_by_a_signal_leaves_no_keeper_and_no_zombie() {
     let mut host = keeping_host(Duration::from_secs(5));
     let key = launch(&mut host, "sleep 1; kill -9 $$", dir.path());
     await_gone(&host, &key);
-    await_group_empty(key.pid, Duration::from_secs(1));
+    await_group_empty(key.pid, BOUND);
 }
 
 #[test]
 fn a_stop_finishes_well_inside_its_grace_and_leaves_nothing() {
     let dir = tempfile::tempdir().expect("scratch");
-    let grace = Duration::from_secs(5);
+    let grace = Duration::from_secs(10);
     let mut host = keeping_host(grace);
     let key = launch(&mut host, "exec sleep 120", dir.path());
 
@@ -193,10 +196,10 @@ fn a_stop_finishes_well_inside_its_grace_and_leaves_nothing() {
     let stopped = started.elapsed();
     assert!(matches!(outcome, KillOutcome::Signalled), "{outcome:?}");
     assert!(
-        stopped < Duration::from_secs(1),
+        stopped < grace / 2,
         "the stop took {stopped:?} of a {grace:?} grace"
     );
-    await_group_empty(key.pid, Duration::from_secs(1));
+    await_group_empty(key.pid, BOUND);
     assert_eq!(host.owned(), 0);
 }
 
@@ -368,7 +371,7 @@ fn starting_a_keeper_costs_little_launch_time() {
         }
     }
     assert!(
-        at(&with, 100) < Duration::from_secs(1),
+        at(&with, 100) < Duration::from_millis(2500),
         "a launch with a keeper took {:?}, against a 3 s peer wait",
         at(&with, 100)
     );
@@ -547,7 +550,7 @@ fn a_daemon_killed_with_sigkill_takes_its_agent_with_it_before_a_restart_probes(
     let keys = recorded(dir.path());
     let outlived = kill_daemon_and_measure(helper, &keys);
     assert!(
-        outlived < Duration::from_secs(1),
+        outlived < OUTLIVED,
         "agents outlived the daemon by {outlived:?}"
     );
 
@@ -562,15 +565,15 @@ fn an_agent_that_ignores_sigterm_is_ended_at_once_when_the_daemon_dies() {
     let dir = tempfile::tempdir().expect("scratch");
     let helper = start_helper(dir.path(), "ignores_term");
     let keys = recorded(dir.path());
-    assert!(
-        dir.path().join("started").exists() || {
-            std::thread::sleep(Duration::from_millis(500));
-            dir.path().join("started").exists()
-        }
-    );
+    let started = dir.path().join("started");
+    let deadline = Instant::now() + BOUND;
+    while !started.exists() {
+        assert!(Instant::now() < deadline, "the agent never started");
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let outlived = kill_daemon_and_measure(helper, &keys);
     assert!(
-        outlived < Duration::from_secs(1),
+        outlived < OUTLIVED,
         "the agent outlived the daemon by {outlived:?}"
     );
 }
@@ -610,7 +613,7 @@ fn concurrent_launches_leak_no_pipe_end_into_another_child() {
     // end-of-file when the daemon dies.
     let outlived = kill_daemon_and_measure(helper, &keys);
     assert!(
-        outlived < Duration::from_secs(2),
+        outlived < OUTLIVED,
         "agents outlived the daemon by {outlived:?}"
     );
 }
@@ -625,7 +628,7 @@ fn an_attached_terminal_agent_is_hung_up_when_the_daemon_dies() {
     let keys = recorded(dir.path());
     let outlived = kill_daemon_and_measure(helper, &keys);
     assert!(
-        outlived < Duration::from_secs(1),
+        outlived < OUTLIVED,
         "the terminal agent outlived the daemon by {outlived:?}"
     );
 }

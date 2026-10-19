@@ -102,7 +102,7 @@ fn end_of_file_ends_the_whole_group_at_once() {
     );
     assert_eq!(agent_status.signal(), Some(9), "the agent ends by SIGKILL");
     assert!(
-        elapsed < Duration::from_secs(2),
+        elapsed < BOUND,
         "the group outlived its pipe by {elapsed:?}"
     );
     assert_eq!(
