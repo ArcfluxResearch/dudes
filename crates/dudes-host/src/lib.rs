@@ -105,6 +105,8 @@ mod peer;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unix_peer;
 
+pub mod tcp_peer;
+
 /// The test-only latch that holds one child's reap open across a `kill`, so the window in which a group sweep can answer `EPERM`
 /// is about can be entered on purpose instead of waited for. Its own documentation says why the
 /// release has to come from the production presence query rather than from the test.
