@@ -30,7 +30,12 @@ export function NeedsStrip({ agents, cards, selectedId, selectable, stale, onSel
   const rows = needsOf(agents, cards, { live, now: performance.now(), wallNow: Date.now() });
   const byId = useMemo(() => new Map(agents.map((row) => [row.id, row] as const)), [agents]);
   if (rows.length === 0) return null;
-  const waiting = rows.filter((row) => row.state === 'needs-you' || row.state === 'ready').length;
+  const ready = rows.filter((row) => row.state === 'ready').length;
+  const needing = rows.filter((row) => row.state === 'needs-you').length;
+  const waiting = ready + needing;
+  const heading = waiting === 0 ? 'Nobody needs you right now'
+    : [ready > 0 ? `${ready} ready for you` : null, needing > 0 ? `${needing} need${needing === 1 ? 's' : ''} you` : null]
+      .filter((part) => part !== null).join(' · ');
 
   function act(row: NeedRow): void {
     if (row.action.kind === 'question') onOpenQuestion(row.id);
@@ -40,7 +45,7 @@ export function NeedsStrip({ agents, cards, selectedId, selectable, stale, onSel
 
   return (
     <section className="needs-strip" aria-label="Who needs you" data-waiting={waiting}>
-      <h2 className="needs-strip-title">{waiting === 0 ? 'Nobody needs you right now' : `${waiting} ${waiting === 1 ? 'needs' : 'need'} you`}</h2>
+      <h2 className="needs-strip-title">{heading}</h2>
       <ul className="needs-cards">
         {rows.map((row) => {
           const agent = byId.get(row.id);

@@ -47,12 +47,12 @@ const cards = () => [
 test('agents that need the operator come first, each with its state, its work and its one action', () => {
   const rows = needs.needsOf(crew(), cards());
   assert.deepEqual(rows.map((row) => [row.name, row.state, row.doing, row.action.kind]), [
-    ['Grace', 'needs-you', 'Which database should I use?', 'question'],
     ['Ada', 'ready', 'Add a notes file', 'ticket'],
+    ['Grace', 'needs-you', 'Which database should I use?', 'question'],
     ['Kim', 'working', 'Redo the login page', 'agent'],
     ['Oli', 'idle', 'Nothing assigned', 'agent'],
   ]);
-  assert.equal(rows[1].action.card, cards()[0].id);
+  assert.equal(rows[0].action.card, cards()[0].id);
 
   const blocked = needs.needsOf([agent(ADA, 'Ada', { status: 'idle' })],
     [ticketCard(3, 'blocked', { claimed_by: ADA, title: 'Fix the build' }, { reason: 'no_turns' })]);
@@ -67,10 +67,10 @@ test('the strip says who needs you in plain words and offers a way to act, and d
     agents: floor.agents, cards: floor.cards, selectedId: null, selectable: true, stale: false,
     onSelectAgent() {}, onOpenQuestion() {}, onOpenTicket() {},
   }));
-  assert.match(html, /2 need you/);
+  assert.match(html, /1 ready for you · 1 needs you/);
   const order = [...html.matchAll(/class="needs-name">([^<]+)</g)].map((m) => m[1]);
-  assert.deepEqual(order, ['Grace', 'Ada', 'Kim', 'Oli']);
-  for (const word of ['Needs you', 'Ready for review', 'Working', 'Idle']) assert.ok(html.includes(`>${word}<`), word);
+  assert.deepEqual(order, ['Ada', 'Grace', 'Kim', 'Oli']);
+  for (const word of ['Needs you', 'Ready for you', 'Working', 'Idle']) assert.ok(html.includes(`>${word}<`), word);
   for (const label of ['Answer', 'Review', 'Talk']) assert.ok(html.includes(`>${label}</button>`), label);
   assert.match(html, /aria-label="Chat with Ada"/);
 

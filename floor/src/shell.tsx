@@ -378,7 +378,7 @@ function SignedInShell() {
         <PastedLinkNotice />
         <JournalStoppedBanner stopped={floor.journalStopped} />
         <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
-        <TicketBanner floor={floor} onOpen={() => openView('board')} />
+        {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
         <StreamNotice floor={floor} />
         <div className="office-bar" ref={setOfficeBar} />
       </header>

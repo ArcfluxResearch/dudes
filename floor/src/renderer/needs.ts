@@ -8,12 +8,12 @@ import { crewRowOf } from './crewRow.ts';
 import type { LiveActivityContext } from './liveActivity.ts';
 import type { AgentRow } from './scene/cast.ts';
 import { tickets } from './ticket/model.ts';
-import { reasonSentence } from './ticket/words.ts';
+import type { TicketReason } from './board.ts';
 
 export type NeedState = 'needs-you' | 'ready' | 'working' | 'idle';
 
 export const NEED_LABEL: Readonly<Record<NeedState, string>> = Object.freeze({
-  'needs-you': 'Needs you', ready: 'Ready for review', working: 'Working', idle: 'Idle',
+  'needs-you': 'Needs you', ready: 'Ready for you', working: 'Working', idle: 'Idle',
 });
 
 export type NeedAction =
@@ -29,7 +29,11 @@ export interface NeedRow {
   readonly action: NeedAction;
 }
 
-const ORDER: Readonly<Record<NeedState, number>> = Object.freeze({ 'needs-you': 0, ready: 1, working: 2, idle: 3 });
+const ORDER: Readonly<Record<NeedState, number>> = Object.freeze({ ready: 0, 'needs-you': 1, working: 2, idle: 3 });
+
+function shortReason(reason: TicketReason | null): string {
+  return reason === 'recovery_required' ? 'Interrupted. Open it to continue.' : 'Open it to see what it needs.';
+}
 
 function heldTicket(cards: readonly CardRow[], agent: string, status: 'blocked' | 'review'): CardRow | null {
   return tickets(cards).find((card) => card.claimed_by === agent && card.status === status) ?? null;
@@ -45,7 +49,7 @@ function needOf(row: AgentRow, cards: readonly CardRow[], context: LiveActivityC
       action: { kind: 'question', label: 'Answer' } };
   }
   if (blocked !== null) {
-    return { ...base, state: 'needs-you', doing: `${blocked.title}. ${reasonSentence(blocked.ticket?.reason ?? null)}`,
+    return { ...base, state: 'needs-you', doing: `${blocked.title}. ${shortReason(blocked.ticket?.reason ?? null)}`,
       action: { kind: 'ticket', label: 'Open ticket', card: blocked.id } };
   }
   if (review !== null) {
@@ -63,7 +67,7 @@ function needOf(row: AgentRow, cards: readonly CardRow[], context: LiveActivityC
   return { ...base, state: 'idle', doing: task ?? 'Nothing assigned', action: { kind: 'agent', label: 'Talk' } };
 }
 
-/** Every agent, the ones that need the operator first. Within a state the Crew order stands. */
+/** Every agent: tickets ready to accept first, then the ones that need the operator. Within a state the Crew order stands. */
 export function needsOf(agents: readonly AgentRow[], cards: readonly CardRow[],
   context?: LiveActivityContext): readonly NeedRow[] {
   return agents.map((row) => needOf(row, cards, context))
