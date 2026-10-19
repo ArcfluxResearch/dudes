@@ -82,6 +82,7 @@ impl AddOptions {
             predicate_timeout_s: self.predicate_timeout_s,
             tokens_per_day: self.tokens_per_day,
             goal_tokens: self.goal_tokens,
+            may_already_pass: false,
         })
     }
 }
@@ -138,6 +139,8 @@ pub struct NewWorkspace {
     pub tokens_per_day: Option<u64>,
     /// `goal_tokens`.
     pub goal_tokens: Option<u64>,
+    /// `may_already_pass`: the check can pass before any work, as a project's own tests do.
+    pub may_already_pass: bool,
 }
 
 /// One more completion check for an enrolled workspace, as `dudes workspace check add` writes it.
@@ -380,6 +383,9 @@ fn push(
     }
     if let Some(tokens) = new.goal_tokens {
         entry["goal_tokens"] = integer(tokens);
+    }
+    if new.may_already_pass {
+        entry["may_already_pass"] = value(true);
     }
     list.push(entry);
     Ok(())

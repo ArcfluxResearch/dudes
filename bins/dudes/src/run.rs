@@ -1666,6 +1666,7 @@ fn enrollment(plan: &Plan, cwd: Option<&Path>) -> Result<Option<NewWorkspace>, F
         predicate_timeout_s: check.timeout_s,
         tokens_per_day: None,
         goal_tokens: None,
+        may_already_pass: true,
     }))
 }
 

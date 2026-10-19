@@ -528,6 +528,8 @@ test('Briefing offers the workspace’s checks by label, the first chosen, and s
     ['default', false, 'Parser tests pass'],
     ['contributing', true, 'CONTRIBUTING.md exists (may already pass)'],
   ]);
+  assert.match(render(), /<p class="hire-note">This check may already pass, so Dudes hires without running it first\./);
+  assert.doesNotMatch(render(), /nobody is hired/, 'a check that may already pass still says a pass hires nobody');
   // Another workspace has its own checks; a choice it does not offer falls back to its first.
   hire.editDraft({ workspaceId: 'repo_2' });
   html = render();

@@ -310,7 +310,11 @@ function HireForm({ hire, floor, onClose }: {
                           </label>
                         ))}
                       </fieldset>
-                      <p className="hire-note">Dudes runs this check once before hiring. If it already passes, there is nothing to do, so nobody is hired.</p>
+                      {check?.mayAlreadyPass === true
+                        ? <p className="hire-note">This check may already pass, so Dudes hires without running it first.
+                          After the agent&apos;s turn it runs the check again. A pass does not prove the task is done, so
+                          review the change yourself.</p>
+                        : <p className="hire-note">Dudes runs this check once before hiring. If it already passes, there is nothing to do, so nobody is hired.</p>}
                     </>
                   )}
                   <SharedProjectNote names={sharedProject(floor, workspace.workspaceId)} />

@@ -392,6 +392,7 @@ fn add_refuses_each_bad_path_and_id_before_writing() {
         predicate_timeout_s: 10,
         tokens_per_day: None,
         goal_tokens: None,
+        may_already_pass: false,
     };
     let canonical_link = home.path().join("link").canonicalize().expect("target");
     for (arm, attempt) in [
@@ -1051,6 +1052,7 @@ fn new_workspace(path: &Path, argv: &[&str]) -> NewWorkspace {
         predicate_timeout_s: 10,
         tokens_per_day: None,
         goal_tokens: None,
+        may_already_pass: false,
     }
 }
 
