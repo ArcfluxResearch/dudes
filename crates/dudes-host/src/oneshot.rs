@@ -412,7 +412,7 @@ impl OneShot {
         // and the waiter, for the reason `RealHost::spawn` gives at the same point: `?` drops the
         // `Child`, and dropping a `Child` neither signals it nor reaps it — so an early return
         // would leave a running process this runner holds no record of and `sweep` can never reach.
-        let child = command.spawn()?;
+        let child = crate::spawn_serialized(&mut command)?;
         #[cfg(test)]
         tests::after_spawn(child.id());
         if matches!(capture, Capture::Head(_)) {

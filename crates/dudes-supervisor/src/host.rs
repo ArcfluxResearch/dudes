@@ -366,11 +366,13 @@ pub struct OwnedTargets {
 /// running, which is the state it is least likely to be in.
 ///
 /// **This trait is not the whole of invariant 10.** Declaring `shutdown` makes the daemon-exit
-/// half *reachable* and *assertable*; what makes it *hold* is three things together — the
+/// half *reachable* and *assertable*; what makes it *hold* is these together — the
 /// platform hold taken at `spawn` (a process group on Unix, a job with `KILL_ON_JOB_CLOSE` on
 /// Windows), the daemon calling `shutdown` on every exit path, and the real host's own tests. On
-/// Unix the platform hold **selects** and does not kill, so a daemon killed with `SIGKILL`
-/// orphans its children on that platform and no implementation of this trait can prevent it.
+/// Unix a process group **selects** and does not kill, so the real host adds a keeper process
+/// beside each agent: it reads a pipe that the kernel closes when the daemon dies, however it
+/// dies, and ends the agent's group when that happens. A host built without that keeper still
+/// orphans its children when the daemon is killed with `SIGKILL`.
 ///
 /// `spawn` takes the [`ManagedInstall`] alongside the spec because the adapter's files are a
 /// projection: the host writes any that differ *before* exec, so a

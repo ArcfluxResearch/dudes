@@ -668,6 +668,11 @@ fn start() -> anyhow::Result<duded::ExitCause> {
     // the decide loop as soon as the loop's queue exists.
     let children = duded::ChildEnds::new();
     let host = RealHost::watching(Arc::new(HostStreams(Arc::clone(&children))));
+    // A keeper beside each agent is what ends its process group when this daemon dies hard. A
+    // daemon that cannot name its own executable would launch agents nothing guards, so it refuses
+    // to start.
+    #[cfg(unix)]
+    let host = host.with_keeper(keeper_executable(&settings)?);
     // Supported desktop platforms use the host-owned process-ancestry relation. Other targets keep the
     // explicit `NoWalk -> Unresolvable` fallback and publish no child mapping.
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -768,6 +773,23 @@ fn announce(
             socket.display()
         ),
     );
+}
+
+/// The executable that answers `keeper`: this daemon's own.
+///
+/// On Linux that is `/proc/self/exe`, which keeps naming the running binary after an upgrade
+/// replaces the file on disk. Elsewhere it is the path the daemon was started from, so after an
+/// upgrade a newer keeper serves an older daemon until it restarts; the keeper's contract does not
+/// change, so the skew is harmless.
+#[cfg(unix)]
+fn keeper_executable(settings: &Settings) -> anyhow::Result<PathBuf> {
+    if cfg!(target_os = "linux") {
+        return Ok(PathBuf::from("/proc/self/exe"));
+    }
+    settings
+        .daemon_exe
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("cannot find this daemon's own executable to keep agents"))
 }
 
 /// Block `SIGTERM` and `SIGINT` in this thread, and therefore in every thread started after it.

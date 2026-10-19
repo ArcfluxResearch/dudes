@@ -118,6 +118,8 @@ mod unix_peer;
 mod reap_hold;
 
 #[cfg(unix)]
+mod keeper;
+#[cfg(unix)]
 mod sigmask;
 #[cfg(unix)]
 mod unix;
@@ -277,6 +279,12 @@ struct Owned {
     reap_confirmed: Arc<AtomicBool>,
     native_receipt: NativeBoundaryReceipt,
     protocol: Option<ProtocolWriter>,
+    /// The write end of this agent's keeper pipe, held exactly as long as this host owns the agent.
+    /// Dropping it ends the agent's process group at once, so nothing that leaves the agent running
+    /// may drop it.
+    #[cfg(unix)]
+    #[expect(dead_code, reason = "held for its Drop, which is what ends the group")]
+    lifeline: Option<keeper::Lifeline>,
 }
 
 struct CurrentNativeTarget {
@@ -317,6 +325,10 @@ pub struct RealHost {
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     peers: PeerProcesses,
     grace: Duration,
+    /// The executable that is started as a keeper beside each agent, when this host keeps agents
+    /// alive only as long as the daemon. `None` starts no keeper.
+    #[cfg(unix)]
+    keeper_executable: Option<PathBuf>,
     /// Where every agent child's standard output goes, when this host was given somewhere to send
     /// it. `None` leaves stdout inherited and opens no pipe at all — which is what
     /// [`RealHost::new`] does and what every host did before there was a sink, so a host with no
@@ -629,6 +641,8 @@ impl RealHost {
             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
             peers,
             grace,
+            #[cfg(unix)]
+            keeper_executable: None,
             streams: None,
             #[cfg(test)]
             setup_fault: None,
@@ -662,6 +676,17 @@ impl RealHost {
             streams: Some(streams),
             ..Self::with_grace(grace)
         }
+    }
+
+    /// Start a keeper beside every agent this host launches, from `executable`.
+    ///
+    /// `executable` is the daemon's own binary, which answers `keeper` as a hidden mode. A launch
+    /// whose keeper cannot start fails, and no task reaches that agent.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn with_keeper(mut self, executable: PathBuf) -> Self {
+        self.keeper_executable = Some(executable);
+        self
     }
 
     /// How many children this host owns and has not reaped. The count invariant 10 is about.
@@ -1752,6 +1777,8 @@ mod spawn_failure_tests {
                 reap_confirmed: Arc::clone(&reap_confirmed),
                 native_receipt: NativeBoundaryReceipt::fresh(),
                 protocol: None,
+                #[cfg(unix)]
+                lifeline: None,
             },
         );
         host.index_native_target(pid);
@@ -2347,6 +2374,30 @@ mod spawn_failure_tests {
     }
 }
 
+/// Spawn `command` while no other child of this process is being created.
+///
+/// A descriptor is only close-on-exec once it has been marked, and on macOS the standard library
+/// creates a pipe and marks it in two steps. A child forked by another thread between them would
+/// inherit the pipe's write end, and a stray copy of a keeper's write end or an agent's stdin write
+/// end would keep that pipe open after its owner is gone. Every child this crate starts goes
+/// through here so that no fork can fall inside another spawn's two steps.
+pub(crate) fn spawn_serialized(command: &mut Command) -> io::Result<Child> {
+    static SPAWNING: Mutex<()> = Mutex::new(());
+    let _one_at_a_time = SPAWNING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    command.spawn()
+}
+
+/// End an agent that has no keeper and was never reported as launched: its whole group, then the
+/// leader itself in case the group could not be signalled, and the reap.
+#[cfg(unix)]
+fn end_unkept_agent(mut child: Child) {
+    let _ = unix::signal_group(unix::as_pid(child.id()), kill::Sig::Kill);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// `spec` as a [`Command`]: `argv[0]` is the program and every other element is one argument.
 ///
 /// Invariant 7 in one function — there is no string anywhere on this path, no shell, and no
@@ -2493,7 +2544,7 @@ impl ProcessHost for RealHost {
         #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         let peer_slot = self.peers.activate();
         let launched_at = std::time::Instant::now();
-        let mut child = match command.spawn() {
+        let mut child = match spawn_serialized(&mut command) {
             Ok(child) => child,
             Err(reason) => {
                 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -2535,6 +2586,25 @@ impl ProcessHost for RealHost {
         self.peers.register(pid, grip.job(), peer_slot);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.peers.register(pid, peer_slot);
+
+        // After the peer registration and before the stdin writer, so a task written to stdin only
+        // ever reaches an agent that already has a keeper. Before the child moves to its watcher, so
+        // the agent is not yet reaped and its group still exists to join.
+        #[cfg(unix)]
+        let lifeline = match self
+            .keeper_executable
+            .as_deref()
+            .map(|exe| keeper::start(exe, pid))
+        {
+            None => None,
+            Some(Ok(lifeline)) => Some(lifeline),
+            Some(Err(reason)) => {
+                end_unkept_agent(child);
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                self.peers.exited(pid, peer_slot);
+                return SpawnResult::NotLaunched { reason };
+            }
+        };
 
         // The scoped writer borrows the launch bytes instead of copying a potentially large task,
         // and it cannot outlive this call. The child moves to its stdout watcher before the join,
@@ -2717,6 +2787,8 @@ impl ProcessHost for RealHost {
                     reap_confirmed,
                     native_receipt: NativeBoundaryReceipt::fresh(),
                     protocol: protocol.clone(),
+                    #[cfg(unix)]
+                    lifeline,
                 },
             );
             self.index_native_target(pid);
