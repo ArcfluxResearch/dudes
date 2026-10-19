@@ -39,7 +39,9 @@ Dudes reads no engine's credentials or files.
    - **Project.** When the current directory is a git repository that is not enrolled, one
      question for its completion check, the command the daemon runs itself to decide that a goal
      is done. Quickstart suggests `cargo test`, `npm test`, `go test ./...`, `pytest` or
-     `make test` from the files it finds; `-` skips enrolling. Outside a repository with no
+     `make test` from the files it finds, and when it finds none it offers a check that passes once the
+     agent has edited or added a file; `-` skips enrolling. Quickstart marks the check as one that
+     may already pass, so the Floor's Hire does not refuse a project whose tests already pass. Outside a repository with no
      project enrolled, the guide asks for a project folder instead. Enter skips it.
    - **First hire.** With a project, the guide offers an idle agent named Kim. Confirm the only
      installed engine, or choose an engine when several are installed. Enter skips the engine

@@ -908,10 +908,52 @@ fn quickstart_outside_a_repo_enrolls_the_entered_folder() {
     assert_eq!(loaded.enrollment.profiles[0].cwd, layout.repo());
     assert_eq!(loaded.enrollment.profiles[0].checks[0].label, "cargo test");
     assert!(
+        loaded.enrollment.profiles[0].checks[0].may_already_pass,
+        "a project's own tests usually pass before any work, and the Floor's Hire must allow that"
+    );
+    assert!(
         !screen.shown().contains("No project yet."),
         "{}",
         screen.shown()
     );
+}
+
+/// A repository with no test command still enrolls: the default check passes once files changed,
+/// and the guide says so before it enrolls.
+#[test]
+fn quickstart_with_no_test_command_enrolls_the_files_changed_check() {
+    let layout = Layout::new();
+    let pty = nix::pty::openpty(
+        None::<&nix::pty::Winsize>,
+        None::<&nix::sys::termios::Termios>,
+    )
+    .unwrap();
+    let mut child = layout
+        .cli()
+        .current_dir(layout.root.path())
+        .arg("quickstart")
+        .spawn_on_terminal(&pty.slave);
+    drop(pty.slave);
+    let mut screen = Screen::new(pty.master);
+    screen.expect(FLOOR_QUESTION);
+    screen.answer("y");
+    screen.expect("Project folder (Enter to skip):");
+    screen.answer(layout.path("repo").to_str().unwrap());
+    screen.expect("No test command was found here.");
+    screen.expect("First agent engine (claude, codex; Enter to skip):");
+    screen.answer("");
+    screen.expect("and go ahead? [Y/n]");
+    screen.answer("y");
+    screen.expect("Engines the daemon turned on:");
+    assert!(child.wait().unwrap().success(), "{}", screen.shown());
+    let loaded = duded::config::load_operator(&layout.config()).unwrap();
+    let check = &loaded.enrollment.profiles[0].checks[0];
+    assert_eq!(check.label, "files changed");
+    assert!(check.may_already_pass);
+    let dudes_proto::goal::Predicate::Command { argv, .. } = &check.predicate else {
+        panic!("a command check: {:?}", check.predicate);
+    };
+    assert_eq!(*argv, dudes::setup::changed_check());
 }
 
 #[test]
@@ -975,7 +1017,7 @@ fn billed_and_unbilled_guides_ask_at_most_five_questions_and_hire_idle() {
             screen.expect("Daily dollar cap for the whole floor (Enter for none):");
             screen.answer("25");
         }
-        screen.expect("Completion check for this repository (- to skip):");
+        screen.expect("repository [git ls-files");
         screen.answer("/usr/bin/true");
         if multiple {
             screen.expect("First agent engine (claude, codex; Enter to skip):");
@@ -1025,7 +1067,7 @@ fn repeat_guide(cli: &Cli, enroll: bool) -> String {
     screen.expect(FLOOR_QUESTION);
     screen.answer("y");
     if enroll {
-        screen.expect("Completion check for this repository (- to skip):");
+        screen.expect("repository [git ls-files");
         screen.answer("/usr/bin/true");
     }
     screen.expect("Hire an agent named Kim on claude, idle? [y/N]");
@@ -1205,10 +1247,7 @@ fn a_terminal_is_asked_each_step_and_gets_the_same_setup() {
 
     for (question, answer) in [
         (FLOOR_QUESTION, "y"),
-        (
-            "Completion check for this repository (- to skip):",
-            "/usr/bin/true",
-        ),
+        ("repository [git ls-files", "/usr/bin/true"),
         (
             "First agent engine (claude, codex; Enter to skip):",
             "codex",
@@ -1275,10 +1314,7 @@ fn a_terminal_is_warned_before_a_restart() {
     let mut child = layout.cli().arg("quickstart").spawn_on_terminal(&pty.slave);
     drop(pty.slave);
     let mut screen = Screen::new(pty.master);
-    for (question, answer) in [
-        (FLOOR_QUESTION, "n"),
-        ("Completion check for this repository (- to skip):", ""),
-    ] {
+    for (question, answer) in [(FLOOR_QUESTION, "n"), ("repository [git ls-files", "-")] {
         screen.expect(question);
         screen.answer(answer);
     }
@@ -1325,7 +1361,7 @@ fn a_terminal_that_ends_its_input_writes_nothing() {
 fn answer_the_defaults(screen: &mut Screen) {
     for (question, answer) in [
         (FLOOR_QUESTION, "n"),
-        ("Completion check for this repository (- to skip):", ""),
+        ("repository [git ls-files", "-"),
         ("and go ahead? [Y/n]", ""),
     ] {
         screen.expect(question);

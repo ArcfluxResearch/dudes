@@ -313,18 +313,16 @@ fn project_folder_step(
         Ok(Some(path))
     })?;
     if let Some(folder) = folder {
-        if let Some(argv) = suggest_check(&folder) {
-            plan.project = Some(folder);
-            plan.enroll = Some(Enroll {
-                check_label: argv.join(" "),
-                department: DEFAULT_DEPARTMENT.to_owned(),
-                agent_usd_per_day: None,
-                goal_usd: None,
-            });
-            plan.check = Some(check(argv));
-            return Ok(());
-        }
-        term.say("No completion check was found. In that folder run `dudes workspace add -- <program> [args...]`.")?;
+        let argv = default_check(term, &folder)?;
+        plan.project = Some(folder);
+        plan.enroll = Some(Enroll {
+            check_label: check_label(&argv),
+            department: DEFAULT_DEPARTMENT.to_owned(),
+            agent_usd_per_day: None,
+            goal_usd: None,
+        });
+        plan.check = Some(check(argv));
+        return Ok(());
     }
     term.say("Tickets and Floor hiring need a project.")?;
     term.say(NO_PROJECT_HINT)?;
@@ -502,6 +500,52 @@ pub fn suggest_check(dir: &Path) -> Option<Vec<String>> {
     Some(argv.iter().map(|word| (*word).to_owned()).collect())
 }
 
+/// What the daemon runs when a repository names no test command: git lists a file that is edited
+/// or added and left uncommitted, and `--error-unmatch` makes that exit 0 and an unchanged tree
+/// exit 1. Nothing is interpolated and no shell runs it.
+#[must_use]
+pub fn changed_check() -> Vec<String> {
+    [
+        "git",
+        "ls-files",
+        "--modified",
+        "--deleted",
+        "--others",
+        "--exclude-standard",
+        "--error-unmatch",
+        "--",
+        ".",
+    ]
+    .iter()
+    .map(|word| (*word).to_owned())
+    .collect()
+}
+
+/// The label the Floor shows for [`changed_check`].
+const CHANGED_LABEL: &str = "files changed";
+
+/// Said wherever [`changed_check`] is offered, so the default is never a surprise.
+const NO_TEST_CHECK: &str = "No test command was found here. The default check passes once the agent has edited or added a \
+     file that is not committed yet. Dudes runs it itself, then you review the change.";
+
+/// The check a repository suggests, or [`changed_check`] after saying so when it names none.
+fn default_check(term: &mut Terminal<'_>, dir: &Path) -> Result<Vec<String>, Stopped> {
+    if let Some(argv) = suggest_check(dir) {
+        return Ok(argv);
+    }
+    term.say(NO_TEST_CHECK)?;
+    Ok(changed_check())
+}
+
+/// The Floor's label for a check: the plain words for [`changed_check`], else the command.
+fn check_label(argv: &[String]) -> String {
+    if argv == changed_check() {
+        CHANGED_LABEL.to_owned()
+    } else {
+        argv.join(" ")
+    }
+}
+
 /// Whether `package.json` has a `test` script, other than the placeholder `npm init` writes.
 fn npm_test(manifest: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(manifest)
@@ -568,18 +612,18 @@ fn workspace_step(
          arguments separated by spaces.",
         cwd.display()
     ))?;
-    let suggestion = suggest_check(cwd);
+    let suggestion = default_check(term, cwd)?;
     let Some(argv) = ask_check(
         term,
         "Completion check for this repository",
-        suggestion.as_deref(),
+        Some(&suggestion),
         true,
         cwd,
     )?
     else {
         return Ok(());
     };
-    let label = argv.join(" ");
+    let label = check_label(&argv);
     plan.enroll = Some(Enroll {
         check_label: display_text(&label)
             .map_err(|why| Stopped::Io(io::Error::new(io::ErrorKind::InvalidInput, why)))?,
@@ -791,6 +835,13 @@ pub fn summary(term: &mut Terminal<'_>, plan: &Plan, cwd: Option<&Path>) -> io::
             enroll.check_label,
             check.hop_cap
         )?;
+        if check.argv != changed_check() {
+            writeln!(
+                out,
+                "  the check may already pass before any work, as a project's tests usually do, so a \
+                 Floor hire's first task does not wait for it to fail"
+            )?;
+        }
     }
     writeln!(
         out,
@@ -1140,7 +1191,7 @@ mod tests {
     }
 
     /// The check question offers the suggestion, takes another command, and skips on `-`; with
-    /// no suggestion Enter skips enrolling.
+    /// no suggestion Enter takes the default check that files changed.
     #[test]
     fn the_check_question_offers_skips_and_takes_another_command() {
         let quiet = host(&[Provider::Claude], &[]);
@@ -1181,13 +1232,20 @@ mod tests {
             None,
             &[
                 (FLOOR, "n"),
-                ("Completion check for this repository (- to skip):", ""),
+                ("Completion check for this repository [git ls-files", ""),
+                ("Hire a first agent named Kim on claude, idle? [Y/n]", "n"),
             ],
             Some(bare.path()),
             &quiet,
         );
-        assert!(run.plan.expect("answered").enroll.is_none());
-        assert!(!run.shown.contains("Name the check"), "{}", run.shown);
+        assert!(
+            run.shown.contains("No test command was found here."),
+            "{}",
+            run.shown
+        );
+        let plan = run.plan.expect("answered");
+        assert_eq!(plan.check.expect("a check").argv, changed_check());
+        assert_eq!(plan.enroll.expect("enrolled").check_label, "files changed");
     }
 
     #[test]

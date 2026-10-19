@@ -552,7 +552,8 @@ COMMANDS
         Set up and start the daemon. On a terminal with no options it turns on the
         engines it finds on your PATH, then asks, one step at a time, whether the Floor
         may act on your agents, for a daily spending cap only when an API key is set,
-        for the current repository's completion check (suggested from its files), or
+        for the current repository's completion check (suggested from its files, or, when
+        it has no test command, one that passes once files changed), or
         for a project folder when outside a repository. Enter skips that folder.
         It asks at most five questions, including confirmation. A first hire is named
         Kim and starts idle. Choose an installed engine or skip hiring. Use explicit
