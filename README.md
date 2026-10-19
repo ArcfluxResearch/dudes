@@ -66,8 +66,9 @@ dudes floor open
 hire a first agent. Paste the link into any browser; `dudes floor open` prints a new one later. On a remote
 machine, forward the link's port over SSH first, because the link is a loopback address. To hire an agent
 yourself and give it
-a goal, use the id that `dudes hire` prints. Give a second agent a folder of its own: two agents in one
-repository can change the same files, so Dudes holds that repository's tickets in Needs you for review.
+a goal, use the id that `dudes hire` prints. Give a second agent a folder of its own: Dudes cannot check
+another agent's engine settings for a ticket, so in a repository two agents share it holds tickets in Needs
+you for review.
 
 ```sh
 mkdir -p ~/dudes-hello

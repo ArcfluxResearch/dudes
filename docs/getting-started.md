@@ -93,8 +93,8 @@ Dudes reads no engine's credentials or files.
 5. Hire more agents. On the Floor, click **Hire an agent**, choose the workspace and an engine it
    offers, and write the briefing. The Floor offers Claude Code, and Codex or Pi once they are
    turned on. From the command line, hire an agent, then give it a goal with the id that `hire`
-   prints. This one gets a folder of its own, because two agents in one repository can change the
-   same files, and Dudes then holds that repository's tickets in **Needs you** for review:
+   prints. This one gets a folder of its own. Dudes cannot check another agent's engine settings
+   for a ticket, so in a repository two agents share it holds tickets in **Needs you** for review:
 
    ```sh
    mkdir -p ~/dudes-hello
