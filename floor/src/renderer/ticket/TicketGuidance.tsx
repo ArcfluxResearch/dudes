@@ -15,5 +15,5 @@ export function TicketOffHint({ floor }: { readonly floor: FloorState }) {
 }
 
 export function NoTicketProjectHint() {
-  return <p className="ticket-hint">Tickets run in a project, and none is set up yet. In your project&apos;s folder run <code>dudes workspace add</code>.</p>;
+  return <p className="ticket-hint">Tickets run in a project, and none is set up yet. In your project&apos;s folder run <code>dudes project add</code>.</p>;
 }

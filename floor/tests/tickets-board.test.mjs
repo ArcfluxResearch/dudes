@@ -310,7 +310,7 @@ function form(extra = {}) {
 test('with no project the new ticket form says how to set one up', () => {
   subscribe(store, { agents: [agent(ADA, 'Ada', { workspace: undefined })], checks: { workspaces: [] } });
   const html = form();
-  assert.match(html, /Tickets run in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes workspace add<\/code>\./);
+  assert.match(html, /Tickets run in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes project add<\/code>\./);
   assert.doesNotMatch(html, /No agent yet/);
   assert.match(html, /<button type="submit"[^>]*disabled=""[^>]*>Create ticket<\/button>/);
 });

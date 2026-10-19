@@ -378,7 +378,7 @@ impl Environment {
         self.current_dir.as_deref()
     }
 
-    /// The daemon's operator file, which `dudes workspace` edits.
+    /// The daemon's operator file, which `dudes project` edits.
     ///
     /// # Errors
     ///

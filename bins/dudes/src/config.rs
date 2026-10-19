@@ -3,7 +3,7 @@
 //!
 //! An edit keeps the file's other settings and comments where `toml_edit` can. It writes line
 //! endings as LF, can respace a header it rewrites, and drops the comments of a table that `unset`
-//! empties. It is written as `dudes workspace` writes, to a temporary file beside the original that
+//! empties. It is written as `dudes project` writes, to a temporary file beside the original that
 //! is renamed over it.
 //!
 //! An edit that breaks the file's own start rules, [`RULES`], is refused before anything is
@@ -546,7 +546,7 @@ impl Draft {
         apply(&mut self.settings.document, change)
     }
 
-    /// Append one workspace, checked as `dudes workspace add` checks it.
+    /// Append one workspace, checked as `dudes project add` checks it.
     ///
     /// # Errors
     ///

@@ -1092,13 +1092,13 @@ pub fn reload(
         }
         None => writeln!(
             out,
-            "not applied; run `dudes workspace reload --apply {}` to apply this change",
+            "not applied; run `dudes project reload --apply {}` to apply this change",
             Escaped(&result.sha256)
         ),
     }
 }
 
-/// `dudes workspace list`: each id the file enrolls or the daemon runs, and where it is, or one
+/// `dudes project list`: each id the file enrolls or the daemon runs, and where it is, or one
 /// line naming the file when there is none.
 ///
 /// # Errors
@@ -1123,7 +1123,7 @@ pub fn workspaces(
     if ids.is_empty() {
         return writeln!(
             out,
-            "no workspace is enrolled in {}; add one with `dudes workspace add`",
+            "no project is enrolled in {}; add one with `dudes project add`",
             Escaped(&config.display().to_string())
         );
     }
@@ -1858,7 +1858,7 @@ mod tests {
                  changed  {SHOWN} ({SHOWN})\n\
                  needs a daemon restart: {SHOWN}\n\
                  running  {SHOWN}\n\
-                 not applied; run `dudes workspace reload --apply {SHOWN}` to apply this change\n"
+                 not applied; run `dudes project reload --apply {SHOWN}` to apply this change\n"
             )
         );
 
@@ -1893,7 +1893,7 @@ mod tests {
         let said = text(|out| reload(out, false, &result));
         assert!(
             said.ends_with(
-                "not applied; run `dudes workspace reload --apply abc` to apply this change\n"
+                "not applied; run `dudes project reload --apply abc` to apply this change\n"
             ),
             "a restart-only difference is still a difference: {said}"
         );
@@ -1924,7 +1924,7 @@ mod tests {
     fn the_operator_file_path_is_escaped() {
         assert_eq!(
             text(|out| workspaces(out, false, Path::new(HOSTILE), &[], None)),
-            format!("no workspace is enrolled in {SHOWN}; add one with `dudes workspace add`\n")
+            format!("no project is enrolled in {SHOWN}; add one with `dudes project add`\n")
         );
 
         let absent = tempfile::tempdir().expect("a directory with no operator file");

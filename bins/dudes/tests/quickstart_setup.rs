@@ -363,7 +363,7 @@ fn a_script_whose_check_cannot_run_hires_without_a_goal() {
              give Kim a goal with: dudes goal --agent {agent} --text <text> --hop-cap 5 -- \
              <program> [args...]; workspace repo is enrolled with the same check, so the Floor \
              offers no hire there until you change its predicate_argv in {} and run dudes \
-             workspace reload, then dudes workspace reload --apply <sha256> (-32602)\n",
+             workspace reload, then dudes project reload --apply <sha256> (-32602)\n",
             layout.config().display()
         )
     );
@@ -856,13 +856,13 @@ fn quickstart_outside_a_repo_asks_for_a_folder_and_can_skip_it() {
     screen.expect("Tickets and Floor hiring need a project.");
     screen.expect("and go ahead? [Y/n]");
     screen.answer("y");
-    screen.expect("No project yet. In your project's folder run `dudes workspace add`.");
+    screen.expect("No project yet. In your project's folder run `dudes project add`.");
     assert!(child.wait().unwrap().success(), "{}", screen.shown());
     assert_eq!(
         screen.shown().matches("[Y/n]").count() + screen.shown().matches("Enter to skip):").count(),
         3
     );
-    let listed = layout.cli().args(["--json", "workspace", "list"]).run();
+    let listed = layout.cli().args(["--json", "project", "list"]).run();
     assert_eq!(
         listed.json::<serde_json::Value>()["running"],
         serde_json::json!([])
@@ -965,7 +965,7 @@ fn start_floor_and_quickstart_show_a_missing_project_hint_only_to_people() {
         assert!(
             human
                 .stdout
-                .contains("No project yet. In your project's folder run `dudes workspace add`.\n"),
+                .contains("No project yet. In your project's folder run `dudes project add`.\n"),
             "{human:?}"
         );
         let json = layout.cli().arg("--json").args(&command).run();
@@ -975,7 +975,7 @@ fn start_floor_and_quickstart_show_a_missing_project_hint_only_to_people() {
     }
     let added = layout
         .cli()
-        .args(["workspace", "add", "--", "/usr/bin/true"])
+        .args(["project", "add", "--", "/usr/bin/true"])
         .run();
     assert_eq!(added.code(), dudes::exit::SUCCESS, "{added:?}");
     for command in [vec!["start"], vec!["floor", "open"], vec!["quickstart"]] {
@@ -1182,7 +1182,7 @@ fn hire_asks_which_project_and_refuses_to_guess_without_a_terminal() {
     assert_eq!(started.code(), 0, "{started:?}");
     let added = layout
         .cli()
-        .args(["workspace", "add", "--", "/usr/bin/true"])
+        .args(["project", "add", "--", "/usr/bin/true"])
         .run();
     assert_eq!(added.code(), 0, "{added:?}");
     let other = layout.path("other");
@@ -1190,7 +1190,7 @@ fn hire_asks_which_project_and_refuses_to_guess_without_a_terminal() {
     let added = layout
         .cli()
         .current_dir(&other)
-        .args(["workspace", "add", "--", "/usr/bin/true"])
+        .args(["project", "add", "--", "/usr/bin/true"])
         .run();
     assert_eq!(added.code(), 0, "{added:?}");
     let args = [

@@ -23,7 +23,7 @@ pub const DEFAULT_HOP_CAP: u32 = 5;
 pub const DEFAULT_PREDICATE_TIMEOUT_S: u64 = 600;
 /// The next step when the daemon has no enrolled project.
 pub const NO_PROJECT_HINT: &str =
-    "No project yet. In your project's folder run `dudes workspace add`.";
+    "No project yet. In your project's folder run `dudes project add`.";
 /// The name the guided first hire offers.
 const DEFAULT_NAME: &str = "Kim";
 
@@ -525,7 +525,7 @@ pub fn changed_check() -> Vec<String> {
 const CHANGED_LABEL: &str = "files changed";
 
 /// Said wherever [`changed_check`] is offered, so the default is never a surprise.
-const NO_TEST_CHECK: &str = "No test command was found here. The default check passes once the agent has edited or added a \
+pub(crate) const NO_TEST_CHECK: &str = "No test command was found here. The default check passes once the agent has edited or added a \
      file that is not committed yet. Dudes runs it itself, then you review the change.";
 
 /// The check a repository suggests, or [`changed_check`] after saying so when it names none.
@@ -538,7 +538,7 @@ fn default_check(term: &mut Terminal<'_>, dir: &Path) -> Result<Vec<String>, Sto
 }
 
 /// The Floor's label for a check: the plain words for [`changed_check`], else the command.
-fn check_label(argv: &[String]) -> String {
+pub(crate) fn check_label(argv: &[String]) -> String {
     if argv == changed_check() {
         CHANGED_LABEL.to_owned()
     } else {

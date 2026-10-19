@@ -146,7 +146,7 @@ test('the Give form reads before it offers a hire, and takes the project from th
 
 test('the Give form shows project setup instead of reading forever when no project exists', () => {
   subscribe(store, { agents: [], cards: [ticketCard(1, 'todo')], checks: { workspaces: [] } });
-  assert.match(giveForm(null), /Tickets run in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes workspace add<\/code>\./);
+  assert.match(giveForm(null), /Tickets run in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes project add<\/code>\./);
   assert.doesNotMatch(giveForm(null), /Reading the ticket|No agent yet/);
 });
 

@@ -105,7 +105,7 @@ fn adding_a_ticket_without_a_project_names_the_one_step_setup() {
     assert_eq!(refused.code(), dudes::exit::REFUSED, "{refused:?}");
     assert_eq!(
         refused.stderr,
-        "dudes: No project yet. In your project's folder run `dudes workspace add`. (-32004)\n"
+        "dudes: No project yet. In your project's folder run `dudes project add`. (-32004)\n"
     );
     let json = cli
         .args(["--json", "ticket", "add", "--title", "Fix sign-in"])

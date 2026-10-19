@@ -101,7 +101,7 @@ test('the top bar names the floor and counts the crew by status', () => {
   ], 'the strip under the office says each status, so the top bar keeps only the count');
   assert.doesNotMatch(bar, /hire-entry-off/, 'the top bar still carries the Hire reason that Crew folds');
   const crew = html.match(/<section class="crew-list"[\s\S]*?<\/section>/)?.[0] ?? '';
-  assert.match(crew, /<details class="hire-off"><summary>Hire is unavailable<\/summary><p class="hire-entry-off">Hire needs a workspace/);
+  assert.match(crew, /<details class="hire-off"><summary>Hire is unavailable<\/summary><p class="hire-entry-off">Hire needs a project/);
   const actions = bar.match(/<div class="top-bar-actions" role="group" aria-label="Floor actions">[\s\S]*<\/div>/)[0];
   assert.match(actions, /<button type="button" class="crew-toggle" id="crew-toggle" aria-pressed="true" aria-controls="crew-list">Crew<\/button>/);
   assert.match(actions, /id="focus-toggle" aria-pressed="false" aria-keyshortcuts="Alt\+Shift\+F">Focus agent<\/button>/);

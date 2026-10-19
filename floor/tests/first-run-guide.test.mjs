@@ -82,8 +82,8 @@ test('Engines is done only when Setup finds a hireable program and offers instal
 test('Workspaces changes from not done to done on the enrollment resync without a page reload', () => {
   const epoch = snapshot();
   assert.equal(done('workspaces'), false);
-  assert.match(view('workspaces'), /No enrolled workspaces/);
-  assert.match(view('workspaces'), /dudes workspace add &lt;path&gt;/);
+  assert.match(view('workspaces'), /No enrolled projects/);
+  assert.match(view('workspaces'), /dudes project add &lt;path&gt;/);
   assert.match(view('workspaces'), />Copy<\/button>/);
   applyServerFrame('{"type":"floor.resync"}', epoch);
   assert.equal(done('workspaces'), false);
@@ -105,7 +105,7 @@ test('Floor actions reads the real switches, the Hire switch and the Hire offer'
   assert.match(html, /dudes config set floor.terminal on/);
   assert.doesNotMatch(html, /budget\.|positive ceilings/, 'Hire no longer needs a budget');
   snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, hire: true } } });
-  assert.match(view('actions'), /<p>Hire needs a workspace enrolled with dudes workspace add, at least one engine/);
+  assert.match(view('actions'), /<p>Hire needs a project enrolled with dudes project add, at least one engine/);
   assert.match(view('actions'), /<code>dudes config set floor.hire off<\/code>/);
   snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, control: true, terminal: true, hire: true } },
     onboarding: CATALOG });

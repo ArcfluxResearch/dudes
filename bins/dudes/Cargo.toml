@@ -42,7 +42,7 @@ chrono.workspace = true
 getrandom.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json.workspace = true
-# `dudes workspace` hashes exactly the bytes it wrote. It and `dudes config` edit the operator's
+# `dudes project` hashes exactly the bytes it wrote. It and `dudes config` edit the operator's
 # file in place.
 sha2.workspace = true
 thiserror = { workspace = true, features = ["std"] }

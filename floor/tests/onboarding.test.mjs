@@ -593,7 +593,7 @@ const CHECK_REFUSED = (reason) => (request) => ({ status: 409,
 const HIRE_REFUSALS = Object.freeze({
   check_already_passes: '“CONTRIBUTING.md exists” already passes in this workspace, so it cannot show when this goal '
     + 'is done. Nothing was hired. Choose another check, or ask the operator to add one for this goal with dudes '
-    + 'workspace check add.',
+    + 'project check add.',
   check_did_not_finish: '“CONTRIBUTING.md exists” did not finish, so it cannot show whether it already passes. '
     + 'Nothing was hired. Try again, or ask the operator to raise its timeout.',
   check_cannot_run: '“CONTRIBUTING.md exists” could not run, so nothing was hired. The daemon log says why.',
@@ -713,9 +713,9 @@ test('with no project the Workspace step gives one setup command and no jargon',
   subscribe({ onboarding: null, checks: null, settings: SETTINGS });
   hire.showSection('workspace');
   const html = render();
-  assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes workspace add<\/code>\./);
+  assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes project add<\/code>\./);
   assert.equal((html.match(/none is set up yet/g) ?? []).length, 1);
-  assert.doesNotMatch(html, /No enrolled workspace|operator enrolled|Hire needs a workspace|by its ID/);
+  assert.doesNotMatch(html, /No enrolled workspace|operator enrolled|Hire needs a project|by its ID/);
   assert.match(html, /class="hire-submit"[^>]*aria-disabled="true"/);
   hire.moveSection(1, getFloorState());
   const afterNext = render();
@@ -737,7 +737,7 @@ test('project setup guidance keeps a stale-stream reason visible', () => {
   noteStale(true);
   const html = render();
   assert.match(html, /The view is unconfirmed, so Hire waits for the stream\./);
-  assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes workspace add<\/code>\./);
+  assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes project add<\/code>\./);
 });
 
 test('project setup guidance keeps an explicit Hire-off command visible', () => {
@@ -747,7 +747,7 @@ test('project setup guidance keeps an explicit Hire-off command visible', () => 
   hire.showSection('workspace');
   const html = render();
   assert.match(html, /Hire is off\. Turn it on with dudes config set floor.hire on, then restart the daemon\./);
-  assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes workspace add<\/code>\./);
+  assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes project add<\/code>\./);
 });
 const WITHDRAWN = '<p class="hire-note">An engine missing here is turned off in the daemon&#x27;s configuration, or '
   + 'needs a ceiling on this workspace because the daemon holds a billing key for it.</p>';

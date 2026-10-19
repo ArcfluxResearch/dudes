@@ -627,7 +627,7 @@ fn an_edit_asks_for_a_restart_only_for_settings_the_running_daemon_does_not_run(
         set(&cli, "floor.answer", "off"),
         restart(&config, "floor.retire")
     );
-    let reload = cli.clone().args(["workspace", "reload"]).run();
+    let reload = cli.clone().args(["project", "reload"]).run();
     assert!(
         reload
             .stdout
@@ -667,7 +667,7 @@ fn recovery_can_be_configured_without_control_but_requires_restart() {
     );
     let loaded = duded::config::load_operator(&config).unwrap();
     assert!(loaded.recovery_enabled);
-    let report = cli.clone().args(["workspace", "reload"]).run();
+    let report = cli.clone().args(["project", "reload"]).run();
     assert!(
         report
             .stdout
@@ -774,14 +774,14 @@ fn an_edit_names_workspace_changes_apart_and_points_to_the_reload() {
     let written = set(&cli, "floor.answer", "on");
     let check: EnrollmentReloadResult = cli
         .clone()
-        .args(["--json", "workspace", "reload"])
+        .args(["--json", "project", "reload"])
         .run()
         .json();
     assert_eq!(
         written,
         format!(
             "{}the running daemon has not adopted the file's workspace changes (workspace repo_1 \
-             added); `dudes workspace reload --apply {}` adopts them without a restart\n",
+             added); `dudes project reload --apply {}` adopts them without a restart\n",
             restart(&config, "floor.answer"),
             check.sha256
         )

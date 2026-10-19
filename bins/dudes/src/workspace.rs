@@ -1,4 +1,4 @@
-//! `dudes workspace add|remove`: edit `[floor.onboarding]` in the operator's own file, in place.
+//! `dudes project add|remove`: edit `[floor.onboarding]` in the operator's own file, in place.
 //!
 //! The file is the operator's, hand-written, so an edit keeps every other byte and comment as it
 //! was: it goes through `toml_edit`, into a temporary file beside the original, and is renamed
@@ -64,7 +64,7 @@ impl AddOptions {
             .predicate_argv
             .clone()
             .or_else(|| crate::setup::suggest_check(&path))
-            .ok_or(WorkspaceError::NoSuggestedCheck)?;
+            .unwrap_or_else(crate::setup::changed_check);
         let id = self.id.clone().unwrap_or_else(|| project_id(&path, ids));
         Ok(NewWorkspace {
             path,
@@ -73,7 +73,7 @@ impl AddOptions {
             completion_check_label: self
                 .completion_check_label
                 .clone()
-                .unwrap_or_else(|| argv.join(" ")),
+                .unwrap_or_else(|| crate::setup::check_label(&argv)),
             department: self.department.clone(),
             agent_usd_per_day: self.agent_usd_per_day.clone(),
             goal_usd: self.goal_usd.clone(),
@@ -111,7 +111,7 @@ pub(crate) fn project_id(path: &Path, ids: &[String]) -> String {
     id
 }
 
-/// One workspace as `dudes workspace add` writes it. The label defaults to the id, and every
+/// One workspace as `dudes project add` writes it. The label defaults to the id, and every
 /// ceiling is optional; every other value is the operator's policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewWorkspace {
@@ -143,7 +143,7 @@ pub struct NewWorkspace {
     pub may_already_pass: bool,
 }
 
-/// One more completion check for an enrolled workspace, as `dudes workspace check add` writes it.
+/// One more completion check for an enrolled workspace, as `dudes project check add` writes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewCheck {
     /// The workspace it is enrolled for.
@@ -165,14 +165,9 @@ pub struct NewCheck {
 pub enum WorkspaceError {
     /// No current directory was available for the default path.
     #[error(
-        "The current directory cannot be read. Pass the project folder to `dudes workspace add`."
+        "The current directory cannot be read. Pass the project folder to `dudes project add`."
     )]
     NoCurrentDirectory,
-    /// The repository has no recognized completion check.
-    #[error(
-        "No completion check was found. Pass one with `dudes workspace add -- <program> [args...]`."
-    )]
-    NoSuggestedCheck,
     /// `add` was given a relative path.
     #[error("{0} is not an absolute path")]
     RelativePath(PathBuf),
@@ -191,7 +186,7 @@ pub enum WorkspaceError {
         canonical: PathBuf,
     },
     /// `add` was given a directory that is not a repository.
-    #[error("{0} is not a git repository. Run `dudes workspace add` in a folder that holds .git.")]
+    #[error("{0} is not a git repository. Run `dudes project add` in a folder that holds .git.")]
     NotARepository(PathBuf),
     /// A check whose program is a file inside the repository the agent works in.
     #[error(
@@ -478,7 +473,7 @@ pub fn add_check(config: &Path, new: &NewCheck) -> Result<Edit, WorkspaceError> 
 }
 
 /// Delete one row of the workspace's `checks` table. The workspace's own check, in its entry's
-/// keys, changes only through `dudes workspace add`.
+/// keys, changes only through `dudes project add`.
 ///
 /// # Errors
 ///

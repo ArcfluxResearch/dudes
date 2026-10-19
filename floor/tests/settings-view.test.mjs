@@ -39,7 +39,7 @@ test('Settings shows read-only running values, local commands, Setup and About',
       'dudes config set floor.retire on', 'dudes config set floor.terminal on', 'dudes config set floor.hire on',
       'dudes config set floor.git on', 'dudes config set floor.recovery on floor.control on',
       'dudes config set providers.codex on', 'default to $0.25 and 20000 tokens',
-      'dudes workspace add', 'dudes workspace remove repo_1', '&lt;Service&gt;', '$10', '$5', '456',
+      'dudes project add', 'dudes project remove repo_1', '&lt;Service&gt;', '$10', '$5', '456',
       'Setup', 'About', 'Daemon', '0.12.3', 'Floor build', 'Browser wire', 'browser-wire-v3', 'restart']) {
       assert.ok(html.includes(expected), `missing ${expected}: ${html}`);
     }
@@ -99,9 +99,9 @@ test('Hire says it is off when its switch is off, and names every other reason w
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, hire } }), control: 'hire' }));
     assert.equal(hint(false), '<p class="settings-guidance">Hire is off. Turn it on with dudes config set floor.hire on, '
       + 'then restart the daemon.</p>');
-    assert.equal(hint(true), '<p class="settings-guidance">Hire needs a workspace enrolled with dudes workspace add, at '
+    assert.equal(hint(true), '<p class="settings-guidance">Hire needs a project enrolled with dudes project add, at '
       + 'least one engine offered for it, and a free Hire slot in this session. An engine is withdrawn when the '
-      + 'daemon&#x27;s configuration turns it off, or when the daemon holds a billing key for it and the workspace has '
+      + 'daemon&#x27;s configuration turns it off, or when the daemon holds a billing key for it and the project has '
       + 'no ceiling that key requires.</p>');
   } finally { await server.close(); }
 });
@@ -116,12 +116,12 @@ test('Settings gives usable guidance for reserved workspace ids and optional cei
         workspaces: [{ ...REPORT.workspaces[0], workspace_id: id }] };
       const html = renderToStaticMarkup(createElement(SettingsView, { floor: floor(report), onSetup() {} }));
       if (id === '-ordinary') {
-        assert.match(html, /dudes workspace remove -ordinary/);
+        assert.match(html, /dudes project remove -ordinary/);
       } else {
-        assert.ok(!html.includes(`dudes workspace remove ${id}`), `unusable remove command for ${id}`);
+        assert.ok(!html.includes(`dudes project remove ${id}`), `unusable remove command for ${id}`);
         assert.match(html, /edit its entry in your local config/);
-        assert.match(html, /dudes workspace reload/);
-        assert.match(html, /dudes workspace reload --apply &lt;sha256&gt;/);
+        assert.match(html, /dudes project reload/);
+        assert.match(html, /dudes project reload --apply &lt;sha256&gt;/);
       }
       assert.doesNotMatch(html, /Before enabling Control, Goal or Retire/);
       assert.match(html, /No ceiling/);

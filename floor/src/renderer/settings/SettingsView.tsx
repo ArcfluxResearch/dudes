@@ -19,7 +19,7 @@ const SWITCHES = [
 const OFFICE_CHOICES = [{ id: null, label: 'Automatic' },
   ...OFFICES.map((office) => ({ id: office.id, label: `${office.definition.label}, ${office.capacity} desks` }))] as const;
 const REMOVE_RESERVED_IDS = new Set(['-h', '--help', '--json', '--']);
-export const ADD_WORKSPACE = 'dudes workspace add <path> --id <id> --label <label> --completion-check-label <check> '
+export const ADD_WORKSPACE = 'dudes project add <path> --id <id> --label <label> --completion-check-label <check> '
   + '--department <department> --hop-cap <n> --timeout-s <seconds> [--agent-usd-per-day <usd>] [--goal-usd <usd>] '
   + '[--tokens-per-day <tokens>] [--goal-tokens <tokens>] -- <program> [args...]';
 
@@ -33,9 +33,9 @@ export function hireUnavailable(floor: FloorState): string | null {
     return 'Hire is off. Turn it on with dudes config set floor.hire on, then restart the daemon.';
   }
   if (floor.onboarding !== null) return null;
-  return 'Hire needs a workspace enrolled with dudes workspace add, at least one engine offered for it, and a free Hire '
+  return 'Hire needs a project enrolled with dudes project add, at least one engine offered for it, and a free Hire '
     + 'slot in this session. An engine is withdrawn when the daemon\'s configuration turns it off, or when the '
-    + 'daemon holds a billing key for it and the workspace has no ceiling that key requires.';
+    + 'daemon holds a billing key for it and the project has no ceiling that key requires.';
 }
 
 /** The drawer's controls whose switch the daemon reports off, so the drawer says how to turn each on. */
@@ -175,9 +175,9 @@ export function WorkspaceSettings({ report, onCopyAdd, headingId = 'settings-wor
   readonly onCopyAdd?: () => void;
   readonly headingId?: string;
 }) {
-  return <section aria-labelledby={headingId}><h3 id={headingId}>Enrolled workspaces</h3>
-      {report.workspaces.length === 0 ? <p>No enrolled workspaces.</p> : <ul>{report.workspaces.map((workspace) =>
-        <li key={workspace.workspace_id}><h4>{workspace.label}</h4><p>Workspace <code>{workspace.workspace_id}</code></p>
+  return <section aria-labelledby={headingId}><h3 id={headingId}>Enrolled projects</h3>
+      {report.workspaces.length === 0 ? <p>No enrolled projects.</p> : <ul>{report.workspaces.map((workspace) =>
+        <li key={workspace.workspace_id}><h4>{workspace.label}</h4><p>Project <code>{workspace.workspace_id}</code></p>
           <dl>
             <div><dt>Agent daily dollar ceiling</dt><dd>{ceiling(workspace.agent_usd_per_day_micros)}</dd></div>
             <div><dt>Agent daily token ceiling</dt><dd>{ceiling(workspace.agent_tokens_per_day, false)}</dd></div>
@@ -186,15 +186,15 @@ export function WorkspaceSettings({ report, onCopyAdd, headingId = 'settings-wor
           </dl>
           {REMOVE_RESERVED_IDS.has(workspace.workspace_id) ? <>
             <p>For this identifier, edit its entry in your local config, then check and apply the enrollment change.</p>
-            <code>dudes workspace reload</code><code>dudes workspace reload --apply &lt;sha256&gt;</code>
+            <code>dudes project reload</code><code>dudes project reload --apply &lt;sha256&gt;</code>
           </> : <>
             <p>To replace this label or these ceilings, remove its enrollment, then add it with the new values.</p>
-            <code>dudes workspace remove {workspace.workspace_id}</code>
+            <code>dudes project remove {workspace.workspace_id}</code>
           </>}
         </li>)}</ul>}
       <p>Choose your own values for the placeholders.</p><code>{ADD_WORKSPACE}</code>
-      {onCopyAdd === undefined ? null : <button type="button" aria-label="Copy workspace add command" onClick={onCopyAdd}>Copy</button>}
-      <p>Inspect enrollment with <code>dudes workspace list</code>. For a config-file edit, use
-        <code> dudes workspace reload</code>, then <code>dudes workspace reload --apply &lt;sha256&gt;</code>.</p>
+      {onCopyAdd === undefined ? null : <button type="button" aria-label="Copy project add command" onClick={onCopyAdd}>Copy</button>}
+      <p>Inspect enrollment with <code>dudes project list</code>. For a config-file edit, use
+        <code> dudes project reload</code>, then <code>dudes project reload --apply &lt;sha256&gt;</code>.</p>
     </section>;
 }

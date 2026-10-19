@@ -11,7 +11,7 @@ passing, such as a test suite, can be declared with `--check-may-already-pass`. 
 first, and Done means only that it passes after the agent's work.
 
 Each enrolled workspace offers the Floor its own check and any more you add with
-`dudes workspace check add`. A Floor hire or goal change names the one its goal uses.
+`dudes project check add`. A Floor hire or goal change names the one its goal uses.
 
 The completion check runs in the agent's working directory with no sandbox. See
 [What agents can do on your machine](what-agents-can-do.md).

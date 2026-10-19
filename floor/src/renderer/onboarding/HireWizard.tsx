@@ -370,7 +370,7 @@ function HireForm({ hire, floor, onClose }: {
 }
 
 function NoHireProjectHint() {
-  return <p className="hire-note">Agents work in a project, and none is set up yet. In your project&apos;s folder run <code>dudes workspace add</code>.</p>;
+  return <p className="hire-note">Agents work in a project, and none is set up yet. In your project&apos;s folder run <code>dudes project add</code>.</p>;
 }
 
 function HirePortrait({ draft }: { readonly draft: HireDraft }) {

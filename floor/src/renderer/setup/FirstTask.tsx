@@ -43,7 +43,7 @@ export function FirstTask({ floor, onHire }: {
         <Install command={INSTALL_COMMANDS.claude!} /></> : null}
       {offer.why === 'no_project' ? <>
         <p>Agents work in a project folder, and none is set up yet. In your project&apos;s folder, run{' '}
-          <code>dudes workspace add</code>, then press Recheck.</p>
+          <code>dudes project add</code>, then press Recheck.</p>
         <p><button type="button" onClick={() => refreshFloorSnapshot()}>Recheck</button></p></> : null}
       {offer.why === 'off' ? <p>Hiring from this page is turned off. Run <code>dudes hire</code> in a terminal to add
         an agent.</p> : null}

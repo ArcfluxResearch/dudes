@@ -88,11 +88,11 @@ If you skipped the project in quickstart, add it in one step from its git reposi
 
 ```sh
 cd /absolute/path/to/repo
-dudes workspace add
+dudes project add
 ```
 
 Dudes suggests a completion check from the repository's files and prints the project id.
-If it finds no check, pass one with `dudes workspace add -- <program> [args...]`.
+If it finds no check, pass one with `dudes project add -- <program> [args...]`.
 Tickets and Floor hiring need an enrolled project.
 
 If `dudes` runs something else, check `type dudes` for an alias or shell function and use

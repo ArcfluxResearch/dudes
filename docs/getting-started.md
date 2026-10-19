@@ -69,13 +69,13 @@ Dudes reads no engine's credentials or files.
 
    ```sh
    cd /absolute/path/to/repo
-   dudes workspace add
+   dudes project add
    ```
 
    The command uses a unique slug of the folder name as the project id, the suggested test
    command as the check and its label, department `engineering`, a five-turn hop cap, and a
    600-second check timeout. It prints what it enrolled and how to change it. If the repository
-   suggests no check, pass one with `dudes workspace add -- <program> [args...]`. Explicit flags
+   suggests no check, pass one with `dudes project add -- <program> [args...]`. Explicit flags
    override the defaults. A completion check must fail until the particular goal is met.
 
    The operator file and the `duded.log` line that `quickstart` leaves are described in
@@ -174,7 +174,7 @@ hires a first agent there, with the completion check after `--`; a setting that 
 file's start rules is refused by name, and nothing is written. A script restarts a running daemon
 with other settings only with `--restart`; without it, `quickstart` writes the file, names what
 differs, stops nothing and exits 4. To set things one at a time instead, use `dudes config set` (for
-example `dudes config set providers.codex on floor.hire on`), `dudes workspace add` and `dudes
+example `dudes config set providers.codex on floor.hire on`), `dudes project add` and `dudes
 hire`, and restart the daemon with `dudes quickstart --restart` so it reads the file. `dudes config`
 prints the file's path and each setting it manages, and refuses an edit that breaks one of the
 file's start rules, naming the missing key.

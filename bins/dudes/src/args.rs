@@ -580,7 +580,7 @@ COMMANDS
         optional.
         Without a terminal and without options it only starts the daemon when absent
         and prints its version, socket and journal position. Without a project it
-        also says to run `dudes workspace add` in your project's folder, except with --json.
+        also says to run `dudes project add` in your project's folder, except with --json.
 
     start
         Start the daemon if it is not running, then print what ping prints. Use it
@@ -855,7 +855,7 @@ COMMANDS
         and the explicit launch command. Windows and SSH sessions only print the directory.
         Lease verification requires macOS or Linux; other platforms refuse leased checkouts.
 
-    workspace add [<path>] [--id <id>] [--completion-check-label <text>] [--department <dept>]
+    project add [<path>] [--id <id>] [--completion-check-label <text>] [--department <dept>]
                   [--hop-cap <n>] [--timeout-s <n>] [--label <text>]
                   [--agent-usd-per-day <usd>] [--goal-usd <usd>]
                   [--tokens-per-day <n>] [--goal-tokens <n>]
@@ -865,28 +865,28 @@ COMMANDS
         which must hold .git. An explicit path must be absolute and canonical.
         Default to a unique folder slug, its suggested test command and that command's
         label, department engineering, 5 turns a goal and 600 seconds a check.
-        If no check is suggested, pass one after --. Every option overrides its default.
+        If no check is suggested, the files-changed check is used. Every option, including a check after --, overrides its default.
 
-    workspace remove <id>
-        Remove one enrolled workspace from the configuration and the running daemon.
+    project remove <id>
+        Remove one enrolled project from the configuration and the running daemon.
         No folder is touched.
 
-    workspace reload [--apply <sha256>]
+    project reload [--apply <sha256>]
         Show how the configuration differs from what the daemon runs, with the file's
         SHA-256. With --apply, adopt that change only if the file still has that hash.
 
-    workspace list
-        The configuration's workspaces beside the ones the daemon runs.
+    project list
+        The configuration's projects beside the ones the daemon runs.
 
-    workspace check add <workspace> --id <id> --label <text> [--timeout-s <n>]
+    project check add <project> --id <id> --label <text> [--timeout-s <n>]
                         [--may-already-pass] -- <program> [args...]
-    workspace check remove <workspace> <id>
-        Add or remove one named completion check for an enrolled workspace, then have a
-        running daemon adopt the change. The Floor offers a workspace's checks when it
+    project check remove <project> <id>
+        Add or remove one named completion check for an enrolled project, then have a
+        running daemon adopt the change. The Floor offers a project's checks when it
         hires an agent or changes a goal there. A goal's check runs once before the first
         turn and must not already pass, unless --may-already-pass says Done may mean only
-        that the check still passes after the agent's work. The check in the workspace's
-        own entry changes through dudes workspace add.
+        that the check still passes after the agent's work. The check in the project's
+        own entry changes through dudes project add.
 
     config
     config set <key> <value> [<key> <value> ...]
@@ -1089,7 +1089,7 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "floor" => floor(tail)?,
         "login" if json => return Err(ArgError::TextOnly("login")),
         "login" => login(tail)?,
-        "workspace" => Command::Workspace(workspace(tail, payload)?),
+        "project" => Command::Workspace(workspace(tail, payload)?),
         "worktree" => Command::Worktree(worktree(tail)?),
         "board" => Command::Board(board(tail)?),
         "ticket" => Command::Ticket(ticket(tail, json)?),
@@ -1883,7 +1883,7 @@ fn workspace(
     payload: Option<&[OsString]>,
 ) -> Result<WorkspaceCommand, ArgError> {
     let Some((subcommand, rest)) = tail.split_first() else {
-        return Err(ArgError::NoSubcommand("workspace"));
+        return Err(ArgError::NoSubcommand("project"));
     };
     if asks_for_help(subcommand) {
         return Err(ArgError::HelpRequested);
@@ -1918,7 +1918,7 @@ fn workspace(
             Ok(WorkspaceCommand::List)
         }
         "check" => workspace_check(rest, payload),
-        other => Err(ArgError::UnknownCommand(format!("workspace {other}"))),
+        other => Err(ArgError::UnknownCommand(format!("project {other}"))),
     }
 }
 
@@ -1929,7 +1929,7 @@ fn workspace_check(
     payload: Option<&[OsString]>,
 ) -> Result<WorkspaceCommand, ArgError> {
     let Some((subcommand, rest)) = tail.split_first() else {
-        return Err(ArgError::NoSubcommand("workspace check"));
+        return Err(ArgError::NoSubcommand("project check"));
     };
     if asks_for_help(subcommand) {
         return Err(ArgError::HelpRequested);
@@ -1993,7 +1993,7 @@ fn workspace_check(
                 },
             )))
         }
-        other => Err(ArgError::UnknownCommand(format!("workspace check {other}"))),
+        other => Err(ArgError::UnknownCommand(format!("project check {other}"))),
     }
 }
 

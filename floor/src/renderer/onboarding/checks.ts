@@ -112,7 +112,7 @@ export function checkRefusalText(reason: CheckRefusal, label: string | null, rou
   switch (reason) {
     case 'check_already_passes':
       return `${check} already passes in this workspace, so it cannot show when this goal is done. Nothing ${nothing}. `
-        + 'Choose another check, or ask the operator to add one for this goal with dudes workspace check add.';
+        + 'Choose another check, or ask the operator to add one for this goal with dudes project check add.';
     case 'check_did_not_finish':
       return `${check} did not finish, so it cannot show whether it already passes. Nothing ${nothing}. `
         + 'Try again, or ask the operator to raise its timeout.';

@@ -59,7 +59,7 @@ MCP servers are declared in the same file. See [Give an agent MCP servers](mcp-s
 Budgets are optional, and none is set by default. An agent with no ceiling still stops at its
 goal's hop cap, and the engine's own plan limits apply to it. A ceiling you set is checked
 before every turn: `budget.floor_usd_per_day` caps the whole floor's dollars per day,
-`dudes workspace add` takes optional ceilings for the agents and goals the Floor hires there,
+`dudes project add` takes optional ceilings for the agents and goals the Floor hires there,
 and `dudes hire` and `dudes goal` take `--usd-per-day`, `--tokens-per-day`, `--usd` and
 `--tokens`. A turn whose usage the daemon never saw counts against a set ceiling at the per-turn
 reserve: $0.25 and 20,000 tokens, unless you set `budget.per_turn_floor.usd` or
