@@ -1062,6 +1062,13 @@ samp,
   font-size: 0.86rem;
 }
 
+/* Clear of the zoom buttons, whose row is taller on a phone. */
+@media (max-width: 800px) {
+  .office-shelf {
+    bottom: 3.75rem;
+  }
+}
+
 .office-shelf-value {
   font-size: 1.1rem;
 }
@@ -3550,4 +3557,13 @@ samp,
     background: var(--accent-ink);
     color: var(--on-accent);
   }
+}
+
+/* The strip and the office tags say what each agent is doing, so Crew rows show a name until one is selected. */
+.crew-row[aria-pressed='false'] .crew-meta,
+.crew-row[aria-pressed='false'] .crew-workspace,
+.crew-row[aria-pressed='false'] .crew-checkout,
+.crew-row[aria-pressed='false'] .crew-activity:not([data-activity='question']),
+.crew-row[aria-pressed='false'] .crew-live-activity {
+  display: none;
 }

@@ -278,6 +278,26 @@ test('a refused optional assignment stays visible on the auto-opened created car
   } finally { await app.close(); }
 });
 
+test('the working notice goes once the ticket is ready for review', async () => {
+  const app = await mount([], { strict: true });
+  try {
+    await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
+    await act(async () => propsOf(app.page.host.querySelector('[name="title"]')).onChange({ target: { value: 'Say who is working' } }));
+    await act(async () => propsOf(app.page.host.querySelector('[name="agent"]')).onChange({ target: { value: ADA } }));
+    const ordinaryReply = reply;
+    reply = (url, body) => url === '/floor/ticket'
+      ? { status: 200, text: async () => JSON.stringify({ state: 'created', card: cardId(2), seq: 0, lsn: '4097' }) }
+      : url.endsWith('/assign')
+        ? { status: 200, text: async () => JSON.stringify({ state: 'assigned', card: cardId(2), lsn: '4098', seq: 1, start: { state: 'started' } }) }
+        : ordinaryReply(url, body);
+    await act(async () => propsOf(app.page.host.querySelector('.ticket-composer').querySelector('form')).onSubmit({ preventDefault() {} }));
+    await app.render({ ...app.floor, cards: [{ ...ticketCard(2, 'doing', { claimed_by: ADA }), seq: 1 }] });
+    assert.ok(textOf(app.page.host.querySelector('.ticket-notice')).includes('Ticket created. Ada is working on it.'));
+    await app.render({ ...app.floor, cards: [{ ...ticketCard(2, 'review', { claimed_by: ADA }), seq: 2 }] });
+    assert.equal(app.page.host.querySelector('.ticket-notice'), null, 'a ready ticket is not still being worked on');
+  } finally { await app.close(); }
+});
+
 test('a card opens a modal and Escape closes only that modal and returns focus', async () => {
   const app = await mount([ticketCard(1, 'review', { claimed_by: ADA })]);
   try {

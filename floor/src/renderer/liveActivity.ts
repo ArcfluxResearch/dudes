@@ -13,7 +13,7 @@ const LABELS = {
   working: 'Working',
   using_tool: 'Tool step',
   compacting: 'Compacting',
-  waiting: 'Waiting',
+  waiting: 'Idle',
   idle: 'Idle',
 } as const;
 

@@ -26,7 +26,7 @@ import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
 import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, reasonSentence, stateName } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
-import { coverageText, groupGaps, instructionContextText } from './instructions.ts';
+import { COVERAGE_SUMMARY, coverageText, groupGaps, instructionContextText } from './instructions.ts';
 import type { InstructionReview } from './instructions.ts';
 
 const TRUNCATED_LABEL: Readonly<Record<TruncatedTicketField, string>> = Object.freeze({
@@ -74,7 +74,7 @@ function ChangedFiles({ floor, card }: { readonly floor: FloorState; readonly ca
   }, [floor.git, agent, card.id, card.seq]);
   if (!floor.git) {
     return <section aria-label="Changed files"><h4>Changed files</h4>
-      <p className="ticket-hint">The Git tab is off, so changed files are not shown. Turn it on with <code>dudes config set floor.git on</code> and restart the daemon.</p>
+      <p className="ticket-hint">Changed files are turned off, so this list is empty. To see them, run <code>dudes config set floor.git on</code> in a terminal, then <code>dudes stop</code> and <code>dudes start</code>.</p>
     </section>;
   }
   const mine = agent !== null && git.agent === agent;
@@ -345,7 +345,7 @@ export function TicketPanel({ floor, card, onHire }: {
     data-ticket-status={card.status} data-mode={mode}>
     <h3 id="card-detail-title" ref={focusHeading} tabIndex={-1}
       data-focus-on-leave="view-board">{card.title}</h3>
-    <TicketNotice card={card.id} />
+    <TicketNotice card={card.id} floor={floor} />
     <Facts floor={floor} card={card} />
     {loaded?.context == null ? null : <RecoveredReview context={loaded.context} fresh={fresh} />}
     {loaded?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={loaded.instruction_review} />}
@@ -358,7 +358,9 @@ export function TicketPanel({ floor, card, onHire }: {
         onClick={() => { void loadDetail(card); }}>Read again</button>
     </div> : null}
     {loaded?.coverage != null && loaded.coverage.limits.length > 0
-      ? <section aria-label="What Dudes could not see"><h4>What Dudes could not see</h4><p>{coverageText(loaded.coverage)}</p></section> : null}
+      ? <section aria-label="What Dudes could not see"><h4>What Dudes could not see</h4>
+        <p>{COVERAGE_SUMMARY}</p>
+        <details><summary>Details</summary><p>{coverageText(loaded.coverage)}</p></details></section> : null}
     {card.status === 'review' && !changesView ? <ChangedFiles floor={floor} card={card} /> : null}
     {changesView
       ? <DiffPanel card={card.id} expectedSeq={card.seq} transport={browserDiffTransport} /> : null}

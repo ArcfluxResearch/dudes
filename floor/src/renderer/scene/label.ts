@@ -85,6 +85,11 @@ export function fieldsOf(row: Record<string, unknown>, context?: LiveActivityCon
     cost: formatCost(row.spent_today),
     usd: formatUsd(whole(((row.spent_today ?? {}) as Record<string, unknown>).usd)),
     question,
-    liveActivity: context === undefined ? null : liveActivityLabel(row, context),
+    liveActivity: context === undefined ? null : busyLabel(liveActivityLabel(row, context)),
   });
+}
+
+/** The status already says an agent is idle, so a second "Idle" beside it adds nothing. */
+function busyLabel(label: string | null): string | null {
+  return label === 'Idle' ? null : label;
 }

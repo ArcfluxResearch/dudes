@@ -407,6 +407,6 @@ test('each away state says its one thing, in words', async () => {
   for (let looks = 0; away.getAway().kind === 'watching' && looks < 400; looks += 1) await timers.step(AWAY_POLL_MS);
   assert.equal(
     text(),
-    'This sign-in has expired. Run dudes floor open for a new link. Each link works once, in one browser.',
+    'You are signed out of this Floor. That happens after 30 minutes without use, or when Dudes restarts. Run dudes floor open for a new link. Each link works once, in one browser.',
   );
 });
