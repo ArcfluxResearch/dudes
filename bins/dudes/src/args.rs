@@ -1943,10 +1943,10 @@ fn workspace_check(
         "remove" => match rest {
             [first, ..] if asks_for_help(first) => Err(ArgError::HelpRequested),
             [workspace, id] => Ok(WorkspaceCommand::CheckRemove {
-                workspace: word(workspace, "<workspace>")?,
+                workspace: word(workspace, "<project>")?,
                 id: word(id, "<id>")?,
             }),
-            [] => Err(ArgError::Missing("<workspace>")),
+            [] => Err(ArgError::Missing("<project>")),
             [_] => Err(ArgError::Missing("<id>")),
             [_, _, extra, ..] => Err(ArgError::UnknownFlag(extra.to_string_lossy().into_owned())),
         },
@@ -1964,7 +1964,7 @@ fn workspace_check(
                     other if other.starts_with('-') => {
                         return Err(ArgError::UnknownFlag(other.to_owned()));
                     }
-                    _ if workspace.is_none() => workspace = Some(word(arg, "<workspace>")?),
+                    _ if workspace.is_none() => workspace = Some(word(arg, "<project>")?),
                     other => return Err(ArgError::UnknownFlag(other.to_owned())),
                 }
             }
@@ -1981,7 +1981,7 @@ fn workspace_check(
             }
             Ok(WorkspaceCommand::CheckAdd(Box::new(
                 crate::workspace::NewCheck {
-                    workspace: required(workspace, "<workspace>")?,
+                    workspace: required(workspace, "<project>")?,
                     id: required(id, "--id")?,
                     label: required(label, "--label")?,
                     argv: argv

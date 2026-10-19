@@ -265,7 +265,7 @@ test('the renewal form states what a new goal gets, in the specified words, and 
   const lines = [...html.matchAll(/<(?:p|li)[^>]*>([^<]*)<\/(?:p|li)>/g)].map((match) => match[1]);
   assert.deepEqual(lines.slice(0, 7), [
     'This goal has no turns left.',
-    'A new goal gets this workspace’s allowance: 3 turns.',
+    'A new goal gets this project’s allowance: 3 turns.',
     'a cap of $1',
     'Daily ceilings still apply. If one is reached, the first turn waits for the next UTC day.',
     'Notes waiting for the current goal are not delivered to the new one.',
@@ -463,7 +463,7 @@ test('profile_changed refreshes the snapshot, releases the form, and the next pr
 
 test('a goal_exhausted answer says to start a new goal only when one is offered, and otherwise keeps the terminal copy', async () => {
   const offeredCopy = 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
-    + 'Start a new goal with this workspace’s allowance below.';
+    + 'Start a new goal with this project’s allowance below.';
   const terminalCopy = 'This goal has no turns or capped dollars left to carry over, so nothing was recorded. '
     + 'To continue, give the agent a new goal with its own limits from a terminal (dudes goal), '
     + 'or retire it and hire a new one.';

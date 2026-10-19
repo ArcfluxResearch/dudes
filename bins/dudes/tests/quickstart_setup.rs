@@ -361,7 +361,7 @@ fn a_script_whose_check_cannot_run_hires_without_a_goal() {
              daemon's PATH; give each word as its own argument, not one quoted string: test -f \
              q.txt; Kim is already hired, so running quickstart again would hire a second agent; \
              give Kim a goal with: dudes goal --agent {agent} --text <text> --hop-cap 5 -- \
-             <program> [args...]; workspace repo is enrolled with the same check, so the Floor \
+             <program> [args...]; project repo is enrolled with the same check, so the Floor \
              offers no hire there until you change its predicate_argv in {} and run dudes \
              workspace reload, then dudes project reload --apply <sha256> (-32602)\n",
             layout.config().display()

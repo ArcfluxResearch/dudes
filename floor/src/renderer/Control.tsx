@@ -105,7 +105,7 @@ export function AgentsRoster({ floor, selectedId, onSelectAgent, onHireAgain, on
         groups.map((group, at) => <section key={group.id === null ? 'unrecorded' : `workspace-${group.id}`}
           className="workspace-roster-group" aria-labelledby={`workspace-roster-${at}`}>
           <h3 id={`workspace-roster-${at}`}>{group.label}</h3>
-          {group.labelsDiffer ? <p className="workspace-roster-note">This workspace has agents with different labels.</p> : null}
+          {group.labelsDiffer ? <p className="workspace-roster-note">This project has agents with different labels.</p> : null}
           <ul aria-label={`Agents in ${group.label}`}>
             {group.agents.map((row) => {
               const fields = fieldsOf(row);

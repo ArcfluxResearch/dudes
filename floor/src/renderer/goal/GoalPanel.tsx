@@ -58,7 +58,7 @@ function RenewList({ offer }: { readonly offer: RenewOffer }) {
   return (
     <>
       <p data-renew-spent={offer.spent}>{SPENT[offer.spent]}</p>
-      <p data-renew-turns={offer.hopCap}>{`A new goal gets this workspace’s allowance: ${offer.hopCap} ${offer.hopCap === '1' ? 'turn' : 'turns'}.`}</p>
+      <p data-renew-turns={offer.hopCap}>{`A new goal gets this project’s allowance: ${offer.hopCap} ${offer.hopCap === '1' ? 'turn' : 'turns'}.`}</p>
       <ul className="goal-carry">
         <li data-renew-usd={offer.usd ?? 'none'}>{offer.usd === null ? 'no dollar cap'
           : `a cap of ${formatUsdMicros(offer.usd)}`}</li>

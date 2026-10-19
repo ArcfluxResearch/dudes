@@ -52,7 +52,7 @@ const UNAVAILABLE: Readonly<Record<Extract<TerminalOffer, { kind: 'unavailable' 
   'no-session': 'Attach waits for this agent’s first confirmed session.',
 });
 
-const TRUST_WARNING = 'Claude Code may ask you to trust this workspace. Check the folder before accepting in the terminal. '
+const TRUST_WARNING = 'Claude Code may ask you to trust this folder. Check the folder before accepting in the terminal. '
   + 'No, exit may be selected when the prompt opens.';
 
 /** Claude Code's workspace trust prompt comes up inside the terminal, so it is read here first. */

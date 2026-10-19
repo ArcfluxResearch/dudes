@@ -206,7 +206,7 @@ pub enum WorkspaceError {
     #[error("{0} is not valid UTF-8")]
     NotUtf8(PathBuf),
     /// An id outside 1–128 bytes of `[A-Za-z0-9_-]`.
-    #[error("`{0}` is not a workspace id: use 1 to 128 of A-Z, a-z, 0-9, _ and -")]
+    #[error("`{0}` is not a project id: use 1 to 128 of A-Z, a-z, 0-9, _ and -")]
     InvalidId(String),
     /// `add` was given an id the file already holds.
     #[error("the configuration already enrolls `{0}`")]
@@ -221,7 +221,7 @@ pub enum WorkspaceError {
     #[error("a check label is 1 to 128 bytes with no control characters")]
     InvalidCheckLabel,
     /// `check add` was given an id its workspace already uses.
-    #[error("workspace `{workspace}` already has a check `{id}`")]
+    #[error("project `{workspace}` already has a check `{id}`")]
     DuplicateCheck {
         /// The workspace.
         workspace: String,
@@ -229,7 +229,7 @@ pub enum WorkspaceError {
         id: String,
     },
     /// `check remove` was given an id the workspace's `checks` table does not hold.
-    #[error("workspace `{workspace}` has no check `{id}` in its checks table")]
+    #[error("project `{workspace}` has no check `{id}` in its checks table")]
     UnknownCheck {
         /// The workspace.
         workspace: String,

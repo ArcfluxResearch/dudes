@@ -84,7 +84,7 @@ test('an archived Codex or Pi engine is preselected only where the matched works
   assert.deepEqual(hire.getHireState().draft, { name: 'Ada', role: 'Parser engineer', workspaceId: '', goalText: '' },
     'another engine was substituted for the archived one');
   assert.equal(hire.getHireState().prefill.notes.engine,
-    'This workspace does not offer the archived Codex engine. No engine was preselected.');
+    'This project does not offer the archived Codex engine. No engine was preselected.');
   assert.equal(hire.getHireState().prefill.notes.workspace,
     'Choose an enrolled workspace, then review the engines it offers.');
 

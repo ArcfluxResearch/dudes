@@ -41,7 +41,7 @@ export interface ReloadMark {
 export interface EnrolledWorkspace {
   readonly workspaceId: string;
   readonly label: string;
-  /** The engines offered for this workspace: at least one, in `HIRE_ENGINES` order. */
+  /** The engines offered for this project: at least one, in `HIRE_ENGINES` order. */
   readonly engines: readonly HireEngine[];
   /** Each ceiling is `null` when unset, which is no cap. */
   readonly goalUsdMicros: string | null;

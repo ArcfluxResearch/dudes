@@ -702,9 +702,9 @@ fn hire_step(
     };
     if provider == Provider::Codex {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
-        term.say("Codex's command sandbox permits writes in this workspace, its permitted temporary directories and its own outgoing mailbox. The completion check runs this workspace's code with no sandbox.")?;
+        term.say("Codex's command sandbox permits writes in this project's folder, its permitted temporary directories and its own outgoing mailbox. The completion check runs this project's code with no sandbox.")?;
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        term.say("Codex's command sandbox permits writes in this workspace and its permitted temporary directories. Mail is unavailable on this platform. The completion check runs this workspace's code with no sandbox.")?;
+        term.say("Codex's command sandbox permits writes in this project's folder and its permitted temporary directories. Mail is unavailable on this platform. The completion check runs this project's code with no sandbox.")?;
     }
     plan.hire = Some(Hire {
         name: DEFAULT_NAME.to_owned(),

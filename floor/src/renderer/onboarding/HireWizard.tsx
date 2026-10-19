@@ -29,7 +29,7 @@ import type { FieldName, HireAttempt, HireDraft, HireOutcome, HireState } from '
 /** What each engine may touch, as the operator must read it before choosing. */
 const ENGINE_REACH: Readonly<Record<HireEngine, string>> = Object.freeze({
   claude: 'Runs with permission prompts skipped. It can change any file your account can.',
-  codex: "Codex's sandbox limits its own writes to this workspace. The completion check runs this workspace's code "
+  codex: "Codex's sandbox limits its own writes to this project. The completion check runs this project's code "
     + 'with no sandbox.',
   pi: 'Has no sandbox. It can change any file your account can.',
 });
@@ -264,7 +264,7 @@ function HireForm({ hire, floor, onClose }: {
                 </fieldset>
               )}
               {withdrawn ? <p className="hire-note">{"An engine missing here is turned off in the daemon's "
-                + 'configuration, or needs a ceiling on this workspace because the daemon holds a billing key for it.'}</p>
+                + 'configuration, or needs a ceiling on this project because the daemon holds a billing key for it.'}</p>
                 : null}
               {engine === null || row === null ? null : <p className="hire-note" data-engine-found={row.found}>
                 {row.found ? `${HIRE_ENGINES[engine]} is installed on this computer.`
@@ -639,7 +639,7 @@ function AnswerBody({ outcome, hire, floor }: {
     case 'stale':
       return (
         <p className="hire-error" role="alert">
-          A reload changed this workspace in the daemon&apos;s configuration after this page was offered it, so
+          A reload changed this project in the daemon&apos;s configuration after this page was offered it, so
           the daemon refused this Hire before any effect. No agent was hired. Review the workspace in the fresh
           snapshot and hire again.
         </p>

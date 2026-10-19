@@ -66,7 +66,7 @@ test('Pause, Retire and Attach share one row with no paragraph between them', ()
   assert.deepEqual(labels.slice(0, 3), ['Pause', 'Retire', 'Attach']);
   const between = block.slice(block.indexOf('class="control-pause"'), block.indexOf('>Attach<'));
   assert.doesNotMatch(between, /<p\b/);
-  assert.doesNotMatch(block, /trust this workspace/);
+  assert.doesNotMatch(block, /trust this folder/);
 });
 
 test('the Attach explanation is the button’s description and tooltip, and a waiting Attach says why', () => {
@@ -110,6 +110,6 @@ test('Claude Attach opens a confirmation that carries the trust warning', () => 
     name: 'Ada', onConfirm() {}, onCancel() {},
   }));
   assert.match(view, /<dialog[^>]*data-attach-dialog/);
-  assert.match(view, /Claude Code may ask you to trust this workspace\. Check the folder before accepting in the terminal\./);
+  assert.match(view, /Claude Code may ask you to trust this folder\. Check the folder before accepting in the terminal\./);
   assert.match(view, /No, exit may be selected when the prompt opens\./);
 });

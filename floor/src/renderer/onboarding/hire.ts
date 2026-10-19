@@ -68,7 +68,7 @@ export type FieldName = 'name' | 'role' | 'workspace_id' | 'engine' | 'check_id'
 /** What the page offers a Hire from: the enrolled workspaces, and the checks each offers. */
 export type HireOffer = Pick<FloorState, 'onboarding' | 'checks'>;
 
-export const NO_CHECK = 'No completion check is offered for this workspace, so Hire is unavailable.';
+export const NO_CHECK = 'No completion check is offered for this project, so Hire is unavailable.';
 
 export interface HireDraft {
   readonly name: string;
@@ -315,7 +315,7 @@ export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldPr
     problems.push({ field: 'workspace_id', section: 'workspace',
       message: 'That workspace is no longer offered. Choose another.' });
   } else if (chosenEngine(draft, workspace) === null) {
-    problems.push({ field: 'engine', section: 'engine', message: 'Choose an engine this workspace offers.' });
+    problems.push({ field: 'engine', section: 'engine', message: 'Choose an engine this project offers.' });
   }
   if (workspace !== null && chosenCheck(draft, offer.checks) === null) {
     problems.push({ field: 'check_id', section: 'briefing', message: NO_CHECK });
@@ -379,7 +379,7 @@ export function prepareArchiveHire(row: RetiredAgentRow, floor: FloorState): boo
         ? `${HIRE_ENGINES[archived]}, the archived engine, is preselected. Review the engine and the current limits.`
         : match === null
           ? `The archived engine was ${HIRE_ENGINES[archived]}. No engine was preselected; choose a workspace, then an engine it offers.`
-          : `This workspace does not offer the archived ${HIRE_ENGINES[archived]} engine. No engine was preselected.`;
+          : `This project does not offer the archived ${HIRE_ENGINES[archived]} engine. No engine was preselected.`;
   commit({ ...INITIAL, draft: Object.freeze({ name: row.name, role: row.role, workspaceId,
     ...(engine === null ? {} : { engine }), goalText: '',
     ...(row.character === undefined ? {} : { character: row.character }),

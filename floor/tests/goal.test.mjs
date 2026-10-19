@@ -651,7 +651,7 @@ test('an achieved goal starts with nothing chosen, and Send waits for a choice',
 
 /** What each check refusal of a goal change says, for a check named as `check`. */
 const GOAL_REFUSALS = (check) => ({
-  check_already_passes: `${check} already passes in this workspace, so it cannot show when this goal is done. `
+  check_already_passes: `${check} already passes in this project, so it cannot show when this goal is done. `
     + 'Nothing changed. Choose another check, or ask the operator to add one for this goal with dudes project '
     + 'check add.',
   check_did_not_finish: `${check} did not finish, so it cannot show whether it already passes. Nothing changed. `

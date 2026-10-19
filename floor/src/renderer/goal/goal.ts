@@ -282,7 +282,7 @@ const RENEWAL_REASONS: Readonly<Partial<Record<FixedRefusal, string>>> = Object.
 
 /** What `goal_exhausted` says when the page can offer a new goal beside it. */
 export const EXHAUSTED_WITH_RENEWAL = 'This goal has no turns or capped dollars left to carry over, so nothing was '
-  + 'recorded. Start a new goal with this workspace’s allowance below.';
+  + 'recorded. Start a new goal with this project’s allowance below.';
 
 const NOT_ENROLLED = 'This agent’s check already passes, and no enrolled workspace offers this agent another check. '
   + 'Nothing changed. Set a new goal from a terminal (dudes goal) with a check that fails until the goal is met.';
