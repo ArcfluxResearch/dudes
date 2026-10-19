@@ -166,7 +166,7 @@ followed by `dudes quickstart --restart`.
 Without a terminal and without options, `dudes quickstart` only starts the daemon and prints its
 version and control socket, plus a missing-project hint unless `--json` is set. With options it asks nothing,
 prints no live Floor link: it prints `dudes floor open`, and `dudes login
-<engine>` for each engine that is signed out. `--yes` takes every default, `--set <key> <value>`
+<engine>` for each engine that is signed out. `--yes` takes every default, including the guide's Yes to letting the Floor act (the git and diff views stay off), `--set <key> <value>`
 sets what `dudes config set` sets, `--enroll` enrolls the current repository and `--hire <name>`
 hires a first agent there, with the completion check after `--`; a setting that breaks one of the
 file's start rules is refused by name, and nothing is written. A script restarts a running daemon

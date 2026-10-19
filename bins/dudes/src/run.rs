@@ -1578,9 +1578,14 @@ fn start(env: &Environment, err: &mut dyn Write) -> Result<PingResult, Failure> 
 
 /// A scripted plan, its settings applied to `draft`. A start rule the result breaks is refused
 /// when the draft is written, before anything is.
-fn scripted(plan: Plan, draft: &mut Draft) -> Result<Plan, Failure> {
-    for change in &plan.changes {
-        draft.apply(change).map_err(local)?;
+fn scripted(mut plan: Plan, draft: &mut Draft) -> Result<Plan, Failure> {
+    let explicit = std::mem::take(&mut plan.changes);
+    if plan.floor_default && setup::floor_is_uniform(draft.settings()) {
+        setup::set_floor(draft, &mut plan, true).map_err(local)?;
+    }
+    for change in explicit {
+        draft.apply(&change).map_err(local)?;
+        plan.changes.push(change);
     }
     if let Some(hire) = &plan.hire
         && !setup::engine_on(draft.settings(), hire.provider)

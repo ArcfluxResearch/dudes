@@ -44,6 +44,9 @@ pub struct Plan {
     /// The operator agreed that a running daemon with other settings is stopped and started
     /// again, which ends any turn it is running.
     pub restart: bool,
+    /// `--yes`: turn the Floor's actions on, as the guided question's default does, unless the
+    /// file already chooses its own mix.
+    pub floor_default: bool,
 }
 
 /// A completion check: a typed argv the daemon resolves and runs itself, never a shell string.
@@ -363,12 +366,7 @@ fn engines_step(
 /// One question for the Floor's actions, or one line when the file already holds its own mix.
 fn floor_step(term: &mut Terminal<'_>, draft: &mut Draft, plan: &mut Plan) -> Result<(), Stopped> {
     term.say("")?;
-    let settings = draft.settings();
-    let on = FLOOR_ACTIONS
-        .iter()
-        .filter(|key| settings.satisfies(**key))
-        .count();
-    if on != 0 && on != FLOOR_ACTIONS.len() {
+    if !floor_is_uniform(draft.settings()) {
         return Ok(term.say(
             "Floor actions: your file already chooses which ones are on, so quickstart keeps that \
              choice.",
@@ -381,6 +379,25 @@ fn floor_step(term: &mut Terminal<'_>, draft: &mut Draft, plan: &mut Plan) -> Re
          act with your account's full reach.",
         true,
     )?;
+    set_floor(draft, plan, allow)
+}
+
+/// Whether the file has every Floor action on or every one off, so one answer can settle them.
+#[must_use]
+pub fn floor_is_uniform(settings: &Settings) -> bool {
+    let on = FLOOR_ACTIONS
+        .iter()
+        .filter(|key| settings.satisfies(**key))
+        .count();
+    on == 0 || on == FLOOR_ACTIONS.len()
+}
+
+/// Turn every Floor action on or off, and Renew off with them.
+///
+/// # Errors
+///
+/// [`Stopped`] when the file refuses a change.
+pub fn set_floor(draft: &mut Draft, plan: &mut Plan, allow: bool) -> Result<(), Stopped> {
     for key in FLOOR_ACTIONS {
         if allow != draft.settings().satisfies(key) {
             set(draft, plan, key, allow)?;
@@ -989,6 +1006,23 @@ mod tests {
             assert!(!run.draft.settings().satisfies(key), "{key}:\n{shown}");
         }
         assert!(run.draft.settings().problems().is_empty(), "{shown}");
+    }
+
+    /// `--yes` takes the guide's default: every Floor action on, ticket board included, and an
+    /// explicit later `--set` still wins. The git and diff views are not among them.
+    #[test]
+    fn the_floor_default_turns_the_actions_on_and_leaves_git_views_off() {
+        let home = tempfile::tempdir().expect("a home");
+        let mut draft = Draft::open(&home.path().join("config.toml")).expect("opens");
+        assert!(floor_is_uniform(draft.settings()));
+        let mut plan = Plan::default();
+        set_floor(&mut draft, &mut plan, true).expect("sets");
+        for key in ACTIONS {
+            assert!(draft.settings().satisfies(key), "{key}");
+        }
+        assert!(draft.settings().satisfies(Key::Board));
+        assert!(!draft.settings().satisfies(Key::Git));
+        assert!(!draft.settings().satisfies(Key::Diff));
     }
 
     /// A file that already mixes the switches keeps its mix and is told so, with no question.
