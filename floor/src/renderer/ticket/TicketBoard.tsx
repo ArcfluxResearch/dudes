@@ -15,6 +15,7 @@ import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
 import { decodeWorkspace } from '../workspace.ts';
 import { agentChoiceSentence, agentRow, boardColumns, cardWords, noProjects, otherCards, plainColumnOf, TICKET_COLUMNS } from './model.ts';
 import type { TicketColumn } from './model.ts';
+import type { Notice } from './ticket.ts';
 import { createTicket, dismissNotice, getTicketState, subscribeToTicket } from './ticket.ts';
 import { titleOf } from '../setup/nextStep.ts';
 import type { FirstTaskAgent } from '../setup/nextStep.ts';
@@ -70,9 +71,15 @@ export function agentsFor(floor: FloorState, project: string): {
   };
 }
 
-export function TicketNotice({ card }: { readonly card?: string | null }) {
+export function TicketNotice({ card, floor }: { readonly card?: string | null; readonly floor: FloorState }) {
   const ticket = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState);
-  const notice = card === undefined || ticket.notice?.card === card ? ticket.notice : null;
+  const said = card === undefined || ticket.notice?.card === card ? ticket.notice : null;
+  const status = said?.whileWorking === true ? floor.cards.find((row) => row.id === said.card)?.status : undefined;
+  const worked = useRef<{ readonly notice: Notice | null; seen: boolean }>({ notice: null, seen: false });
+  if (worked.current.notice !== said) worked.current = { notice: said, seen: false };
+  if (status === 'todo' || status === 'claimed' || status === 'doing') worked.current.seen = true;
+  const moved = worked.current.seen && (status === 'review' || status === 'blocked' || status === 'done');
+  const notice = moved ? null : said;
   // What went well is said for a few seconds. What went wrong stays until it is dismissed.
   useEffect(() => {
     if (notice === null || notice.tone !== 'done') return undefined;
@@ -122,7 +129,7 @@ export function FirstTaskForm({ floor, agents }: { readonly floor: FloorState; r
       placeholder="For example: add a dark mode switch to the settings page"
       onChange={(event) => setTask(event.target.value)} />
     <p className="first-task-note">When {agent.name} says it is finished, Dudes checks it itself ({agent.check.label}) before you review it.</p>
-    <TicketNotice />
+    <TicketNotice floor={floor} />
     <button type="submit" className="first-task-start" disabled={!ready}>{sending ? 'Starting…' : 'Start'}</button>
   </form>;
 }
@@ -263,7 +270,7 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
     selectable={selectable} onSelect={onSelect} />;
   return <div className="board-view ticket-board">
     {selectable ? null : <p className="stream-state" role="alert">View unconfirmed — waiting for the stream</p>}
-    {opened ? null : <TicketNotice />}
+    {opened ? null : <TicketNotice floor={floor} />}
     {floor.ticket ? <section className="ticket-new" aria-label="New ticket">
       <button type="button" className="ticket-new-toggle" aria-expanded={forming} disabled={!ticketActionsOpen(floor)}
         aria-haspopup="dialog" onClick={(event) => onNewTicket(event.currentTarget)}>New ticket</button>

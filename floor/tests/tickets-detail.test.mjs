@@ -186,7 +186,7 @@ test('a ready or held ticket names what Dudes could not see', async () => {
   const coverage = { provider: 'codex', limits: ['configuration_unknown', 'fallback_unknown', 'root_marker_unknown'], saw_no_change: true };
   await open({ coverage });
   const html = panel();
-  assert.match(html, /<h4>What Dudes could not see<\/h4><p>Dudes cannot see Codex&#x27;s settings in its home folder, fallback file names or root markers\. It saw no change to the instruction and settings files it can read\.<\/p>/);
+  assert.match(html, /<h4>What Dudes could not see<\/h4>\s*<p>Dudes could not check every file this agent may have followed\. Look at the result yourself before you accept it\.<\/p><details><summary>Details<\/summary><p>Dudes cannot see Codex&#x27;s settings in its home folder, fallback file names or root markers\. It saw no change to the instruction and settings files it can read\.<\/p><\/details>/);
   detail.resetDetail();
   store.resetFloorStore();
   await open({ coverage: { ...coverage, provider: 'claude', limits: ['plugin_unknown'], saw_no_change: false } });
@@ -196,7 +196,7 @@ test('a ready or held ticket names what Dudes could not see', async () => {
   detail.resetDetail();
   store.resetFloorStore();
   await open({ coverage }, { status: 'blocked' });
-  assert.match(panel(), /<h4>What Dudes could not see<\/h4><p>Dudes cannot see Codex&#x27;s settings in its home folder, fallback file names or root markers\./, 'Needs you shows the standing limits too');
+  assert.match(panel(), /<details><summary>Details<\/summary><p>Dudes cannot see Codex&#x27;s settings in its home folder, fallback file names or root markers\./, 'Needs you shows the standing limits too');
 });
 
 test('a Pi note reads in plain words and an unknown limit falls back instead of dropping the note', async () => {
@@ -229,7 +229,7 @@ test('the decoder refuses a coverage note it does not know', () => {
 test('the changed files come from the Git read, or one plain line says how to turn it on', async () => {
   await open({}, { git: false });
   const off = panel();
-  assert.match(off, /<h4>Changed files<\/h4><p class="ticket-hint">The Git tab is off, so changed files are not shown\. Turn it on with <code>dudes config set floor\.git on<\/code> and restart the daemon\.<\/p>/);
+  assert.match(off, /<h4>Changed files<\/h4><p class="ticket-hint">Changed files are turned off, so this list is empty\. To see them, run <code>dudes config set floor\.git on<\/code> in a terminal, then <code>dudes stop<\/code> and <code>dudes start<\/code>\.<\/p>/);
   assert.ok(!/ticket-files/.test(off));
   assert.ok(!/Look again/.test(off));
 
@@ -250,7 +250,7 @@ test('the changed files come from the Git read, or one plain line says how to tu
   const on = panel();
   assert.match(on, /<ul class="ticket-files"><li><span class="git-kind">Added<\/span> <span class="git-path data">src\/new\.rs<\/span><\/li><li><span class="git-kind">Modified<\/span> <span class="git-path data">src\/main\.rs<\/span><\/li><\/ul>/);
   assert.match(on, /Look again/);
-  assert.ok(!/The Git tab is off/.test(on));
+  assert.ok(!/Changed files are turned off/.test(on));
 
   const busy = daemon(() => json(200, view({ state: 'busy', head: null, committed: { items: [], truncated: false, dropped: 0 },
     changes: { items: [], truncated: false, dropped: 0 } })));
@@ -486,7 +486,7 @@ test('only gaps that hold the ticket are reasons, standing limits are named as w
   const trace = html.slice(disclosure, html.indexOf('</details>', disclosure));
   assert.match(trace, /Coverage gap 2\. fallback unknown\. Unresolved context\.[^<]*Standing engine limit\./);
   assert.match(trace, /Coverage gap 3\. import cycle\. Unshared project\.[^<]*Found during this ticket\./);
-  assert.match(html, /<h4>What Dudes could not see<\/h4><p>Dudes cannot see Codex&#x27;s fallback file names\.<\/p>/);
+  assert.match(html, /<details><summary>Details<\/summary><p>Dudes cannot see Codex&#x27;s fallback file names\.<\/p>/);
 });
 
 test('an issued turn with a missing sampled start shows launch uncertainty without an invented baseline or end', async () => {

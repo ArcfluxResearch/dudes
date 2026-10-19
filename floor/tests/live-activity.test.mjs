@@ -25,7 +25,7 @@ const LIVE = { live: true, now: NOW, wallNow: NOW };
 test('fixed live labels reveal only the recognized kind', () => {
   for (const [kind, expected] of [
     ['working', 'Working'], ['using_tool', 'Tool step'], ['compacting', 'Compacting'],
-    ['waiting', 'Waiting'], ['idle', 'Idle'],
+    ['waiting', 'Idle'], ['idle', 'Idle'],
   ]) {
     const row = { ...ROW, live_activity: { ...ROW.live_activity, kind } };
     assert.equal(liveActivityLabel(row, LIVE), expected, kind);
@@ -114,4 +114,12 @@ test('Crew renders the fixed label only while its floor is selectable and confir
   } finally {
     await server.close();
   }
+});
+
+test('an idle or waiting engine adds no second Idle beside the idle status', () => {
+  for (const kind of ['waiting', 'idle']) {
+    const row = { ...ROW, status: 'idle', live_activity: { ...ROW.live_activity, kind } };
+    assert.equal(fieldsOf(row, LIVE).liveActivity, null, kind);
+  }
+  assert.equal(fieldsOf(ROW, LIVE).liveActivity, 'Tool step');
 });

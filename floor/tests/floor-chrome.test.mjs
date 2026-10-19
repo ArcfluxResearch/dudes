@@ -98,10 +98,7 @@ test('the top bar names the floor and counts the crew by status', () => {
   const stats = bar.match(/<ul class="crew-stats" aria-label="Crew by status">([\s\S]*?)<\/ul>/)[1];
   assert.deepEqual([...stats.matchAll(/<li([^>]*)>([^<]*)<\/li>/g)].map(([, attrs, words]) => [attrs.trim(), words]), [
     ['class="crew-stats-total"', '3 crew'],
-    ['data-status="running"', '1 running'],
-    ['data-status="waiting"', '1 waiting'],
-    ['data-status="idle"', '1 idle'],
-  ]);
+  ], 'the strip under the office says each status, so the top bar keeps only the count');
   assert.doesNotMatch(bar, /hire-entry-off/, 'the top bar still carries the Hire reason that Crew folds');
   const crew = html.match(/<section class="crew-list"[\s\S]*?<\/section>/)?.[0] ?? '';
   assert.match(crew, /<details class="hire-off"><summary>Hire is unavailable<\/summary><p class="hire-entry-off">Hire needs a workspace/);
@@ -468,7 +465,7 @@ test('a Crew row says its workspace is not recorded only while it is selected', 
     }));
   assert.equal(hidden(false, false), true, 'an unselected row still says Workspace not recorded');
   assert.equal(hidden(true, false), false, 'the selected row hides Workspace not recorded');
-  assert.equal(hidden(false, true), false, 'a recorded workspace is hidden');
+  assert.equal(hidden(false, true), true, 'a recorded workspace waits for the row to be selected');
   assert.equal(hidden(true, true), false, 'a recorded workspace is hidden on the selected row');
 });
 

@@ -293,6 +293,8 @@ export function decodeCoverageNote(value: unknown): CoverageNote | null {
   return Object.freeze({ provider, limits: Object.freeze([...value.limits]) as readonly string[], saw_no_change: value.saw_no_change });
 }
 
+export const COVERAGE_SUMMARY = 'Dudes could not check every file this agent may have followed. Look at the result yourself before you accept it.';
+
 export function coverageText(note: CoverageNote): string {
   const engine = note.provider !== null && Object.hasOwn(COVERAGE_ENGINES, note.provider)
     ? COVERAGE_ENGINES[note.provider as keyof typeof COVERAGE_ENGINES] : 'the engine';

@@ -143,6 +143,8 @@ export interface Notice {
   readonly card: string | null;
   readonly tone: 'done' | 'problem';
   readonly text: string;
+  /** Said only while the ticket is still being worked on, so it goes when the ticket reaches review or beyond. */
+  readonly whileWorking?: true;
 }
 
 /** The sentence for an answer that was not a success. `status` is the ticket's state, used by `wrong_state`. */
@@ -296,7 +298,7 @@ export async function createTicket(form: NewTicket, deps: ControlDeps = browserC
     : `Ticket created, but it was not given to ${name}. ${given.kind === 'done' ? COULD_NOT_CONFIRM : problemText(given, 'todo')}`;
   // A ticket that needs you stays said until it is dismissed, like any other problem.
   const well = started !== null && started.state !== 'needs_you';
-  finishRequest(request, { card: made.card, tone: well ? 'done' : 'problem', text });
+  finishRequest(request, { card: made.card, tone: well ? 'done' : 'problem', text, ...(started !== null ? { whileWorking: true as const } : {}) });
   return { card: made.card, saved: true };
 }
 
@@ -366,6 +368,7 @@ export async function changeTicket(card: CardRow, change: Change, deps: ControlD
     ? startText(outcome.start, agentName(getFloorState(), change.agent), holdingTicket(getFloorState(), change.agent)?.title)
     : change.verb === 'assign' ? COULD_NOT_CONFIRM : DONE_TEXT[change.verb];
   const needs = change.verb === 'assign' && outcome.start?.state === 'needs_you';
-  finishRequest(request, { card: card.id, tone: needs ? 'problem' : 'done', text });
+  finishRequest(request, { card: card.id, tone: needs ? 'problem' : 'done', text,
+    ...(change.verb === 'assign' && outcome.start !== null ? { whileWorking: true as const } : {}) });
   return true;
 }

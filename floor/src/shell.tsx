@@ -58,10 +58,10 @@ export function PastedLinkNotice() {
   if (first === 'refused') {
     return (
       <p className="link-refused" role="alert">
-        This sign-in link was refused, either because it was already used or has expired, or because four Floor tabs are
-        already signed in. For a used or expired link, run <code>dudes floor open</code> for a new one and paste it here
-        within 60 seconds. For a full set of tabs, close the ones you no longer use and wait 30 minutes, or run{' '}
-        <code>dudes stop</code> then <code>dudes start</code> to sign every tab out (this ends running turns), and then{' '}
+        This sign-in link did not work. A link works once, for 60 seconds. Run <code>dudes floor open</code> for a new
+        one and paste it here. If the new link is refused too, four Dudes tabs are probably already open: close the
+        ones you no longer use and try again after 30 minutes, or run <code>dudes stop</code> then{' '}
+        <code>dudes start</code> to sign every tab out (this ends running turns), and then{' '}
         <code>dudes floor open</code>.
       </p>
     );
@@ -69,7 +69,7 @@ export function PastedLinkNotice() {
   if (first === 'missing') {
     return (
       <p className="link-refused" role="alert">
-        The sign-in link in the address of this page is not one the daemon can read. Run{' '}
+        The sign-in link in the address of this page is not a Dudes sign-in link. Run{' '}
         <code>dudes floor open</code> and paste the new link here within 60 seconds.
       </p>
     );
@@ -353,7 +353,7 @@ function SignedInShell() {
       data-theme={preferences.theme} style={{ '--side-width': `${preferences.sidebarWidth}px` } as CSSProperties}>
       <header className="top-bar">
         <h1 id="floor-title" className="wordmark">dudes</h1>
-        <CrewStats agents={floor.agents} cards={floor.cards} />
+        <CrewStats agents={floor.agents} cards={floor.cards} statuses={focused} />
         <ControlNav floor={floor} view={focused ? null : view} onToggle={toggleView} />
         <div className="top-bar-actions" role="group" aria-label="Floor actions">
           <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={crewOpen && !focused && view !== 'board'}

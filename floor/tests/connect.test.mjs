@@ -274,14 +274,13 @@ test('a link refused for a different build says so, keeps the page, and a matchi
   assert.equal(entry.pastedLinkBuildMismatch(), false);
 });
 
-const USED = 'This sign-in link was refused, either because it was already used or has expired, or because four Floor tabs are already signed in\. '
-  + 'For a used or expired link, run <code>dudes floor open</code> for a new one and paste it here within 60 seconds\. '
-  + 'For a full set of tabs, close the ones you no longer use and wait 30 minutes, or run <code>dudes stop</code> then '
-  + '<code>dudes start</code> to sign every tab out \\(this ends running turns\\), and then <code>dudes floor open</code>\.';
-const NO_LINK = 'The sign-in link in the address of this page is not one the daemon can read\. Run '
+const USED = 'This sign-in link did not work\. A link works once, for 60 seconds\. Run <code>dudes floor open</code> for a new one and paste it here\. '
+  + 'If the new link is refused too, four Dudes tabs are probably already open: close the ones you no longer use and try again after 30 minutes, or run '
+  + '<code>dudes stop</code> then <code>dudes start</code> to sign every tab out \\(this ends running turns\\), and then <code>dudes floor open</code>\.';
+const NO_LINK = 'The sign-in link in the address of this page is not a Dudes sign-in link\. Run '
   + '<code>dudes floor open</code> and paste the new link here within 60 seconds\.';
-const EXPIRED = 'This sign-in has expired\. Run <code>dudes floor open</code> for a new link\. Each link works once, in one '
-  + 'browser\.';
+const EXPIRED = 'You are signed out of this Floor\. That happens after 30 minutes without use, or when Dudes restarts\. Run '
+  + '<code>dudes floor open</code> for a new link\. Each link works once, in one browser\.';
 
 test('a refused first link leads with the used-or-expired line, names no secret, and a session taken since clears it', async () => {
   const session = await server.ssrLoadModule('/src/session.ts');
@@ -302,7 +301,7 @@ test('a refused first link leads with the used-or-expired line, names no secret,
   assert.equal(await outcome(async () => { throw new TypeError('Failed to fetch'); }) instanceof session.LinkRefused,
     false, 'the control: a daemon that could not be reached is not a refusal');
 
-  assert.doesNotMatch(page(), /already used or has expired/, 'the control: nothing is said before a refusal');
+  assert.doesNotMatch(page(), /did not work/, 'the control: nothing is said before a refusal');
   // What main.tsx does with a refused first link: say so, then close the stream's phase.
   entry.noteFirstLinkRefused();
   store.noteTransport('close');
@@ -317,7 +316,7 @@ test('a refused first link leads with the used-or-expired line, names no secret,
   assert.equal(html.includes(BOOTSTRAP), false, 'the refusal line carries the bootstrap');
 
   await entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_A }), session), ports);
-  assert.doesNotMatch(page(), /already used or has expired/, 'a link that signed the page in left the refusal up');
+  assert.doesNotMatch(page(), /did not work/, 'a link that signed the page in left the refusal up');
   assert.match(page(), /id="crew-list"/, 'a signed-in page lost its crew list');
 });
 
