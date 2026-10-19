@@ -775,36 +775,27 @@ fn capture_attributed_assistant_text_in_bounded_run_registry() {
     );
     assert!(!text(&replacement).contains("late-old-turn"));
 
-    // More than 8 MiB admitted from actual process stdout across 129+ rings.
-    for n in 0..129 {
-        let dir = fixture.state.path().join(format!("bulk-{n}"));
-        std::fs::create_dir(&dir).expect("bulk work directory");
-        let agent = common::hire(&running.handle, &dir);
-        common::set_goal(
-            &running.handle,
-            common::goal_params(agent, &["/usr/bin/true"]),
-        );
-        fixture.await_record("bulk TurnEnded", |r| {
-            matches!(r, Record::TurnEnded { agent: found, .. } if *found == agent).then_some(())
-        });
-        let bulk = await_output(
-            &output,
-            agent,
-            |s| matches!(s, OutputState::Ready { ended: true, next_seq: 16, chunks, .. } if chunks.len() == 16),
-        );
-        assert!(
-            matches!(bulk, OutputState::Ready { ref chunks, .. } if chunks.iter().map(|c| c.text.len()).sum::<usize>() == 65_536)
-        );
-        let usage = output.usage();
-        assert!(
-            usage.rings <= 128 && usage.text_bytes <= 8 * 1_024 * 1_024,
-            "run-local bounds"
-        );
-    }
-    assert!(matches!(
-        output.snapshot(agents[0]).state,
-        OutputState::Unavailable(Unavailable::Evicted)
-    ));
+    // One real child's 64 KiB of stdout arrives whole, as sixteen chunks. The run-local ring and
+    // byte bounds and the eviction of the oldest ring are proved in `output_registry.rs`, which
+    // needs no 129 real turns to reach them.
+    let dir = fixture.state.path().join("bulk-0");
+    std::fs::create_dir(&dir).expect("bulk work directory");
+    let agent = common::hire(&running.handle, &dir);
+    common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &["/usr/bin/true"]),
+    );
+    fixture.await_record("bulk TurnEnded", |r| {
+        matches!(r, Record::TurnEnded { agent: found, .. } if *found == agent).then_some(())
+    });
+    let bulk = await_output(
+        &output,
+        agent,
+        |s| matches!(s, OutputState::Ready { ended: true, next_seq: 16, chunks, .. } if chunks.len() == 16),
+    );
+    assert!(
+        matches!(bulk, OutputState::Ready { ref chunks, .. } if chunks.iter().map(|c| c.text.len()).sum::<usize>() == 65_536)
+    );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     let restarted_children = ChildEnds::new();
     let restarted_output = restarted_children.output();
