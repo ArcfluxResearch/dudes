@@ -597,7 +597,7 @@ fn workspace_step(
 ) -> Result<(), Stopped> {
     if let Some(id) = file.enrolled_at(cwd) {
         return Ok(term.say(&format!(
-            "\nWorkspace. {} is enrolled as {id}.",
+            "\nProject. {} is enrolled as {id}.",
             cwd.display()
         ))?);
     }
@@ -607,7 +607,7 @@ fn workspace_step(
         "the Floor can hire agents into it once floor.hire is on"
     };
     term.say(&format!(
-        "\nWorkspace. {} is a git repository. Enrolled, {hires}. A completion check is a command \
+        "\nProject. {} is a git repository. Enrolled, {hires}. A completion check is a command \
          the daemon runs itself to decide that a goal is done, typed as a program and its \
          arguments separated by spaces.",
         cwd.display()

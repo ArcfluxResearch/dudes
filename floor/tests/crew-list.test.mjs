@@ -82,14 +82,14 @@ test('each row shows its colour, name, role and engine, workspace, activity and 
       + `aria-label="Inspect Ada in Crew" aria-describedby="crew-about-${ADA}" aria-pressed="false">`
       + '<span class="crew-dot" aria-hidden="true" style="--agent:#397ca9">A</span><span class="crew-who">'
       + '<strong class="crew-name">Ada</strong><small class="crew-meta">backend engineer · claude</small>'
-      + '<small class="crew-workspace" title="Workspace not recorded" data-recorded="false">Workspace not recorded</small>'
+      + '<small class="crew-workspace" title="Project not recorded" data-recorded="false">Project not recorded</small>'
       + `<small class="crew-activity" data-activity="question" title="${question}">? ${question}</small></span>`
       + '<span class="crew-state"><span class="crew-chip" data-status="waiting">waiting</span>'
       + '<span class="crew-hold">halted</span></span></button>');
     assert.ok(html.includes(`<span id="crew-about-${ADA}" hidden="">backend engineer, claude, waiting, $0.42 spent today, `
-      + `halted. Waiting question: ${question}. Workspace: Workspace not recorded</span>`), html);
+      + `halted. Waiting question: ${question}. Project: Project not recorded</span>`), html);
     assert.ok(row(GRACE).includes('<small class="crew-meta">frontend engineer · codex</small>'
-      + '<small class="crew-workspace" title="Workspace not recorded" data-recorded="false">Workspace not recorded</small>'
+      + '<small class="crew-workspace" title="Project not recorded" data-recorded="false">Project not recorded</small>'
       + '<small class="crew-activity" data-activity="goal" title="Polish the Floor">Polish the Floor</small>'), row(GRACE));
     assert.ok(row(GRACE).includes('<span class="crew-chip" data-status="running">running</span></span>'), row(GRACE));
     assert.doesNotMatch(html, /<canvas|cast\.png|agent-portrait/, 'Crew draws something from the office');
@@ -166,7 +166,7 @@ test('Crew says which agents write in their own worktree and which share a direc
     assert.match(entry('Hopper'), /Shared directory<\/span>/);
     assert.doesNotMatch(entry('Turing'), /crew-checkout/);
     assert.doesNotMatch(entry('Hopper'), /Worktree/);
-    assert.match(entry('Ada'), /Workspace: [^<]*\. Worktree dudes\/0123456789ab, in use<\/span>/);
+    assert.match(entry('Ada'), /Project: [^<]*\. Worktree dudes\/0123456789ab, in use<\/span>/);
   });
 });
 

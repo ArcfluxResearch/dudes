@@ -50,7 +50,7 @@ test('archive preparation copies recorded appearance and a unique current Claude
   assert.equal(hire.getHireState().section, 'identity');
   assert.equal(hire.getHireState().attempt, null);
   assert.match(hire.getHireState().prefill.notes.identity, /Recorded appearance choices were copied/);
-  assert.match(hire.getHireState().prefill.notes.workspace, /current workspace.*label.*review/);
+  assert.match(hire.getHireState().prefill.notes.workspace, /current project.*label.*review/);
 });
 
 test('missing, unrecorded, and duplicate workspace labels leave a required explicit choice', () => {
@@ -86,7 +86,7 @@ test('an archived Codex or Pi engine is preselected only where the matched works
   assert.equal(hire.getHireState().prefill.notes.engine,
     'This project does not offer the archived Codex engine. No engine was preselected.');
   assert.equal(hire.getHireState().prefill.notes.workspace,
-    'Choose an enrolled workspace, then review the engines it offers.');
+    'Choose a project, then review the engines it offers.');
 
   hire.resetHire();
   const missing = decodeDaemonReport({ providers: [{ provider: 'pi', program: 'pi', found: false }] });

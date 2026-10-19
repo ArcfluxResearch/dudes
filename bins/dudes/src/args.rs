@@ -571,7 +571,7 @@ COMMANDS
         git and diff views stay off), --set is `config set`, --enroll enrolls the
         current repository, --hire hires a first
         agent there, and everything after `--` is
-        the completion check that the workspace and the goal share (default: at
+        the completion check that the project and the goal share (default: at
         most 5 turns a goal, 600 seconds a check). A running daemon with other
         settings is restarted only with --restart, because a restart ends
         every running turn; without it quickstart writes the file, names what differs,
@@ -817,7 +817,7 @@ COMMANDS
     ticket show <card>
         A ticket is a board card with a title, a note, a project and a \"Done when\"
         check. Add makes one and prints its card id. Project defaults to the only
-        enrolled workspace, and Done when to that project's own check. Give starts the
+        enrolled project, and Done when to that project's own check. Give starts the
         ticket at once when the agent and the project are free, and otherwise queues
         it; it answers at once and polls nothing, and the agent must be hired into
         the ticket's project. An agent is named by its name, which must match exactly

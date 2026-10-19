@@ -75,7 +75,7 @@ export function SettingsView({ floor, onSetup }: {
     <p>The Floor only reads daemon settings. Run the commands locally to change them.</p>
     {floor.stale ? <p role="status">View unconfirmed. These values are from the last snapshot.</p> : null}
     <p>After a config edit, restart with <code>dudes quickstart --restart</code>, which ends any running turn.
-      Workspace commands apply enrollment changes to the running daemon.</p>
+      Project commands apply enrollment changes to the running daemon.</p>
     <section aria-labelledby="settings-switches"><h3 id="settings-switches">Floor switches</h3>
       <dl><div><dt>Chat messages</dt><dd>Always on, with no setting</dd></div>
       {SWITCHES.map(([key, label]) => {

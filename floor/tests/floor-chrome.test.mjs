@@ -463,8 +463,8 @@ test('a Crew row says its workspace is not recorded only while it is selected', 
       return parts.every((part) => /^\.(crew-row|crew-workspace)\b/.test(part)) && conditions.every(([name, value]) =>
         (name === 'aria-pressed' && value === String(pressed)) || (name === 'data-recorded' && value === String(recorded)));
     }));
-  assert.equal(hidden(false, false), true, 'an unselected row still says Workspace not recorded');
-  assert.equal(hidden(true, false), false, 'the selected row hides Workspace not recorded');
+  assert.equal(hidden(false, false), true, 'an unselected row still says Project not recorded');
+  assert.equal(hidden(true, false), false, 'the selected row hides Project not recorded');
   assert.equal(hidden(false, true), true, 'a recorded workspace waits for the row to be selected');
   assert.equal(hidden(true, true), false, 'a recorded workspace is hidden on the selected row');
 });

@@ -715,12 +715,12 @@ test('with no project the Workspace step gives one setup command and no jargon',
   const html = render();
   assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes project add<\/code>\./);
   assert.equal((html.match(/none is set up yet/g) ?? []).length, 1);
-  assert.doesNotMatch(html, /No enrolled workspace|operator enrolled|Hire needs a project|by its ID/);
+  assert.doesNotMatch(html, /No enrolled project|operator enrolled|Hire needs a project|by its ID/);
   assert.match(html, /class="hire-submit"[^>]*aria-disabled="true"/);
   hire.moveSection(1, getFloorState());
   const afterNext = render();
   assert.equal((afterNext.match(/none is set up yet/g) ?? []).length, 1);
-  assert.doesNotMatch(afterNext, /No enrolled workspace/);
+  assert.doesNotMatch(afterNext, /No enrolled project/);
   assert.equal(hire.getHireState().section, 'workspace');
 });
 
@@ -925,7 +925,7 @@ test('403 with a live snapshot says no longer available, not session expiry', as
   assert.doesNotMatch(html, /data-hire-agent-id/);
 
   resubscribe({ onboarding: { ...structuredClone(CATALOG), workspaces: [CATALOG.workspaces[1]] } });
-  assert.match(render(), /The workspace repo_1 is no longer offered/);
+  assert.match(render(), /The project repo_1 is no longer offered/);
 
   // A no-effect refusal lets the operator edit, keeping what was typed.
   hire.releaseAttempt();

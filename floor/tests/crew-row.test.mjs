@@ -26,14 +26,14 @@ test('a Waiting agent shows its question, whole, and its row says everything but
     colour: '#b87918',
     role: 'backend engineer',
     engine: 'claude',
-    workspace: 'Workspace not recorded',
+    workspace: 'Project not recorded',
     status: 'waiting',
     activity: { kind: 'question', line: `? ${QUESTION}`, text: QUESTION, spoken: `Waiting question: ${QUESTION}` },
     liveActivity: null,
     activeCard: null,
     hold: null,
     checkout: { worktree: null, shared: false },
-    description: `backend engineer, claude, waiting, $1.49 spent today. Waiting question: ${QUESTION}. Workspace: Workspace not recorded`,
+    description: `backend engineer, claude, waiting, $1.49 spent today. Waiting question: ${QUESTION}. Project: Project not recorded`,
   });
 });
 
@@ -50,7 +50,7 @@ test('otherwise the row shows the goal, and a question riding on another status 
       text: 'Validate every parser boundary',
       spoken: 'Goal: Validate every parser boundary',
     });
-    assert.equal(crew.description, `backend engineer, claude, ${row.status}, $1.49 spent today. Goal: Validate every parser boundary. Workspace: Workspace not recorded`);
+    assert.equal(crew.description, `backend engineer, claude, ${row.status}, $1.49 spent today. Goal: Validate every parser boundary. Project: Project not recorded`);
   }
 });
 
@@ -63,7 +63,7 @@ test('an agent with no goal and no question says so, and a missing field shows a
       role: '—',
       engine: '—',
       activity: { kind: 'none', line: 'No goal', text: undefined, spoken: 'No goal' },
-      description: 'idle, $0.00 spent today. No goal. Workspace: Workspace not recorded',
+      description: 'idle, $0.00 spent today. No goal. Project: Project not recorded',
     },
   );
 });
@@ -83,7 +83,7 @@ test('a halt outranks a pause, and only a standing true flag holds a row', () =>
     hold({ paused: 'yes', halted: 1 }),
   ], [null, 'paused', 'halted', 'halted', null]);
   assert.equal(crewRowOf({ ...ada, paused: true, halted: true }).description,
-    `backend engineer, claude, waiting, $1.49 spent today, halted. Waiting question: ${QUESTION}. Workspace: Workspace not recorded`);
+    `backend engineer, claude, waiting, $1.49 spent today, halted. Waiting question: ${QUESTION}. Project: Project not recorded`);
 });
 
 test('the colour is the hire accent, or one fixed by the AgentId when the agent has none or an unknown one', () => {

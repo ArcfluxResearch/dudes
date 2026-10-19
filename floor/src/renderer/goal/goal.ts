@@ -266,17 +266,17 @@ export const REFUSAL_REASONS: Readonly<Record<FixedRefusal, string>> = Object.fr
   agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
   agent_absent: 'The agent is no longer on the floor, so nothing was recorded.',
   goal_not_exhausted: 'This goal still has turns or dollars left, so nothing was recorded. Change its text instead.',
-  workspace_unavailable: 'This agent’s workspace is no longer enrolled at its directory, so that check cannot be '
+  workspace_unavailable: 'This agent’s project is no longer enrolled at its directory, so that check cannot be '
     + 'chosen. Nothing changed.',
   profile_changed: 'The operator changed that check after this page read it. Nothing changed. Choose again.',
 });
 
 /** What a renewal's own reasons say, where they differ from a change's. */
 const RENEWAL_REASONS: Readonly<Partial<Record<FixedRefusal, string>>> = Object.freeze({
-  workspace_unavailable: 'This agent’s workspace is not enrolled at its directory now, or sets no ceiling that the '
+  workspace_unavailable: 'This agent’s project is not enrolled at its directory now, or sets no ceiling that the '
     + 'daemon’s billing key requires, so nothing was recorded. Give it a new goal from a terminal (dudes goal), '
     + 'or retire it and hire a new one.',
-  profile_changed: 'The workspace’s allowance or checks changed since this page read it, so nothing was '
+  profile_changed: 'The project’s allowance or checks changed since this page read it, so nothing was '
     + 'recorded. The floor is being refreshed.',
 });
 
@@ -284,7 +284,7 @@ const RENEWAL_REASONS: Readonly<Partial<Record<FixedRefusal, string>>> = Object.
 export const EXHAUSTED_WITH_RENEWAL = 'This goal has no turns or capped dollars left to carry over, so nothing was '
   + 'recorded. Start a new goal with this project’s allowance below.';
 
-const NOT_ENROLLED = 'This agent’s check already passes, and no enrolled workspace offers this agent another check. '
+const NOT_ENROLLED = 'This agent’s check already passes, and no enrolled project offers this agent another check. '
   + 'Nothing changed. Set a new goal from a terminal (dudes goal) with a check that fails until the goal is met.';
 
 /** What one refusal of this request says. */

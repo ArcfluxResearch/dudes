@@ -24,7 +24,7 @@ export function decodeWorkspace(value: unknown): Workspace | null {
 }
 
 export function workspaceLabel(row: AgentRow): string {
-  return decodeWorkspace(row.workspace)?.label ?? 'Workspace not recorded';
+  return decodeWorkspace(row.workspace)?.label ?? 'Project not recorded';
 }
 
 export function workspaceGroups(agents: readonly AgentRow[]): readonly WorkspaceGroup[] {
@@ -44,7 +44,7 @@ export function workspaceGroups(agents: readonly AgentRow[]): readonly Workspace
     .sort(([a], [b]) => a === b ? 0 : a === null ? 1 : b === null ? -1 : a < b ? -1 : 1)
     .map(([id, group]) => ({
       id,
-      label: [...group.labels].sort()[0] ?? 'Workspace not recorded',
+      label: [...group.labels].sort()[0] ?? 'Project not recorded',
       labelsDiffer: group.labels.size > 1,
       agents: group.agents,
     }));

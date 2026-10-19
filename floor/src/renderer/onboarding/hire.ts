@@ -127,7 +127,7 @@ export const PARTIAL_REASONS: Readonly<Record<PartialReason, string>> = Object.f
   goal_conflict: 'Another goal was set on this agent first, and the Hire did not overwrite it.',
   session_revoked: 'This Floor session was revoked after the agent was hired and before its goal was set.',
   session_expired: 'This Floor session expired after the agent was hired and before its goal was set.',
-  profile_changed: 'The enrolled workspace changed after the agent was hired, so its goal was not set.',
+  profile_changed: 'The project changed after the agent was hired, so its goal was not set.',
   goal_refused: 'The daemon refused the initial goal, for example on a budget or reserve check.',
 });
 
@@ -308,12 +308,12 @@ export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldPr
   const workspace = chosenWorkspace(draft, catalog);
   if (catalog === null) {
     problems.push({ field: 'workspace_id', section: 'workspace',
-      message: 'No enrolled workspace is offered to this session, so Hire is unavailable.' });
+      message: 'No project is offered to this session, so Hire is unavailable.' });
   } else if (draft.workspaceId === '') {
-    problems.push({ field: 'workspace_id', section: 'workspace', message: 'Choose an enrolled workspace.' });
+    problems.push({ field: 'workspace_id', section: 'workspace', message: 'Choose a project.' });
   } else if (workspace === null) {
     problems.push({ field: 'workspace_id', section: 'workspace',
-      message: 'That workspace is no longer offered. Choose another.' });
+      message: 'That project is no longer offered. Choose another.' });
   } else if (chosenEngine(draft, workspace) === null) {
     problems.push({ field: 'engine', section: 'engine', message: 'Choose an engine this project offers.' });
   }
@@ -361,16 +361,16 @@ export function prepareArchiveHire(row: RetiredAgentRow, floor: FloorState): boo
   const engine = offered && !missingEngine ? archived : null;
   const workspaceId = engine === null ? '' : match!.workspaceId;
   const workspace = row.workspace_label === undefined
-    ? 'The archived workspace was not recorded. Choose an enrolled workspace.'
+    ? 'The archived project was not recorded. Choose a project.'
     : floor.onboarding === null
-      ? 'Workspaces are not offered to this session. Check Setup before hiring.'
+      ? 'Projects are not offered to this session. Check Setup before hiring.'
       : matches.length === 0
-        ? 'The archived workspace label is no longer offered. Choose an enrolled workspace.'
+        ? 'The archived project label is no longer offered. Choose a project.'
         : matches.length > 1
-          ? 'The archived label matches more than one current workspace. Choose the intended workspace.'
+          ? 'The archived label matches more than one current project. Choose the intended project.'
           : workspaceId === ''
-            ? 'Choose an enrolled workspace, then review the engines it offers.'
-            : 'This current workspace matches the archived label. The archive has no workspace ID; review this choice.';
+            ? 'Choose a project, then review the engines it offers.'
+            : 'This current project matches the archived label. The archive has no project ID; review this choice.';
   const engineNote = archived === null
     ? `The archived ${row.provider} engine cannot be hired from the browser. No engine was preselected.`
     : missingEngine
@@ -378,7 +378,7 @@ export function prepareArchiveHire(row: RetiredAgentRow, floor: FloorState): boo
       : engine !== null
         ? `${HIRE_ENGINES[archived]}, the archived engine, is preselected. Review the engine and the current limits.`
         : match === null
-          ? `The archived engine was ${HIRE_ENGINES[archived]}. No engine was preselected; choose a workspace, then an engine it offers.`
+          ? `The archived engine was ${HIRE_ENGINES[archived]}. No engine was preselected; choose a project, then an engine it offers.`
           : `This project does not offer the archived ${HIRE_ENGINES[archived]} engine. No engine was preselected.`;
   commit({ ...INITIAL, draft: Object.freeze({ name: row.name, role: row.role, workspaceId,
     ...(engine === null ? {} : { engine }), goalText: '',

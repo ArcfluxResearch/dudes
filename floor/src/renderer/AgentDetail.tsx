@@ -84,7 +84,7 @@ export function AgentDetail({
       <dl>
         <div><dt>AgentId</dt><dd className="data">{row.id}</dd></div>
         <div><dt>Provider</dt><dd>{value(row.provider)}</dd></div>
-        <div><dt>Workspace</dt><dd>{workspaceLabel(row)}</dd></div>
+        <div><dt>Project</dt><dd>{workspaceLabel(row)}</dd></div>
         {worktree === null ? null : <div><dt>Worktree</dt><dd>{worktreeText(worktree)}</dd></div>}
         {!sharesCheckout(row) ? null : <div><dt>Shared directory</dt><dd>Another live agent works in this agent's directory, so their edits and checkouts can collide.</dd></div>}
         <div><dt>Role</dt><dd>{value(row.role)}</dd></div>

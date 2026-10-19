@@ -44,7 +44,7 @@ test('focus grouping uses ids, keeps all agents, and chooses a stable label afte
   const expected = [
     { id: 'alpha', label: 'Bench', labelsDiffer: true, agents: [rows[0], renamed] },
     { id: 'beta', label: 'Workbench', labelsDiffer: false, agents: [rows[1]] },
-    { id: null, label: 'Workspace not recorded', labelsDiffer: false, agents: [old] },
+    { id: null, label: 'Project not recorded', labelsDiffer: false, agents: [old] },
   ];
   assert.deepEqual(workspaceGroups([rows[0], rows[1], renamed, old]), expected);
   assert.deepEqual(workspaceGroups([old, renamed, rows[1], rows[0]]).map(({ agents, ...group }) => group),
@@ -65,11 +65,11 @@ test('Floor shows recorded labels in Crew, the detail and the focus roster\'s se
     const detail = render(AgentDetail, { row: rows[0] });
     const roster = render(AgentsRoster, { floor: { retiredAgents: [], agents, phase: 'live', stale: false }, selectedId: GRACE, onSelectAgent() {} });
     assert.match(strip, new RegExp(`data-agent-id="${ADA}"[^>]*>(?:(?!</button>).)*<small class="crew-workspace" title="Workbench" data-recorded="true">Workbench</small>`));
-    assert.match(strip, /<small class="crew-workspace" title="Workspace not recorded" data-recorded="false">Workspace not recorded<\/small>/);
-    assert.match(strip, new RegExp(`<span id="crew-about-${ADA}" hidden="">[^<]*Workspace: Workbench</span>`));
-    assert.match(detail, /<dt>Workspace<\/dt><dd>Workbench<\/dd>/);
+    assert.match(strip, /<small class="crew-workspace" title="Project not recorded" data-recorded="false">Project not recorded<\/small>/);
+    assert.match(strip, new RegExp(`<span id="crew-about-${ADA}" hidden="">[^<]*Project: Workbench</span>`));
+    assert.match(detail, /<dt>Project<\/dt><dd>Workbench<\/dd>/);
     assert.equal((roster.match(/<h3[^>]*>Workbench<\/h3>/g) ?? []).length, 2);
-    assert.match(roster, /<h3[^>]*>Workspace not recorded<\/h3>/);
+    assert.match(roster, /<h3[^>]*>Project not recorded<\/h3>/);
     assert.equal((roster.match(/data-agent-id=/g) ?? []).length, 3);
     assert.match(roster, new RegExp(`data-agent-id="${GRACE}"[^>]*aria-pressed="true"`));
     for (const html of [strip, detail, roster]) assert.doesNotMatch(html, /private|SECRET|cwd/);

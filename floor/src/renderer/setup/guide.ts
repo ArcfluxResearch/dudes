@@ -10,7 +10,7 @@ const STEPS: readonly { readonly key: GuideStep; readonly label: string; readonl
   { key: 'welcome', label: 'Welcome', ready: () => true },
   { key: 'engines', label: 'Engines', ready: (floor) => floor.daemon?.providers.some(
     (row) => isHireEngine(row.provider) && row.found) ?? false },
-  { key: 'workspaces', label: 'Workspaces', ready: (floor) => (floor.settings?.workspaces.length ?? 0) > 0 },
+  { key: 'workspaces', label: 'Projects', ready: (floor) => (floor.settings?.workspaces.length ?? 0) > 0 },
   { key: 'actions', label: 'Floor actions', optional: true, ready: (_floor, actionsSeen) => actionsSeen },
   { key: 'hire', label: 'First hire', ready: (floor) => floor.agents.length > 0 },
 ];
