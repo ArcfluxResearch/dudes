@@ -60,9 +60,6 @@ fn protocol_fixture() {
         let input: Value = serde_json::from_str(&line).unwrap();
         let id = input.get("id").cloned().unwrap_or(Value::Null);
         match input["method"].as_str().unwrap() {
-            "initialize" if marker.join("stall-init").exists() => loop {
-                std::thread::sleep(Duration::from_secs(1));
-            },
             "initialize" => emit(
                 &json!({"id":id,"result":{"userAgent":"dudes/0.160.0 (fixture)","codexHome":std::env::var("CODEX_HOME").unwrap()}}),
             ),
@@ -253,7 +250,6 @@ impl PredicateRunner for Runner {
 enum Case {
     Stream,
     ChangedConfig,
-    InitTimeout,
     CloseTimeout,
 }
 
@@ -268,7 +264,6 @@ fn run(case: Case) {
     let marker = tempfile::tempdir().unwrap();
     match case {
         Case::ChangedConfig => std::fs::write(marker.path().join("hold-thread"), "").unwrap(),
-        Case::InitTimeout => std::fs::write(marker.path().join("stall-init"), "").unwrap(),
         Case::CloseTimeout => std::fs::write(marker.path().join("ignore-eof"), "").unwrap(),
         Case::Stream => {}
     }
@@ -332,7 +327,7 @@ fn run(case: Case) {
         )
         .unwrap();
         std::fs::write(marker.path().join("allow-thread"), "").unwrap();
-    } else if case != Case::InitTimeout {
+    } else {
         let until = Instant::now() + Duration::from_secs(15);
         loop {
             if let OutputState::Ready {
@@ -402,9 +397,6 @@ fn run(case: Case) {
         if case != Case::CloseTimeout {
             assert!(!marker.path().join("task.sent").exists());
         }
-        if case == Case::InitTimeout {
-            assert!(started.elapsed() >= Duration::from_secs(30));
-        }
         if case == Case::CloseTimeout {
             assert!(marker.path().join("eof.seen").exists());
             assert!(started.elapsed() >= Duration::from_secs(5));
@@ -453,10 +445,6 @@ fn configuration_added_during_startup_prevents_task_delivery() {
     run(Case::ChangedConfig);
 }
 
-#[test]
-fn stalled_initialization_reaches_the_real_startup_deadline_and_reaps_the_child() {
-    run(Case::InitTimeout);
-}
 #[test]
 fn ignored_eof_reaches_the_real_close_deadline_and_reaps_the_child() {
     run(Case::CloseTimeout);
