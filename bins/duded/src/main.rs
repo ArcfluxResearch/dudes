@@ -906,14 +906,15 @@ mod pty_tests {
         let cwd = tempfile::tempdir().expect("scratch");
         let cwd = cwd.path().to_path_buf();
         let (opened, opens) = std::sync::mpsc::channel();
-        let early = dudes_host::serialize_spawn(|| {
+        let (early, opener) = dudes_host::serialize_spawn(|| {
             let mut host = MainPtyHost::new();
-            std::thread::spawn(move || {
-                let pty = open(&mut host, &cwd, &["/usr/bin/true"]);
+            let opener = std::thread::spawn(move || {
+                let pty = open(&mut host, &cwd, &["/bin/sleep", "30"]);
                 let _ = opened.send(());
                 (host, pty)
             });
-            opens.recv_timeout(Duration::from_millis(300)).is_ok()
+            let early = opens.recv_timeout(Duration::from_millis(300)).is_ok();
+            (early, opener)
         });
         assert!(
             !early,
@@ -922,6 +923,8 @@ mod pty_tests {
         opens
             .recv_timeout(WAIT)
             .expect("the terminal opens once the lock is free");
+        let (mut host, pty) = opener.join().expect("opener");
+        assert!(matches!(host.close(pty), PtyCloseOutcome::Closed));
     }
 
     #[test]
