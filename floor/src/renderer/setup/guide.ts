@@ -25,7 +25,3 @@ export function guideSteps(floor: FloorState, actionsSeen: boolean):
   return STEPS.map(({ key, label, optional, ready }) => ({ key, label,
     status: confirmed && ready(floor, actionsSeen) ? 'Done' : optional ? 'Optional' : 'Not done' }));
 }
-
-export function shouldOpenFirstRunGuide(floor: FloorState, closed: boolean): boolean {
-  return !closed && guideSnapshotConfirmed(floor) && floor.agents.length === 0;
-}

@@ -44,11 +44,14 @@ export type SectionKey = 'identity' | 'workspace' | 'engine' | 'briefing';
 /** The four sections, in order; one is shown at a time. */
 export const SECTIONS: readonly { readonly key: SectionKey; readonly label: string; readonly hint: string }[] =
   Object.freeze([
-    { key: 'identity', label: 'Identity', hint: 'Name, role and appearance' },
-    { key: 'workspace', label: 'Workspace', hint: 'A project to work in' },
-    { key: 'engine', label: 'Engine', hint: 'An offered engine' },
-    { key: 'briefing', label: 'Briefing', hint: 'First goal and its limits' },
+    { key: 'identity', label: 'Name', hint: 'Who you are hiring' },
+    { key: 'workspace', label: 'Project', hint: 'Where they work' },
+    { key: 'engine', label: 'App', hint: 'Claude, Codex or Pi' },
+    { key: 'briefing', label: 'First task', hint: 'What to do first' },
   ]);
+
+/** What an agent is called when the person gives no role. */
+export const DEFAULT_ROLE = 'engineer';
 
 /** Field limits in UTF-8 bytes, measured after trimming ASCII whitespace. */
 export const LIMITS = Object.freeze({ name: 128, role: 512, goal_text: 2048 });
@@ -292,8 +295,9 @@ export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldPr
   const problems: FieldProblem[] = [];
   const name = bounded('Name', draft.name, LIMITS.name);
   if (name !== null) problems.push({ field: 'name', section: 'identity', message: name });
-  const role = bounded('Role', draft.role, LIMITS.role);
-  if (role !== null) problems.push({ field: 'role', section: 'identity', message: role });
+  if (utf8Bytes(trimAsciiSpace(draft.role)) > LIMITS.role) {
+    problems.push({ field: 'role', section: 'identity', message: `Role is longer than ${LIMITS.role} UTF-8 bytes.` });
+  }
   const workspace = chosenWorkspace(draft, catalog);
   if (catalog === null) {
     problems.push({ field: 'workspace_id', section: 'workspace',
@@ -381,6 +385,20 @@ export function prepareArchiveHire(row: RetiredAgentRow, floor: FloorState): boo
   return true;
 }
 
+/**
+ * Choices a person should not have to make: the project when the offer has only one, and the first
+ * engine the daemon found. Applied once, when the dialog opens on a draft with nothing chosen.
+ */
+export function prepareHire(floor: FloorState): void {
+  if (state.attempt !== null || state.sending || state.draft.workspaceId !== '') return;
+  const spaces = floor.onboarding?.workspaces ?? [];
+  const space = spaces.length === 1 ? spaces[0]! : null;
+  if (space === null) return;
+  const engine = space.engines.find((name) => rowFor(floor.daemon, name)?.found === true);
+  commit({ ...state, draft: Object.freeze({ ...state.draft, workspaceId: space.workspaceId,
+    ...(engine === undefined ? {} : { engine }) }) });
+}
+
 export function showSection(section: SectionKey): void {
   commit({ ...state, section });
 }
@@ -429,7 +447,7 @@ export async function submitHire(offer: HireOffer, deps: HireDeps): Promise<void
     check_id: check.id,
     check_revision: check.revision,
     name: trimAsciiSpace(state.draft.name),
-    role: trimAsciiSpace(state.draft.role),
+    role: trimAsciiSpace(state.draft.role) || DEFAULT_ROLE,
     goal_text: trimAsciiSpace(state.draft.goalText),
     ...(engine === 'codex' || engine === 'pi' ? { provider: engine } : {}),
     ...(state.draft.character ? { character: state.draft.character } : {}),

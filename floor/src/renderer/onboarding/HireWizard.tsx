@@ -10,7 +10,9 @@ import { refreshFloorSnapshot } from '../floor/stream.ts';
 import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
 import { UnavailableControls } from '../settings/SettingsView.tsx';
-import { rowFor } from '../setup/daemon.ts';
+import { INSTALL_COMMANDS, rowFor } from '../setup/daemon.ts';
+import { copyToClipboard } from '../setup/SetupView.tsx';
+import { decodeWorkspace } from '../workspace.ts';
 import { noProjects, viewConfirmed } from '../ticket/model.ts';
 import type { ProviderRow } from '../setup/daemon.ts';
 import { HIRE_ENGINES, formatUsdMicros, isHireEngine } from './catalog.ts';
@@ -44,7 +46,7 @@ function goalOf(row: AgentRow): Record<string, unknown> | null {
 function goalLine(row: AgentRow): string {
   const goal = goalOf(row);
   if (goal === null) return 'No goal';
-  return `${text(goal.text)} · ${text(goal.status)} · GoalId ${text(goal.id)}`;
+  return `${text(goal.text)} · ${text(goal.status)}`;
 }
 
 function bytesOf(value: string): number {
@@ -61,10 +63,25 @@ function cap(value: string | null, unit: 'usd' | 'tokens', perDay = false): stri
  * Why the engine blocks this Hire, or `null`. Only a report that the program
  * is not found blocks: an absent report, or no row for the engine, never does.
  */
-function engineMissing(row: ProviderRow | null): string | null {
+function engineMissing(row: ProviderRow | null, engine: HireEngine | null): string | null {
   if (row?.found !== false) return null;
-  return `${row.program ?? 'The engine’s program'} is not on the daemon’s PATH, so this Hire would not launch. `
-    + 'Install it where the daemon can find it, then check again.';
+  const name = engine === null ? 'This app' : HIRE_ENGINES[engine];
+  return `${name} is not installed on this computer, so this agent could not start. Install it, then check again.`;
+}
+
+/** The plain warning for a project that already has a live agent, or `null`. */
+function sharedProject(floor: FloorState, workspaceId: string): readonly string[] {
+  return floor.agents.filter((row) => decodeWorkspace(row.workspace)?.id === workspaceId)
+    .map((row) => text(row.name));
+}
+
+function SharedProjectNote({ names }: { readonly names: readonly string[] }) {
+  if (names.length === 0) return null;
+  return <p className="hire-note hire-shared" role="note" data-hire-shared="true">
+    {names.join(' and ')} already {names.length === 1 ? 'works' : 'work'} in this project. Two agents in one
+    folder can overwrite each other, so Dudes holds their finished tickets for your review. To keep them apart,
+    give a Claude Code agent its own copy with <code>dudes hire --worktree</code>, or choose another project.
+  </p>;
 }
 
 /** Why Hire cannot be pressed right now, or `null` when it can. */
@@ -121,7 +138,7 @@ function HireForm({ hire, floor, onClose }: {
   const checks = workspace === null ? null : checksFor(floor.checks, workspace.workspaceId);
   const check = chosenCheck(hire.draft, floor.checks);
   const row = engine === null ? null : rowFor(floor.daemon, engine);
-  const missing = engineMissing(row);
+  const missing = engineMissing(row, engine);
   const withdrawn = workspace !== null && (floor.settings?.providers
     .some((name) => isHireEngine(name) && !workspace.engines.includes(name)) ?? false);
   const blocked = unavailable(floor) ?? missing;
@@ -157,13 +174,15 @@ function HireForm({ hire, floor, onClose }: {
           {hire.section !== 'identity' ? null : (
             <>
               <div className="hire-field">
-                <label htmlFor="hire-name">Name</label>
+                <label htmlFor="hire-name">What is this agent called?</label>
                 <input id="hire-name" name="name" type="text" autoComplete="off" spellCheck={false}
                   value={hire.draft.name} disabled={frozen}
                   aria-invalid={invalid('name')} aria-describedby={described('name')}
                   onChange={(event) => editDraft({ name: event.target.value })} />
                 <p className="hire-count">{bytesOf(hire.draft.name)} of {LIMITS.name} bytes</p>
               </div>
+              <details className="hire-more" open={invalid('role')}>
+              <summary>Role and look</summary>
               <div className="hire-appearance">
                 <div className="hire-field">
                   <label htmlFor="hire-character">Character</label>
@@ -196,8 +215,9 @@ function HireForm({ hire, floor, onClose }: {
                   value={hire.draft.role} disabled={frozen}
                   aria-invalid={invalid('role')} aria-describedby={described('role')}
                   onChange={(event) => editDraft({ role: event.target.value })} />
-                <p className="hire-count">{bytesOf(hire.draft.role)} of {LIMITS.role} bytes</p>
+                <p className="hire-count">{bytesOf(hire.draft.role)} of {LIMITS.role} bytes. Left empty, the role is engineer.</p>
               </div>
+              </details>
             </>
           )}
           {hire.section !== 'workspace' ? null : (
@@ -205,7 +225,7 @@ function HireForm({ hire, floor, onClose }: {
               {noProject ? <NoHireProjectHint /> : catalog === null ? <p>No project is available for hiring in this session.</p> : (
                 <fieldset className="hire-choices" aria-invalid={invalid('workspace_id')}
                   aria-describedby={described('workspace_id')}>
-                  <legend>Project</legend>
+                  <legend>Which project?</legend>
                   {catalog.workspaces.map((space) => (
                     <label key={space.workspaceId} className="hire-choice">
                       <input type="radio" name="workspace_id" value={space.workspaceId}
@@ -223,13 +243,14 @@ function HireForm({ hire, floor, onClose }: {
                 </fieldset>
               )}
               {catalog === null ? null : <p className="hire-note">Choose the project where this agent will work.</p>}
+              {workspace === null ? null : <SharedProjectNote names={sharedProject(floor, workspace.workspaceId)} />}
             </>
           )}
           {hire.section !== 'engine' ? null : (
             <>
               {workspace === null ? <p className="hire-note">Choose a workspace to see the engines it offers.</p> : (
                 <fieldset className="hire-choices" aria-invalid={invalid('engine')} aria-describedby={described('engine')}>
-                  <legend>Offered engine</legend>
+                  <legend>Which app should do the work?</legend>
                   {workspace.engines.map((name) => (
                     <label key={name} className="hire-choice">
                       <input type="radio" name="engine" value={name} checked={engine === name} disabled={frozen}
@@ -243,34 +264,26 @@ function HireForm({ hire, floor, onClose }: {
               {withdrawn ? <p className="hire-note">{"An engine missing here is turned off in the daemon's "
                 + 'configuration, or needs a ceiling on this workspace because the daemon holds a billing key for it.'}</p>
                 : null}
-              <dl className="hire-facts">
-                <div><dt>Engine</dt><dd>{catalog === null ? 'None offered'
-                  : engine === null ? 'Not selected' : HIRE_ENGINES[engine]}</dd></div>
-                <div><dt>Mode</dt><dd>Managed</dd></div>
-                {engine === null ? null : (
-                  <div>
-                    <dt>On the daemon’s PATH</dt>
-                    <dd>{row === null ? 'Not reported' : row.found
-                      ? `Found at ${row.path ?? 'a path this page cannot show'}` : 'Not found'}</dd>
-                  </div>
-                )}
-              </dl>
+              {engine === null || row === null ? null : <p className="hire-note" data-engine-found={row.found}>
+                {row.found ? `${HIRE_ENGINES[engine]} is installed on this computer.`
+                  : `${HIRE_ENGINES[engine]} is not installed on this computer.`}
+              </p>}
               {missing === null ? null : (
-                <p className="hire-problem" role="alert">
-                  {missing}{' '}
+                <div className="hire-problem" role="alert">
+                  <p>{missing}</p>
+                  {engine === null || INSTALL_COMMANDS[engine] === undefined ? null : <p className="hire-install">
+                    <code>{INSTALL_COMMANDS[engine]}</code>{' '}
+                    <button type="button" onClick={() => copyToClipboard(INSTALL_COMMANDS[engine]!)}>Copy</button>
+                  </p>}
                   <button type="button" onClick={() => refreshFloorSnapshot()}>Check again</button>
-                </p>
+                </div>
               )}
-              <p className="hire-note">
-                The daemon decides which engines each workspace offers. The engine&apos;s command and the
-                workspace&apos;s folder, isolation and trust are daemon configuration, not choices on this page.
-              </p>
             </>
           )}
           {hire.section !== 'briefing' ? null : (
             <>
               <div className="hire-field">
-                <label htmlFor="hire-goal">Initial goal</label>
+                <label htmlFor="hire-goal">What should they do first?</label>
                 <textarea id="hire-goal" name="goal_text" rows={4} autoComplete="off"
                   value={hire.draft.goalText} disabled={frozen}
                   aria-invalid={invalid('goal_text')} aria-describedby={described('goal_text')}
@@ -278,14 +291,14 @@ function HireForm({ hire, floor, onClose }: {
                 <p className="hire-count">{bytesOf(hire.draft.goalText)} of {LIMITS.goal_text} bytes</p>
               </div>
               {workspace === null || catalog === null ? (
-                <p className="hire-note">Choose a workspace to see the check and ceilings this goal runs under.</p>
+                <p className="hire-note">Choose a project to see how this task is checked.</p>
               ) : (
                 <>
                   {checks === null ? <p className="hire-note">{NO_CHECK}</p> : (
                     <>
                       <fieldset className="hire-choices" data-check-choice="hire" aria-invalid={invalid('check_id')}
                         aria-describedby={described('check_id')}>
-                        <legend>Completion check</legend>
+                        <legend>The task is done when</legend>
                         {checks.map((option) => (
                           <label key={option.id} className="hire-choice">
                             <input type="radio" name="check_id" value={option.id} data-check-id={option.id}
@@ -295,9 +308,11 @@ function HireForm({ hire, floor, onClose }: {
                           </label>
                         ))}
                       </fieldset>
-                      <p className="hire-note">Hire runs this check once first. If it already passes, nothing is hired.</p>
+                      <p className="hire-note">Dudes runs this check once before hiring. If it already passes, there is nothing to do, so nobody is hired.</p>
                     </>
                   )}
+                  <SharedProjectNote names={sharedProject(floor, workspace.workspaceId)} />
+                  <details className="hire-more"><summary>Limits</summary>
                   <dl className="hire-facts" aria-label="Configured limits">
                     <div><dt>Hop cap</dt><dd>{workspace.hopCap} Managed turns</dd></div>
                     <div><dt>Goal ceiling</dt><dd>{cap(workspace.goalUsdMicros, 'usd')}</dd></div>
@@ -307,13 +322,14 @@ function HireForm({ hire, floor, onClose }: {
                     <div><dt>Floor ceiling</dt><dd>{cap(catalog.floorUsdPerDayMicros, 'usd', true)}</dd></div>
                   </dl>
                   {engine === null ? null : <p className="hire-note">
-                    {`This agent runs at most ${workspace.hopCap} turns for this goal. ${HIRE_ENGINES[engine]}'s own `
+                    {`This agent runs at most ${workspace.hopCap} turns for this task. ${HIRE_ENGINES[engine]}'s own `
                       + 'plan limits apply, and so does any ceiling shown above.'}
                   </p>}
+                  </details>
                 </>
               )}
               <p className="hire-note">
-                The daemon runs the completion check itself; an agent saying it is done does not count.
+                Dudes runs the check itself. An agent saying it is finished does not count.
               </p>
             </>
           )}
@@ -363,11 +379,11 @@ function HirePortrait({ draft }: { readonly draft: HireDraft }) {
 /** What the journal already holds, for an operator who lost track of a Hire. */
 function Reconciliation({ floor }: { readonly floor: FloorState }) {
   return (
-    <section className="hire-roster" aria-labelledby="hire-roster-title">
-      <h3 id="hire-roster-title">Already on the floor</h3>
+    <details className="hire-roster hire-more" aria-labelledby="hire-roster-title">
+      <summary id="hire-roster-title">Agents already on the floor</summary>
       <p>
-        This page keeps a Hire only in memory. If it reloaded during a Hire, look here for that agent before hiring
-        again: every Hire makes a new agent.
+        This page forgets a hire in progress if it reloads. Look here for that agent before hiring again: every
+        hire makes a new agent.
       </p>
       {floor.phase !== 'live' ? <p>Waiting for the floor.</p> : floor.agents.length === 0 ? (
         <p>No current agents.</p>
@@ -381,7 +397,7 @@ function Reconciliation({ floor }: { readonly floor: FloorState }) {
           ))}
         </ul>
       )}
-    </section>
+    </details>
   );
 }
 

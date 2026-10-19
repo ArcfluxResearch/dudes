@@ -1081,9 +1081,9 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(RECOVERY_PANEL),
     ...Array(3).fill(GOAL_PANEL),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
-    ...Array(6).fill(TICKET_BOARD),
+    ...Array(7).fill(TICKET_BOARD),
     ...Array(10).fill(TICKET_PANEL),
-    ...Array(10).fill(HIRE_FORM),
+    ...Array(11).fill(HIRE_FORM),
     HIRE_ENTRY,
     ...Array(6).fill(RETIRE_PANEL),
     ...Array(2).fill(GIT_PANEL),
@@ -1094,6 +1094,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(3).fill(SETUP_VIEW),
     ...Array(5).fill(SETTINGS_VIEW),
     ...Array(7).fill(FIRST_RUN_GUIDE),
+    ...Array(5).fill('src/renderer/setup/FirstTask.tsx'),
     ...Array(10).fill(TERMINAL_PANEL),
     ...Array(4).fill('src/shell.tsx'),
   ];
@@ -1101,7 +1102,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   expected.sort();
   const clickExpected = [...expected];
   clickExpected.splice(clickExpected.indexOf(LOOK_PANEL), 1);
-  // The two ticket forms each submit with a button that has no click handler of its own.
+  // The ticket forms each submit with a button that has no click handler of its own.
+  clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
@@ -1228,6 +1230,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   // Edit after a no-effect refusal, Hire another after a durable answer, and
   // Close. The shell opens it.
   assert.deepEqual(clicksIn(await readFile(resolve(floor, HIRE_FORM), 'utf8')).sort(), [
+    '() => copyToClipboard(INSTALL_COMMANDS[engine]!)',
     '() => { if (at !== 0 && !frozen && !stuck) moveSection(-1, floor); }',
     '() => { if (at !== SECTIONS.length - 1 && !frozen && !stuck) moveSection(1, floor); }',
     '() => { if (!stuck) showSection(entry.key); }',

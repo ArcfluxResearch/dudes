@@ -3206,3 +3206,68 @@ samp,
   margin: 1rem;
   color: var(--muted-ink);
 }
+
+/* The first next step: one card over the office, where an empty floor needs a person to act. */
+.floor-stage > .first-task {
+  position: absolute;
+  inset: auto 0 1.25rem 0;
+  z-index: var(--layer-panels);
+  box-sizing: border-box;
+  display: grid;
+  gap: .5rem;
+  width: min(30rem, calc(100% - 2rem));
+  max-height: calc(100% - 2rem);
+  margin: 0 auto;
+  padding: .9rem 1rem 1rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: .5rem;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 8px 28px var(--panel-shadow);
+}
+.first-task h2 { margin: 0; font-size: 1.15rem; }
+.first-task p { margin: 0; }
+.first-task form { display: grid; gap: .5rem; }
+.first-task-label { font-weight: 700; }
+.first-task textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: .45rem .55rem;
+  border: 1px solid var(--line);
+  background: var(--output);
+  color: var(--ink);
+  font: inherit;
+  resize: vertical;
+}
+.first-task-note { color: var(--muted-ink); font-size: .85rem; }
+.first-task-install { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.first-task button {
+  padding: .4rem .7rem;
+  border: 1px solid var(--accent-ink);
+  background: var(--button-background);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.first-task button.first-task-start { justify-self: start; font-weight: 700; }
+.first-task button:disabled { opacity: .55; cursor: default; }
+.first-task button:focus-visible,
+.first-task textarea:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+
+/* Hire: its footer stays in view, so Hire is never below the fold of a phone. */
+.hire-wizard .hire-actions {
+  position: sticky;
+  bottom: -.75rem;
+  margin: 0 -.75rem -.75rem;
+  padding: .6rem .75rem;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.hire-more { margin: .4rem 0; }
+.hire-more > summary { cursor: pointer; font-weight: 700; }
+.hire-shared { border-left: 3px solid var(--accent-ink); padding-left: .5rem; }
+.hire-install { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+@media (max-width: 800px) {
+  .hire-dialog { height: 100dvh; }
+}

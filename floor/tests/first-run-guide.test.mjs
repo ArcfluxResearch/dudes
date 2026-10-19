@@ -7,7 +7,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { applyServerFrame, beginFloorEpoch, getFloorState, noteTransport, resetFloorStore } from '../src/renderer/floor/store.ts';
-import { guideSteps, shouldOpenFirstRunGuide } from '../src/renderer/setup/guide.ts';
+import { guideSteps } from '../src/renderer/setup/guide.ts';
 import { readGuideClosed, rememberGuideClosed } from '../src/renderer/view.ts';
 
 const ID = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
@@ -51,16 +51,11 @@ beforeEach(() => resetFloorStore());
 const view = (step) => renderToStaticMarkup(createElement(FirstRunGuideView, { floor: getFloorState(), step,
   onStep() {}, onClose() {}, onHire() {} }));
 
-test('Welcome waits for a confirmed snapshot and opens only on an undismissed empty floor', () => {
+test('Welcome waits for a confirmed snapshot', () => {
   assert.equal(done('welcome'), false);
-  assert.equal(shouldOpenFirstRunGuide(getFloorState(), false), false);
   snapshot();
   assert.equal(done('welcome'), true);
-  assert.equal(shouldOpenFirstRunGuide(getFloorState(), false), true);
-  assert.equal(shouldOpenFirstRunGuide(getFloorState(), true), false);
   assert.match(view('welcome'), /Dudes supervises coding agents/);
-  snapshot({ agents: [{ id: ID }] });
-  assert.equal(shouldOpenFirstRunGuide(getFloorState(), false), false);
   noteTransport('close');
   assert.equal(done('welcome'), false);
 });

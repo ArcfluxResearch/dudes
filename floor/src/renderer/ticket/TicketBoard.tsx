@@ -16,6 +16,8 @@ import { decodeWorkspace } from '../workspace.ts';
 import { agentChoiceSentence, agentRow, boardColumns, cardWords, noProjects, otherCards, plainColumnOf, TICKET_COLUMNS } from './model.ts';
 import type { TicketColumn } from './model.ts';
 import { createTicket, dismissNotice, getTicketState, subscribeToTicket } from './ticket.ts';
+import { titleOf } from '../setup/nextStep.ts';
+import type { FirstTaskAgent } from '../setup/nextStep.ts';
 import { agentWithoutProjectSentence, otherStateName, stateName } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
@@ -83,6 +85,49 @@ export function TicketNotice({ card }: { readonly card?: string | null }) {
     <button type="button" className="ticket-dismiss" onClick={() => dismissNotice(notice)}>Dismiss</button>
   </p>;
 }
+
+/** The first task: a sentence, one Start, and the ticket is made and given in the same step. */
+export function FirstTaskForm({ floor, agents }: { readonly floor: FloorState; readonly agents: readonly FirstTaskAgent[] }) {
+  const ids = useId();
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
+  const [task, setTask] = useState('');
+  const [chosen, setChosen] = useState('');
+  const agent = agents.find((entry) => entry.id === chosen) ?? agents[0]!;
+  const ready = !sending && task.trim() !== '' && floor.ticket;
+
+  async function submit(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    if (!ready) return;
+    const note = task.trim() === titleOf(task) ? '' : task.trim();
+    const made = await createTicket({
+      title: titleOf(task), note, project: null,
+      check: { id: agent.check.id, revision: agent.check.revision }, agent: agent.id,
+    });
+    if (made.saved && mounted.current) setTask('');
+  }
+
+  return <form className="ticket-form" onSubmit={(event) => { void submit(event); }} aria-label={`Give ${agent.name} a task`}>
+    <h2>Give {agent.name} a task</h2>
+    {agents.length > 1 ? <p><label htmlFor={`${ids}-who`}>Who? </label>
+      <select id={`${ids}-who`} value={agent.id} onChange={(event) => setChosen(event.target.value)}>
+        {agents.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+      </select></p> : null}
+    <label htmlFor={`${ids}-task`} className="first-task-label">What should {agent.name} do?</label>
+    <textarea id={`${ids}-task`} rows={3} maxLength={8192} value={task} autoFocus
+      placeholder="For example: add a dark mode switch to the settings page"
+      onChange={(event) => setTask(event.target.value)} />
+    <p className="first-task-note">When {agent.name} says it is finished, Dudes runs <code>{agent.check.label}</code> to
+      see if it worked. You review the result before it counts.</p>
+    <TicketNotice />
+    <button type="submit" className="first-task-start" disabled={!ready}>{sending ? 'Starting…' : 'Start'}</button>
+  </form>;
+}
+
 
 export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
   readonly floor: FloorState;

@@ -74,8 +74,10 @@ export function OverviewSummary({ floor, selectedId, onOpenQuestion, onOpenTicke
       <WaitingSection floor={floor} onOpen={onOpenQuestion} onOpenTicket={onOpenTicket} />
       <dl>
         <div><dt>Current agents</dt><dd>{floor.agents.length}</dd></div>
-        <div><dt>Journal position</dt><dd className="data">{journalPosition(floor.lsn)}</dd></div>
       </dl>
+      <details className="overview-details"><summary>Details</summary>
+        <dl><div><dt>Journal position</dt><dd className="data">{journalPosition(floor.lsn)}</dd></div></dl>
+      </details>
       <p>{selectedId === null
         ? 'Select an agent in the office or in Crew to open its details.'
         : 'The selected agent’s current projection and read-only Live work are open in its details.'}</p>

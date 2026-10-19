@@ -408,7 +408,7 @@ test('a required field that fails moves to its own section and keeps what was ty
 
   // Next checks only the section it leaves.
   hire.showSection('identity');
-  hire.editDraft({ role: '' });
+  hire.editDraft({ role: 'x'.repeat(513) });
   hire.moveSection(1, getFloorState());
   assert.equal(hire.getHireState().section, 'identity');
   assert.equal(hire.getHireState().problem?.field, 'role');
@@ -424,7 +424,7 @@ test('the four sections show only enrolled choices and the configured limits', (
     sections[key] = render();
   }
   const index = [...sections.identity.matchAll(/class="hire-index-label">([^<]+)</g)].map((match) => match[1]);
-  assert.deepEqual(index, ['Identity', 'Workspace', 'Engine', 'Briefing']);
+  assert.deepEqual(index, ['Name', 'Project', 'App', 'First task']);
   assert.equal((sections.identity.match(/aria-current="step"/g) ?? []).length, 1);
 
   const names = (html) => [...html.matchAll(/<(?:input|textarea)[^>]*name="([^"]+)"/g)].map((match) => match[1]);
@@ -437,10 +437,9 @@ test('the four sections show only enrolled choices and the configured limits', (
   const values = radios.map((tag) => /value="([^"]+)"/.exec(tag)?.[1]);
   assert.deepEqual(values, ['repo_1', 'repo_2'], 'workspace choices are exactly the enrolled IDs');
   assert.match(sections.workspace, /Parser repository/);
-  assert.match(sections.engine, /<dt>Engine<\/dt><dd>Claude<\/dd>/);
   assert.match(sections.engine, /<input type="radio" name="engine" checked="" value="claude"\/>/,
     'a workspace offering one engine offers it chosen');
-  assert.match(sections.briefing, /data-check-choice="hire" aria-invalid="false"><legend>Completion check<\/legend>/);
+  assert.match(sections.briefing, /data-check-choice="hire" aria-invalid="false"><legend>The task is done when<\/legend>/);
   assert.deepEqual(checkOptions(sections.briefing), [['default', true, 'Site builds']]);
   for (const [dt, dd] of [['Hop cap', '3 Managed turns'],
     ['Goal ceiling', '\\$1\\.5'], ['Goal token ceiling', 'No cap'], ['Agent ceiling', '\\$3 per day'],
@@ -516,12 +515,12 @@ test('Briefing offers the workspace’s checks by label, the first chosen, and s
   hire.editDraft({ workspaceId: 'repo_1' });
   hire.showSection('briefing');
   let html = render();
-  assert.match(html, /<fieldset class="hire-choices" data-check-choice="hire" aria-invalid="false"><legend>Completion check<\/legend>/);
+  assert.match(html, /<fieldset class="hire-choices" data-check-choice="hire" aria-invalid="false"><legend>The task is done when<\/legend>/);
   assert.deepEqual(checkOptions(html), [
     ['default', true, 'Parser tests pass'],
     ['contributing', false, 'CONTRIBUTING.md exists (may already pass)'],
   ]);
-  assert.match(html, /<\/fieldset><p class="hire-note">Hire runs this check once first\. If it already passes, nothing is hired\.<\/p>/);
+  assert.match(html, /<\/fieldset><p class="hire-note">Dudes runs this check once before hiring\. If it already passes, there is nothing to do, so nobody is hired\.<\/p>/);
   assert.doesNotMatch(html, /<dt>Completion check<\/dt>/, 'the old configured-limits row is still drawn');
 
   hire.editDraft({ checkId: 'contributing' });
@@ -698,7 +697,7 @@ test('an unset ceiling reads No cap, and the hop cap and the engine bound the go
     ['Agent ceiling', 'No cap'], ['Agent token ceiling', 'No cap'], ['Floor ceiling', 'No cap']]) {
     assert.match(html, new RegExp(`<dt>${dt}</dt><dd>${dd}</dd>`), dt);
   }
-  assert.match(html, /<p class="hire-note">This agent runs at most 8 turns for this goal\. Pi&#x27;s own plan limits apply, and so does any ceiling shown above\.<\/p>/);
+  assert.match(html, /<p class="hire-note">This agent runs at most 8 turns for this task\. Pi&#x27;s own plan limits apply, and so does any ceiling shown above\.<\/p>/);
   assert.doesNotMatch(html, /ceilings are the admission limits/);
 });
 
@@ -958,7 +957,7 @@ test('typed 409 shows the durable agent, its reason and the projection’s goal,
   assert.match(html, new RegExp(`data-hire-agent-id="${AGENT}"`));
   assert.match(html, /data-hire-reason="goal_conflict">Another goal was set on this agent first/);
   assert.match(html, new RegExp(`<dt>Goal when answered</dt><dd>GoalId ${LOCAL_GOAL}</dd>`));
-  assert.match(html, new RegExp(`A goal set locally · in_progress · GoalId ${LOCAL_GOAL}`));
+  assert.match(html, new RegExp(`A goal set locally · in_progress`));
   assert.doesNotMatch(html, new RegExp(GOAL), 'the intended goal is shown as if it were set');
   assert.equal(hire.agentToReveal(hire.getHireState(), getFloorState()), AGENT);
 
@@ -1094,11 +1093,11 @@ test('after a reload the page shows journal-backed roster and goals and never se
   assert.equal(hire.getHireState().attempt, null);
   const html = render();
   assert.doesNotMatch(html, /data-hire-outcome/);
-  assert.match(html, /Already on the floor/);
+  assert.match(html, /Agents already on the floor/);
   assert.match(html, new RegExp(`data-roster-agent-id="${AGENT}"`));
-  assert.match(html, new RegExp(`A goal set locally · in_progress · GoalId ${LOCAL_GOAL}`));
+  assert.match(html, new RegExp(`A goal set locally · in_progress`));
   assert.match(html, new RegExp(`data-roster-agent-id="${OTHER}"[\\s\\S]*No goal`));
-  assert.match(html, /every Hire makes a new agent/);
+  assert.match(html, /every hire makes a new agent/);
 
   // The only way to mint an attempt is the Hire button.
   const wizard = await readFile(resolve(root, 'src/renderer/onboarding/HireWizard.tsx'), 'utf8');

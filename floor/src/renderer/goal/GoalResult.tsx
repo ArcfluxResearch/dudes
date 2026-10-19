@@ -14,10 +14,12 @@ export function GoalResult({ result }: { readonly result: GoalResultView | null 
             ? 'Latest check could not run. Its program did not start, so this result says nothing about the goal. The journal shows why (dudes tail).'
             : result.outcome === 'passed' ? 'Latest check passed' : 'Latest check failed'}</p>
           <dl>
-            {result.kind === 'not_run' ? null : <div><dt>Provenance</dt><dd>{result.kind === 'observed'
-              ? 'Observed' : 'Inferred. Does not establish completion'}</dd></div>}
-            <div><dt>Journal position</dt><dd className="data">{journalPosition(result.position)}</dd></div>
+            {result.kind === 'not_run' ? null : <div><dt>Who ran it</dt><dd>{result.kind === 'observed'
+              ? 'Dudes ran it' : 'The agent reported this. Dudes did not run it, so treat it as unproven'}</dd></div>}
           </dl>
+          <details><summary>Details</summary>
+            <dl><div><dt>Journal position</dt><dd className="data">{journalPosition(result.position)}</dd></div></dl>
+          </details>
         </>}
   </section>;
 }

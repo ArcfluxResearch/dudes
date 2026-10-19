@@ -158,10 +158,10 @@ test('BACKDROP_MODAL_LIFETIME mutant clears an incomplete gesture when opening o
   const backdropPress = { current: 5 };
   const code = ts.transpile(functions.join('\n'), { target: ts.ScriptTarget.ES2022 });
   const transitions = Function('backdropPress', 'hireOpener', 'hireDialog', 'document',
-    'restoreFocusAfterDialog', 'setHiring', 'setArchiveHireKept', 'prepareArchiveHire', 'setGuide', 'floor',
+    'restoreFocusAfterDialog', 'setHiring', 'setArchiveHireKept', 'prepareArchiveHire', 'prepareHire', 'setGuide', 'floor',
     `${code}; return { openHire, hireAgain, closeHire };`)(backdropPress, { current: null },
     { current: { close() {} } }, { getElementById() { return null; } }, () => {}, () => {}, () => {},
-    () => true, () => {}, {});
+    () => true, () => {}, () => {}, {});
   for (const transition of Object.values(transitions)) {
     backdropPress.current = 5;
     transition({}, {});
