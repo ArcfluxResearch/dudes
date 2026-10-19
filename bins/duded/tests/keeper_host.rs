@@ -236,6 +236,10 @@ fn a_keeper_that_cannot_start_fails_the_launch_and_no_task_is_written() {
 
 #[test]
 fn starting_a_keeper_costs_little_launch_time() {
+    let samples: usize = std::env::var("KEEPER_LAUNCH_SAMPLES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(10);
     let dir = tempfile::tempdir().expect("scratch");
     let measure = |keeper: bool| -> Vec<Duration> {
         let mut host = if keeper {
@@ -244,7 +248,7 @@ fn starting_a_keeper_costs_little_launch_time() {
             RealHost::with_grace(Duration::from_secs(5))
         };
         let mut times = Vec::new();
-        for _ in 0..10 {
+        for _ in 0..samples {
             let spec = script("exec sleep 120", dir.path(), LaunchInput::Null);
             let started = Instant::now();
             let SpawnResult::Spawned(_) = host.spawn(&spec, &ManagedInstall::default()) else {
@@ -258,24 +262,26 @@ fn starting_a_keeper_costs_little_launch_time() {
     };
     let without = measure(false);
     let with = measure(true);
+    let at = |times: &[Duration], per_cent: usize| times[(times.len() - 1) * per_cent / 100];
     #[allow(
         clippy::print_stderr,
         reason = "the measurement is the point of the test"
     )]
     {
-        eprintln!(
-            "launch without keeper: median {:?}, worst {:?}",
-            without[5], without[9]
-        );
-        eprintln!(
-            "launch with keeper:    median {:?}, worst {:?}",
-            with[5], with[9]
-        );
+        for (label, times) in [("without keeper", &without), ("with keeper   ", &with)] {
+            eprintln!(
+                "launch {label}: n={} median {:?}, p95 {:?}, worst {:?}",
+                times.len(),
+                at(times, 50),
+                at(times, 95),
+                at(times, 100)
+            );
+        }
     }
     assert!(
-        with[9] < Duration::from_secs(1),
+        at(&with, 100) < Duration::from_secs(1),
         "a launch with a keeper took {:?}, against a 3 s peer wait",
-        with[9]
+        at(&with, 100)
     );
 }
 
