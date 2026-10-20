@@ -24,7 +24,7 @@ use nix::unistd::Pid;
 
 mod common;
 
-use common::{Cli, run_program};
+use common::{Cli, Lifeline, run_program};
 
 const SPAWN_MARKER: &str = "quickstart started duded pid ";
 const FLOOR_QUESTION: &str = "Let the Floor act on your agents: hire, pause, answer, change goals, give tickets to agents, retire, recover, add projects and read their changes? A ticket given to an agent starts it, and agents then run and spend under your account. Anyone holding your one-time Floor link could start agents that act with your account's full reach. [Y/n]";
@@ -37,6 +37,7 @@ const FLOOR_FIXTURE: &str = concat!(
 /// An installed `duded` with a Floor, two stand-in engines, a home and a repository.
 struct Layout {
     root: tempfile::TempDir,
+    _lifeline: Lifeline,
 }
 
 impl Layout {
@@ -89,7 +90,11 @@ impl Layout {
         }
         std::fs::create_dir_all(root.path().join("repo/.git")).expect("a repository");
         std::fs::create_dir(root.path().join("home")).expect("a home");
-        Self { root }
+        let lifeline = Lifeline::start(root.path());
+        Self {
+            root,
+            _lifeline: lifeline,
+        }
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -155,6 +160,83 @@ impl Drop for Layout {
             let _ = kill(pid, Signal::SIGKILL);
         }
     }
+}
+
+const LIFELINE_REPORT: &str = "DUDES_TEST_LIFELINE_REPORT";
+
+/// Not a test of its own: the process the next test kills. It starts a daemon, reports its pid and
+/// its root, and waits to be killed.
+#[test]
+fn lifeline_victim() {
+    let Some(report) = std::env::var_os(LIFELINE_REPORT) else {
+        return;
+    };
+    let layout = Layout::new();
+    let run = layout
+        .cli()
+        .args(["quickstart", "--set", "floor.answer", "on"])
+        .run();
+    assert_eq!(run.code(), dudes::exit::SUCCESS, "{run:?}");
+    let pid = layout.daemons()[0];
+    let record = format!("{pid}\n{}\n", layout.root.path().display());
+    std::fs::write(Path::new(&report).with_extension("tmp"), record).expect("a report");
+    std::fs::rename(Path::new(&report).with_extension("tmp"), &report).expect("a report");
+    std::thread::sleep(Duration::from_secs(60));
+}
+
+/// A test the runner kills never runs its destructors, and its daemon has left the group the
+/// runner kills. The daemon still ends.
+#[test]
+fn a_daemon_ends_when_the_test_that_started_it_is_killed() {
+    if std::env::var_os(LIFELINE_REPORT).is_some() {
+        return;
+    }
+    let scratch = tempfile::tempdir().expect("a report directory");
+    let report = scratch.path().join("report");
+    let args = [
+        "--exact".into(),
+        "lifeline_victim".into(),
+        "--test-threads=1".into(),
+    ];
+    let mut victim = common::process(
+        std::env::current_exe()
+            .expect("this test binary")
+            .as_os_str(),
+        &args,
+        None,
+    )
+    .env(LIFELINE_REPORT, &report)
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .spawn()
+    .expect("start the victim");
+    // Just under the runner's 10 s limit: a loaded machine can take most of it to start the victim.
+    let deadline = Instant::now() + Duration::from_secs(9);
+    while !report.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let recorded = std::fs::read_to_string(&report).unwrap_or_default();
+    let mut lines = recorded.lines();
+    let pid: i32 = lines.next().and_then(|line| line.parse().ok()).unwrap_or(0);
+    let root = lines.next().map(PathBuf::from);
+    victim.kill().expect("kill the victim");
+    victim.wait().expect("reap the victim");
+    assert!(
+        pid > 1 && root.is_some(),
+        "the victim did not start its daemon in time, so this run proves nothing: {recorded:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let survived = alive(pid);
+    if survived {
+        let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+    }
+    if let Some(root) = root {
+        let _ = std::fs::remove_dir_all(root);
+    }
+    assert!(!survived, "the daemon outlived its killed test");
 }
 
 fn copy_tree(from: &Path, to: &Path) {
