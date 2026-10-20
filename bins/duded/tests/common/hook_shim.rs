@@ -65,8 +65,12 @@ pub(crate) fn hook_binary() -> &'static Path {
 /// when it compiles nothing. A process that looks in that moment finds no file. So the shim builds
 /// in a target directory of its own, and the workspace's `target/debug/dudes-hook` stays with the
 /// tests that run it. These tests run a copy named by its content, which no later build replaces,
-/// and the lock stops another test process from rebuilding while that copy is taken.
+/// and the lock stops another test process from rebuilding while that copy is taken. A shim a
+/// workspace build already left beside the test executables is copied instead, with no Cargo run.
 fn publish_hook() -> PathBuf {
+    if let Some(built) = prebuilt_hook() {
+        return copy_by_content(&built);
+    }
     let dir = option_env!("CARGO_TARGET_TMPDIR").map_or_else(
         || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp"),
         PathBuf::from,
@@ -74,14 +78,58 @@ fn publish_hook() -> PathBuf {
     let lock = std::fs::File::create(dir.join("dudes-hook.lock")).expect("open the shim lock");
     lock.lock().expect("take the shim lock");
     let built = build_hook(&dir.join("hook-target"));
-    let digest = dudes_supervisor::blake3_hex(&std::fs::read(&built).expect("read the built shim"));
+    copy_by_content_in(&dir, &built)
+}
+
+/// The shim a workspace build already produced beside this test's own executable, when it is at
+/// least as new as every source file that can change it. Building it again from inside a test costs
+/// a Cargo run per test process, and a cold first run holds every other test behind the lock for
+/// as long as the compile takes.
+fn prebuilt_hook() -> Option<PathBuf> {
+    let beside = std::env::current_exe()
+        .ok()?
+        .parent()?
+        .parent()?
+        .join(format!("dudes-hook{}", std::env::consts::EXE_SUFFIX));
+    let built = std::fs::metadata(&beside).ok()?.modified().ok()?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent()?.parent()?;
+    let mut newest = std::time::SystemTime::UNIX_EPOCH;
+    let mut pending = vec![root.join("bins/dudes-hook/src"), root.join("crates")];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|name| name != "tests") {
+                    pending.push(path);
+                }
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext == "rs" || ext == "toml")
+            {
+                newest = newest.max(entry.metadata().ok()?.modified().ok()?);
+            }
+        }
+    }
+    (built >= newest).then_some(beside)
+}
+
+fn copy_by_content(built: &Path) -> PathBuf {
+    let dir = option_env!("CARGO_TARGET_TMPDIR").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp"),
+        PathBuf::from,
+    );
+    copy_by_content_in(&dir, built)
+}
+
+fn copy_by_content_in(dir: &Path, built: &Path) -> PathBuf {
+    let digest = dudes_supervisor::blake3_hex(&std::fs::read(built).expect("read the built shim"));
     let published = dir.join(format!(
         "dudes-hook-{digest}{}",
         std::env::consts::EXE_SUFFIX
     ));
     if !published.exists() {
-        let staged = published.with_extension("partial");
-        std::fs::copy(&built, &staged).expect("stage the shim");
+        let staged = published.with_extension(format!("partial{}", std::process::id()));
+        std::fs::copy(built, &staged).expect("stage the shim");
         std::fs::rename(&staged, &published).expect("publish the shim");
     }
     published
