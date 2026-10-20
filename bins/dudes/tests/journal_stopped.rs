@@ -187,25 +187,6 @@ fn await_goal_spawn(fixture: &Fixture, agent: AgentId, goal: GoalId) {
 }
 
 #[test]
-fn doctor_names_stopped_journal_and_recovery() {
-    let stopped = Stopped::new();
-    let result = stopped.cli.clone().arg("doctor").run();
-    assert_eq!(result.code(), exit::SUCCESS, "{}", result.output());
-    assert!(
-        result.stdout.lines().any(|line| line == stopped.expected()),
-        "{}",
-        result.output()
-    );
-    let json = stopped
-        .cli
-        .clone()
-        .args(["doctor", "--json"])
-        .run()
-        .json::<Value>();
-    assert_eq!(json["journal_stopped"]["lsn"], stopped.lsn);
-}
-
-#[test]
 fn status_names_stopped_journal_and_recovery() {
     let stopped = Stopped::new();
     let result = stopped.cli.clone().arg("status").run();
@@ -215,6 +196,13 @@ fn status_names_stopped_journal_and_recovery() {
         "{}",
         result.output()
     );
+    let json = stopped
+        .cli
+        .clone()
+        .args(["status", "--json"])
+        .run()
+        .json::<Value>();
+    assert_eq!(json["journal_stopped"]["lsn"], stopped.lsn);
 }
 
 #[test]
@@ -247,9 +235,9 @@ fn restart_repairs_torn_tail_and_resumes_writes() {
         stopped.host.clone(),
         Arc::new(OpenRunner::default()),
     );
-    let doctor = stopped.cli.clone().args(["doctor", "--json"]).run();
-    assert_eq!(doctor.code(), exit::SUCCESS, "{}", doctor.output());
-    assert!(doctor.json::<Value>().get("journal_stopped").is_none());
+    let status = stopped.cli.clone().args(["status", "--json"]).run();
+    assert_eq!(status.code(), exit::SUCCESS, "{}", status.output());
+    assert!(status.json::<Value>().get("journal_stopped").is_none());
     let result = stopped
         .cli
         .clone()
@@ -394,7 +382,7 @@ fn poisoned_hook_cannot_consume_pending_steer() {
 #[test]
 fn checkpoint_poison_preserves_durable_frame_and_prevents_spawn() {
     let stopped = Stopped::with_fault(false, None, true);
-    let result = stopped.cli.clone().args(["doctor", "--json"]).run();
+    let result = stopped.cli.clone().args(["status", "--json"]).run();
     assert_eq!(result.code(), exit::SUCCESS, "{}", result.output());
     assert_eq!(
         result.json::<Value>()["journal_stopped"]["lsn"],
@@ -447,7 +435,7 @@ fn doctor_and_status_preserve_both_diagnostics_and_escape_labels() {
         std::fs::write(done.join(label), "unmatched content").unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            let result = cli.clone().args(["doctor", "--json"]).run();
+            let result = cli.clone().args(["status", "--json"]).run();
             let value = result.json::<Value>();
             assert!(
                 value["journal_stopped"].is_null(),
@@ -472,7 +460,8 @@ fn doctor_and_status_preserve_both_diagnostics_and_escape_labels() {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
     });
-    for command in ["doctor", "status"] {
+    {
+        let command = "status";
         let human = stopped.cli.clone().arg(command).run();
         assert_eq!(human.code(), exit::SUCCESS);
         assert!(human.stdout.contains(&stopped.expected()));
