@@ -6,6 +6,7 @@
 //! page exchanges the link as it loads.
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::time::Duration;
 
 use crate::env::Environment;
@@ -13,10 +14,12 @@ use crate::env::Environment;
 /// How long to wait for the opener to fail before counting the link as handed over. An opener
 /// still running then is left alone: it may be waiting on a browser it just started, and the
 /// browser must outlive this command.
+#[cfg(unix)]
 const HANDOFF: Duration = Duration::from_secs(2);
 
 /// What the opener needs to find a browser and a display, and nothing else: the rest of this
 /// process's environment, including any agent token, stays behind.
+#[cfg(unix)]
 const OPENER_ENV: &[&str] = &[
     "HOME",
     "PATH",
@@ -35,6 +38,7 @@ const OPENER_ENV: &[&str] = &[
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Launch {
     /// The opener took the link.
+    #[cfg_attr(not(unix), expect(dead_code, reason = "only the Unix opener runs"))]
     Opened,
     /// Nothing was tried, for the reason given; the link has to be shown instead.
     Skipped(&'static str),
