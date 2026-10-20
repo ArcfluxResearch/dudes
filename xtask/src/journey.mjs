@@ -166,7 +166,7 @@ export class Journey {
     await this.click('.hire-submit');
     await this.until(`document.querySelector('[data-hire-outcome]')?.dataset.hireOutcome === 'complete'`, 'the hire did not complete');
     await this.screen('hire: done');
-    await this.clickButton('Close');
+    await this.until(`!document.querySelector('.hire-dialog')`, 'the hire dialog did not close');
     await this.until(`/Checks passed today\\s+1\\b/.test(document.body.innerText)`, 'the first task did not finish', 60_000);
     await this.screen('one agent');
   }
