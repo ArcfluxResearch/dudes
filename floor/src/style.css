@@ -1524,6 +1524,20 @@ samp,
   font-size: .85rem;
   line-height: 1.5;
 }
+.remove-project {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  align-items: center;
+  max-width: 34rem;
+  margin: .4rem 0;
+}
+.remove-project > p {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: .85rem;
+  line-height: 1.5;
+}
 
 .agent-reorder-handle {
   width: 1.1rem;

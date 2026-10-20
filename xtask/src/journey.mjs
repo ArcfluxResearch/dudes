@@ -11,7 +11,7 @@ const pause = (ms) => new Promise((done) => setTimeout(done, ms));
  * when the screen stops showing the command: an entry that matches nothing fails the run.
  */
 export const ALLOWED_EXITS = [
-  { name: 'Settings shows the remove and reload commands for a project', screen: 'settings', text: /^dudes project (?:remove|reload)/ },
+  { name: 'Settings shows the reload command for a project', screen: 'settings', text: /^dudes project reload/ },
   { name: 'Settings sends a restart to the terminal', screen: 'settings', text: /^dudes quickstart --restart/ },
   { name: 'Settings sends the update check to the terminal', screen: 'settings', text: /^dudes upgrade/ },
 ];

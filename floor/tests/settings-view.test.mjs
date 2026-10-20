@@ -35,11 +35,11 @@ test('Settings shows read-only running values, local commands, Setup and About',
     const { SettingsView, UnavailableControls } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
     const html = renderToStaticMarkup(createElement(SettingsView, { floor: floor(), onSetup() {} }));
     for (const expected of ['Floor switches', '$0', '$0.001234', '9007199254740993',
-      'default to $0.25 and 20000 tokens', 'dudes project remove repo_1', '&lt;Service&gt;', '$10', '$5', '456',
+      'default to $0.25 and 20000 tokens', '&lt;Service&gt;', '$10', '$5', '456',
       'Setup', 'About', 'Daemon', '0.12.3', 'Floor build', 'Browser wire', 'browser-wire-v3', 'restart']) {
       assert.ok(html.includes(expected), `missing ${expected}: ${html}`);
     }
-    assert.doesNotMatch(html, /dudes config|dudes project (?:add|list)|--completion-check-label/);
+    assert.doesNotMatch(html, /dudes config|dudes project (?:add|list|remove)|--completion-check-label/);
     const anchors = [...html.matchAll(/<a ([^>]*)>/g)].map((match) => match[1]).filter((attrs) => attrs.includes('github.com'));
     const link = (href) => `href="${href}" target="_blank" rel="noopener noreferrer"`;
     assert.deepEqual(anchors, [
@@ -99,25 +99,22 @@ test('Hire says it is off when its switch is off, and names every other reason w
   } finally { await server.close(); }
 });
 
-test('Settings gives usable guidance for reserved workspace ids and optional ceilings', async () => {
+test('Settings offers a Remove control for every project, whatever its id, and no terminal command to remove one', async () => {
   const root = resolve(import.meta.dirname, '..');
   const server = await createServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
   try {
     const { SettingsView } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
     for (const id of ['-h', '--help', '--json', '--', '-ordinary']) {
-      const report = { ...REPORT, budget: { ...REPORT.budget, floor_usd_per_day_micros: null },
-        workspaces: [{ ...REPORT.workspaces[0], workspace_id: id }] };
-      const html = renderToStaticMarkup(createElement(SettingsView, { floor: floor(report), onSetup() {} }));
-      if (id === '-ordinary') {
-        assert.match(html, /dudes project remove -ordinary/);
-      } else {
-        assert.ok(!html.includes(`dudes project remove ${id}`), `unusable remove command for ${id}`);
-        assert.match(html, /edit its entry in your local config/);
-        assert.match(html, /dudes project reload/);
-        assert.match(html, /dudes project reload --apply &lt;sha256&gt;/);
+      for (const project of [false, true]) {
+        const report = { ...REPORT, switches: { ...REPORT.switches, project },
+          budget: { ...REPORT.budget, floor_usd_per_day_micros: null },
+          workspaces: [{ ...REPORT.workspaces[0], workspace_id: id }] };
+        const html = renderToStaticMarkup(createElement(SettingsView, { floor: floor(report), onSetup() {} }));
+        assert.equal(html.includes('>Remove project</button>'), project, `${id} with the switch ${project}`);
+        assert.doesNotMatch(html, /dudes project remove/);
+        assert.doesNotMatch(html, /Before enabling Control, Goal or Retire/);
+        assert.match(html, /No ceiling/);
       }
-      assert.doesNotMatch(html, /Before enabling Control, Goal or Retire/);
-      assert.match(html, /No ceiling/);
     }
   } finally { await server.close(); }
 });

@@ -3,7 +3,7 @@
 // Adding a project from a folder path. The page asks the daemon to look at the folder, shows what
 // the daemon found, and adds exactly that on one click. The daemon decides what the folder is: the
 // page sends back the folder and check it was shown, and the daemon refuses with `changed` if
-// either has moved since.
+// either has moved since. Removing a project asks once on the page, then sends the project's id.
 
 import { currentFloorSession } from '../../session.ts';
 import { floorFetch } from '../../transport.ts';
@@ -11,7 +11,7 @@ import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { editDraft, mintAttemptId } from '../onboarding/hire.ts';
 
 export const REFUSALS = ['not_found', 'not_a_folder', 'not_allowed', 'not_git', 'changed', 'busy', 'config_changed', 'full',
-  'action_off'] as const;
+  'unknown', 'working', 'action_off'] as const;
 export type Refusal = (typeof REFUSALS)[number];
 export type NotHireable = 'ceiling_required' | 'check_not_runnable';
 
@@ -148,8 +148,9 @@ export function decodeAdded(status: number, text: string): Decoded<ProjectAdded>
 
 const PREVIEW_PATH = '/floor/project/preview';
 const ADD_PATH = '/floor/project/add';
+const REMOVE_PATH = '/floor/project/remove';
 
-async function post(path: typeof PREVIEW_PATH | typeof ADD_PATH, body: unknown, deps: AddDeps): Promise<{ status: number; text: string } | null> {
+async function post(path: typeof PREVIEW_PATH | typeof ADD_PATH | typeof REMOVE_PATH, body: unknown, deps: AddDeps): Promise<{ status: number; text: string } | null> {
   const csrf = deps.csrf();
   if (csrf === null) return null;
   try {
@@ -216,7 +217,9 @@ export function refusalLine(reason: Refusal): string {
     case 'config_changed': return 'Other changes to the settings file are waiting to be loaded, so nothing was changed. '
       + 'Restart Dudes to load them, then add the project again.';
     case 'full': return 'Dudes already runs 32 projects, the most it can. Remove one first.';
-    case 'action_off': return 'Adding projects from this page is turned off. Turn on Add projects in Settings.';
+    case 'unknown': return 'Dudes no longer runs that project.';
+    case 'working': return 'An agent still works in this project. Retire it first, then remove the project.';
+    case 'action_off': return 'Adding and removing projects from this page is turned off. Turn on Add and remove projects in Settings.';
   }
 }
 
@@ -247,4 +250,76 @@ export function addedLine(added: ProjectAdded): string {
   }
   if (added.reason === 'check_not_runnable') return `${added.label} is added, but its check cannot run on this computer yet.`;
   return `${added.label} is added. You can hire an agent in it now.`;
+}
+
+export interface ProjectRemoved {
+  readonly projectId: string;
+  readonly label: string;
+}
+
+export type RemoveState =
+  | { readonly kind: 'idle' }
+  | { readonly kind: 'asking'; readonly projectId: string; readonly label: string; readonly attempt: string }
+  | { readonly kind: 'removing'; readonly projectId: string; readonly label: string; readonly attempt: string }
+  | { readonly kind: 'removed'; readonly label: string }
+  | { readonly kind: 'refused'; readonly projectId: string; readonly label: string; readonly reason: Refusal }
+  | { readonly kind: 'unsure'; readonly projectId: string; readonly label: string; readonly attempt: string };
+
+let removal: RemoveState = Object.freeze({ kind: 'idle' });
+const removeListeners = new Set<() => void>();
+
+export function getRemoveState(): RemoveState { return removal; }
+
+export function subscribeToRemove(listener: () => void): () => void {
+  removeListeners.add(listener);
+  return () => { removeListeners.delete(listener); };
+}
+
+function commitRemove(next: RemoveState): void {
+  removal = Object.freeze(next);
+  for (const listener of [...removeListeners]) listener();
+}
+
+export function resetRemove(): void { commitRemove({ kind: 'idle' }); }
+
+export function decodeRemoved(status: number, text: string): Decoded<ProjectRemoved> {
+  const fields = object(text);
+  if (fields === null) return { kind: 'failed' };
+  if (status === 202 && fields.state === 'pending') return { kind: 'pending' };
+  const refused = refusal(status, fields);
+  if (refused !== null) return refused;
+  if (status !== 200 || typeof fields.project_id !== 'string' || typeof fields.label !== 'string') return { kind: 'failed' };
+  return { kind: 'ok', value: Object.freeze({ projectId: fields.project_id, label: fields.label }) };
+}
+
+/** Ask once: nothing is sent until the person confirms with {@link removeAsked}. */
+export function askToRemove(projectId: string, label: string, deps: AddDeps = browserAddDeps): void {
+  if (removal.kind === 'removing') return;
+  commitRemove({ kind: 'asking', projectId, label, attempt: mintAttemptId(deps.random) });
+}
+
+/** Remove the project the person confirmed. */
+export async function removeAsked(deps: AddDeps = browserAddDeps): Promise<void> {
+  const current = removal;
+  if (current.kind !== 'asking' && current.kind !== 'unsure') return;
+  const { projectId, label, attempt } = current;
+  commitRemove({ kind: 'removing', projectId, label, attempt });
+  const body = { project_id: projectId, attempt_id: attempt };
+  for (let tries = 0; tries <= MOST_PENDING_RETRIES; tries += 1) {
+    const answer = await post(REMOVE_PATH, body, deps);
+    const decoded = answer === null ? null : decodeRemoved(answer.status, answer.text);
+    if (decoded === null || decoded.kind === 'failed') return commitRemove({ kind: 'unsure', projectId, label, attempt });
+    if (decoded.kind === 'refused') {
+      commitRemove({ kind: 'refused', projectId, label, reason: decoded.reason });
+      if (decoded.reason === 'unknown') deps.refresh();
+      return;
+    }
+    if (decoded.kind === 'ok') {
+      commitRemove({ kind: 'removed', label: decoded.value.label });
+      deps.refresh();
+      return;
+    }
+    await deps.wait(500);
+  }
+  commitRemove({ kind: 'unsure', projectId, label, attempt });
 }

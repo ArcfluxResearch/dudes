@@ -149,3 +149,55 @@ test('the box shows where a newcomer meets no project, and falls back to the old
     await server.close();
   }
 });
+
+test('removing a project asks once on the page, sends nothing until confirmed, and says why a refusal happened', async () => {
+  const root = resolve(import.meta.dirname, '..');
+  const server = await createServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
+  try {
+    const { RemoveProject, RemoveNotice } = await server.ssrLoadModule('/src/renderer/project/AddProject.tsx');
+    const remove = await server.ssrLoadModule('/src/renderer/project/add.ts');
+    const sent = [];
+    let refreshed = 0;
+    const script = [reply(409, { state: 'refused', reason: 'working' }), reply(202, { state: 'pending' }),
+      reply(200, { project_id: 'app', label: 'App' })];
+    const deps = {
+      fetch: (url, init) => { sent.push([url, JSON.parse(init.body)]); return Promise.resolve(script.shift()); },
+      csrf: () => 'csrf', random: (bytes) => { bytes.fill(7); }, refresh: () => { refreshed += 1; }, wait: () => Promise.resolve(),
+    };
+    const html = () => renderToStaticMarkup(createElement(RemoveProject, { floor: floor(true), projectId: 'app', label: 'App' }));
+
+    remove.resetRemove();
+    assert.equal(renderToStaticMarkup(createElement(RemoveProject, { floor: floor(false), projectId: 'app', label: 'App' })), '');
+    assert.match(html(), />Remove project<\/button>/);
+    remove.askToRemove('app', 'App', deps);
+    assert.deepEqual(sent, [], 'asking sends nothing');
+    assert.match(html(), /Remove App from Dudes\?[^]*history stays in the journal[^]*folder on disk is not\s+touched/);
+    assert.match(html(), /Remove App<\/button>[^]*Keep project<\/button>/);
+    remove.resetRemove();
+    assert.deepEqual(sent, [], 'keeping the project sends nothing');
+
+    remove.askToRemove('app', 'App', deps);
+    await remove.removeAsked(deps);
+    assert.deepEqual(sent, [['/floor/project/remove', { project_id: 'app', attempt_id: sent[0][1].attempt_id }]]);
+    assert.match(sent[0][1].attempt_id, ATTEMPT);
+    assert.equal(remove.getRemoveState().kind, 'refused');
+    assert.match(html(), /An agent still works in this project\. Retire it first/);
+
+    remove.askToRemove('app', 'App', deps);
+    await remove.removeAsked(deps);
+    assert.equal(sent.length, 3, 'a pending answer is asked again');
+    assert.deepEqual(sent[1], sent[2], 'with the same body');
+    assert.equal(remove.getRemoveState().kind, 'removed');
+    assert.equal(refreshed, 1);
+    assert.match(renderToStaticMarkup(createElement(RemoveNotice)), /App is removed\. Its folder was not touched\./);
+
+    remove.resetRemove();
+    remove.askToRemove('app', 'App', deps);
+    await remove.removeAsked({ ...deps, fetch: () => Promise.reject(new Error('down')) });
+    assert.equal(remove.getRemoveState().kind, 'unsure');
+    assert.match(html(), /did not confirm the removal/);
+    remove.resetRemove();
+  } finally {
+    await server.close();
+  }
+});

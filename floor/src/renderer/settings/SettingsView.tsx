@@ -16,17 +16,16 @@ import { ReadNotice, snapshotReadState } from '../ReadError.tsx';
 import { getOfficePin, setOfficePin, subscribeToOfficePin } from '../view.ts';
 import { desktopNotificationPreference } from '../desktopNotifications.ts';
 import { releaseNotesLabel, releaseNotesUrl } from '../releaseLinks.ts';
-import { AddProject } from '../project/AddProject.tsx';
+import { AddProject, RemoveNotice, RemoveProject } from '../project/AddProject.tsx';
 
 const SWITCHES = [
   ['answer', 'Answer questions'], ['control', 'Pause, resume and rename'], ['recovery', 'Recover interrupted goals'], ['goal', 'Change goals'],
   ['retire', 'Retire agents'], ['terminal', 'Attach terminals'], ['git', 'Read checkouts in the Git tab'],
   ['hire', 'Hire agents'], ['renew', 'Start new goals'],
-  ['board', 'Make tickets'], ['diff', 'Read ticket changes'], ['project', 'Add projects'],
+  ['board', 'Make tickets'], ['diff', 'Read ticket changes'], ['project', 'Add and remove projects'],
 ] as const;
 const OFFICE_CHOICES = [{ id: null, label: 'Automatic' },
   ...OFFICES.map((office) => ({ id: office.id, label: `${office.definition.label}, ${office.capacity} desks` }))] as const;
-const REMOVE_RESERVED_IDS = new Set(['-h', '--help', '--json', '--']);
 const ENGINES = [['codex', 'Codex'], ['pi', 'Pi']] as const;
 
 function ceiling(value: string | null, dollars = true): string {
@@ -236,14 +235,10 @@ export function WorkspaceSettings({ report, floor, headingId = 'settings-workspa
             <div><dt>Initial goal dollar ceiling</dt><dd>{ceiling(workspace.goal_usd_micros)}</dd></div>
             <div><dt>Initial goal token ceiling</dt><dd>{ceiling(workspace.goal_tokens, false)}</dd></div>
           </dl>
-          {REMOVE_RESERVED_IDS.has(workspace.workspace_id) ? <>
-            <p>For this identifier, edit its entry in your local config, then check and apply the enrollment change.</p>
-            <code>dudes project reload</code><code>dudes project reload --apply &lt;sha256&gt;</code>
-          </> : <>
-            <p>To replace this label or these ceilings, remove its enrollment, then add it with the new values.</p>
-            <code>dudes project remove {workspace.workspace_id}</code>
-          </>}
+          {floor === undefined ? null
+            : <RemoveProject floor={floor} projectId={workspace.workspace_id} label={workspace.label} />}
         </li>)}</ul>}
+      <RemoveNotice />
       {floor === undefined ? null : <AddProject floor={floor} off={<p>Adding a project from this page is off. Turn on the project switch under Floor switches.</p>} />}
       <p>For a config-file edit, use <code>dudes project reload</code>, then <code>dudes project reload --apply &lt;sha256&gt;</code>.</p>
     </section>;
