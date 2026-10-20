@@ -657,7 +657,7 @@ fn codex_streaming_changes_restart_once_without_disabling_codex() {
                 .satisfies(Key::Codex)
         );
         if setting == "on" {
-            let doctor = layout.cli().args(["--json", "doctor"]).run();
+            let doctor = layout.cli().args(["--json", "status"]).run();
             assert_eq!(doctor.code(), dudes::exit::SUCCESS, "{doctor:?}");
             let doctor: dudes_proto::rpc::system::DoctorResult = doctor.json();
             let row = doctor

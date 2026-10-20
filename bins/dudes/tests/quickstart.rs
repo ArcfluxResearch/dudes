@@ -1164,7 +1164,7 @@ fn ping_and_floor_open_name_a_daemon_of_another_version_on_stderr() {
         )
     );
 
-    let open = cli.clone().args(["floor", "open", "--no-browser"]).run();
+    let open = cli.clone().args(["floor", "open"]).run();
     assert!(open.stderr.starts_with(&line), "{open:?}");
     assert_eq!(
         open.stderr.matches("The running daemon is").count(),
@@ -1174,7 +1174,7 @@ fn ping_and_floor_open_name_a_daemon_of_another_version_on_stderr() {
 
     let machine = cli.clone().args(["--json", "ping"]).run();
     assert_eq!(machine.stderr, "", "{machine:?}");
-    let machine = cli.args(["--json", "floor", "open", "--no-browser"]).run();
+    let machine = cli.args(["--json", "floor", "open"]).run();
     assert!(
         !machine.stderr.contains("The running daemon"),
         "{machine:?}"
