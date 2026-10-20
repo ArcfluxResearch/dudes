@@ -758,7 +758,7 @@ fn selected_output_read_is_epoch_scoped_and_bounded() {
 
     drop(first);
     drop(second);
-    let fresh_csrf = csrf.to_owned();
+    let fresh_csrf = csrf.clone();
     let deadline = Instant::now() + Duration::from_secs(3);
     let reconnect = || loop {
         let (stream, head) = upgrade(addr, Some(&cookie), Some(&fresh_csrf), None);

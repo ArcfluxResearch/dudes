@@ -6698,7 +6698,6 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         tracing::error!(%error, "a predicate verdict could not be journaled during shutdown");
                     }
                 }
-                Job::FloorPeerRefused { .. } => {}
                 Job::MemoryCondenseModelEnded {
                     agent,
                     plan,
@@ -6774,7 +6773,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         let _ = reply.send(Err(refused("the daemon is shutting down")));
                     }
                 }
-                Job::EnrollmentResync { .. } | Job::PiProbed { .. } | Job::Stop(_) => {}
+                Job::EnrollmentResync { .. }
+                | Job::PiProbed { .. }
+                | Job::Stop(_)
+                | Job::FloorPeerRefused { .. } => {}
             }
         }
         clean

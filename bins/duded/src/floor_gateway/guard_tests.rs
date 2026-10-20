@@ -1,6 +1,7 @@
 //! Every dynamic Floor route goes through the guard, and the guard refuses what it must.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::io::Cursor;
 use std::sync::mpsc::{self, Receiver};
 
@@ -8,7 +9,7 @@ use dudes_proto::FloorPeerRefusal;
 use dudes_supervisor::testing::FakeClock;
 use dudes_types::AgentId;
 
-use super::guard::DYNAMIC_PATHS;
+use super::guard::{Admission, DYNAMIC_PATHS};
 use super::*;
 use crate::floor_peer::{AgentRoot, ProcessRef, SocketOwner, SocketOwnerLookup};
 use crate::ports::Job;
@@ -201,12 +202,12 @@ fn post(
         "POST {path} HTTP/1.1\r\nHost: {HOST}\r\nOrigin: http://{HOST}\r\nContent-Type: {content_type}\r\n"
     );
     if let Some(cookie) = cookie {
-        head.push_str(&format!("Cookie: {SESSION_COOKIE_NAME}={cookie}\r\n"));
+        let _ = write!(head, "Cookie: {SESSION_COOKIE_NAME}={cookie}\r\n");
     }
     if let Some(secret) = secret {
-        head.push_str(&format!("X-Dudes-CSRF: {secret}\r\n"));
+        let _ = write!(head, "X-Dudes-CSRF: {secret}\r\n");
     }
-    head.push_str(&format!("Content-Length: {length}\r\n\r\n"));
+    let _ = write!(head, "Content-Length: {length}\r\n\r\n");
     let mut bytes = head.into_bytes();
     bytes.extend_from_slice(body);
     bytes
@@ -335,6 +336,31 @@ fn every_listed_path_is_a_route_when_its_switch_is_on_and_only_git_and_diff_are_
     assert!(Route::of("GET", TERMINAL_PATH, switched_off).is_none());
 }
 
+fn max_body_of(path: &str) -> usize {
+    let (assets, memory, board) = everything_on();
+    let catalog = Catalog {
+        assets: &assets,
+        manifest: &[],
+        answer: true,
+        control: FloorControl::On {
+            goal: true,
+            retire: true,
+            renew: true,
+        },
+        recovery: true,
+        terminal: true,
+        git: None,
+        diff: None,
+        board: Some(&board),
+        memory: &memory,
+        peer: &outside(),
+    };
+    Route::of("POST", path, catalog)
+        .and_then(Route::action)
+        .map(ActionRoute::max_body)
+        .expect("a listed POST route")
+}
+
 #[test]
 fn no_post_route_acts_without_a_clean_session_secret_body_and_peer() {
     let signed = signed_in();
@@ -349,30 +375,7 @@ fn no_post_route_acts_without_a_clean_session_secret_body_and_peer() {
         .collect();
     assert!(routes.len() >= 22);
     for path in routes {
-        let max = {
-            let (assets, memory, board) = everything_on();
-            let catalog = Catalog {
-                assets: &assets,
-                manifest: &[],
-                answer: true,
-                control: FloorControl::On {
-                    goal: true,
-                    retire: true,
-                    renew: true,
-                },
-                recovery: true,
-                terminal: true,
-                git: None,
-                diff: None,
-                board: Some(&board),
-                memory: &memory,
-                peer: &outside(),
-            };
-            Route::of("POST", path, catalog)
-                .and_then(Route::action)
-                .map(ActionRoute::max_body)
-                .expect("a listed POST route")
-        };
+        let max = max_body_of(path);
         let too_big = post(
             path,
             Some(cookie),
@@ -653,12 +656,16 @@ fn the_guard_admits_a_clean_request_from_outside_every_agent() {
         accept: String::new(),
     };
     let endpoints = Some(("127.0.0.1:50000".parse().unwrap(), HOST.parse().unwrap()));
+    let body = || Ok(b"{}".to_vec());
     assert!(matches!(
-        guard.admit(route, &head, b"{}", endpoints),
-        Ok(Admitted::Session(_))
+        guard.admit(route, &head, body, endpoints),
+        Ok(Admission {
+            admitted: Admitted::Session(_),
+            ..
+        })
     ));
     assert!(
-        guard.admit(route, &head, b"{}", None).is_err(),
+        guard.admit(route, &head, body, None).is_err(),
         "a transport that cannot name its endpoints is not admitted"
     );
 }

@@ -83,6 +83,13 @@ pub fn process_group(pid: u32) -> Option<u32> {
 
 /// The user this process runs as, where the platform can say.
 #[must_use]
+#[cfg_attr(
+    unix,
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "one signature for platforms that cannot say"
+    )
+)]
 pub fn current_uid() -> Option<u32> {
     #[cfg(unix)]
     {

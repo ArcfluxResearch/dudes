@@ -57,7 +57,7 @@ mod guard;
 #[cfg(test)]
 mod guard_tests;
 mod recovery;
-use guard::{Admitted, Credentials, Endpoints, Guard, Head, Route, SignIn};
+use guard::{Admission, Admitted, Credentials, Denied, Endpoints, Guard, Head, Route, SignIn};
 use recovery::RecoveryRoute;
 
 /// The configured public root for the first static shell.
@@ -1260,10 +1260,6 @@ impl RequestReader for TcpStream {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one bounded request-head loop dispatches every finite Floor route"
-)]
 fn read_request<'a>(
     stream: &mut impl RequestReader,
     guard: Guard<'a>,
@@ -1290,29 +1286,30 @@ fn read_request<'a>(
                     head: parsed,
                 } => {
                     let buffered = &head[end..];
-                    let body = if route.has_body() {
-                        if buffered.len() > parsed.content_length {
-                            return Ok(Some(ConnectionAction::Response(error_response(
-                                400,
-                                "Bad Request",
-                            ))));
+                    let endpoints = stream.endpoints();
+                    let read = || {
+                        if !route.has_body() {
+                            return Ok(Vec::new());
                         }
-                        let Some(body) =
-                            read_body(stream, buffered, parsed.content_length, deadline, phase)?
-                        else {
-                            return Ok(None);
-                        };
-                        body
-                    } else {
-                        Vec::new()
+                        if buffered.len() > parsed.content_length {
+                            return Err(Denied::Response(error_response(400, "Bad Request")));
+                        }
+                        match read_body(stream, buffered, parsed.content_length, deadline, phase) {
+                            Ok(Some(body)) => Ok(body),
+                            Ok(None) => Err(Denied::Closed),
+                            Err(error) => Err(Denied::Failed(error)),
+                        }
                     };
-                    let admitted = match guard.admit(route, &parsed, &body, stream.endpoints()) {
-                        Ok(admitted) => admitted,
-                        Err(refusal) => return Ok(Some(ConnectionAction::Response(refusal))),
-                    };
-                    Ok(dispatch(
-                        admitted, route, parsed, body, buffered, guard, phase,
-                    ))
+                    match guard.admit(route, &parsed, read, endpoints) {
+                        Ok(Admission { admitted, body }) => Ok(dispatch(
+                            admitted, route, parsed, &body, buffered, guard, phase,
+                        )),
+                        Err(Denied::Response(refusal)) => {
+                            Ok(Some(ConnectionAction::Response(refusal)))
+                        }
+                        Err(Denied::Closed) => Ok(None),
+                        Err(Denied::Failed(error)) => Err(error),
+                    }
                 }
             };
         }
@@ -1362,7 +1359,7 @@ fn dispatch<'a>(
     admitted: Admitted,
     route: Route,
     head: Head,
-    body: Vec<u8>,
+    body: &[u8],
     buffered: &[u8],
     guard: Guard<'a>,
     phase: &AtomicU8,
@@ -1374,7 +1371,7 @@ fn dispatch<'a>(
         ..
     } = guard;
     let response = match (admitted, route.action()) {
-        (Admitted::SignIn(sign_in), _) => exchange_response(sessions, &sign_in, &body),
+        (Admitted::SignIn(sign_in), _) => exchange_response(sessions, &sign_in, body),
         (Admitted::Socket(session), _) => {
             return Some(ConnectionAction::Upgrade(Upgrade {
                 accept: head.accept,
@@ -1385,48 +1382,48 @@ fn dispatch<'a>(
         (admitted @ (Admitted::Session(_) | Admitted::Receipt(_)), Some(action)) => {
             match (action, admitted) {
                 (ActionRoute::Recovery(route), admitted) => {
-                    recovery::response(route, admitted, handle, &body)
+                    recovery::response(route, admitted, handle, body)
                 }
                 (ActionRoute::Onboard, Admitted::Session(session)) => {
-                    onboard_response(session, handle, &body)
+                    onboard_response(session, handle, body)
                 }
                 (ActionRoute::Answer, Admitted::Session(session)) => {
-                    answer_response(session, handle, &body)
+                    answer_response(session, handle, body)
                 }
                 (ActionRoute::Control(verb), Admitted::Session(session)) => {
-                    control_response(verb, session, handle, &body)
+                    control_response(verb, session, handle, body)
                 }
                 (ActionRoute::Goal, Admitted::Session(session)) => {
-                    goal_response(GoalRoute::Change, session, handle, &body)
+                    goal_response(GoalRoute::Change, session, handle, body)
                 }
                 (ActionRoute::Renew, Admitted::Session(session)) => {
-                    goal_response(GoalRoute::Renew, session, handle, &body)
+                    goal_response(GoalRoute::Renew, session, handle, body)
                 }
                 (ActionRoute::Rename, Admitted::Session(session)) => {
-                    rename_response(session, handle, &body)
+                    rename_response(session, handle, body)
                 }
                 (ActionRoute::Look, Admitted::Session(session)) => {
-                    look_response(session, handle, &body)
+                    look_response(session, handle, body)
                 }
                 (ActionRoute::Retire, Admitted::Session(session)) => {
-                    retire_response(session, handle, &body)
+                    retire_response(session, handle, body)
                 }
                 (ActionRoute::Git, Admitted::Session(session)) => {
-                    return git_response(session, handle, catalog, phase, &body)
+                    return git_response(&session, handle, catalog, phase, body)
                         .map(ConnectionAction::Response);
                 }
                 (ActionRoute::Diff, Admitted::Session(session)) => {
-                    return diff_response(session, handle, catalog, phase, &body)
+                    return diff_response(&session, handle, catalog, phase, body)
                         .map(ConnectionAction::Response);
                 }
                 (ActionRoute::Memory(route), Admitted::Session(session)) => {
-                    memory_response(route, session, handle, catalog.memory, &body)
+                    memory_response(route, &session, handle, catalog.memory, body)
                 }
                 (ActionRoute::Chat(verb), Admitted::Session(session)) => {
-                    chat_response(verb, session, handle, &body)
+                    chat_response(verb, session, handle, body)
                 }
                 (ActionRoute::Ticket(route), Admitted::Session(session)) => {
-                    ticket_response(route, session, handle, catalog, &body)
+                    ticket_response(route, session, handle, catalog, body)
                 }
                 _ => error_response(403, "Forbidden"),
             }
@@ -2098,7 +2095,7 @@ fn retire_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -
 /// worker this thread waits for, and every outcome is one finite [`dudes_proto::GitView`]. The read
 /// changes nothing, so it keeps no request identity and writes no journal record.
 fn git_response<'a>(
-    session: SessionIdentity,
+    session: &SessionIdentity,
     handle: &Handle,
     catalog: Catalog<'_>,
     phase: &AtomicU8,
@@ -2128,7 +2125,7 @@ fn git_response<'a>(
 /// Every refusal is one finite reply with no repository data. A session that ends while the read
 /// runs gets `403` and no reply.
 fn diff_response<'a>(
-    session: SessionIdentity,
+    session: &SessionIdentity,
     handle: &Handle,
     catalog: Catalog<'_>,
     phase: &AtomicU8,
@@ -2157,7 +2154,7 @@ fn diff_response<'a>(
 /// ending drops the read, and the route answers `503`.
 fn memory_response<'a>(
     route: MemoryRoute,
-    session: SessionIdentity,
+    session: &SessionIdentity,
     handle: &Handle,
     reads: &MemoryReads,
     body: &[u8],

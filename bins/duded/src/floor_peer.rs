@@ -182,7 +182,7 @@ mod tests {
         PeerGate::with(
             Arc::new(Roots(roots)),
             Box::new(move |_, _| lookup.clone()),
-            Box::new(|pid| Some(pid)),
+            Box::new(Some),
             Some(ME),
         )
     }

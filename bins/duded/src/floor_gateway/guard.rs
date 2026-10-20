@@ -17,9 +17,18 @@
 //! Content-Type, Content-Length against the route's cap) is checked by the parsers in the parent
 //! module before any body is read.
 
+use std::io;
+
 use dudes_proto::FloorPeerRefusal;
 
-use super::*;
+use super::{
+    ANSWER_PATH, ActionRoute, CHAT_CANCEL_PATH, CHAT_SEND_PATH, Catalog, Clock, DIFF_PATH,
+    FloorSessions, GIT_PATH, GOAL_PATH, Handle, INSPECT_RECOVERY_PATH, LOOK_PATH,
+    MEMORY_ENTRY_PATH, MEMORY_PAGE_PATH, ONBOARD_PATH, PAUSE_PATH, RECEIPT_RECOVERY_PATH,
+    RENAME_PATH, RENEW_PATH, RESUME_PATH, RETIRE_PATH, ReceiptSession, RecoveryRoute, Response,
+    SIGN_IN_PATH, STREAM_PATH, SUBMIT_RECOVERY_PATH, SessionIdentity, SocketAddr, SocketRoute,
+    SocketSession, TERMINAL_PATH, TicketRoute, error_response,
+};
 use crate::floor_peer::Verdict;
 
 /// Every dynamic path, whether or not its switch is on. A test holds this equal to the paths the
@@ -166,29 +175,59 @@ pub(super) struct Guard<'a> {
     pub(super) clock: &'a (dyn Clock + Send + Sync),
 }
 
+/// Why a request was not admitted.
+pub(super) enum Denied {
+    /// Answer with this and close.
+    Response(Response<'static>),
+    /// The body never arrived in time, or the daemon is stopping: close without an answer.
+    Closed,
+    /// The connection failed while the body was read.
+    Failed(io::Error),
+}
+
+impl From<Response<'static>> for Denied {
+    fn from(response: Response<'static>) -> Self {
+        Self::Response(response)
+    }
+}
+
+/// An admitted request and the body that came with it.
+pub(super) struct Admission {
+    pub(super) admitted: Admitted,
+    pub(super) body: Vec<u8>,
+}
+
 impl Guard<'_> {
-    /// Let a request through, or say why not. `endpoints` are the connection's two addresses, when
-    /// the transport has them; without them the peer cannot be found, and the request is refused.
+    /// Let a request through, or say why not.
+    ///
+    /// `read_body` is called once, after the session has been shown to exist and before the body is
+    /// checked, so a sender with no session is refused without the daemon waiting for its body.
+    /// `endpoints` are the connection's two addresses, when the transport has them; without them
+    /// the peer cannot be found, and the request is refused.
     pub(super) fn admit(
         self,
         route: Route,
         head: &Head,
-        body: &[u8],
+        read_body: impl FnOnce() -> Result<Vec<u8>, Denied>,
         endpoints: Option<Endpoints>,
-    ) -> Result<Admitted, Response<'static>> {
-        let forbidden = || error_response(403, "Forbidden");
+    ) -> Result<Admission, Denied> {
+        let forbidden = || Denied::Response(error_response(403, "Forbidden"));
         let sessions = self.sessions;
         if !sessions.authority_matches(&head.host, &head.origin) {
             return Err(forbidden());
         }
         match route.kind {
             Kind::SignIn => {
-                clean_body(body)?;
+                let body = read_body()?;
+                clean_body(&body)?;
                 self.peer(route, endpoints)?;
-                Ok(Admitted::SignIn(SignIn {
-                    host: head.host.clone(),
-                    origin: head.origin.clone(),
-                }))
+                Ok(Admission {
+                    admitted: Admitted::SignIn(SignIn {
+                        host: head.host.clone(),
+                        origin: head.origin.clone(),
+                    }),
+                    body,
+                })
             }
             Kind::Socket(socket) => {
                 self.peer(route, endpoints)?;
@@ -196,7 +235,7 @@ impl Guard<'_> {
                 let authorizer = sessions.authorizer();
                 let (host, origin) = (&head.host, &head.origin);
                 let (cookie, secret) = (&credentials.cookie, &credentials.secret);
-                match socket {
+                let admitted = match socket {
                     SocketRoute::Stream => authorizer
                         .authorize_stream(host, origin, cookie, secret)
                         .map(SocketSession::Stream),
@@ -205,7 +244,11 @@ impl Guard<'_> {
                         .map(SocketSession::Terminal),
                 }
                 .map(Admitted::Socket)
-                .ok_or_else(forbidden)
+                .ok_or_else(forbidden)?;
+                Ok(Admission {
+                    admitted,
+                    body: Vec::new(),
+                })
             }
             Kind::Action(action) => {
                 let credentials = head.credentials.as_ref().ok_or_else(forbidden)?;
@@ -221,9 +264,10 @@ impl Guard<'_> {
                         .map(Admitted::Session)
                 }
                 .ok_or_else(forbidden)?;
-                clean_body(body)?;
+                let body = read_body()?;
+                clean_body(&body)?;
                 self.peer(route, endpoints)?;
-                Ok(admitted)
+                Ok(Admission { admitted, body })
             }
         }
     }

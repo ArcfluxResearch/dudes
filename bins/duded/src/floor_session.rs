@@ -970,7 +970,7 @@ impl FloorCarry {
             let key = entry.digest.bytes();
             let session = Session {
                 revoked: Arc::new(AtomicBool::new(false)),
-                csrf: entry.secret.map(|secret| secret.bytes()),
+                csrf: entry.secret.map(Hex32::bytes),
                 created: entry.created,
                 last_used: entry.last_used,
                 websockets: 0,
