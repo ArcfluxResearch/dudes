@@ -25,7 +25,8 @@ Dudes also leaves files in these places:
   never merges or pushes these, and it never deletes a tree that an agent ran in.
 - `install.sh` puts `duded`, `dudes` and `dudes-hook` in `~/.local/bin`, or in `<dir>/bin` when
   you pass `--prefix <dir>`. A source build also leaves them in `target/dist/` in your checkout, where
-  `cargo xtask dist` wrote them.
+  `cargo xtask dist` wrote them. It also adds a Dudes launcher that runs `dudes open`: the app
+  `~/Applications/Dudes.app` on macOS, or `~/.local/share/applications/dudes.desktop` on Linux.
 - Claude Code and Codex keep their own session history in their own folders, for example
   `~/.claude/projects/` and `~/.codex/sessions/`. Uninstalling Dudes does not delete it. Pi's
   sessions and the Codex streaming profile are in the state directory.
@@ -71,6 +72,8 @@ dudes uninstall
   that leaves it empty; anything else stays, and it says what. It never deletes the filesystem
   root, your home directory, a parent of it, or a symbolic link. With `DUDES_CONFIG` set it deletes
   only that file, and only if it reads as an operator file.
+- **The launcher.** It deletes the launcher `install.sh` wrote, found by the word `DudesLauncher`
+  inside it. A file or app of the same name that does not carry that word is yours, and stays.
 - **Programs.** It deletes `duded`, `dudes` and `dudes-hook` only when this copy was put there by
   `install.sh`. For a source build, `cargo install` or a link, it removes the data, leaves the
   programs and prints the commands to remove them by hand.
@@ -144,7 +147,8 @@ your repositories keep stale worktree entries. Remove Dudes in this order:
    On Windows, delete `.local\share\dudes` and `.local\state\dudes` under `HOME`, or under
    `%USERPROFILE%` when `HOME` is not set. Then delete `%APPDATA%\dudes`.
 
-6. Delete the programs. If `install.sh` installed them, delete `duded`, `dudes` and `dudes-hook`
+6. Delete the programs. If `install.sh` installed them, delete the launcher
+   (`~/Applications/Dudes.app` or `~/.local/share/applications/dudes.desktop`) and then delete `duded`, `dudes` and `dudes-hook`
    from `~/.local/bin`. With `--prefix <dir>`, delete them from `<dir>/bin` and also delete
    `<dir>/share/dudes`. After a source build, also delete `target/dist/` in your checkout, and remove any `PATH`
    entry you added for it.

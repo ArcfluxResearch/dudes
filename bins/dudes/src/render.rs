@@ -1017,8 +1017,8 @@ pub fn floor_url(
     writeln!(out, "{}", urls.printed_once)?;
     writeln!(
         out,
-        "Paste this link into any browser within {} seconds. It works once; run dudes floor open \
-         for a new one.",
+        "Paste this link into any browser within {} seconds. It works once; run dudes open for a \
+         new one.",
         result.expires_in_s
     )
 }

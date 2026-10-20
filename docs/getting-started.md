@@ -58,8 +58,8 @@ Dudes reads no engine's credentials or files.
      and whether it is signed in. The daemon asks the engine's own status command (`claude auth
      status` or `codex login status`) and reads only its exit status. Pi has no such command:
      run `pi`, then type `/login` inside it;
-   - prints a one-time link to the Floor, as `dudes floor open` does, for you to paste into any
-     browser;
+   - opens the Floor in your default browser with a one-time link, as `dudes open` does (over SSH,
+     or where no opener is found, it prints the link for you to paste into a browser);
    - prints the hired agent's id, when you hired one;
    - prints `dudes login claude` or `dudes login codex` for each engine that is signed out.
      Run the command to sign in.
@@ -83,9 +83,9 @@ Dudes reads no engine's credentials or files.
    The operator file and the `duded.log` line that `quickstart` leaves are described in
    [Configuration](configuration.md#the-operator-file).
 
-3. Paste the link into a browser and use the Floor. The link works once, in one browser;
-   `dudes floor open` prints a new one. On a remote machine, forward the link's port over SSH first, because
-   the link is a loopback address. [The Floor](floor.md) explains how it signs in, what each tab shows and what an agent's position
+3. Use the Floor in the browser that opened. The link works once, in one browser;
+   `dudes open` opens a new one. On a remote machine, `dudes open` prints the link; forward its port over SSH
+   first, because the link is a loopback address. [The Floor](floor.md) explains how it signs in, what each tab shows and what an agent's position
    in the office means.
 
 4. Give an agent a ticket from the Floor. Open **Board**, press **New ticket**, type a title and
@@ -169,7 +169,7 @@ followed by `dudes quickstart --restart`.
 
 Without a terminal and without options, `dudes quickstart` only starts the daemon and prints its
 version and control socket, plus a missing-project hint unless `--json` is set. With options it asks nothing,
-prints no live Floor link: it prints `dudes floor open`, and `dudes login
+opens no browser: it prints `dudes open`, and `dudes login
 <engine>` for each engine that is signed out. `--yes` takes every default, including turning on the same eleven Floor actions as a Yes when the file turns none on (the terminal stays off), `--set <key> <value>`
 sets what `dudes config set` sets, `--enroll` enrolls the current repository and `--hire <name>`
 hires a first agent there, with the completion check after `--`; a setting that breaks one of the

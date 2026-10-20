@@ -59,12 +59,12 @@ From the repository you want agents to work in:
 ```sh
 cd /absolute/path/to/repo
 dudes quickstart
-dudes floor open
 ```
 
-`dudes quickstart` asks only what it cannot work out, starts the daemon, prints a link to the Floor and can
-hire a first agent. Paste the link into any browser; `dudes floor open` prints a new one later. On a remote
-machine, forward the link's port over SSH first, because the link is a loopback address. To hire an agent
+`dudes quickstart` asks only what it cannot work out, starts the daemon, opens the Floor in your browser and can
+hire a first agent. Later, `dudes open` (or the Dudes launcher that the installer adds) opens it again and starts
+the daemon first when it is down. On a remote machine, `dudes open` prints a link instead, and you forward the
+link's port over SSH first, because the link is a loopback address. To hire an agent
 yourself and give it
 a goal, use the id that `dudes hire` prints. Give a second agent a folder of its own: Dudes cannot check
 another agent's engine settings for a ticket, so in a repository two agents share it holds tickets in Needs

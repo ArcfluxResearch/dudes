@@ -376,7 +376,7 @@ fn launch_files(dir: &Path) -> Vec<PathBuf> {
 
 /// What the command prints besides the link.
 const PASTE: &str = "Paste this link into any browser within 60 seconds. It works once; run dudes \
-                     floor open for a new one.";
+                     open for a new one.";
 
 /// **The command prints the link on its own line, then where to paste it, and launches nothing.**
 ///

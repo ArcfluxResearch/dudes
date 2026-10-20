@@ -1,6 +1,6 @@
 # The Floor
 
-The Floor is the browser view that the link from `dudes floor open` opens. The daemon's state decides where each
+The Floor is the browser view that `dudes open` opens. The daemon's state decides where each
 agent stands in the office:
 
 - While a turn runs, the agent types at its desk.
@@ -39,17 +39,24 @@ twelve and HQ with sixteen:
 
 ## Open the Floor
 
-`dudes floor open` prints a one-time sign-in link, and `dudes quickstart` prints one when it
-finishes. Paste the link into any browser, on this computer, within 60 seconds. Dudes opens no
-browser for you, so the link goes to the browser you choose and never to one you did not.
+`dudes open` starts the daemon when it is down, mints a one-time sign-in link and opens it in your
+default browser (`open` on macOS, `xdg-open` on Linux). `dudes quickstart` ends by doing the same,
+and the installer adds a Dudes launcher that runs it: an app in `~/Applications` on macOS, an entry in
+your applications menu on Linux. The launcher registers no web address and no file type, so no web page
+can start it. `dudes uninstall` removes it. Over SSH, or where no opener is found, `dudes open` prints
+the link instead, to paste into a browser on this computer within 60 seconds.
+`dudes floor open` always prints the link and opens nothing.
 
-A link works once, in one browser. Once a browser has used it, that browser keeps its own session,
-and the same link pasted into a second browser, or reloaded after it expired, is refused. The page
-then says so and tells you to run `dudes floor open` again for a new link. Copying the address from
-the browser's address bar does not help, because the browser removes the secret from the address as
-soon as it signs in. `dudes stop` and `dudes start` end every Floor session; [after you
-upgrade](#after-you-upgrade) explains what `dudes upgrade` does instead. The daemon allows four Floor sessions at a time. `--no-browser` is still
-accepted and changes nothing, because printing is now the default. The link is a loopback address, so on a remote machine forward the port first, for example `ssh -L <port>:127.0.0.1:<port> <host>`, and paste the link into a browser on your own computer.
+A link works once, in one browser, and only for 60 seconds. The page signs in with it as it loads and
+removes it from the address bar and the browser's history. A browser that has signed in keeps its own
+session, and the same link used in a second browser, or after it expired, is refused. The page then
+tells you to open Dudes again. A session renews each time it is used, and ends after 24 hours without
+use, after 30 days in all, or when you choose **Sign out**, which also closes its open connections.
+The daemon allows four Floor sessions at a time; a fifth sign-in ends the one used longest ago, and
+that browser shows the signed-out screen. A page whose session the daemon no longer knows shows the
+same screen, and a page whose connection merely dropped keeps its session and reconnects. Copying the address from
+the browser's address bar does not help, because the link is gone from it. `dudes stop` and `dudes start` end every Floor session; [after you
+upgrade](#after-you-upgrade) explains what `dudes upgrade` does instead. The link is a loopback address, so on a remote machine forward the port first, for example `ssh -L <port>:127.0.0.1:<port> <host>`, and paste the link into a browser on your own computer.
 
 **Setup** shows each engine the daemon turned on and whether it found that engine's program on its
 `PATH`. **Settings** shows the running Floor switches, budget ceilings, per-turn reserves,
@@ -128,13 +135,13 @@ takes. When the daemon stops, an open tab reconnects for about eight seconds, th
 anything that carries your sign-in and checks every two seconds, without it, whether Dudes is
 back. After an upgrade it says "Dudes was updated. Reload this tab to continue." After the reload
 the tab is signed in again and shows the same agents, with no new link.
-The sign-in keeps its original time limits: the idle limit of 30 minutes, and the eight-hour limit
+The sign-in keeps its original time limits: the idle limit of 24 hours, and the 30-day limit
 that counts from the first sign-in. Ticket and check allowances carry over too, so an upgrade does
 not refill them.
 
 Only `dudes upgrade` carries sign-ins. A plain `dudes stop` and `dudes start` signs every browser
 out. The tab says "Dudes restarted. Reload this tab to continue.", and the reload then asks you to
-run `dudes floor open`, which is also the way to end every Floor session at once. A tab that finds
+open Dudes again. A tab that finds
 no daemon for ten minutes stops checking and shows that same sign-in message. An upgrade that
 cannot keep a sign-in, for example because the Floor comes back on a different port or the upgrade
 is interrupted, ends the same way.
@@ -156,7 +163,7 @@ the install script puts it. On Unix, the daemon refuses to start with a `share/d
 neither you nor root owns, or that its group or others can write. A `duded` started directly, not
 through `dudes quickstart`, can name another bundle with `DUDES_FLOOR_ASSETS`, which takes
 precedence, for example `DUDES_FLOOR_ASSETS="$PWD/floor/dist" cargo run -p duded` in a checkout.
-With none of these, the Floor listener is disabled, and `dudes floor open` says what
+With none of these, the Floor listener is disabled, and `dudes open` says what
 to do.
 
 `DUDES_FLOOR_ASSETS`, when present, must name an existing absolute release-bundle directory;
@@ -167,7 +174,7 @@ keeps in a `floor-port` file in the state directory, and takes a free port when 
 The Floor's address then stays the same across restarts, so the roster order a
 browser keeps for it survives `dudes stop` and `dudes start`, and it is what lets `dudes upgrade` keep
 your sign-ins. The startup line and
-`dudes floor open` both show the port chosen. `dudes quickstart` and `dudes start` pass
+`dudes open` both show the port chosen. `dudes quickstart` and `dudes start` pass
 neither variable to the daemon. Dudes always binds `127.0.0.1`; neither variable can change the host.
 
 The release manifest proves that the directory is internally complete and version-matched. It does

@@ -13,7 +13,7 @@ is an optional mode for Codex CLI **0.160.x** (any 0.160 patch release) on macOS
 dudes config set providers.codex on providers.codex.streaming on
 dudes quickstart --restart
 dudes login codex
-dudes floor open
+dudes open
 ```
 
 This mode keeps its own Codex profile under the daemon's state directory. Sign in once through

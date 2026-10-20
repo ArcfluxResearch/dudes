@@ -62,6 +62,7 @@ mod layout;
 mod lifecycle;
 pub mod login;
 mod mail;
+mod opener;
 mod quickstart;
 pub mod render;
 pub mod run;

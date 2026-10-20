@@ -186,7 +186,7 @@ fn assert_set_up(run_output: &str, layout: &Layout, terminal: bool) {
             "Paste this link into any browser within 60 seconds.",
         ]
     } else {
-        &["Open the Floor with: dudes floor open"]
+        &["Open Dudes with: dudes open"]
     };
     let expected: Vec<String> = [
         format!("duded {VERSION} on {}", layout.socket().display()),
@@ -1273,7 +1273,7 @@ fn a_terminal_is_asked_each_step_and_gets_the_same_setup() {
         screen.answer(answer);
     }
     screen.expect("hired ");
-    screen.expect("run dudes floor open for a new one.");
+    screen.expect("run dudes open for a new one.");
 
     let deadline = Instant::now() + Duration::from_secs(60);
     let status = loop {
@@ -1701,7 +1701,7 @@ fn options_on_a_terminal_ask_nothing_and_print_the_commands() {
     drop(pty.slave);
     let mut screen = Screen::new(pty.master);
     screen.expect("Claude is signed out. Sign in with: dudes login claude");
-    screen.expect("Open the Floor with: dudes floor open");
+    screen.expect("Open Dudes with: dudes open");
     let status = exit_status(&mut child, &screen);
     assert!(status.success(), "{status:?}:\n{}", screen.shown());
     let shown = screen.shown();

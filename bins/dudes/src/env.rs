@@ -96,6 +96,7 @@ pub struct Environment {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     mailbox: Result<PathBuf, NoMailbox>,
     daemon: Option<PathBuf>,
+    opener: Option<PathBuf>,
     daemon_env: Vec<EnvVar>,
     agent_token: Option<HookToken>,
     config: Result<PathBuf, NoConfig>,
@@ -324,6 +325,7 @@ impl Environment {
             |socket| Ok(PathBuf::from(socket)),
         );
         let daemon = lookup("DUDES_DAEMON").map(PathBuf::from);
+        let opener = lookup("DUDES_OPENER").map(PathBuf::from);
         // One loop over [`DAEMON_ENV_ALLOWLIST`] and no second spelling of any name: the list
         // and the construction cannot drift apart, and a name is added by editing the constant
         // that carries the reason for it. Absent names are dropped rather than forwarded empty,
@@ -350,6 +352,7 @@ impl Environment {
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             mailbox,
             daemon,
+            opener,
             daemon_env,
             agent_token,
             config,
@@ -443,6 +446,11 @@ impl Environment {
     /// here and which are deliberately absent lives on that constant.
     pub(crate) fn daemon_env(&self) -> &[EnvVar] {
         &self.daemon_env
+    }
+
+    /// The program `DUDES_OPENER` names, when it is set.
+    pub(crate) fn opener(&self) -> Option<&Path> {
+        self.opener.as_deref()
     }
 
     /// The daemon `DUDES_DAEMON` names, when it is set.

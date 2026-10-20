@@ -767,9 +767,7 @@ fn announce(
              one there), or start duded directly with DUDES_FLOOR_ASSETS"
                 .to_owned()
         },
-        |addr| {
-            format!("Floor at http://{addr}/floor/, sign in with a link from `dudes floor open`")
-        },
+        |addr| format!("Floor at http://{addr}/floor/, sign in with `dudes open`"),
     );
     // A daemon that cannot write its own log line keeps serving rather than stop over it.
     let _ = write_line(

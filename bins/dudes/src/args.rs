@@ -67,6 +67,8 @@ pub enum Command {
     /// Start the daemon when absent, then complete `system.ping`. It asks nothing, writes no
     /// configuration and hires nobody.
     Start,
+    /// Start the daemon when absent, mint a one-time Floor link and open it in the default browser.
+    Open,
     /// `system.ping`.
     Ping,
     /// `system.doctor` diagnostics.
@@ -589,6 +591,13 @@ COMMANDS
         If a daemon is already running it says so and leaves it alone, and when that
         daemon is not this version it says how to restart it.
 
+    open
+        Open Dudes: start the daemon if it is not running, mint a one-time Floor sign-in
+        link and open it in your default browser. The link works once, for 60 seconds.
+        It stays signed in for up to 30 days, or until a day passes without use. Over
+        SSH, or where no opener is found, it prints the link instead. The Dudes launcher
+        that install.sh adds runs this command.
+
     ping
         Ask the daemon for its version, socket and journal position.
 
@@ -908,7 +917,8 @@ COMMANDS
         runs differently, which a restart applies: dudes stop, then dudes start.
 
     floor open [--no-browser]
-        Mint a Floor session and print its one-time sign-in link. The session can view
+        Mint a Floor session and print its one-time sign-in link; `dudes open` opens it
+        for you instead. The session can view
         the Floor, and it can also act on agents (hire, answer, pause, retire and the
         rest) for each floor.* action that is on. Paste the link into any browser. It
         expires in 60 seconds and works once, in one browser; run the command again for
@@ -935,6 +945,8 @@ ENVIRONMENT
     DUDES_CONFIG        The operator file, as an absolute path; a relative one is refused.
                         Wins over the platform default on every system.
     DUDES_DAEMON        The daemon executable. Default: a `duded` sibling of this binary.
+    DUDES_OPENER        The program `open` hands the link to, as an absolute path.
+                        Default: /usr/bin/open on macOS, xdg-open on Linux.
     DUDES_SOCK          The control socket. Default: <runtime dir>/duded.sock
     DUDES_RUNTIME_DIR   Where the daemon put its socket and operator credential.
                         Default: <storage root>/.local/state/dudes
@@ -1033,6 +1045,7 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
             Command::Quickstart(plan)
         }
         "start" => without_arguments(tail, Command::Start)?,
+        "open" => without_arguments(tail, Command::Open)?,
         "ping" => without_arguments(tail, Command::Ping)?,
         "doctor" | "status" => {
             reject_leftovers(tail)?;

@@ -98,6 +98,7 @@ enum Kind {
     ConfigFolder,
     ConfigFile,
     Share,
+    Launcher,
     Program,
 }
 
@@ -109,6 +110,7 @@ impl Kind {
             Self::ConfigFolder => "operator file folder",
             Self::ConfigFile => "operator file",
             Self::Share => "installed Floor and notices",
+            Self::Launcher => "launcher",
             Self::Program => "program",
         }
     }
@@ -137,7 +139,19 @@ enum Removal {
     /// A path a setting chose: only the known entries, then the folder if it is empty.
     Known(Known),
     File,
+    /// A launcher `install.sh` wrote: a file or an app folder, deleted whole once its marker is found.
+    Launcher,
 }
+
+/// The word `install.sh` puts in every launcher it writes, so that one is told from a file or an
+/// app of the same name that is someone else's.
+const LAUNCHER_MARKER: &str = "DudesLauncher";
+
+/// Where the launchers go, below the home directory: the macOS app and the Linux desktop entry.
+const LAUNCHERS: [&str; 2] = [
+    "Applications/Dudes.app",
+    ".local/share/applications/dudes.desktop",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Content {
@@ -298,6 +312,21 @@ fn vet_directory(
     Ok(())
 }
 
+/// Why `path` is not a launcher `install.sh` wrote, or `None` when it is.
+fn launcher_problem(path: &Path) -> Option<String> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    let marked = if metadata.file_type().is_symlink() {
+        None
+    } else if metadata.is_dir() {
+        std::fs::read_to_string(path.join("Contents/Info.plist")).ok()
+    } else {
+        std::fs::read_to_string(path).ok()
+    };
+    marked
+        .is_none_or(|text| !text.contains(LAUNCHER_MARKER))
+        .then(|| "it is not the launcher install.sh writes".to_owned())
+}
+
 fn operator_file_problem(path: &Path) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     let Ok(table) = text.parse::<toml::Table>() else {
@@ -321,6 +350,7 @@ fn vet(entry: &Entry, home: &Path) -> Result<(), String> {
         Removal::Whole | Removal::Known(_) => {
             vet_directory(&entry.path, home, entry.content, entry.removal)
         }
+        Removal::Launcher => launcher_problem(&entry.path).map_or(Ok(()), Err),
         Removal::File => {
             let metadata = std::fs::symlink_metadata(&entry.path)
                 .map_err(|error| format!("{}: {error}", entry.path.display()))?;
@@ -402,6 +432,16 @@ fn candidates(layout: &Layout, prefix: Option<&Path>) -> Vec<Entry> {
                 Content::Share,
             ));
         }
+        for launcher in LAUNCHERS {
+            list.push(Entry {
+                kind: Kind::Launcher,
+                path: home.join(launcher),
+                removal: Removal::Launcher,
+                content: Content::Any,
+                operator_file: false,
+                bytes: 0,
+            });
+        }
         for name in PROGRAMS {
             list.push(Entry {
                 kind: Kind::Program,
@@ -431,7 +471,17 @@ fn plan(layout: &Layout) -> Result<Plan, String> {
         if !exists(&entry.path) {
             continue;
         }
-        vet(&entry, &layout.home)?;
+        if entry.removal == Removal::Launcher {
+            if let Some(problem) = launcher_problem(&entry.path) {
+                skipped.push(format!(
+                    "{} is not deleted: {problem}",
+                    entry.path.display()
+                ));
+                continue;
+            }
+        } else {
+            vet(&entry, &layout.home)?;
+        }
         if entry.operator_file
             && let Some(problem) = operator_file_problem(&entry.path)
         {
@@ -443,7 +493,7 @@ fn plan(layout: &Layout) -> Result<Plan, String> {
         }
         entry.bytes = match entry.removal {
             Removal::Known(known) => known_size(&entry.path, known),
-            Removal::Whole | Removal::File => size(&entry.path),
+            Removal::Whole | Removal::File | Removal::Launcher => size(&entry.path),
         };
         entries.push(entry);
     }
@@ -675,7 +725,7 @@ fn remove(entry: &Entry, home: &Path, outcome: &mut Outcome) {
     }
     match entry.removal {
         Removal::Known(known) => remove_known(entry, known, outcome),
-        Removal::Whole | Removal::File => {
+        Removal::Whole | Removal::File | Removal::Launcher => {
             let result = if entry.removal == Removal::Whole {
                 remove_whole(&entry.path)
             } else {

@@ -1754,13 +1754,11 @@ fn browser_head(
         Ok(None) => return Parsed::Response(error_response(403, "Forbidden")),
         Err(()) => return Parsed::Response(error_response(400, "Bad Request")),
     };
-    let cookie = match unique_header(headers, "cookie") {
-        Ok(found) => found,
-        Err(()) => return Parsed::Response(error_response(400, "Bad Request")),
+    let Ok(cookie) = unique_header(headers, "cookie") else {
+        return Parsed::Response(error_response(400, "Bad Request"));
     };
-    let secret = match unique_header(headers, crate::floor_session::CSRF_HEADER_NAME) {
-        Ok(found) => found,
-        Err(()) => return Parsed::Response(error_response(400, "Bad Request")),
+    let Ok(secret) = unique_header(headers, crate::floor_session::CSRF_HEADER_NAME) else {
+        return Parsed::Response(error_response(400, "Bad Request"));
     };
     let Some(host) = std::str::from_utf8(host).ok() else {
         return Parsed::Response(error_response(403, "Forbidden"));

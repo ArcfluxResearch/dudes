@@ -143,6 +143,7 @@ pub fn run(
             quickstart(invocation.json, plan.as_deref(), terminal, env, out, err)
         }
         Command::Start => start_command(invocation.json, env, out, err),
+        Command::Open => open_command(invocation.json, env, out, err),
         Command::SelectHire(params) => {
             select_hire(params, invocation.json, terminal, env, out, err)
         }
@@ -1334,7 +1335,7 @@ fn quickstart(
     if plan.is_none() {
         floor_link(env, out, err)?;
     } else {
-        writeln!(out, "Open the Floor with: dudes floor open").map_err(local)?;
+        writeln!(out, "Open Dudes with: dudes open").map_err(local)?;
     }
     Ok(exit::SUCCESS)
 }
@@ -1866,14 +1867,54 @@ fn hard_stop_daemon(env: &Environment, err: &mut dyn Write) -> Result<(), Failur
     Ok(())
 }
 
-/// The Floor's one-time link, printed as `dudes floor open` prints it. A daemon that serves no
-/// Floor is a warning, because the daemon itself is running.
+/// `dudes open`: start the daemon when it is down, then open a one-time Floor link in the browser.
+/// With `--json` nothing is opened and the contract's own answer is printed, as for `floor open`.
+fn open_command(
+    machine: bool,
+    env: &Environment,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<u8, Failure> {
+    let answer = start(env, err)?;
+    let issued = typed::<SessionIssueResult>(operator_call(env, Method::FloorSessionIssue, None)?)?;
+    let urls = crate::floor::urls(&issued).map_err(local)?;
+    if machine {
+        render::floor_url(out, true, &issued, &urls).map_err(local)?;
+        return Ok(exit::SUCCESS);
+    }
+    write_restart_nudge(err, &answer.version).map_err(local)?;
+    open_link(env, &issued, &urls, out, err)?;
+    Ok(exit::SUCCESS)
+}
+
+/// Hand the link to the browser. When that cannot be done the link is printed instead, once, with
+/// the reason, so the person can paste it.
+fn open_link(
+    env: &Environment,
+    issued: &SessionIssueResult,
+    urls: &crate::floor::FloorUrl,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<(), Failure> {
+    let reason = match crate::opener::launch(env, &urls.printed_once) {
+        crate::opener::Launch::Opened => {
+            return writeln!(out, "Opened Dudes in your browser.").map_err(local);
+        }
+        crate::opener::Launch::Skipped(reason) => reason.to_owned(),
+        crate::opener::Launch::Failed(reason) => reason,
+    };
+    render::warning(err, &format!("not opened: {reason}")).map_err(local)?;
+    render::floor_url(out, false, issued, urls).map_err(local)
+}
+
+/// The Floor, opened for a guided quickstart. A daemon that serves no Floor is a warning, because
+/// the daemon itself is running.
 fn floor_link(env: &Environment, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), Failure> {
     match operator_call(env, Method::FloorSessionIssue, None) {
         Ok(issued) => {
             let issued = typed::<SessionIssueResult>(issued)?;
             let urls = crate::floor::urls(&issued).map_err(local)?;
-            render::floor_url(out, false, &issued, &urls).map_err(local)
+            open_link(env, &issued, &urls, out, err)
         }
         Err(failure) => {
             render::warning(err, &format!("no Floor link: {}", failure.message())).map_err(local)
@@ -2090,6 +2131,7 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         Command::Quickstart(_)
         | Command::SelectHire(_)
         | Command::Start
+        | Command::Open
         | Command::Login(_)
         | Command::PauseAll
         | Command::GoalReplace(_)
