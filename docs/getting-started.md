@@ -64,8 +64,10 @@ Dudes reads no engine's credentials or files.
    - prints `dudes login claude` or `dudes login codex` for each engine that is signed out.
      Run the command to sign in.
 
-   If you skipped the project, tickets and Floor hiring need one before they can work. Add it
-   from its git repository:
+   If you skipped the project, tickets and Floor hiring need one before they can work. On the
+   Floor, type the project's folder into the "Folder on this computer" box, look at what Dudes
+   found, and press Add project. The folder must be a git repository, and it cannot be your home
+   folder, a hidden folder or one of Dudes' own. Or add it from a terminal, in its git repository:
 
    ```sh
    cd /absolute/path/to/repo

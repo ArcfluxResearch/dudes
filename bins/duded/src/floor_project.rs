@@ -154,11 +154,11 @@ pub struct PreviewRequest {
     pub(crate) path: String,
 }
 
-/// `POST /floor/project/add`: the canonical folder and check the preview showed, and the
-/// identity of this attempt.
-#[derive(Clone, Debug, Deserialize)]
+/// `POST /floor/project/add` as the page sends it: the canonical folder and check the preview
+/// showed, and the identity of this attempt.
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AddBody {
+struct AddBody {
     folder: String,
     check: Check,
     #[serde(default)]
@@ -236,12 +236,14 @@ pub enum ProjectAnswer {
     Added(Added),
 }
 
-/// Why a body is not a request: it is the wrong shape or too large.
+/// The preview request a body holds, or `None` when it is the wrong shape or too large.
 pub(crate) fn parse_preview(bytes: &[u8]) -> Option<PreviewRequest> {
     let request: PreviewRequest = parse(bytes)?;
     (request.path.len() <= MAX_FOLDER_BYTES).then_some(request)
 }
 
+/// The add request a body holds, or `None` when it is the wrong shape, too large or names an
+/// attempt that is not 32 bytes of base64url.
 pub(crate) fn parse_add(bytes: &[u8]) -> Option<AddRequest> {
     let body: AddBody = parse(bytes)?;
     if body.folder.len() > MAX_FOLDER_BYTES
@@ -373,6 +375,7 @@ impl Folders {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn git_repo(path: &Path) {
         fs::create_dir_all(path.join(".git")).expect("repository");
     }

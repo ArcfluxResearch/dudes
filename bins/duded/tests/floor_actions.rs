@@ -17039,189 +17039,194 @@ fn a_saved_edit_the_daemon_could_not_adopt_is_not_reported_as_running() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-const PROJECT_ATTEMPT: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-const OTHER_ATTEMPT: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE";
+#[cfg(unix)]
+mod project_add {
+    use super::*;
 
-fn project_settings(fixture: &Fixture) -> duded::Settings {
-    let text = "[floor.hire]\nenabled = true\n[floor.project]\nenabled = true\n";
-    let mut settings = reload_settings(fixture, text);
-    settings.floor_hire_enabled = true;
-    settings.floor_project_enabled = true;
-    settings
-}
+    const PROJECT_ATTEMPT: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const OTHER_ATTEMPT: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE";
 
-/// A git repository outside the daemon's own folders, which the Floor may take.
-fn project_repo(root: &Path, name: &str) -> PathBuf {
-    let repo = root.join(name);
-    std::fs::create_dir_all(repo.join(".git")).expect("repository marker");
-    repo.canonicalize().expect("canonical repository")
-}
-
-fn project_post(
-    addr: SocketAddr,
-    session: &(String, String),
-    verb: &str,
-    body: &Value,
-) -> (String, Value) {
-    let body = serde_json::to_vec(body).expect("JSON");
-    post_bytes(
-        addr,
-        &format!("/floor/project/{verb}"),
-        &session.0,
-        &session.1,
-        &body,
-        None,
-    )
-}
-
-fn project_add_body(folder: &Path, check: &Value, attempt: &str) -> Value {
-    json!({"folder": folder.to_str().unwrap(), "check": check, "attempt_id": attempt})
-}
-
-/// A newcomer types a folder, sees the preview, adds it with one request, and the project is live
-/// without a restart. Adding it again, even under a new attempt, answers with the same project.
-/// A check the preview did not show, a folder that is not a repository and one Dudes will not
-/// take each leave the file as it was.
-#[test]
-fn a_folder_typed_on_the_floor_becomes_a_live_project() {
-    let fixture = Fixture::new();
-    let settings = project_settings(&fixture);
-    let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-    let session = (cookie.clone(), csrf.clone());
-    let file = settings.operator_config.clone().expect("a file");
-    let scratch = tempfile::tempdir().expect("scratch");
-    let app = project_repo(scratch.path(), "app");
-
-    let (head, preview) = project_post(addr, &session, "preview", &json!({"path": app}));
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {preview}");
-    assert_eq!(
-        preview,
-        json!({
-            "folder": app, "already": null, "check": "files_changed",
-            "check_label": "files changed", "hireable": true, "reason": null
-        })
-    );
-    assert!(offered(addr, &cookie, &csrf).is_empty());
-
-    let add = project_add_body(&app, &json!("files_changed"), PROJECT_ATTEMPT);
-    let (head, added) = project_post(addr, &session, "add", &add);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {added}");
-    assert_eq!(
-        added,
-        json!({
-            "project_id": "app", "label": "app", "check_label": "files changed",
-            "hireable": true, "reason": null
-        })
-    );
-    let written = std::fs::read_to_string(&file).unwrap();
-    assert_eq!(written.matches("workspace_id").count(), 1, "{written}");
-    let ids: Vec<String> = offered(addr, &cookie, &csrf)
-        .into_iter()
-        .map(|(id, _)| id)
-        .collect();
-    assert_eq!(ids, ["app"], "live with no restart");
-
-    for attempt in [PROJECT_ATTEMPT, OTHER_ATTEMPT] {
-        let again = project_add_body(&app, &json!("files_changed"), attempt);
-        let (head, repeat) = project_post(addr, &session, "add", &again);
-        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {repeat}");
-        assert_eq!(repeat, added, "a repeat converges");
+    fn project_settings(fixture: &Fixture) -> duded::Settings {
+        let text = "[floor.hire]\nenabled = true\n[floor.project]\nenabled = true\n";
+        let mut settings = reload_settings(fixture, text);
+        settings.floor_hire_enabled = true;
+        settings.floor_project_enabled = true;
+        settings
     }
-    assert_eq!(
-        std::fs::read_to_string(&file).unwrap(),
-        written,
-        "a repeat wrote"
-    );
-    let (_, preview) = project_post(addr, &session, "preview", &json!({"path": app}));
-    assert_eq!(
-        preview["already"],
-        json!({"project_id": "app", "label": "app"})
-    );
 
-    let make = project_repo(scratch.path(), "make-app");
-    std::fs::write(make.join("Makefile"), "test:\n\ttrue\n").expect("makefile");
-    let (_, preview) = project_post(addr, &session, "preview", &json!({"path": make}));
-    assert_eq!(preview["check"], json!(["make", "test"]), "{preview}");
-    let stale = project_add_body(&make, &json!("files_changed"), OTHER_ATTEMPT);
-    let (head, body) = project_post(addr, &session, "add", &stale);
-    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
-    assert_eq!(body["reason"], "changed", "{body}");
+    /// A git repository outside the daemon's own folders, which the Floor may take.
+    fn project_repo(root: &Path, name: &str) -> PathBuf {
+        let repo = root.join(name);
+        std::fs::create_dir_all(repo.join(".git")).expect("repository marker");
+        repo.canonicalize().expect("canonical repository")
+    }
 
-    let plain = scratch.path().join("plain");
-    std::fs::create_dir_all(&plain).expect("plain folder");
-    std::fs::write(scratch.path().join("note"), "x").expect("file");
-    for (path, reason) in [
-        (plain, "not_git"),
-        (scratch.path().join("missing"), "not_found"),
-        (scratch.path().join("note"), "not_a_folder"),
-        (PathBuf::from("/"), "not_allowed"),
-        (fixture.state.path().to_path_buf(), "not_allowed"),
-    ] {
-        let (head, body) = project_post(addr, &session, "preview", &json!({"path": path}));
+    fn project_post(
+        addr: SocketAddr,
+        session: &(String, String),
+        verb: &str,
+        body: &Value,
+    ) -> (String, Value) {
+        let body = serde_json::to_vec(body).expect("JSON");
+        post_bytes(
+            addr,
+            &format!("/floor/project/{verb}"),
+            &session.0,
+            &session.1,
+            &body,
+            None,
+        )
+    }
+
+    fn project_add_body(folder: &Path, check: &Value, attempt: &str) -> Value {
+        json!({"folder": folder.to_str().unwrap(), "check": check, "attempt_id": attempt})
+    }
+
+    /// A newcomer types a folder, sees the preview, adds it with one request, and the project is live
+    /// without a restart. Adding it again, even under a new attempt, answers with the same project.
+    /// A check the preview did not show, a folder that is not a repository and one Dudes will not
+    /// take each leave the file as it was.
+    #[test]
+    fn a_folder_typed_on_the_floor_becomes_a_live_project() {
+        let fixture = Fixture::new();
+        let settings = project_settings(&fixture);
+        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
+        let session = (cookie.clone(), csrf.clone());
+        let file = settings.operator_config.clone().expect("a file");
+        let scratch = tempfile::tempdir().expect("scratch");
+        let app = project_repo(scratch.path(), "app");
+
+        let (head, preview) = project_post(addr, &session, "preview", &json!({"path": app}));
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {preview}");
+        assert_eq!(
+            preview,
+            json!({
+                "folder": app, "already": null, "check": "files_changed",
+                "check_label": "files changed", "hireable": true, "reason": null
+            })
+        );
+        assert!(offered(addr, &cookie, &csrf).is_empty());
+
+        let add = project_add_body(&app, &json!("files_changed"), PROJECT_ATTEMPT);
+        let (head, added) = project_post(addr, &session, "add", &add);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {added}");
+        assert_eq!(
+            added,
+            json!({
+                "project_id": "app", "label": "app", "check_label": "files changed",
+                "hireable": true, "reason": null
+            })
+        );
+        let written = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(written.matches("workspace_id").count(), 1, "{written}");
+        let ids: Vec<String> = offered(addr, &cookie, &csrf)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids, ["app"], "live with no restart");
+
+        for attempt in [PROJECT_ATTEMPT, OTHER_ATTEMPT] {
+            let again = project_add_body(&app, &json!("files_changed"), attempt);
+            let (head, repeat) = project_post(addr, &session, "add", &again);
+            assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {repeat}");
+            assert_eq!(repeat, added, "a repeat converges");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            written,
+            "a repeat wrote"
+        );
+        let (_, preview) = project_post(addr, &session, "preview", &json!({"path": app}));
+        assert_eq!(
+            preview["already"],
+            json!({"project_id": "app", "label": "app"})
+        );
+
+        let make = project_repo(scratch.path(), "make-app");
+        std::fs::write(make.join("Makefile"), "test:\n\ttrue\n").expect("makefile");
+        let (_, preview) = project_post(addr, &session, "preview", &json!({"path": make}));
+        assert_eq!(preview["check"], json!(["make", "test"]), "{preview}");
+        let stale = project_add_body(&make, &json!("files_changed"), OTHER_ATTEMPT);
+        let (head, body) = project_post(addr, &session, "add", &stale);
         assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
-        assert_eq!(body["reason"], reason, "{path:?}");
+        assert_eq!(body["reason"], "changed", "{body}");
+
+        let plain = scratch.path().join("plain");
+        std::fs::create_dir_all(&plain).expect("plain folder");
+        std::fs::write(scratch.path().join("note"), "x").expect("file");
+        for (path, reason) in [
+            (plain, "not_git"),
+            (scratch.path().join("missing"), "not_found"),
+            (scratch.path().join("note"), "not_a_folder"),
+            (PathBuf::from("/"), "not_allowed"),
+            (fixture.state.path().to_path_buf(), "not_allowed"),
+        ] {
+            let (head, body) = project_post(addr, &session, "preview", &json!({"path": path}));
+            assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
+            assert_eq!(body["reason"], reason, "{path:?}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            written,
+            "a refusal wrote"
+        );
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     }
-    assert_eq!(
-        std::fs::read_to_string(&file).unwrap(),
-        written,
-        "a refusal wrote"
-    );
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
 
-/// An add the daemon cannot adopt, here because the file already holds a project the daemon has
-/// not loaded, puts the file back exactly as it was, and says so.
-#[test]
-fn an_add_the_daemon_cannot_adopt_leaves_the_file_as_it_was() {
-    let fixture = Fixture::new();
-    let settings = project_settings(&fixture);
-    let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-    let session = (cookie.clone(), csrf.clone());
-    let file = settings.operator_config.clone().expect("a file");
-    let scratch = tempfile::tempdir().expect("scratch");
-    let hand = project_repo(scratch.path(), "by-hand");
-    let app = project_repo(scratch.path(), "app");
-    let mut text = std::fs::read_to_string(&file).unwrap();
-    write!(
-        text,
-        "[[floor.onboarding.workspaces]]\nworkspace_id = 'by-hand'\nlabel = 'By hand'\ncompletion_check_label = 'Checks pass'\ncwd = '{}'\ndepartment = 'engineering'\nisolation = 'default'\nhop_cap = 3\npredicate_argv = ['/usr/bin/true']\npredicate_timeout_s = 10\n",
-        hand.display()
-    )
-    .unwrap();
-    std::fs::write(&file, &text).expect("hand edit");
+    /// An add the daemon cannot adopt, here because the file already holds a project the daemon has
+    /// not loaded, puts the file back exactly as it was, and says so.
+    #[test]
+    fn an_add_the_daemon_cannot_adopt_leaves_the_file_as_it_was() {
+        let fixture = Fixture::new();
+        let settings = project_settings(&fixture);
+        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
+        let session = (cookie.clone(), csrf.clone());
+        let file = settings.operator_config.clone().expect("a file");
+        let scratch = tempfile::tempdir().expect("scratch");
+        let hand = project_repo(scratch.path(), "by-hand");
+        let app = project_repo(scratch.path(), "app");
+        let mut text = std::fs::read_to_string(&file).unwrap();
+        write!(
+            text,
+            "[[floor.onboarding.workspaces]]\nworkspace_id = 'by-hand'\nlabel = 'By hand'\ncompletion_check_label = 'Checks pass'\ncwd = '{}'\ndepartment = 'engineering'\nisolation = 'default'\nhop_cap = 3\npredicate_argv = ['/usr/bin/true']\npredicate_timeout_s = 10\n",
+            hand.display()
+        )
+        .unwrap();
+        std::fs::write(&file, &text).expect("hand edit");
 
-    let add = project_add_body(&app, &json!("files_changed"), PROJECT_ATTEMPT);
-    let (head, body) = project_post(addr, &session, "add", &add);
-    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
-    assert_eq!(body["reason"], "config_changed", "{body}");
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "put back");
-    assert!(offered(addr, &cookie, &csrf).is_empty());
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
+        let add = project_add_body(&app, &json!("files_changed"), PROJECT_ATTEMPT);
+        let (head, body) = project_post(addr, &session, "add", &add);
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
+        assert_eq!(body["reason"], "config_changed", "{body}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "put back");
+        assert!(offered(addr, &cookie, &csrf).is_empty());
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
 
-/// While a reload holds the lock an add answers `busy` and writes nothing; once the lock is free
-/// the same add succeeds.
-#[test]
-fn an_add_during_a_reload_answers_busy() {
-    let fixture = Fixture::new();
-    let settings = project_settings(&fixture);
-    let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-    let session = (cookie, csrf);
-    let file = settings.operator_config.clone().expect("a file");
-    let scratch = tempfile::tempdir().expect("scratch");
-    let app = project_repo(scratch.path(), "app");
-    let before = std::fs::read(&file).unwrap();
-    let add = project_add_body(&app, &json!("files_changed"), PROJECT_ATTEMPT);
+    /// While a reload holds the lock an add answers `busy` and writes nothing; once the lock is free
+    /// the same add succeeds.
+    #[test]
+    fn an_add_during_a_reload_answers_busy() {
+        let fixture = Fixture::new();
+        let settings = project_settings(&fixture);
+        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
+        let session = (cookie, csrf);
+        let file = settings.operator_config.clone().expect("a file");
+        let scratch = tempfile::tempdir().expect("scratch");
+        let app = project_repo(scratch.path(), "app");
+        let before = std::fs::read(&file).unwrap();
+        let add = project_add_body(&app, &json!("files_changed"), PROJECT_ATTEMPT);
 
-    let lock = running.handle.reload_lock();
-    let held = lock.lock().unwrap();
-    let (head, body) = project_post(addr, &session, "add", &add);
-    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
-    assert_eq!(body["reason"], "busy", "{body}");
-    assert_eq!(std::fs::read(&file).unwrap(), before, "a busy add wrote");
-    drop(held);
+        let lock = running.handle.reload_lock();
+        let reload_running = lock.lock().unwrap();
+        let (head, body) = project_post(addr, &session, "add", &add);
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
+        assert_eq!(body["reason"], "busy", "{body}");
+        assert_eq!(std::fs::read(&file).unwrap(), before, "a busy add wrote");
+        drop(reload_running);
 
-    let (head, body) = project_post(addr, &session, "add", &add);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+        let (head, body) = project_post(addr, &session, "add", &add);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
 }
