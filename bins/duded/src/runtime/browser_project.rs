@@ -140,15 +140,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 _ => Reason::ConfigChanged,
             },
         )?;
-        dudes_config::workspace::replace(&path, &written).map_err(|_| Reason::ConfigChanged)?;
-        if !self.adopt(&path, &written, *sequence, std::slice::from_ref(&id), &[]) {
-            let holds_ours = dudes_config::workspace::read_bytes(&path)
-                .is_ok_and(|now| now.as_deref() == Some(written.as_slice()));
-            if holds_ours {
-                let _ = dudes_config::workspace::restore(&path, previous.as_deref());
-            }
-            return Err(Reason::ConfigChanged);
-        }
+        self.write_and_adopt(
+            &path,
+            previous.as_deref(),
+            &written,
+            *sequence,
+            std::slice::from_ref(&id),
+            &[],
+        )?;
         self.resync_floor();
         tracing::info!(
             session = %&crate::enrollment_reload::hex(&session.digest().bytes())[..16],
@@ -194,21 +193,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             dudes_config::workspace::read_bytes(&path).map_err(|_| Reason::ConfigChanged)?;
         let written = dudes_config::workspace::removed(&path, previous.as_deref(), &project_id)
             .map_err(|_| Reason::ConfigChanged)?;
-        dudes_config::workspace::replace(&path, &written).map_err(|_| Reason::ConfigChanged)?;
-        if !self.adopt(
+        self.write_and_adopt(
             &path,
+            previous.as_deref(),
             &written,
             *sequence,
             &[],
             std::slice::from_ref(&project_id),
-        ) {
-            let holds_ours = dudes_config::workspace::read_bytes(&path)
-                .is_ok_and(|now| now.as_deref() == Some(written.as_slice()));
-            if holds_ours {
-                let _ = dudes_config::workspace::restore(&path, previous.as_deref());
-            }
-            return Err(Reason::ConfigChanged);
-        }
+        )?;
         self.resync_floor();
         tracing::info!(
             session = %&crate::enrollment_reload::hex(&session.digest().bytes())[..16],
@@ -233,6 +225,29 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 };
                 directory.is_none_or(|directory| directory.starts_with(project))
             })
+    }
+
+    /// Write `written`, then have the daemon adopt it. A reload the daemon declines puts the file
+    /// back as `previous`, unless something else has written it since.
+    fn write_and_adopt(
+        &mut self,
+        path: &Path,
+        previous: Option<&[u8]>,
+        written: &[u8],
+        seq: u64,
+        added: &[String],
+        removed: &[String],
+    ) -> Result<(), Reason> {
+        dudes_config::workspace::replace(path, written).map_err(|_| Reason::ConfigChanged)?;
+        if self.adopt(path, written, seq, added, removed) {
+            return Ok(());
+        }
+        let holds_ours = dudes_config::workspace::read_bytes(path)
+            .is_ok_and(|now| now.as_deref() == Some(written));
+        if holds_ours {
+            let _ = dudes_config::workspace::restore(path, previous);
+        }
+        Err(Reason::ConfigChanged)
     }
 
     /// The reload the CLI asks for after an edit: adopt exactly `written`, adding and removing the
