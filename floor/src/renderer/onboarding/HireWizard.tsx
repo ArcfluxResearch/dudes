@@ -627,7 +627,7 @@ function AnswerBody({ outcome, hire, floor }: {
             {hire.attempt?.payload.own_copy === true ? (
               <div><dt>Works in</dt><dd data-hire-own-copy="true">Its own copy of the project, on its own branch</dd></div>
             ) : null}
-            <div><dt>On the floor</dt><dd>{presence === 'present' ? 'Yes, selected on the floor'
+            <div><dt>On the floor</dt><dd>{presence === 'present' ? 'Yes, on the Floor'
               : presence === 'absent' ? 'No, retired since the Hire' : 'Waiting for the Floor to refresh'}</dd></div>
             {row === null ? null : <div><dt>Current task</dt><dd>{goalLine(row)}</dd></div>}
           </dl>

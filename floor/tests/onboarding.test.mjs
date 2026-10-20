@@ -834,7 +834,7 @@ test('only complete shows success, with the real AgentId and GoalId, and it sele
   assert.match(html, SUCCESS);
   assert.match(html, new RegExp(`data-hire-agent-id="${AGENT}">${AGENT}<`));
   assert.match(html, new RegExp(`data-hire-goal-id="${GOAL}">${GOAL}<`));
-  assert.match(html, /Yes, selected on the floor/);
+  assert.match(html, /Yes, on the Floor/);
   assert.equal(hire.agentToReveal(hire.getHireState(), getFloorState()), AGENT);
   hire.markRevealed(AGENT);
   assert.equal(hire.agentToReveal(hire.getHireState(), getFloorState()), null, 'selected once, not on every render');
