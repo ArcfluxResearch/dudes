@@ -200,7 +200,7 @@ export function NewTicketForm({ floor, onCreated, onHire, onCancel }: {
         {checks.map((entry) => <option key={entry.id} value={entry.id}>{choiceLabel(entry)}</option>)}
       </select>
     </div> : null}
-    {noProjects(floor) ? <NoTicketProjectHint />
+    {noProjects(floor) ? <NoTicketProjectHint floor={floor} />
       : project === null ? <p className="ticket-hint">Project choices are unavailable. Open Setup to check the project and its completion check.</p>
       : usable.length === 0 ? <div className="ticket-field" data-no-agent="true">
       <p className="ticket-hint">{agentChoiceSentence(floor, project)}</p>

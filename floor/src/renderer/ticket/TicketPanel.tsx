@@ -210,7 +210,7 @@ export function GiveForm({ floor, card, project, pending, mode, onDone, onHire }
   const evidence = useSyncExternalStore(subscribeToDetail, getDetailState, getDetailState);
   const reviewReady = !requiresInstructionReview(card) || reviewedWatermark(evidence, card) !== null;
   const chosen = usable.find((row) => row.id === agent)?.id ?? usable[0]?.id ?? null;
-  if (noProjects(floor)) return <NoTicketProjectHint />;
+  if (noProjects(floor)) return <NoTicketProjectHint floor={floor} />;
   if (project === null) return <p className="ticket-hint" role="status">{pending ?? 'Reading the ticket…'}</p>;
   if (usable.length === 0) return <div className="ticket-field" data-no-agent="true">
     <p className="ticket-hint">{agentChoiceSentence(floor, project)}</p>

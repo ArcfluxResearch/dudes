@@ -1496,7 +1496,36 @@ samp,
   grid-column: 2;
 }
 
-.crew-entry .agent-reorder-handle {
+.crew-entry .add-project {
+  display: grid;
+  gap: .4rem;
+  max-width: 34rem;
+  margin: .6rem 0;
+}
+.add-project input[type="text"] {
+  min-width: 0;
+  padding: .45rem .55rem;
+  font: inherit;
+}
+.add-project button {
+  justify-self: start;
+}
+.add-project-preview {
+  display: grid;
+  gap: .3rem;
+  padding: .55rem .7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+}
+.add-project-preview p,
+.add-project > p {
+  margin: 0;
+  font-size: .85rem;
+  line-height: 1.5;
+}
+
+.agent-reorder-handle {
   width: 1.1rem;
   min-height: 2.6rem;
   padding: 0;

@@ -263,6 +263,8 @@ const TERMINAL_CONTROLS = 'src/renderer/terminal/controls.ts';
 const RETIRE_PANEL = 'src/renderer/retire/RetirePanel.tsx';
 const RETIRE_MODULE = 'src/renderer/retire/retire.ts';
 const SETTINGS_EDIT_MODULE = 'src/renderer/settings/edit.ts';
+const ADD_PROJECT_MODULE = 'src/renderer/project/add.ts';
+const ADD_PROJECT_FORM = 'src/renderer/project/AddProject.tsx';
 const TICKET_MODULE = 'src/renderer/ticket/ticket.ts';
 const TICKET_BOARD = 'src/renderer/ticket/TicketBoard.tsx';
 const TICKET_PANEL = 'src/renderer/ticket/TicketPanel.tsx';
@@ -317,6 +319,7 @@ const ADMITTED = new Map([
   [TICKET_BOARD, Object.freeze([...ADMITTED_IN_TICKET_FORM, 'a key handler'])], [TICKET_PANEL, ADMITTED_IN_TICKET_FORM],
   [CHAT_PANEL, Object.freeze(['a textarea', 'a change handler', 'a key handler'])],
   [RENAME_PANEL, Object.freeze(['an input', 'a change handler', 'a key handler'])],
+  [ADD_PROJECT_FORM, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
   [LOOK_PANEL, Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler',
     'a submit handler', 'a key handler'])],
   [FLOOR_SHELL, Object.freeze(['a key handler', 'a pointer handler'])],
@@ -402,6 +405,8 @@ const ADMITTED_HANDLERS = [
   { file: RENAME_PANEL, tag: 'input', handler: 'onFocus', expression: '(event) => event.currentTarget.select()' },
   { file: RENAME_PANEL, tag: 'input', handler: 'onChange' },
   { file: RENAME_PANEL, tag: 'input', handler: 'onKeyDown' },
+  { file: ADD_PROJECT_FORM, tag: 'form', className: 'add-project', handler: 'onSubmit' },
+  { file: ADD_PROJECT_FORM, tag: 'input', handler: 'onChange' },
   { file: LOOK_PANEL, tag: 'form', handler: 'onSubmit',
     expression: '(event) => { event.preventDefault(); void submitLook(row, browserLookDeps); }' },
   { file: LOOK_PANEL, tag: 'form', handler: 'onKeyDown',
@@ -1092,6 +1097,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(5).fill(DIFF_PANEL),
     ...Array(4).fill(MEMORY_PANEL),
     ...Array(4).fill(RENAME_PANEL),
+    ...Array(2).fill(ADD_PROJECT_FORM),
     ...Array(4).fill(LOOK_PANEL),
     ...Array(3).fill(SETUP_VIEW),
     ...Array(8).fill(SETTINGS_VIEW),
@@ -1108,6 +1114,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_BOARD), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
+  // The folder form submits with a button that has no click handler of its own.
+  clickExpected.splice(clickExpected.indexOf(ADD_PROJECT_FORM), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
   clickExpected.push(RECOVERED_REVIEW);
   assert.deepEqual(clicks.sort(), clickExpected.sort());
@@ -1512,6 +1520,11 @@ const REQUESTS = {
     methods: ['POST'],
     fetches: ['deps.fetch', "fetch('/floor/retire')"],
   },
+  [ADD_PROJECT_MODULE]: {
+    paths: ['/floor/project/preview', '/floor/project/add', 'application/json'],
+    methods: ['POST'],
+    fetches: ['floorFetch', 'floorFetch', 'fetch', 'floorFetch', 'deps.fetch(path)'],
+  },
   [SETTINGS_EDIT_MODULE]: {
     paths: ['/floor/settings', 'application/json'],
     methods: ['POST'],
@@ -1707,7 +1720,7 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
     Object.fromEntries([...reaching].sort().map(([name, files]) => [name, [...files].sort()])),
     {
       WebSocket: ['src/renderer/floor/stream.ts'],
-      fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE,
+      fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', ADD_PROJECT_MODULE, RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE,
         SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
     },
     'the page reaches the network somewhere new',
@@ -1809,7 +1822,7 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
 
   const fetching = reaching.get('fetch') ?? [];
   assert.deepEqual(fetching.sort(),
-    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE, SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
+    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', ADD_PROJECT_MODULE, RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE, SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
     'something other than the admitted action, read, session and transport modules fetches');
   assert.deepEqual(calling.sort(), fetching,
     'a module other than those six calls fetch with a space before the parenthesis');

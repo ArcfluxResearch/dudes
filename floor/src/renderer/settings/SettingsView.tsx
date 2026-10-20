@@ -14,6 +14,7 @@ import { ReadNotice, snapshotReadState } from '../ReadError.tsx';
 import { getOfficePin, setOfficePin, subscribeToOfficePin } from '../view.ts';
 import { desktopNotificationPreference } from '../desktopNotifications.ts';
 import { releaseNotesLabel, releaseNotesUrl } from '../releaseLinks.ts';
+import { AddProject } from '../project/AddProject.tsx';
 
 const SWITCHES = [
   ['answer', 'Answer questions'], ['control', 'Pause, resume and rename'], ['recovery', 'Recover interrupted goals'], ['goal', 'Change goals'],
@@ -123,7 +124,7 @@ export function SettingsView({ floor, onSetup }: {
       <p>Register optional providers with <code>dudes config set providers.codex on</code> or
         <code> dudes config set providers.pi on</code>, then restart.</p>
     </section>
-    <WorkspaceSettings report={report} />
+    <WorkspaceSettings report={report} floor={floor} />
     <UnavailableControls floor={floor} control="hire" />
     <OfficeLayoutChoice />
     <section className="settings-about" aria-labelledby="settings-about"><h3 id="settings-about">About</h3>
@@ -192,8 +193,9 @@ function OfficeLayoutChoice() {
   </section>;
 }
 
-export function WorkspaceSettings({ report, onCopyAdd, headingId = 'settings-workspaces' }: {
+export function WorkspaceSettings({ report, floor, onCopyAdd, headingId = 'settings-workspaces' }: {
   readonly report: SettingsReport;
+  readonly floor?: FloorState;
   readonly onCopyAdd?: () => void;
   readonly headingId?: string;
 }) {
@@ -214,6 +216,7 @@ export function WorkspaceSettings({ report, onCopyAdd, headingId = 'settings-wor
             <code>dudes project remove {workspace.workspace_id}</code>
           </>}
         </li>)}</ul>}
+      {floor === undefined ? null : <AddProject floor={floor} off={<p>Adding a project from this page is off. Turn on the project switch under Floor switches.</p>} />}
       <p>Choose your own values for the placeholders.</p><code>{ADD_WORKSPACE}</code>
       {onCopyAdd === undefined ? null : <button type="button" aria-label="Copy project add command" onClick={onCopyAdd}>Copy</button>}
       <p>Inspect enrollment with <code>dudes project list</code>. For a config-file edit, use

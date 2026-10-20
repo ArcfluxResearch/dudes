@@ -14,6 +14,7 @@ import { INSTALL_COMMANDS, rowFor } from '../setup/daemon.ts';
 import { copyToClipboard } from '../setup/SetupView.tsx';
 import { decodeWorkspace } from '../workspace.ts';
 import { noProjects, viewConfirmed } from '../ticket/model.ts';
+import { AddProject, projectAddOn } from '../project/AddProject.tsx';
 import type { ProviderRow } from '../setup/daemon.ts';
 import { HIRE_ENGINES, formatUsdMicros, isHireEngine } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
@@ -224,7 +225,7 @@ function HireForm({ hire, floor, onClose }: {
           )}
           {hire.section !== 'workspace' ? null : (
             <>
-              {noProject ? <NoHireProjectHint /> : catalog === null ? <p>No project is available for hiring in this session.</p> : (
+              {noProject ? <NoHireProjectHint floor={floor} /> : catalog === null ? <p>No project is available for hiring in this session.</p> : (
                 <fieldset className="hire-choices" aria-invalid={invalid('workspace_id')}
                   aria-describedby={described('workspace_id')}>
                   <legend>Which project?</legend>
@@ -363,14 +364,19 @@ function HireForm({ hire, floor, onClose }: {
       {hire.sending && hire.attempt !== null ? (
         <p className="hire-note" role="status">{`Running “${hire.attempt.checkLabel}” once before hiring.`}</p>
       ) : null}
-      {noProject && viewConfirmed(floor) ? (hire.section === 'workspace' ? null : <NoHireProjectHint />)
+      {noProject && viewConfirmed(floor) ? (hire.section === 'workspace' ? null : <NoHireProjectHint floor={floor} />)
         : blocked === null || stuck ? null : <p className="hire-note" role="status">{blocked}</p>}
     </>
   );
 }
 
-function NoHireProjectHint() {
-  return <p className="hire-note">Agents work in a project, and none is set up yet. In your project&apos;s folder run <code>dudes project add</code>.</p>;
+function NoHireProjectHint({ floor }: { readonly floor: FloorState }) {
+  return <>
+    {projectAddOn(floor)
+      ? <p className="hire-note">Agents work in a project, and none is set up yet. Add the folder of your project below.</p>
+      : <p className="hire-note">Agents work in a project, and none is set up yet. In your project&apos;s folder run <code>dudes project add</code>.</p>}
+    <AddProject floor={floor} />
+  </>;
 }
 
 function HirePortrait({ draft }: { readonly draft: HireDraft }) {
