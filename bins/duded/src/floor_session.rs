@@ -448,6 +448,7 @@ pub(crate) enum ActionKind {
     Look,
     Retire,
     Chat,
+    Project,
 }
 
 pub(crate) enum ReserveResult {

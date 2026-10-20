@@ -98,6 +98,7 @@ use crate::ports::{
 };
 
 mod agent_mcp;
+mod browser_project;
 mod browser_ticket;
 mod ticket_run;
 #[cfg(test)]
@@ -912,6 +913,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) resolved_browser_turn: Option<(TurnId, u64)>,
     /// The operator file the Settings page edits and a reload reads; `None` without one.
     pub(crate) operator_config: Option<PathBuf>,
+    /// The folders the Floor's project add will not take.
+    pub(crate) project_folders: crate::floor_project::Folders,
     /// Every `[floor.*]` switch as the last applied reload left it, shared with the gateway.
     pub(crate) switches: crate::floor_switches::SharedSwitches,
     /// Only attributed durable pauses and resumes populate this replayable request index.
@@ -1583,6 +1586,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     reply,
                 } => {
                     let answer = self.browser_settings_edit(&session, &request);
+                    let _ = reply.send(answer);
+                }
+                Job::Project {
+                    session,
+                    request,
+                    reply,
+                } => {
+                    let answer = self.browser_project(&session, &request);
                     let _ = reply.send(answer);
                 }
                 Job::Ticket {
@@ -2383,15 +2394,21 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     /// each of Claude, Codex and Pi that has an adapter in this run's registry, less any that the
     /// billing-credential guard withdraws because `profile` sets no ceiling that counts for it.
     fn offered_engines(&self, profile: &Profile) -> Vec<Provider> {
+        self.engines_for(&profile.agent_budget, &profile.goal_budget)
+    }
+
+    /// [`Self::offered_engines`] for a project that sets these ceilings.
+    fn engines_for(
+        &self,
+        agent: &dudes_proto::AgentBudget,
+        goal: &dudes_proto::GoalBudget,
+    ) -> Vec<Provider> {
         crate::floor_actions::BROWSER_ENGINES
             .into_iter()
             .filter(|engine| {
                 self.sup.adapters().get(*engine).is_some()
-                    && (self.guard_satisfied(
-                        *engine,
-                        &profile.agent_budget,
-                        Some(&profile.goal_budget),
-                    ) || !self.sup.billing_credential_visible(*engine))
+                    && (self.guard_satisfied(*engine, agent, Some(goal))
+                        || !self.sup.billing_credential_visible(*engine))
             })
             .collect()
     }
@@ -6784,6 +6801,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         crate::floor_settings_edit::SettingsRefusal::Unavailable,
                     ));
                 }
+                Job::Project { reply, .. } => {
+                    let _ = reply.send(Err(crate::floor_project::Refusal::Unavailable));
+                }
                 Job::Ticket { reply, .. } => {
                     let _ = reply.send(crate::floor_ticket::TicketReply::Unavailable);
                 }
@@ -7255,6 +7275,9 @@ pub(crate) fn refuse_action_off(live: crate::floor_switches::Switches, job: Job)
         }
         Job::Ticket { reply, .. } if !live.board => {
             let _ = reply.send(crate::floor_ticket::TicketReply::Refused(ACTION_OFF));
+        }
+        Job::Project { reply, .. } if !live.project => {
+            let _ = reply.send(Err(crate::floor_project::Refusal::ActionOff));
         }
         job => return Some(job),
     }

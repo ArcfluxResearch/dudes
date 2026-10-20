@@ -47,6 +47,30 @@ pub struct NewWorkspace {
     pub may_already_pass: bool,
 }
 
+impl NewWorkspace {
+    /// A project with the settings `dudes project add` gives one unless told otherwise: the
+    /// default department, turn cap and check timeout, and no ceilings. A check that only asks
+    /// whether files changed may pass before any work, as it does on a clean tree.
+    #[must_use]
+    pub fn with_defaults(path: PathBuf, id: String, label: String, argv: Vec<String>) -> Self {
+        Self {
+            path,
+            id,
+            label,
+            completion_check_label: crate::check::check_label(&argv),
+            department: crate::check::DEFAULT_DEPARTMENT.to_owned(),
+            agent_usd_per_day: None,
+            goal_usd: None,
+            hop_cap: crate::check::DEFAULT_HOP_CAP,
+            may_already_pass: argv == crate::check::changed_check(),
+            predicate_argv: argv,
+            predicate_timeout_s: crate::check::DEFAULT_PREDICATE_TIMEOUT_S,
+            tokens_per_day: None,
+            goal_tokens: None,
+        }
+    }
+}
+
 /// One more completion check for an enrolled workspace, as `dudes project check add` writes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewCheck {
@@ -206,11 +230,26 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 ///
 /// The first refusal, in a fixed order, before anything is written.
 pub fn add(config: &Path, new: &NewWorkspace) -> Result<Edit, WorkspaceError> {
-    let cwd = checked(new)?;
     let previous = read(config)?;
-    let mut document = parse(config, previous.as_deref())?;
+    let written = appended(config, previous.as_deref(), new)?;
+    write(config, previous, written)
+}
+
+/// [`add`]'s checks and edit applied to the file's bytes `previous`, which the caller read; the
+/// bytes to write, with nothing written here.
+///
+/// # Errors
+///
+/// The first refusal, in a fixed order.
+pub fn appended(
+    config: &Path,
+    previous: Option<&[u8]>,
+    new: &NewWorkspace,
+) -> Result<Vec<u8>, WorkspaceError> {
+    let cwd = checked(new)?;
+    let mut document = parse(config, previous)?;
     push(config, &mut document, new, &cwd)?;
-    write(config, previous, document.to_string().into_bytes())
+    Ok(document.to_string().into_bytes())
 }
 
 /// [`add`]'s checks and entry, into a document the caller writes.
@@ -488,8 +527,16 @@ pub fn remove(config: &Path, id: &str) -> Result<Edit, WorkspaceError> {
 ///
 /// A file that cannot be read, or whose list cannot be read.
 pub fn enrolled(config: &Path) -> Result<Vec<String>, WorkspaceError> {
-    let bytes = read(config)?;
-    let mut document = parse(config, bytes.as_deref())?;
+    enrolled_in(config, read(config)?.as_deref())
+}
+
+/// [`enrolled`] for the file's bytes `bytes`, which the caller read.
+///
+/// # Errors
+///
+/// Bytes whose list cannot be read.
+pub fn enrolled_in(config: &Path, bytes: Option<&[u8]>) -> Result<Vec<String>, WorkspaceError> {
+    let mut document = parse(config, bytes)?;
     let list = workspaces(config, &mut document)?;
     Ok(list
         .iter()
@@ -562,6 +609,32 @@ pub fn canonical_repository(path: &Path) -> Result<PathBuf, WorkspaceError> {
         return Err(WorkspaceError::NotARepository(canonical));
     }
     Ok(canonical)
+}
+
+/// The id a project at `path` gets: its folder name as a slug, suffixed to be unique among `ids`.
+#[must_use]
+pub fn project_id(path: &Path, ids: &[String]) -> String {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let slug: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .take(118)
+        .collect();
+    let base = slug.trim_matches('-');
+    let base = if base.is_empty() { "project" } else { base };
+    let mut id = base.to_owned();
+    let mut suffix = 2_u32;
+    while ids.contains(&id) {
+        id = format!("{base}-{suffix}");
+        suffix += 1;
+    }
+    id
 }
 
 /// The workspace id: 1–128 bytes of `[A-Za-z0-9_-]`.
@@ -646,6 +719,18 @@ fn write(
     Ok(Edit { previous, written })
 }
 
+/// A new operator file may hold the operator's settings, so only its owner reads it.
+#[cfg(unix)]
+fn private(file: &fs::File) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn private(_file: &fs::File) -> io::Result<()> {
+    Ok(())
+}
+
 /// Write `bytes` to a temporary file beside the operator file, or beside its symlink's target, and
 /// rename it over the original, keeping the original's permissions.
 pub fn replace(config: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -667,7 +752,7 @@ pub fn replace(config: &Path, bytes: &[u8]) -> io::Result<()> {
         .write_all(bytes)
         .and_then(|()| match fs::metadata(&target) {
             Ok(metadata) => file.set_permissions(metadata.permissions()),
-            Err(_) => Ok(()),
+            Err(_) => private(&file),
         })
         .and_then(|()| file.sync_all());
     drop(file);

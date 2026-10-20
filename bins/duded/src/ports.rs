@@ -875,6 +875,15 @@ pub enum Job {
             >,
         >,
     },
+    /// One authenticated Floor look at a folder, or add of it as a project.
+    Project {
+        /// Registry-derived admitting session.
+        session: crate::floor_session::SessionIdentity,
+        /// What to do with the folder.
+        request: crate::floor_project::ProjectRequest,
+        /// The answer, or why not.
+        reply: Sender<Result<crate::floor_project::ProjectAnswer, crate::floor_project::Refusal>>,
+    },
     /// One authenticated Floor retirement of the agent it names.
     Retire {
         /// Registry-derived admitting session.
@@ -1050,6 +1059,9 @@ pub struct ClosingJob {
 pub struct Handle {
     jobs: Sender<Job>,
     floor_admission: Arc<Mutex<()>>,
+    /// The sequence number of the latest read of the operator file, held across a read for a
+    /// reload and across a whole project add, so the two never interleave.
+    reload_lock: Arc<Mutex<u64>>,
     #[cfg(test)]
     floor_submission_pause: Arc<Mutex<Option<FloorSubmissionPause>>>,
     next_hook: Arc<AtomicU64>,
@@ -1432,6 +1444,21 @@ impl Handle {
         .map_err(|_| SettingsRefusal::Unavailable)?;
         answers.recv().map_err(|_| SettingsRefusal::Unavailable)?
     }
+    pub(crate) fn project(
+        &self,
+        session: crate::floor_session::SessionIdentity,
+        request: crate::floor_project::ProjectRequest,
+    ) -> Result<crate::floor_project::ProjectAnswer, crate::floor_project::Refusal> {
+        use crate::floor_project::Refusal;
+        let (reply, answers) = mpsc::channel();
+        self.send_floor(Job::Project {
+            session,
+            request,
+            reply,
+        })
+        .map_err(|_| Refusal::Unavailable)?;
+        answers.recv().map_err(|_| Refusal::Unavailable)?
+    }
     pub(crate) fn retire(
         &self,
         session: crate::floor_session::SessionIdentity,
@@ -1483,6 +1510,7 @@ impl Handle {
         Self {
             jobs,
             floor_admission: Arc::new(Mutex::new(())),
+            reload_lock: Arc::new(Mutex::new(0)),
             #[cfg(test)]
             floor_submission_pause: Arc::new(Mutex::new(None)),
             next_hook: Arc::new(AtomicU64::new(1)),
@@ -1502,6 +1530,13 @@ impl Handle {
     pub fn with_hook_reply_timeout(mut self, timeout: Duration) -> Self {
         self.hook_reply_timeout = timeout;
         self
+    }
+
+    /// The reload sequence lock, shared by every clone of this handle. The tests hold it to show
+    /// that a project add yields to a reload in progress.
+    #[doc(hidden)]
+    pub fn reload_lock(&self) -> Arc<Mutex<u64>> {
+        Arc::clone(&self.reload_lock)
     }
 
     /// The flag [`Self::stop_waiting`] sets, for work that must stop when the daemon does.

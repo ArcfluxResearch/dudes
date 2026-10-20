@@ -343,7 +343,9 @@ version = "0.91.0"
 dependencies = [
  "dudes-proto",
  "dudes-types",
+ "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.21",
  "toml_edit",
 ]

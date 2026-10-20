@@ -38,6 +38,9 @@ use crate::floor_goal::{GoalOutcome, GoalRefusal, GoalRequest, MAX_GOAL_BODY_BYT
 use crate::floor_look::{LookOutcome, LookRefusal, LookRequest, MAX_LOOK_BODY_BYTES};
 use crate::floor_memory::{MAX_MEMORY_BODY_BYTES, MemoryReads, MemoryRequest, MemoryRoute};
 use crate::floor_peer::{AgentRoots, PeerGate};
+use crate::floor_project::{
+    MAX_PROJECT_BODY_BYTES, ProjectAnswer, ProjectRequest, Refusal as ProjectRefusal,
+};
 use crate::floor_rename::{MAX_RENAME_BODY_BYTES, RenameOutcome, RenameRefusal, RenameRequest};
 use crate::floor_retire::{MAX_RETIRE_BODY_BYTES, RetireOutcome, RetireRefusal, RetireRequest};
 use crate::floor_session::{
@@ -102,6 +105,9 @@ const LOOK_PATH: &str = "/floor/look";
 /// unrouted POST.
 const RETIRE_PATH: &str = "/floor/retire";
 const SETTINGS_PATH: &str = "/floor/settings";
+/// Routed only while `[floor.project]` is on; otherwise a POST here is any unrouted POST.
+const PROJECT_PREVIEW_PATH: &str = "/floor/project/preview";
+const PROJECT_ADD_PATH: &str = "/floor/project/add";
 const TERMINAL_PATH: &str = "/floor/terminal";
 /// Routed only when the operator enabled the Git tab; otherwise a POST here is any
 /// unrouted POST.
@@ -1116,6 +1122,7 @@ enum ActionRoute {
     Look,
     Retire,
     Settings,
+    Project(ProjectVerb),
     Git,
     Diff,
     Memory(MemoryRoute),
@@ -1150,6 +1157,8 @@ impl ActionRoute {
             LOOK_PATH if live.control.pause_resume() => Some(Self::Look),
             RETIRE_PATH if live.control.retire() => Some(Self::Retire),
             SETTINGS_PATH => Some(Self::Settings),
+            PROJECT_PREVIEW_PATH if live.project => Some(Self::Project(ProjectVerb::Preview)),
+            PROJECT_ADD_PATH if live.project => Some(Self::Project(ProjectVerb::Add)),
             GIT_PATH if catalog.git().is_some() => Some(Self::Git),
             DIFF_PATH if catalog.diff().is_some() => Some(Self::Diff),
             MEMORY_PAGE_PATH => Some(Self::Memory(MemoryRoute::Page)),
@@ -1170,6 +1179,7 @@ impl ActionRoute {
             Self::Look => MAX_LOOK_BODY_BYTES,
             Self::Retire => MAX_RETIRE_BODY_BYTES,
             Self::Settings => MAX_SETTINGS_BODY_BYTES,
+            Self::Project(_) => MAX_PROJECT_BODY_BYTES,
             Self::Git => MAX_GIT_BODY_BYTES,
             Self::Diff => MAX_DIFF_BODY_BYTES,
             Self::Memory(_) => MAX_MEMORY_BODY_BYTES,
@@ -1420,6 +1430,9 @@ fn dispatch<'a>(
                 }
                 (ActionRoute::Settings, Admitted::Session(session)) => {
                     settings_response(session, handle, body)
+                }
+                (ActionRoute::Project(verb), Admitted::Session(session)) => {
+                    project_response(verb, session, handle, body)
                 }
                 (ActionRoute::Git, Admitted::Session(session)) => {
                     return git_response(&session, handle, catalog, phase, body)
@@ -2101,6 +2114,76 @@ fn retire_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -
             error_response(503, "Service Unavailable")
         }
         Err(RetireRefusal::UnavailableNoEffect) => error_response(503, "Service Unavailable"),
+    }
+}
+
+/// Which project request a routed POST carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProjectVerb {
+    Preview,
+    Add,
+}
+
+/// The project preview and add. A preview changes nothing. An add keeps its attempt for as long
+/// as it runs, so a retry meets `pending`; once it has run, adding the same folder again answers
+/// with the project that is already there.
+fn project_response<'a>(
+    verb: ProjectVerb,
+    session: SessionIdentity,
+    handle: &Handle,
+    body: &[u8],
+) -> Response<'a> {
+    let refused = |reason: &str| {
+        action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({ "state": "refused", "reason": reason }),
+        )
+    };
+    let (request, _reservation) = match verb {
+        ProjectVerb::Preview => {
+            let Some(request) = crate::floor_project::parse_preview(body) else {
+                return error_response(400, "Bad Request");
+            };
+            (ProjectRequest::Preview(request), None)
+        }
+        ProjectVerb::Add => {
+            let Some(request) = crate::floor_project::parse_add(body) else {
+                return error_response(400, "Bad Request");
+            };
+            let reservation =
+                match session.reserve(ActionKind::Project, request.attempt_id, request.digest) {
+                    ReserveResult::Owner(reservation) => reservation,
+                    ReserveResult::Pending => {
+                        return action_json(
+                            202,
+                            "Accepted",
+                            &serde_json::json!({
+                                "attempt_id": request.attempt_wire, "state": "pending"
+                            }),
+                        );
+                    }
+                    ReserveResult::Conflict => return error_response(409, "Conflict"),
+                    ReserveResult::Forbidden => return error_response(403, "Forbidden"),
+                };
+            (ProjectRequest::Add(request), Some(reservation))
+        }
+    };
+    match handle.project(session, request) {
+        Ok(ProjectAnswer::Preview(preview)) => action_json(
+            200,
+            "OK",
+            &serde_json::to_value(preview).expect("a preview is finite JSON"),
+        ),
+        Ok(ProjectAnswer::Added(added)) => action_json(
+            200,
+            "OK",
+            &serde_json::to_value(added).expect("an added project is finite JSON"),
+        ),
+        Err(ProjectRefusal::Reason(reason)) => refused(reason.code()),
+        Err(ProjectRefusal::ActionOff) => refused(crate::floor_switches::ACTION_OFF),
+        Err(ProjectRefusal::Forbidden) => error_response(403, "Forbidden"),
+        Err(ProjectRefusal::Unavailable) => error_response(503, "Service Unavailable"),
     }
 }
 

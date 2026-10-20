@@ -309,6 +309,24 @@ where
     )
 }
 
+/// The folders the Floor's project add refuses: home itself and the daemon's own folders.
+fn project_folders(settings: &Settings) -> crate::floor_project::Folders {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let config = settings
+        .operator_config
+        .as_deref()
+        .and_then(std::path::Path::parent);
+    let own: Vec<&std::path::Path> = [
+        Some(settings.state_dir.as_path()),
+        Some(settings.runtime_dir.as_path()),
+        config,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    crate::floor_project::Folders::new(home.as_deref(), &own)
+}
+
 fn memory_from_settings(settings: &Settings) -> Result<dudes_journal::MemoryCondenseConfig> {
     settings
         .operator_config
@@ -599,6 +617,7 @@ where
             resolved_browser_turn: None,
             switches,
             operator_config: settings.operator_config.clone(),
+            project_folders: project_folders(settings),
             control_index,
             recovery_authority: None,
             #[cfg(test)]
