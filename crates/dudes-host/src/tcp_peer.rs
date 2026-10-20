@@ -318,10 +318,13 @@ mod platform {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
+    use std::net::{Ipv4Addr, SocketAddrV4};
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use std::net::{SocketAddr, TcpListener, TcpStream};
 
     use super::*;
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn v4(addr: SocketAddr) -> SocketAddrV4 {
         match addr {
             SocketAddr::V4(addr) => addr,
