@@ -10,7 +10,7 @@ A background daemon keeps the agent working until the daemon's own run of that
 check passes. The **Floor** is a 3D office in your browser. It shows each agent at a desk, and what
 you see there is what the daemon knows.
 
-![The Floor in a browser. An isometric voxel office holds a crew of eight: four agents type at desks, two stand at the goal board between turns, one sits on the lounge sofa under a question mark, and one stands at the bell after its goal is done. The top bar counts the crew by status. The Crew list on the left shows each agent's initial, role, engine, workspace, goal and status. The drawer on the right is open on the waiting agent, with a portrait of its voxel figure, its question, an answer box and the buttons to pause, retire or attach to it.](.github/readme/floor.webp)
+![The Floor in a browser. An isometric voxel office holds a crew of eight: four agents type at desks, two stand at the goal board between turns, one sits on the lounge sofa under a question mark, and one stands at the bell after its goal is done. The top bar counts the crew by status. The Crew list on the left shows each agent's initial, role, engine, project, goal and status. The drawer on the right is open on the waiting agent, with a portrait of its voxel figure, its question, an answer box and the buttons to pause, retire or attach to it.](.github/readme/floor.webp)
 
 ## Status
 

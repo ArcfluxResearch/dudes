@@ -51,3 +51,9 @@ test('a screen with plain words passes, and an allowed exit must still be shown'
   await assert.rejects(look([exit], 'settings', 'Nothing to run here.').then((journey) => journey.finish()),
     /the allowed exit "update check" no longer shows on settings/);
 });
+
+test('a screen that says workspace instead of project fails the journey and names the screen', async () => {
+  const journey = await look([], 'hire: where', 'Which workspace? Pick one.');
+  assert.deepEqual(journey.oldWords, ['hire: where: Which workspace? Pick one.']);
+  await assert.rejects(journey.finish(), /"workspace" shown instead of "project" on hire: where/);
+});

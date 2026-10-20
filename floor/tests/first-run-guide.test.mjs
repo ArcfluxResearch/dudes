@@ -82,7 +82,7 @@ test('Engines is done only when Setup finds a hireable program and offers instal
 test('Workspaces changes from not done to done on the enrollment resync without a page reload', () => {
   const epoch = snapshot();
   assert.equal(done('workspaces'), false);
-  assert.match(view('workspaces'), /No enrolled projects/);
+  assert.match(view('workspaces'), /No projects yet/);
   assert.match(view('workspaces'), /Adding a project from this page is off/);
   assert.doesNotMatch(view('workspaces'), /dudes project add/);
   applyServerFrame('{"type":"floor.resync"}', epoch);
