@@ -381,6 +381,7 @@ fn no_post_route_acts_without_a_clean_session_secret_body_and_peer() {
         .iter()
         .copied()
         .filter(|path| !matches!(*path, STREAM_PATH | TERMINAL_PATH | SIGN_IN_PATH))
+        .filter(|path| !matches!(*path, SESSION_CHECK_PATH | SESSION_END_PATH))
         .filter(|path| !matches!(*path, GIT_PATH | DIFF_PATH))
         .collect();
     assert!(routes.len() >= 22);
@@ -458,6 +459,58 @@ fn no_post_route_acts_without_a_clean_session_secret_body_and_peer() {
         assert_eq!(nobody.outcome, Outcome::Status(403), "{path}");
         assert_eq!(nobody.reached_a_handler, 0, "{path}");
     }
+}
+
+#[test]
+fn the_session_routes_say_unknown_only_to_a_clean_peer_and_end_only_for_the_session_itself() {
+    let signed = signed_in();
+    let (cookie, secret) = (signed.cookie.as_str(), signed.secret.as_str());
+    let check = |sessions: &FloorSessions| {
+        let request = json_post(SESSION_CHECK_PATH, Some(cookie), Some(secret), b"{}");
+        drive(&request, sessions, &outside()).outcome
+    };
+    let end = json_post(SESSION_END_PATH, Some(cookie), Some(secret), b"{}");
+
+    let from_an_agent = drive(&end, &signed.sessions, &inside_an_agent());
+    assert_eq!(from_an_agent.outcome, Outcome::Status(403));
+    assert_eq!(
+        from_an_agent.audit,
+        vec![(
+            path_of(SESSION_END_PATH),
+            Some(agent()),
+            FloorPeerRefusal::Agent
+        )]
+    );
+    assert_eq!(
+        check(&signed.sessions),
+        Outcome::Status(200),
+        "an agent cannot sign the user out"
+    );
+
+    for (what, request) in [
+        (
+            "no credentials",
+            json_post(SESSION_END_PATH, None, None, b"{}"),
+        ),
+        (
+            "a wrong secret",
+            json_post(SESSION_END_PATH, Some(cookie), Some(&"A".repeat(43)), b"{}"),
+        ),
+    ] {
+        let driven = drive(&request, &signed.sessions, &outside());
+        assert_eq!(driven.outcome, Outcome::Status(401), "{what}");
+    }
+    assert_eq!(
+        check(&signed.sessions),
+        Outcome::Status(200),
+        "an unknown request ends nothing"
+    );
+
+    assert_eq!(
+        drive(&end, &signed.sessions, &outside()).outcome,
+        Outcome::Status(200)
+    );
+    assert_eq!(check(&signed.sessions), Outcome::Status(401));
 }
 
 fn path_of(path: &str) -> &'static str {

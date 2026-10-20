@@ -519,7 +519,7 @@ fn chat_routes_refuse_oversize_and_expired_sessions_without_waiting_for_body() {
         );
         assert_eq!(http(browser.addr, request.as_bytes()).0, 403);
     }
-    browser.clock.advance(30 * 60_000);
+    browser.clock.advance(24 * 60 * 60_000);
     assert_eq!(
         http(
             browser.addr,

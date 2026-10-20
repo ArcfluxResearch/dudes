@@ -24,7 +24,7 @@ const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/floor-release-v3"
 );
-const MINUTE_MS: i64 = 60_000;
+const HOUR_MS: i64 = 60 * 60_000;
 
 fn free_port() -> u16 {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve loopback port");
@@ -114,7 +114,7 @@ fn exchange(addr: SocketAddr, host: &str, origin: &str, bootstrap: &str) -> (Str
     assert!(set_cookie.contains("; Path=/floor/"), "{set_cookie}");
     assert!(set_cookie.contains("; HttpOnly"), "{set_cookie}");
     assert!(set_cookie.contains("; SameSite=Strict"), "{set_cookie}");
-    assert!(set_cookie.contains("; Max-Age=28800"), "{set_cookie}");
+    assert!(set_cookie.contains("; Max-Age=86400"), "{set_cookie}");
     assert!(
         !set_cookie.contains("Domain="),
         "host-only cookie: {set_cookie}"
@@ -236,18 +236,18 @@ fn bootstrap_exchange_is_single_use_origin_bound_and_expiring() {
 
     let idle = issue(&settings);
     let (idle_cookie, idle_csrf) = exchange(addr, &host, &origin, &idle.bootstrap);
-    clock.advance(30 * MINUTE_MS);
+    clock.advance(24 * HOUR_MS);
     assert!(
         sessions
             .authorize_read(&host, &origin, &idle_cookie, &idle_csrf)
             .is_none(),
-        "30 minutes idle expires the session"
+        "24 hours idle expires the session"
     );
 
     let active = issue(&settings);
     let (active_cookie, active_csrf) = exchange(addr, &host, &origin, &active.bootstrap);
-    for _ in 0..16 {
-        clock.advance(29 * MINUTE_MS);
+    for _ in 0..31 {
+        clock.advance(23 * HOUR_MS);
         assert!(
             sessions
                 .authorize_read(&host, &origin, &active_cookie, &active_csrf)
@@ -255,12 +255,12 @@ fn bootstrap_exchange_is_single_use_origin_bound_and_expiring() {
             "activity within the idle window keeps the session live"
         );
     }
-    clock.advance(16 * MINUTE_MS);
+    clock.advance(8 * HOUR_MS);
     assert!(
         sessions
             .authorize_read(&host, &origin, &active_cookie, &active_csrf)
             .is_none(),
-        "eight hours absolute expires even an active session"
+        "thirty days absolute expires even an active session"
     );
 
     let before_restart = issue(&settings);
@@ -456,6 +456,114 @@ fn the_page_secret_reaches_the_snapshot_and_a_cookie_alone_does_not() {
     );
     drop(browser);
 
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// A check or a sign-out of the session, as the page sends it.
+fn post_standing(
+    addr: SocketAddr,
+    path: &str,
+    host: &str,
+    origin: &str,
+    credentials: Option<(&str, &str)>,
+) -> (String, String) {
+    let mut request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n"
+    );
+    if let Some((cookie, csrf)) = credentials {
+        use std::fmt::Write as _;
+        let _ = write!(
+            &mut request,
+            "Cookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\n"
+        );
+    }
+    request.push_str("\r\n{}");
+    let mut stream = TcpStream::connect(addr).expect("connect to the Floor gateway");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("read timeout");
+    stream.write_all(request.as_bytes()).expect("write request");
+    let mut response = Vec::new();
+    let _ = stream.read_to_end(&mut response);
+    let (head, body) = response_parts(&response);
+    (head.to_owned(), String::from_utf8_lossy(body).into_owned())
+}
+
+#[test]
+fn signing_out_closes_the_stream_and_only_an_unknown_session_is_told_so() {
+    let fixture = Fixture::new();
+    let port = free_port();
+    let settings = settings(&fixture, Some(port));
+    let host = format!("127.0.0.1:{port}");
+    let origin = format!("http://{host}");
+    let daemon = boot(
+        &settings,
+        seams(
+            &settings,
+            SharedHost::new(),
+            Arc::new(ScriptedRunner::default()),
+            Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
+            Witness::default(),
+        ),
+    )
+    .expect("daemon boot");
+    let addr = daemon.floor_addr().expect("Floor address");
+    let probe = daemon.floor_gateway_probe().expect("Floor gateway probe");
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &host, &origin, &issue(&settings).bootstrap);
+    let check = |origin: &str, credentials: Option<(&str, &str)>| {
+        post_standing(addr, "/floor/session/check", &host, origin, credentials)
+    };
+
+    let (head, body) = check(&origin, Some((&cookie, &csrf)));
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head}");
+    assert!(
+        head.contains("; Max-Age=86400"),
+        "the cookie is renewed: {head}"
+    );
+    assert_eq!(body, r#"{"session":"live"}"#);
+
+    let wrong_secret = "A".repeat(SESSION_BOOTSTRAP_LEN);
+    for credentials in [Some((cookie.as_str(), wrong_secret.as_str())), None] {
+        let (head, body) = check(&origin, credentials);
+        assert!(head.starts_with("HTTP/1.1 401 Unauthorized\r\n"), "{head}");
+        assert_eq!(body, r#"{"session":"unknown"}"#);
+    }
+    let (head, body) = check("http://localhost.invalid", Some((&cookie, &csrf)));
+    assert!(head.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{head}");
+    assert_eq!(
+        body, "",
+        "a refusal that is not about the session says nothing of it"
+    );
+
+    let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
+    let (mut stream, upgrade) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
+    assert!(upgrade.starts_with("HTTP/1.1 101"), "{upgrade:?}");
+    wait_for_live(&probe, 1);
+
+    let (head, body) = post_standing(
+        addr,
+        "/floor/session/end",
+        &host,
+        &origin,
+        Some((&cookie, &csrf)),
+    );
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head}");
+    assert!(
+        head.contains("; Max-Age=0"),
+        "the browser forgets the cookie: {head}"
+    );
+    assert_eq!(body, r#"{"session":"ended"}"#);
+    wait_for_live(&probe, 0);
+    stream
+        .set_read_timeout(Some(CLOSE_BOUND))
+        .expect("read timeout");
+    let mut rest = Vec::new();
+    let _ = stream.read_to_end(&mut rest);
+
+    let (head, body) = check(&origin, Some((&cookie, &csrf)));
+    assert!(head.starts_with("HTTP/1.1 401 Unauthorized\r\n"), "{head}");
+    assert_eq!(body, r#"{"session":"unknown"}"#);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 

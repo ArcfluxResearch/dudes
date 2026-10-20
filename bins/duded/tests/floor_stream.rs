@@ -1283,7 +1283,7 @@ fn append_poison_publishes_only_the_stopped_fact_and_keeps_authenticated_reads()
     );
     drop(second);
     wait_for_live(&probe, 1);
-    clock.advance(30 * 60_000);
+    clock.advance(24 * 60 * 60_000);
     browser.expect_closed(&probe);
     drop(browser);
     running.stop(duded::ExitCause::Ended);

@@ -4513,7 +4513,7 @@ fn browser_answer_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(30 * 60 * 1000);
+    clock.advance(24 * 60 * 60 * 1000);
     let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
     let (head, response) = post_answer(
         addr,
@@ -6370,7 +6370,7 @@ fn browser_pause_resume_refuses_wrong_session_host_origin_and_csrf_without_effec
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(30 * 60 * 1000);
+    clock.advance(24 * 60 * 60 * 1000);
     let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
     for path in [PAUSE, RESUME] {
         let (head, response) = post_control(
@@ -8073,7 +8073,7 @@ fn browser_goal_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(30 * 60 * 1000);
+    clock.advance(24 * 60 * 60 * 1000);
     let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
     let (head, response) = post_goal(
         addr,
@@ -11410,7 +11410,7 @@ fn browser_retire_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(30 * 60 * 1000);
+    clock.advance(24 * 60 * 60 * 1000);
     let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
     let (head, response) = post_retire(
         addr,
@@ -14527,7 +14527,7 @@ fn browser_renew_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(30 * 60 * 1000);
+    clock.advance(24 * 60 * 60 * 1000);
     let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
     let renewal = renew_body(&request_id(1), agent, goal, SHOWN);
     let (head, response) = post_renew(addr, &expired_cookie, &expired_csrf, &renewal);

@@ -14,8 +14,9 @@
 //!
 //! Sign-in reads its body first, then checks the peer, and only then does the exchange spend the
 //! one-time link, so a refused agent never spends it. A socket checks the peer before it takes a
-//! slot. The route's
-//! switch is part of resolving it: a route that is off is not a route. The head's shape (framing,
+//! slot. A check or a sign-out of the session checks the peer too, then looks the session up
+//! without extending it: an unknown session is an answer, not a refusal, and the only one that
+//! says so. The route's switch is part of resolving it: a route that is off is not a route. The head's shape (framing,
 //! Content-Type, Content-Length against the route's cap) is checked by the parsers in the parent
 //! module before any body is read.
 
@@ -28,7 +29,8 @@ use super::{
     FloorSessions, GIT_PATH, GOAL_PATH, Handle, INSPECT_RECOVERY_PATH, LOOK_PATH,
     MEMORY_ENTRY_PATH, MEMORY_PAGE_PATH, ONBOARD_PATH, PAUSE_PATH, PROJECT_ADD_PATH,
     PROJECT_PREVIEW_PATH, RECEIPT_RECOVERY_PATH, RENAME_PATH, RENEW_PATH, RESUME_PATH, RETIRE_PATH,
-    ReceiptSession, RecoveryRoute, Response, SETTINGS_PATH, SIGN_IN_PATH, STREAM_PATH,
+    ReceiptSession, RecoveryRoute, Response, SESSION_CHECK_PATH, SESSION_END_PATH, SETTINGS_PATH,
+    SIGN_IN_PATH, STREAM_PATH,
     SUBMIT_RECOVERY_PATH, SessionIdentity, SocketAddr, SocketRoute, SocketSession, TERMINAL_PATH,
     TicketRoute, error_response,
 };
@@ -38,6 +40,8 @@ use crate::floor_peer::Verdict;
 /// gateway source names, so a route added without being listed fails the build.
 pub(super) const DYNAMIC_PATHS: &[&str] = &[
     SIGN_IN_PATH,
+    SESSION_CHECK_PATH,
+    SESSION_END_PATH,
     STREAM_PATH,
     TERMINAL_PATH,
     INSPECT_RECOVERY_PATH,
@@ -73,8 +77,18 @@ pub(super) const DYNAMIC_PATHS: &[&str] = &[
 #[derive(Clone, Copy)]
 enum Kind {
     SignIn,
+    Standing(StandingRoute),
     Action(ActionRoute),
     Socket(SocketRoute),
+}
+
+/// The two routes that ask about the session itself rather than act for it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum StandingRoute {
+    /// Is the session the page holds still known?
+    Check,
+    /// Sign the session out.
+    End,
 }
 
 /// A dynamic route that is on. Only [`Route::of`] makes one.
@@ -90,6 +104,10 @@ impl Route {
         let path = DYNAMIC_PATHS.iter().copied().find(|known| *known == path)?;
         let kind = if method == "POST" && path == SIGN_IN_PATH {
             Kind::SignIn
+        } else if method == "POST" && path == SESSION_CHECK_PATH {
+            Kind::Standing(StandingRoute::Check)
+        } else if method == "POST" && path == SESSION_END_PATH {
+            Kind::Standing(StandingRoute::End)
         } else if let Some(route) = ActionRoute::of(method, path, catalog) {
             Kind::Action(route)
         } else {
@@ -101,7 +119,14 @@ impl Route {
     pub(super) const fn action(self) -> Option<ActionRoute> {
         match self.kind {
             Kind::Action(route) => Some(route),
-            Kind::SignIn | Kind::Socket(_) => None,
+            Kind::SignIn | Kind::Standing(_) | Kind::Socket(_) => None,
+        }
+    }
+
+    pub(super) const fn standing(self) -> Option<StandingRoute> {
+        match self.kind {
+            Kind::Standing(route) => Some(route),
+            Kind::SignIn | Kind::Action(_) | Kind::Socket(_) => None,
         }
     }
 
@@ -112,7 +137,7 @@ impl Route {
     pub(super) const fn socket(self) -> Option<SocketRoute> {
         match self.kind {
             Kind::Socket(route) => Some(route),
-            Kind::SignIn | Kind::Action(_) => None,
+            Kind::SignIn | Kind::Standing(_) | Kind::Action(_) => None,
         }
     }
 
@@ -125,7 +150,7 @@ impl Route {
     /// operating system cannot say who owns a connection, only the routes that do not are served.
     const fn acting(self) -> bool {
         match self.kind {
-            Kind::SignIn | Kind::Socket(SocketRoute::Stream) => false,
+            Kind::SignIn | Kind::Standing(_) | Kind::Socket(SocketRoute::Stream) => false,
             Kind::Socket(SocketRoute::Terminal) => true,
             Kind::Action(route) => !matches!(
                 route,
@@ -164,6 +189,8 @@ pub(super) struct SignIn {
 /// What a request has earned. Handlers take these and nothing less.
 pub(super) enum Admitted {
     SignIn(SignIn),
+    /// The session a check or a sign-out named, or `None` when the daemon does not know it.
+    Standing(Option<SessionIdentity>),
     Session(SessionIdentity),
     Receipt(ReceiptSession),
     Socket(SocketSession),
@@ -232,6 +259,23 @@ impl Guard<'_> {
                         host: head.host.clone(),
                         origin: head.origin.clone(),
                     }),
+                    body,
+                })
+            }
+            Kind::Standing(_) => {
+                self.peer(route, endpoints)?;
+                let body = read_body()?;
+                clean_body(&body)?;
+                let identity = head.credentials.as_ref().and_then(|credentials| {
+                    sessions.authorize_standing(
+                        &head.host,
+                        &head.origin,
+                        &credentials.cookie,
+                        &credentials.secret,
+                    )
+                });
+                Ok(Admission {
+                    admitted: Admitted::Standing(identity),
                     body,
                 })
             }

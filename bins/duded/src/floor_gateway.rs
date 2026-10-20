@@ -61,7 +61,9 @@ mod guard;
 #[cfg(test)]
 mod guard_tests;
 mod recovery;
-use guard::{Admission, Admitted, Credentials, Denied, Endpoints, Guard, Head, Route, SignIn};
+use guard::{
+    Admission, Admitted, Credentials, Denied, Endpoints, Guard, Head, Route, SignIn, StandingRoute,
+};
 use recovery::RecoveryRoute;
 
 /// The configured public root for the first static shell.
@@ -78,10 +80,15 @@ const MAX_REQUEST_HEAD: usize = 16 * 1024;
 const MAX_REQUEST_DRAIN_BYTES: usize = 64 * 1024;
 const REQUEST_DRAIN_DEADLINE: Duration = Duration::from_millis(200);
 const MAX_BOOTSTRAP_BODY: usize = 4 * 1024;
+const MAX_STANDING_BODY: usize = 64;
 const MAX_HEADERS: usize = 64;
 const MAX_HTTP_CONNECTIONS: usize = 32;
 const STREAM_PATH: &str = "/floor/stream";
 const SIGN_IN_PATH: &str = "/floor/session";
+/// Asks whether the session the page holds is still known.
+const SESSION_CHECK_PATH: &str = "/floor/session/check";
+/// Signs the session out.
+const SESSION_END_PATH: &str = "/floor/session/end";
 const INSPECT_RECOVERY_PATH: &str = "/floor/recovery/inspect";
 const SUBMIT_RECOVERY_PATH: &str = "/floor/recovery/submit";
 const RECEIPT_RECOVERY_PATH: &str = "/floor/recovery/receipt";
@@ -1392,6 +1399,11 @@ fn dispatch<'a>(
     } = guard;
     let response = match (admitted, route.action()) {
         (Admitted::SignIn(sign_in), _) => exchange_response(sessions, &sign_in, body),
+        (Admitted::Standing(identity), _) => match route.standing() {
+            Some(StandingRoute::Check) => standing_response(identity.as_ref(), &head, false),
+            Some(StandingRoute::End) => standing_response(identity.as_ref(), &head, true),
+            None => error_response(403, "Forbidden"),
+        },
         (Admitted::Socket(session), _) => {
             return Some(ConnectionAction::Upgrade(Upgrade {
                 accept: head.accept,
@@ -1400,7 +1412,14 @@ fn dispatch<'a>(
             }));
         }
         (admitted @ (Admitted::Session(_) | Admitted::Receipt(_)), Some(action)) => {
-            match (action, admitted) {
+            // Using the session renews it, so the browser's cookie is renewed with it.
+            let renewed = match (&admitted, &head.credentials) {
+                (Admitted::Session(session), Some(credentials)) => session
+                    .cookie_max_age_s()
+                    .map(|age| session_cookie_header(&credentials.cookie, age)),
+                _ => None,
+            };
+            let mut response = match (action, admitted) {
                 (ActionRoute::Recovery(route), admitted) => {
                     recovery::response(route, admitted, handle, body)
                 }
@@ -1435,12 +1454,20 @@ fn dispatch<'a>(
                     project_response(verb, session, handle, body)
                 }
                 (ActionRoute::Git, Admitted::Session(session)) => {
-                    return git_response(&session, handle, catalog, phase, body)
-                        .map(ConnectionAction::Response);
+                    return git_response(&session, handle, catalog, phase, body).map(|response| {
+                        ConnectionAction::Response(Response {
+                            set_cookie: renewed,
+                            ..response
+                        })
+                    });
                 }
                 (ActionRoute::Diff, Admitted::Session(session)) => {
-                    return diff_response(&session, handle, catalog, phase, body)
-                        .map(ConnectionAction::Response);
+                    return diff_response(&session, handle, catalog, phase, body).map(|response| {
+                        ConnectionAction::Response(Response {
+                            set_cookie: renewed,
+                            ..response
+                        })
+                    });
                 }
                 (ActionRoute::Memory(route), Admitted::Session(session)) => {
                     memory_response(route, &session, handle, catalog.memory, body)
@@ -1452,7 +1479,9 @@ fn dispatch<'a>(
                     ticket_response(route, session, handle, catalog, body)
                 }
                 _ => error_response(403, "Forbidden"),
-            }
+            };
+            response.set_cookie = renewed;
+            response
         }
         _ => error_response(403, "Forbidden"),
     };
@@ -1526,6 +1555,8 @@ fn parse_request<'a>(head: &[u8], catalog: Catalog<'a>, sessions: &FloorSessions
             upgrade_request(route, socket, request.version, request.headers, sessions)
         } else if route.is_sign_in() {
             exchange_request(route, request.version, request.headers, sessions)
+        } else if route.standing().is_some() {
+            standing_request(route, request.version, request.headers)
         } else {
             action_request(route, request.version, request.headers)
         };
@@ -1626,10 +1657,54 @@ fn exchange_response<'a>(sessions: &FloorSessions, sign_in: &SignIn, body: &[u8]
         content_type: Some("application/json"),
         cache: "no-store",
         allow: None,
-        set_cookie: Some(format!(
-            "{SESSION_COOKIE_NAME}={}; Path={BASE_PATH}; HttpOnly; SameSite=Strict; Max-Age=28800",
-            exchange.cookie
+        set_cookie: Some(session_cookie_header(
+            &exchange.cookie,
+            exchange.cookie_max_age_s,
         )),
+    }
+}
+
+/// The `Set-Cookie` value that gives the browser this session cookie for `max_age_s` seconds. Zero
+/// seconds tells it to forget the cookie.
+fn session_cookie_header(value: &str, max_age_s: i64) -> String {
+    format!(
+        "{SESSION_COOKIE_NAME}={value}; Path={BASE_PATH}; HttpOnly; SameSite=Strict; Max-Age={max_age_s}"
+    )
+}
+
+/// The answer to a check or a sign-out. A session the daemon does not know is answered `401` with
+/// `{"session":"unknown"}`, which only these two routes say: any other refusal (a wrong origin, a
+/// refused peer) is a `403` and says nothing about the session, so a page never signs itself out
+/// over a refusal that is not about its session.
+fn standing_response<'a>(
+    identity: Option<&SessionIdentity>,
+    head: &Head,
+    end: bool,
+) -> Response<'a> {
+    let Some(session) = identity else {
+        return action_json(
+            401,
+            "Unauthorized",
+            &serde_json::json!({ "session": "unknown" }),
+        );
+    };
+    if end {
+        session.end();
+        return Response {
+            set_cookie: head
+                .credentials
+                .as_ref()
+                .map(|credentials| session_cookie_header(&credentials.cookie, 0)),
+            ..action_json(200, "OK", &serde_json::json!({ "session": "ended" }))
+        };
+    }
+    Response {
+        set_cookie: head.credentials.as_ref().and_then(|credentials| {
+            session
+                .cookie_max_age_s()
+                .map(|age| session_cookie_header(&credentials.cookie, age))
+        }),
+        ..action_json(200, "OK", &serde_json::json!({ "session": "live" }))
     }
 }
 
@@ -1645,6 +1720,27 @@ fn action_request(
     let Some(action) = route.action() else {
         return Parsed::Response(error_response(403, "Forbidden"));
     };
+    browser_head(route, version, headers, action.max_body(), true)
+}
+
+/// The head of a check or a sign-out. Unlike an action it may carry no cookie or secret, or a
+/// malformed one: the page asks because it is not sure it still has a session, and the answer to
+/// a request with no usable credentials is that the session is unknown.
+fn standing_request(
+    route: Route,
+    version: Option<u8>,
+    headers: &[httparse::Header<'_>],
+) -> Parsed<'static> {
+    browser_head(route, version, headers, MAX_STANDING_BODY, false)
+}
+
+fn browser_head(
+    route: Route,
+    version: Option<u8>,
+    headers: &[httparse::Header<'_>],
+    max_body: usize,
+    credentials_required: bool,
+) -> Parsed<'static> {
     if version != Some(1) || forbidden_framing(headers) {
         return Parsed::Response(error_response(400, "Bad Request"));
     }
@@ -1659,13 +1755,11 @@ fn action_request(
         Err(()) => return Parsed::Response(error_response(400, "Bad Request")),
     };
     let cookie = match unique_header(headers, "cookie") {
-        Ok(Some(value)) => value,
-        Ok(None) => return Parsed::Response(error_response(403, "Forbidden")),
+        Ok(found) => found,
         Err(()) => return Parsed::Response(error_response(400, "Bad Request")),
     };
     let secret = match unique_header(headers, crate::floor_session::CSRF_HEADER_NAME) {
-        Ok(Some(value)) => value,
-        Ok(None) => return Parsed::Response(error_response(403, "Forbidden")),
+        Ok(found) => found,
         Err(()) => return Parsed::Response(error_response(400, "Bad Request")),
     };
     let Some(host) = std::str::from_utf8(host).ok() else {
@@ -1674,14 +1768,19 @@ fn action_request(
     let Some(origin) = std::str::from_utf8(origin).ok() else {
         return Parsed::Response(error_response(403, "Forbidden"));
     };
-    let Some(cookie) = std::str::from_utf8(cookie).ok().and_then(session_cookie) else {
-        return Parsed::Response(error_response(403, "Forbidden"));
-    };
-    let Some(secret) = std::str::from_utf8(secret)
-        .ok()
-        .filter(|value| valid_nonce(value))
-    else {
-        return Parsed::Response(error_response(403, "Forbidden"));
+    let cookie = cookie
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(session_cookie);
+    let secret = secret
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .filter(|value| valid_nonce(value));
+    let credentials = match (cookie, secret) {
+        (Some(cookie), Some(secret)) => Some(Credentials {
+            cookie: cookie.to_owned(),
+            secret: secret.to_owned(),
+        }),
+        _ if credentials_required => return Parsed::Response(error_response(403, "Forbidden")),
+        _ => None,
     };
     let Some(content_type) = one_header(headers, "content-type") else {
         return Parsed::Response(error_response(400, "Bad Request"));
@@ -1696,7 +1795,7 @@ fn action_request(
     else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
-    if content_length > action.max_body() {
+    if content_length > max_body {
         return Parsed::Response(error_response(413, "Content Too Large"));
     }
     Parsed::Dynamic {
@@ -1704,10 +1803,7 @@ fn action_request(
         head: Head {
             host: host.to_owned(),
             origin: origin.to_owned(),
-            credentials: Some(Credentials {
-                cookie: cookie.to_owned(),
-                secret: secret.to_owned(),
-            }),
+            credentials,
             content_length,
             accept: String::new(),
         },

@@ -31,8 +31,10 @@ pub const SESSION_COOKIE_NAME: &str = "dudes_floor_session";
 pub const CSRF_HEADER_NAME: &str = "X-Dudes-CSRF";
 
 const BOOTSTRAP_EXPIRES_MS: i64 = 60_000;
-const IDLE_EXPIRES_MS: i64 = 30 * 60_000;
-const ABSOLUTE_EXPIRES_MS: i64 = 8 * 60 * 60_000;
+/// A session ends after this long without use.
+const IDLE_EXPIRES_MS: i64 = 24 * 60 * 60_000;
+/// A session ends this long after sign-in, however busy it was.
+const ABSOLUTE_EXPIRES_MS: i64 = 30 * 24 * 60 * 60_000;
 const MAX_PENDING_BOOTSTRAPS: usize = 4;
 const MAX_LIVE_SESSIONS: usize = 4;
 const MAX_WEBSOCKETS_PER_SESSION: usize = 2;
@@ -59,6 +61,8 @@ impl fmt::Display for IssueError {
 pub(crate) struct Exchange {
     pub(crate) cookie: String,
     pub(crate) csrf: String,
+    /// How long the browser keeps the cookie, in seconds.
+    pub(crate) cookie_max_age_s: i64,
 }
 
 impl fmt::Debug for Exchange {
@@ -125,11 +129,7 @@ impl FloorSessionAuthorizer {
     #[doc(hidden)]
     pub fn revoke_for_test(&self, cookie: &str) -> bool {
         let cookie = digest(cookie.as_bytes());
-        let mut state = self.0.registry.lock();
-        state.sessions.remove(&cookie).is_some_and(|session| {
-            session.revoked.store(true, Ordering::Release);
-            true
-        })
+        self.0.registry.lock().end(&cookie)
     }
 
     /// Run `hook` once, as the next reservation asks for the registry lock; test-only caller access.
@@ -527,6 +527,21 @@ impl SessionIdentity {
         Hex32::new(self.cookie)
     }
 
+    /// How long the browser should keep this session's cookie, or `None` once the session is gone.
+    pub(crate) fn cookie_max_age_s(&self) -> Option<i64> {
+        let registry::Locked { state, now } = self.inner.registry.lock_at_now();
+        state
+            .sessions
+            .get(&self.cookie)
+            .filter(|session| session.live_at(now))
+            .map(|session| session.cookie_max_age_s(now))
+    }
+
+    /// Sign this session out: it leaves the table now, so its sockets close at their next check.
+    pub(crate) fn end(&self) {
+        self.inner.registry.lock().end(&self.cookie);
+    }
+
     pub(crate) fn is_valid(&self) -> bool {
         if !self.inner.valid.load(Ordering::Acquire) || self.revoked.load(Ordering::Acquire) {
             return false;
@@ -688,6 +703,14 @@ impl Session {
         now.millis_since(self.created) < ABSOLUTE_EXPIRES_MS
             && now.millis_since(self.last_used) < IDLE_EXPIRES_MS
     }
+
+    /// How long the browser should keep this session's cookie: whichever of the two limits comes
+    /// first, in whole seconds and never below one.
+    fn cookie_max_age_s(&self, now: Timestamp) -> i64 {
+        let idle = IDLE_EXPIRES_MS - now.millis_since(self.last_used);
+        let absolute = ABSOLUTE_EXPIRES_MS - now.millis_since(self.created);
+        (idle.min(absolute) / 1000).max(1)
+    }
 }
 
 impl State {
@@ -695,6 +718,33 @@ impl State {
         self.pending
             .retain(|_, issued| now.millis_since(*issued) < BOOTSTRAP_EXPIRES_MS);
         self.sessions.retain(|_, session| session.live_at(now));
+    }
+
+    /// End one session: it leaves the table, and everything holding its revoked flag sees it.
+    fn end(&mut self, key: &[u8; 32]) -> bool {
+        self.sessions.remove(key).is_some_and(|session| {
+            session.revoked.store(true, Ordering::Release);
+            true
+        })
+    }
+
+    /// End the session that was used longest ago. Equal uses go to the older sign-in, then to the
+    /// smaller key, so the choice never depends on map order.
+    fn end_least_recently_used(&mut self) {
+        let oldest = self
+            .sessions
+            .iter()
+            .min_by_key(|(key, session)| {
+                (
+                    session.last_used.unix_millis(),
+                    session.created.unix_millis(),
+                    **key,
+                )
+            })
+            .map(|(key, _)| *key);
+        if let Some(key) = oldest {
+            self.end(&key);
+        }
     }
 }
 
@@ -715,6 +765,17 @@ impl FloorSessions {
         csrf: &str,
     ) -> Option<SessionIdentity> {
         self.authenticate(host, origin, cookie, csrf, IdleClock::Advance)
+    }
+
+    /// Admit a request that asks about the session itself, and leave its idle deadline alone.
+    pub(crate) fn authorize_standing(
+        &self,
+        host: &str,
+        origin: &str,
+        cookie: &str,
+        csrf: &str,
+    ) -> Option<SessionIdentity> {
+        self.authenticate(host, origin, cookie, csrf, IdleClock::Hold)
     }
 
     pub(crate) fn authorize_receipt(
@@ -839,11 +900,11 @@ impl FloorSessions {
             return None;
         }
         state.prune(now);
-        let issued = state.pending.remove(&bootstrap)?;
-        if now.millis_since(issued) >= BOOTSTRAP_EXPIRES_MS
-            || state.sessions.len() >= MAX_LIVE_SESSIONS
-        {
-            return None;
+        // Pruning has dropped every expired link, so a link found here is good, and nothing after
+        // this refuses: a full table makes room instead, so a link is spent only by a sign-in.
+        state.pending.remove(&bootstrap)?;
+        while state.sessions.len() >= MAX_LIVE_SESSIONS {
+            state.end_least_recently_used();
         }
         let cookie = loop {
             let candidate = mint_secret();
@@ -863,7 +924,11 @@ impl FloorSessions {
                 terminal: None,
             },
         );
-        Some(Exchange { cookie, csrf })
+        Some(Exchange {
+            cookie,
+            csrf,
+            cookie_max_age_s: IDLE_EXPIRES_MS / 1000,
+        })
     }
 
     /// End this run's authority before its listener and connection owners are released.
@@ -1509,9 +1574,10 @@ mod tests {
         assert!(
             sessions
                 .exchange(host, origin, fifth.bootstrap.as_bytes())
-                .is_none(),
-            "a fifth live session is refused"
+                .is_some(),
+            "a fifth sign-in makes room instead of being refused"
         );
+        assert_eq!(sessions.registry_counts_for_test().1, MAX_LIVE_SESSIONS);
 
         for _ in 0..MAX_PENDING_BOOTSTRAPS {
             sessions.issue().expect("one of four pending bootstraps");
@@ -1519,6 +1585,164 @@ mod tests {
         assert_eq!(sessions.issue(), Err(IssueError::Capacity));
         clock.advance(BOOTSTRAP_EXPIRES_MS);
         assert!(sessions.issue().is_ok(), "expiry releases pending capacity");
+    }
+
+    const HOUR_MS: i64 = 60 * 60_000;
+    const LIFETIME_HOST: &str = "127.0.0.1:43124";
+    const LIFETIME_ORIGIN: &str = "http://127.0.0.1:43124";
+
+    fn lifetime_sessions() -> (Arc<FakeClock>, FloorSessions) {
+        let clock = Arc::new(FakeClock::frozen(0));
+        let sessions = FloorSessions::new(
+            LIFETIME_HOST.parse().expect("loopback address"),
+            Arc::clone(&clock),
+        );
+        (clock, sessions)
+    }
+
+    fn sign_in(sessions: &FloorSessions) -> Exchange {
+        let issued = sessions.issue().expect("a bootstrap");
+        sessions
+            .exchange(LIFETIME_HOST, LIFETIME_ORIGIN, issued.bootstrap.as_bytes())
+            .expect("a session")
+    }
+
+    fn acts(sessions: &FloorSessions, session: &Exchange) -> bool {
+        sessions
+            .authorize_onboard(
+                LIFETIME_HOST,
+                LIFETIME_ORIGIN,
+                &session.cookie,
+                &session.csrf,
+            )
+            .is_some()
+    }
+
+    #[test]
+    fn a_fifth_sign_in_ends_the_session_used_longest_ago_and_spends_its_link_once() {
+        let (clock, sessions) = lifetime_sessions();
+        let mut live = Vec::new();
+        for _ in 0..MAX_LIVE_SESSIONS {
+            live.push(sign_in(&sessions));
+            clock.advance(1_000);
+        }
+        assert!(
+            acts(&sessions, &live[0]),
+            "the oldest sign-in was used last"
+        );
+        clock.advance(1_000);
+
+        let issued = sessions.issue().expect("a bootstrap");
+        let fifth = sessions
+            .exchange(LIFETIME_HOST, LIFETIME_ORIGIN, issued.bootstrap.as_bytes())
+            .expect("a full table makes room and does not refuse");
+        assert!(
+            sessions
+                .exchange(LIFETIME_HOST, LIFETIME_ORIGIN, issued.bootstrap.as_bytes())
+                .is_none(),
+            "the link was spent by the sign-in it earned"
+        );
+        assert!(!acts(&sessions, &live[1]), "the least recently used ended");
+        for kept in [&live[0], &live[2], &live[3], &fifth] {
+            assert!(acts(&sessions, kept));
+        }
+    }
+
+    #[test]
+    fn a_session_ends_after_a_day_idle_and_after_thirty_days_in_all() {
+        let (clock, sessions) = lifetime_sessions();
+        let idle = sign_in(&sessions);
+        let busy = sign_in(&sessions);
+        clock.advance(24 * HOUR_MS - 1);
+        assert!(
+            acts(&sessions, &busy),
+            "a day less a millisecond is still live"
+        );
+        clock.advance(1);
+        assert!(!acts(&sessions, &idle), "a day idle ends it");
+        assert!(acts(&sessions, &busy), "use renewed the other");
+
+        for _ in 0..30 {
+            clock.advance(23 * HOUR_MS);
+            assert!(acts(&sessions, &busy), "use keeps it for 30 days");
+        }
+        clock.advance(23 * HOUR_MS);
+        assert!(
+            !acts(&sessions, &busy),
+            "thirty days in all end it, however busy"
+        );
+    }
+
+    #[test]
+    fn the_cookie_is_kept_for_the_sooner_of_the_two_limits() {
+        let (clock, sessions) = lifetime_sessions();
+        let session = sign_in(&sessions);
+        assert_eq!(session.cookie_max_age_s, 24 * 3600);
+        let identity = |s: &Exchange| {
+            sessions
+                .authorize_onboard(LIFETIME_HOST, LIFETIME_ORIGIN, &s.cookie, &s.csrf)
+                .expect("live")
+        };
+        clock.advance(6 * HOUR_MS);
+        assert_eq!(identity(&session).cookie_max_age_s(), Some(24 * 3600));
+        for _ in 0..30 {
+            clock.advance(23 * HOUR_MS);
+            identity(&session);
+        }
+        clock.advance(HOUR_MS);
+        let near_the_end = 30 * 24 * 3600 - (6 + 30 * 23 + 1) * 3600;
+        assert_eq!(identity(&session).cookie_max_age_s(), Some(near_the_end));
+    }
+
+    #[test]
+    fn signing_out_ends_the_session_and_closes_its_sockets() {
+        let (_, sessions) = lifetime_sessions();
+        let leaving = sign_in(&sessions);
+        let staying = sign_in(&sessions);
+        let socket = sessions
+            .authorizer()
+            .authorize_stream(
+                LIFETIME_HOST,
+                LIFETIME_ORIGIN,
+                &leaving.cookie,
+                &leaving.csrf,
+            )
+            .expect("a stream slot");
+        let kept = sessions
+            .authorizer()
+            .authorize_stream(
+                LIFETIME_HOST,
+                LIFETIME_ORIGIN,
+                &staying.cookie,
+                &staying.csrf,
+            )
+            .expect("a stream slot");
+        assert!(socket.is_valid() && kept.is_valid());
+
+        sessions
+            .authorize_standing(
+                LIFETIME_HOST,
+                LIFETIME_ORIGIN,
+                &leaving.cookie,
+                &leaving.csrf,
+            )
+            .expect("known")
+            .end();
+
+        assert!(!socket.is_valid(), "its socket closes at the next check");
+        assert!(!acts(&sessions, &leaving), "its secret acts for no one");
+        assert!(
+            sessions
+                .authorize_standing(
+                    LIFETIME_HOST,
+                    LIFETIME_ORIGIN,
+                    &leaving.cookie,
+                    &leaving.csrf
+                )
+                .is_none(),
+            "the daemon now says the session is unknown"
+        );
+        assert!(kept.is_valid() && acts(&sessions, &staying));
     }
 }
 
