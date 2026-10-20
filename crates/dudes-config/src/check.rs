@@ -25,8 +25,13 @@ pub const NO_TEST_CHECK: &str = "No test command was found here. The default che
 #[must_use]
 pub fn suggest_check(dir: &Path) -> Option<Vec<String>> {
     let read = |name: &str| {
+        let path = dir.join(name);
+        // A link, a FIFO or a device is not read: opening one can block this thread for good.
+        if !std::fs::symlink_metadata(&path).ok()?.file_type().is_file() {
+            return None;
+        }
         let mut text = String::new();
-        std::fs::File::open(dir.join(name))
+        std::fs::File::open(path)
             .ok()?
             .take(MAX_READ_BYTES)
             .read_to_string(&mut text)
@@ -116,6 +121,26 @@ mod tests {
         assert_eq!(
             suggest_check(dir.path()),
             Some(vec!["npm".to_owned(), "test".to_owned()])
+        );
+    }
+
+    /// A FIFO or a link named like a manifest is skipped without being opened.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_or_a_link_named_like_a_manifest_is_not_opened() {
+        let dir = tempfile::tempdir().expect("dir");
+        // This crate forbids unsafe code, so the FIFO comes from the system tool.
+        let made = std::process::Command::new("mkfifo")
+            .arg(dir.path().join("package.json"))
+            .status();
+        assert!(made.expect("mkfifo").success());
+        std::fs::write(dir.path().join("real.mk"), "test:\n").expect("file");
+        std::os::unix::fs::symlink(dir.path().join("real.mk"), dir.path().join("Makefile"))
+            .expect("link");
+        assert_eq!(
+            suggest_check(dir.path()),
+            None,
+            "falls back and does not block"
         );
     }
 }

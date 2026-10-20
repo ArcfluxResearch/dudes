@@ -719,16 +719,14 @@ fn write(
     Ok(Edit { previous, written })
 }
 
-/// A new operator file may hold the operator's settings, so only its owner reads it.
-#[cfg(unix)]
-fn private(file: &fs::File) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    file.set_permissions(fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn private(_file: &fs::File) -> io::Result<()> {
-    Ok(())
+/// The temporary file, created readable by its owner only on unix, so a new operator file's
+/// content is never written to a wider file.
+fn create_private(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
 }
 
 /// Write `bytes` to a temporary file beside the operator file, or beside its symlink's target, and
@@ -747,12 +745,12 @@ pub fn replace(config: &Path, bytes: &[u8]) -> io::Result<()> {
         .map_or_else(Default::default, |name| name.to_string_lossy().into_owned());
     let temporary = parent.join(format!(".{name}.{}.tmp", std::process::id()));
     // `create_new` refuses a name that already exists, a planted symlink included.
-    let mut file = fs::File::create_new(&temporary)?;
+    let mut file = create_private(&temporary)?;
     let written = file
         .write_all(bytes)
         .and_then(|()| match fs::metadata(&target) {
             Ok(metadata) => file.set_permissions(metadata.permissions()),
-            Err(_) => private(&file),
+            Err(_) => Ok(()),
         })
         .and_then(|()| file.sync_all());
     drop(file);

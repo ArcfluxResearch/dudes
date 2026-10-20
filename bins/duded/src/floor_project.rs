@@ -290,6 +290,28 @@ fn digest(folder: &str, check: &Check, label: Option<&str>) -> Hex32 {
     Hex32::new(hasher.finalize().into())
 }
 
+/// `path` as it will resolve once it exists: its nearest existing ancestor made canonical, then
+/// the rest, so a link in the ancestor (`/var`, `/tmp`) still matches.
+fn resolved_ahead(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(canonical) = at.canonicalize() {
+            return rest
+                .iter()
+                .rev()
+                .fold(canonical, |whole, part| whole.join(part));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                at = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
 /// The folders the daemon will not take, and where "home" is.
 #[derive(Clone, Debug, Default)]
 pub struct Folders {
@@ -302,10 +324,9 @@ impl Folders {
     /// are `own`. Each is resolved, so a link to one is refused as well.
     #[must_use]
     pub fn new(home: Option<&Path>, own: &[&Path]) -> Self {
-        let resolve = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         Self {
-            home: home.map(resolve),
-            own: own.iter().map(|path| resolve(path)).collect(),
+            home: home.map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf())),
+            own: own.iter().map(|path| resolved_ahead(path)).collect(),
         }
     }
 
@@ -316,6 +337,9 @@ impl Folders {
     ///
     /// The first [`Reason`] that applies: `not_found`, `not_a_folder`, `not_allowed`, `not_git`.
     pub fn resolve(&self, typed: &str) -> Result<PathBuf, Reason> {
+        if self.home.is_none() {
+            return Err(Reason::NotAllowed);
+        }
         let path = match typed
             .strip_prefix("~/")
             .or_else(|| (typed == "~").then_some(""))
