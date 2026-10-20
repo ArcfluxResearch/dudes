@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { Journey } from './journey.mjs';
 
 const execute = promisify(execFile);
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -19,6 +20,7 @@ const timeout = 30_000;
 // a generous-but-bounded wait for transient contention, not a fix for a genuinely wedged Chrome.
 export const navigateTimeout = 120_000;
 let interrupted = false;
+let journeyRun;
 
 class WaitTimeout extends Error {}
 
@@ -136,7 +138,7 @@ export class DevTools {
 }
 
 export class ScratchRun {
-  constructor(root, workspace, xtask, version, chrome) {
+  constructor(root, workspace, xtask, version, chrome, prefix = join(root, 'prefix')) {
     this.root = root;
     this.workspace = workspace;
     this.xtask = xtask;
@@ -145,7 +147,7 @@ export class ScratchRun {
     this.groups = new Map();
     this.owned = new Map();
     this.chromeChildren = new Map();
-    this.prefix = join(root, 'prefix');
+    this.prefix = prefix;
     this.repo = join(root, 'repo');
     this.home = join(root, 'home');
     this.runtime = join(root, 'run');
@@ -328,7 +330,7 @@ exec /bin/sleep 120
     await this.rememberManaged();
   }
 
-  async browser() {
+  async launchChrome() {
     const profile = join(this.root, 'chrome');
     this.chrome = spawn(this.chromeProgram, [
       ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : ['--password-store=basic']),
@@ -356,9 +358,10 @@ exec /bin/sleep 120
     this.cdp.session = sessionId;
     await this.cdp.send('Page.enable', {}, sessionId);
     await this.cdp.send('Runtime.enable', {}, sessionId);
-    const { stdout } = await this.cli(['floor', 'open', '--no-browser']);
-    const link = stdout.match(/http:\/\/127\.0\.0\.1:\d+\/floor\/#bootstrap=[A-Za-z0-9_-]+/)?.[0];
-    check(link, 'Floor open returned no bootstrap link');
+  }
+
+  async openFloor(link) {
+    const sessionId = this.cdp.session;
     const navigation = await this.cdp.send('Page.navigate', { url: link, referrerPolicy: 'noReferrer' }, sessionId, navigateTimeout);
     check(!navigation.errorText && !navigation.isDownload, 'Chrome could not navigate to the Floor');
     const page = new URL(link);
@@ -370,6 +373,14 @@ exec /bin/sleep 120
         && (!navigation.loaderId || frameTree.frame.loaderId === navigation.loaderId);
     }, 'Chrome did not commit the Floor navigation', navigateTimeout);
     await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-open-office'))`), 'Floor bundle did not render Hire');
+  }
+
+  async browser() {
+    await this.launchChrome();
+    const { stdout } = await this.cli(['floor', 'open', '--no-browser']);
+    const link = stdout.match(/http:\/\/127\.0\.0\.1:\d+\/floor\/#bootstrap=[A-Za-z0-9_-]+/)?.[0];
+    check(link, 'Floor open returned no bootstrap link');
+    await this.openFloor(link);
   }
 
   async hire() {
@@ -586,12 +597,30 @@ exec /bin/sleep 120
   }
 }
 
+// A newcomer's whole path on a second scratch home, sharing the install: quickstart, open, then
+// only the page, up to an accepted ticket.
+async function newcomerJourney(first, chrome) {
+  const root = await mkdtemp(join(tmpdir(), 'dudes-jrny-'));
+  await chmod(root, 0o700);
+  const second = new ScratchRun(root, first.workspace, first.xtask, first.version, chrome, first.prefix);
+  journeyRun = second;
+  try {
+    await second.prepare();
+    await new Journey(second).walk();
+    await second.stop();
+  } finally {
+    await second.cleanup();
+  }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   let run;
   const interrupt = () => {
     interrupted = true;
-    if (run?.chrome?.pid) void run.signalChrome('SIGTERM').catch(() => {});
-    run?.signalChildren('SIGTERM');
+    for (const each of [run, journeyRun]) {
+      if (each?.chrome?.pid) void each.signalChrome('SIGTERM').catch(() => {});
+      each?.signalChildren('SIGTERM');
+    }
   };
   process.once('SIGINT', interrupt);
   process.once('SIGTERM', interrupt);
@@ -612,6 +641,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       await stage('hire and live activity', () => run.hire());
     } else console.log('SKIP browser (Chrome absent)');
     await stage('stop', () => run.stop());
+    if (chrome) await stage('journey from quickstart to an accepted ticket', () => newcomerJourney(run, chrome));
   } catch (error) {
     console.error(`smoke: ${error.message}`);
     process.exitCode = 1;
