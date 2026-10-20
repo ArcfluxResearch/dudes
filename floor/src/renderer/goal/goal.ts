@@ -266,14 +266,14 @@ export const REFUSAL_REASONS: Readonly<Record<FixedRefusal, string>> = Object.fr
   agent_halted: 'A halt stands on this agent, which the Floor cannot lift, so nothing was recorded.',
   agent_absent: 'The agent is no longer on the floor, so nothing was recorded.',
   goal_not_exhausted: 'This goal still has turns or dollars left, so nothing was recorded. Change its text instead.',
-  workspace_unavailable: 'This agent’s project is no longer enrolled at its directory, so that check cannot be '
+  workspace_unavailable: 'This agent’s project is no longer set up at its folder, so that check cannot be '
     + 'chosen. Nothing changed.',
   profile_changed: 'The operator changed that check after this page read it. Nothing changed. Choose again.',
 });
 
 /** What a renewal's own reasons say, where they differ from a change's. */
 const RENEWAL_REASONS: Readonly<Partial<Record<FixedRefusal, string>>> = Object.freeze({
-  workspace_unavailable: 'This agent’s project is not enrolled at its directory now, or sets no ceiling that the '
+  workspace_unavailable: 'This agent’s project is not set up at its folder now, or sets no ceiling that the '
     + 'daemon’s billing key requires, so nothing was recorded. Give it a new goal from a terminal (dudes goal), '
     + 'or retire it and hire a new one.',
   profile_changed: 'The project’s allowance or checks changed since this page read it, so nothing was '
