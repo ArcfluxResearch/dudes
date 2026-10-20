@@ -13,6 +13,7 @@ use super::guard::{Admission, DYNAMIC_PATHS};
 use super::*;
 use crate::floor_peer::{AgentRoot, ProcessRef, SocketOwner, SocketOwnerLookup};
 use crate::ports::Job;
+use crate::settings::FloorControl;
 
 const HOST: &str = "127.0.0.1:43123";
 const SIGN_IN_BODY_TYPE: &str = "text/plain;charset=UTF-8";
@@ -108,24 +109,38 @@ struct Driven {
     audit: Vec<(&'static str, Option<AgentId>, FloorPeerRefusal)>,
 }
 
-fn drive(request: &[u8], sessions: &FloorSessions, peer: &PeerGate) -> Driven {
-    let assets = BTreeMap::new();
-    let memory = MemoryReads::new();
-    let board = TicketLimits::new();
-    let catalog = Catalog {
-        assets: &assets,
-        manifest: &[],
+/// Every switch on whose reads this test file builds; the Git and diff reads are not built here.
+fn all_on() -> Switches {
+    Switches {
         answer: true,
+        hire: true,
         control: FloorControl::On {
             goal: true,
             retire: true,
             renew: true,
         },
         recovery: true,
+        board: true,
         terminal: true,
+        git: false,
+        diff: false,
+        project: true,
+    }
+}
+
+fn drive(request: &[u8], sessions: &FloorSessions, peer: &PeerGate) -> Driven {
+    let assets = BTreeMap::new();
+    let memory = MemoryReads::new();
+    let board = TicketLimits::new();
+    let switches = SharedSwitches::new(all_on());
+    let catalog = Catalog {
+        assets: &assets,
+        manifest: &[],
+        switches: &switches,
+        terminal_csp: false,
         git: None,
         diff: None,
-        board: Some(&board),
+        board: &board,
         memory: &memory,
         peer,
     };
@@ -282,20 +297,15 @@ fn the_route_list_is_every_path_the_gateway_names() {
 #[test]
 fn every_listed_path_is_a_route_when_its_switch_is_on_and_only_git_and_diff_are_off_here() {
     let (assets, memory, board) = everything_on();
+    let switches = SharedSwitches::new(all_on());
     let catalog = Catalog {
         assets: &assets,
         manifest: &[],
-        answer: true,
-        control: FloorControl::On {
-            goal: true,
-            retire: true,
-            renew: true,
-        },
-        recovery: true,
-        terminal: true,
+        switches: &switches,
+        terminal_csp: false,
         git: None,
         diff: None,
-        board: Some(&board),
+        board: &board,
         memory: &memory,
         peer: &outside(),
     };
@@ -316,12 +326,16 @@ fn every_listed_path_is_a_route_when_its_switch_is_on_and_only_git_and_diff_are_
             "{path} answers only {method}"
         );
     }
-    let switched_off = Catalog {
+    let off = SharedSwitches::new(Switches {
         answer: false,
         control: FloorControl::Off,
         recovery: false,
         terminal: false,
-        board: None,
+        board: false,
+        ..all_on()
+    });
+    let switched_off = Catalog {
+        switches: &off,
         ..catalog
     };
     for path in [
@@ -339,20 +353,15 @@ fn every_listed_path_is_a_route_when_its_switch_is_on_and_only_git_and_diff_are_
 
 fn max_body_of(path: &str) -> usize {
     let (assets, memory, board) = everything_on();
+    let switches = SharedSwitches::new(all_on());
     let catalog = Catalog {
         assets: &assets,
         manifest: &[],
-        answer: true,
-        control: FloorControl::On {
-            goal: true,
-            retire: true,
-            renew: true,
-        },
-        recovery: true,
-        terminal: true,
+        switches: &switches,
+        terminal_csp: false,
         git: None,
         diff: None,
-        board: Some(&board),
+        board: &board,
         memory: &memory,
         peer: &outside(),
     };
@@ -624,16 +633,22 @@ fn the_guard_admits_a_clean_request_from_outside_every_agent() {
     let assets = BTreeMap::new();
     let memory = MemoryReads::new();
     let peer = outside();
-    let catalog = Catalog {
-        assets: &assets,
-        manifest: &[],
-        answer: true,
+    let board = TicketLimits::new();
+    let switches = SharedSwitches::new(Switches {
         control: FloorControl::Off,
         recovery: false,
         terminal: false,
+        board: false,
+        ..all_on()
+    });
+    let catalog = Catalog {
+        assets: &assets,
+        manifest: &[],
+        switches: &switches,
+        terminal_csp: false,
         git: None,
         diff: None,
-        board: None,
+        board: &board,
         memory: &memory,
         peer: &peer,
     };
