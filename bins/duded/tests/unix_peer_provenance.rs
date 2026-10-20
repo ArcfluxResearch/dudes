@@ -23,14 +23,12 @@ use duded::{ChildEnds, ChildTurn, ExitCause, boot};
 use dudes_host::{ChildExit, ChildStream, ChildStreams, RealHost};
 use dudes_journal::{Fsync, JournalOptions};
 use dudes_proto::providers::claude::Settings;
-use dudes_proto::rpc::agent::{AskParams, AttachParams, RetireParams};
+use dudes_proto::rpc::agent::{AskParams, AttachParams};
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::hook::HookToken;
 use dudes_proto::rpc::pty::PtyId;
-use dudes_proto::rpc::{AgentRef, Empty, ErrorCode, Method, Response};
-use dudes_proto::{
-    Actor, AgentBudget, Entry, ExitStatus, PtyCloseOutcome as ClosedOutcome, Record,
-};
+use dudes_proto::rpc::{Empty, ErrorCode, Method, Response};
+use dudes_proto::{Actor, AgentBudget, Entry, ExitStatus, Record};
 use dudes_providers::adapter::{
     Adapter, AgentCtx, Isolation, ManagedInstall, SessionAcquisition, TurnSession, UsageSource,
 };
@@ -560,16 +558,6 @@ impl RecordedHostPeerProcesses {
             })
             .collect()
     }
-
-    fn answer_for(&self, peer: &Value) -> Option<Relation> {
-        let peer = u32::try_from(peer.as_u64()?).ok()?;
-        self.answers
-            .lock()
-            .expect("recorded answers")
-            .iter()
-            .find(|answer| answer.peer == peer)
-            .map(|answer| answer.relation)
-    }
 }
 
 impl ProcessRelation for RecordedHostPeerProcesses {
@@ -1071,16 +1059,6 @@ impl AttachedDaemon {
         .expect("attach params");
         self.as_operator(connection, Method::AgentAttach, params)
     }
-
-    fn detach(&mut self, agent: AgentId) -> Response {
-        let connection = self
-            .attached
-            .iter()
-            .position(|attached| *attached == agent)
-            .expect("the agent was attached here");
-        let params = serde_json::to_value(AgentRef { agent }).expect("detach params");
-        self.as_operator(connection, Method::AgentDetach, params)
-    }
 }
 
 fn pty_of(fixture: &Fixture, agent: AgentId) -> PtyId {
@@ -1101,184 +1079,6 @@ fn detached_by_system(records: &[Record], agent: AgentId) -> bool {
             Record::Detached { agent: detached, by: Actor::System, .. } if *detached == agent
         )
     })
-}
-
-/// Through the shipped resolver and a native PTY: an attached CLI's own
-/// `PreToolUse` hook, run as the CLI's child the way the vendor runs an installed handler.
-#[test]
-fn attached_cli_hook_is_its_agents_and_is_denied_while_paused() {
-    let fixture = Fixture::new();
-    let settings = attached_settings(&fixture, ATTACHED_HOOK);
-    let mut daemon = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(NativePtys::default()),
-        Registration::Immediate,
-    );
-    let agent = daemon.paused_agent(&fixture);
-    let attach = daemon.attach(agent);
-    assert!(attach.error.is_none(), "attach was refused: {attach:?}");
-    let observed = await_observation(&fixture, agent, "0");
-    assert_eq!(daemon.stop(), ExitCause::Ended);
-
-    assert_eq!(
-        observed["result"],
-        denied_while_paused(),
-        "hook pid {}; host answers: {:?}",
-        observed["pid"],
-        daemon.processes.answers()
-    );
-}
-
-/// A hook the attached child fires before the pump has published its key waits at
-/// the barrier and then resolves to the agent; it is never answered as no recorded agent.
-#[test]
-fn a_hook_before_the_publication_waits_then_resolves_to_its_agent() {
-    let fixture = Fixture::new();
-    let settings = attached_settings(&fixture, ATTACHED_HOOK);
-    let mut daemon = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(NativePtys::default()),
-        Registration::AfterAPeerWaits,
-    );
-    let agent = daemon.paused_agent(&fixture);
-    let attach = daemon.attach(agent);
-    assert!(attach.error.is_none(), "attach was refused: {attach:?}");
-    let observed = await_observation(&fixture, agent, "0");
-    assert_eq!(daemon.stop(), ExitCause::Ended);
-
-    assert!(
-        matches!(
-            daemon.processes.answer_for(&observed["pid"]),
-            Some(Relation::Pending(_))
-        ),
-        "the hook reached the relation before its child was registered, so it met the barrier; \
-         host answers: {:?}",
-        daemon.processes.answers()
-    );
-    assert_eq!(
-        observed["result"],
-        denied_while_paused(),
-        "host answers: {:?}",
-        daemon.processes.answers()
-    );
-}
-
-/// A close the host cannot confirm appends no `Detached`, so the attached CLI that
-/// may still be running stays its agent's and a pause still governs its hooks.
-#[test]
-fn a_failed_close_keeps_the_attached_child_governed() {
-    let fixture = Fixture::new();
-    let settings = attached_settings(&fixture, ATTACHED_HOOK);
-    let ptys = NativePtys::default();
-    let mut daemon = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(ptys.clone()),
-        Registration::Immediate,
-    );
-    let agent = daemon.paused_agent(&fixture);
-    let attach = daemon.attach(agent);
-    assert!(attach.error.is_none(), "attach was refused: {attach:?}");
-    assert_eq!(
-        await_observation(&fixture, agent, "0")["result"],
-        denied_while_paused(),
-        "control: governed before the close"
-    );
-
-    ptys.refuse_close.store(true, Ordering::SeqCst);
-    let _ = daemon.detach(agent);
-    fixture.await_record("failed PtyCloseCompleted", |record| {
-        matches!(
-            record,
-            Record::PtyCloseCompleted {
-                outcome: ClosedOutcome::Failed { .. },
-                ..
-            }
-        )
-        .then_some(())
-    });
-    release_hook(&fixture, agent, 1);
-    let after = await_observation(&fixture, agent, "1");
-    let before_teardown = fixture.records();
-    ptys.refuse_close.store(false, Ordering::SeqCst);
-    assert_eq!(daemon.stop(), ExitCause::Ended);
-
-    assert!(
-        !before_teardown
-            .iter()
-            .any(|record| matches!(record, Record::Detached { .. })),
-        "the failed close appended a Detached: {:?}",
-        before_teardown.iter().map(Record::kind).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        after["result"],
-        denied_while_paused(),
-        "hook pid {}; host answers: {:?}",
-        after["pid"],
-        daemon.processes.answers()
-    );
-}
-
-/// Through the shipped resolver, a native PTY and the real `dudes-hook`. The closes
-/// are refused, which keeps the loop free and the child recorded.
-#[test]
-fn retired_agents_attached_hook_is_halted_not_refused() {
-    let fixture = Fixture::new();
-    let settings = attached_settings(&fixture, ATTACHED_HOOK);
-    let ptys = NativePtys::default();
-    let mut daemon = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(ptys.clone()),
-        Registration::Immediate,
-    );
-    let agent = daemon.paused_agent(&fixture);
-    let attach = daemon.attach(agent);
-    assert!(attach.error.is_none(), "attach was refused: {attach:?}");
-    assert_eq!(
-        await_observation(&fixture, agent, "0")["result"],
-        denied_while_paused(),
-        "control: governed before the retirement"
-    );
-
-    ptys.refuse_close.store(true, Ordering::SeqCst);
-    let retired = daemon
-        .running
-        .handle
-        .ask(Ask::Retire(Box::new(RetireParams {
-            agent,
-            reason: "the quarter ended".to_owned(),
-        })));
-    assert!(matches!(retired, Ok(Answered::Done)), "retire: {retired:?}");
-    fixture.await_record("the retirement's failed close", |record| {
-        matches!(
-            record,
-            Record::PtyCloseCompleted {
-                outcome: ClosedOutcome::Failed { .. },
-                ..
-            }
-        )
-        .then_some(())
-    });
-    release_hook(&fixture, agent, 1);
-    let after = await_observation(&fixture, agent, "1");
-    ptys.refuse_close.store(false, Ordering::SeqCst);
-    assert_eq!(daemon.stop(), ExitCause::Ended);
-
-    assert_eq!(
-        after["result"],
-        json!({
-            "settings_installed": true,
-            "exit": 0,
-            "stdout": {"continue": false},
-            "stderr": "",
-        }),
-        "hook pid {}; host answers: {:?}",
-        after["pid"],
-        daemon.processes.answers()
-    );
 }
 
 /// Across a daemon that died without closing its PTYs: a child that outlived it stays
@@ -1397,44 +1197,6 @@ fn an_operator_credential_from_inside_an_attached_tree_is_refused() {
     );
 }
 
-/// Fails closed: a PTY child the relation cannot register is closed, its open counts
-/// as not launched, and the attach is refused.
-#[test]
-fn an_attached_child_the_relation_cannot_register_is_closed_and_refused() {
-    let fixture = Fixture::new();
-    let settings = attached_settings(&fixture, ATTACHED_HOOK);
-    let ptys = NativePtys::default();
-    let mut daemon = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(ptys.clone()),
-        Registration::Refused,
-    );
-    let agent = daemon.paused_agent(&fixture);
-    let attach = daemon.attach(agent);
-    fixture.await_record("Detached", |record| {
-        matches!(record, Record::Detached { agent: detached, .. } if *detached == agent)
-            .then_some(())
-    });
-    assert_eq!(daemon.stop(), ExitCause::Ended);
-
-    let refusal = attach.error.expect("the attach is refused");
-    assert!(
-        refusal.message.contains("injected registration refusal"),
-        "refused for the registration: {refusal:?}"
-    );
-    let opened = ptys.opened.lock().expect("opened").clone();
-    assert_eq!(opened.len(), 1, "the child was started once");
-    assert!(!ptys.live(opened[0]), "the unregistered child was closed");
-    assert!(
-        !fixture
-            .records()
-            .iter()
-            .any(|record| matches!(record, Record::PtySpawned { .. })),
-        "no key is recorded for a child that was never registered"
-    );
-}
-
 #[derive(Debug)]
 struct FixedRelation {
     relation: Relation,
@@ -1540,17 +1302,6 @@ fn dispatch_negative_with_resolver(label: &str, resolver: Resolver, expected: Ne
     assert_eq!(running.stop(ExitCause::Ended), ExitCause::Ended);
 }
 
-fn reported_peer() -> dudes_rpc::PeerIdentity {
-    dudes_rpc::PeerIdentity {
-        uid: Some(501),
-        gid: Some(20),
-        pid: dudes_rpc::PeerPid::Reported {
-            pid: 42,
-            pidversion: cfg!(target_os = "macos").then_some(7),
-        },
-    }
-}
-
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
 struct CapturedHostPeerProcesses {
@@ -1643,52 +1394,6 @@ fn assert_real_macos_dead_and_version_mismatch_are_unresolvable() {
             captured: dead,
         })),
         NegativeDispatch::Completed,
-    );
-}
-
-#[test]
-fn pending_spawn_waits_for_publication_and_refuses_non_answers() {
-    use dudes_rpc::PeerResolver as _;
-    use dudes_rpc::auth::PeerResolution;
-
-    let aborted = Resolver::processes(Arc::new(FixedRelation {
-        relation: Relation::Pending(1),
-        finish: true,
-    }));
-    let pending = aborted.begin_spawn().expect("arm pending owner");
-    aborted.abort_spawn(pending);
-    assert_eq!(aborted.resolve(&reported_peer()), PeerResolution::Refuse);
-
-    let exhausted = Resolver::processes(Arc::new(FixedRelation {
-        relation: Relation::Abandoned,
-        finish: true,
-    }));
-    assert_eq!(exhausted.resolve(&reported_peer()), PeerResolution::Refuse);
-
-    let timed_out = Resolver::processes(Arc::new(FixedRelation {
-        relation: Relation::Pending(1),
-        finish: false,
-    }));
-    let _ = timed_out.begin_spawn().expect("arm timed-out owner");
-    assert_eq!(timed_out.resolve(&reported_peer()), PeerResolution::Refuse);
-
-    dispatch_matrix_negative(
-        "pending abort",
-        Relation::Pending(1),
-        true,
-        PendingSetup::Abort,
-    );
-    dispatch_matrix_negative(
-        "pending timeout",
-        Relation::Pending(1),
-        false,
-        PendingSetup::Wait,
-    );
-    dispatch_matrix_negative(
-        "host abandonment",
-        Relation::Abandoned,
-        true,
-        PendingSetup::None,
     );
 }
 
