@@ -2831,7 +2831,7 @@ fn serve_websocket(
 
     let mut input = [0_u8; 8192];
     loop {
-        if stop_requested(phase) || !session.is_valid() {
+        if stop_requested(phase) || !session.renew_if_watched() {
             let _ = write_bytes(stream, &close_frame(), phase);
             return Ok(());
         }
@@ -2919,6 +2919,9 @@ fn handle_messages(
                         }
                         write_activity_frame(stream, &opened.snapshot, clock, phase)?;
                         *subscription = Some(opened.subscription);
+                    }
+                    (true, ClientMessage::Visibility { visible }) => {
+                        session.set_visible(visible);
                     }
                     (true, ClientMessage::Unsubscribe {}) => {
                         let _ = write_bytes(stream, &close_frame(), phase);

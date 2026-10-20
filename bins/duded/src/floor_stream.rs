@@ -39,8 +39,9 @@ const LIVE: u8 = 0;
 const OVERFLOWED: u8 = 1;
 const ENDED: u8 = 2;
 
-const CLIENT_TYPES: [&str; 4] = [
+const CLIENT_TYPES: [&str; 5] = [
     "floor.subscribe",
+    "floor.visibility",
     "floor.unsubscribe",
     "floor.output.select",
     "floor.output.clear",
@@ -145,6 +146,9 @@ pub(crate) enum ClientMessage {
     /// Begin one stream and receive its snapshot.
     #[serde(rename = "floor.subscribe")]
     Subscribe {},
+    /// Say whether the page is on screen, so a tab the person is watching counts as in use.
+    #[serde(rename = "floor.visibility")]
+    Visibility { visible: bool },
     /// End the stream.
     #[serde(rename = "floor.unsubscribe")]
     Unsubscribe {},
@@ -4430,6 +4434,17 @@ mod tests {
             decode_client(r#"{"type":"floor.unsubscribe"}"#).unwrap(),
             ClientMessage::Unsubscribe {}
         );
+        assert_eq!(
+            decode_client(r#"{"type":"floor.visibility","visible":false}"#).unwrap(),
+            ClientMessage::Visibility { visible: false }
+        );
+        for invalid in [
+            r#"{"type":"floor.visibility"}"#,
+            r#"{"type":"floor.visibility","visible":"yes"}"#,
+            r#"{"type":"floor.visibility","visible":true,"extra":1}"#,
+        ] {
+            assert!(decode_client(invalid).is_err(), "admitted {invalid}");
+        }
         assert!(decode_client(r#"{"type":"floor.write"}"#).is_err());
         assert!(decode_client(r#"{"type":"floor.subscribe","extra":true}"#).is_err());
         assert!(decode_client(&format!("{}{}", "[".repeat(17), "]".repeat(17))).is_err());

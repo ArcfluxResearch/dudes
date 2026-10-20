@@ -15,7 +15,7 @@
 //   a) add `<button onClick={...}>answer</button>` to `OfficeCanvas.tsx` — the
 //      exact control count goes red;
 //   b) send an extra message in `stream.ts` — say `socket.send('{"type":
-//      "agent.answer"}')` — "the page sends only the four named read-only stream messages" goes red
+//      "agent.answer"}')` — "the page sends only the five named read-only stream messages" goes red
 //      naming the message;
 //   c) delete a pattern from `FORBIDDEN` — "the scan finds what it looks for"
 //      goes red, because the fixture that carries a match for each
@@ -1383,7 +1383,7 @@ test('the served HTML and CSS match no FORBIDDEN pattern and no static activator
   assert.match(html, /<div id="root"><\/div>/);
 });
 
-test('the page sends only the four named read-only stream messages', async () => {
+test('the page sends only the five named read-only stream messages', async () => {
   // The output view adds exactly one selected output read filter and its clear to
   // `floor.subscribe` and `floor.unsubscribe`. An unlisted type has no
   // dispatch target — but a page that tried would be a page asking for
@@ -1401,13 +1401,13 @@ test('the page sends only the four named read-only stream messages', async () =>
     ts.forEachChild(node, collect);
   }
   collect(syntax);
-  assert.deepEqual(sent, ['CLEAR_OUTPUT', "JSON.stringify({ type: 'floor.output.select', agent_id: desired.targetId,\n          ...(desired.view === 'reply' ? { view: 'reply' } : {}) })", 'SUBSCRIBE', 'UNSUBSCRIBE'],
-    'the page sent anything beyond the four read-only browser-wire messages');
+  assert.deepEqual(sent, ['visible ? VISIBLE : HIDDEN', 'CLEAR_OUTPUT', "JSON.stringify({ type: 'floor.output.select', agent_id: desired.targetId,\n          ...(desired.view === 'reply' ? { view: 'reply' } : {}) })", 'SUBSCRIBE', 'UNSUBSCRIBE'],
+    'the page sent anything beyond the five read-only browser-wire messages');
 
-  const literals = [...stream.matchAll(/const (SUBSCRIBE|UNSUBSCRIBE|CLEAR_OUTPUT) = '([^']+)'/g)];
-  assert.equal(literals.length, 3, 'the fixed client messages changed');
+  const literals = [...stream.matchAll(/const (SUBSCRIBE|UNSUBSCRIBE|CLEAR_OUTPUT|VISIBLE|HIDDEN) = '([^']+)'/g)];
+  assert.equal(literals.length, 5, 'the fixed client messages changed');
   const types = literals.map(([, , text]) => JSON.parse(text).type).sort();
-  assert.deepEqual(types, ['floor.output.clear', 'floor.subscribe', 'floor.unsubscribe']);
+  assert.deepEqual(types, ['floor.output.clear', 'floor.subscribe', 'floor.unsubscribe', 'floor.visibility', 'floor.visibility']);
   assert.match(stream, /live\.send\(JSON\.stringify\(\{ type: 'floor\.output\.select', agent_id: desired\.targetId,\s+\.\.\.\(desired\.view === 'reply' \? \{ view: 'reply' \} : \{\}\) \}\)\)/);
 
   // Nothing else in the renderer sends anything on a socket, but the terminal
@@ -2585,6 +2585,7 @@ const ADMITTED_LISTENERS = Object.freeze([
   { path: 'src/renderer/OfficeCanvas.tsx', line: "box.addEventListener('focusout', schedule);" },
   { path: 'src/renderer/OfficeCanvas.tsx', line: "canvas.addEventListener('webglcontextlost', onContextLost);" },
   { path: 'src/renderer/desktopNotifications.ts', line: "notification.addEventListener('click', () => {" },
+  { path: 'src/renderer/floor/stream.ts', line: "document.addEventListener('visibilitychange', listener);" },
   { path: 'src/shell.tsx', line: "preference.addEventListener('change', onThemePreference);" },
   { path: 'src/shell.tsx', line: "document.addEventListener('keydown', onShortcut);" },
 ]);

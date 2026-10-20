@@ -418,3 +418,23 @@ test('resync, restart without run output, retirement and expiry do not retain as
   assert.deepEqual(getFloorState().output.chunks, []);
   assert.equal(getFloorState().output.status, 'unavailable');
 });
+
+test('the page tells the daemon when it is hidden or shown, and stops listening on dispose', () => {
+  let shown = true;
+  let notify = () => {};
+  let listening = true;
+  const visibility = {
+    visible: () => shown,
+    watch: (listener) => { notify = listener; return () => { listening = false; }; },
+  };
+  const live = socket();
+  const stop = openFloorStream({ csrf: 'test-nonce' }, HERE, () => live, undefined, undefined,
+    undefined, undefined, visibility);
+  live.emit('open');
+  assert.deepEqual(live.sent, [{ type: 'floor.subscribe' }, { type: 'floor.visibility', visible: true }]);
+  shown = false;
+  notify();
+  assert.deepEqual(live.sent.at(-1), { type: 'floor.visibility', visible: false });
+  stop();
+  assert.equal(listening, false);
+});

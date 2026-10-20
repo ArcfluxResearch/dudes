@@ -108,6 +108,23 @@ export const RECONNECT_ATTEMPTS = 5;
 const SUBSCRIBE = '{"type":"floor.subscribe"}';
 const UNSUBSCRIBE = '{"type":"floor.unsubscribe"}';
 const CLEAR_OUTPUT = '{"type":"floor.output.clear"}';
+const VISIBLE = '{"type":"floor.visibility","visible":true}';
+const HIDDEN = '{"type":"floor.visibility","visible":false}';
+
+/** What the page knows about being on screen. `null` from `visible` means it cannot tell. */
+export interface VisibilityPort {
+  visible(): boolean | null;
+  watch(listener: () => void): () => void;
+}
+
+const BROWSER_VISIBILITY: VisibilityPort = {
+  visible: () => (typeof document === 'undefined' ? null : document.visibilityState === 'visible'),
+  watch: (listener) => {
+    if (typeof document === 'undefined') return () => {};
+    document.addEventListener('visibilitychange', listener);
+    return () => document.removeEventListener('visibilitychange', listener);
+  },
+};
 
 export interface FloorSessionLike {
   readonly csrf: string;
@@ -265,6 +282,7 @@ export function openFloorStream(
   away: AwayPorts = BROWSER_AWAY,
   standing: StandingPorts = NO_STANDING,
   proof?: ProvePort,
+  visibility: VisibilityPort = BROWSER_VISIBILITY,
 ): () => void {
   // The session every socket is opened for. It changes only when the page is
   // re-authenticated in place, and the next socket then offers the new nonce.
@@ -318,6 +336,18 @@ export function openFloorStream(
     });
   }
 
+  let openedSocket: SocketLike | null = null;
+
+  // Tell the daemon whether the page is on screen, so a tab being watched stays signed in.
+  function tellVisibility(live: SocketLike): void {
+    const visible = visibility.visible();
+    if (visible !== null) live.send(visible ? VISIBLE : HIDDEN);
+  }
+
+  const stopVisibility = visibility.watch(() => {
+    if (!disposed && socket !== null && openedSocket === socket) tellVisibility(socket);
+  });
+
   function open(epoch: number): void {
     const live = connect(streamUrl(location), streamProtocols(session.csrf));
     socket = live;
@@ -359,6 +389,8 @@ export function openFloorStream(
       lastFrameAt = timers.now();
       noteTransport('open');
       live.send(SUBSCRIBE);
+      openedSocket = live;
+      tellVisibility(live);
     });
 
     live.addEventListener('message', (event: MessageLike) => {
@@ -533,6 +565,7 @@ export function openFloorStream(
     if (refreshOpenStream === refresh) refreshOpenStream = null;
     if (reauthenticateOpenStream === reauthenticate) reauthenticateOpenStream = null;
     stopSelectionWatch();
+    stopVisibility();
     stopWatching();
     cancelRetry?.();
     cancelRetry = null;

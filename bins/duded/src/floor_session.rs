@@ -37,6 +37,8 @@ const IDLE_EXPIRES_MS: i64 = 24 * 60 * 60_000;
 const ABSOLUTE_EXPIRES_MS: i64 = 30 * 24 * 60 * 60_000;
 const MAX_PENDING_BOOTSTRAPS: usize = 4;
 const MAX_LIVE_SESSIONS: usize = 4;
+/// The most often an open stream on a visible page renews its session's idle time.
+const WATCH_RENEWAL_MS: i64 = 60_000;
 const MAX_WEBSOCKETS_PER_SESSION: usize = 2;
 
 /// The issue route cannot mint another bootstrap while its bounded run-local table is full.
@@ -188,6 +190,7 @@ impl FloorSessionAuthorizer {
             inner: Arc::clone(&self.0),
             cookie,
             revoked,
+            visible: AtomicBool::new(false),
         })
     }
 
@@ -453,6 +456,8 @@ pub(crate) struct StreamSession {
     inner: Arc<Inner>,
     cookie: [u8; 32],
     revoked: Arc<AtomicBool>,
+    /// What the page last said about being on screen. A page that has said nothing is not watched.
+    visible: AtomicBool,
 }
 
 /// Internal session identity for writer-ordered Floor reads and mutation permits.
@@ -642,6 +647,34 @@ impl StreamSession {
         let registry::Locked { mut state, now } = self.inner.registry.lock_at_now();
         state.prune(now);
         self.inner.valid.load(Ordering::Acquire) && state.sessions.contains_key(&self.cookie)
+    }
+
+    /// Record whether the page is on screen.
+    pub(crate) fn set_visible(&self, visible: bool) {
+        self.visible.store(visible, Ordering::Release);
+    }
+
+    /// Revalidate, and while the page is on screen renew the idle time at most once a minute. A
+    /// session past its 30-day limit is gone from the table, so renewal never extends it.
+    #[must_use]
+    pub(crate) fn renew_if_watched(&self) -> bool {
+        if !self.inner.valid.load(Ordering::Acquire) {
+            return false;
+        }
+        let registry::Locked { mut state, now } = self.inner.registry.lock_at_now();
+        state.prune(now);
+        if !self.inner.valid.load(Ordering::Acquire) {
+            return false;
+        }
+        let Some(session) = state.sessions.get_mut(&self.cookie) else {
+            return false;
+        };
+        if self.visible.load(Ordering::Acquire)
+            && now.millis_since(session.last_used) >= WATCH_RENEWAL_MS
+        {
+            session.last_used = now;
+        }
+        true
     }
 
     /// A successfully decoded client `floor.subscribe` is admitted activity.
@@ -1789,6 +1822,86 @@ mod tests {
         for kept in [&live[0], &live[2], &live[3], &fifth] {
             assert!(acts(&sessions, kept));
         }
+    }
+
+    fn watch(sessions: &FloorSessions, session: &Exchange, visible: bool) -> StreamSession {
+        let stream = sessions
+            .authorizer()
+            .authorize_stream(
+                LIFETIME_HOST,
+                LIFETIME_ORIGIN,
+                &session.cookie,
+                &session.csrf,
+            )
+            .expect("an open stream");
+        stream.set_visible(visible);
+        stream
+    }
+
+    #[test]
+    fn a_visible_open_stream_keeps_its_session_and_a_hidden_one_does_not() {
+        let (clock, sessions) = lifetime_sessions();
+        let (shown, hidden) = (sign_in(&sessions), sign_in(&sessions));
+        let (shown_stream, hidden_stream) = (
+            watch(&sessions, &shown, true),
+            watch(&sessions, &hidden, false),
+        );
+        for _ in 0..30 {
+            clock.advance(HOUR_MS);
+            assert!(shown_stream.renew_if_watched());
+            let _ = hidden_stream.renew_if_watched();
+        }
+        assert!(acts(&sessions, &shown), "30 hours on screen, no requests");
+        assert!(!acts(&sessions, &hidden), "a hidden tab ended after a day");
+        assert!(!hidden_stream.renew_if_watched());
+        assert_eq!(shown_stream.renew_if_watched(), acts(&sessions, &shown));
+    }
+
+    #[test]
+    fn watching_never_outlasts_thirty_days_and_renews_at_most_once_a_minute() {
+        let (clock, sessions) = lifetime_sessions();
+        let shown = sign_in(&sessions);
+        let stream = watch(&sessions, &shown, true);
+        clock.advance(59_000);
+        assert!(stream.renew_if_watched());
+        clock.advance(24 * HOUR_MS + 30_000 - 59_000);
+        assert!(
+            !acts(&sessions, &shown),
+            "a renewal inside a minute did not move the idle time"
+        );
+        let (clock, sessions) = lifetime_sessions();
+        let shown = sign_in(&sessions);
+        let stream = watch(&sessions, &shown, true);
+        for _ in 0..29 * 24 {
+            clock.advance(HOUR_MS);
+            assert!(stream.renew_if_watched());
+        }
+        clock.advance(24 * HOUR_MS);
+        assert!(!stream.renew_if_watched(), "the 30-day limit still ends it");
+        assert!(!acts(&sessions, &shown));
+    }
+
+    #[test]
+    fn a_watched_tab_is_not_the_one_a_fifth_sign_in_ends() {
+        let (clock, sessions) = lifetime_sessions();
+        let live: Vec<_> = (0..MAX_LIVE_SESSIONS)
+            .map(|_| {
+                let session = sign_in(&sessions);
+                clock.advance(1_000);
+                session
+            })
+            .collect();
+        let stream = watch(&sessions, &live[0], true);
+        clock.advance(HOUR_MS);
+        assert!(stream.renew_if_watched());
+        clock.advance(1_000);
+        let fifth = sign_in(&sessions);
+        assert!(
+            acts(&sessions, &live[0]),
+            "the watched oldest sign-in stays"
+        );
+        assert!(!acts(&sessions, &live[1]), "the idle one ended instead");
+        assert!(acts(&sessions, &fifth));
     }
 
     #[test]
