@@ -5,14 +5,16 @@
 //! with what [`admit`] returns. A route cannot skip a check by forgetting it, because the checks
 //! are not in the routes.
 //!
-//! Admission checks, in this order for a POST:
+//! Admission checks, in this order for a POST that has a session:
 //! 1. the listener's exact Host and Origin;
-//! 2. the session cookie and the session secret, which must both name one live session;
-//! 3. the body: no NUL byte and valid UTF-8;
-//! 4. the peer: the process on the other end of the connection is not an agent.
+//! 2. the peer: no process on the other end of the connection is inside an agent, so a refused
+//!    peer holding stolen credentials neither authenticates nor keeps the session alive;
+//! 3. the session cookie and the session secret, which must both name one live session;
+//! 4. the body: no NUL byte and valid UTF-8.
 //!
-//! Sign-in and the sockets have no session to check before the peer, so for them the peer comes
-//! first and a refused agent never spends a one-time link or takes a socket slot. The route's
+//! Sign-in reads its body first, then checks the peer, and only then does the exchange spend the
+//! one-time link, so a refused agent never spends it. A socket checks the peer before it takes a
+//! slot. The route's
 //! switch is part of resolving it: a route that is off is not a route. The head's shape (framing,
 //! Content-Type, Content-Length against the route's cap) is checked by the parsers in the parent
 //! module before any body is read.
@@ -251,6 +253,7 @@ impl Guard<'_> {
                 })
             }
             Kind::Action(action) => {
+                self.peer(route, endpoints)?;
                 let credentials = head.credentials.as_ref().ok_or_else(forbidden)?;
                 let (host, origin) = (&head.host, &head.origin);
                 let (cookie, secret) = (&credentials.cookie, &credentials.secret);
@@ -266,7 +269,6 @@ impl Guard<'_> {
                 .ok_or_else(forbidden)?;
                 let body = read_body()?;
                 clean_body(&body)?;
-                self.peer(route, endpoints)?;
                 Ok(Admission { admitted, body })
             }
         }
