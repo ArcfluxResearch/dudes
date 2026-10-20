@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::Duration;
 
@@ -17041,6 +17041,8 @@ fn a_saved_edit_the_daemon_could_not_adopt_is_not_reported_as_running() {
 
 #[cfg(unix)]
 mod project_add {
+    use std::path::Path;
+
     use super::*;
 
     const PROJECT_ATTEMPT: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
