@@ -11,7 +11,7 @@ import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { editDraft, mintAttemptId } from '../onboarding/hire.ts';
 
 export const REFUSALS = ['not_found', 'not_a_folder', 'not_allowed', 'not_git', 'changed', 'busy', 'config_changed', 'full',
-  'unknown', 'working', 'action_off'] as const;
+  'unknown', 'working', 'open_tickets', 'action_off'] as const;
 export type Refusal = (typeof REFUSALS)[number];
 export type NotHireable = 'ceiling_required' | 'check_not_runnable';
 
@@ -215,9 +215,10 @@ export function refusalLine(reason: Refusal): string {
     case 'changed': return 'That folder changed since you looked at it. Look at it again.';
     case 'busy': return 'Dudes is busy applying another change. Try again in a moment.';
     case 'config_changed': return 'Other changes to the settings file are waiting to be loaded, so nothing was changed. '
-      + 'Restart Dudes to load them, then add the project again.';
+      + 'Restart Dudes to load them, then try again.';
     case 'full': return 'Dudes already runs 32 projects, the most it can. Remove one first.';
-    case 'unknown': return 'Dudes no longer runs that project.';
+    case 'unknown': return 'That project is no longer in the list.';
+    case 'open_tickets': return 'The project still has open tickets. Finish or remove them first, then remove the project.';
     case 'working': return 'An agent still works in this project. Retire it first, then remove the project.';
     case 'action_off': return 'Adding and removing projects from this page is turned off. Turn on Add and remove projects in Settings.';
   }

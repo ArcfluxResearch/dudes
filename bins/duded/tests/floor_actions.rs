@@ -17317,6 +17317,78 @@ mod project_add {
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     }
 
+    /// An agent hired through a link to the project folder still works in the project: the folder
+    /// is resolved before it is compared.
+    #[test]
+    fn an_agent_hired_through_a_link_holds_the_project() {
+        let fixture = Fixture::new();
+        let settings = project_settings(&fixture);
+        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
+        let session = (cookie.clone(), csrf.clone());
+        let file = settings.operator_config.clone().expect("a file");
+        let scratch = tempfile::tempdir().expect("scratch");
+        let app = project_repo(scratch.path(), "app");
+        let link = scratch.path().join("link-to-app");
+        std::os::unix::fs::symlink(&app, &link).expect("link");
+        add_app(addr, &session, &app);
+        common::hire(&running.handle, &link);
+        let before = std::fs::read(&file).unwrap();
+
+        let (head, body) = project_post(
+            addr,
+            &session,
+            "remove",
+            &remove_body("app", PROJECT_ATTEMPT),
+        );
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
+        assert_eq!(body["reason"], "working", "{body}");
+        assert_eq!(std::fs::read(&file).unwrap(), before, "a refusal wrote");
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
+
+    /// A ticket that is not done names the project by id, and a later project could take the id, so
+    /// the remove is refused until the ticket is finished or removed.
+    #[test]
+    fn a_project_with_an_open_ticket_is_not_removed() {
+        let fixture = Fixture::new();
+        let mut settings = project_settings(&fixture);
+        let file = settings.operator_config.clone().expect("a file");
+        let text = "[floor.hire]\nenabled = true\n[floor.project]\nenabled = true\n[floor.control]\nenabled = true\n[floor.goal]\nenabled = true\n[floor.board]\nenabled = true\n";
+        std::fs::write(&file, text).expect("operator file");
+        settings.floor_control = FloorControl::On {
+            goal: true,
+            retire: false,
+            renew: false,
+        };
+        settings.floor_board_enabled = true;
+        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
+        let session = (cookie.clone(), csrf.clone());
+        let scratch = tempfile::tempdir().expect("scratch");
+        let app = project_repo(scratch.path(), "app");
+        add_app(addr, &session, &app);
+        let (head, body) = post_bytes(
+            addr,
+            "/floor/ticket",
+            &cookie,
+            &csrf,
+            br#"{"title":"Fix it"}"#,
+            None,
+        );
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
+        let before = std::fs::read(&file).unwrap();
+
+        let (head, body) = project_post(
+            addr,
+            &session,
+            "remove",
+            &remove_body("app", PROJECT_ATTEMPT),
+        );
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
+        assert_eq!(body["reason"], "open_tickets", "{body}");
+        assert_eq!(std::fs::read(&file).unwrap(), before, "a refusal wrote");
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
+
     /// While a reload holds the lock a remove answers `busy` and writes nothing. A remove the
     /// daemon cannot adopt, here because the file holds a project the daemon has not loaded, puts
     /// the file back exactly as it was.

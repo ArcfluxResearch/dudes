@@ -173,8 +173,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             profile.label.clone(),
             profile.cwd.clone(),
         );
-        if self.agent_works_in(&cwd) {
-            return Err(Reason::Working);
+        if let Some(reason) = self.removal_blocker(&project_id, &cwd) {
+            return Err(reason);
         }
         let path = self
             .ctx
@@ -210,21 +210,41 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         Ok(Removed { project_id, label })
     }
 
-    /// Whether an agent that is not retired works in `project`, in its folder or in a worktree
-    /// leased from it.
-    fn agent_works_in(&self, project: &Path) -> bool {
+    /// Why a project cannot be removed yet: an agent that is not retired works in it, or a ticket
+    /// that is not done names it. An agent counts when the projection recorded it under the
+    /// project, or when its folder, resolved, is the project's folder or below it. A folder or
+    /// projection that cannot be read counts as working, so the project stays.
+    fn removal_blocker(&self, id: &str, project: &Path) -> Option<Reason> {
         let world = self.sup.world();
-        world
-            .agents
-            .values()
-            .filter(|agent| !agent.retired)
-            .any(|agent| {
-                let directory = match agent.worktree {
-                    None => Some(&agent.cwd),
-                    Some(lease) => world.worktrees.get(&lease).map(|lease| &lease.origin),
-                };
-                directory.is_none_or(|directory| directory.starts_with(project))
+        let works =
+            world
+                .agents
+                .iter()
+                .filter(|(_, agent)| !agent.retired)
+                .any(|(agent_id, agent)| {
+                    let recorded = self.ctx.projections.agent(*agent_id).map_or(true, |row| {
+                        row.is_some_and(|row| {
+                            row.workspace.is_some_and(|workspace| workspace.id == id)
+                        })
+                    });
+                    let directory = match agent.worktree {
+                        None => Some(&agent.cwd),
+                        Some(lease) => world.worktrees.get(&lease).map(|lease| &lease.origin),
+                    };
+                    recorded
+                        || directory
+                            .and_then(|directory| directory.canonicalize().ok())
+                            .is_none_or(|directory| directory.starts_with(project))
+                });
+        if works {
+            return Some(Reason::Working);
+        }
+        let open = self.ctx.projections.tickets().map_or(true, |tickets| {
+            tickets.iter().any(|(card, ticket)| {
+                ticket.project == id && card.status != dudes_types::CardStatus::Done
             })
+        });
+        open.then_some(Reason::OpenTickets)
     }
 
     /// Write `written`, then have the daemon adopt it. A reload the daemon declines puts the file

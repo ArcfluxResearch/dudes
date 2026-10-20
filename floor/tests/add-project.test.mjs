@@ -196,6 +196,9 @@ test('removing a project asks once on the page, sends nothing until confirmed, a
     await remove.removeAsked({ ...deps, fetch: () => Promise.reject(new Error('down')) });
     assert.equal(remove.getRemoveState().kind, 'unsure');
     assert.match(html(), /did not confirm the removal/);
+    assert.match(remove.refusalLine('open_tickets'), /still has open tickets\. Finish or remove them first/);
+    assert.equal(remove.refusalLine('unknown'), 'That project is no longer in the list.');
+    assert.doesNotMatch(remove.refusalLine('config_changed'), /add the project again/);
     remove.resetRemove();
   } finally {
     await server.close();

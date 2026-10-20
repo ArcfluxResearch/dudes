@@ -55,6 +55,8 @@ pub enum Reason {
     Unknown,
     /// An agent that is not retired works in the project.
     Working,
+    /// A ticket that is not done names the project.
+    OpenTickets,
 }
 
 impl Reason {
@@ -72,6 +74,7 @@ impl Reason {
             Self::Full => "full",
             Self::Unknown => "unknown",
             Self::Working => "working",
+            Self::OpenTickets => "open_tickets",
         }
     }
 }
