@@ -42,7 +42,7 @@ export interface ProofPorts {
 
 const encoder = new TextEncoder();
 
-export function base64url(bytes: Uint8Array): string {
+function base64url(bytes: Uint8Array): string {
   let text = '';
   for (const byte of bytes) text += String.fromCharCode(byte);
   return btoa(text).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
