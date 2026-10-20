@@ -3,7 +3,7 @@
 import { useId, useState, useSyncExternalStore } from 'react';
 
 import {
-  cancelSetting, changeSetting, confirmation, confirmSetting, editLine, getSettingsEditState, limitChange,
+  cancelSetting, changeSetting, confirmSetting, editLine, getSettingsEditState, limitChange,
   subscribeToSettingsEdit,
 } from './edit.ts';
 import type { LimitUnit } from './edit.ts';
