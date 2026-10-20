@@ -20,6 +20,8 @@ import { LookStatus } from './look/LookEditor.tsx';
 import { MessagesPanel } from './MessagesPanel.tsx';
 import { RenameStatus } from './rename/NameEditor.tsx';
 import { RetireStatus, RetireStrip } from './retire/RetirePanel.tsx';
+import { automaticHoldOf } from './automaticHold.ts';
+import { RESUME_SWITCH } from './ticket/stuck.ts';
 import { RecoveryPanel, RecoveryReceipts } from './recovery/RecoveryPanel.tsx';
 import { switchedOffControls, UnavailableControls } from './settings/SettingsView.tsx';
 import type { AgentRow } from './scene/cast.ts';
@@ -95,7 +97,9 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
               agents={floor.agents} retiredAgents={floor.retiredAgents} /> : null}
           git={floor.git ? <GitPanel row={row} active={detailTab === 'git'} /> : null}
           memory={<MemoryPanel agent={row.id} active={detailTab === 'memory'} crew={floor} />}
-          control={<ControlStrip floor={floor} row={row} />}
+          control={floor.settings && !floor.control && automaticHoldOf(row) !== null
+            ? <p className="settings-guidance">Resume is off. Turn on {RESUME_SWITCH} under Floor switches in Settings.</p>
+            : <ControlStrip floor={floor} row={row} />}
           recovery={<RecoveryPanel floor={floor} row={row} />}
           retire={switchedOff.includes('retire') ? null : <RetireStrip floor={floor} row={row} />}
           terminal={switchedOff.includes('terminal') ? null : <TerminalAttach floor={floor} row={row} />}

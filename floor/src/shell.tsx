@@ -224,6 +224,12 @@ function SignedInShell() {
     if (selectAgent(id)) setAnswerAsked({ id });
   }
 
+  function reviewRecovery(id: string): void {
+    if (!selectAgent(id)) return;
+    setView(null);
+    requestAnimationFrame(() => document.getElementById('recovery-title')?.focus());
+  }
+
   function openView(next: ControlView): void {
     setFocused(false);
     setView(next);
@@ -392,7 +398,7 @@ function SignedInShell() {
           addAgent={<HireEntry floor={floor} id="hire-open-crew" onAddAgent={openHire} folded />} /> : null}
         {view === null || focused ? null : <Control key={view} floor={floor} view={view} selectedId={currentSelectedId}
           onClose={() => setView(null)} onView={openView} onOpenQuestion={openQuestion} onOpenTicket={openCard}
-          onHire={openHire} onHireAgain={hireAgain}
+          onReviewRecovery={reviewRecovery} onHire={openHire} onHireAgain={hireAgain}
           onGuide={() => { setFocused(false); setHiring(false); setGuide('open'); }} />}
         <div className="office-slot">
           <div className="office-area">

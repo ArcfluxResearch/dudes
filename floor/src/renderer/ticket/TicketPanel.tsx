@@ -24,6 +24,7 @@ import type { TicketAction } from './model.ts';
 import { agentsFor, ticketActionsOpen, TicketNotice } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
 import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, reasonSentence, stateName } from './words.ts';
+import { StuckActions } from './StuckActions.tsx';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
 import { COVERAGE_SUMMARY, coverageText, groupGaps, instructionContextText } from './instructions.ts';
@@ -293,10 +294,12 @@ function EditForm({ floor, card, detail, onDone }: {
   </form>;
 }
 
-export function TicketPanel({ floor, card, onHire }: {
+export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
   readonly floor: FloorState;
   readonly card: CardRow;
   readonly onHire?: (opener: HTMLElement | null) => void;
+  /** Open the recovery view in this agent's drawer. */
+  readonly onReviewRecovery?: (agent: string) => void;
 }) {
   const [mode, setMode] = useState<Mode>('none');
   const sending = useSyncExternalStore(subscribeToTicket, getTicketState, getTicketState).sending;
@@ -347,6 +350,7 @@ export function TicketPanel({ floor, card, onHire }: {
       data-focus-on-leave="view-board">{card.title}</h3>
     <TicketNotice card={card.id} floor={floor} />
     <Facts floor={floor} card={card} />
+    <StuckActions floor={floor} card={card} onReviewRecovery={onReviewRecovery} />
     {loaded?.context == null ? null : <RecoveredReview context={loaded.context} fresh={fresh} />}
     {loaded?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={loaded.instruction_review} />}
     {(requiresInstructionReview(card) && !reviewReady) || (detail.card === card.id && detail.phase === 'failed')

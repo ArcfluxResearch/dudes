@@ -207,7 +207,7 @@ export function ControlNav({ floor, view, onToggle }: {
   );
 }
 
-export function Control({ floor, view, selectedId, onClose, onView, onOpenQuestion, onOpenTicket, onHire, onHireAgain, onGuide }: {
+export function Control({ floor, view, selectedId, onClose, onView, onOpenQuestion, onOpenTicket, onReviewRecovery, onHire, onHireAgain, onGuide }: {
   readonly floor: FloorState;
   readonly view: ControlView;
   readonly selectedId: string | null;
@@ -216,6 +216,8 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
   readonly onOpenQuestion: (agentId: string) => void;
   /** Open the Board on a ticket. */
   readonly onOpenTicket?: (card: string) => void;
+  /** Close the ticket and open the agent's drawer on its recovery view. */
+  readonly onReviewRecovery?: (agent: string) => void;
   /** Open the Hire form, from the new-ticket form when no agent is hired. */
   readonly onHire?: (opener: HTMLElement | null) => void;
   readonly onHireAgain?: (row: RetiredAgentRow, opener: HTMLButtonElement) => void;
@@ -300,7 +302,8 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
           {floor.ticket ? null : <TicketOffHint floor={floor} />}
           <NewTicketForm floor={floor} onHire={onHire} onCancel={closeOverlay}
             onCreated={(id) => { opener.current = null; seenCard.current = null; setOverlay({ kind: 'card', id }); }} />
-        </div> : selectedCard?.ticket != null ? <TicketPanel key={selectedCard.id} floor={floor} card={selectedCard} onHire={onHire} />
+        </div> : selectedCard?.ticket != null ? <TicketPanel key={selectedCard.id} floor={floor} card={selectedCard} onHire={onHire}
+          onReviewRecovery={onReviewRecovery} />
           : selectedCard !== null ? <CardDetail key={selectedCard.id} floor={floor} card={selectedCard} />
             : <p role="status">Waiting for the board to confirm this ticket.</p>}
         </> : null}
