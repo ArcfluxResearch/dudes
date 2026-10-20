@@ -46,6 +46,6 @@ test('release manifest covers the static build and excludes build tools', async 
   assert.doesNotThrow(() => validateRuntimeNotices(notices));
   assert.deepEqual(
     notices.map(({ name, version, identifier }) => `${name}@${version}@${identifier}`).sort(),
-    ['@xterm/xterm@6.0.0@MIT', 'react-dom@19.3.0@MIT', 'react@19.3.0@MIT', 'scheduler@0.28.0@MIT', 'three@0.186.1@MIT'],
+    ['@xterm/xterm@6.0.0@MIT', 'react-dom@19.3.1@MIT', 'react@19.3.1@MIT', 'scheduler@0.28.0@MIT', 'three@0.186.1@MIT'],
   );
 });
