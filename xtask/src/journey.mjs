@@ -1,6 +1,7 @@
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { oldProjectWords } from '../../floor/tests/helpers/project-word.mjs';
 import { terminalCommandsOnScreen } from '../../floor/tests/helpers/terminal-commands.mjs';
 
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -44,6 +45,7 @@ export class Journey {
     this.allowed = allowed;
     this.used = new Set();
     this.findings = [];
+    this.oldWords = [];
     this.screens = [];
   }
 
@@ -88,6 +90,7 @@ export class Journey {
     const file = join(this.pictures, `${String(this.screens.length + 1).padStart(2, '0')}-${name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.png`);
     await writeFile(file, Buffer.from(shot.data, 'base64'));
     this.screens.push(name);
+    for (const context of oldProjectWords(text)) this.oldWords.push(`${name}: ${context}`);
     const seen = new Set();
     for (const found of terminalCommandsOnScreen({ text, codeBlocks })) {
       if (seen.has(found.text)) continue;
@@ -204,6 +207,7 @@ export class Journey {
     const unused = this.allowed.filter((entry) => !this.used.has(entry));
     const problems = [
       ...this.findings.map((line) => `terminal command shown on ${line}`),
+      ...this.oldWords.map((line) => `"workspace" shown instead of "project" on ${line}`),
       ...unused.map((entry) => `the allowed exit "${entry.name}" no longer shows on ${entry.screen}: remove it from ALLOWED_EXITS`),
     ];
     console.log(`journey screens (${this.screens.length}): ${this.screens.join(', ')}`);

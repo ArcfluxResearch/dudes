@@ -106,7 +106,7 @@ pub enum WorkspaceError {
     #[error("{0} is not a directory")]
     NotADirectory(PathBuf),
     /// `add` was given a path that goes through a symlink.
-    #[error("{typed} goes through a symlink to {canonical}; enroll the canonical path")]
+    #[error("{typed} goes through a symlink to {canonical}; add the canonical path")]
     NotCanonical {
         /// What the operator typed.
         typed: PathBuf,
@@ -137,10 +137,10 @@ pub enum WorkspaceError {
     #[error("`{0}` is not a project id: use 1 to 128 of A-Z, a-z, 0-9, _ and -")]
     InvalidId(String),
     /// `add` was given an id the file already holds.
-    #[error("the configuration already enrolls `{0}`")]
+    #[error("a project named `{0}` is already added")]
     DuplicateId(String),
     /// `remove` was given an id the file does not hold.
-    #[error("the configuration does not enroll `{0}`")]
+    #[error("no project is named `{0}`")]
     UnknownId(String),
     /// A check id outside 1 to 64 bytes of `[a-z][a-z0-9_-]*`.
     #[error("`{0}` is not a check id: use 1 to 64 of a-z, 0-9, _ and -, starting with a letter")]

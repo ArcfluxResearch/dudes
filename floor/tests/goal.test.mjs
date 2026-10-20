@@ -703,7 +703,7 @@ test('an agent no enrolled project offers checks to can only keep its check, and
 
 test('workspace_unavailable and profile_changed say nothing changed, and a changed check refreshes the floor', async () => {
   for (const [reason, text, refreshes] of [
-    ['workspace_unavailable', 'This agent’s project is no longer enrolled at its directory, so that check cannot be '
+    ['workspace_unavailable', 'This agent’s project is no longer set up at its folder, so that check cannot be '
       + 'chosen. Nothing changed.', 0],
     ['profile_changed', 'The operator changed that check after this page read it. Nothing changed. Choose again.', 1],
   ]) {

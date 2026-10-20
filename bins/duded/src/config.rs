@@ -224,12 +224,12 @@ impl fmt::Display for ConfigError {
             ConfigErrorKind::InvalidWorkspace(id) => {
                 write!(
                     formatter,
-                    "has an invalid [floor.onboarding] workspace `{id}`"
+                    "has an invalid project `{id}` in [floor.onboarding] workspaces"
                 )
             }
             ConfigErrorKind::NonCanonicalWorkspace(id) => write!(
                 formatter,
-                "has a [floor.onboarding] workspace `{id}` whose cwd is not its canonical form"
+                "has a project `{id}` in [floor.onboarding] workspaces whose cwd is not its canonical form"
             ),
             ConfigErrorKind::OnboardingTooLarge => write!(
                 formatter,

@@ -261,7 +261,7 @@ impl WorktreeHires {
     ) -> Result<dudes_proto::rpc::workspace::TrustResult, RpcError> {
         let refused = |text: String| RpcError {
             code: dudes_proto::rpc::ErrorCode::Refused.code(),
-            message: format!("workspace.trust: {text}"),
+            message: format!("project trust: {text}"),
             data: None,
         };
         // A revocation needs no enrolled project: a removed project's grant must still be undone.

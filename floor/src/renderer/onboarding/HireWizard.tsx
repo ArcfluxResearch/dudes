@@ -21,7 +21,7 @@ import { HIRE_ENGINES, formatUsdMicros, isHireEngine } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
 import { checkRefusalText, checksFor, choiceLabel } from './checks.ts';
 import {
-  LIMITS, NO_CHECK, agentsIn, lengthNote, ownCopyOffer, PARTIAL_REASONS, SECTIONS, browserHireDeps, checkHireStatus, chosenCheck, chosenWorkspace,
+  LIMITS, NO_CHECK, NO_PROJECT_LIST, agentsIn, lengthNote, ownCopyOffer, PARTIAL_REASONS, SECTIONS, browserHireDeps, checkHireStatus, chosenCheck, chosenWorkspace,
   chosenEngine, editDraft, freshSince, getHireState, mayCheckRecorded, moveSection, presenceOf, releasable,
   releaseAttempt,
   sessionAfterRefusal, showSection, startAnotherHire, submitHire, subscribeToHire,
@@ -149,7 +149,7 @@ function unavailable(floor: FloorState): string | null {
   if (floor.phase !== 'live' || floor.snapshotEpoch !== floor.epoch) return 'Waiting for a snapshot from the daemon.';
   if (floor.stale) return 'The view is unconfirmed, so Hire waits for the stream.';
   if (floor.onboarding === null) {
-    return 'The daemon offers no project to this session, so Hire is unavailable.';
+    return NO_PROJECT_LIST;
   }
   return null;
 }
@@ -284,7 +284,7 @@ function HireForm({ hire, floor, onClose }: {
           )}
           {hire.section !== 'workspace' ? null : (
             <>
-              {noProject ? <NoHireProjectHint floor={floor} /> : catalog === null ? <p>No project is available for hiring in this session.</p> : (
+              {noProject ? <NoHireProjectHint floor={floor} /> : catalog === null ? <p>{NO_PROJECT_LIST}</p> : (
                 <fieldset className="hire-choices" aria-invalid={invalid('workspace_id')}
                   aria-describedby={described('workspace_id')}>
                   <legend>Which project?</legend>
