@@ -9,7 +9,7 @@ use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use duded::classify::{ExternalChild, PeerBarrier, ProcessRelation, Relation, Resolver};
@@ -477,71 +477,10 @@ struct HostAnswer {
     relation: Relation,
 }
 
-/// What the recording relation does with an attached child the PTY host created.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Registration {
-    /// Register it at once, as production does.
-    Immediate,
-    /// Register it only once a peer's resolution has entered the relation and has either
-    /// answered or waited a second, so that peer meets the barrier before the child has a key.
-    AfterAPeerWaits,
-    /// Refuse to register it.
-    Refused,
-}
-
 #[derive(Debug)]
 struct RecordedHostPeerProcesses {
     host: HostPeerProcesses,
     answers: Mutex<Vec<HostAnswer>>,
-    peers: Arc<(Mutex<PeerCounts>, Condvar)>,
-    registration: Registration,
-}
-
-/// Resolutions that entered the relation, and those that answered.
-#[derive(Clone, Copy, Debug, Default)]
-struct PeerCounts {
-    arrived: usize,
-    answered: usize,
-}
-
-/// Holds a registration until a peer's resolution has entered the relation, and then until it
-/// answers or has waited one second, well inside the relation's three-second bound. A peer that
-/// meets an armed barrier is still waiting when the second ends; one that does not has answered.
-#[derive(Debug)]
-struct HeldRegistration {
-    inner: Box<dyn ExternalChild>,
-    peers: Arc<(Mutex<PeerCounts>, Condvar)>,
-    before: PeerCounts,
-}
-
-impl ExternalChild for HeldRegistration {
-    fn register(&mut self, child: PtyChild) -> std::io::Result<AdoptionKey> {
-        let (peers, changed) = &*self.peers;
-        let peers = peers.lock().expect("peer counts");
-        let (peers, _) = changed
-            .wait_timeout_while(peers, Duration::from_secs(20), |counts| {
-                counts.arrived == self.before.arrived
-            })
-            .expect("peer counts");
-        let _ = changed
-            .wait_timeout_while(peers, Duration::from_secs(1), |counts| {
-                counts.answered == self.before.answered
-            })
-            .expect("peer counts");
-        self.inner.register(child)
-    }
-}
-
-/// Keeps the slot active, as a real hold does, and refuses to register the child.
-#[derive(Debug)]
-struct RefusedRegistration {
-    _hold: Box<dyn ExternalChild>,
-}
-
-impl ExternalChild for RefusedRegistration {
-    fn register(&mut self, _child: PtyChild) -> std::io::Result<AdoptionKey> {
-        Err(std::io::Error::other("injected registration refusal"))
-    }
 }
 
 impl RecordedHostPeerProcesses {
@@ -574,22 +513,10 @@ impl ProcessRelation for RecordedHostPeerProcesses {
     }
 
     fn track_external(&self, slot: u64) -> Box<dyn ExternalChild> {
-        let inner = self.host.track_external(slot);
-        match self.registration {
-            Registration::Immediate => inner,
-            Registration::AfterAPeerWaits => Box::new(HeldRegistration {
-                inner,
-                peers: Arc::clone(&self.peers),
-                before: *self.peers.0.lock().expect("peer counts"),
-            }),
-            Registration::Refused => Box::new(RefusedRegistration { _hold: inner }),
-        }
+        self.host.track_external(slot)
     }
 
     fn resolve(&self, peer: u32, pidversion: Option<u32>, children: &[AdoptionKey]) -> Relation {
-        let (counts, changed) = &*self.peers;
-        counts.lock().expect("peer counts").arrived += 1;
-        changed.notify_all();
         let relation = self.host.resolve(peer, pidversion, children);
         self.answers
             .lock()
@@ -599,8 +526,6 @@ impl ProcessRelation for RecordedHostPeerProcesses {
                 recorded_children: children.len(),
                 relation,
             });
-        counts.lock().expect("peer counts").answered += 1;
-        changed.notify_all();
         relation
     }
 }
@@ -697,15 +622,12 @@ fn start_real_with(
     settings: &duded::settings::Settings,
     pty_host: Box<dyn PtyHostPort>,
     adapters: Adapters,
-    registration: Registration,
 ) -> (common::Running, Arc<RecordedHostPeerProcesses>) {
     let children = ChildEnds::new();
     let host = RealHost::watching(Arc::new(HostStreams(Arc::clone(&children))));
     let processes = Arc::new(RecordedHostPeerProcesses {
         host: HostPeerProcesses(host.peer_processes()),
         answers: Mutex::new(Vec::new()),
-        peers: Arc::default(),
-        registration,
     });
     let resolver = Resolver::processes(Arc::clone(&processes) as Arc<dyn ProcessRelation>);
     let host = PeerBarrier::new(host, resolver.clone());
@@ -732,13 +654,7 @@ fn start_real(fixture: &Fixture, role: &str, release: &Path) -> common::Running 
     let adapters = [Box::new(HelperAdapter) as Box<dyn Adapter>]
         .into_iter()
         .collect();
-    start_real_with(
-        &settings,
-        Box::new(duded::ports::ClosedPtyHost),
-        adapters,
-        Registration::Immediate,
-    )
-    .0
+    start_real_with(&settings, Box::new(duded::ports::ClosedPtyHost), adapters).0
 }
 
 fn questions(fixture: &Fixture) -> Vec<(AgentId, String)> {
@@ -973,7 +889,6 @@ impl AttachedDaemon {
         fixture: &Fixture,
         settings: &duded::settings::Settings,
         ptys: Box<dyn PtyHostPort>,
-        registration: Registration,
     ) -> Self {
         let stand_in = ClaudeConfig {
             command: claude_stand_in(fixture.state.path()).into_os_string(),
@@ -986,7 +901,7 @@ impl AttachedDaemon {
             &settings.daemon_env,
         )
         .expect("stand-in Claude adapter");
-        let (running, processes) = start_real_with(settings, ptys, adapters, registration);
+        let (running, processes) = start_real_with(settings, ptys, adapters);
         let operators = (0..2)
             .map(|_| {
                 let mut operator =
@@ -1089,12 +1004,7 @@ fn a_restart_keeps_a_surviving_child_governed_and_detaches_a_gone_one() {
     let fixture = Fixture::new();
     let settings = attached_settings(&fixture, ATTACHED_HOOK);
     let ptys = NativePtys::default();
-    let mut first = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(ptys.clone()),
-        Registration::Immediate,
-    );
+    let mut first = AttachedDaemon::start(&fixture, &settings, Box::new(ptys.clone()));
     let survivor = first.paused_agent(&fixture);
     let gone = first.paused_agent(&fixture);
     for agent in [survivor, gone] {
@@ -1123,12 +1033,8 @@ fn a_restart_keeps_a_surviving_child_governed_and_detaches_a_gone_one() {
     ptys.close_for_real(gone_pty);
     assert!(ptys.live(survivor_pty), "the survivor outlived its daemon");
 
-    let mut second = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(duded::ports::ClosedPtyHost),
-        Registration::Immediate,
-    );
+    let mut second =
+        AttachedDaemon::start(&fixture, &settings, Box::new(duded::ports::ClosedPtyHost));
     let records = fixture.records();
     assert!(
         detached_by_system(&records, gone),
@@ -1167,12 +1073,7 @@ fn a_restart_keeps_a_surviving_child_governed_and_detaches_a_gone_one() {
 fn an_operator_credential_from_inside_an_attached_tree_is_refused() {
     let fixture = Fixture::new();
     let settings = attached_settings(&fixture, ATTACHED_OPERATOR);
-    let mut daemon = AttachedDaemon::start(
-        &fixture,
-        &settings,
-        Box::new(NativePtys::default()),
-        Registration::Immediate,
-    );
+    let mut daemon = AttachedDaemon::start(&fixture, &settings, Box::new(NativePtys::default()));
     let agent = daemon.paused_agent(&fixture);
     let attach = daemon.attach(agent);
     assert!(attach.error.is_none(), "attach was refused: {attach:?}");

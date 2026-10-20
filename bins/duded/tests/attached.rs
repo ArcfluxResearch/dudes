@@ -4,6 +4,7 @@
 
 mod common;
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use common::{Fixture, ScriptedColumn, ScriptedRunner, SharedHost, SharedPtyHost, TestClock};
@@ -1593,4 +1594,1639 @@ mod native_close_query_tests {
         assert!(host.native_close_absence(pty, &token).is_ok());
         assert!(!host.acknowledge_native_close(pty, &token));
     }
+}
+
+const OWNED: &[u8] = b"owner-keystrokes";
+
+/// The host received `OWNED` once, through the attached connection, before a test's own subject.
+fn write_owned_bytes(fixture: &Fixture, ptys: &SharedPtyHost, session: &mut Attached) {
+    let applied = write_bytes(&mut session.owner, &session.settings, session.pty, OWNED);
+    assert!(applied.error.is_none(), "the owning write: {applied:?}");
+    assert_eq!(
+        ptys.writes(),
+        vec![(session.pty, OWNED.to_vec())],
+        "the host received the exact caller-owned bytes, once"
+    );
+    assert_eq!(
+        count(fixture, |r| matches!(r, Record::PtyWriteCompleted { .. })),
+        1
+    );
+}
+
+/// Invariant 6: no message body becomes a keystroke. Every surface that carries a body is planted
+/// with the same distinctive text, each plant is shown to have landed, and the host still saw
+/// nothing but the one owned write.
+#[test]
+fn no_message_body_becomes_a_keystroke() {
+    const PLANTED: &str = "planted-message-body";
+
+    let fixture = Fixture::new();
+    // Durable before the daemon starts, so the mail arm is mail the daemon replays.
+    seed_mail(&fixture, PLANTED);
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &ptys);
+    write_owned_bytes(&fixture, &ptys, &mut session);
+
+    // An answer lands only on an open question, so one is opened first.
+    session
+        .running
+        .handle
+        .ask(duded::ports::Ask::Ask {
+            agent: session.agent,
+            text: PLANTED.to_owned(),
+        })
+        .expect("the question the answer plant closes");
+    for (method, params) in [
+        (
+            Method::AgentSteer,
+            serde_json::json!({ "agent": session.agent, "text": PLANTED }),
+        ),
+        (
+            Method::AgentAnswer,
+            serde_json::json!({ "agent": session.agent, "text": PLANTED }),
+        ),
+        (
+            Method::MemoryAppend,
+            serde_json::json!({ "agent": session.agent, "text": PLANTED }),
+        ),
+    ] {
+        let response = session
+            .owner
+            .call_as_operator(method, Some(params), credential_of(&session.settings))
+            .expect("a response");
+        assert!(
+            response.error.is_none(),
+            "the {} plant must land to be worth anything: {response:?}",
+            method.name()
+        );
+    }
+    let replanted_goal = dudes_proto::rpc::goal::GoalSetParams {
+        text: PLANTED.to_owned(),
+        ..common::goal_params(session.agent, &["/usr/bin/true"])
+    };
+    let goal = session
+        .owner
+        .call_as_operator(
+            Method::GoalSet,
+            Some(serde_json::to_value(replanted_goal).unwrap()),
+            credential_of(&session.settings),
+        )
+        .expect("a response");
+    assert!(goal.error.is_none(), "the task plant: {goal:?}");
+
+    let planted_records: Vec<&'static str> = fixture
+        .records()
+        .iter()
+        .filter_map(|record| match record {
+            Record::Steer { text, .. } if text == PLANTED => Some("Steer"),
+            Record::HumanAnswer { text, .. } if text == PLANTED => Some("HumanAnswer"),
+            Record::MemoryAppend { text, .. } if text == PLANTED => Some("MemoryAppend"),
+            Record::GoalSet { goal, .. } if goal.text == PLANTED => Some("GoalSet"),
+            Record::Mail {
+                body: Some(body), ..
+            } if body == PLANTED => Some("Mail"),
+            _ => None,
+        })
+        .collect();
+    for expected in ["Steer", "HumanAnswer", "MemoryAppend", "GoalSet", "Mail"] {
+        assert!(
+            planted_records.contains(&expected),
+            "the {expected} plant never reached the journal, so its arm proves nothing: \
+             {planted_records:?}"
+        );
+    }
+    assert_eq!(
+        ptys.writes(),
+        vec![(session.pty, OWNED.to_vec())],
+        "five message bodies are durable in this journal and none of them reached the PTY"
+    );
+    assert_eq!(
+        session.running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+}
+
+/// A partial host write is journaled as what it was and revokes the connection's ownership.
+#[test]
+fn a_partial_host_write_revokes_the_connections_ownership() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &ptys);
+    write_owned_bytes(&fixture, &ptys, &mut session);
+
+    ptys.short_next_write(3);
+    let partial = write_bytes(
+        &mut session.owner,
+        &session.settings,
+        session.pty,
+        b"partial-keystrokes",
+    );
+    assert!(
+        partial.error.is_some(),
+        "a partial write is not reported as success"
+    );
+    assert!(
+        fixture.records().iter().any(|record| matches!(
+            record,
+            Record::PtyWriteCompleted {
+                outcome: dudes_proto::PtyWriteOutcome::Partial { written_len: 3, .. },
+                ..
+            }
+        )),
+        "the host's short count is journaled as what it was"
+    );
+    let after_partial = ptys.writes();
+    assert_eq!(after_partial.len(), 2);
+    let revoked = write_bytes(&mut session.owner, &session.settings, session.pty, b"after");
+    assert!(revoked.error.is_some(), "ownership was revoked");
+    assert_eq!(
+        ptys.writes(),
+        after_partial,
+        "and the revoked connection reached the host no further"
+    );
+    assert_eq!(
+        session.running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+}
+
+/// A failed host write is not a partial one: it arrives as an error from the host, and it must be
+/// journaled as a failure, answered as one, and revoke ownership too.
+#[test]
+fn a_failed_host_write_revokes_the_connections_ownership() {
+    const REFUSED: &[u8] = b"refused-keystrokes";
+
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &ptys);
+
+    ptys.fail_next_write();
+    let failed = write_bytes(&mut session.owner, &session.settings, session.pty, REFUSED);
+    assert!(
+        failed.error.is_some(),
+        "a refused host write is not reported as success"
+    );
+    assert_eq!(
+        ptys.writes(),
+        vec![(session.pty, REFUSED.to_vec())],
+        "the failed call still reached the host exactly once, with the caller's exact bytes"
+    );
+
+    let failed_completions: Vec<dudes_types::Lsn> = fixture
+        .records()
+        .into_iter()
+        .filter_map(|record| match record {
+            Record::PtyWriteCompleted {
+                request_lsn,
+                outcome: dudes_proto::PtyWriteOutcome::Failed { .. },
+            } => Some(request_lsn),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        failed_completions.len(),
+        1,
+        "the host's refusal is journaled as what it was, once"
+    );
+    // The completion has to name the request it completes.
+    let named = requests(&fixture)
+        .into_iter()
+        .find(|(lsn, _)| *lsn == failed_completions[0])
+        .map(|(_, record)| record)
+        .expect("the failed completion names a request in this journal");
+    assert!(
+        matches!(
+            &named,
+            Record::PtyWriteRequested { pty, payload, .. }
+                if *pty == session.pty
+                    && payload.decoded_len == REFUSED.len() as u64
+                    && payload.blake3 == blake3::hash(REFUSED).to_hex().to_string()
+        ),
+        "and the request it names is the refused write's own: {named:?}"
+    );
+
+    let after_failed = write_bytes(
+        &mut session.owner,
+        &session.settings,
+        session.pty,
+        b"after-failure",
+    );
+    assert!(
+        after_failed.error.is_some(),
+        "a failed host write revokes this connection's ownership, as a partial one does"
+    );
+    assert_eq!(
+        ptys.writes().len(),
+        1,
+        "and the revoked connection reached the host no further"
+    );
+    assert_eq!(
+        session.running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+}
+
+/// Replay after a completed write repeats no bytes.
+#[test]
+fn replay_after_a_completed_write_repeats_no_bytes() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &ptys);
+    write_owned_bytes(&fixture, &ptys, &mut session);
+    let last_lsn = fixture
+        .entries()
+        .last()
+        .map(|(lsn, _)| *lsn)
+        .expect("a non-empty journal");
+    assert_eq!(
+        session.running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+
+    let replayed = SharedPtyHost::new(fixture.journal_dir());
+    let replayed_lsn = replay_run(&fixture, replayed.clone());
+    assert!(
+        replayed_lsn >= last_lsn,
+        "the restarted daemon replayed to the end of the journal ({replayed_lsn:?} < {last_lsn:?})"
+    );
+    assert_eq!(
+        replayed.writes(),
+        Vec::new(),
+        "replay wrote no bytes for a request that already has an outcome"
+    );
+    assert_eq!(
+        replayed.shutdowns(),
+        1,
+        "control: that run really held this host, so its empty write log is evidence"
+    );
+}
+
+/// Append one mail with an inline `body`, before any daemon opens this journal.
+fn seed_mail(fixture: &Fixture, body: &str) {
+    let options = dudes_journal::JournalOptions {
+        fsync: dudes_journal::Fsync::Full,
+        checkpoint_every: 0,
+        ..dudes_journal::JournalOptions::default()
+    };
+    let (mut writer, _) =
+        dudes_journal::open(&fixture.journal_dir(), options).expect("open the seed journal");
+    writer
+        .append(&dudes_proto::Entry {
+            at: dudes_types::Timestamp::from_unix_millis(1_787_394_600_000),
+            record: Record::Mail {
+                thread: None,
+                thread_seq: 0,
+                members: Vec::new(),
+                id: dudes_types::MailId::parse("01ARZ3NDEKTSV4RRFFQ69G5FB9").expect("a mail id"),
+                from: dudes_proto::MailFrom::Human,
+                to: dudes_proto::MailTo::Human,
+                act: dudes_proto::MailAct::Message,
+                subject: "planted".to_owned(),
+                body: Some(body.to_owned()),
+                body_len: body.len() as u64,
+                body_path: None,
+                body_blake3: None,
+                state: dudes_types::MailState::Durable,
+                actor: None,
+                provenance: None,
+            },
+        })
+        .expect("seed the mail");
+}
+
+/// Boot a second daemon over the same state directory, let it settle, and stop it.
+///
+/// Returns the lsn the restarted daemon reports, which is how a caller tells a run that replayed
+/// the journal from one that failed to open it.
+fn replay_run(fixture: &Fixture, ptys: SharedPtyHost) -> dudes_types::Lsn {
+    let settings = fixture.settings();
+    let column = ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
+    let seams = duded::Seams {
+        host: SharedHost::new(),
+        pty_host: Box::new(ptys),
+        predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
+        clock: Arc::new(TestClock::new()),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
+        resolver: duded::classify::Resolver::fixed(
+            Arc::clone(&column) as Arc<dyn dudes_rpc::PeerResolver>
+        ),
+        adapters: dudes_providers::registry::Adapters::from_config(
+            &dudes_providers::registry::ProvidersConfig {
+                claude: Some(dudes_providers::claude::config::ClaudeConfig::default()),
+            },
+            &[],
+        )
+        .expect("default Claude adapter"),
+        children: duded::ChildEnds::new(),
+        witness: Witness::default(),
+    };
+    let daemon = duded::boot(&settings, seams).expect("the same state directory boots again");
+    let mut running = common::start(daemon);
+    let mut client = Client::connect(settings.socket()).expect("connect to the restarted daemon");
+    let ping = client
+        .call(Method::SystemPing, None)
+        .expect("the restarted daemon answers");
+    assert!(ping.error.is_none(), "system.ping: {ping:?}");
+    let state: dudes_proto::rpc::system::PingResult =
+        serde_json::from_value(ping.result.expect("a ping result")).unwrap();
+    drop(client);
+    assert_eq!(
+        running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+    state.lsn
+}
+
+#[test]
+fn attached_claude_refuses_a_live_peer_before_pty_open() {
+    let fixture = Fixture::new();
+    let settings = fixture.settings();
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut seams = common::seams_with(
+        &settings,
+        host.clone(),
+        Arc::new(ScriptedRunner::scripted([common::passes()])),
+        Arc::new(TestClock::new()),
+        Witness::default(),
+        ScriptedColumn::new(PeerProvenance::NoRecordedAgent),
+    );
+    seams.pty_host = Box::new(ptys.clone());
+    seams.resolver = common::native_resolver(&ptys);
+    host.bind_child_ends(Arc::clone(&seams.children));
+    let daemon = duded::boot(&settings, seams).unwrap();
+    let mut running = common::start(daemon);
+    let mut client = Client::connect(settings.socket()).unwrap();
+    let candidate = common::hire(&running.handle, fixture.state.path());
+    common::set_goal(
+        &running.handle,
+        common::goal_params(candidate, &["/usr/bin/true"]),
+    );
+    let (turn, session) = fixture.await_record("candidate issue", |record| match record {
+        Record::TurnIssued {
+            agent,
+            turn,
+            session: Some(session),
+            ..
+        } if *agent == candidate => Some((*turn, session.clone())),
+        _ => None,
+    });
+    running
+        .handle
+        .input(Input::SessionLearned { turn, session });
+    fixture.await_record("candidate confirmed session", |record| match record {
+        Record::SessionLearned { turn: seen, .. } if *seen == turn => Some(()),
+        _ => None,
+    });
+    common::end_turn_with_native(&fixture, &running.handle, &host, turn);
+    fixture.await_record("candidate observed completion", |record| match record {
+        Record::LoopDecided {
+            agent,
+            decision: dudes_proto::LoopDecision::Done,
+            ..
+        } if *agent == candidate => Some(()),
+        _ => None,
+    });
+    let peer = common::hire(&running.handle, fixture.state.path());
+    common::set_goal(
+        &running.handle,
+        common::goal_params(peer, &["/usr/bin/false"]),
+    );
+    let pid = fixture.await_record("live peer child", |record| match record {
+        Record::TurnSpawned { agent, pid, .. } if *agent == peer => Some(*pid),
+        _ => None,
+    });
+    let response = attach(&mut client, &settings, candidate);
+    let refusal = response
+        .error
+        .expect("attached composition refuses live shared context even under managed default");
+    assert!(refusal.message.contains(&peer.to_string()), "{refusal:?}");
+    assert!(refusal.message.contains("worktree"), "{refusal:?}");
+    assert_eq!(ptys.opens().len(), 0);
+    assert!(fixture.records().iter().any(|record| matches!(record,
+        Record::AgentHeld { agent, cause: dudes_proto::AutomaticHold::LaunchRefused { reason }, .. }
+            if *agent == candidate && reason.contains(&peer.to_string()))));
+    running.stop(duded::ExitCause::ShutdownRpc);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the selector holds one connection across session establishment, attach, and cleanup"
+)]
+fn agent_attach_binds_the_durable_attachment_to_one_connection() {
+    let fixture = Fixture::new();
+    let settings = fixture.settings();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let host = SharedHost::with_native_evidence(fixture.journal_dir());
+    let children = duded::ChildEnds::new();
+    host.bind_child_ends(Arc::clone(&children));
+    let seams = duded::Seams {
+        host: host.clone(),
+        pty_host: Box::new(ptys.clone()),
+        predicates: Arc::new(ScriptedRunner::scripted([common::passes()])),
+        clock: Arc::new(TestClock::new()),
+        rng: common::FixtureRng::from_rng(&settings, FakeRng::new()),
+        resolver: common::native_resolver(&ptys),
+        adapters: dudes_providers::registry::Adapters::from_config(
+            &dudes_providers::registry::ProvidersConfig {
+                claude: Some(dudes_providers::claude::config::ClaudeConfig::default()),
+            },
+            &[],
+        )
+        .expect("default Claude adapter"),
+        children,
+        witness: Witness::default(),
+    };
+    let daemon = duded::boot(&settings, seams).expect("boot");
+    let mut running = common::start(daemon);
+
+    // This connection is accepted in the pre-agent epoch and keeps that lease after hire seals it.
+    let mut client = Client::connect(settings.socket()).expect("connect before the first hire");
+    let mut second = Client::connect(settings.socket()).expect("second pre-agent connection");
+    let mut third = Client::connect(settings.socket()).expect("third pre-agent connection");
+    let ping = second
+        .call(Method::SystemPing, None)
+        .expect("second connection is accepted before hire");
+    assert!(ping.error.is_none());
+    assert!(
+        third
+            .call(Method::SystemPing, None)
+            .expect("third connection is accepted before hire")
+            .error
+            .is_none()
+    );
+    let hire = client
+        .call_as_operator(
+            Method::AgentHire,
+            Some(serde_json::to_value(common::hire_params(fixture.state.path())).unwrap()),
+            credential_of(&settings),
+        )
+        .expect("hire response");
+    assert!(hire.error.is_none(), "hire was refused: {hire:?}");
+    let hired: dudes_proto::rpc::agent::HireResult =
+        serde_json::from_value(hire.result.expect("hire result")).unwrap();
+    let attached_before = fixture
+        .records()
+        .iter()
+        .filter(|record| matches!(record, Record::Attached { .. }))
+        .count();
+    assert!(
+        attach(&mut client, &settings, hired.agent).error.is_some(),
+        "an agent with no confirmed session is not attachable"
+    );
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record, Record::Attached { .. }))
+            .count(),
+        attached_before
+    );
+    assert!(ptys.opens().is_empty());
+
+    let goal = client
+        .call_as_operator(
+            Method::GoalSet,
+            Some(
+                serde_json::to_value(common::goal_params(hired.agent, &["/usr/bin/true"])).unwrap(),
+            ),
+            credential_of(&settings),
+        )
+        .expect("goal response");
+    assert!(goal.error.is_none(), "goal was refused: {goal:?}");
+
+    let (turn, session) = fixture.await_record("TurnIssued", |record| match record {
+        Record::TurnIssued {
+            turn,
+            session: Some(session),
+            ..
+        } => Some((*turn, session.clone())),
+        _ => None,
+    });
+    running.handle.input(Input::SessionLearned {
+        turn,
+        session: session.clone(),
+    });
+    fixture.await_record("SessionLearned", |record| match record {
+        Record::SessionLearned { turn: seen, .. } if *seen == turn => Some(()),
+        _ => None,
+    });
+    common::end_turn_with_native(&fixture, &running.handle, &host, turn);
+    fixture.await_record("TurnEnded", |record| match record {
+        Record::TurnEnded { turn: seen, .. } if *seen == turn => Some(()),
+        _ => None,
+    });
+    fixture.await_record("PredicateResult", |record| {
+        matches!(record, Record::PredicateResult { .. }).then_some(())
+    });
+
+    let attached_before = fixture
+        .records()
+        .iter()
+        .filter(|record| matches!(record, Record::Attached { .. }))
+        .count();
+    assert!(
+        attach_sized(&mut client, &settings, hired.agent, 0, 24)
+            .error
+            .is_some(),
+        "invalid dimensions are refused before the supervisor command"
+    );
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record, Record::Attached { .. }))
+            .count(),
+        attached_before
+    );
+    assert!(ptys.opens().is_empty());
+
+    let response = attach(&mut client, &settings, hired.agent);
+    assert!(response.error.is_none(), "attach was refused: {response:?}");
+    let attached: AttachResult =
+        serde_json::from_value(response.result.expect("attach result")).unwrap();
+    assert_eq!(attached.pty.0, 41, "the host's exact id is returned");
+    assert!(
+        ptys.attached_before_open(),
+        "Attached was durable before open"
+    );
+
+    let opens = ptys.opens();
+    assert_eq!(opens.len(), 1);
+    assert_eq!((opens[0].1, opens[0].2), (101, 37));
+    assert_eq!(opens[0].0.stdin, dudes_providers::launch::LaunchInput::Null);
+    assert!(opens[0].0.argv.iter().any(|part| part == "--resume"));
+    assert!(opens[0].0.argv.iter().any(|part| part == session.as_str()));
+    let record = fixture
+        .records()
+        .into_iter()
+        .find(|record| matches!(record, Record::Attached { .. }))
+        .expect("durable Attached");
+    assert!(matches!(
+        record,
+        Record::Attached {
+            agent,
+            by: Actor::Peer { .. },
+            provenance: Some(PeerProvenance::NoRecordedAgent),
+            ..
+        } if agent == hired.agent
+    ));
+
+    let attached_records = fixture
+        .records()
+        .iter()
+        .filter(|record| matches!(record, Record::Attached { .. }))
+        .count();
+    assert!(
+        attach(&mut client, &settings, hired.agent).error.is_some(),
+        "one connection cannot acquire a second live slot"
+    );
+    assert!(
+        attach(&mut second, &settings, hired.agent).error.is_some(),
+        "another connection cannot replace the live agent attachment"
+    );
+    assert_eq!(
+        fixture
+            .records()
+            .iter()
+            .filter(|record| matches!(record, Record::Attached { .. }))
+            .count(),
+        attached_records,
+        "both ownership refusals happen before another Attached"
+    );
+
+    drop(client);
+    fixture.await_record("system Detached", |record| match record {
+        Record::Detached {
+            agent,
+            by: Actor::System,
+            provenance: None,
+        } if *agent == hired.agent => Some(()),
+        _ => None,
+    });
+    assert_eq!(ptys.closes(), vec![attached.pty]);
+    ptys.await_native_acknowledged(attached.pty);
+    assert!(fixture.records().iter().any(|record| matches!(record,
+        Record::InstructionAttemptBoundarySettled {
+            owner: dudes_proto::InstructionObservationOwner::AttachedProcess { agent, .. }, ..
+        } if *agent == hired.agent)));
+
+    let replacement = attach(&mut second, &settings, hired.agent);
+    assert!(
+        replacement.error.is_none(),
+        "the released agent can attach again"
+    );
+    let replacement: AttachResult =
+        serde_json::from_value(replacement.result.expect("replacement result")).unwrap();
+    assert_eq!(replacement.pty.0, 42);
+
+    let mut late = Client::connect(settings.socket()).expect("post-hire connection");
+    let suppressed = attach(&mut late, &settings, hired.agent);
+    assert!(
+        suppressed.error.is_some(),
+        "sealed authority suppresses Apply"
+    );
+    assert!(fixture.records().iter().any(|record| matches!(
+        record,
+        Record::ConditionedEffectSuppressed {
+            method: dudes_proto::ConditionedMethod::AgentAttach,
+            reason,
+            ..
+        } if reason == "operator authority unavailable"
+    )));
+    drop(late);
+    drop(second);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while fixture
+        .records()
+        .iter()
+        .filter(|record| matches!(record, Record::Detached { .. }))
+        .count()
+        < 2
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "replacement was detached"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(ptys.closes(), vec![attached.pty, replacement.pty]);
+    ptys.await_native_acknowledged(replacement.pty);
+    drop(third);
+    assert_eq!(
+        running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+}
+
+/// A failed open whose cleanup is uncertain is never returned as attached, and stays reachable
+/// for the exit retry.
+#[test]
+fn an_attach_whose_cleanup_is_uncertain_is_refused_and_retried_at_exit() {
+    let retained_fixture = Fixture::new();
+    let retained_ptys = SharedPtyHost::with_native_evidence(retained_fixture.journal_dir());
+    let Hired {
+        mut running,
+        settings,
+        agent,
+        mut owner,
+        ..
+    } = self::hired(
+        &retained_fixture,
+        &retained_ptys,
+        retained_fixture.settings(),
+    );
+    retained_ptys.retain_next_failed_open();
+    retained_ptys.fail_next_close();
+    let uncertain = attach(&mut owner, &settings, agent);
+    assert!(
+        uncertain.error.is_some(),
+        "cleanup uncertainty is never returned as attached"
+    );
+    assert_eq!(retained_ptys.opens().len(), 1);
+    assert!(
+        retained_ptys
+            .live()
+            .contains(&dudes_proto::rpc::pty::PtyId(41))
+    );
+    drop(owner);
+    assert_eq!(
+        running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+    assert_eq!(
+        retained_ptys.closes(),
+        vec![
+            dudes_proto::rpc::pty::PtyId(41),
+            dudes_proto::rpc::pty::PtyId(41)
+        ],
+        "uncertain cleanup stays reachable for the exit retry"
+    );
+    assert!(!retained_ptys.native_acknowledged(dudes_proto::rpc::pty::PtyId(41)));
+}
+
+/// A physical open that failed leaves a durable unresolved launch attempt that refuses another
+/// attachment and survives every replay unchanged.
+#[test]
+fn a_failed_physical_open_leaves_an_unresolved_launch_attempt() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let Hired {
+        settings,
+        mut running,
+        agent,
+        mut owner,
+        ..
+    } = hired(&fixture, &ptys, fixture.settings());
+    let before_failed = fixture.entries().last().unwrap().0;
+    ptys.fail_next_open();
+    let failed = attach(&mut owner, &settings, agent);
+    assert!(failed.error.is_some(), "a failed open returns no PTY id");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while fixture
+        .records()
+        .iter()
+        .filter(|record| matches!(record, Record::Detached { .. }))
+        .count()
+        < 1
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a confirmed failed open was system-detached"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let (failed_started, failed_owner) = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| match entry.record {
+            Record::InstructionObservationStarted {
+                owner:
+                    owner @ dudes_proto::InstructionObservationOwner::AttachedProcess { agent, .. },
+                ..
+            } if lsn > before_failed && agent == agent => Some((lsn, owner)),
+            _ => None,
+        })
+        .expect("the failed physical open has its own durable starting boundary");
+    let failed_finished =
+        fixture.await_record("exact failed-open Unknown", |record| match record {
+            Record::InstructionObservationFinished {
+                owner,
+                baseline: dudes_proto::InstructionBaselineRef::Started { lsn },
+                settlement:
+                    dudes_proto::InstructionSettlement::Unknown {
+                        reason: dudes_proto::InstructionUnknownReason::UnrecordedLaunchBoundary,
+                        end: None,
+                        sampled_at: None,
+                        ..
+                    },
+                ..
+            } if *owner == failed_owner && *lsn == failed_started => Some(record.clone()),
+            _ => None,
+        });
+    let assert_failed_unresolved = || {
+        let mut instructions = dudes_proto::instruction_state::InstructionState::default();
+        let entries = fixture.entries();
+        for (lsn, entry) in &entries {
+            instructions
+                .apply_validated(*lsn, entry, |bytes| {
+                    dudes_proto::record::Hex32::new(*blake3::hash(bytes).as_bytes())
+                })
+                .expect("fold the actual validated durable prefix");
+        }
+        let attempt = instructions.attempt(failed_started).unwrap();
+        assert_eq!(attempt.owner, failed_owner);
+        assert!(attempt.spawn_lsn.is_none());
+        assert!(attempt.boundary_settled.is_none());
+        assert!(matches!(
+            &attempt.finished.as_ref().unwrap().settlement,
+            dudes_proto::InstructionSettlement::Unknown {
+                reason: dudes_proto::InstructionUnknownReason::UnrecordedLaunchBoundary,
+                end: None,
+                sampled_at: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            instructions
+                .unresolved_launch_attempts(agent)
+                .map(|(lsn, _)| *lsn)
+                .collect::<Vec<_>>(),
+            vec![failed_started]
+        );
+        let finishes: Vec<_> = entries
+            .iter()
+            .filter_map(|(_, entry)| match &entry.record {
+                Record::InstructionObservationFinished {
+                    baseline: dudes_proto::InstructionBaselineRef::Started { lsn },
+                    ..
+                } if *lsn == failed_started => Some(&entry.record),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            finishes,
+            vec![&failed_finished],
+            "the original failed-open Unknown remains immutable"
+        );
+        assert!(!entries.iter().any(|(_, entry)| matches!(entry.record,
+            Record::InstructionAttemptBoundarySettled { started_lsn, .. } if started_lsn == failed_started)));
+    };
+    assert_failed_unresolved();
+    let open_count = ptys.opens().len();
+    assert_eq!(
+        open_count, 1,
+        "the failed physical open was the only host call"
+    );
+    let refused = attach(&mut owner, &settings, agent);
+    assert!(
+        refused.error.is_some(),
+        "an unresolved failed physical open refuses another attachment"
+    );
+    assert_eq!(
+        ptys.opens().len(),
+        open_count,
+        "refusal precedes another native open call"
+    );
+    assert_failed_unresolved();
+    drop(owner);
+    assert_eq!(
+        running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+    assert!(
+        ptys.closes().is_empty(),
+        "the failed open creates no owned PTY handle to close"
+    );
+    for _ in 0..2 {
+        let restarted_ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+        assert!(replay_run(&fixture, restarted_ptys.clone()) >= failed_started);
+        assert!(restarted_ptys.opens().is_empty());
+        assert!(restarted_ptys.closes().is_empty());
+        assert_failed_unresolved();
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exact selector proves the durable close order and its owning-connection controls"
+)]
+fn agent_detach_waits_for_confirmed_close_before_loop_resume() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &ptys);
+
+    let no_owner = session
+        .sibling
+        .call(
+            Method::AgentDetach,
+            Some(
+                serde_json::to_value(AgentRef {
+                    agent: session.agent,
+                })
+                .unwrap(),
+            ),
+        )
+        .expect("unproven response");
+    assert!(
+        no_owner.error.is_some(),
+        "the method's `Requirement` rejects the unproven peer first"
+    );
+    assert!(ptys.closes().is_empty());
+
+    let sibling = detach(&mut session.sibling, &session.settings, session.agent);
+    assert!(
+        sibling.error.is_some(),
+        "a sibling cannot close the owner's PTY"
+    );
+    assert!(ptys.closes().is_empty());
+
+    let wrong_agent = detach(
+        &mut session.owner,
+        &session.settings,
+        AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAY").expect("other agent id"),
+    );
+    assert!(
+        wrong_agent.error.is_some(),
+        "the owner cannot detach another agent"
+    );
+    assert!(ptys.closes().is_empty());
+
+    let mut late = Client::connect(session.settings.socket()).expect("post-hire connection");
+    let no_authority = detach(&mut late, &session.settings, session.agent);
+    assert!(no_authority.error.is_some(), "late authority cannot Apply");
+    assert!(ptys.closes().is_empty());
+
+    let malformed = session
+        .owner
+        .call_as_operator(
+            Method::AgentDetach,
+            Some(serde_json::json!({ "agent": session.agent, "extra": true })),
+            credential_of(&session.settings),
+        )
+        .expect("malformed response");
+    assert_eq!(
+        malformed.error.expect("invalid params").code,
+        dudes_proto::rpc::ErrorCode::InvalidParams.code()
+    );
+    assert!(ptys.closes().is_empty());
+
+    let goal = session
+        .owner
+        .call_as_operator(
+            Method::GoalSet,
+            Some(
+                serde_json::to_value(common::goal_params(session.agent, &["/usr/bin/true"]))
+                    .unwrap(),
+            ),
+            credential_of(&session.settings),
+        )
+        .expect("standing goal response");
+    assert!(goal.error.is_none(), "a goal stands behind attachment");
+    let before = fixture.entries().len();
+    let accepted_write = write_bytes(
+        &mut session.owner,
+        &session.settings,
+        session.pty,
+        b"before-detach",
+    );
+    assert!(
+        accepted_write.error.is_none(),
+        "one owned write is accepted"
+    );
+    let response = detach(&mut session.owner, &session.settings, session.agent);
+    assert!(response.error.is_none(), "detach was refused: {response:?}");
+    assert_eq!(ptys.closes(), vec![session.pty]);
+    assert_eq!(ptys.requested_before_close(), vec![true]);
+
+    let entries = fixture.entries();
+    let tail = &entries[before..];
+    let (request_at, (request_lsn, _)) = tail
+        .iter()
+        .enumerate()
+        .find(|(_, (_, entry))| {
+            matches!(&entry.record,
+                Record::PtyCloseRequested {
+                    pty,
+                    actor: Actor::Peer { .. },
+                    provenance: Some(PeerProvenance::NoRecordedAgent),
+                    reason,
+                } if *pty == session.pty && reason == "agent.detach"
+            )
+        })
+        .expect("peer-attributed request is durable");
+    let write_completed_at = tail
+        .iter()
+        .position(|(_, entry)| {
+            matches!(
+                &entry.record,
+                Record::PtyWriteCompleted {
+                    outcome: dudes_proto::PtyWriteOutcome::Complete { written_len: 13 },
+                    ..
+                }
+            )
+        })
+        .expect("the admitted write completed before close");
+    let completed_at = tail
+        .iter()
+        .position(|(_, entry)| matches!(&entry.record,
+            Record::PtyCloseCompleted { request_lsn: seen, outcome: dudes_proto::PtyCloseOutcome::Closed }
+            if seen == request_lsn
+        ))
+        .expect("the host confirmed the close");
+    let detached_at = tail
+        .iter()
+        .position(|(_, entry)| matches!(&entry.record,
+            Record::Detached { agent, by: Actor::Peer { .. }, provenance: Some(PeerProvenance::NoRecordedAgent) }
+            if *agent == session.agent
+        ))
+        .expect("the explicit detach follows confirmation");
+    let decided_at = tail
+        .iter()
+        .position(|(_, entry)| {
+            matches!(&entry.record,
+                Record::LoopDecided { agent, .. } if *agent == session.agent
+            )
+        })
+        .expect("the managed loop re-decides after detach");
+    assert!(
+        write_completed_at < request_at
+            && request_at < completed_at
+            && completed_at < detached_at
+            && detached_at < decided_at
+    );
+
+    let duplicate = detach(&mut session.owner, &session.settings, session.agent);
+    assert!(
+        duplicate.error.is_some(),
+        "the revoked binding cannot detach twice"
+    );
+    assert_eq!(ptys.closes(), vec![session.pty]);
+    let writes_before = ptys.writes();
+    let after = write_bytes(
+        &mut session.owner,
+        &session.settings,
+        session.pty,
+        b"after-detach",
+    );
+    assert!(after.error.is_some(), "revoked connection cannot write");
+    assert_eq!(ptys.writes(), writes_before);
+
+    assert_eq!(
+        session.running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+}
+
+#[test]
+fn failed_close_is_retryable_without_regrant() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &ptys);
+    ptys.fail_next_close();
+    let response = detach(&mut session.owner, &session.settings, session.agent);
+    assert!(
+        response.error.is_some(),
+        "an unconfirmed close is not a detach success"
+    );
+    fixture.await_record("system retry confirmation", |record| {
+        matches!(
+            record,
+            Record::PtyCloseCompleted {
+                outcome: dudes_proto::PtyCloseOutcome::Closed,
+                ..
+            }
+        )
+        .then_some(())
+    });
+    fixture.await_record("system retry Detached", |record| {
+        matches!(record, Record::Detached {
+            agent,
+            by: Actor::System,
+            provenance: None,
+        } if *agent == session.agent)
+        .then_some(())
+    });
+    let records = fixture.records();
+    let failure = records
+        .iter()
+        .position(|record| {
+            matches!(
+                record,
+                Record::PtyCloseCompleted {
+                    outcome: dudes_proto::PtyCloseOutcome::Failed { .. },
+                    ..
+                }
+            )
+        })
+        .expect("the failed host outcome is durable");
+    let retry = records
+        .iter()
+        .position(|record| {
+            matches!(
+                record,
+                Record::PtyCloseRequested {
+                    actor: Actor::System,
+                    provenance: None,
+                    ..
+                }
+            )
+        })
+        .expect("a system retry is scheduled without peer authority");
+    let closed = records
+        .iter()
+        .position(|record| {
+            matches!(
+                record,
+                Record::PtyCloseCompleted {
+                    outcome: dudes_proto::PtyCloseOutcome::Closed,
+                    ..
+                }
+            )
+        })
+        .expect("the retry closed the PTY");
+    let detached = records
+        .iter()
+        .position(|record| {
+            matches!(record, Record::Detached {
+            agent,
+            by: Actor::System,
+            provenance: None,
+        } if *agent == session.agent)
+        })
+        .expect("only the confirmed retry detaches");
+    assert!(failure < retry && retry < closed && closed < detached);
+    assert_eq!(ptys.closes(), vec![session.pty, session.pty]);
+    assert_eq!(ptys.requested_before_close(), vec![true, true]);
+    let writes_before = ptys.writes();
+    let refused = write_bytes(
+        &mut session.owner,
+        &session.settings,
+        session.pty,
+        b"revoked",
+    );
+    assert!(refused.error.is_some());
+    assert_eq!(ptys.writes(), writes_before);
+    assert_eq!(
+        session.running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+}
+
+#[test]
+fn pre_requested_append_fault_never_closes_before_system_retry() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &ptys);
+    let before = fixture.entries().len();
+    session
+        .append_failure
+        .fail_nth(NonZeroUsize::new(1).expect("first append"));
+    let refused = detach(&mut session.owner, &session.settings, session.agent);
+    assert!(refused.error.is_some(), "the request append failed");
+    fixture.await_record("system retry Detached", |record| {
+        matches!(record, Record::Detached {
+            agent,
+            by: Actor::System,
+            provenance: None,
+        } if *agent == session.agent)
+        .then_some(())
+    });
+    let entries = fixture.entries();
+    let tail = &entries[before..];
+    assert!(
+        !tail.iter().any(|(_, entry)| matches!(
+            &entry.record,
+            Record::PtyCloseRequested {
+                actor: Actor::Peer { .. },
+                ..
+            }
+        )),
+        "the failed peer request never became durable"
+    );
+    let system_request = tail
+        .iter()
+        .position(|(_, entry)| {
+            matches!(&entry.record,
+                Record::PtyCloseRequested {
+                    pty,
+                    actor: Actor::System,
+                    provenance: None,
+                    ..
+                } if *pty == session.pty
+            )
+        })
+        .expect("a distinct system retry was journaled");
+    let completion = tail
+        .iter()
+        .position(|(_, entry)| {
+            matches!(
+                &entry.record,
+                Record::PtyCloseCompleted {
+                    outcome: dudes_proto::PtyCloseOutcome::Closed,
+                    ..
+                }
+            )
+        })
+        .expect("the system retry completed");
+    let detached = tail
+        .iter()
+        .position(|(_, entry)| {
+            matches!(&entry.record,
+                Record::Detached { agent, by: Actor::System, provenance: None }
+                if *agent == session.agent
+            )
+        })
+        .expect("the system retry detached");
+    assert!(system_request < completion && completion < detached);
+    assert_eq!(
+        ptys.closes(),
+        vec![session.pty],
+        "only the durable retry called the host"
+    );
+    assert_eq!(ptys.requested_before_close(), vec![true]);
+    let refused_write = write_bytes(
+        &mut session.owner,
+        &session.settings,
+        session.pty,
+        b"revoked",
+    );
+    assert!(
+        refused_write.error.is_some(),
+        "the peer binding was not restored"
+    );
+    assert!(ptys.writes().is_empty());
+    assert_eq!(
+        session.running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+}
+
+#[test]
+fn final_detached_append_fault_retains_recovery() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &ptys);
+    let goal = session
+        .owner
+        .call_as_operator(
+            Method::GoalSet,
+            Some(
+                serde_json::to_value(common::goal_params(session.agent, &["/usr/bin/true"]))
+                    .unwrap(),
+            ),
+            credential_of(&session.settings),
+        )
+        .expect("standing goal");
+    assert!(goal.error.is_none());
+    session.running.handle.doctor().expect("goal has settled");
+    let before = fixture.entries().len();
+    session
+        .append_failure
+        .fail_nth(NonZeroUsize::new(5).expect("Detached append"));
+    let refused = detach(&mut session.owner, &session.settings, session.agent);
+    assert!(refused.error.is_some(), "the final lifecycle append failed");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !fixture.records().iter().any(|record| {
+        matches!(record,
+            Record::Detached { agent, by: Actor::System, provenance: None }
+            if *agent == session.agent
+        )
+    }) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "confirmed close stranded Attached after its first Detached append failed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let entries = fixture.entries();
+    let tail = &entries[before..];
+    let completed = tail
+        .iter()
+        .position(|(_, entry)| {
+            matches!(
+                &entry.record,
+                Record::PtyCloseCompleted {
+                    outcome: dudes_proto::PtyCloseOutcome::Closed,
+                    ..
+                }
+            )
+        })
+        .expect("host confirmation survived the fault");
+    let detached = tail
+        .iter()
+        .position(|(_, entry)| {
+            matches!(&entry.record,
+                Record::Detached { agent, by: Actor::System, provenance: None }
+                if *agent == session.agent
+            )
+        })
+        .expect("system retry made Detached durable");
+    assert!(completed < detached);
+    assert_eq!(
+        tail.iter()
+            .filter(|(_, entry)| matches!(&entry.record,
+                Record::Detached { agent, .. } if *agent == session.agent
+            ))
+            .count(),
+        1,
+        "one confirmed close yields one lifecycle transition"
+    );
+    assert_eq!(
+        ptys.closes(),
+        vec![session.pty],
+        "the retry must not re-close a confirmed PTY"
+    );
+    let refused_write = write_bytes(
+        &mut session.owner,
+        &session.settings,
+        session.pty,
+        b"revoked",
+    );
+    assert!(refused_write.error.is_some());
+    assert!(ptys.writes().is_empty());
+    assert_eq!(
+        session.running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+}
+
+#[test]
+fn failed_final_shutdown_close_never_detaches() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &ptys);
+    ptys.fail_next_closes(3);
+    ptys.fail_next_shutdown();
+    let response = detach(&mut session.owner, &session.settings, session.agent);
+    assert!(response.error.is_some());
+    assert_eq!(
+        session.running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+    let records = fixture.records();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(
+                record,
+                Record::PtyCloseCompleted {
+                    outcome: dudes_proto::PtyCloseOutcome::Failed { .. },
+                    ..
+                }
+            ))
+            .count(),
+        4,
+        "explicit, queued retry, per-handle shutdown and aggregate shutdown remain visible"
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::Detached { agent, .. } if *agent == session.agent)
+            )
+            .count(),
+        0,
+        "a failed final host shutdown cannot pretend the PTY was closed"
+    );
+    assert_eq!(ptys.closes(), vec![session.pty, session.pty, session.pty]);
+    assert_eq!(ptys.requested_before_close(), vec![true, true, true]);
+    assert_eq!(ptys.shutdowns(), 1, "the invariant-10 backstop still ran");
+    assert_eq!(
+        ptys.requested_before_shutdown(),
+        vec![true],
+        "the aggregate host call was preceded by this PTY's fourth durable request"
+    );
+}
+
+#[test]
+fn repeated_close_failure_stays_attached_and_revoked() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &ptys);
+    let goal = session
+        .owner
+        .call_as_operator(
+            Method::GoalSet,
+            Some(
+                serde_json::to_value(common::goal_params(session.agent, &["/usr/bin/true"]))
+                    .unwrap(),
+            ),
+            credential_of(&session.settings),
+        )
+        .expect("standing goal");
+    assert!(goal.error.is_none());
+    let before = fixture.records().len();
+    ptys.fail_next_closes(2);
+    let response = detach(&mut session.owner, &session.settings, session.agent);
+    assert!(response.error.is_some());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while count(&fixture, |record| {
+        matches!(
+            record,
+            Record::PtyCloseCompleted {
+                outcome: dudes_proto::PtyCloseOutcome::Failed { .. },
+                ..
+            }
+        )
+    }) < 2
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the system retry was recorded"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let records = fixture.records();
+    let tail = &records[before..];
+    assert!(
+        !tail.iter().any(
+            |record| matches!(record, Record::Detached { agent, .. } if *agent == session.agent)
+        ),
+        "no failed close may detach"
+    );
+    assert!(
+        !tail.iter().any(
+            |record| matches!(record, Record::LoopDecided { agent, .. } if *agent == session.agent)
+        ),
+        "no failed close may re-decide the standing goal"
+    );
+    assert_eq!(ptys.closes(), vec![session.pty, session.pty]);
+    let writes_before = ptys.writes();
+    let refused = write_bytes(
+        &mut session.owner,
+        &session.settings,
+        session.pty,
+        b"revoked",
+    );
+    assert!(refused.error.is_some());
+    assert_eq!(ptys.writes(), writes_before);
+    assert_eq!(
+        session.running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+    let records = fixture.records();
+    let shutdown_completed = records
+        .iter()
+        .rposition(|record| {
+            matches!(
+                record,
+                Record::PtyCloseCompleted {
+                    outcome: dudes_proto::PtyCloseOutcome::Closed,
+                    ..
+                }
+            )
+        })
+        .expect("shutdown retry confirmed the retained PTY absent");
+    let shutdown_detached = records
+        .iter()
+        .rposition(|record| {
+            matches!(record, Record::Detached {
+            agent,
+            by: Actor::System,
+            provenance: None,
+        } if *agent == session.agent)
+        })
+        .expect("shutdown recorded one confirmed system detach");
+    assert!(shutdown_completed < shutdown_detached);
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::Detached { agent, .. } if *agent == session.agent)
+            )
+            .count(),
+        1,
+        "the retained handle is detached once"
+    );
+    assert_eq!(ptys.closes(), vec![session.pty, session.pty, session.pty]);
+    assert_eq!(ptys.requested_before_close(), vec![true, true, true]);
+}
+
+#[test]
+fn already_closed_confirms_detach() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &ptys);
+    ptys.mark_already_closed(session.pty);
+    let response = detach(&mut session.owner, &session.settings, session.agent);
+    assert!(
+        response.error.is_none(),
+        "AlreadyClosed confirms absence: {response:?}"
+    );
+    let records = fixture.records();
+    let completed = records
+        .iter()
+        .position(|record| {
+            matches!(
+                record,
+                Record::PtyCloseCompleted {
+                    outcome: dudes_proto::PtyCloseOutcome::AlreadyClosed,
+                    ..
+                }
+            )
+        })
+        .expect("AlreadyClosed was journaled");
+    let detached = records
+        .iter()
+        .position(|record| {
+            matches!(record, Record::Detached {
+            agent,
+            by: Actor::Peer { .. },
+            provenance: Some(PeerProvenance::NoRecordedAgent),
+        } if *agent == session.agent)
+        })
+        .expect("peer detach followed confirmation");
+    assert!(completed < detached);
+    assert_eq!(ptys.closes(), vec![session.pty]);
+    assert_eq!(
+        session.running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+}
+
+#[test]
+fn connection_loss_close_is_system_attributed() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &ptys);
+    let agent = session.agent;
+    let pty = session.pty;
+    drop(session.owner);
+    fixture.await_record("connection-loss system detach", |record| {
+        matches!(record, Record::Detached {
+            agent: seen,
+            by: Actor::System,
+            provenance: None,
+        } if *seen == agent)
+        .then_some(())
+    });
+    let records = fixture.records();
+    let requested = records
+        .iter()
+        .position(|record| {
+            matches!(record, Record::PtyCloseRequested {
+            pty: seen,
+            actor: Actor::System,
+            provenance: None,
+            ..
+        } if *seen == pty)
+        })
+        .expect("the system close request is durable");
+    let completed = records
+        .iter()
+        .position(|record| {
+            matches!(
+                record,
+                Record::PtyCloseCompleted {
+                    outcome: dudes_proto::PtyCloseOutcome::Closed,
+                    ..
+                }
+            )
+        })
+        .expect("the system close completed");
+    let detached = records
+        .iter()
+        .position(|record| {
+            matches!(record, Record::Detached {
+            agent: seen,
+            by: Actor::System,
+            provenance: None,
+        } if *seen == agent)
+        })
+        .expect("the system detached only after confirmation");
+    assert!(requested < completed && completed < detached);
+    assert_eq!(ptys.closes(), vec![pty]);
+    assert_eq!(ptys.requested_before_close(), vec![true]);
+    assert_eq!(
+        session.running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+}
+
+#[test]
+fn replay_does_not_act_on_orphan_close_request() {
+    let fixture = Fixture::new();
+    let orphan = dudes_proto::rpc::pty::PtyId(999);
+    seed_orphan_close_request(&fixture, orphan);
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let last = replay_run(&fixture, ptys.clone());
+    assert!(
+        last > dudes_types::Lsn::ZERO,
+        "the orphan request was replayed"
+    );
+    assert!(
+        ptys.closes().is_empty(),
+        "replay never retries a close request"
+    );
+    assert_eq!(
+        count(&fixture, |record| matches!(record, Record::Detached { .. })),
+        0,
+        "an unmatched close request alone cannot resume an agent"
+    );
+}
+
+#[test]
+fn replayed_attachment_stays_held_without_observed_close() {
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut session = attach_one(&fixture, &ptys);
+    let agent = session.agent;
+    let goal = session
+        .owner
+        .call_as_operator(
+            Method::GoalSet,
+            Some(serde_json::to_value(common::goal_params(agent, &["/usr/bin/true"])).unwrap()),
+            credential_of(&session.settings),
+        )
+        .expect("standing goal");
+    assert!(goal.error.is_none());
+    assert_eq!(
+        session.running.stop(duded::ExitCause::Ended),
+        duded::ExitCause::Ended
+    );
+    let attached_lsn = seed_replayed_attached(&fixture, agent);
+    let before = fixture.entries().len();
+    let replayed = SharedPtyHost::new(fixture.journal_dir());
+    let reached = replay_run(&fixture, replayed.clone());
+    assert!(
+        reached >= attached_lsn,
+        "the new daemon replayed the seeded Attached"
+    );
+    let entries = fixture.entries();
+    let tail = &entries[before..];
+    assert!(
+        !tail.iter().any(|(_, entry)| matches!(&entry.record,
+            Record::Detached { agent: seen, .. }
+            | Record::LoopDecided { agent: seen, .. }
+            | Record::TurnIssued { agent: seen, .. }
+            if *seen == agent
+        )),
+        "replayed Attached without observed close must not detach, decide or spawn: {tail:?}"
+    );
+    assert!(replayed.opens().is_empty() && replayed.closes().is_empty());
+    assert_eq!(replayed.shutdowns(), 1, "the replay control used this host");
+}
+
+fn seed_orphan_close_request(fixture: &Fixture, pty: dudes_proto::rpc::pty::PtyId) {
+    let options = dudes_journal::JournalOptions {
+        fsync: dudes_journal::Fsync::Full,
+        checkpoint_every: 0,
+        ..dudes_journal::JournalOptions::default()
+    };
+    let (mut writer, _) =
+        dudes_journal::open(&fixture.journal_dir(), options).expect("open the seed journal");
+    writer
+        .append(&dudes_proto::Entry {
+            at: dudes_types::Timestamp::from_unix_millis(1_787_394_700_000),
+            record: Record::PtyCloseRequested {
+                pty,
+                actor: Actor::System,
+                provenance: None,
+                reason: "orphan replay control".to_owned(),
+            },
+        })
+        .expect("seed one unmatched close request");
 }
