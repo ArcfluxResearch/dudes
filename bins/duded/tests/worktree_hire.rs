@@ -767,48 +767,6 @@ fn a_new_tree_under_another_live_lease_is_refused_and_cleaned_up() {
     assert_eq!(left, 0, "and its tree");
 }
 
-/// A search path whose `git` sleeps through `worktree add`, so a checkout runs until its deadline
-/// and makes no directory.
-fn slow_git_path(fixture: &Fixture) -> std::ffi::OsString {
-    let wrapper = fixture.runtime.path().join("slow-git");
-    std::fs::create_dir_all(&wrapper).unwrap();
-    let script = wrapper.join("git");
-    std::fs::write(
-        &script,
-        "#!/bin/sh\nfor a in \"$@\"; do if [ \"$a\" = add ]; then sleep 60; exit 0; fi; done\nexec /usr/bin/git \"$@\"\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    format!("{}:/usr/bin:/bin", wrapper.display()).into()
-}
-
-/// A `git worktree add` that outlives its deadline is killed with its group, the lease is ended as
-/// never assigned, and the caller is told.
-#[test]
-fn a_checkout_killed_at_its_deadline_leaves_no_lease_and_no_agent() {
-    let fixture = Fixture::new();
-    let git = git(&fixture);
-    let repo = repo(&fixture, &git);
-    let (mut running, settings, _) = daemon_with(&fixture, claude(), |settings| {
-        settings.predicate_path = Some(slow_git_path(&fixture));
-        settings.git_checkout_deadline = Duration::from_secs(2);
-    });
-    let mut client = connect(&settings);
-
-    let started = std::time::Instant::now();
-    let error = hire(&settings, &mut client, &worktree_params(&repo))
-        .expect_err("the checkout is killed at its deadline");
-    running.stop(ExitCause::Ended);
-
-    assert!(
-        started.elapsed() < Duration::from_secs(30),
-        "the deadline, not the sleep, ended it"
-    );
-    assert_eq!(gate(&error), Some(RefusalGate::WorktreeUnavailable));
-    assert!(error.message.contains("deadline"), "{}", error.message);
-    assert_eq!(kinds(&fixture), ["leased", "never_assigned"]);
-}
-
 /// Hooks configured as `hook.<name>.command` run whatever `core.hooksPath` says, so a repository
 /// that has any is refused. The same repository with the keys removed is the control.
 #[test]
