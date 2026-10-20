@@ -514,11 +514,26 @@ fn checks_view(list: &ArrayOfTables) -> ChecksView {
 /// An id the file does not hold, or a file that cannot be read or written.
 pub fn remove(config: &Path, id: &str) -> Result<Edit, WorkspaceError> {
     let previous = read(config)?;
-    let mut document = parse(config, previous.as_deref())?;
+    let written = removed(config, previous.as_deref(), id)?;
+    write(config, previous, written)
+}
+
+/// [`remove`]'s edit applied to the file's bytes `previous`, which the caller read; the bytes to
+/// write, with nothing written here.
+///
+/// # Errors
+///
+/// An id the bytes do not hold, or bytes that cannot be read as a config.
+pub fn removed(
+    config: &Path,
+    previous: Option<&[u8]>,
+    id: &str,
+) -> Result<Vec<u8>, WorkspaceError> {
+    let mut document = parse(config, previous)?;
     let list = workspaces(config, &mut document)?;
     let index = position(list, id).ok_or_else(|| WorkspaceError::UnknownId(id.to_owned()))?;
     list.remove(index);
-    write(config, previous, document.to_string().into_bytes())
+    Ok(document.to_string().into_bytes())
 }
 
 /// The ids the file enrolls, in file order.

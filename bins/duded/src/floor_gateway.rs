@@ -116,6 +116,7 @@ const SETTINGS_PATH: &str = "/floor/settings";
 /// Routed only while `[floor.project]` is on; otherwise a POST here is any unrouted POST.
 const PROJECT_PREVIEW_PATH: &str = "/floor/project/preview";
 const PROJECT_ADD_PATH: &str = "/floor/project/add";
+const PROJECT_REMOVE_PATH: &str = "/floor/project/remove";
 const TERMINAL_PATH: &str = "/floor/terminal";
 /// Routed only while `[floor.hire]` is on: the socket that signs in to an engine.
 const ENGINE_LOGIN_PATH: &str = "/floor/engine-login";
@@ -1197,6 +1198,7 @@ impl ActionRoute {
             SETTINGS_PATH => Some(Self::Settings),
             PROJECT_PREVIEW_PATH if live.project => Some(Self::Project(ProjectVerb::Preview)),
             PROJECT_ADD_PATH if live.project => Some(Self::Project(ProjectVerb::Add)),
+            PROJECT_REMOVE_PATH if live.project => Some(Self::Project(ProjectVerb::Remove)),
             GIT_PATH if catalog.git().is_some() => Some(Self::Git),
             DIFF_PATH if catalog.diff().is_some() => Some(Self::Diff),
             MEMORY_PAGE_PATH => Some(Self::Memory(MemoryRoute::Page)),
@@ -2265,11 +2267,13 @@ fn retire_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -
 enum ProjectVerb {
     Preview,
     Add,
+    Remove,
 }
 
-/// The project preview and add. A preview changes nothing. An add keeps its attempt for as long
-/// as it runs, so a retry meets `pending`; once it has run, adding the same folder again answers
-/// with the project that is already there.
+/// The project preview, add and remove. A preview changes nothing. An add or remove keeps its
+/// attempt for as long as it runs, so a retry meets `pending`; once it has run, adding the same
+/// folder again answers with the project that is already there, and removing the same project
+/// again answers `unknown`.
 fn project_response<'a>(
     verb: ProjectVerb,
     session: SessionIdentity,
@@ -2311,6 +2315,25 @@ fn project_response<'a>(
                 };
             (ProjectRequest::Add(request), Some(reservation))
         }
+        ProjectVerb::Remove => {
+            let Some(request) = crate::floor_project::parse_remove(body) else {
+                return error_response(400, "Bad Request");
+            };
+            let reservation =
+                match session.reserve(ActionKind::Project, request.attempt_id, request.digest) {
+                    ReserveResult::Owner(reservation) => reservation,
+                    ReserveResult::Pending => {
+                        return action_json(
+                            202,
+                            "Accepted",
+                            &serde_json::json!({ "state": "pending" }),
+                        );
+                    }
+                    ReserveResult::Conflict => return error_response(409, "Conflict"),
+                    ReserveResult::Forbidden => return error_response(403, "Forbidden"),
+                };
+            (ProjectRequest::Remove(request), Some(reservation))
+        }
     };
     match handle.project(session, request) {
         Ok(ProjectAnswer::Preview(preview)) => action_json(
@@ -2322,6 +2345,11 @@ fn project_response<'a>(
             200,
             "OK",
             &serde_json::to_value(added).expect("an added project is finite JSON"),
+        ),
+        Ok(ProjectAnswer::Removed(removed)) => action_json(
+            200,
+            "OK",
+            &serde_json::to_value(removed).expect("a removed project is finite JSON"),
         ),
         Err(ProjectRefusal::Reason(reason)) => refused(reason.code()),
         Err(ProjectRefusal::ActionOff) => refused(crate::floor_switches::ACTION_OFF),

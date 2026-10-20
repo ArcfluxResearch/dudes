@@ -1,6 +1,7 @@
-//! A Floor session's look at a folder and its add of that folder as a project, on the loop
-//! thread. The add runs the edit `dudes project add` runs, then the reload the CLI asks for, with
-//! the reload lock held for the whole of it. A reload the daemon declines puts the file back.
+//! A Floor session's look at a folder and its add or remove of a project, on the loop thread. Each
+//! runs the edit `dudes project add` or `dudes project remove` runs, then the reload the CLI asks
+//! for, with the reload lock held for the whole of it. A reload the daemon declines puts the file
+//! back.
 
 use std::path::Path;
 use std::sync::TryLockError;
@@ -14,7 +15,7 @@ use sha2::Digest as _;
 use super::{Clock, Daemon, PredicateRunner, ProcessHost, Rng, predicate};
 use crate::floor_actions::Profile;
 use crate::floor_project::{
-    Added, Check, Preview, ProjectAnswer, ProjectRef, ProjectRequest, Reason, Refusal,
+    Added, Check, Preview, ProjectAnswer, ProjectRef, ProjectRequest, Reason, Refusal, Removed,
 };
 
 /// Most projects the daemon runs.
@@ -37,6 +38,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             ProjectRequest::Add(request) => {
                 self.project_add(session, request).map(ProjectAnswer::Added)
             }
+            ProjectRequest::Remove(request) => self
+                .project_remove(session, &request.project_id)
+                .map(ProjectAnswer::Removed),
         }
         .map_err(Refusal::Reason)
     }
@@ -137,7 +141,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             },
         )?;
         dudes_config::workspace::replace(&path, &written).map_err(|_| Reason::ConfigChanged)?;
-        if !self.adopt(&path, &written, *sequence, &id) {
+        if !self.adopt(&path, &written, *sequence, std::slice::from_ref(&id), &[]) {
             let holds_ours = dudes_config::workspace::read_bytes(&path)
                 .is_ok_and(|now| now.as_deref() == Some(written.as_slice()));
             if holds_ours {
@@ -159,8 +163,88 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         Ok(self.added(profile))
     }
 
-    /// The reload the CLI asks for after an edit: adopt exactly `written`, adding `id`.
-    fn adopt(&mut self, path: &Path, written: &[u8], seq: u64, id: &str) -> bool {
+    fn project_remove(
+        &mut self,
+        session: &crate::floor_session::SessionIdentity,
+        id: &str,
+    ) -> Result<Removed, Reason> {
+        let profile = self.ctx.enrollment.profile(id).ok_or(Reason::Unknown)?;
+        let (project_id, label, cwd) = (
+            profile.id.clone(),
+            profile.label.clone(),
+            profile.cwd.clone(),
+        );
+        if self.agent_works_in(&cwd) {
+            return Err(Reason::Working);
+        }
+        let path = self
+            .ctx
+            .operator_config
+            .clone()
+            .ok_or(Reason::ConfigChanged)?;
+        let lock = self.handle.reload_lock();
+        let mut sequence = match lock.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return Err(Reason::Busy),
+        };
+        *sequence += 1;
+
+        let previous =
+            dudes_config::workspace::read_bytes(&path).map_err(|_| Reason::ConfigChanged)?;
+        let written = dudes_config::workspace::removed(&path, previous.as_deref(), &project_id)
+            .map_err(|_| Reason::ConfigChanged)?;
+        dudes_config::workspace::replace(&path, &written).map_err(|_| Reason::ConfigChanged)?;
+        if !self.adopt(
+            &path,
+            &written,
+            *sequence,
+            &[],
+            std::slice::from_ref(&project_id),
+        ) {
+            let holds_ours = dudes_config::workspace::read_bytes(&path)
+                .is_ok_and(|now| now.as_deref() == Some(written.as_slice()));
+            if holds_ours {
+                let _ = dudes_config::workspace::restore(&path, previous.as_deref());
+            }
+            return Err(Reason::ConfigChanged);
+        }
+        self.resync_floor();
+        tracing::info!(
+            session = %&crate::enrollment_reload::hex(&session.digest().bytes())[..16],
+            project = %project_id,
+            "floor project remove"
+        );
+        Ok(Removed { project_id, label })
+    }
+
+    /// Whether an agent that is not retired works in `project`, in its folder or in a worktree
+    /// leased from it.
+    fn agent_works_in(&self, project: &Path) -> bool {
+        let world = self.sup.world();
+        world
+            .agents
+            .values()
+            .filter(|agent| !agent.retired)
+            .any(|agent| {
+                let directory = match agent.worktree {
+                    None => Some(&agent.cwd),
+                    Some(lease) => world.worktrees.get(&lease).map(|lease| &lease.origin),
+                };
+                directory.is_none_or(|directory| directory.starts_with(project))
+            })
+    }
+
+    /// The reload the CLI asks for after an edit: adopt exactly `written`, adding and removing the
+    /// ids named.
+    fn adopt(
+        &mut self,
+        path: &Path,
+        written: &[u8],
+        seq: u64,
+        added: &[String],
+        removed: &[String],
+    ) -> bool {
         let sha256 = crate::enrollment_reload::hex(&sha2::Sha256::digest(written));
         let Ok((startup, memory_config)) =
             crate::config::parse_operator_and_memory_with_options(path, Some(written))
@@ -171,8 +255,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             seq,
             apply: Some(EnrollmentApply {
                 sha256: sha256.clone(),
-                added: vec![id.to_owned()],
-                removed: Vec::new(),
+                added: added.to_vec(),
+                removed: removed.to_vec(),
                 changed: Vec::new(),
             }),
             sha256,

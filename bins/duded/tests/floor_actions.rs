@@ -17232,4 +17232,134 @@ mod project_add {
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     }
+
+    fn remove_body(id: &str, attempt: &str) -> Value {
+        json!({"project_id": id, "attempt_id": attempt})
+    }
+
+    fn add_app(addr: SocketAddr, session: &(String, String), app: &Path) {
+        let add = project_add_body(app, &json!("files_changed"), PROJECT_ATTEMPT);
+        let (head, body) = project_post(addr, session, "add", &add);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
+    }
+
+    /// A project added from the page is removed from the page: gone from the running daemon with
+    /// no restart and from the file, and the folder on disk is untouched. Removing it again, or a
+    /// project the daemon never ran, is refused as unknown.
+    #[test]
+    fn a_project_removed_on_the_floor_is_gone_live() {
+        let fixture = Fixture::new();
+        let settings = project_settings(&fixture);
+        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
+        let session = (cookie.clone(), csrf.clone());
+        let file = settings.operator_config.clone().expect("a file");
+        let scratch = tempfile::tempdir().expect("scratch");
+        let app = project_repo(scratch.path(), "app");
+        let before = std::fs::read(&file).unwrap();
+        add_app(addr, &session, &app);
+        assert_eq!(offered(addr, &cookie, &csrf).len(), 1);
+
+        let (head, body) = project_post(
+            addr,
+            &session,
+            "remove",
+            &remove_body("app", PROJECT_ATTEMPT),
+        );
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
+        assert_eq!(body, json!({"project_id": "app", "label": "app"}));
+        assert!(
+            offered(addr, &cookie, &csrf).is_empty(),
+            "gone with no restart"
+        );
+        let written = std::fs::read_to_string(&file).unwrap();
+        assert!(!written.contains("workspace_id"), "{written}");
+        assert_eq!(
+            written.as_bytes(),
+            before.as_slice(),
+            "the file is as it began"
+        );
+        assert!(app.join(".git").is_dir(), "the folder is untouched");
+
+        for id in ["app", "never-ran"] {
+            let (head, body) =
+                project_post(addr, &session, "remove", &remove_body(id, OTHER_ATTEMPT));
+            assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
+            assert_eq!(body["reason"], "unknown", "{body}");
+        }
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
+
+    /// An agent that works in the project holds it: the remove is refused and the file stays as it
+    /// was.
+    #[test]
+    fn a_project_with_an_agent_in_it_is_not_removed() {
+        let fixture = Fixture::new();
+        let settings = project_settings(&fixture);
+        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
+        let session = (cookie.clone(), csrf.clone());
+        let file = settings.operator_config.clone().expect("a file");
+        let scratch = tempfile::tempdir().expect("scratch");
+        let app = project_repo(scratch.path(), "app");
+        add_app(addr, &session, &app);
+        common::hire(&running.handle, &app);
+        let before = std::fs::read(&file).unwrap();
+
+        let (head, body) = project_post(
+            addr,
+            &session,
+            "remove",
+            &remove_body("app", PROJECT_ATTEMPT),
+        );
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
+        assert_eq!(body["reason"], "working", "{body}");
+        assert_eq!(std::fs::read(&file).unwrap(), before, "a refusal wrote");
+        assert_eq!(offered(addr, &cookie, &csrf).len(), 1, "still live");
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
+
+    /// While a reload holds the lock a remove answers `busy` and writes nothing. A remove the
+    /// daemon cannot adopt, here because the file holds a project the daemon has not loaded, puts
+    /// the file back exactly as it was.
+    #[test]
+    fn a_remove_that_cannot_apply_leaves_the_file_as_it_was() {
+        let fixture = Fixture::new();
+        let settings = project_settings(&fixture);
+        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
+        let session = (cookie.clone(), csrf.clone());
+        let file = settings.operator_config.clone().expect("a file");
+        let scratch = tempfile::tempdir().expect("scratch");
+        let app = project_repo(scratch.path(), "app");
+        let hand = project_repo(scratch.path(), "by-hand");
+        add_app(addr, &session, &app);
+
+        let lock = running.handle.reload_lock();
+        let reload_running = lock.lock().unwrap();
+        let before = std::fs::read(&file).unwrap();
+        let (head, body) = project_post(
+            addr,
+            &session,
+            "remove",
+            &remove_body("app", PROJECT_ATTEMPT),
+        );
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
+        assert_eq!(body["reason"], "busy", "{body}");
+        assert_eq!(std::fs::read(&file).unwrap(), before, "a busy remove wrote");
+        drop(reload_running);
+
+        let mut text = std::fs::read_to_string(&file).unwrap();
+        write!(
+            text,
+            "[[floor.onboarding.workspaces]]\nworkspace_id = 'by-hand'\nlabel = 'By hand'\ncompletion_check_label = 'Checks pass'\ncwd = '{}'\ndepartment = 'engineering'\nisolation = 'default'\nhop_cap = 3\npredicate_argv = ['/usr/bin/true']\npredicate_timeout_s = 10\n",
+            hand.display()
+        )
+        .unwrap();
+        std::fs::write(&file, &text).expect("hand edit");
+        let (head, body) =
+            project_post(addr, &session, "remove", &remove_body("app", OTHER_ATTEMPT));
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
+        assert_eq!(body["reason"], "config_changed", "{body}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "put back");
+        assert_eq!(offered(addr, &cookie, &csrf).len(), 1, "still live");
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
 }

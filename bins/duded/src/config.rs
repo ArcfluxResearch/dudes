@@ -82,7 +82,7 @@ pub struct OperatorConfig {
     /// `false` registers no route. The route also needs `[floor.git]` on; with either off it
     /// does not exist.
     pub diff_enabled: bool,
-    /// `[floor.project] enabled`: whether the Floor may add a project. It only gates; the route
+    /// `[floor.project] enabled`: whether the Floor may add or remove a project. It only gates; the route
     /// that adds one checks it.
     pub project_enabled: bool,
     /// The `[providers.<name>]` tables the operator wrote.
@@ -359,7 +359,7 @@ struct DiffTable {
     enabled: bool,
 }
 
-/// `[floor.project]`: whether the Floor may add a project.
+/// `[floor.project]`: whether the Floor may add or remove a project.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ProjectTable {

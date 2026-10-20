@@ -734,6 +734,7 @@ fn where_the_owner_cannot_be_looked_up_the_floor_shows_and_does_not_act() {
         ONBOARD_PATH,
         SETTINGS_PATH,
         PROJECT_ADD_PATH,
+        PROJECT_REMOVE_PATH,
         "/floor/ticket",
         CHAT_SEND_PATH,
     ] {
