@@ -39,7 +39,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { loadStage } from './helpers/page.mjs';
-import { PROVE_PATH, proofFrom } from './helpers/daemon-proof.mjs';
+import { ORIGIN, PROVE_PATH, proofFrom } from './helpers/daemon-proof.mjs';
 
 import { ATTEMPT_ID } from '../src/renderer/onboarding/hire.ts';
 import { accessibleNameOfHeading } from './helpers/heading-name.mjs';
@@ -277,6 +277,7 @@ async function withBrowser(reply, run) {
   await session.openFloorSessionWith({ hash: '', pathname: '/floor/', search: '' }, { replaceState() {} }, answer,
     { read: () => CSRF, write() {} });
   globalThis.window = {
+    location: { origin: ORIGIN },
     async fetch(url, init) {
       if (url === PROVE_PATH) return proofFrom(CSRF, init);
       calls.push({ url, init });

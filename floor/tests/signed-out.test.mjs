@@ -18,7 +18,7 @@ import { connect, firstLinkProblem, resetPastedLink } from '../src/connect.ts';
 import { resetFloorStore } from '../src/renderer/floor/store.ts';
 import { resetAway } from '../src/renderer/floor/away.ts';
 import { getProofState, resetProof } from '../src/proof.ts';
-import { PROVE_PATH, proofFrom, proofFromNobody } from './helpers/daemon-proof.mjs';
+import { ORIGIN, PROVE_PATH, proofFrom, proofFromNobody } from './helpers/daemon-proof.mjs';
 import {
   askFloorStanding,
   currentFloorSession,
@@ -41,6 +41,7 @@ function page({ check, holds = SECRET }) {
   const asked = [];
   const proofs = [];
   globalThis.window = {
+    location: { origin: ORIGIN },
     localStorage: {
       getItem: (key) => storage.get(key) ?? null,
       setItem: (key, value) => storage.set(key, value),

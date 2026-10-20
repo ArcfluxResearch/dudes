@@ -1003,8 +1003,10 @@ impl FloorSessions {
 
     /// Prove to a page that this daemon holds the session it signed in to, before the page sends
     /// its secret. The answer is a keyed hash of the page's nonce, bound to this purpose by a fixed
-    /// label, keyed by the digest of the session's secret: only a holder of that digest can make
-    /// one the page accepts, and the secret itself is never needed. A cookie that names no live
+    /// label and to this listener's own origin, keyed by the digest of the session's secret: only a
+    /// holder of that digest can make one the page accepts, a process that relays the page's nonce
+    /// to a daemon on another port gets an answer for that port's origin, and the secret itself is
+    /// never needed. A cookie that names no live
     /// session, or none at all, gets an answer of the same shape under a key nobody holds, so the
     /// answer says nothing about which sessions exist. Asking leaves the idle deadline alone.
     pub(crate) fn prove(&self, cookie: Option<&str>, nonce: &str) -> String {
@@ -1025,7 +1027,15 @@ impl FloorSessions {
             getrandom::fill(&mut bytes).expect("the operating system's entropy source");
             bytes
         });
-        base64url(&hmac_sha256(&key, &[PROOF_LABEL, nonce.as_bytes()]))
+        base64url(&hmac_sha256(
+            &key,
+            &[
+                PROOF_LABEL,
+                self.0.origin.as_bytes(),
+                b"\n",
+                nonce.as_bytes(),
+            ],
+        ))
     }
 
     /// End this run's authority before its listener and connection owners are released.
@@ -1885,7 +1895,12 @@ mod tests {
         let expected = |secret: &str| {
             base64url(&hmac_sha256(
                 &digest(secret.as_bytes()),
-                &[PROOF_LABEL, nonce.as_bytes()],
+                &[
+                    PROOF_LABEL,
+                    PROBE_ORIGIN.as_bytes(),
+                    b"\n",
+                    nonce.as_bytes(),
+                ],
             ))
         };
 

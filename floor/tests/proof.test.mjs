@@ -15,7 +15,7 @@ import test, { beforeEach } from 'node:test';
 import { checkDaemon, forgetProof, getProofState, resetProof } from '../src/proof.ts';
 import { browserSocket } from '../src/renderer/floor/stream.ts';
 import { DaemonNotProven, floorFetch, proveFloorDaemon } from '../src/transport.ts';
-import { PROVE_PATH, proofFrom, proofFromNobody } from './helpers/daemon-proof.mjs';
+import { ORIGIN, PROVE_PATH, proofFrom, proofFromNobody } from './helpers/daemon-proof.mjs';
 
 const SECRET = `C${'d'.repeat(41)}I`;
 const OTHER = `F${'g'.repeat(41)}M`;
@@ -23,6 +23,7 @@ const LABEL = 'dudes-floor-daemon-proof-v1\n';
 
 const ports = (answer) => ({
   post: async (body) => answer(JSON.parse(body).nonce, body),
+  origin: () => ORIGIN,
   subtle: globalThis.crypto.subtle,
   random: (bytes) => globalThis.crypto.getRandomValues(bytes),
 });
@@ -37,14 +38,16 @@ beforeEach(() => {
 
 test('only the daemon that holds the digest, answering this nonce for this purpose, passes', async () => {
   const seen = [];
-  const answer = (secret, label = LABEL) => (nonce) => {
+  const answer = (secret, label = LABEL, origin = ORIGIN) => (nonce) => {
     seen.push(nonce);
-    return { ok: true, json: async () => ({ proof: macOf(secret, label + nonce) }) };
+    return { ok: true, json: async () => ({ proof: macOf(secret, `${label}${origin}\n${nonce}`) }) };
   };
   assert.equal(await checkDaemon(SECRET, ports(answer(SECRET))), true);
   assert.equal(await checkDaemon(SECRET, ports(answer(OTHER))), false, 'a digest of another secret');
   assert.equal(await checkDaemon(SECRET, ports(answer(SECRET, 'another purpose\n'))), false, 'a proof made for another purpose');
-  assert.equal(await checkDaemon(SECRET, ports(() => ({ ok: true, json: async () => ({ proof: macOf(SECRET, LABEL + 'A'.repeat(43)) }) }))), false, 'an old answer replayed');
+  assert.equal(await checkDaemon(SECRET, ports(answer(SECRET, LABEL, 'http://127.0.0.1:9999'))), false,
+    'the real daemon on another port, relayed by a process on this one');
+  assert.equal(await checkDaemon(SECRET, ports(() => ({ ok: true, json: async () => ({ proof: macOf(SECRET, `${LABEL}${ORIGIN}\n${'A'.repeat(43)}`) }) }))), false, 'an old answer replayed');
   assert.equal(await checkDaemon(SECRET, ports((nonce) => proofFrom(SECRET, { body: JSON.stringify({ nonce }) }))), true, 'the fake daemon answers as the real one');
   for (const bad of [
     () => ({ ok: false, json: async () => ({}) }),
@@ -60,6 +63,7 @@ test('only the daemon that holds the digest, answering this nonce for this purpo
 function fakeWindow(daemon) {
   const reached = [];
   globalThis.window = {
+    location: { origin: ORIGIN },
     fetch: async (url, init) => {
       reached.push({ url, init });
       if (url === PROVE_PATH) return daemon.holds === null ? proofFromNobody() : proofFrom(daemon.holds, init);

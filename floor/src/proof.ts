@@ -7,7 +7,9 @@
 // word that the session is gone. So before the secret leaves the page after a load or a reconnect,
 // the page sends a fresh random nonce and asks the daemon for a keyed hash of it. The key is the
 // SHA-256 digest of the secret, which the daemon stores and a process that was never signed in
-// does not hold, so only the real daemon can answer. The check uses WebCrypto's `verify`, which
+// does not hold, so only the real daemon can answer. The answer also names the origin it was made
+// for, so a process on the old port cannot pass the page's nonce to a daemon on another port and
+// hand the page that daemon's answer. The check uses WebCrypto's `verify`, which
 // compares in constant time.
 
 const LABEL = 'dudes-floor-daemon-proof-v1\n';
@@ -29,9 +31,11 @@ export interface ProofReply {
   json(): Promise<unknown>;
 }
 
-/** What a proof needs from the browser: one POST without the secret, WebCrypto, and random bytes. */
+/** What a proof needs from the browser: one POST without the secret, WebCrypto, random bytes, and its own origin. */
 export interface ProofPorts {
   post(body: string): Promise<ProofReply>;
+  /** The origin the page was loaded from, which the daemon binds into its answer. */
+  origin(): string;
   readonly subtle: SubtleCrypto;
   random(bytes: Uint8Array<ArrayBuffer>): void;
 }
@@ -64,7 +68,7 @@ export async function checkDaemon(secret: string, ports: ProofPorts): Promise<bo
   if (typeof answer !== 'object' || answer === null || !('proof' in answer)) return false;
   const proof = answer.proof;
   if (typeof proof !== 'string' || !PROOF.test(proof)) return false;
-  return ports.subtle.verify('HMAC', key, fromBase64url(proof), encoder.encode(LABEL + nonce));
+  return ports.subtle.verify('HMAC', key, fromBase64url(proof), encoder.encode(`${LABEL}${ports.origin()}\n${nonce}`));
 }
 
 let state: ProofState = 'unproven';

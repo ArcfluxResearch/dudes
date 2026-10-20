@@ -51,6 +51,7 @@ const BROWSER_PROOF: ProofPorts = {
     headers: { 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(PROVE_CUTOFF_MS),
   }),
+  origin: () => window.location.origin,
   get subtle() {
     return globalThis.crypto.subtle;
   },
