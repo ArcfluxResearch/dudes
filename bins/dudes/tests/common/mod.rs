@@ -359,6 +359,7 @@ impl Fixture {
             predicate_path: Some(OsString::from("/usr/bin:/bin")),
             git_checkout_deadline: duded::worktree::git::CHECKOUT_DEADLINE,
             max_connections: NonZeroUsize::new(8).expect("not zero"),
+            hook_reply_timeout: duded::ports::DEFAULT_HOOK_REPLY_TIMEOUT,
             // Far longer than any test here: a beat that fired mid-assertion would make a test about
             // a door a test about timing.
             beat: Duration::from_secs(3600),

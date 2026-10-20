@@ -1731,6 +1731,7 @@ pub(crate) fn settings_at(state: &Path, runtime: &Path) -> Settings {
         predicate_path: Some(std::ffi::OsString::from("/usr/bin:/bin")),
         git_checkout_deadline: duded::worktree::git::CHECKOUT_DEADLINE,
         max_connections: NonZeroUsize::new(8).expect("not zero"),
+        hook_reply_timeout: duded::ports::DEFAULT_HOOK_REPLY_TIMEOUT,
         // Far longer than any test: a beat that fired mid-assertion would make a test about
         // ordering a test about timing.
         beat: Duration::from_hours(1),

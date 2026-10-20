@@ -384,7 +384,7 @@ where
     let shutdown_run = rng.ulid().to_string();
 
     let (jobs_tx, jobs_rx) = mpsc::channel();
-    let handle = Handle::new(jobs_tx);
+    let handle = Handle::new(jobs_tx).with_hook_reply_timeout(settings.hook_reply_timeout);
     // As soon as there is a loop to reach, and before step 7 can spawn anything: a managed child's
     // watcher runs on its own thread and may report an end at any moment after the exec.
     children.arm(handle.clone());

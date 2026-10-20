@@ -321,6 +321,8 @@ pub struct Settings {
     pub git_checkout_deadline: Duration,
     /// The accept loop's cap.
     pub max_connections: NonZeroUsize,
+    /// How long a hook waits for the loop's answer before a control event is denied.
+    pub hook_reply_timeout: Duration,
     /// The beat.
     pub beat: Duration,
     /// The optional static Floor shell. Absence means no TCP listener.

@@ -1218,6 +1218,7 @@ mod native_tests {
             predicate_path: Some("/usr/bin:/bin".into()),
             git_checkout_deadline: duded::worktree::git::CHECKOUT_DEADLINE,
             max_connections: NonZeroUsize::new(8).expect("nonzero"),
+            hook_reply_timeout: duded::ports::DEFAULT_HOOK_REPLY_TIMEOUT,
             beat: Duration::from_hours(1),
             floor: None,
             hook_command: Some({
@@ -1679,6 +1680,7 @@ fn settings_from_environment() -> anyhow::Result<(
         git_checkout_deadline: duded::worktree::git::CHECKOUT_DEADLINE,
         max_connections: NonZeroUsize::new(DEFAULT_MAX_CONNECTIONS)
             .expect("the default cap is not zero"),
+        hook_reply_timeout: duded::ports::DEFAULT_HOOK_REPLY_TIMEOUT,
         beat: DEFAULT_BEAT,
         floor: duded::settings::floor_from_values(
             floor_assets,

@@ -1059,10 +1059,16 @@ pub struct Handle {
     #[cfg(feature = "testing")]
     predicate_completions: Arc<AtomicU64>,
     journal_stopped: Arc<Mutex<Option<Lsn>>>,
+    /// How long [`Self::hook`] waits for the loop's answer before it denies a control event or
+    /// allows any other.
+    hook_reply_timeout: Duration,
     /// Set once the exit path starts. A thread waiting on a goal's check run, or on the append
     /// after it, stops waiting, so it never holds the exit path's join on connections.
     stopping: Arc<AtomicBool>,
 }
+
+/// How long a hook waits for the loop's answer in production.
+pub const DEFAULT_HOOK_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Unavailable;
@@ -1486,8 +1492,16 @@ impl Handle {
             #[cfg(feature = "testing")]
             predicate_completions: Arc::new(AtomicU64::new(0)),
             journal_stopped: Arc::new(Mutex::new(None)),
+            hook_reply_timeout: DEFAULT_HOOK_REPLY_TIMEOUT,
             stopping: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Wait this long for a hook's answer instead of [`DEFAULT_HOOK_REPLY_TIMEOUT`].
+    #[must_use]
+    pub fn with_hook_reply_timeout(mut self, timeout: Duration) -> Self {
+        self.hook_reply_timeout = timeout;
+        self
     }
 
     /// The flag [`Self::stop_waiting`] sets, for work that must stop when the daemon does.
@@ -1858,8 +1872,6 @@ impl Handle {
         event: Event,
         permit: crate::hooks::HookPermit,
     ) -> Result<HookReply, RpcError> {
-        const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
-
         let agent = event.agent;
         let control = matches!(
             &event.kind,
@@ -1868,7 +1880,8 @@ impl Handle {
         let (reply, answer) = mpsc::channel();
         let lease = permit.reply_lease();
         self.queue_hook(event, Some(reply), permit)?;
-        let (answered, preserve_delivery_error) = match answer.recv_timeout(REPLY_TIMEOUT) {
+        let (answered, preserve_delivery_error) = match answer.recv_timeout(self.hook_reply_timeout)
+        {
             Ok(reply) => (reply, false),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 lease.expire();

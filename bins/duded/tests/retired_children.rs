@@ -54,6 +54,7 @@ struct RelationState {
     next_slot: u64,
     confirmed: BTreeMap<u64, AdoptionKey>,
     walk: Walk,
+    refuse_registration: bool,
 }
 
 impl ScriptedRelation {
@@ -63,9 +64,15 @@ impl ScriptedRelation {
                 next_slot: 0,
                 confirmed: BTreeMap::new(),
                 walk: Walk::Unowned,
+                refuse_registration: false,
             }),
             ptys,
         ))
+    }
+
+    /// The next attached child is created but its registration fails.
+    fn refuse_registration(&self) {
+        self.0.lock().expect("relation").refuse_registration = true;
     }
 
     fn walk(&self, walk: Walk) {
@@ -122,7 +129,19 @@ impl ProcessRelation for ScriptedRelation {
     }
 
     fn track_external(&self, _slot: u64) -> Box<dyn ExternalChild> {
+        if self.0.lock().expect("relation").refuse_registration {
+            return Box::new(RefusedChild);
+        }
         Box::new(AttachedChild(self.1.clone()))
+    }
+}
+
+#[derive(Debug)]
+struct RefusedChild;
+
+impl ExternalChild for RefusedChild {
+    fn register(&mut self, _child: PtyChild) -> std::io::Result<AdoptionKey> {
+        Err(std::io::Error::other("injected registration refusal"))
     }
 }
 
@@ -158,6 +177,15 @@ impl Daemon {
         let fixture = Fixture::new();
         let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
         Self::start_on(fixture, ptys)
+    }
+
+    /// A daemon that gives up on an unanswered hook after 100 ms instead of two seconds.
+    fn start_with_short_hook_deadline() -> Self {
+        let fixture = Fixture::new();
+        let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+        let mut settings = fixture.settings();
+        settings.hook_reply_timeout = Duration::from_millis(100);
+        Self::boot(fixture, ptys, settings)
     }
 
     fn start_on(fixture: Fixture, ptys: SharedPtyHost) -> Self {
@@ -493,7 +521,7 @@ fn record_control_receipt(receipt: &Value) {
 }
 
 fn control_peer(state: DeadlineState) -> (Daemon, AgentId, HookToken, PtyId) {
-    let mut daemon = Daemon::start();
+    let mut daemon = Daemon::start_with_short_hook_deadline();
     let (agent, token) = daemon.idle_agent();
     let (pty, key) = daemon.attach(agent);
     match state {
@@ -538,6 +566,170 @@ fn deadline_shutdown(daemon: &mut Daemon) -> String {
     assert_eq!(completion, format!("complete {}\n", receipt.run));
     assert_eq!(daemon.host.shutdowns(), 1);
     completion
+}
+
+#[derive(Clone, Copy, Debug)]
+enum DeadlineState {
+    Running,
+    Paused,
+    Halted,
+    Retired,
+}
+
+fn control_deadline_body(event: &str) -> Value {
+    match event {
+        "PreToolUse" => json!({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "the daemon did not answer the control hook; retry, and restart duded if this persists"
+        }}),
+        "UserPromptSubmit" => json!({
+            "decision": "block",
+            "reason": "the daemon did not answer the control hook; retry, and restart duded if this persists"
+        }),
+        _ => panic!("a control event is required"),
+    }
+}
+
+fn assert_control_deadline(output: &std::process::Output, event: &str) {
+    assert_eq!(output.status.code(), Some(2), "{event}: {output:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        control_deadline_body(event)
+    );
+    assert!(output.stderr.is_empty(), "{event}: {output:?}");
+}
+
+fn control_peer(state: DeadlineState) -> (Daemon, AgentId, HookToken, PtyId) {
+    let mut daemon = Daemon::start();
+    let (agent, token) = daemon.idle_agent();
+    let (pty, key) = daemon.attach(agent);
+    match state {
+        DeadlineState::Paused => assert!(matches!(
+            daemon.running.handle.ask(Ask::Pause(agent)),
+            Ok(Answered::Done)
+        )),
+        DeadlineState::Halted => assert!(matches!(
+            daemon.running.handle.ask(Ask::Halt(agent)),
+            Ok(Answered::Done)
+        )),
+        DeadlineState::Running | DeadlineState::Retired => {}
+    }
+    daemon.relation.walk(Walk::Inside(key));
+    (daemon, agent, token, pty)
+}
+
+fn control_handlers(agent: AgentId, fixture: &Fixture) -> dudes_proto::providers::claude::Settings {
+    let binary = std::env::var_os("DUDES_TEST_HOOK_BINARY").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/debug/dudes-hook")
+        },
+        std::path::PathBuf::from,
+    );
+    assert!(binary.is_file(), "preflight the standalone hook shim");
+    handlers_for(agent, fixture.state.path(), &binary)
+}
+
+fn unanswered_control(state: DeadlineState) {
+    let (mut daemon, agent, token, pty) = control_peer(state);
+    let generated = control_handlers(agent, &daemon.fixture);
+    let held = daemon.ptys.block_host_calls();
+    let before = daemon.running.handle.hooks_queued();
+    let outputs =
+        if matches!(state, DeadlineState::Retired) {
+            assert!(matches!(daemon.retire(agent), Ok(Answered::Done)));
+            daemon.await_count("the blocked retirement close", 1, |record| {
+            matches!(record, Record::PtyCloseRequested { pty: seen, .. } if *seen == pty)
+        });
+            let outputs = deadline_outputs(
+                &daemon.settings.socket(),
+                &generated,
+                &token,
+                &daemon.fixture,
+            );
+            drop(held);
+            outputs
+        } else {
+            let credential = daemon.credential();
+            let socket = daemon.settings.socket();
+            let fixture = &daemon.fixture;
+            let owner = daemon.owner.as_mut().expect("operator connection");
+            std::thread::scope(|scope| {
+                let held = held;
+                let writing =
+                    scope.spawn(move || write_bytes(owner, credential, pty, b"hold the loop"));
+                fixture.await_record("the blocked host write", |record| {
+                    matches!(record, Record::PtyWriteRequested { pty: seen, .. } if *seen == pty)
+                        .then_some(())
+                });
+                let outputs = deadline_outputs(&socket, &generated, &token, fixture);
+                drop(held);
+                assert!(writing.join().expect("released writer").error.is_none());
+                outputs
+            })
+        };
+    assert_eq!(daemon.running.handle.hooks_queued() - before, 2);
+    deadline_shutdown(&mut daemon);
+    for (event, output) in outputs {
+        assert_control_deadline(&output, event);
+    }
+}
+
+fn deadline_shutdown(daemon: &mut Daemon) -> String {
+    let credential = daemon.credential();
+    let response = daemon
+        .owner()
+        .call_as_operator(Method::SystemShutdown, None, credential)
+        .expect("authenticated shutdown");
+    let shutdown: ShutdownResult =
+        serde_json::from_value(response.result.expect("shutdown result")).unwrap();
+    daemon.owner = None;
+    assert_eq!(daemon.running.join(), duded::ExitCause::ShutdownRpc);
+    let receipt = shutdown.completion.expect("complete receipt");
+    let completion = std::fs::read_to_string(receipt.path).unwrap();
+    assert_eq!(completion, format!("complete {}\n", receipt.run));
+    assert_eq!(daemon.host.shutdowns(), 1);
+    completion
+}
+
+fn deadline_outputs(
+    socket: &std::path::Path,
+    generated: &dudes_proto::providers::claude::Settings,
+    token: &HookToken,
+    fixture: &Fixture,
+) -> [(&'static str, std::process::Output); 2] {
+    let before = fixture.records();
+    let outputs = ["PreToolUse", "UserPromptSubmit"].map(|event| {
+        let (_, output) = spawn_handler(handler(generated, event), socket, token, &payload(event));
+        (event, output)
+    });
+    assert_eq!(
+        fixture.records(),
+        before,
+        "the deadline fallback makes no durable mutation"
+    );
+    outputs
+}
+
+#[test]
+fn a_running_agents_unanswered_control_hooks_are_denied() {
+    unanswered_control(DeadlineState::Running);
+}
+
+#[test]
+fn a_paused_agents_unanswered_control_hooks_are_denied() {
+    unanswered_control(DeadlineState::Paused);
+}
+
+#[test]
+fn a_halted_agents_unanswered_control_hooks_are_denied() {
+    unanswered_control(DeadlineState::Halted);
+}
+
+#[test]
+fn a_retired_agents_unanswered_control_hooks_are_denied() {
+    unanswered_control(DeadlineState::Retired);
 }
 
 #[test]
@@ -742,6 +934,48 @@ fn is_failed_close(record: &Record) -> bool {
             ..
         }
     )
+}
+
+/// Fails closed: a PTY child the relation cannot register is closed, its open counts as not
+/// launched, and the attach is refused.
+#[test]
+fn an_attached_child_the_relation_cannot_register_is_closed_and_refused() {
+    let mut daemon = Daemon::start();
+    let (agent, _) = daemon.idle_agent();
+    daemon.relation.refuse_registration();
+    let credential = daemon.credential();
+    let params = serde_json::to_value(AttachParams {
+        agent,
+        cols: 80,
+        rows: 24,
+    })
+    .expect("attach params");
+    let attach = daemon
+        .owner()
+        .call_as_operator(Method::AgentAttach, Some(params), credential)
+        .expect("attach response");
+    daemon.await_count(
+        "the failed attach detaches",
+        1,
+        |record| matches!(record, Record::Detached { agent: detached, .. } if *detached == agent),
+    );
+    let refusal = attach.error.expect("the attach is refused");
+    assert!(
+        refusal.message.contains("injected registration refusal"),
+        "refused for the registration: {refusal:?}"
+    );
+    let opened = daemon.ptys.opens();
+    assert_eq!(opened.len(), 1, "the child was started once");
+    assert!(
+        daemon.ptys.live().is_empty(),
+        "the unregistered child was closed"
+    );
+    assert_eq!(
+        daemon.count(|record| matches!(record, Record::PtySpawned { .. })),
+        0,
+        "no key is recorded for a child that was never registered"
+    );
+    daemon.stop();
 }
 
 ///

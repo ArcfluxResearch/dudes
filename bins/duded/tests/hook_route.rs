@@ -20,12 +20,12 @@ use dudes_proto::reply::{HookReply, VendorReply};
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::hook::HookEventParams;
 use dudes_proto::rpc::{ErrorCode, Method};
-use dudes_proto::{LiveActivityKind, PeerProvenance, Record};
+use dudes_proto::{Event, EventKind, LiveActivityKind, PeerProvenance, Record};
 use dudes_rpc::auth::{PeerClassifier, PeerResolver};
 use dudes_rpc::testing::FakeMintedTokens;
 use dudes_rpc::{LocalClient, Outbound, Subscribers};
-use dudes_supervisor::Input;
-use dudes_types::AgentId;
+use dudes_supervisor::{Input, RuntimeSignal};
+use dudes_types::{AgentId, Provenance, Timestamp};
 use serde_json::json;
 
 const FLOOR_FIXTURE: &str = concat!(
@@ -212,6 +212,126 @@ fn a_sibling_process_with_a_stolen_hook_token_is_refused_without_effect() {
     assert_eq!(running.stop(ExitCause::Ended), ExitCause::Ended);
 }
 
+#[test]
+fn stop_boundary_timeout_fails_open_and_queues_the_existing_signal() {
+    for (event_name, kind) in [
+        ("Stop", EventKind::TurnEnd { last_message: None }),
+        ("SubagentStop", EventKind::SubagentEnd),
+    ] {
+        let fixture = Fixture::new();
+        let (dispatcher, loop_side, agent) = direct_dispatcher_fast(&fixture);
+        let waiting_dispatcher = Arc::clone(&dispatcher);
+        let waiter =
+            std::thread::spawn(move || direct_hook(&waiting_dispatcher, agent, event_name));
+        let held = loop_side.recv().expect("hook queued before the wait");
+        assert!(matches!(&held, Job::Hook { reply: Some(_), .. }));
+
+        let response = waiter.join().expect("waiter thread");
+        assert!(response.error.is_none(), "timeout fails open: {response:?}");
+        let reply: VendorReply =
+            serde_json::from_value(response.result.expect("timeout vendor reply")).unwrap();
+        let expected = VendorReply {
+            body: None,
+            exit_code: 0,
+        };
+        assert_eq!(reply, expected, "timeout adds no vendor context");
+        let encoded_event = Event {
+            agent,
+            at: Timestamp::from_unix_millis(1_789_000_000_000),
+            provenance: Provenance::Observed,
+            kind,
+            raw: Some(payload(event_name)),
+        };
+        assert_ne!(
+            dudes_providers::claude::encode_reply(
+                &HookReply::allow_with("supervisor timeout"),
+                &encoded_event,
+            ),
+            expected,
+            "the former context-injecting timeout mutation must fail"
+        );
+        let signal = loop_side
+            .recv()
+            .expect("timeout signal queued after the hook");
+        assert!(matches!(
+            signal,
+            Job::Input(input)
+                if matches!(*input, Input::Signal {
+                    agent: owner,
+                    signal: RuntimeSignal::HookTimeout,
+                } if owner == agent)
+        ));
+        drop(held);
+    }
+}
+
+#[test]
+fn admitted_control_deadlines_encode_denial_and_keep_the_original_job() {
+    for (event, body) in [
+        (
+            "PreToolUse",
+            json!({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "the daemon did not answer the control hook; retry, and restart duded if this persists"
+            }}),
+        ),
+        (
+            "UserPromptSubmit",
+            json!({
+                "decision":"block",
+                "reason":"the daemon did not answer the control hook; retry, and restart duded if this persists"
+            }),
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let (dispatcher, queued, agent) = direct_dispatcher_fast(&fixture);
+        let waiting = Arc::clone(&dispatcher);
+        let caller = std::thread::spawn(move || direct_hook(&waiting, agent, event));
+        let held = queued.recv_timeout(Duration::from_secs(1)).unwrap();
+        let Job::Hook {
+            event: original,
+            reply: Some(reply),
+            ..
+        } = &held
+        else {
+            panic!("the original admitted hook")
+        };
+        assert_eq!(original.agent, agent);
+        let mut expected_raw = payload(event);
+        expected_raw["agent_id"] = json!(second_agent());
+        assert_eq!(original.raw.as_ref(), Some(&expected_raw));
+        let response = caller.join().unwrap();
+        assert!(response.error.is_none(), "{response:?}");
+        let received: VendorReply = serde_json::from_value(response.result.unwrap()).unwrap();
+        assert_eq!(
+            received,
+            VendorReply {
+                body: Some(body),
+                exit_code: 2
+            }
+        );
+        assert!(
+            reply.send(Ok(HookReply::ALLOW.into())).is_err(),
+            "a late answer has no live caller"
+        );
+        assert!(matches!(
+            queued.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Job::Input(input) if matches!(*input, Input::Signal {
+                agent: seen,
+                signal: RuntimeSignal::HookTimeout,
+            } if seen == agent)
+        ));
+        assert!(matches!(queued.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        let refused = direct_hook(&dispatcher, agent, event).error.unwrap();
+        assert_eq!(
+            refused.message,
+            "hook event was not queued because hook capacity is full"
+        );
+        drop(held);
+    }
+}
+
 fn direct_hook(
     dispatcher: &dudes_rpc::Dispatcher,
     agent: AgentId,
@@ -265,9 +385,23 @@ fn direct_dispatcher(
     direct_dispatcher_with_capacity(fixture, 1)
 }
 
+fn direct_dispatcher_fast(
+    fixture: &Fixture,
+) -> (Arc<dudes_rpc::Dispatcher>, mpsc::Receiver<Job>, AgentId) {
+    direct_dispatcher_timed(fixture, 1, Duration::from_millis(100))
+}
+
 fn direct_dispatcher_with_capacity(
     fixture: &Fixture,
     capacity: usize,
+) -> (Arc<dudes_rpc::Dispatcher>, mpsc::Receiver<Job>, AgentId) {
+    direct_dispatcher_timed(fixture, capacity, duded::ports::DEFAULT_HOOK_REPLY_TIMEOUT)
+}
+
+fn direct_dispatcher_timed(
+    fixture: &Fixture,
+    capacity: usize,
+    hook_reply_timeout: Duration,
 ) -> (Arc<dudes_rpc::Dispatcher>, mpsc::Receiver<Job>, AgentId) {
     let mut settings = fixture.settings();
     settings.max_connections = NonZeroUsize::new(capacity).unwrap();
@@ -286,7 +420,10 @@ fn direct_dispatcher_with_capacity(
                 ("DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", third_agent()),
             ])),
         ),
-        duded::hooks::Ingress::new(Handle::new(jobs), Arc::new(TestClock::new())),
+        duded::hooks::Ingress::new(
+            Handle::new(jobs).with_hook_reply_timeout(hook_reply_timeout),
+            Arc::new(TestClock::new()),
+        ),
         &fixture.journal_dir(),
         &Arc::new(Subscribers::new()),
         Arc::new(AtomicU64::new(0)),
