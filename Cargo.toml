@@ -120,7 +120,7 @@ windows-spawn = "=0.1.0"
 windows-sys = "0.61.2"
 # Synchronous byte-mode Windows named pipes for the local control transport. Kept Windows-only by
 # `dudes-rpc`; no runtime or network transport enters the control-plane crate.
-interprocess = { version = "=2.4.4", default-features = false }
+interprocess = { version = "=2.4.6", default-features = false }
 # `SecurityDescriptor::deserialize` consumes a wide SDDL string at bind time. This exact major is
 # shared with interprocess 2.4.3, so the descriptor never crosses two incompatible wide-string
 # types.
