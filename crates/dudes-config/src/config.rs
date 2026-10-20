@@ -581,14 +581,24 @@ impl Draft {
                 }
             })?;
         }
-        let zeroed = [Key::PerTurnUsd, Key::PerTurnTokens]
+        let zeroed = self.zeroed();
+        Ok(Edited { wrote, zeroed })
+    }
+
+    /// Whether writing the draft would take a per-turn reserve from above zero to zero.
+    #[must_use]
+    pub fn zeroes_a_reserve(&self) -> bool {
+        !self.zeroed().is_empty()
+    }
+
+    fn zeroed(&self) -> Vec<Key> {
+        [Key::PerTurnUsd, Key::PerTurnTokens]
             .into_iter()
             .filter(|key| {
                 held(&self.original, *key).satisfied()
                     && !held(&self.settings.document, *key).satisfied()
             })
-            .collect();
-        Ok(Edited { wrote, zeroed })
+            .collect()
     }
 }
 

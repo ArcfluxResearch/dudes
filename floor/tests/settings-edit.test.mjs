@@ -16,6 +16,11 @@ test('the daemon answer to a switch edit is read exactly, and anything else is a
     assert.match(editLine(restart), /floor\.terminal takes a restart/);
     const refused = decodeSettingsResponse(409, JSON.stringify({ state: 'refused', reason: 'start_rule', detail: 'floor.goal on needs floor.control on' }));
     assert.match(editLine(refused), /floor\.goal on needs floor\.control on/);
+    const notLive = decodeSettingsResponse(200, JSON.stringify({ state: 'saved_not_live', reason: 'enrollment_drift', wrote: true, applied: [], restart: [] }));
+    assert.deepEqual(notLive, { kind: 'not_live', reason: 'enrollment_drift' });
+    assert.match(editLine(notLive), /not running yet[^]*next restart/);
+    assert.doesNotMatch(editLine(notLive), /runs it now/);
+    assert.match(editLine(decodeSettingsResponse(409, JSON.stringify({ state: 'refused', reason: 'zeroes_reserve', detail: null }))), /per-turn reserve to zero/);
     assert.deepEqual(decodeSettingsResponse(200, 'not json'), { kind: 'failed' });
     assert.deepEqual(decodeSettingsResponse(500, '{}'), { kind: 'failed' });
     assert.deepEqual(decodeSettingsResponse(200, JSON.stringify({ state: 'saved', applied: 'x', restart: [] })), { kind: 'failed' });

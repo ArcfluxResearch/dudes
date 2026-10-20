@@ -2247,7 +2247,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         crate::floor_settings_edit::SettingsSaved,
         crate::floor_settings_edit::SettingsRefusal,
     > {
-        use crate::floor_settings_edit::{SettingsRefusal, SettingsSaved};
+        use crate::floor_settings_edit::{NotLive, SettingsRefusal, SettingsSaved};
         use dudes_config::config::ConfigError;
         use sha2::Digest as _;
         if !session.is_valid() {
@@ -2258,15 +2258,27 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .operator_config
             .clone()
             .ok_or(SettingsRefusal::NoFile)?;
-        let edited = dudes_config::config::edit(&path, std::slice::from_ref(&request.change))
-            .map_err(|error| match error {
-                ConfigError::Refused(_) | ConfigError::Holds { .. } => {
-                    SettingsRefusal::StartRule(error.to_string())
-                }
-                _ => SettingsRefusal::FileError,
-            })?;
+        let map = |error: ConfigError| match error {
+            ConfigError::Refused(_) | ConfigError::Holds { .. } => {
+                SettingsRefusal::StartRule(error.to_string())
+            }
+            _ => SettingsRefusal::FileError,
+        };
+        let mut draft = dudes_config::config::Draft::open(&path).map_err(map)?;
+        draft.apply(&request.change).map_err(map)?;
+        if draft.zeroes_a_reserve() {
+            return Err(SettingsRefusal::ZeroesReserve);
+        }
+        let edited = draft.write().map_err(map)?;
+        tracing::info!(
+            session = %&crate::enrollment_reload::hex(&session.digest().bytes())[..16],
+            change = %request.change,
+            wrote = edited.wrote,
+            "floor settings write"
+        );
         let mut saved = SettingsSaved {
             wrote: edited.wrote,
+            not_live: Some(NotLive::Unread),
             ..SettingsSaved::default()
         };
         let Ok(bytes) = crate::config::read_operator_for_reload(&path) else {
@@ -2295,10 +2307,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             pid: None,
         };
         if let Ok(result) = self.enrollment_reload(&read) {
+            saved.restart = result.not_applied;
             if result.applied {
                 saved.applied = result.switches;
+                saved.not_live = None;
+            } else {
+                saved.not_live = Some(NotLive::Drifted);
             }
-            saved.restart = result.not_applied;
         }
         Ok(saved)
     }

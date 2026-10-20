@@ -10,6 +10,7 @@ import { refreshFloorSnapshot } from '../floor/stream.ts';
 
 export type SettingsEditResult =
   | { readonly kind: 'saved'; readonly applied: readonly string[]; readonly restart: readonly string[] }
+  | { readonly kind: 'not_live'; readonly reason: string }
   | { readonly kind: 'refused'; readonly reason: string; readonly detail: string | null }
   | { readonly kind: 'failed' };
 
@@ -52,6 +53,9 @@ export function decodeSettingsResponse(status: number, text: string): SettingsEd
     const applied = strings(fields.applied);
     const restart = strings(fields.restart);
     return applied !== null && restart !== null ? { kind: 'saved', applied, restart } : { kind: 'failed' };
+  }
+  if (status === 200 && fields.state === 'saved_not_live' && typeof fields.reason === 'string') {
+    return { kind: 'not_live', reason: fields.reason };
   }
   if (status === 409 && fields.state === 'refused' && typeof fields.reason === 'string') {
     return { kind: 'refused', reason: fields.reason, detail: typeof fields.detail === 'string' ? fields.detail : null };
@@ -122,7 +126,12 @@ export function editLine(result: SettingsEditResult): string {
   switch (result.kind) {
     case 'saved':
       return result.restart.length > 0 ? `Saved. ${result.restart.join(', ')} takes a restart.` : 'Saved. The daemon runs it now.';
+    case 'not_live':
+      return result.reason === 'enrollment_drift'
+        ? 'Saved, but not running yet. The file differs from the projects the daemon runs, perhaps from a pending project change. It applies at the next restart.'
+        : 'Saved, but the daemon could not adopt it just now. It applies at the next restart.';
     case 'refused':
+      if (result.reason === 'zeroes_reserve') return 'Not saved. This would set a per-turn reserve to zero, which can stop the daemon starting. Use dudes config to do that.';
       return result.reason === 'start_rule' && result.detail !== null ? `Not saved. ${result.detail}`
         : `Not saved (${result.reason}).`;
     case 'failed':

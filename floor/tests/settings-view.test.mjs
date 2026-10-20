@@ -81,6 +81,10 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.match(hint('terminal'), /dudes config set floor.terminal on/);
 
     assert.match(html, /Turn a switch on or off here/);
+    const diffRow = (git) => renderToStaticMarkup(createElement(SettingsView,
+      { floor: floor({ ...REPORT, switches: { ...REPORT.switches, diff: true, git } }), onSetup() {} }));
+    assert.match(diffRow(false), /floor\.diff<\/code><\/dt><dd>On, but needs Git</);
+    assert.match(diffRow(true), /floor\.diff<\/code><\/dt><dd>On<code>/);
     noteTransport('close');
     const closed = renderToStaticMarkup(createElement(SettingsView, { floor: getFloorState(), onSetup() {} }));
     assert.match(closed, /Settings is unavailable while the stream is disconnected/);

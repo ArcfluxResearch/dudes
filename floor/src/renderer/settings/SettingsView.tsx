@@ -96,7 +96,7 @@ export function SettingsView({ floor, onSetup }: {
               It needs goal change and Hire.</dd></div>;
         }
         return <div key={key}><dt>{label} <code>floor.{key}</code></dt>
-          <dd>{report.switches[key] ? 'On' : 'Off'}<code>dudes config set floor.{key} {next}{companions}</code>
+          <dd>{key === 'diff' && report.switches.diff && !report.switches.git ? 'On, but needs Git' : report.switches[key] ? 'On' : 'Off'}<code>dudes config set floor.{key} {next}{companions}</code>
             <SwitchButton switchKey={key} next={next} /></dd></div>;
       })}</dl>
       <p>Recovery needs both <code>floor.recovery</code> and <code>floor.control</code>. It keeps existing budgets and admission gates.

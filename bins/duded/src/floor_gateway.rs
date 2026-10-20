@@ -2128,8 +2128,9 @@ fn settings_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8])
             200,
             "OK",
             &serde_json::json!({
-                "state": "saved", "wrote": saved.wrote,
-                "applied": saved.applied, "restart": saved.restart
+                "state": if saved.not_live.is_some() { "saved_not_live" } else { "saved" },
+                "reason": saved.not_live.map(crate::floor_settings_edit::NotLive::reason),
+                "wrote": saved.wrote, "applied": saved.applied, "restart": saved.restart
             }),
         ),
         Err(SettingsRefusal::Forbidden) => error_response(403, "Forbidden"),

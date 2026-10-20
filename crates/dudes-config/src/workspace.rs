@@ -668,7 +668,8 @@ pub fn replace(config: &Path, bytes: &[u8]) -> io::Result<()> {
         .and_then(|()| match fs::metadata(&target) {
             Ok(metadata) => file.set_permissions(metadata.permissions()),
             Err(_) => Ok(()),
-        });
+        })
+        .and_then(|()| file.sync_all());
     drop(file);
     if let Err(error) = written.and_then(|()| fs::rename(&temporary, &target)) {
         let _ = fs::remove_file(&temporary);

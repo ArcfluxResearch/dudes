@@ -52,6 +52,9 @@ pub enum SettingsRefusal {
     NoFile,
     /// The edit would leave a file the daemon refuses at start, for this reason.
     StartRule(String),
+    /// The edit would take a per-turn reserve to zero, which can block the next start. The
+    /// command line can still do it, with a warning.
+    ZeroesReserve,
     /// The file could not be read, parsed or written.
     FileError,
     /// The daemon is ending.
@@ -68,8 +71,30 @@ impl SettingsRefusal {
             Self::BadValue => "bad_value",
             Self::NoFile => "no_config_file",
             Self::StartRule(_) => "start_rule",
+            Self::ZeroesReserve => "zeroes_reserve",
             Self::FileError => "file_error",
             Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// Why a saved edit is not running yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotLive {
+    /// The file has drifted from the running projects, by a hand edit or a pending project
+    /// change, so the daemon declined to adopt it. A restart adopts it.
+    Drifted,
+    /// The daemon could not read or adopt the file just now.
+    Unread,
+}
+
+impl NotLive {
+    /// The fixed code the page shows.
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Drifted => "enrollment_drift",
+            Self::Unread => "reload_failed",
         }
     }
 }
@@ -83,6 +108,8 @@ pub struct SettingsSaved {
     pub applied: Vec<String>,
     /// The settings that take a restart.
     pub restart: Vec<String>,
+    /// Set when the file was saved but the running daemon did not adopt it.
+    pub not_live: Option<NotLive>,
 }
 
 #[derive(Deserialize)]

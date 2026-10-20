@@ -17816,3 +17816,39 @@ fn a_switch_turned_off_from_the_settings_route_refuses_the_next_action() {
     assert_eq!(browser_hires(&fixture), []);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
+
+/// A saved edit the daemon could not adopt says so and never claims to run, and an edit that
+/// would zero a per-turn reserve is refused before anything is written.
+#[test]
+fn a_saved_edit_the_daemon_could_not_adopt_is_not_reported_as_running() {
+    let fixture = Fixture::new();
+    let mut settings = enrolled_settings(&fixture);
+    let file = fixture.state.path().join("config.toml");
+    std::fs::write(&file, "[budget.per_turn_floor]\nusd = 1\n").expect("operator file");
+    settings.operator_config = Some(file.clone());
+    let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
+    let post = |key: &str, value: &str| {
+        let body = serde_json::to_vec(&json!({"key": key, "value": value})).expect("JSON");
+        post_bytes(addr, "/floor/settings", &cookie, &csrf, &body, None)
+    };
+
+    let before = std::fs::read(&file).unwrap();
+    let (head, body) = post("budget.per_turn_floor.usd", "0");
+    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
+    assert_eq!(body["reason"], "zeroes_reserve", "{body}");
+    assert_eq!(std::fs::read(&file).unwrap(), before, "a refusal wrote");
+
+    let (head, body) = post("floor.answer", "on");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
+    assert_eq!(body["state"], "saved_not_live", "{body}");
+    assert_eq!(body["reason"], "enrollment_drift", "{body}");
+    assert_eq!(body["applied"], json!([]), "{body}");
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("[floor.answer]")
+    );
+    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    assert!(frame.get("answer").is_none(), "{frame}");
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
