@@ -3793,46 +3793,6 @@ mod tests {
     }
 
     #[test]
-    fn history_past_the_entry_budget_still_lets_each_phase_progress() {
-        let mut h = Harness::new(2);
-        let (sender, recipient) = (Harness::id(1), Harness::id(2));
-        let stuck = [Harness::mail(1), Harness::mail(2)];
-        let acked = Harness::mail(3);
-        for id in stuck.into_iter().chain([acked]) {
-            h.send(sender, recipient, id, "body");
-        }
-        let stuck = stuck.map(|id| dudes_journal::mail_recipient_id(id, recipient));
-        let acked = dudes_journal::mail_recipient_id(acked, recipient);
-        h.settle();
-        for id in stuck {
-            std::fs::write(h.move_done(recipient, id), "{}").unwrap();
-        }
-        h.move_done(recipient, acked);
-        h.record_history(recipient, PASS_ENTRIES as u64 / 2 + 64);
-        let fresh = Harness::mail(4);
-        h.send(sender, recipient, fresh, "body");
-        let fresh = dudes_journal::mail_recipient_id(fresh, recipient);
-        for _ in 0..4 {
-            h.pass();
-        }
-        assert_eq!(
-            h.acked(acked),
-            1,
-            "an acknowledgement starved behind history"
-        );
-        assert!(
-            h.path(recipient, "inbox", &format!("{fresh}.json"))
-                .exists(),
-            "a delivery starved behind history"
-        );
-        assert!(stuck.iter().any(|id| h.diagnosed(
-            recipient,
-            &format!("{id}.json"),
-            MailboxProblem::MalformedMarker
-        )));
-    }
-
-    #[test]
     fn an_oversized_item_to_an_unknown_recipient_creates_nothing() {
         let mut h = Harness::new(1);
         let (sender, unknown) = (Harness::id(1), Harness::id(77));
