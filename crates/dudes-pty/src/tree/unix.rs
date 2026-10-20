@@ -381,6 +381,10 @@ fn close_owned(state: &mut CleanupState, ops: &mut impl UnixTeardownOps) -> Clos
 }
 
 impl Session {
+    pub(crate) fn exit_status(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
+    }
+
     pub(crate) fn close_query(&self) -> io::Result<CloseQuery> {
         if self.cleanup.direct != DirectCleanup::Reaped {
             return Err(io::Error::other("PTY direct child is not reaped"));

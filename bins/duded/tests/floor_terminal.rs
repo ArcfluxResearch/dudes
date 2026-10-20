@@ -74,7 +74,19 @@ fn floor_reading(
     control: FloorControl,
     config: Option<PathBuf>,
 ) -> Floor {
+    floor_hiring(fixture, terminal, true, control, config)
+}
+
+/// [`floor_reading`] with `[floor.hire]` chosen, since hiring carries the engine sign-in terminal.
+fn floor_hiring(
+    fixture: &Fixture,
+    terminal: bool,
+    hire: bool,
+    control: FloorControl,
+    config: Option<PathBuf>,
+) -> Floor {
     let mut settings = fixture.settings();
+    settings.floor_hire_enabled = hire;
     settings.operator_config = config;
     settings.floor = Some(FloorSettings {
         assets_dir: PathBuf::from(FLOOR_FIXTURE),
@@ -1360,13 +1372,22 @@ fn detach_purges_old_output_before_the_boundary_and_a_new_grant_sees_only_its_pt
 #[test]
 fn terminal_csp_keeps_one_origin_and_exact_routes() {
     let fixture = Fixture::new();
-    let mut disabled = floor(&fixture, false);
+    let mut disabled = floor_hiring(&fixture, false, false, FloorControl::Off, None);
     assert_eq!(
         index_csp(&disabled),
         CSP,
-        "a disabled daemon keeps the default bytes"
+        "a daemon with neither a terminal nor hiring keeps the default bytes"
     );
     disabled.stop();
+
+    let fixture = Fixture::new();
+    let mut hiring = floor_hiring(&fixture, false, true, FloorControl::Off, None);
+    assert_eq!(
+        index_csp(&hiring),
+        TERMINAL_CSP,
+        "hiring draws the engine sign-in terminal, so it gets the terminal's policy"
+    );
+    hiring.stop();
 
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);

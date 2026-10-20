@@ -10524,7 +10524,7 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     assert_eq!(
         frame["daemon"],
         json!({"state_dir":"~/state","providers":[
-            {"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog"}
+            {"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog","sign_in":"unknown"}
         ]})
     );
     one_launch(&running.handle, &fixture, &home.path().join("work-a"));
@@ -10542,7 +10542,8 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     let outside_prog = bin_b.join("prog").to_str().expect("UTF-8").to_owned();
     assert_eq!(
         frame["daemon"]["providers"],
-        json!([{"provider":"claude","program":"prog","found":true,"path":outside_prog}]),
+        json!([{"provider":"claude","program":"prog","found":true,"path":outside_prog,
+            "sign_in":"unknown"}]),
         "a path outside the home is shown in full, with no restart"
     );
     one_launch(&running.handle, &fixture, &home.path().join("work-b"));
@@ -10725,7 +10726,7 @@ fn browser_daemon_view_agrees_with_the_launch_on_each_path_shape() {
         let (frame, _) = snapshot(addr, &cookie, &csrf);
         let row = match &shape.expected {
             Some(path) => json!({"provider":"claude","program":"prog","found":true,
-                "path":path.to_str().expect("UTF-8")}),
+                "path":path.to_str().expect("UTF-8"),"sign_in":"unknown"}),
             None => json!({"provider":"claude","program":"prog","found":false}),
         };
         assert_eq!(

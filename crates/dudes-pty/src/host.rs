@@ -405,6 +405,12 @@ impl PtyHost {
             .job()
     }
 
+    /// How the PTY's direct child ended, or `None` while it runs. The child is reaped by the first
+    /// call that sees it end; the tree is still owned until [`Self::close`].
+    pub fn exit_status(&mut self, pty: PtyId) -> io::Result<Option<std::process::ExitStatus>> {
+        self.session_mut(pty)?.native.exit_status()
+    }
+
     /// Write the exact caller slice once and return the operating system's byte count.
     pub fn write(&mut self, pty: PtyId, bytes: &[u8]) -> io::Result<usize> {
         let session = self.active_session_mut(pty)?;

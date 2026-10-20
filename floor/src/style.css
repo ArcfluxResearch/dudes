@@ -2868,6 +2868,42 @@ samp,
   white-space: nowrap;
 }
 
+.login-offer,
+.login-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.login-panel {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.login-state {
+  margin: 0;
+}
+
+.login-failed {
+  padding: 0.5rem 0.6rem;
+  border: 2px solid var(--accent-ink);
+  background: var(--danger-background);
+  font-weight: 700;
+}
+
+.login-screen {
+  flex: 0 0 auto;
+  height: 16rem;
+}
+
+.login-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
 .task-columns {
   display: grid;
   grid-template-columns: repeat(4, minmax(10rem, 1fr));

@@ -463,6 +463,19 @@ where
         }),
         crate::sign_in::Timing::DAEMON,
     );
+    let engine_logins = crate::engine_login::EngineLogins::for_daemon(
+        provider_check.clone(),
+        Provider::ALL
+            .into_iter()
+            .filter_map(|provider| {
+                adapters
+                    .get(provider)
+                    .map(|adapter| (provider, adapter.child_env(&settings.daemon_env)))
+            })
+            .collect(),
+        settings.state_dir.clone(),
+        settings.engine_login,
+    );
 
     let Replayed {
         lock,
@@ -728,7 +741,8 @@ where
         // Built whether or not the switch is on, so a reload can turn the route on.
         let prepared = prepared
             .with_git(Arc::new(git_reads(settings, &daemon)))
-            .with_diff(Arc::new(diff_reads(&daemon)));
+            .with_diff(Arc::new(diff_reads(&daemon)))
+            .with_engine_logins(engine_logins);
         daemon.sup.enable_activity_sampling();
         daemon.activity_flusher = Some(start_activity_flusher(
             handle.clone(),
@@ -749,6 +763,7 @@ where
             stream_fault,
             daemon.ctx.children.output(),
             provider_check.clone(),
+            sign_in.clone(),
         )
         .context("serializing the post-started Floor projection")?;
         daemon.ctx.floor_streams = Some(streams.clone());

@@ -11,8 +11,11 @@ use dudes_types::AgentId;
 
 use super::guard::{Admission, DYNAMIC_PATHS};
 use super::*;
+use crate::engine_login::{EngineLogins, Refusal};
 use crate::floor_peer::{AgentRoot, ProcessRef, SocketOwner, SocketOwnerLookup};
+use crate::ports::ClosedPtyHost;
 use crate::ports::Job;
+use crate::settings::ENGINE_LOGIN_TIMEOUT;
 use crate::settings::FloorControl;
 
 const HOST: &str = "127.0.0.1:43123";
@@ -54,6 +57,15 @@ fn gate(lookup: SocketOwnerLookup) -> PeerGate {
         Box::new(Some),
         Some(ME),
         None,
+    )
+}
+
+/// Sign-ins that start nothing: these tests look at admission, not at the engine.
+fn engine_logins() -> EngineLogins {
+    EngineLogins::new(
+        |_| Err(Refusal::NotInstalled),
+        Box::new(ClosedPtyHost),
+        ENGINE_LOGIN_TIMEOUT,
     )
 }
 
@@ -133,6 +145,7 @@ fn drive(request: &[u8], sessions: &FloorSessions, peer: &PeerGate) -> Driven {
     let memory = MemoryReads::new();
     let board = TicketLimits::new();
     let switches = SharedSwitches::new(all_on());
+    let logins = engine_logins();
     let catalog = Catalog {
         assets: &assets,
         manifest: &[],
@@ -140,6 +153,7 @@ fn drive(request: &[u8], sessions: &FloorSessions, peer: &PeerGate) -> Driven {
         terminal_csp: false,
         git: None,
         diff: None,
+        logins: Some(&logins),
         board: &board,
         memory: &memory,
         peer,
@@ -247,6 +261,13 @@ fn stream_protocols(secret: &str) -> String {
     format!("{FLOOR_PROTOCOL}, {CSRF_PROTOCOL_PREFIX}{secret}")
 }
 
+fn login_protocols(secret: &str) -> String {
+    format!(
+        "{}, {CSRF_PROTOCOL_PREFIX}{secret}",
+        crate::engine_login::PROTOCOL
+    )
+}
+
 fn terminal_protocols(secret: &str) -> String {
     format!(
         "{}, {CSRF_PROTOCOL_PREFIX}{secret}",
@@ -298,6 +319,7 @@ fn the_route_list_is_every_path_the_gateway_names() {
 fn every_listed_path_is_a_route_when_its_switch_is_on_and_only_git_and_diff_are_off_here() {
     let (assets, memory, board) = everything_on();
     let switches = SharedSwitches::new(all_on());
+    let logins = engine_logins();
     let catalog = Catalog {
         assets: &assets,
         manifest: &[],
@@ -305,12 +327,13 @@ fn every_listed_path_is_a_route_when_its_switch_is_on_and_only_git_and_diff_are_
         terminal_csp: false,
         git: None,
         diff: None,
+        logins: Some(&logins),
         board: &board,
         memory: &memory,
         peer: &outside(),
     };
     for path in DYNAMIC_PATHS {
-        let method = if matches!(*path, STREAM_PATH | TERMINAL_PATH) {
+        let method = if matches!(*path, STREAM_PATH | TERMINAL_PATH | ENGINE_LOGIN_PATH) {
             "GET"
         } else {
             "POST"
@@ -349,6 +372,36 @@ fn every_listed_path_is_a_route_when_its_switch_is_on_and_only_git_and_diff_are_
         assert!(Route::of("POST", path, switched_off).is_none(), "{path}");
     }
     assert!(Route::of("GET", TERMINAL_PATH, switched_off).is_none());
+    assert!(
+        Route::of("GET", ENGINE_LOGIN_PATH, switched_off).is_some(),
+        "signing in follows hiring, not the terminal"
+    );
+    let hiring_off = SharedSwitches::new(Switches {
+        hire: false,
+        ..all_on()
+    });
+    assert!(
+        Route::of(
+            "GET",
+            ENGINE_LOGIN_PATH,
+            Catalog {
+                switches: &hiring_off,
+                ..catalog
+            }
+        )
+        .is_none()
+    );
+    assert!(
+        Route::of(
+            "GET",
+            ENGINE_LOGIN_PATH,
+            Catalog {
+                logins: None,
+                ..catalog
+            }
+        )
+        .is_none()
+    );
 }
 
 fn max_body_of(path: &str) -> usize {
@@ -361,6 +414,7 @@ fn max_body_of(path: &str) -> usize {
         terminal_csp: false,
         git: None,
         diff: None,
+        logins: None,
         board: &board,
         memory: &memory,
         peer: &outside(),
@@ -380,7 +434,12 @@ fn no_post_route_acts_without_a_clean_session_secret_body_and_peer() {
     let routes: Vec<&str> = DYNAMIC_PATHS
         .iter()
         .copied()
-        .filter(|path| !matches!(*path, STREAM_PATH | TERMINAL_PATH | SIGN_IN_PATH))
+        .filter(|path| {
+            !matches!(
+                *path,
+                STREAM_PATH | TERMINAL_PATH | ENGINE_LOGIN_PATH | SIGN_IN_PATH
+            )
+        })
         .filter(|path| !matches!(*path, SESSION_CHECK_PATH | SESSION_END_PATH))
         .filter(|path| !matches!(*path, GIT_PATH | DIFF_PATH))
         .collect();
@@ -522,13 +581,14 @@ fn path_of(path: &str) -> &'static str {
 }
 
 #[test]
-fn the_stream_and_the_terminal_need_the_cookie_the_secret_and_a_clean_peer() {
+fn the_sockets_need_the_cookie_the_secret_and_a_clean_peer() {
     let signed = signed_in();
     let other = signed_in();
     let cookie = signed.cookie.as_str();
     for (path, protocols) in [
         (STREAM_PATH, stream_protocols as fn(&str) -> String),
         (TERMINAL_PATH, terminal_protocols),
+        (ENGINE_LOGIN_PATH, login_protocols),
     ] {
         let good = upgrade(path, &protocols(&signed.secret), Some(cookie));
         let refused = [
@@ -567,10 +627,10 @@ fn the_stream_and_the_terminal_need_the_cookie_the_secret_and_a_clean_peer() {
 }
 
 fn stream_protocols_without_secret(path: &str) -> String {
-    let protocol = if path == STREAM_PATH {
-        FLOOR_PROTOCOL
-    } else {
-        crate::floor_terminal::TERMINAL_PROTOCOL
+    let protocol = match path {
+        STREAM_PATH => FLOOR_PROTOCOL,
+        ENGINE_LOGIN_PATH => crate::engine_login::PROTOCOL,
+        _ => crate::floor_terminal::TERMINAL_PROTOCOL,
     };
     format!("{protocol}, {CSRF_PROTOCOL_PREFIX}")
 }
@@ -697,6 +757,38 @@ fn where_the_owner_cannot_be_looked_up_the_floor_shows_and_does_not_act() {
         Outcome::Status(403),
         "a terminal is acting"
     );
+    assert_eq!(
+        drive(
+            &upgrade(ENGINE_LOGIN_PATH, &login_protocols(secret), Some(cookie)),
+            &signed.sessions,
+            &view_only
+        )
+        .outcome,
+        Outcome::Status(403),
+        "signing in is acting"
+    );
+}
+
+#[test]
+fn a_session_holds_one_sign_in_socket_at_a_time() {
+    let signed = signed_in();
+    let authorizer = signed.sessions.authorizer();
+    let (host, origin) = (HOST, format!("http://{HOST}"));
+    let first = authorizer
+        .authorize_login(host, &origin, &signed.cookie, &signed.secret)
+        .expect("the first socket");
+    assert!(
+        authorizer
+            .authorize_login(host, &origin, &signed.cookie, &signed.secret)
+            .is_none()
+    );
+    drop(first);
+    assert!(
+        authorizer
+            .authorize_login(host, &origin, &signed.cookie, &signed.secret)
+            .is_some(),
+        "the slot is free once the socket ends"
+    );
 }
 
 #[test]
@@ -741,6 +833,7 @@ fn the_guard_admits_a_clean_request_from_outside_every_agent() {
         terminal_csp: false,
         git: None,
         diff: None,
+        logins: None,
         board: &board,
         memory: &memory,
         peer: &peer,

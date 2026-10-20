@@ -327,6 +327,7 @@ impl Fixture {
             floor_git_enabled: false,
             floor_diff_enabled: false,
             floor_project_enabled: false,
+            engine_login: None,
             floor_board_enabled: false,
             // Off by default here too: nothing in this suite exercises the
             // memory-condense model path, and turning it on would let the daemon's own resolution

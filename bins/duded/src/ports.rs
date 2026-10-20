@@ -120,6 +120,15 @@ pub trait PtyHostPort: Send {
         let _ = (pty, identity);
         false
     }
+    /// Whether one live handle's direct child has ended, and if so whether it exited 0. `None`
+    /// while it runs.
+    ///
+    /// # Errors
+    /// The port does not own the handle, or cannot ask.
+    fn exit_success(&mut self, pty: PtyId) -> io::Result<Option<bool>> {
+        let _ = pty;
+        Err(io::ErrorKind::Unsupported.into())
+    }
     /// Attempt every session still retained by the host.
     fn shutdown(&mut self) -> io::Result<()>;
 }

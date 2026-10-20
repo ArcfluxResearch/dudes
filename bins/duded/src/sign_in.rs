@@ -57,6 +57,14 @@ pub struct Check {
 #[derive(Clone)]
 pub struct SignInCheck(Arc<Shared>);
 
+impl std::fmt::Debug for SignInCheck {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SignInCheck")
+            .finish_non_exhaustive()
+    }
+}
+
 struct Shared {
     runner: Arc<dyn PredicateRunner>,
     cwd: PathBuf,
@@ -84,15 +92,10 @@ impl SignInCheck {
         checks: impl IntoIterator<Item = Check>,
         timing: Timing,
     ) -> Self {
-        let agent_name = |var: &EnvVar| {
-            var.name().to_str().is_some_and(|name| {
-                name.eq_ignore_ascii_case("DUDES_TOKEN") || name.eq_ignore_ascii_case("DUDES_SOCK")
-            })
-        };
         let checks = checks
             .into_iter()
             .map(|mut check| {
-                check.env.retain(|var| !agent_name(var));
+                strip_agent_vars(&mut check.env);
                 (check.provider, check)
             })
             .collect();
@@ -202,6 +205,15 @@ impl SignInCheck {
             }
         }
     }
+}
+
+/// Remove the variables that would hand a child the daemon's agent identity.
+pub(crate) fn strip_agent_vars(env: &mut Vec<EnvVar>) {
+    env.retain(|var| {
+        !var.name().to_str().is_some_and(|name| {
+            name.eq_ignore_ascii_case("DUDES_TOKEN") || name.eq_ignore_ascii_case("DUDES_SOCK")
+        })
+    });
 }
 
 impl Shared {

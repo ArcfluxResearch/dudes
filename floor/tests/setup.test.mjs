@@ -90,12 +90,12 @@ test('the daemon sibling decodes exactly, and anything malformed reads as not re
   assert.deepEqual(decodeDaemonReport(structuredClone(REPORT)), {
     stateDir: '~/.local/share/dudes',
     providers: [
-      { provider: 'claude', program: 'claude', found: true, path: '~/.local/bin/claude', detail: null },
-      { provider: 'codex', program: 'codex', found: false, path: null, detail: null },
+      { provider: 'claude', program: 'claude', found: true, path: '~/.local/bin/claude', detail: null, signIn: null },
+      { provider: 'codex', program: 'codex', found: false, path: null, detail: null, signIn: null },
     ],
   });
   assert.deepEqual(decodeDaemonReport({ providers: [{ provider: 'pi', found: false }] }),
-    { stateDir: null, providers: [{ provider: 'pi', program: null, found: false, path: null, detail: null }] },
+    { stateDir: null, providers: [{ provider: 'pi', program: null, found: false, path: null, detail: null, signIn: null }] },
     'every optional value may be omitted');
   const malformed = {
     absent: undefined,
@@ -107,6 +107,8 @@ test('the daemon sibling decodes exactly, and anything malformed reads as not re
     'a duplicate provider': { providers: [FOUND, FOUND] },
     'a path on a row not found': { providers: [{ ...MISSING, path: '/usr/bin/codex' }] },
     'a detail on a found row': { providers: [{ ...FOUND, detail: 'not found' }] },
+    'an unknown sign-in word': { providers: [{ ...FOUND, sign_in: 'maybe' }] },
+    'a sign-in on a row not found': { providers: [{ ...MISSING, sign_in: 'signed_out' }] },
     'a control character in detail': { providers: [{ ...MISSING, detail: 'bad\u0007' }] },
     'a 2,049-byte detail': { providers: [{ ...MISSING, detail: 'x'.repeat(2_049) }] },
     'a found that is not a boolean': { providers: [{ ...FOUND, found: 'yes' }] },

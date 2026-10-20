@@ -57,7 +57,14 @@ the browser's address bar does not help, because the link is gone from it. `dude
 upgrade](#after-you-upgrade) explains what `dudes upgrade` does instead. The link is a loopback address, so on a remote machine forward the port first, for example `ssh -L <port>:127.0.0.1:<port> <host>`, and paste the link into a browser on your own computer.
 
 **Setup** shows each engine the daemon turned on and whether it found that engine's program on its
-`PATH`. **Settings** shows the running Floor switches, budget ceilings, per-turn reserves,
+`PATH`. When you hire and the engine you chose is installed but signed out, the hire flow says so and
+offers **Sign in**. It runs that engine's own login in a terminal on the page: for Claude Code,
+open the link in your browser and paste the code it shows into the terminal. Codex finishes by itself
+once you sign in at its link. Pi signs in inside its own terminal, where you type `/login`. The page
+checks the engine again when the login exits cleanly and the hire carries on. This follows
+`floor.hire` and needs no terminal switch. Closing the terminal, waiting ten minutes or stopping the
+daemon ends the login. Dudes does not keep or log what the terminal shows or what you type, and the
+engine writes its own credentials. **Settings** shows the running Floor switches, budget ceilings, per-turn reserves,
 registered providers and enrolled workspace labels. The Floor reads configuration without editing
 it. **About**, within Settings, shows the daemon, Floor build and browser wire versions.
 

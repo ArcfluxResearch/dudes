@@ -260,6 +260,8 @@ const RECOVERY_MODULE = 'src/renderer/recovery/recovery.ts';
 const TERMINAL_PANEL = 'src/renderer/terminal/TerminalPanel.tsx';
 const TERMINAL_MODULE = 'src/renderer/terminal/terminal.ts';
 const TERMINAL_CONTROLS = 'src/renderer/terminal/controls.ts';
+const LOGIN_MODULE = 'src/renderer/login/login.ts';
+const LOGIN_PANEL = 'src/renderer/login/EngineSignIn.tsx';
 const RETIRE_PANEL = 'src/renderer/retire/RetirePanel.tsx';
 const RETIRE_MODULE = 'src/renderer/retire/retire.ts';
 const SETTINGS_EDIT_MODULE = 'src/renderer/settings/edit.ts';
@@ -1058,7 +1060,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
 });
 
 test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Pause all, resume, goal change, look edit and dismiss buttons, '
-  + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, Retire\'s own four, the Git tab\'s Refresh and Copy path, '
+  + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again and Close, Retire\'s own four, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, context choices, one authorization and inert receipt lookup, earlier acknowledged-review disclosure, the guide\'s navigation and Hire opener, '
   + 'and checkout differences\' explicit show, refresh, hide, open and more-files controls', async () => {
@@ -1104,6 +1106,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(7).fill(FIRST_RUN_GUIDE),
     ...Array(5).fill('src/renderer/setup/FirstTask.tsx'),
     ...Array(10).fill(TERMINAL_PANEL),
+    ...Array(3).fill(LOGIN_PANEL),
     ...Array(5).fill('src/shell.tsx'),
   ];
   assert.deepEqual(buttons.sort(), [...expected, AGENT_ORDER].sort());
@@ -1397,9 +1400,9 @@ test('the page sends only the four named read-only stream messages', async () =>
   assert.match(stream, /live\.send\(JSON\.stringify\(\{ type: 'floor\.output\.select', agent_id: desired\.targetId,\s+\.\.\.\(desired\.view === 'reply' \? \{ view: 'reply' \} : \{\}\) \}\)\)/);
 
   // Nothing else in the renderer sends anything on a socket, but the terminal
-  // channel, whose sends the next test pins.
+  // channel and the engine sign-in channel, whose sends the next tests pin.
   for (const path of await filesUnder(source, ['.ts', '.tsx'])) {
-    if (path.endsWith('floor/stream.ts') || path.endsWith(TERMINAL_MODULE)) continue;
+    if (path.endsWith('floor/stream.ts') || path.endsWith(TERMINAL_MODULE) || path.endsWith(LOGIN_MODULE)) continue;
     const text = await readFile(path, 'utf8');
     assert.doesNotMatch(text, /\.send\(/, `${path.slice(floor.length + 1)} sends on a socket`);
   }
@@ -1409,8 +1412,8 @@ test('the page sends only the four named read-only stream messages', async () =>
  * What the terminal module puts on its socket: each `.send(` call, and the
  * `type` of each object literal handed to its own `send(channel, …)`.
  */
-function terminalSendsIn(text) {
-  const syntax = parsedByExtension(text, TERMINAL_MODULE);
+function terminalSendsIn(text, file = TERMINAL_MODULE) {
+  const syntax = parsedByExtension(text, file);
   const sockets = [];
   const sent = [];
   (function walk(node) {
@@ -1465,6 +1468,37 @@ test("the terminal channel sends only the four terminal-grant client messages, a
     assert.deepEqual(writers, [`${TERMINAL_PANEL}: term.onData((data) => writeTerminal(data))`],
       'something other than the operator\'s own input is written to the terminal');
   });
+
+test("the engine sign-in channel sends only its three client messages, and only the person's own input is written", async () => {
+  const found = terminalSendsIn(await readFile(resolve(floor, LOGIN_MODULE), 'utf8'), LOGIN_MODULE);
+  assert.deepEqual(found.sockets, ['channel.socket.send(JSON.stringify(message))'],
+    'the sign-in module sends on its socket somewhere new');
+  assert.deepEqual(found.sent, ['login.resize', 'login.start', 'login.write'],
+    'the sign-in channel sends something beyond its three client messages');
+  assert.deepEqual(terminalSendsIn(`
+    function send(channel, message) { channel.socket.send(JSON.stringify(message)); }
+    send(live, { type: 'login.hire', engine }); send(live, message); live.socket.send('{}');
+  `, LOGIN_MODULE), {
+    sockets: ['channel.socket.send(JSON.stringify(message))', "live.socket.send('{}')"],
+    sent: ['login.hire', 'not a literal: send(live, message)'],
+  }, 'a planted fourth message or second send is not seen');
+
+  // The one way bytes reach `login.write` is the grid's own input event, handed on unchanged.
+  const writers = [];
+  for (const path of await filesUnder(source, ['.ts', '.tsx'])) {
+    const relative = path.slice(floor.length + 1);
+    const syntax = parsedByExtension(await readFile(path, 'utf8'), relative);
+    (function walk(node) {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'writeLogin') {
+        const around = ts.findAncestor(node.parent, ts.isCallExpression);
+        writers.push(`${relative}: ${around?.getText(syntax) ?? node.getText(syntax)}`);
+      }
+      ts.forEachChild(node, walk);
+    })(syntax);
+  }
+  assert.deepEqual(writers, [`${LOGIN_PANEL}: term.onData((data) => writeLogin(data))`],
+    "something other than the person's own input is written to the sign-in terminal");
+});
 
 /** Five network primitives, matched as text, not only the one the page uses. */
 const OUTBOUND = [
@@ -2330,6 +2364,7 @@ const TERMINAL_GRID = 'src/renderer/terminal/grid.ts';
 const ADMITTED_TERMINAL_LINES = Object.freeze({
   [TERMINAL_GRID]: ["import '@xterm/xterm/css/xterm.css';", "export { Terminal } from '@xterm/xterm';"],
   [TERMINAL_CONTROLS]: ["const drawn = term.element?.querySelector('.xterm-screen')?.getBoundingClientRect();"],
+  [LOGIN_PANEL]: ["const drawn = term.element?.querySelector('.xterm-screen')?.getBoundingClientRect();"],
 });
 
 /**
@@ -3244,7 +3279,7 @@ test('no control is built without JSX', async () => {
   assert.deepEqual(carrying, [], 'a control is built without JSX');
   assert.deepEqual(admitted, ["src/renderer/figurePortrait.ts: document.createElement('canvas').getContext('webgl2')"],
     'the admitted build is not made exactly once');
-  assert.equal(terminals, 1, 'the floor does not build its one terminal, so the fontFamily check measured nothing');
+  assert.equal(terminals, 2, 'the floor does not build its two grids, so the fontFamily check measured nothing');
 });
 
 test('a refused name is found however the source reads it', () => {

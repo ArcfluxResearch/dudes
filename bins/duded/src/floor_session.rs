@@ -219,6 +219,25 @@ impl FloorSessionAuthorizer {
         })
     }
 
+    /// Authenticate one engine sign-in upgrade and claim its session's one sign-in slot.
+    #[must_use]
+    pub(crate) fn authorize_login(
+        &self,
+        host: &str,
+        origin: &str,
+        cookie: &str,
+        csrf: &str,
+    ) -> Option<LoginSession> {
+        let ((), cookie, revoked) = self.admit_socket(host, origin, cookie, csrf, |session| {
+            (!session.login).then(|| session.login = true)
+        })?;
+        Some(LoginSession {
+            inner: Arc::clone(&self.0),
+            cookie,
+            revoked,
+        })
+    }
+
     /// Authenticate one upgrade and let `take` claim its session's slot under the registry lock.
     /// Only a claimed slot advances the session's idle time.
     fn admit_socket<T>(
@@ -383,6 +402,48 @@ impl Drop for TerminalSession {
                 .is_some_and(|slot| slot.browser_epoch == self.browser_epoch)
         {
             session.terminal = None;
+        }
+    }
+}
+
+/// One authenticated engine sign-in socket. A session holds at most one.
+pub(crate) struct LoginSession {
+    inner: Arc<Inner>,
+    cookie: [u8; 32],
+    revoked: Arc<AtomicBool>,
+}
+
+impl LoginSession {
+    /// Whether the session is still live. Only typing advances its idle time, through [`Self::touch`].
+    pub(crate) fn is_valid(&self) -> bool {
+        self.check(false)
+    }
+
+    /// Count the person's own typing as session activity.
+    pub(crate) fn touch(&self) -> bool {
+        self.check(true)
+    }
+
+    fn check(&self, advance: bool) -> bool {
+        if !self.inner.valid.load(Ordering::Acquire) || self.revoked.load(Ordering::Acquire) {
+            return false;
+        }
+        let registry::Locked { mut state, now } = self.inner.registry.lock_at_now();
+        state.prune(now);
+        let Some(session) = state.sessions.get_mut(&self.cookie) else {
+            return false;
+        };
+        if advance {
+            session.last_used = now;
+        }
+        self.inner.valid.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for LoginSession {
+    fn drop(&mut self) {
+        if let Some(session) = self.inner.registry.lock().sessions.get_mut(&self.cookie) {
+            session.login = false;
         }
     }
 }
@@ -696,6 +757,8 @@ struct Session {
     last_used: Timestamp,
     websockets: usize,
     terminal: Option<TerminalSlot>,
+    /// Whether this session holds its one engine sign-in socket.
+    login: bool,
 }
 
 impl Session {
@@ -922,6 +985,7 @@ impl FloorSessions {
                 last_used: now,
                 websockets: 0,
                 terminal: None,
+                login: false,
             },
         );
         Some(Exchange {
@@ -1047,6 +1111,7 @@ impl FloorCarry {
                 last_used: entry.last_used,
                 websockets: 0,
                 terminal: None,
+                login: false,
             };
             if now.millis_since(entry.created) < 0
                 || now.millis_since(entry.last_used) < 0

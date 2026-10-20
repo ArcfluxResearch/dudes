@@ -15,6 +15,7 @@ import { copyToClipboard } from '../setup/SetupView.tsx';
 import { decodeWorkspace } from '../workspace.ts';
 import { noProjects, viewConfirmed } from '../ticket/model.ts';
 import { AddProject, projectAddOn } from '../project/AddProject.tsx';
+import { EngineSignIn } from '../login/EngineSignIn.tsx';
 import type { ProviderRow } from '../setup/daemon.ts';
 import { HIRE_ENGINES, formatUsdMicros, isHireEngine } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
@@ -63,12 +64,18 @@ function cap(value: string | null, unit: 'usd' | 'tokens', perDay = false): stri
 
 /**
  * Why the engine blocks this Hire, or `null`. Only a report that the program
- * is not found blocks: an absent report, or no row for the engine, never does.
+ * is not found, or that it is signed out, blocks: an absent report, an unknown
+ * sign-in, or no row for the engine, never does.
  */
 function engineMissing(row: ProviderRow | null, engine: HireEngine | null): string | null {
-  if (row?.found !== false) return null;
   const name = engine === null ? 'This app' : HIRE_ENGINES[engine];
-  return `${name} is not installed on this computer, so this agent could not start. Install it, then check again.`;
+  if (row?.found === false) {
+    return `${name} is not installed on this computer, so this agent could not start. Install it, then check again.`;
+  }
+  if (row?.found === true && row.signIn === 'signed_out') {
+    return `${name} is installed but not signed in, so this agent could not start. Sign in, then check again.`;
+  }
+  return null;
 }
 
 /** The plain warning for a project that already has a live agent, or `null`. */
@@ -144,7 +151,7 @@ function HireForm({ hire, floor, onClose }: {
   const withdrawn = workspace !== null && (floor.settings?.providers
     .some((name) => isHireEngine(name) && !workspace.engines.includes(name)) ?? false);
   const blocked = unavailable(floor) ?? missing;
-  // A missing engine holds the wizard on Engine, where its reason and Check again are.
+  // A missing or signed-out engine holds the wizard on Engine, where its reason, Sign in and Check again are.
   const stuck = hire.section === 'engine' && missing !== null;
   const frozen = hire.attempt !== null;
   const invalid = (field: FieldName) => hire.problem?.field === field;
@@ -274,13 +281,14 @@ function HireForm({ hire, floor, onClose }: {
               {missing === null ? null : (
                 <div className="hire-problem" role="alert">
                   <p>{missing}</p>
-                  {engine === null || INSTALL_COMMANDS[engine] === undefined ? null : <p className="hire-install">
+                  {engine === null || row?.found !== false || INSTALL_COMMANDS[engine] === undefined ? null : <p className="hire-install">
                     <code>{INSTALL_COMMANDS[engine]}</code>{' '}
                     <button type="button" onClick={() => copyToClipboard(INSTALL_COMMANDS[engine]!)}>Copy</button>
                   </p>}
                   <button type="button" onClick={() => refreshFloorSnapshot()}>Check again</button>
                 </div>
               )}
+              {engine === null ? null : <EngineSignIn engine={engine} row={row} />}
             </>
           )}
           {hire.section !== 'briefing' ? null : (

@@ -255,6 +255,19 @@ pub struct FloorSettings {
     pub port: Option<u16>,
 }
 
+/// How long an engine sign-in may run before the daemon ends it.
+pub const ENGINE_LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// What the Floor's engine sign-in is built from. Sign-ins have no agent, so they do not share the
+/// agents' terminal host: each daemon run makes one of its own, through the same port.
+#[derive(Clone, Copy, Debug)]
+pub struct EngineLogin {
+    /// Makes the terminal host the sign-ins own.
+    pub host: fn() -> Box<dyn crate::ports::PtyHostPort>,
+    /// How long one sign-in may run.
+    pub timeout: Duration,
+}
+
 /// Everything a daemon run needs that is not a seam.
 #[derive(Clone, Debug)]
 #[expect(
@@ -301,6 +314,9 @@ pub struct Settings {
     pub floor_diff_enabled: bool,
     /// [`crate::config::OperatorConfig::project_enabled`].
     pub floor_project_enabled: bool,
+    /// Where the Floor's engine sign-in gets its terminal. `None` leaves every sign-in refused as
+    /// unavailable.
+    pub engine_login: Option<EngineLogin>,
     /// [`crate::config::OperatorConfig::condense_model_enabled`].
     pub condense_model_enabled: bool,
     /// [`crate::config::OperatorConfig::condense_model`].

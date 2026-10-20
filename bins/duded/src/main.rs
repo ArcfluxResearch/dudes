@@ -294,6 +294,10 @@ impl duded::ports::PtyHostPort for MainPtyHost {
         true
     }
 
+    fn exit_success(&mut self, pty: PtyId) -> io::Result<Option<bool>> {
+        Ok(self.host.exit_status(pty)?.map(|status| status.success()))
+    }
+
     fn shutdown(&mut self) -> io::Result<()> {
         let result = self.host.shutdown();
         if result.is_ok() {
@@ -1208,6 +1212,7 @@ mod native_tests {
             floor_git_enabled: false,
             floor_diff_enabled: false,
             floor_project_enabled: false,
+            engine_login: None,
             condense_model_enabled: true,
             condense_model: None,
             breaker: BreakerConfig::default(),
@@ -1668,6 +1673,10 @@ fn settings_from_environment() -> anyhow::Result<(
         floor_git_enabled: operator.git_enabled,
         floor_diff_enabled: operator.diff_enabled,
         floor_project_enabled: operator.project_enabled,
+        engine_login: Some(duded::settings::EngineLogin {
+            host: || Box::new(MainPtyHost::new()),
+            timeout: duded::settings::ENGINE_LOGIN_TIMEOUT,
+        }),
         condense_model_enabled: operator.condense_model_enabled,
         condense_model: operator.condense_model,
         breaker: BreakerConfig::default(),
