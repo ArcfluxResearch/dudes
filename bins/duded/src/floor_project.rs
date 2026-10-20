@@ -309,14 +309,17 @@ impl Folders {
         }
     }
 
-    /// The canonical folder `typed` names, or why Dudes will not take it. `~/` at the start means
-    /// the daemon's home.
+    /// The canonical folder `typed` names, or why Dudes will not take it. `~` or `~/` at the start
+    /// means the daemon's home.
     ///
     /// # Errors
     ///
     /// The first [`Reason`] that applies: `not_found`, `not_a_folder`, `not_allowed`, `not_git`.
     pub fn resolve(&self, typed: &str) -> Result<PathBuf, Reason> {
-        let path = match typed.strip_prefix("~/") {
+        let path = match typed
+            .strip_prefix("~/")
+            .or_else(|| (typed == "~").then_some(""))
+        {
             Some(rest) => self.home.as_ref().ok_or(Reason::NotFound)?.join(rest),
             None => PathBuf::from(typed),
         };
@@ -457,6 +460,11 @@ mod tests {
             at(&home.join("alias")),
             Ok(canonical(home.join("app"))),
             "link resolved"
+        );
+        assert_eq!(
+            folders.resolve("~"),
+            Err(Reason::NotAllowed),
+            "home by its tilde"
         );
         assert_eq!(
             folders.resolve("~/app"),
