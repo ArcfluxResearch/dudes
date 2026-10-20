@@ -1397,3 +1397,95 @@ fn goal_replace_keeps_running_after_a_hang_up() {
         "{retried:?}"
     );
 }
+
+/// A caller that closes its socket, or shuts down its write side, while its goal set's check runs
+/// or after the run and before the append, gets no goal. A hang-up during the run ends the check's
+/// child at once, so the agent's next goal set is not refused beside it. A replacement keeps
+/// running after a hang-up, and its same-request retry returns its result.
+///
+/// Mutations: skipping the probe in the append job journals a goal in the third arm; waiting on
+/// the run without reading the probe leaves the held check running.
+fn assert_a_hang_up_during_the_check_abandons_the_goal_set(arm: &str) {
+    let daemon = baselined();
+    let settings = daemon.fixture.settings();
+    let stream = send_goal_set(&settings, &held_check(daemon.agent));
+    wait_for(|| daemon.runner.runs() == 1, "the check started");
+    if arm == "closed" {
+        stream.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(stream);
+    } else {
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+    }
+    // Never released: the hang-up itself ends the check.
+    wait_for(|| daemon.runner.ended() == 1, "the hang-up ended the check");
+    std::thread::sleep(Duration::from_millis(300));
+    let control = daemon
+        .set(common::goal_params(daemon.agent, &["test", "-f", "absent"]))
+        .expect("a later goal set is admitted");
+    let goals = daemon.goal_sets();
+    assert_eq!(
+        goals.iter().map(|goal| goal.id).collect::<Vec<_>>(),
+        [control.goal],
+        "{arm}: only the later goal was journaled"
+    );
+}
+
+#[test]
+fn a_closed_socket_during_the_check_abandons_the_goal_set() {
+    assert_a_hang_up_during_the_check_abandons_the_goal_set("closed");
+}
+
+#[test]
+fn a_half_closed_socket_during_the_check_abandons_the_goal_set() {
+    assert_a_hang_up_during_the_check_abandons_the_goal_set("half-closed");
+}
+
+#[test]
+fn a_hang_up_before_the_append_abandons_the_goal_set() {
+    let fixture = Fixture::new();
+    let settings = fixture.settings();
+    let tree = tempfile::tempdir().expect("agent tree");
+    let daemon = boot(
+        &fixture.settings(),
+        seams(
+            &settings,
+            SharedHost::new(),
+            CountingRunner::new(),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+        ),
+    )
+    .expect("boot");
+    let pause = daemon.onboarding_pause();
+    let running = common::start(daemon);
+    let agent = common::hire(&running.handle, tree.path());
+    pause.arm(duded::runtime::OnboardingPausePoint::BeforeBaselineRecheck);
+    let stream = send_goal_set(
+        &fixture.settings(),
+        &checked_goal(agent, &["test", "-f", "absent"]),
+    );
+    assert!(
+        pause.wait_reached(Duration::from_secs(10)),
+        "the append job was reached"
+    );
+    stream.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(stream);
+    std::thread::sleep(Duration::from_millis(50));
+    pause.release();
+    let control = running
+        .handle
+        .set_goal(
+            common::goal_params(agent, &["test", "-f", "absent"]),
+            &dudes_rpc::HangUp::never(),
+        )
+        .expect("a later goal set is admitted");
+    let goals: Vec<_> = fixture
+        .records()
+        .into_iter()
+        .filter_map(|record| match record {
+            Record::GoalSet { goal, .. } => Some(goal.id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(goals, [control.goal], "after the run: only the later goal");
+}
