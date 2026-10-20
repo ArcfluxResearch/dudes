@@ -128,13 +128,17 @@ test('with the ticket switch off, board cards use the same columns and only true
   assert.match(html, /Needs you \(0\)/);
 });
 
-test('Done shows the newest twenty and says how many it leaves out', () => {
+test('Done shows the newest twenty and Show more adds the next page', () => {
   subscribe(store, { cards: Array.from({ length: 25 }, (_, n) => ticketCard(n + 1, 'done')) });
   const { columns, doneHidden } = model.boardColumns(store.getFloorState().cards);
   assert.equal(columns.done.length, 20);
   assert.deepEqual([columns.done[0].title, columns.done[19].title], ['Ticket 25', 'Ticket 6']);
   assert.equal(doneHidden, 5);
-  assert.match(board(), /5 older cards not shown\. List tickets with <code>dudes ticket list --status done<\/code> and other cards with <code>dudes board list<\/code>/);
+  const html = board();
+  assert.match(html, /5 older cards not shown\..*Show more/);
+  assert.doesNotMatch(html, /dudes ticket list|dudes board list/);
+  const more = model.boardColumns(store.getFloorState().cards, 40);
+  assert.deepEqual([more.columns.done.length, more.doneHidden], [25, 0]);
 });
 
 test('an empty ticket board gives one next step in every labelled lane', () => {

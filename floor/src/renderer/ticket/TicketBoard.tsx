@@ -13,7 +13,7 @@ import type { FloorState } from '../floor/store.ts';
 import { checksFor, choiceLabel } from '../onboarding/checks.ts';
 import { hireSwitchOn } from '../onboarding/HireEntry.tsx';
 import { decodeWorkspace } from '../workspace.ts';
-import { agentChoiceSentence, agentRow, boardColumns, cardWords, noProjects, otherCards, plainColumnOf, TICKET_COLUMNS } from './model.ts';
+import { agentChoiceSentence, agentRow, boardColumns, cardWords, DONE_SHOWN, noProjects, otherCards, plainColumnOf, TICKET_COLUMNS } from './model.ts';
 import type { TicketColumn } from './model.ts';
 import type { Notice } from './ticket.ts';
 import { createTicket, dismissNotice, getTicketState, subscribeToTicket } from './ticket.ts';
@@ -262,7 +262,8 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
 }) {
   const selectable = floor.phase === 'live' && !floor.stale;
   useRequestedCard(floor, selectable, onSelect);
-  const { columns, needsYou, doneHidden } = boardColumns(floor.cards);
+  const [doneShown, setDoneShown] = useState(DONE_SHOWN);
+  const { columns, needsYou, doneHidden } = boardColumns(floor.cards, doneShown);
   // The panel of the selected ticket says what happened; the board says it when none is open.
   const opened = forming || floor.cards.some((card) => card.id === selectedId && card.ticket !== null);
   const other = otherCards(floor.cards);
@@ -291,7 +292,8 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
           <ul>{cards.map(draw)}</ul>
           {cards.length === 0 ? <p className="ticket-empty">{(floor.ticket ? EMPTY_COLUMN : EMPTY_COLUMN_CARDS)[column.key]}</p> : null}
           {column.key === 'done' && doneHidden > 0
-            ? <p className="ticket-hint">{doneHidden} older card{doneHidden === 1 ? '' : 's'} not shown. List tickets with <code>dudes ticket list --status done</code> and other cards with <code>dudes board list</code>.</p> : null}
+            ? <p className="ticket-hint">{doneHidden} older card{doneHidden === 1 ? '' : 's'} not shown.{' '}
+              <button type="button" className="ticket-more" onClick={() => setDoneShown(doneShown + DONE_SHOWN)}>Show more</button></p> : null}
         </section>;
       })}
     </div>

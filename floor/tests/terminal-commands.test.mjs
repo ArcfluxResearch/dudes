@@ -11,13 +11,13 @@ import {
 } from './helpers/terminal-commands.mjs';
 
 /** Source lines in `src/renderer` that can show a terminal command. Lower it when you remove one. */
-const PLACES = 40;
+const PLACES = 39;
 /**
  * The different `dudes ...` commands those lines name. Lower it when the last mention of one goes.
  * It includes `dudes project trust`, the one named exit of the optional own-copy box on Hire, which
  * the page shows only for an untrusted project another agent already works in.
  */
-const DISTINCT_DUDES_COMMANDS = 18;
+const DISTINCT_DUDES_COMMANDS = 16;
 
 const renderer = resolve(import.meta.dirname, '../src/renderer');
 

@@ -18,7 +18,7 @@ export const TICKET_COLUMNS: readonly { readonly key: TicketColumn; readonly tit
   { key: 'ready', title: 'Ready for you' }, { key: 'done', title: 'Done' },
 ]);
 
-/** How many finished tickets the Done column shows. The rest stay reachable with `dudes ticket list --status done`. */
+/** How many finished tickets the Done column shows at first, and how many more each "Show more" adds. */
 export const DONE_SHOWN = 20;
 
 export function noProjects(floor: FloorState): boolean {
@@ -72,7 +72,7 @@ export interface BoardColumns {
   readonly columns: Readonly<Record<TicketColumn, readonly CardRow[]>>;
   /** Tickets in Needs you. */
   readonly needsYou: readonly CardRow[];
-  /** Done cards past the newest {@link DONE_SHOWN}. */
+  /** Done cards past the newest `doneShown`. */
   readonly doneHidden: number;
 }
 
@@ -80,7 +80,7 @@ export interface BoardColumns {
  * The board's columns. A queue shows in the order the daemon serves it, and the newest Done cards
  * come first. `cards` arrive in id order, which is creation order.
  */
-export function boardColumns(cards: readonly CardRow[]): BoardColumns {
+export function boardColumns(cards: readonly CardRow[], doneShown: number = DONE_SHOWN): BoardColumns {
   const columnFor = (card: CardRow) => (card.ticket === null ? plainColumnOf(card) : columnOf(card));
   const byColumn = (column: TicketColumn) => cards.filter((card) => columnFor(card) === column);
   const todo = [...byColumn('todo')].sort((a, b) => queueOrder(a) - queueOrder(b) || a.id.localeCompare(b.id));
@@ -88,10 +88,10 @@ export function boardColumns(cards: readonly CardRow[]): BoardColumns {
   return Object.freeze({
     columns: Object.freeze({
       todo: Object.freeze(todo), working: Object.freeze(byColumn('working')), ready: Object.freeze(byColumn('ready')),
-      done: Object.freeze(done.slice(0, DONE_SHOWN)),
+      done: Object.freeze(done.slice(0, doneShown)),
     }),
     needsYou: Object.freeze(tickets(cards).filter((card) => card.status === 'blocked')),
-    doneHidden: Math.max(0, done.length - DONE_SHOWN),
+    doneHidden: Math.max(0, done.length - doneShown),
   });
 }
 

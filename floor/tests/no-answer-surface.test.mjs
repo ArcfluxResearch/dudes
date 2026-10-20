@@ -1068,7 +1068,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
 });
 
 test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Pause all, resume, goal change, look edit and dismiss buttons, '
-  + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again and Close, Retire\'s own four, the Git tab\'s Refresh and Copy path, '
+  + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again and Close, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, context choices, one authorization and inert receipt lookup, earlier acknowledged-review disclosure, the guide\'s navigation and Hire opener, '
   + 'and checkout differences\' explicit show, refresh, hide, open and more-files controls', async () => {
@@ -1098,7 +1098,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(RECOVERY_PANEL),
     ...Array(3).fill(GOAL_PANEL),
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
-    ...Array(7).fill(TICKET_BOARD),
+    ...Array(8).fill(TICKET_BOARD),
     ...Array(10).fill(TICKET_PANEL),
     ...Array(11).fill(HIRE_FORM),
     HIRE_ENTRY,
@@ -1220,7 +1220,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     '() => onOpenTicket?.(item.card)', '() => onToggle(entry.view)', 'onClose', 'closeOverlay']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, TICKET_BOARD), 'utf8')), [
     '() => dismissNotice(notice)', '(event) => onHire(event.currentTarget)', 'onCancel',
-    '(event) => onSelect(card.id, event.currentTarget)', '(event) => onNewTicket(event.currentTarget)',
+    '(event) => onSelect(card.id, event.currentTarget)', '(event) => onNewTicket(event.currentTarget)', '() => setDoneShown(doneShown + DONE_SHOWN)',
   ]);
   // Opening Setup or Settings takes a fresh snapshot: the same resubscription Recheck starts.
   assert.match(center, /\{ view: 'setup', label: 'Setup', refresh: true \}/);

@@ -91,6 +91,21 @@
   font-size: 0.85rem;
 }
 
+.ticket-more {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ticket-more:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 .ticket-notice {
   margin: 0 0 0.6rem;
   padding: 0.5rem 0.6rem;
