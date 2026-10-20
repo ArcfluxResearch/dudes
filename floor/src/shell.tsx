@@ -103,19 +103,23 @@ function SignedOutShell() {
   );
 }
 
-/** End this browser's session in the daemon, then reload into the signed-out screen. */
-function signOut(): void {
-  const session = currentFloorSession();
-  if (session === null) return;
-  void signOutFloorSession(session).then(() => window.location.reload());
-}
-
 export function WebFloorShell() {
   const firstLink = useSyncExternalStore(subscribeToPastedLink, firstLinkProblem, firstLinkProblem);
   return firstLink === null ? <SignedInShell /> : <SignedOutShell />;
 }
 
 function SignedInShell() {
+  const [signOutFailed, setSignOutFailed] = useState(false);
+  // End this browser's session in the daemon, then reload into the signed-out screen. A daemon that
+  // does not confirm leaves the session alone, and the page says so.
+  const signOut = () => {
+    const session = currentFloorSession();
+    if (session === null) return;
+    void signOutFloorSession(session).then((ended) => {
+      if (ended) window.location.reload();
+      else setSignOutFailed(true);
+    });
+  };
   const floor = useSyncExternalStore(subscribeToFloor, getFloorState, getFloorState);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hiring, setHiring] = useState(false);
@@ -373,6 +377,7 @@ function SignedInShell() {
           <button type="button" className="sign-out" onClick={signOut}>Sign out</button>
         </div>
         <PastedLinkNotice />
+        {signOutFailed ? <p className="link-refused" role="alert">Could not sign out. Try again.</p> : null}
         <JournalStoppedBanner stopped={floor.journalStopped} />
         <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
         {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}

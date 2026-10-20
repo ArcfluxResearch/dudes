@@ -30,9 +30,8 @@ use super::{
     MEMORY_ENTRY_PATH, MEMORY_PAGE_PATH, ONBOARD_PATH, PAUSE_PATH, PROJECT_ADD_PATH,
     PROJECT_PREVIEW_PATH, RECEIPT_RECOVERY_PATH, RENAME_PATH, RENEW_PATH, RESUME_PATH, RETIRE_PATH,
     ReceiptSession, RecoveryRoute, Response, SESSION_CHECK_PATH, SESSION_END_PATH, SETTINGS_PATH,
-    SIGN_IN_PATH, STREAM_PATH,
-    SUBMIT_RECOVERY_PATH, SessionIdentity, SocketAddr, SocketRoute, SocketSession, TERMINAL_PATH,
-    TicketRoute, error_response,
+    SIGN_IN_PATH, STREAM_PATH, SUBMIT_RECOVERY_PATH, SessionIdentity, SocketAddr, SocketRoute,
+    SocketSession, TERMINAL_PATH, TicketRoute, error_response,
 };
 use crate::floor_peer::Verdict;
 
@@ -146,12 +145,15 @@ impl Route {
         !matches!(self.kind, Kind::Socket(_))
     }
 
-    /// Whether the route changes something, or gives the sender control of a terminal. Where the
+    /// Whether the route changes something, or gives the sender control of a terminal. Signing out
+    /// changes something; asking about the session does not. Where the
     /// operating system cannot say who owns a connection, only the routes that do not are served.
     const fn acting(self) -> bool {
         match self.kind {
-            Kind::SignIn | Kind::Standing(_) | Kind::Socket(SocketRoute::Stream) => false,
-            Kind::Socket(SocketRoute::Terminal) => true,
+            Kind::SignIn
+            | Kind::Standing(StandingRoute::Check)
+            | Kind::Socket(SocketRoute::Stream) => false,
+            Kind::Standing(StandingRoute::End) | Kind::Socket(SocketRoute::Terminal) => true,
             Kind::Action(route) => !matches!(
                 route,
                 ActionRoute::Git

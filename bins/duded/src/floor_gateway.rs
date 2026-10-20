@@ -1400,8 +1400,12 @@ fn dispatch<'a>(
     let response = match (admitted, route.action()) {
         (Admitted::SignIn(sign_in), _) => exchange_response(sessions, &sign_in, body),
         (Admitted::Standing(identity), _) => match route.standing() {
-            Some(StandingRoute::Check) => standing_response(identity.as_ref(), &head, false),
-            Some(StandingRoute::End) => standing_response(identity.as_ref(), &head, true),
+            Some(StandingRoute::Check) => {
+                standing_response(identity.as_ref(), sessions.is_running(), &head, false)
+            }
+            Some(StandingRoute::End) => {
+                standing_response(identity.as_ref(), sessions.is_running(), &head, true)
+            }
             None => error_response(403, "Forbidden"),
         },
         (Admitted::Socket(session), _) => {
@@ -1678,10 +1682,16 @@ fn session_cookie_header(value: &str, max_age_s: i64) -> String {
 /// over a refusal that is not about its session.
 fn standing_response<'a>(
     identity: Option<&SessionIdentity>,
+    running: bool,
     head: &Head,
     end: bool,
 ) -> Response<'a> {
     let Some(session) = identity else {
+        // A stopping daemon has cleared every session, so "unknown" would be a lie the page
+        // acts on: it would wipe a secret the carry-over to the next run is about to honour.
+        if !running {
+            return error_response(503, "Service Unavailable");
+        }
         return action_json(
             401,
             "Unauthorized",

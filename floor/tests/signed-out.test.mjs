@@ -153,14 +153,27 @@ test('another tab’s sign-in is followed instead of signing this tab out', asyn
   assert.deepEqual(factory.opened.at(-1)?.protocols.at(-1), `dudes-csrf.${OTHER}`, 'the stream follows the new secret');
 });
 
-test('signing out asks the daemon to end the session and forgets the secret even when it cannot be reached', async () => {
-  for (const check of [async () => reply(200, { session: 'ended' }), async () => { throw new TypeError('down'); }]) {
+test('signing out forgets the secret only once the daemon says the session is ended or unknown', async () => {
+  for (const check of [async () => reply(200, { session: 'ended' }), async () => UNKNOWN()]) {
     resetFloorSession();
     const { storage, asked } = page({ check });
-    await signOutFloorSession(Object.freeze({ csrf: SECRET }));
+    assert.equal(await signOutFloorSession(Object.freeze({ csrf: SECRET })), true);
     assert.equal(asked[0].url, '/floor/session/end');
     assert.equal(asked[0].init.method, 'POST');
     assert.equal(asked[0].init.headers['X-Dudes-CSRF'], SECRET);
     assert.equal(storage.has('dudes.floor.secret'), false);
+  }
+});
+
+test('a sign-out the daemon does not confirm keeps the secret and says it failed', async () => {
+  for (const check of [
+    async () => reply(503, null),
+    async () => reply(403, null),
+    async () => { throw new TypeError('down'); },
+  ]) {
+    resetFloorSession();
+    const { storage } = page({ check });
+    assert.equal(await signOutFloorSession(Object.freeze({ csrf: SECRET })), false);
+    assert.equal(storage.get('dudes.floor.secret'), SECRET, 'the secret is kept');
   }
 });

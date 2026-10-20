@@ -167,13 +167,17 @@ fn the_launcher_install_sh_wrote_goes_and_a_lookalike_of_the_same_name_stays() {
     std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
     std::fs::write(
         app.join("Contents/Info.plist"),
-        "<key>DudesLauncher</key><true/>",
+        "<dict>\n\t<key>DudesLauncher</key><true/>\n</dict>",
     )
     .unwrap();
     let applications = home.join(".local/share/applications");
     std::fs::create_dir_all(&applications).unwrap();
     let mine = applications.join("dudes.desktop");
-    std::fs::write(&mine, "[Desktop Entry]\nName=Somebody else's Dudes\n").unwrap();
+    std::fs::write(
+        &mine,
+        "[Desktop Entry]\nName=Somebody else's Dudes\n# X-Dudes-Launcher=1 is mentioned here, not set\n",
+    )
+    .unwrap();
 
     let (code, out, err) = fixture.run(yes(), None, &Fake::default());
 
@@ -188,6 +192,24 @@ fn the_launcher_install_sh_wrote_goes_and_a_lookalike_of_the_same_name_stays() {
         )),
         "{out}"
     );
+}
+
+#[test]
+fn a_desktop_entry_goes_only_with_the_exact_marker_line() {
+    let fixture = Fixture::new();
+    let applications = fixture.layout.home.join(".local/share/applications");
+    std::fs::create_dir_all(&applications).unwrap();
+    let entry = applications.join("dudes.desktop");
+    std::fs::write(
+        &entry,
+        "[Desktop Entry]\nType=Application\nX-Dudes-Launcher=1\nExec=\"/x/dudes\" open\n",
+    )
+    .unwrap();
+
+    let (code, _, err) = fixture.run(yes(), None, &Fake::default());
+
+    assert_eq!((code, err.as_str()), (exit::SUCCESS, ""));
+    assert!(!entry.exists());
 }
 
 fn plant_tree(fixture: &Fixture) -> (PathBuf, PathBuf) {

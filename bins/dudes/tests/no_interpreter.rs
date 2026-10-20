@@ -3616,7 +3616,7 @@ mod opener_item {
     use std::path::Path;
 
     use syn::visit::{self, Visit};
-    use syn::{Expr, ExprCall, ExprMethodCall};
+    use syn::{Expr, ExprCall, ExprMethodCall, ItemConst, ItemFn, LitStr};
 
     /// A method with one of these names creates, feeds or ends a process.
     const SENSITIVE: &[&str] = &[
@@ -3643,20 +3643,60 @@ mod opener_item {
         "try_wait",
     ];
 
+    /// The string literals under one item.
+    #[derive(Default)]
+    struct Lits(Vec<String>);
+
+    impl<'ast> Visit<'ast> for Lits {
+        fn visit_lit_str(&mut self, lit: &'ast LitStr) {
+            self.0.push(lit.value());
+        }
+    }
+
     #[derive(Default)]
     struct Calls {
         methods: Vec<String>,
         paths: Vec<String>,
         programs: Vec<String>,
+        absolute_checks: usize,
+        env_names: Vec<String>,
+        ssh_names: Vec<String>,
+        openers: Vec<String>,
     }
 
     impl<'ast> Visit<'ast> for Calls {
         fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
             let name = call.method.to_string();
+            if name == "is_absolute" {
+                self.absolute_checks += 1;
+            }
             if SENSITIVE.contains(&name.as_str()) {
                 self.methods.push(name);
             }
             visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_item_const(&mut self, item: &'ast ItemConst) {
+            if item.ident == "OPENER_ENV" {
+                let mut lits = Lits::default();
+                lits.visit_expr(&item.expr);
+                self.env_names = lits.0;
+            }
+            visit::visit_item_const(self, item);
+        }
+
+        fn visit_item_fn(&mut self, item: &'ast ItemFn) {
+            let target = match item.sig.ident.to_string().as_str() {
+                "over_ssh" => Some(&mut self.ssh_names),
+                "system_opener" => Some(&mut self.openers),
+                _ => None,
+            };
+            if let Some(target) = target {
+                let mut lits = Lits::default();
+                lits.visit_block(&item.block);
+                *target = lits.0;
+            }
+            visit::visit_item_fn(self, item);
         }
 
         fn visit_expr_call(&mut self, call: &'ast ExprCall) {
@@ -3724,6 +3764,51 @@ mod opener_item {
         if calls.programs != ["program"] {
             found.push(format!("program: {:?}", calls.programs));
         }
+        // The environment the opener is given is exactly this list, and nothing else is copied in.
+        let env_names = [
+            "HOME",
+            "PATH",
+            "LANG",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
+            "XDG_RUNTIME_DIR",
+            "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_TYPE",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "BROWSER",
+        ];
+        if calls.env_names != env_names {
+            found.push(format!("environment names: {:?}", calls.env_names));
+        }
+        if calls.absolute_checks != 1 {
+            found.push(format!("is_absolute checks: {}", calls.absolute_checks));
+        }
+        if calls.ssh_names != ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] {
+            found.push(format!("ssh names: {:?}", calls.ssh_names));
+        }
+        let programs = [
+            "/usr/bin/open",
+            "/usr/bin/xdg-open",
+            "/usr/local/bin/xdg-open",
+            "/bin/xdg-open",
+        ];
+        if calls.openers != programs {
+            found.push(format!("system openers: {:?}", calls.openers));
+        }
+        let launch = text
+            .split("pub(crate) fn launch")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .unwrap_or_default();
+        let skip = launch.find("if over_ssh() {");
+        let absolute = launch.find("Some(path) if path.is_absolute() => path.to_path_buf(),");
+        let run = launch.find("run(&program, url)");
+        if !matches!((skip, absolute, run), (Some(skip), Some(absolute), Some(run))
+            if skip < absolute && absolute < run)
+        {
+            found.push("launch: not skip, then absolute check, then run".to_owned());
+        }
         found
     }
 
@@ -3772,6 +3857,27 @@ mod opener_item {
                 "    command.arg(url);\n",
                 "    command.arg(url);\n    command.arg(\"-c\");\n",
             ),
+            (
+                "a name added to the environment list",
+                "    \"BROWSER\",\n];",
+                "    \"BROWSER\",\n    \"DUDES_TOKEN\",\n];",
+            ),
+            (
+                "the whole environment copied back in",
+                "    command.arg(url);\n",
+                "    for (key, value) in std::env::vars() {\n        command.env(key, value);\n    }\n    command.arg(url);\n",
+            ),
+            (
+                "a relative DUDES_OPENER admitted",
+                "Some(path) if path.is_absolute() => path.to_path_buf(),",
+                "Some(path) => path.to_path_buf(),",
+            ),
+            (
+                "the SSH skip removed",
+                "    if over_ssh() {",
+                "    if false {",
+            ),
+            ("an SSH name dropped", "\"SSH_CLIENT\", ", ""),
             (
                 "a signal to the opener",
                 "            Ok(None) => return Launch::Opened,\n",

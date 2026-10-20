@@ -158,17 +158,18 @@ export function adoptStoredFloorSession(store: SecretStore = browserSecretStore)
 }
 
 /**
- * Sign out. The daemon ends the session and closes its sockets; the page forgets the secret
- * whether or not the daemon could be asked, since a page that cannot reach the daemon cannot act
- * either.
+ * Sign out. The daemon ends the session and closes its sockets, and only then does the page forget
+ * the secret. An answer that the session is already unknown counts too. Anything else, including a
+ * daemon that cannot be reached, leaves the session and the secret as they were and returns
+ * `false`, so the page can say so instead of looking signed out while the session lives on.
  */
 export async function signOutFloorSession(
   session: FloorSession,
   fetch: FetchPort = floorFetch,
   store: SecretStore = browserSecretStore,
-): Promise<void> {
+): Promise<boolean> {
   try {
-    await fetch('/floor/session/end', {
+    const response = await fetch('/floor/session/end', {
       method: 'POST',
       body: '{}',
       credentials: 'same-origin',
@@ -176,8 +177,12 @@ export async function signOutFloorSession(
       referrerPolicy: 'no-referrer',
       headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': session.csrf },
     });
-  } catch {}
+    if (!response.ok && response.status !== 401) return false;
+  } catch {
+    return false;
+  }
   endFloorSession(store);
+  return true;
 }
 
 export async function establishFloorSession(): Promise<FloorSession | null> {

@@ -617,6 +617,44 @@ fn the_old_cookie_only_recovery_route_is_gone() {
 }
 
 #[test]
+fn a_stopping_gateway_does_not_call_a_cleared_session_unknown() {
+    let signed = signed_in();
+    let request = json_post(
+        SESSION_CHECK_PATH,
+        Some(&signed.cookie),
+        Some(&signed.secret),
+        b"{}",
+    );
+    assert_eq!(
+        drive(&request, &signed.sessions, &outside()).outcome,
+        Outcome::Status(200)
+    );
+
+    signed.sessions.invalidate();
+
+    assert_eq!(
+        drive(&request, &signed.sessions, &outside()).outcome,
+        Outcome::Status(503),
+        "a page that asks while the daemon stops must keep its secret"
+    );
+}
+
+#[test]
+fn where_the_owner_cannot_be_looked_up_sign_out_is_refused_and_the_check_is_served() {
+    let signed = signed_in();
+    let view_only = gate(SocketOwnerLookup::Unsupported);
+    let request = |path| json_post(path, Some(&signed.cookie), Some(&signed.secret), b"{}");
+    assert_eq!(
+        drive(&request(SESSION_END_PATH), &signed.sessions, &view_only).outcome,
+        Outcome::Status(403)
+    );
+    assert_eq!(
+        drive(&request(SESSION_CHECK_PATH), &signed.sessions, &view_only).outcome,
+        Outcome::Status(200)
+    );
+}
+
+#[test]
 fn where_the_owner_cannot_be_looked_up_the_floor_shows_and_does_not_act() {
     let signed = signed_in();
     let (cookie, secret) = (signed.cookie.as_str(), signed.secret.as_str());

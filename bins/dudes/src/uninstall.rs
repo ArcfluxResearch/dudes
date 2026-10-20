@@ -143,9 +143,11 @@ enum Removal {
     Launcher,
 }
 
-/// The word `install.sh` puts in every launcher it writes, so that one is told from a file or an
-/// app of the same name that is someone else's.
-const LAUNCHER_MARKER: &str = "DudesLauncher";
+/// The line `install.sh` writes into a desktop entry, and the line it writes into an app's
+/// `Info.plist`, so a launcher is told from a file or an app of the same name that is someone
+/// else's. Each must be a whole line, not a word somewhere in the file.
+const DESKTOP_MARKER: &str = "X-Dudes-Launcher=1";
+const PLIST_MARKER: &str = "<key>DudesLauncher</key><true/>";
 
 /// Where the launchers go, below the home directory: the macOS app and the Linux desktop entry.
 const LAUNCHERS: [&str; 2] = [
@@ -315,15 +317,17 @@ fn vet_directory(
 /// Why `path` is not a launcher `install.sh` wrote, or `None` when it is.
 fn launcher_problem(path: &Path) -> Option<String> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
-    let marked = if metadata.file_type().is_symlink() {
-        None
+    let (text, marker) = if metadata.file_type().is_symlink() {
+        (None, "")
     } else if metadata.is_dir() {
-        std::fs::read_to_string(path.join("Contents/Info.plist")).ok()
+        (
+            std::fs::read_to_string(path.join("Contents/Info.plist")).ok(),
+            PLIST_MARKER,
+        )
     } else {
-        std::fs::read_to_string(path).ok()
+        (std::fs::read_to_string(path).ok(), DESKTOP_MARKER)
     };
-    marked
-        .is_none_or(|text| !text.contains(LAUNCHER_MARKER))
+    text.is_none_or(|text| !text.lines().any(|line| line.trim() == marker))
         .then(|| "it is not the launcher install.sh writes".to_owned())
 }
 

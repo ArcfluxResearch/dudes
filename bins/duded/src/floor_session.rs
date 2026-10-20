@@ -931,6 +931,12 @@ impl FloorSessions {
         })
     }
 
+    /// Whether this run still honours sessions. Once it is stopping, an unknown session is not
+    /// news about the session, because every session was just cleared.
+    pub(crate) fn is_running(&self) -> bool {
+        self.0.valid.load(Ordering::Acquire)
+    }
+
     /// End this run's authority before its listener and connection owners are released.
     pub(crate) fn invalidate(&self) {
         let mut state = self.0.registry.lock();
