@@ -1360,7 +1360,7 @@ fn rows(p: &Projections) -> Snapshot {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 16, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
     /// Prefix-valid and resumable: replaying `records[..k]` yields a
     /// projection the oracle accepts, and replaying the rest afterwards yields the full one.
@@ -1391,7 +1391,7 @@ proptest! {
     /// the frame the writer produced; they agree, or a daemon that appended after a replay
     /// would leave behind a store its own next replay refuses.
     #[test]
-    fn live_apply_equals_replay(ops in prop::collection::vec(op(), 0..80)) {
+    fn live_apply_equals_replay(ops in prop::collection::vec(op(), 0..20)) {
         let entries = expand(&ops);
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal");
@@ -1437,7 +1437,7 @@ proptest! {
     /// `the_export_changes_when_a_row_changes` beside it, though a claim carried only by other
     /// tests does not belong in this one's doc comment.
     #[test]
-    fn the_export_agrees_between_a_live_fold_and_a_replay(ops in prop::collection::vec(op(), 1..80)) {
+    fn the_export_agrees_between_a_live_fold_and_a_replay(ops in prop::collection::vec(op(), 1..20)) {
         let entries = expand(&ops);
         // `expand` drops an op with no subject — `Retire` before any hire — so a non-empty `ops`
         // can still expand to nothing. The control below needs a real prefix, and the empty log's

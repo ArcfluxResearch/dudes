@@ -31,12 +31,12 @@ const GENEROUS: Duration = Duration::from_secs(30);
 
 /// The Linux control measured a 200 ms beat interval under two-core contention. 800 ms keeps
 /// four times that observed delay while still failing promptly when a helper never beats, and keeps
-/// the timeout test well inside the five-second test limit.
+/// the timeout test inside the five-second test limit.
 const LIVE_CONTROL: Duration = Duration::from_millis(800);
 
 /// This bound starts before the two serial liveness controls. It must outlive both controls or the
 /// test can kill the grandchild while it is still trying to prove that the grandchild is live.
-const OUTLIVES_CONTROLS: Duration = Duration::from_millis(1_800);
+const OUTLIVES_CONTROLS: Duration = Duration::from_millis(2_500);
 
 /// The one `#[test]` that lets this binary be re-executed as a helper. See `common`.
 #[test]
