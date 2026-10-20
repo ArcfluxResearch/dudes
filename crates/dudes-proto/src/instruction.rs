@@ -2272,7 +2272,7 @@ mod tests {
             assert_eq!(json["t"], name);
             assert_eq!(serde_json::from_value::<Record>(json).unwrap(), record);
         }
-        assert_eq!(crate::RecordKind::from_tag(86), None);
+        assert_eq!(crate::RecordKind::from_tag(87), None);
     }
 
     #[test]

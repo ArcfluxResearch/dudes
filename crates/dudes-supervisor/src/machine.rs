@@ -4276,8 +4276,8 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         isolation: input.isolation,
                         max_turns: None,
                         max_budget: None,
-                        trusted: false,
-                        worktree: None,
+                        trusted: input.worktree.is_some(),
+                        worktree: input.worktree,
                         mcp_servers: Vec::new(),
                         browser_onboarding: Some(Box::new(BrowserOnboardingHire {
                             attempt_id: input.attempt_id,
@@ -4285,6 +4285,7 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                             profile_id: input.profile_id,
                             session_digest: input.session_digest,
                             intended_goal,
+                            trust_lsn: input.trust_lsn,
                         })),
                     },
                     Then::Fold,
@@ -4349,6 +4350,20 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                     Then::Fold,
                 );
             }
+            Command::SetWorkspaceTrust {
+                workspace_id,
+                trusted,
+                repository,
+                pin,
+            } => self.persist(
+                Record::WorkspaceTrustSet {
+                    workspace_id,
+                    trusted,
+                    repository,
+                    pin,
+                },
+                Then::Fold,
+            ),
             Command::LeaseWorktree { origin, base, from } => {
                 // A ULID leads with its millisecond timestamp, and the branch name takes the first
                 // 12 hexadecimal characters of the identity, so two leases made in one millisecond

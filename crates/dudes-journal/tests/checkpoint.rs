@@ -181,6 +181,9 @@ fn placement(kind: RecordKind) -> Placement {
         RecordKind::MemoryCondenseModelAdmitted => At(45),
         // A Floor audit record: inert in every projection, like the admission audit above.
         RecordKind::FloorPeerRefused => At(46),
+        RecordKind::WorkspaceTrustSet => Placement::Out(
+            "inert in every journal projection; only the supervisor's world folds it, and its own tests replay it",
+        ),
         RecordKind::WorktreeLeased | RecordKind::WorktreeRemoved => Placement::Out(
             "the lease lifecycle needs its own agent and removal order; tests/worktrees.rs replays it with and without checkpoints",
         ),

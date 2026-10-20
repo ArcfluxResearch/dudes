@@ -65,6 +65,7 @@ mod secret;
 pub mod system;
 pub mod team;
 pub mod ticket;
+pub mod workspace;
 pub mod worktree;
 
 use std::fmt;
@@ -687,6 +688,9 @@ names! {
     "ticket.accept" => TicketAccept / ticket_accept : ticket::TicketAcceptParams => ticket::TicketAcceptResult;
     /// Stop work on a ticket and return it to To do. The running turn finishes by itself. Operator-only.
     "ticket.stop" => TicketStop / ticket_stop : ticket::TicketStopParams => Empty;
+    /// Trust or stop trusting an enrolled project, so the Floor may hire into its own copy there.
+    /// Operator-only.
+    "workspace.trust" => WorkspaceTrust / workspace_trust : workspace::TrustParams => workspace::TrustResult;
 }
 
 impl From<crate::record::ConditionedMethod> for Method {
@@ -878,9 +882,10 @@ mod tests {
     fn the_method_table_keeps_old_rows_and_appends_tickets() {
         assert_eq!(
             Method::ALL.len(),
-            51,
-            "agent.mcp stays at row 44; the ticket methods append rows 45 to 51"
+            52,
+            "agent.mcp stays at row 44; the ticket methods append rows 45 to 51, workspace.trust row 52"
         );
+        assert_eq!(Method::ALL[51], Method::WorkspaceTrust);
         assert_eq!(Method::ALL[44], Method::TicketCreate);
         assert_eq!(Method::ALL[48], Method::TicketRead);
         assert_eq!(Method::ALL[49], Method::TicketAccept);

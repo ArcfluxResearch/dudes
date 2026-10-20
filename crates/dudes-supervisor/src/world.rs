@@ -26,7 +26,7 @@ mod recovery;
 mod worktrees;
 
 pub use mcp::{McpGrant, McpHistoryError, McpPolicy};
-pub use worktrees::{WorktreeRow, WorktreeState};
+pub use worktrees::{TrustGrant, WorktreeRow, WorktreeState};
 
 use dudes_policy::{
     AgentInput, AnswerInput, Control, FloorInput, GoalInput, LoopInput, PredicateInput, WorkInput,
@@ -529,6 +529,9 @@ pub struct World {
     mail_wakes: mail_wakes::Fold,
     /// Every lease the journal holds, by id, removed ones included.
     pub worktrees: BTreeMap<WorktreeId, WorktreeRow>,
+    /// The projects the operator trusts, by project id: the latest `WorkspaceTrustSet` per id,
+    /// dropped once that record says `trusted: false`.
+    pub workspace_trust: BTreeMap<String, TrustGrant>,
 }
 
 /// Durable browser-note lifecycle, separate from legacy local steering.
@@ -1940,6 +1943,7 @@ impl World {
             Record::BudgetDecision { .. } => {} // history, read from the journal
             Record::MemoryCondenseModelAdmitted { .. } => {} // history, read from the journal
             Record::FloorPeerRefused { .. } => {} // audit only
+            Record::WorkspaceTrustSet { .. } => self.fold_workspace_trust(&entry.record, lsn),
             // The goal was installed above, through the one accessor every goal carrier shares.
             Record::GoalSet { .. } => {}
             // An edit changes words, not a card's status, so no board result it could hold moves.

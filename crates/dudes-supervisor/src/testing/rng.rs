@@ -441,6 +441,7 @@ mod tests {
             profile_id: "fixture".into(),
             session_digest: Hex32::new([3; 32]),
             intended_goal: goal,
+            trust_lsn: None,
         }));
         assert_record_floor(entries[0].record.clone());
     }

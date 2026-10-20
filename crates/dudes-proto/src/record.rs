@@ -177,6 +177,9 @@ pub struct BrowserOnboardingHire {
     pub session_digest: Hex32,
     /// Complete goal minted before the hire append.
     pub intended_goal: Goal,
+    /// The operator's project trust grant this hire used, when it worked in its own copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_lsn: Option<dudes_types::Lsn>,
 }
 
 /// Attribution of the later initial-goal append, which may use a new Floor session.
@@ -1807,6 +1810,23 @@ pub enum Record {
     RecoveryAuthorized(Box<crate::recovery::RecoveryAuthorized>),
     /// Durable closure of unused recovery consent on exact evidence.
     RecoveryInvalidated(crate::recovery::RecoveryInvalidated),
+    /// The operator trusted, or stopped trusting, one enrolled project. A trusted project lets the
+    /// Floor hire an agent into its own copy there while the repository still matches what the
+    /// operator vouched for. The latest record per project wins.
+    ///
+    /// An older reader must not skip it: a revocation it missed would leave a grant standing.
+    WorkspaceTrustSet {
+        /// The enrolled project.
+        workspace_id: String,
+        /// Whether the project is trusted from this record on.
+        trusted: bool,
+        /// Where the repository was and what identified it. Absent when `trusted` is false.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repository: Option<TrustedRepository>,
+        /// What the operator saw of the repository's settings. Absent when `trusted` is false.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pin: Option<TrustPin>,
+    },
     /// The Floor refused one request because the process on the other end of its connection
     /// could not be shown to be outside every agent. Audit only: it changes no projection.
     ///
@@ -1891,6 +1911,45 @@ pub enum FloorPeerRefusal {
     OtherUser,
     /// This platform cannot find the owner, so the Floor only shows.
     Unsupported,
+}
+
+/// A directory by device and inode, so a path swapped for another directory does not match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FileIdentity {
+    /// The device the directory is on.
+    pub device: u64,
+    /// The directory's inode.
+    pub inode: u64,
+}
+
+/// The repository an operator trusted, by name and by identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TrustedRepository {
+    /// The project's canonical directory when it was trusted.
+    pub directory: PathBuf,
+    /// That directory's identity.
+    pub directory_identity: FileIdentity,
+    /// The repository's git common directory.
+    pub common_dir: PathBuf,
+    /// That directory's identity.
+    pub common_identity: FileIdentity,
+}
+
+/// The repository settings an operator vouched for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TrustPin {
+    /// The git object id of `.claude/` at the origin's `HEAD`; absent when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_tree: Option<String>,
+    /// The git object id of `.mcp.json` at the origin's `HEAD`; absent when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_json: Option<String>,
+    /// SHA-256 of the common directory's `info/attributes`, or of nothing when it is absent.
+    #[schemars(with = "String")]
+    pub attributes: Hex32,
+    /// SHA-256 of the common directory's configuration entries, less `branch.` and `remote.`.
+    #[schemars(with = "String")]
+    pub config: Hex32,
 }
 
 /// Which agent tree, if any, the daemon independently resolved for a socket peer.
@@ -2106,6 +2165,7 @@ impl Record {
             Self::RecoveryAuthorized(_) => RecordKind::RecoveryAuthorized,
             Self::RecoveryInvalidated(_) => RecordKind::RecoveryInvalidated,
             Self::FloorPeerRefused { .. } => RecordKind::FloorPeerRefused,
+            Self::WorkspaceTrustSet { .. } => RecordKind::WorkspaceTrustSet,
         }
     }
 
@@ -2303,6 +2363,8 @@ pub enum RecordKind {
     RecoveryInvalidated = 84,
     /// [`Record::FloorPeerRefused`].
     FloorPeerRefused = 85,
+    /// [`Record::WorkspaceTrustSet`].
+    WorkspaceTrustSet = 86,
 }
 
 impl RecordKind {
@@ -2359,8 +2421,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 85] {
-        let mut kinds = [Self::AgentHired; 85];
+    const fn known_kinds() -> [Self; 86] {
+        let mut kinds = [Self::AgentHired; 86];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2405,6 +2467,7 @@ impl RecordKind {
         kinds[82] = Self::RecoveryAuthorized;
         kinds[83] = Self::RecoveryInvalidated;
         kinds[84] = Self::FloorPeerRefused;
+        kinds[85] = Self::WorkspaceTrustSet;
         kinds
     }
 
@@ -2434,6 +2497,7 @@ impl RecordKind {
                 | Self::MailWakeTurnDecided
                 | Self::MailWakeOnlyTurnIssued
                 | Self::AgentMcpServersChanged
+                | Self::WorkspaceTrustSet
                 | Self::McpLaunchGranted
                 | Self::TicketCreated
                 | Self::TicketEdited
@@ -3285,6 +3349,28 @@ pub mod samples {
                     },
                 })
             }
+            RecordKind::WorkspaceTrustSet => Record::WorkspaceTrustSet {
+                workspace_id: "project".to_owned(),
+                trusted: true,
+                repository: Some(TrustedRepository {
+                    directory: PathBuf::from("/repo"),
+                    directory_identity: FileIdentity {
+                        device: 1,
+                        inode: 2,
+                    },
+                    common_dir: PathBuf::from("/repo/.git"),
+                    common_identity: FileIdentity {
+                        device: 1,
+                        inode: 3,
+                    },
+                }),
+                pin: Some(TrustPin {
+                    claude_tree: None,
+                    mcp_json: None,
+                    attributes: Hex32::new([7; 32]),
+                    config: Hex32::new([8; 32]),
+                }),
+            },
             RecordKind::FloorPeerRefused => Record::FloorPeerRefused {
                 route: "/floor/answer".to_owned(),
                 agent: Some(agent()),
@@ -3701,7 +3787,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 85);
+        assert_eq!(RecordKind::KNOWN.len(), 86);
         for &kind in &RecordKind::KNOWN[46..66] {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys() {
@@ -4204,7 +4290,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            85,
+            86,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -4935,6 +5021,7 @@ mod tests {
                 profile_id: "repo_1".into(),
                 session_digest,
                 intended_goal: intended,
+                trust_lsn: None,
             }));
         }
         if let Record::GoalSet {
@@ -5202,8 +5289,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 85);
-        assert_eq!(RecordKind::from_tag(86), None);
+        assert_eq!(RecordKind::KNOWN.len(), 86);
+        assert_eq!(RecordKind::from_tag(87), None);
     }
 
     const TICKET_KINDS: [(RecordKind, u16); 5] = [
@@ -5536,6 +5623,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(86), None);
+        assert_eq!(RecordKind::from_tag(87), None);
     }
 }

@@ -883,6 +883,17 @@ pub enum Command {
         /// The lease this one is based on.
         from: Option<dudes_types::WorktreeId>,
     },
+    /// Record that the operator trusts, or stops trusting, one enrolled project.
+    SetWorkspaceTrust {
+        /// The enrolled project.
+        workspace_id: String,
+        /// Whether it is trusted from now on.
+        trusted: bool,
+        /// The repository vouched for. Absent when `trusted` is false.
+        repository: Option<dudes_proto::record::TrustedRepository>,
+        /// The settings vouched for. Absent when `trusted` is false.
+        pin: Option<dudes_proto::record::TrustPin>,
+    },
     /// End a lease whose tree is gone. Ignored unless the lease's state allows it:
     /// `NeverAssigned` only while pending, `Operator` only once released.
     RemoveWorktree {
@@ -1193,6 +1204,10 @@ pub struct BrowserOnboardHire {
     pub workspace_label: String,
     /// Digest of the admitting Floor session.
     pub session_digest: Hex32,
+    /// The lease the agent works in, when it asked for its own copy of the project.
+    pub worktree: Option<dudes_types::WorktreeId>,
+    /// The project trust grant that admitted a hire into a copy.
+    pub trust_lsn: Option<Lsn>,
 }
 
 impl std::fmt::Debug for BrowserOnboardHire {

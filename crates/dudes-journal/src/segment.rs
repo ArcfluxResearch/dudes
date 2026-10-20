@@ -532,6 +532,7 @@ mod tests {
             | Record::BudgetDecision { .. }
             | Record::MemoryCondenseModelAdmitted { .. }
             | Record::FloorPeerRefused { .. }
+            | Record::WorkspaceTrustSet { .. }
             | Record::BreakerBeat { .. }
             | Record::CardCreated { .. }
             | Record::CardTransition { .. }

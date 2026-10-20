@@ -504,3 +504,47 @@ fn a_resumed_agent_is_not_held_again_at_its_next_turn_end() {
         "the agent is not held now"
     );
 }
+
+fn set_trust(harness: &mut Harness, trusted: bool) {
+    use dudes_proto::record::{FileIdentity, TrustPin, TrustedRepository};
+    let identity = FileIdentity {
+        device: 1,
+        inode: 2,
+    };
+    harness.drive(Input::Command(Command::SetWorkspaceTrust {
+        workspace_id: "repo".into(),
+        trusted,
+        repository: trusted.then(|| TrustedRepository {
+            directory: PathBuf::from("/repo"),
+            directory_identity: identity,
+            common_dir: PathBuf::from("/repo/.git"),
+            common_identity: identity,
+        }),
+        pin: trusted.then(|| TrustPin {
+            claude_tree: None,
+            mcp_json: None,
+            attributes: Hex32::new([1; 32]),
+            config: Hex32::new([2; 32]),
+        }),
+    }));
+}
+
+#[test]
+fn the_latest_trust_record_wins_and_a_restart_keeps_it() {
+    let mut harness = Harness::new();
+    assert!(harness.supervisor.world().workspace_trust.is_empty());
+    set_trust(&mut harness, true);
+    let first = harness.supervisor.world().workspace_trust["repo"].lsn;
+    set_trust(&mut harness, true);
+    let second = harness.supervisor.world().workspace_trust["repo"].lsn;
+    assert!(second > first, "a new grant replaces the old one");
+    harness.restart();
+    assert_eq!(harness.supervisor.world().workspace_trust["repo"].lsn, second);
+    set_trust(&mut harness, false);
+    assert!(harness.supervisor.world().workspace_trust.is_empty());
+    harness.restart();
+    assert!(
+        harness.supervisor.world().workspace_trust.is_empty(),
+        "a revocation survives a restart"
+    );
+}

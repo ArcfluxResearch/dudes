@@ -694,6 +694,17 @@
         "session_digest": {
           "description": "Digest of the Floor session that admitted the hire.",
           "type": "string"
+        },
+        "trust_lsn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lsn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The operator's project trust grant this hire used, when it worked in its own copy."
         }
       },
       "required": [
@@ -1614,6 +1625,28 @@
           "type": "null"
         }
       ]
+    },
+    "FileIdentity": {
+      "description": "A directory by device and inode, so a path swapped for another directory does not match.",
+      "properties": {
+        "device": {
+          "description": "The device the directory is on.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inode": {
+          "description": "The directory's inode.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "device",
+        "inode"
+      ],
+      "type": "object"
     },
     "FloorPeerRefusal": {
       "description": "Why the Floor refused a request on the strength of its connection's owner.",
@@ -6515,6 +6548,66 @@
       "minimum": 0,
       "type": "integer"
     },
+    "TrustPin": {
+      "description": "The repository settings an operator vouched for.",
+      "properties": {
+        "attributes": {
+          "description": "SHA-256 of the common directory's `info/attributes`, or of nothing when it is absent.",
+          "type": "string"
+        },
+        "claude_tree": {
+          "description": "The git object id of `.claude/` at the origin's `HEAD`; absent when there is none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "config": {
+          "description": "SHA-256 of the common directory's configuration entries, less `branch.` and `remote.`.",
+          "type": "string"
+        },
+        "mcp_json": {
+          "description": "The git object id of `.mcp.json` at the origin's `HEAD`; absent when there is none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "attributes",
+        "config"
+      ],
+      "type": "object"
+    },
+    "TrustedRepository": {
+      "description": "The repository an operator trusted, by name and by identity.",
+      "properties": {
+        "common_dir": {
+          "description": "The repository's git common directory.",
+          "type": "string"
+        },
+        "common_identity": {
+          "$ref": "#/$defs/FileIdentity",
+          "description": "That directory's identity."
+        },
+        "directory": {
+          "description": "The project's canonical directory when it was trusted.",
+          "type": "string"
+        },
+        "directory_identity": {
+          "$ref": "#/$defs/FileIdentity",
+          "description": "That directory's identity."
+        }
+      },
+      "required": [
+        "directory",
+        "directory_identity",
+        "common_dir",
+        "common_identity"
+      ],
+      "type": "object"
+    },
     "TurnId": {
       "description": "TurnId: a ULID (26 characters of Crockford base32).",
       "maxLength": 26,
@@ -10248,6 +10341,51 @@
         "t",
         "claim",
         "evidence"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The operator trusted, or stopped trusting, one enrolled project. A trusted project lets the\nFloor hire an agent into its own copy there while the repository still matches what the\noperator vouched for. The latest record per project wins.\n\nAn older reader must not skip it: a revocation it missed would leave a grant standing.",
+      "properties": {
+        "pin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrustPin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the operator saw of the repository's settings. Absent when `trusted` is false."
+        },
+        "repository": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrustedRepository"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where the repository was and what identified it. Absent when `trusted` is false."
+        },
+        "t": {
+          "const": "workspace_trust_set",
+          "type": "string"
+        },
+        "trusted": {
+          "description": "Whether the project is trusted from this record on.",
+          "type": "boolean"
+        },
+        "workspace_id": {
+          "description": "The enrolled project.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "workspace_id",
+        "trusted"
       ],
       "type": "object"
     },
