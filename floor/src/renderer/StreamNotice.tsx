@@ -4,15 +4,26 @@ import { useSyncExternalStore } from 'react';
 import type { FloorState } from './floor/store.ts';
 import { getProofState, subscribeToProof } from '../proof.ts';
 import { getAway, subscribeToAway } from './floor/away.ts';
-import { getStreamRetry, subscribeToStreamRetry, STALE_AFTER_MS } from './floor/stream.ts';
-import { SignInExpired } from './SignInExpired.tsx';
+import { getStreamRetry, refreshFloorSnapshot, subscribeToStreamRetry, STALE_AFTER_MS } from './floor/stream.ts';
+import { OpenCommand, SignInExpired } from './SignInExpired.tsx';
+
+/** The one action a connection notice offers: ask the page's stream to try again now. */
+function Reconnect() {
+  return <button type="button" className="notice-action" onClick={() => refreshFloorSnapshot()}>Reconnect</button>;
+}
+
+/** The line a sheet over the page draws when the stream is not confirmed, since the notice behind it is covered. */
+export function NotConnected() {
+  return <p className="stream-state" role="alert">Not connected to Dudes, so this may be out of date. <Reconnect /></p>;
+}
 
 export function StreamNotice({ floor }: { readonly floor: FloorState }) {
   const retry = useSyncExternalStore(subscribeToStreamRetry, getStreamRetry, getStreamRetry);
   const away = useSyncExternalStore(subscribeToAway, getAway, getAway);
   const proof = useSyncExternalStore(subscribeToProof, getProofState, getProofState);
   if (proof === 'refused') return <p className="office-closed stream-notice" role="alert">
-    This page can't confirm it's talking to your Dudes, so it sent nothing. Open Dudes again to continue.
+    Dudes stopped, or restarted without this sign-in. Run <OpenCommand /> for a new link, or press <Reconnect /> if
+    Dudes is back.
   </p>;
   if (away.kind === 'watching') return <p className="office-closed stream-notice" role="status">
     Dudes stopped answering. This page keeps checking and will ask you to reload when it is back.
@@ -26,21 +37,14 @@ export function StreamNotice({ floor }: { readonly floor: FloorState }) {
   </p>;
   if (away.kind === 'expired') return <SignInExpired />;
   if (floor.phase === 'closed') return <p className="office-closed stream-notice" role="status">
-    Disconnected. The page is not retrying{retry.attempt > 0 ? ` after ${retry.attempt} reconnect attempts` : ''}.
-    {' '}The session may have ended or the daemon may have stopped. After a daemon restart, open Dudes to sign in
-    {' '}again.
-    {' '}A reload would drop a Hire or an answer this page is holding.
+    Dudes stopped. Start it again with <OpenCommand />, then press <Reconnect />
   </p>;
   if (floor.phase === 'resyncing') return <p className="office-stale stream-notice" role="status">
-    The stream disconnected or requested a fresh snapshot. {retry.delayMs === null
-      ? 'The page is connecting and waiting for a snapshot.'
-      : `The page is retrying. Reconnect attempt ${retry.attempt} starts after ${retry.delayMs} ms.`}
-    {' '}Wait for the snapshot. After a daemon restart, open Dudes to sign in again.
+    {retry.attempt > 0 ? `Reconnecting to Dudes (attempt ${retry.attempt}).` : 'Connecting to Dudes.'}
   </p>;
   if (floor.phase === 'live' && floor.stale) return <p className="office-stale stream-notice" role="status">
-    View unconfirmed. Nothing received for {Math.round(STALE_AFTER_MS / 1000)} seconds or more.
-    {' '}The connection is still open. The page is waiting for a frame and is not retrying.
-    {' '}If the daemon restarted, open Dudes to sign in again.
+    Nothing has come from Dudes for {Math.round(STALE_AFTER_MS / 1000)} seconds, so what you see may be out of date.
+    {' '}<Reconnect />
   </p>;
   if (floor.phase === 'connecting' || floor.snapshotEpoch !== floor.epoch) return <p className="stream-notice" role="status">
     Connecting. Waiting for the first snapshot from the daemon.

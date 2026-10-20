@@ -11,6 +11,7 @@ import { journalPosition } from './format.ts';
 import { closesPanel, handFocusOnLeave, restoreFocusAfterDialog } from './focus.ts';
 import { StreamReadStatus } from './ReadError.tsx';
 import type { FloorState } from './floor/store.ts';
+import { NotConnected } from './StreamNotice.tsx';
 import { waitingOnYou } from './questions.ts';
 import type { WaitingItem } from './questions.ts';
 import { fieldsOf } from './scene/label.ts';
@@ -296,7 +297,7 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
         {showing ? <><header className="ticket-dialog-head"><p>{overlay?.kind === 'new' ? 'New ticket' : 'Ticket review'}</p>
           <button type="button" className="ticket-dialog-close" aria-label="Close ticket dialog" onClick={closeOverlay}>×</button>
         </header>
-        {viewConfirmed(floor) ? null : <p className="stream-state" role="alert">View unconfirmed — waiting for the stream</p>}
+        {viewConfirmed(floor) ? null : <NotConnected />}
         {overlay?.kind === 'new' ? <div className="ticket-composer"><h3>New ticket</h3>
           <p>Tell an agent what you want to happen.</p><TicketNotice card={null} floor={floor} />
           {floor.ticket ? null : <TicketOffHint floor={floor} />}

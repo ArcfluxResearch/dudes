@@ -98,6 +98,8 @@ const IDLE: LoginChannel = Object.freeze({ phase: 'idle' });
 
 let state: LoginChannel = IDLE;
 let live: Live | null = null;
+/** A screen that was drawn before the channel existed, which the channel takes when it opens. */
+let waiting: LoginScreen | null = null;
 let nextId = 1;
 const listeners = new Set<() => void>();
 
@@ -116,6 +118,7 @@ export function subscribeToLogin(listener: () => void): () => void {
 export function resetLogin(): void {
   live?.socket.close();
   live = null;
+  waiting = null;
   state = IDLE;
   listeners.clear();
 }
@@ -167,7 +170,8 @@ function openChannel(id: number, engine: LoginEngine, csrf: string, ports: Login
     commit({ phase: 'ended', id, engine, ending: 'unopened' });
     return;
   }
-  const channel: Live = { socket, open: false, screen: null, told: null };
+  const channel: Live = { socket, open: false, screen: waiting, told: null };
+  waiting = null;
   live = channel;
   commit({ phase: 'opening', id, engine });
   socket.addEventListener('open', () => {
@@ -187,7 +191,14 @@ function openChannel(id: number, engine: LoginEngine, csrf: string, ports: Login
 /** Draw the open channel into `screen`. The returned function lets it go again, unless a newer view took its place. */
 export function bindLoginScreen(screen: LoginScreen): () => void {
   const channel = live;
-  if (channel === null) return () => {};
+  if (channel === null) {
+    // The terminal's code is cached after the first sign-in, so a view can be ready before the daemon is proved.
+    waiting = screen;
+    return () => {
+      if (waiting === screen) waiting = null;
+      if (live?.screen === screen) live.screen = null;
+    };
+  }
   channel.screen = screen;
   requestStart(channel);
   return () => {

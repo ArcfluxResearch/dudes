@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
-import test, { after, before, beforeEach } from 'node:test';
+import test, { after, before, beforeEach, mock } from 'node:test';
 
 import { act, createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -83,7 +83,7 @@ function held() {
 
 function region() {
   const html = renderToStaticMarkup(createElement(WebFloorShell));
-  return html.match(/(?<=<\/div>)<div class="done-notices"[\s\S]*?<\/div>(?=<div class="stage-center">)/)?.[0] ?? null;
+  return html.match(/<div class="done-notices"[\s\S]*?<\/div>(?=<\/div><\/header>)/)?.[0] ?? null;
 }
 
 function handoffs(html) {
@@ -303,4 +303,27 @@ test("two notices for one agent name each goal in their Dismiss", () => {
     'Dismiss the Done notice for Ada: Ship the release notes',
     'Dismiss the Done notice for Ada: Write the changelog',
   ]);
+});
+
+test('a Done notice goes by itself after a few seconds, but not while someone holds focus inside it', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  const page = fakePage();
+  try {
+    snapshot([agent(ADA, 'Ada', goal(NOTES, 'Ship the release notes', 'in_progress'))], 10);
+    delta(11, [agent(ADA, 'Ada', goal(NOTES, 'Ship the release notes', 'achieved'))]);
+    const { createRoot } = await import('react-dom/client');
+    const root = createRoot(page.host);
+    await act(() => root.render(createElement(DoneNotices, { notices: store.getFloorState().doneNotices, leaveFocusTo: 'crew-toggle' })));
+    const dismiss = page.document.getElementById(`done-dismiss-${ADA}-${NOTES}`);
+    dismiss.focus();
+    mock.timers.tick(30_000);
+    assert.equal(store.getFloorState().doneNotices.length, 1, 'a notice someone is about to press stays');
+    page.document.activeElement = page.document.body;
+    mock.timers.tick(8_000);
+    assert.equal(store.getFloorState().doneNotices.length, 0, 'an unattended notice goes after its few seconds');
+    await act(() => root.unmount());
+  } finally {
+    page.restore();
+    mock.timers.reset();
+  }
 });

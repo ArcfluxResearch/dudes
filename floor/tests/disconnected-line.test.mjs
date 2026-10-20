@@ -85,12 +85,12 @@ test('a shared disconnected notice appears only when the stream is closed', () =
 
 test('a closed stale view shows the ended-session notice without a stale waiting notice', () => {
   const closed = notice('closed', true);
-  assert.match(closed, /Disconnected/);
+  assert.match(closed, /Dudes stopped\./);
   assert.doesNotMatch(closed, /office-stale|View unconfirmed/);
-  assert.match(notice('live', true), /View unconfirmed/);
+  assert.match(notice('live', true), /Nothing has come from Dudes/);
 });
 
-test('the closed notice names the attempts actually spent rather than a static maximum', () => {
+test('the reconnecting notice names the attempts actually spent rather than a static maximum', () => {
   store.resetFloorStore();
   const sockets = [];
   let scheduled;
@@ -105,8 +105,8 @@ test('the closed notice names the attempts actually spent rather than a static m
   scheduled();
   sockets[1].emit('close');
   dispose();
-  assert.match(notice('closed'), /after 2 reconnect attempts/);
-  assert.doesNotMatch(notice('closed'), /after 5 reconnect attempts/);
+  assert.match(notice('resyncing'), /attempt 2\)/);
+  assert.doesNotMatch(notice('resyncing'), /attempt 5/);
 });
 
 test('the disconnected line reads against the page at the brief threshold', async () => {
@@ -137,11 +137,12 @@ test('all three lines below the floor are on the same footing', async () => {
   }
 });
 
-test('the closed notice says to open Dudes and warns about held drafts', async () => {
+test('the closed notice says how to start Dudes again and offers one Reconnect', async () => {
   const closed = notice('closed');
-  assert.match(closed, /After a daemon restart, open Dudes to sign in again/);
+  assert.match(closed, /Start it again with <span class="open-command"><code>dudes open<\/code>/);
   assert.doesNotMatch(closed, /dudes floor open/);
-  assert.match(closed, /A reload would drop a Hire or an answer this page is holding/);
+  assert.equal((closed.match(/<button/g) ?? []).length, 2, 'Copy for the command and Reconnect, and no other action');
+  assert.match(closed, /<button type="button" class="notice-action">Reconnect<\/button>/);
   assert.doesNotMatch(notice('live'), /office-closed/);
   const root = resolve(import.meta.dirname, '..');
   const saying = [];

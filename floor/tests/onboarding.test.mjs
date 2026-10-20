@@ -781,7 +781,7 @@ test('a second Hire is refused while the first is in flight', async () => {
   assert.equal(net.calls.length, 1, 'a Hire after an answer, without Hire another, sent again');
 });
 
-test('only complete shows success, with the real AgentId and GoalId, and it selects that agent', async () => {
+test('only complete shows success, with the real AgentId and GoalId, and the shell shows it without opening it', async () => {
   subscribe();
   const net = daemon(COMPLETE);
   const askedAt = getFloorState().epoch;
@@ -804,7 +804,8 @@ test('only complete shows success, with the real AgentId and GoalId, and it sele
   const wizard = await readFile(resolve(root, 'src/renderer/onboarding/HireWizard.tsx'), 'utf8');
   const shell = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');
   assert.doesNotMatch(wizard, /markRevealed/);
-  assert.match(shell, /markRevealed\(reveal\);\s*selectAgent\(reveal\);/);
+  assert.match(shell, /markRevealed\(reveal\);\s*if \(hire\.outcome\?\.kind === 'complete'\)/);
+  assert.doesNotMatch(shell, /selectAgent\(reveal\)/, 'a new agent fills a phone screen and scrolls the bar away');
   assert.match(shell, /useSyncExternalStore\(subscribeToHire, getHireState, getHireState\)/);
 });
 

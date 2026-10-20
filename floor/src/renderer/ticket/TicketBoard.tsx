@@ -21,6 +21,7 @@ import { titleOf } from '../setup/nextStep.ts';
 import type { FirstTaskAgent } from '../setup/nextStep.ts';
 import { agentWithoutProjectSentence, otherStateName, stateName } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
+import { NotConnected } from '../StreamNotice.tsx';
 
 const NOTICE_SECONDS = 8;
 
@@ -87,10 +88,11 @@ export function TicketNotice({ card, floor }: { readonly card?: string | null; r
     return () => clearTimeout(timer);
   }, [notice]);
   if (notice === null) return null;
-  return <p className="ticket-notice" data-tone={notice.tone} role="status">
+  // The slot takes no room in the sheet; the notice hangs from its top edge, so it never moves what is below.
+  return <div className="ticket-notice-slot"><p className="ticket-notice" data-tone={notice.tone} role="status">
     {notice.text}{' '}
     <button type="button" className="ticket-dismiss" onClick={() => dismissNotice(notice)}>Dismiss</button>
-  </p>;
+  </p></div>;
 }
 
 /** The first task: a sentence, one Start, and the ticket is made and given in the same step. */
@@ -270,7 +272,7 @@ export function TicketBoard({ floor, selectedId, onSelect, forming = false, onNe
   const draw = (card: CardRow) => <TicketCard key={card.id} floor={floor} card={card} selected={card.id === selectedId}
     selectable={selectable} onSelect={onSelect} />;
   return <div className="board-view ticket-board">
-    {selectable ? null : <p className="stream-state" role="alert">View unconfirmed — waiting for the stream</p>}
+    {selectable ? null : <NotConnected />}
     {opened ? null : <TicketNotice floor={floor} />}
     {floor.ticket ? <section className="ticket-new" aria-label="New ticket">
       <button type="button" className="ticket-new-toggle" aria-expanded={forming} disabled={!ticketActionsOpen(floor)}

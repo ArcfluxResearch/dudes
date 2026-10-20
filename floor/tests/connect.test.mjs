@@ -279,10 +279,11 @@ test('a link refused for a different build says so, keeps the page, and a matchi
   assert.equal(entry.pastedLinkBuildMismatch(), false);
 });
 
-const USED = 'This sign-in link did not work\. A link works once, for 60 seconds\. Open Dudes for a new one\.';
-const NO_LINK = 'The sign-in link in the address of this page is not a Dudes sign-in link\. Open Dudes to sign in\.';
+const OPEN = '<span class="open-command"><code>dudes open</code><button type="button" class="open-command-copy">Copy</button></span>';
+const USED = `This sign-in link did not work\\. A link works once, for 60 seconds\\. To get a new one, run ${OPEN} in a terminal\\.`;
+const NO_LINK = `The sign-in link in the address of this page is not a Dudes sign-in link\\. To sign in, run ${OPEN} in a terminal\\.`;
 const EXPIRED = 'You are signed out of this Floor\. That happens after a day without use, after 30 days, when you sign out, or when Dudes restarts and cannot keep sign-ins\. '
-  + 'Open Dudes to sign in again\.';
+  + `To sign in again, run ${OPEN} in a terminal\\.`;
 
 test('a refused first link leads with the used-or-expired line, names no secret, and a session taken since clears it', async () => {
   const session = await server.ssrLoadModule('/src/session.ts');
@@ -381,4 +382,17 @@ test('a page that holds no secret says the sign-in expired instead of Disconnect
   assert.match(html, new RegExp(`<p class="link-refused" role="alert">${EXPIRED}</p>`));
   assert.doesNotMatch(html, /Disconnected/);
   assert.doesNotMatch(html, /no sign-in link/);
+});
+
+test('a fresh link opened in a page that waits for a reload says to reload, and a reload forgets it', async () => {
+  const entry = await server.ssrLoadModule('/src/connect.ts');
+  const { PastedLinkNotice } = await server.ssrLoadModule('/src/shell.tsx');
+  entry.resetPastedLink();
+  const notice = () => renderToStaticMarkup(createElement(PastedLinkNotice));
+  assert.equal(notice(), '');
+  entry.noteLinkWaitsForReload();
+  assert.match(notice(), /Reload this page to use the new link/);
+  assert.match(notice(), /<button[^>]*>Reload<\/button>/);
+  entry.resetPastedLink();
+  assert.equal(notice(), '');
 });

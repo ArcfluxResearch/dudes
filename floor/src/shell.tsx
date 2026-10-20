@@ -2,7 +2,9 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 
 import { currentFloorSession, signOutFloorSession } from './session';
-import { firstLinkProblem, pastedLinkBuildMismatch, pastedLinkRefused, subscribeToPastedLink } from './connect';
+import {
+  firstLinkProblem, pastedLinkBuildMismatch, pastedLinkRefused, pastedLinkWaitsForReload, subscribeToPastedLink,
+} from './connect';
 import { AgentDrawer, Receipts } from './renderer/AgentDrawer';
 import { CONTROL_VIEWS, Control, ControlNav, FocusRoster, toggledView, viewButtonId } from './renderer/Control';
 import type { ControlView } from './renderer/Control';
@@ -31,7 +33,7 @@ import { ClosingTimeBanner } from './renderer/ClosingTimeBanner';
 import { TicketBanner } from './renderer/ticket/TicketBanner';
 import { useDesktopNotifications } from './renderer/useDesktopNotifications';
 import { requestCardSelection } from './renderer/BoardPanel';
-import { SignInExpired } from './renderer/SignInExpired';
+import { OpenCommand, SignInExpired } from './renderer/SignInExpired';
 import { StreamNotice } from './renderer/StreamNotice';
 import './failure.css';
 import {
@@ -39,6 +41,10 @@ import {
   focusAgentId, isFocusShortcut, keyboardSidebarWidth, pointerSidebarWidth,
   readViewPreferences, rememberGuideClosed, toggleTheme, writeViewPreferences,
 } from './renderer/view';
+
+function reloadPage(): void {
+  window.location.reload();
+}
 
 /**
  * Said when the link this page was opened with, or one pasted into it, was
@@ -53,17 +59,27 @@ export function PastedLinkNotice() {
   const first = useSyncExternalStore(subscribeToPastedLink, firstLinkProblem, firstLinkProblem);
   const refused = useSyncExternalStore(subscribeToPastedLink, pastedLinkRefused, pastedLinkRefused);
   const buildMismatch = useSyncExternalStore(subscribeToPastedLink, pastedLinkBuildMismatch, pastedLinkBuildMismatch);
+  const waiting = useSyncExternalStore(subscribeToPastedLink, pastedLinkWaitsForReload, pastedLinkWaitsForReload);
+  if (waiting) {
+    return (
+      <p className="link-refused" role="alert">
+        A new sign-in link was opened in this tab. Reload this page to use the new link. A reload drops anything
+        you have typed but not sent. <button type="button" className="notice-action"
+          onClick={reloadPage}>Reload</button>
+      </p>
+    );
+  }
   if (first === 'refused') {
     return (
       <p className="link-refused" role="alert">
-        This sign-in link did not work. A link works once, for 60 seconds. Open Dudes for a new one.
+        This sign-in link did not work. A link works once, for 60 seconds. To get a new one, run <OpenCommand /> in a terminal.
       </p>
     );
   }
   if (first === 'missing') {
     return (
       <p className="link-refused" role="alert">
-        The sign-in link in the address of this page is not a Dudes sign-in link. Open Dudes to sign in.
+        The sign-in link in the address of this page is not a Dudes sign-in link. To sign in, run <OpenCommand /> in a terminal.
       </p>
     );
   }
@@ -81,7 +97,7 @@ export function PastedLinkNotice() {
   return (
     <p className="link-refused" role="alert">
       The Floor link pasted into this tab was refused, or the daemon could not be reached to take it. This page is
-      as it was and keeps what it holds. Open Dudes for a new sign-in.
+      as it was and keeps what it holds. For a new sign-in, run <OpenCommand /> in a terminal.
     </p>
   );
 }
@@ -156,12 +172,12 @@ function SignedInShell() {
     else { setFocused(false); setView(null); setCrewOpen(true); openQuestion(target.id); }
   });
 
+  // A new agent shows in Crew and the office but is not opened: its drawer would fill a phone screen and push the bar away.
   useEffect(() => {
     if (reveal === null) return;
     markRevealed(reveal);
-    selectAgent(reveal);
     if (hire.outcome?.kind === 'complete') {
-      closeHire(true);
+      closeHire();
       setGuide('closed');
       setFocused(false);
       setArchiveHireKept(false);
@@ -293,7 +309,7 @@ function SignedInShell() {
     if (!hiring) return;
     const dialog = hireDialog.current;
     dialog?.showModal();
-    dialog?.querySelector<HTMLElement>('#hire-title')?.focus();
+    (dialog?.querySelector<HTMLElement>('#hire-name') ?? dialog?.querySelector<HTMLElement>('#hire-title'))?.focus();
   }, [hiring]);
 
   function clearSelection(): void {
@@ -359,7 +375,7 @@ function SignedInShell() {
 
   return (
     <main className="shell" aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
-      data-theme={preferences.theme} style={{ '--side-width': `${preferences.sidebarWidth}px` } as CSSProperties}>
+      data-theme={preferences.theme} data-scheme={effectiveTheme} style={{ '--side-width': `${preferences.sidebarWidth}px` } as CSSProperties}>
       <header className="top-bar">
         <h1 id="floor-title" className="wordmark">dudes</h1>
         <CrewStats agents={floor.agents} cards={floor.cards} statuses={focused} />
@@ -382,13 +398,16 @@ function SignedInShell() {
           </button>
           <button type="button" className="sign-out" onClick={signOut}>Sign out</button>
         </div>
-        <PastedLinkNotice />
-        {signOutFailed ? <p className="link-refused" role="alert">Could not sign out. Try again.</p> : null}
-        <JournalStoppedBanner stopped={floor.journalStopped} />
-        <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
-        {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
-        <StreamNotice floor={floor} />
         <div className="office-bar" ref={setOfficeBar} />
+        <div className="notice-area">
+          <PastedLinkNotice />
+          {signOutFailed ? <p className="link-refused" role="alert">Could not sign out. Try again.</p> : null}
+          <JournalStoppedBanner stopped={floor.journalStopped} />
+          <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
+          {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
+          <StreamNotice floor={floor} />
+          <DoneNotices notices={floor.doneNotices} leaveFocusTo={home} />
+        </div>
       </header>
       <div className="floor-stage"
         onKeyDown={(event) => { if (closesDrawer(event, drawerOpen)) { event.stopPropagation(); clearSelection(); } }}>
@@ -410,7 +429,6 @@ function SignedInShell() {
             selectable={selectable} stale={floor.stale} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
             onOpenTicket={openCard} />}
         </div>
-        <DoneNotices notices={floor.doneNotices} leaveFocusTo={home} />
         <div className="stage-center">
           <TerminalPanel floor={floor} theme={effectiveTheme} />
         </div>

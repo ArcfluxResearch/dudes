@@ -1,12 +1,10 @@
 :root {
   --layer-panels: 1;
-  --layer-done-notices: 2;
   --layer-terminal: 1;
   --layer-hire-wizard: 3;
   --layer-top-bar: 4;
   --layer-expanded-terminal: 2;
   --hire-wizard-width: 38rem;
-  --done-notices-inset: 1rem;
   --ink: #2a2520;
   --accent-ink: #2a6150;
   --on-accent: #fbf6ea;
@@ -274,8 +272,7 @@ samp,
   margin-left: auto;
 }
 
-.top-bar > .link-refused,
-.top-bar > .stream-notice {
+.shell-signed-out .top-bar > .link-refused {
   flex: 0 0 100%;
   margin: 0;
 }
@@ -365,7 +362,6 @@ samp,
 }
 
 .floor-stage:has(.control-panel[data-view='board']) {
-  --notice-row: 2.75rem;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
@@ -507,166 +503,24 @@ samp,
   pointer-events: auto;
 }
 
-.floor-stage > .done-notices {
-  position: relative;
-  inset: auto;
-  z-index: var(--layer-done-notices);
-  display: flex;
-  grid-row: 1;
-  grid-column: 1 / -1;
-  justify-content: center;
-  min-width: 0;
-  padding: 0.6rem;
-  box-sizing: border-box;
-}
-
-/* A fixed notice row keeps arrivals and dismissals from resizing the terminal. */
-.floor-stage:has(.terminal-panel) {
-  --notice-row: 2.75rem;
-  grid-template-rows: var(--notice-row) minmax(0, 1fr);
-}
-
-.floor-stage:has(.terminal-panel) > * {
-  grid-row: 2 / -1;
-}
-
 .floor-stage:has(.terminal-panel) > .stage-center {
   grid-row: 2;
 }
 
-.floor-stage:has(.terminal-panel) > .done-notices,
-.floor-stage:has(.control-panel[data-view='board']) > .done-notices {
-  position: relative;
-  inset: auto;
-  display: flex;
-  grid-row: 1;
-  grid-column: 1 / -1;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  width: auto;
-  height: var(--notice-row);
-  min-width: 0;
-  padding: 0 0.6rem;
-  box-sizing: border-box;
-  transform: none;
-  container: done-row / inline-size;
-}
-
-.floor-stage:not(:has(.terminal-panel)):not(:has(.control-panel[data-view='board'])) .done-notices ol {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-
-.floor-stage:not(:has(.terminal-panel)):not(:has(.control-panel[data-view='board'])) .done-notice {
-  flex: 1 1 16rem;
-  max-width: 22rem;
-}
-
-.done-notices-more {
-  display: none;
-  margin: 0;
-  color: var(--muted-ink);
-  font-size: 0.8rem;
-  white-space: nowrap;
-}
-
-.done-notices-more-label {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-}
-
-@container done-row (width >= 12rem) {
-  .done-notices ol {
-    display: flex;
-    min-width: 0;
-    max-height: none;
-    padding: 0;
-    overflow: visible;
-  }
-
-  .done-notices .done-notice:not(:last-child) {
-    display: none;
-  }
-
-  .done-notices .done-notice {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    min-width: 0;
-    padding: 0.15rem 0.3rem 0.15rem 0.5rem;
-    box-shadow: 0 4px 12px -6px var(--panel-shadow);
-    line-height: 1.25;
-  }
-
-  .done-notices .done-notice p {
-    margin: 0;
-    white-space: nowrap;
-  }
-
-  /* The name gives way last: "met its goal." shrinks to nothing first. */
-  .done-notices .done-notice-met {
-    display: flex;
-    gap: 0.3em;
-    min-width: 0;
-  }
-
-  .done-notice-met > * {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .done-notice-met > span {
-    flex-shrink: 1000;
-  }
-
-  .done-notices .done-notice-goal {
-    flex: 1;
-    min-width: 4ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .done-notices .done-notice button {
-    flex: none;
-    padding: 0.1rem 0.45rem;
-  }
-
-  .done-notices-more {
-    display: block;
-  }
-}
-
-@container done-row (12rem <= width < 18rem) {
-  .done-notice .agent-detail-kicker,
-  .done-notices-more > [aria-hidden='true'] {
-    display: none;
-  }
-}
-
 /*
- * Expanded, the terminal takes the stage under the notice row, above every
- * panel; the top bar and its banners stay in view. `.shell` outranks focus
- * mode's placement of the terminal.
+ * Expanded, the terminal takes the whole stage, above every panel; the top bar
+ * and its notices stay in view. `.shell` outranks focus mode's placement of the
+ * terminal.
  */
-.shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']) > .done-notices,
-.shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']) > .stage-center {
-  grid-column: 1 / -1;
-  background-color: var(--surface-muted);
-}
-
 .shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']) > .stage-center {
   grid-row: 2 / -1;
+  grid-column: 1 / -1;
+  background-color: var(--surface-muted);
   z-index: var(--layer-expanded-terminal);
 }
 
 .shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']):has(.first-run-guide):not(:has(.control-panel[data-view='board'])) {
-  grid-template-rows: var(--notice-row) minmax(0, 0.7fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 0.7fr) minmax(0, 1fr);
 }
 
 .shell .floor-stage:has(.terminal-panel[data-terminal-expanded='true']):has(.first-run-guide):not(:has(.control-panel[data-view='board'])) > .first-run-guide {
@@ -2230,7 +2084,7 @@ samp,
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   width: 100vw;
   height: 100vh;
   max-width: none;
@@ -2254,7 +2108,8 @@ samp,
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  width: min(var(--hire-wizard-width), 100%);
+  width: min(54rem, 100%);
+  min-height: min(34rem, 100%);
   max-height: 100%;
   overflow: auto;
   padding: 0.75rem;
@@ -2278,6 +2133,8 @@ samp,
 
 .hire-body {
   display: grid;
+  flex: 1 1 auto;
+  align-content: start;
   grid-template-columns: 10.5rem minmax(0, 1fr);
   gap: 0.75rem;
 }
@@ -2543,8 +2400,34 @@ samp,
   }
 
   .hire-dialog {
-    justify-content: center;
     padding: 0.5rem;
+  }
+
+  /* Four stacked steps would take a quarter of a phone screen: one numbered strip, the current step named. */
+  .hire-index ol {
+    display: flex;
+    gap: 0.3rem;
+  }
+
+  .hire-index li {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .hire-index button {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    padding: 0.3rem 0.25rem;
+    text-align: center;
+  }
+
+  .hire-index button:not([aria-current='step']) :is(.hire-index-label, .hire-index-hint),
+  .hire-index-hint {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
   }
 
   .hire-body,
@@ -2765,37 +2648,6 @@ samp,
   gap: 0.4rem;
 }
 
-/*
- * Not display: none: that drops the live region from the accessibility tree,
- * and its first notice would go unannounced.
- */
-.done-notices:empty {
-  position: absolute;
-}
-
-.floor-stage:has(.control-panel[data-view='board']) > .done-notices:empty {
-  position: absolute;
-}
-
-.done-notices ol {
-  display: grid;
-  gap: 0.5rem;
-  max-height: 30vh;
-  overflow-y: auto;
-  margin: 0;
-  padding: 0 4px 4px 0;
-  list-style: none;
-}
-
-.done-notice {
-  padding: 0.6rem 0.75rem;
-}
-
-.done-notice p {
-  margin: 0 0 0.4rem;
-  overflow-wrap: anywhere;
-}
-
 .agent-detail-terminal {
   display: grid;
   justify-items: start;
@@ -2909,7 +2761,7 @@ samp,
 
 .login-screen {
   flex: 0 0 auto;
-  height: 16rem;
+  height: 13rem;
 }
 
 .login-actions {
@@ -3294,7 +3146,7 @@ samp,
 }
 
 /* The first next step: one card over the office, where an empty floor needs a person to act. */
-/* Over the office only, so it never covers the strip of who needs you below it. */
+/* Over the office only, and at its top, clear of the checks shelf and the zoom buttons at the foot of it. */
 .office-area {
   position: relative;
   display: flex;
@@ -3304,7 +3156,7 @@ samp,
 }
 .office-area > .first-task {
   position: absolute;
-  inset: auto 0 1.25rem 0;
+  inset: 0.75rem 0 auto 0;
   z-index: var(--layer-panels);
   box-sizing: border-box;
   display: grid;
@@ -3545,6 +3397,275 @@ samp,
 .needs-act:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/*
+ * Notices. One area under the top bar holds every notice the page can raise, out of the page's
+ * flow, so a notice arriving never moves the office or a panel. The area takes no clicks; each
+ * notice does.
+ */
+.notice-area {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 1rem 0;
+  pointer-events: none;
+}
+
+.notice-area > * {
+  box-sizing: border-box;
+  max-width: min(36rem, calc(100vw - 2rem));
+  pointer-events: auto;
+}
+
+.notice-area > .done-notices {
+  pointer-events: none;
+}
+
+.notice-area > :is(.link-refused, .stream-notice, .journal-stopped-banner, .closing-time-banner, .ticket-banner),
+.notice-area .done-notice {
+  width: fit-content;
+  margin: 0;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: var(--surface);
+  box-shadow: 0 8px 28px var(--panel-shadow);
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+}
+
+.notice-area > :is(.link-refused, .office-closed, .journal-stopped-banner) {
+  border-color: var(--danger-ink);
+}
+
+.notice-area > .ticket-banner {
+  border-color: var(--accent-ink);
+  background: var(--question);
+}
+
+.notice-area .done-notices {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.notice-area .done-notices ol {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notice-area .done-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem 0.6rem;
+  border-color: var(--success-border);
+  background: var(--success-background);
+}
+
+.notice-area .done-notice:not(:last-child) {
+  display: none;
+}
+
+.notice-area .done-notice p {
+  margin: 0;
+}
+
+.notice-area .done-notice-goal {
+  flex: 1 1 8rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.done-notices-more {
+  margin: 0;
+  padding: 0.1rem 0.5rem;
+  border-radius: 0.4rem;
+  background: var(--surface);
+  color: var(--muted-ink);
+  font-size: 0.8rem;
+  pointer-events: auto;
+}
+
+.done-notices-more-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.notice-action,
+.open-command-copy {
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.open-command {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  vertical-align: middle;
+}
+
+.open-command code {
+  padding: 0.05rem 0.35rem;
+  border: 1px solid var(--line);
+  background: var(--output);
+}
+
+.notice-action:focus-visible,
+.open-command-copy:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+
+/* Pause all asks its question in a popover from its button, so the buttons beside it do not move. */
+.pause-all-control {
+  position: relative;
+}
+
+.pause-all-control > :is(.pause-all-confirm, p) {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  z-index: 2;
+  width: max-content;
+  max-width: min(22rem, calc(100vw - 2rem));
+  margin: 0;
+  border-radius: 0.4rem;
+  box-shadow: 0 8px 28px var(--panel-shadow);
+}
+
+.pause-all-control > p {
+  box-sizing: border-box;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--danger-ink);
+  background: var(--surface);
+  color: var(--danger-ink);
+}
+
+@media (max-width: 800px) {
+  .pause-all-control {
+    position: static;
+  }
+
+  .pause-all-control > :is(.pause-all-confirm, p) {
+    top: 100%;
+    right: 0.5rem;
+    left: 0.5rem;
+    width: auto;
+    max-width: none;
+  }
+}
+
+/* The engine sign-in: a link to open or copy above the terminal, and a terminal that sits in the page's colours. */
+.login-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.login-link-text {
+  box-sizing: border-box;
+  flex: 1 1 14rem;
+  min-width: 0;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--line);
+  background: var(--output);
+  color: var(--ink);
+  font: inherit;
+  font-family: var(--font-data);
+  font-size: 0.8rem;
+}
+
+.login-link-open,
+.login-link-copy {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.86rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.login-link-open:focus-visible,
+.login-link-copy:focus-visible,
+.login-link-text:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+
+.login-link-note {
+  flex-basis: 100%;
+  color: var(--muted-ink);
+  font-size: 0.8rem;
+}
+
+.login-link-note:empty {
+  display: none;
+}
+
+.login-state:not(.login-failed) {
+  padding: 0.4rem 0.6rem;
+  border-left: 3px solid var(--accent-ink);
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+
+.login-screen {
+  border: 1px solid var(--line);
+}
+
+/* Setup, Settings and Log fill a phone screen when opened, so the tap on their tab visibly does something. */
+@media (max-width: 800px) {
+  .floor-stage > .control-panel:is([data-view='setup'], [data-view='settings'], [data-view='log']) {
+    position: fixed;
+    inset: 0;
+    z-index: calc(var(--layer-top-bar) + 1);
+    width: auto;
+    max-height: none;
+    margin: 0;
+    padding: 1rem;
+    border-width: 0;
+    border-radius: 0;
+  }
+
+  .control-panel .panel-close {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+}
+
+/* A touch or click target of at least 24 pixels tall, including the small text buttons of the bar and its panels. */
+.top-bar button,
+.control-panel button,
+.crew-list button {
+  box-sizing: border-box;
+  min-height: 24px;
 }
 
 /* On a phone the panels follow the office down the page: the strip becomes a stacked list, and the sheets cover the screen. */

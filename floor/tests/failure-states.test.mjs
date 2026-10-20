@@ -85,9 +85,9 @@ for (const [name, component] of [['Setup', () => SetupView], ['Settings', () => 
 
 test('a silent open stream says it is waiting rather than retrying', () => {
   const rendered = html(StreamNotice, floor({ phase: 'live', epoch: 1, snapshotEpoch: 1, stale: true }));
-  assert.match(rendered, /connection is still open/);
-  assert.match(rendered, /waiting for a frame and is not retrying/);
-  assert.match(rendered, /open Dudes to sign in again/);
+  assert.match(rendered, /Nothing has come from Dudes for 5 seconds/);
+  assert.match(rendered, /<button type="button" class="notice-action">Reconnect<\/button>/);
+  assert.doesNotMatch(rendered, /not retrying/);
 });
 
 test('the stream notice reports the actual retry schedule and then says the daemon stopped answering', async () => {
@@ -109,7 +109,7 @@ test('the stream notice reports the actual retry schedule and then says the daem
   try {
     sockets[0].emit('close');
     let rendered = html(StreamNotice, streamStore.getFloorState());
-    assert.match(rendered, /page is retrying.*Reconnect attempt 1 starts after 250 ms/);
+    assert.match(rendered, /Reconnecting to Dudes \(attempt 1\)/);
     for (let i = 0; i < 5; i += 1) {
       const run = scheduled;
       scheduled = undefined;

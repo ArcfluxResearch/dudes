@@ -195,7 +195,7 @@ test('the stream line shows only while the view is unconfirmed, and once', () =>
   assert.ok(!/stream-state/.test(render()));
   store.noteTransport('close');
   const closed = render();
-  assert.equal((closed.match(/View unconfirmed/g) ?? []).length, 1);
+  assert.equal((closed.match(/Not connected to Dudes/g) ?? []).length, 1);
   assert.match(closed, /<p class="stream-state" role="alert">/);
 });
 

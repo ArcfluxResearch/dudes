@@ -182,7 +182,7 @@ test('the entry point opens one stream or surfaces the closed phase', async () =
   assert.equal([...main.matchAll(/addEventListener\(/g)].length, 1);
   assert.match(
     main,
-    /window\.addEventListener\('hashchange', \(\) => \{\s*(?:\/\/[^\n]*\n\s*)?if \(floorRequestsPaused\(\)\) return;\s*void takePastedLink\(reauthenticateFloorSession, BROWSER\);/,
+    /window\.addEventListener\('hashchange', \(\) => \{\s*(?:\/\/[^\n]*\n\s*)?if \(floorRequestsPaused\(\)\) \{\s*if \(window\.location\.hash\.startsWith\('#bootstrap='\)\) noteLinkWaitsForReload\(\);\s*return;\s*\}\s*void takePastedLink\(reauthenticateFloorSession, BROWSER\);/,
   );
   assert.match(main, /const BROWSER: StreamPorts = \{ location: window\.location, socket: browserSocket \};/);
   assert.match(entry, /if \(session === null\) return;\s*try \{\s*connect\(session, ports\);\s*\} catch \{/);

@@ -379,7 +379,7 @@ test('each away state says its one thing, in words', async () => {
   const text = () => renderToStaticMarkup(createElement(StreamNotice,
     { floor: { ...store.getFloorState(), phase: 'closed', stale: false, epoch: 1, snapshotEpoch: 1 } }))
     .replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
-  assert.match(text(), /^Disconnected\./, 'control: with the daemon present the old line stands');
+  assert.match(text(), /^Dudes stopped\./, 'control: with the daemon present the old line stands');
 
   const cases = [
     ['updated', 'Dudes was updated. Reload this tab to continue.'],
@@ -407,6 +407,6 @@ test('each away state says its one thing, in words', async () => {
   for (let looks = 0; away.getAway().kind === 'watching' && looks < 400; looks += 1) await timers.step(AWAY_POLL_MS);
   assert.equal(
     text(),
-    'You are signed out of this Floor. That happens after a day without use, after 30 days, when you sign out, or when Dudes restarts and cannot keep sign-ins. Open Dudes to sign in again.',
+    'You are signed out of this Floor. That happens after a day without use, after 30 days, when you sign out, or when Dudes restarts and cannot keep sign-ins. To sign in again, run dudes openCopy in a terminal.',
   );
 });

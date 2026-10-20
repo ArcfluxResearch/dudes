@@ -309,6 +309,8 @@ const STREAM_NOTICE = 'src/renderer/StreamNotice.tsx';
 const ADMITTED_WITHOUT_HANDLER = new Map([
   [SETUP_VIEW, Object.freeze(['a link'])], [SETTINGS_VIEW, Object.freeze(['a link'])], [STREAM_NOTICE, Object.freeze(['a link'])],
   [RECOVERED_REVIEW, Object.freeze(['a link'])],
+  // The sign-in link the engine printed, drawn whole in a read-only field and offered as one link to open in a new tab.
+  [LOGIN_PANEL, Object.freeze(['an input', 'a link'])],
 ]);
 /**
  * The `FORBIDDEN` kinds each listed file may carry. "the floor ships no
@@ -668,6 +670,8 @@ function urlAttributesIn(text, file) {
       const expression = value.expression;
       if (ts.isIdentifier(expression) && assets.has(expression.text)) continue;
       if (file === SETTINGS_VIEW && expression.getText(syntax) === ADMITTED_RELEASE_NOTES_HREF) continue;
+      // The engine's own sign-in link, which `offerableLink` has already refused unless it is a plain https address.
+      if (file === LOGIN_PANEL && expression.getText(syntax) === 'link') continue;
       found.push({ tag, name, expression: expression.getText(syntax) });
     }
   }
@@ -1068,7 +1072,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
 });
 
 test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Pause all, resume, goal change, look edit and dismiss buttons, '
-  + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again and Close, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
+  + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again, Copy link and Close, the sign-in command\'s Copy, the stream notice\'s Reconnect, the reload after a new link, Retire\'s own four, the Done column\'s Show more, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, a held ticket\'s Resume and Review recovery, context choices, one authorization and inert receipt lookup, earlier acknowledged-review disclosure, the guide\'s navigation and Hire opener, '
   + 'and checkout differences\' explicit show, refresh, hide, open and more-files controls', async () => {
@@ -1115,8 +1119,10 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(7).fill(FIRST_RUN_GUIDE),
     ...Array(5).fill('src/renderer/setup/FirstTask.tsx'),
     ...Array(10).fill(TERMINAL_PANEL),
-    ...Array(4).fill(LOGIN_PANEL),
-    ...Array(5).fill('src/shell.tsx'),
+    ...Array(5).fill(LOGIN_PANEL),
+    ...Array(6).fill('src/shell.tsx'),
+    'src/renderer/SignInExpired.tsx',
+    'src/renderer/StreamNotice.tsx',
   ];
   assert.deepEqual(buttons.sort(), [...expected, AGENT_ORDER].sort());
   expected.sort();
@@ -1270,6 +1276,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.deepEqual(clicksIn(await readFile(resolve(floor, HIRE_ENTRY), 'utf8')),
     ['(event) => onAddAgent(event.currentTarget)']);
   assert.deepEqual(clicksIn(await readFile(resolve(source, 'shell.tsx'), 'utf8')), [
+    'reloadPage',
     'toggleCrew',
     'toggleFocus',
     '(event) => openHire(event.currentTarget)',
