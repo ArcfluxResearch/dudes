@@ -81,6 +81,8 @@ export interface LoginPorts {
   readonly socket: SocketFactory;
   /** The session's CSRF nonce, or `null` when the page has no session. */
   csrf(): string | null;
+  /** Whether the daemon has proved it holds the session; the socket opens only once it has. Left out, it opens at once. */
+  prove?(secret: string): Promise<boolean>;
 }
 
 /** The live channel's private half: its socket and the view it draws into. */
@@ -142,7 +144,29 @@ export function startLogin(engine: LoginEngine, ports: LoginPorts): void {
     commit({ phase: 'ended', id, engine, ending: 'unopened' });
     return;
   }
-  const socket = ports.socket(loginUrl(ports.location), loginProtocols(csrf));
+  if (ports.prove === undefined) {
+    openChannel(id, engine, csrf, ports);
+    return;
+  }
+  commit({ phase: 'opening', id, engine });
+  const unopened = () => {
+    if (state.phase === 'opening' && state.id === id) commit({ phase: 'ended', id, engine, ending: 'unopened' });
+  };
+  ports.prove(csrf).then((proved) => {
+    if (state.phase !== 'opening' || state.id !== id) return;
+    if (proved) openChannel(id, engine, csrf, ports);
+    else unopened();
+  }, unopened);
+}
+
+function openChannel(id: number, engine: LoginEngine, csrf: string, ports: LoginPorts): void {
+  let socket: SocketLike;
+  try {
+    socket = ports.socket(loginUrl(ports.location), loginProtocols(csrf));
+  } catch {
+    commit({ phase: 'ended', id, engine, ending: 'unopened' });
+    return;
+  }
   const channel: Live = { socket, open: false, screen: null, told: null };
   live = channel;
   commit({ phase: 'opening', id, engine });

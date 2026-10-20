@@ -484,3 +484,20 @@ test('pressing a waiting Attach neither opens the confirmation nor attaches, and
     page.restore();
   }
 });
+
+test('the terminal asks for the daemon’s proof before it opens a socket, and says so when the daemon cannot give it', async () => {
+  const settled = () => new Promise((done) => setImmediate(done));
+  for (const [proved, opens] of [[true, 1], [false, 0]]) {
+    resetTerminal();
+    const socket = fakeSocket();
+    const ports = { ...portsFor(socket), prove: async () => proved };
+    attachTerminal(ADA, ports);
+    assert.equal(ports.calls.length, 0, 'a socket opened before the proof answered');
+    await settled();
+    assert.equal(ports.calls.length, opens);
+    assert.equal(getTerminalState().phase, proved ? 'opening' : 'ended');
+  }
+  resetTerminal();
+  attachTerminal(ADA, { ...portsFor(fakeSocket()), socket: () => { throw new TypeError('not proven'); } });
+  assert.deepEqual([getTerminalState().phase, getTerminalState().ending], ['ended', 'unopened'], 'a socket that cannot open threw out of the click');
+});

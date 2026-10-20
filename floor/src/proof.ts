@@ -13,6 +13,11 @@
 // compares in constant time.
 
 const LABEL = 'dudes-floor-daemon-proof-v1\n';
+/**
+ * How long one proof stands. The next request may use another connection than the proof did, so a
+ * proof is only good for as long as it takes to use it; after this the daemon proves itself again.
+ */
+export const PROOF_LIFETIME_MS = 2_000;
 const PROOF = /^[A-Za-z0-9_-]{43}$/;
 
 /**
@@ -73,6 +78,7 @@ export async function checkDaemon(secret: string, ports: ProofPorts): Promise<bo
 
 let state: ProofState = 'unproven';
 let provenFor: string | null = null;
+let provenAt = 0;
 let generation = 0;
 let inflight: { readonly secret: string; readonly promise: Promise<boolean> } | null = null;
 const listeners = new Set<() => void>();
@@ -96,7 +102,7 @@ function move(next: ProofState): void {
 
 /** Whether the daemon has proved itself for this secret on the connection the page holds now. */
 export function isProven(secret: string): boolean {
-  return state === 'proven' && provenFor === secret;
+  return state === 'proven' && provenFor === secret && Date.now() - provenAt < PROOF_LIFETIME_MS;
 }
 
 /**
@@ -139,6 +145,7 @@ export function proveDaemon(secret: string, ports: ProofPorts): Promise<boolean>
     }
     inflight = null;
     provenFor = verified ? secret : null;
+    provenAt = Date.now();
     move(verified ? 'proven' : 'refused');
     return verified;
   })();

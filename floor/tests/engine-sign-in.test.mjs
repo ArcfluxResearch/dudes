@@ -420,3 +420,20 @@ test('Pi is offered its own terminal only with the Floor terminal on, and never 
   assert.doesNotMatch(html, NEXT_DISABLED);
   assert.doesNotMatch(html, HIRE_DISABLED);
 });
+
+test('the engine sign-in asks for the daemon’s proof before it opens a socket, and says so when the daemon cannot give it', async () => {
+  const settled = () => new Promise((done) => setImmediate(done));
+  for (const [proved, opens] of [[true, 1], [false, 0]]) {
+    resetLogin();
+    const socket = fakeSocket();
+    const ports = { ...portsFor(socket), prove: async () => proved };
+    startLogin('codex', ports);
+    assert.equal(ports.calls.length, 0, 'a socket opened before the proof answered');
+    await settled();
+    assert.equal(ports.calls.length, opens);
+    assert.equal(getLoginState().phase, proved ? 'opening' : 'ended');
+  }
+  resetLogin();
+  startLogin('codex', { ...portsFor(fakeSocket()), socket: () => { throw new TypeError('not proven'); } });
+  assert.deepEqual([getLoginState().phase, getLoginState().ending], ['ended', 'unopened'], 'a socket that cannot open threw out of the click');
+});

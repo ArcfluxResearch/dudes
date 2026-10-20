@@ -10,10 +10,11 @@
 
 import assert from 'node:assert/strict';
 import { createHash, createHmac } from 'node:crypto';
-import test, { beforeEach } from 'node:test';
+import test, { beforeEach, mock } from 'node:test';
 
-import { checkDaemon, forgetProof, getProofState, resetProof } from '../src/proof.ts';
-import { browserSocket } from '../src/renderer/floor/stream.ts';
+import { PROOF_LIFETIME_MS, checkDaemon, forgetProof, getProofState, resetProof } from '../src/proof.ts';
+import { browserSocket, openFloorStream } from '../src/renderer/floor/stream.ts';
+import { resetFloorStore } from '../src/renderer/floor/store.ts';
 import { DaemonNotProven, floorFetch, proveFloorDaemon } from '../src/transport.ts';
 import { ORIGIN, PROVE_PATH, proofFrom, proofFromNobody } from './helpers/daemon-proof.mjs';
 
@@ -125,4 +126,35 @@ test('a socket carrying the secret opens only on a proven connection', async () 
   } finally {
     delete globalThis.WebSocket;
   }
+});
+
+test('a proof stands for two seconds, concurrent callers share one, and then the daemon proves itself again', async () => {
+  mock.timers.enable({ apis: ['Date'] });
+  try {
+    const reached = fakeWindow({ holds: SECRET });
+    const proofs = () => reached.filter((request) => request.url === PROVE_PATH).length;
+    assert.deepEqual(await Promise.all([proveFloorDaemon(SECRET), proveFloorDaemon(SECRET)]), [true, true]);
+    assert.equal(proofs(), 1, 'two callers asked the daemon twice');
+    mock.timers.tick(PROOF_LIFETIME_MS - 1);
+    await proveFloorDaemon(SECRET);
+    assert.equal(proofs(), 1, 'a live proof was asked for again');
+    mock.timers.tick(2);
+    assert.throws(() => browserSocket('ws://127.0.0.1:1/x', [`dudes-csrf.${SECRET}`]), TypeError, 'a lapsed proof opened a socket');
+    await proveFloorDaemon(SECRET);
+    assert.equal(proofs(), 2, 'a lapsed proof was trusted');
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('a proof that lapses before the stream opens its socket is a failed attempt that retries, not a throw', async () => {
+  resetFloorStore();
+  fakeWindow({ holds: SECRET });
+  const retries = [];
+  const timers = { now: () => 0, repeat: () => () => {}, after: (ms) => { retries.push(ms); return () => {}; } };
+  const stop = openFloorStream({ csrf: SECRET }, { protocol: 'http:', host: '127.0.0.1:7717' }, () => { throw new TypeError('lapsed'); },
+    timers, undefined, undefined, { prove: async () => true });
+  for (let turn = 0; turn < 5; turn += 1) await new Promise((done) => setImmediate(done));
+  assert.deepEqual(retries, [250], 'the stream did not retry');
+  stop();
 });

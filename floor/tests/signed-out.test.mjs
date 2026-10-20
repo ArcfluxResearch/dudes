@@ -94,8 +94,8 @@ const timers = {
 const elapse = () => { for (const entry of waiting.splice(0)) if (!entry.cancelled) entry.run(); };
 const settle = () => new Promise((done) => setImmediate(done));
 /** Let the proof round trip finish: its WebCrypto steps run off the main thread. */
-const until = async (done) => { for (let turn = 0; turn < 200 && !done(); turn += 1) await settle(); };
-const proven = () => until(() => getProofState() === 'proven');
+const until = async (done, turns = 1000) => { for (let turn = 0; turn < turns && !done(); turn += 1) await new Promise((next) => setTimeout(next, 1)); };
+const proven = () => until(() => ['proven', 'refused'].includes(getProofState()));
 
 async function openedPage(options) {
   const world = page(options);
@@ -220,10 +220,10 @@ const secretSent = (request) => request.init?.headers?.['X-Dudes-CSRF'] !== unde
 test('a process that holds the port from the start gets no secret and cannot sign the page out', async () => {
   const { storage, factory, asked, proofs } = await openedPage({ check: async () => UNKNOWN(), holds: null });
   for (let round = 0; round < 6; round += 1) {
-    await until(() => waiting.length > 0);
+    await until(() => waiting.length > 0, 30);
     elapse();
   }
-  await settle();
+  await until(() => getProofState() === 'refused');
   assert.equal(getProofState(), 'refused');
   assert.ok(proofs.length > 1, 'the page kept asking the ladder of times it is allowed');
   assert.equal(factory.opened.length, 0, 'a socket carried the secret to a daemon that had not proved itself');

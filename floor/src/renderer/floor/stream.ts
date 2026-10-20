@@ -304,9 +304,14 @@ export function openFloorStream(
     void proof.prove(asked).then((proved) => {
       if (disposed || turn !== proving || session !== asked) return;
       if (proved) {
-        open(epoch);
-        return;
+        try {
+          open(epoch);
+          return;
+        } catch {
+          // The proof lapsed before the socket opened: the same as a proof that failed.
+        }
       }
+      socket = null;
       ended = true;
       noteTransport('close');
       retry();

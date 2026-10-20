@@ -16,7 +16,7 @@ import type { HireEngine } from '../onboarding/catalog.ts';
 import type { ProviderRow } from '../setup/daemon.ts';
 import { fitGrid } from '../terminal/terminal.ts';
 import type { Terminal } from '../terminal/grid.ts';
-import { lazyChunk } from '../../transport.ts';
+import { lazyChunk, proveFloorDaemon } from '../../transport.ts';
 import {
   abandonLogin, bindLoginScreen, closeLogin, getLoginState, resizeLogin, startLogin, subscribeToLogin, writeLogin,
 } from './login.ts';
@@ -25,7 +25,7 @@ import type { LoginChannel, LoginEnding, LoginPorts } from './login.ts';
 type OpenChannel = Exclude<LoginChannel, { readonly phase: 'idle' }>;
 
 function browserLoginPorts(): LoginPorts {
-  return { location: window.location, socket: browserSocket, csrf: () => currentFloorSession()?.csrf ?? null };
+  return { location: window.location, socket: browserSocket, csrf: () => currentFloorSession()?.csrf ?? null, prove: proveFloorDaemon };
 }
 
 /** What the person should do in the terminal, by engine. The daemon decides nothing from this. */

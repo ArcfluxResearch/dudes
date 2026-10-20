@@ -692,6 +692,9 @@ struct Inner {
     last_browser_epoch: AtomicU64,
     registry: registry::Registry,
     reserve_hook: Mutex<Option<ReserveHook>>,
+    /// Random for this run. It stands in for the key of a session that does not exist, so a proof
+    /// asked for twice under such a cookie is the same both times, as it is under a live one.
+    absent_key: [u8; 32],
 }
 
 /// The session registry: its state, and the clock that dates it, reachable only together.
@@ -906,6 +909,11 @@ impl FloorSessions {
             last_browser_epoch: AtomicU64::new(0),
             registry: registry::Registry::new(clock),
             reserve_hook: Mutex::new(None),
+            absent_key: {
+                let mut bytes = [0_u8; 32];
+                getrandom::fill(&mut bytes).expect("the operating system's entropy source");
+                bytes
+            },
         }))
     }
 
@@ -1023,11 +1031,15 @@ impl FloorSessions {
             session.csrf
         });
         let key = held.unwrap_or_else(|| {
-            let mut bytes = [0_u8; 32];
-            getrandom::fill(&mut bytes).expect("the operating system's entropy source");
-            bytes
+            digest(
+                &[
+                    self.0.absent_key.as_slice(),
+                    cookie.unwrap_or_default().as_bytes(),
+                ]
+                .concat(),
+            )
         });
-        base64url(&hmac_sha256(
+        base64url(&hmac_sha256_key32(
             &key,
             &[
                 PROOF_LABEL,
@@ -1182,8 +1194,8 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
 /// Binds a proof to the one thing it is for, so it cannot be replayed as any other answer.
 const PROOF_LABEL: &[u8] = b"dudes-floor-daemon-proof-v1\n";
 
-/// HMAC-SHA-256 (RFC 2104) of the parts joined, under a key shorter than a block.
-fn hmac_sha256(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
+/// HMAC-SHA-256 of the parts joined, for a 32-byte key only, which is shorter than a block.
+fn hmac_sha256_key32(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
     const BLOCK: usize = 64;
     let mut inner_pad = [0x36_u8; BLOCK];
     let mut outer_pad = [0x5c_u8; BLOCK];
@@ -1879,7 +1891,7 @@ mod tests {
     #[test]
     fn the_proof_is_the_keyed_hash_of_the_label_and_the_nonce() {
         let key: [u8; 32] = std::array::from_fn(|index| u8::try_from(index).expect("small"));
-        let mac = hmac_sha256(&key, &[PROOF_LABEL, "A".repeat(43).as_bytes()]);
+        let mac = hmac_sha256_key32(&key, &[PROOF_LABEL, "A".repeat(43).as_bytes()]);
         assert_eq!(
             base64url(&mac),
             "vpd4EAoUA9QB6vPA9t7K-KS6G_0Tk36Kz5l6EoyaC5g"
@@ -1893,7 +1905,7 @@ mod tests {
         let second = probe_session(&sessions);
         let nonce = "B".repeat(43);
         let expected = |secret: &str| {
-            base64url(&hmac_sha256(
+            base64url(&hmac_sha256_key32(
                 &digest(secret.as_bytes()),
                 &[
                     PROOF_LABEL,
@@ -1920,6 +1932,11 @@ mod tests {
         for cookie in [None, Some("C".repeat(43))] {
             let answer = sessions.prove(cookie.as_deref(), &nonce);
             assert_eq!(answer.len(), 43, "same shape as a real answer");
+            assert_eq!(
+                answer,
+                sessions.prove(cookie.as_deref(), &nonce),
+                "asked twice, an absent session answers as a live one does"
+            );
             assert_ne!(answer, expected(&first.csrf));
             assert_ne!(answer, expected(&second.csrf));
         }

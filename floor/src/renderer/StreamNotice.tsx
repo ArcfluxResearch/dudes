@@ -12,7 +12,7 @@ export function StreamNotice({ floor }: { readonly floor: FloorState }) {
   const away = useSyncExternalStore(subscribeToAway, getAway, getAway);
   const proof = useSyncExternalStore(subscribeToProof, getProofState, getProofState);
   if (proof === 'refused') return <p className="office-closed stream-notice" role="alert">
-    Dudes is not answering as itself. Open Dudes again.
+    This page can't confirm it's talking to your Dudes, so it sent nothing. Open Dudes again to continue.
   </p>;
   if (away.kind === 'watching') return <p className="office-closed stream-notice" role="status">
     Dudes stopped answering. This page keeps checking and will ask you to reload when it is back.

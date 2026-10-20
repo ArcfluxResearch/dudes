@@ -109,6 +109,8 @@ export interface TerminalPorts {
   readonly socket: SocketFactory;
   /** The session's CSRF nonce, or `null` when the page has no session. */
   csrf(): string | null;
+  /** Whether the daemon has proved it holds the session; the socket opens only once it has. Left out, it opens at once. */
+  prove?(secret: string): Promise<boolean>;
 }
 
 /** The live channel's private half: its socket, the daemon's handle and the view it draws into. */
@@ -205,7 +207,29 @@ export function attachTerminal(agent: string, ports: TerminalPorts): void {
     commit({ phase: 'ended', id, agent, ending: 'unopened' });
     return;
   }
-  const socket = ports.socket(terminalUrl(ports.location), terminalProtocols(csrf));
+  if (ports.prove === undefined) {
+    openChannel(id, agent, csrf, ports);
+    return;
+  }
+  commit({ phase: 'opening', id, agent });
+  const unopened = () => {
+    if (state.phase === 'opening' && state.id === id) commit({ phase: 'ended', id, agent, ending: 'unopened' });
+  };
+  ports.prove(csrf).then((proved) => {
+    if (state.phase !== 'opening' || state.id !== id) return;
+    if (proved) openChannel(id, agent, csrf, ports);
+    else unopened();
+  }, unopened);
+}
+
+function openChannel(id: number, agent: string, csrf: string, ports: TerminalPorts): void {
+  let socket: SocketLike;
+  try {
+    socket = ports.socket(terminalUrl(ports.location), terminalProtocols(csrf));
+  } catch {
+    commit({ phase: 'ended', id, agent, ending: 'unopened' });
+    return;
+  }
   const channel: Live = { socket, open: false, handle: null, screen: null, told: null };
   live = channel;
   commit({ phase: 'opening', id, agent });
