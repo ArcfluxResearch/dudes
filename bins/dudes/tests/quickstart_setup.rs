@@ -210,7 +210,8 @@ fn a_daemon_ends_when_the_test_that_started_it_is_killed() {
     .stderr(std::process::Stdio::null())
     .spawn()
     .expect("start the victim");
-    let deadline = Instant::now() + Duration::from_secs(8);
+    // Just under the runner's 10 s limit: a loaded machine can take most of it to start the victim.
+    let deadline = Instant::now() + Duration::from_secs(9);
     while !report.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -222,7 +223,7 @@ fn a_daemon_ends_when_the_test_that_started_it_is_killed() {
     victim.wait().expect("reap the victim");
     assert!(
         pid > 1 && root.is_some(),
-        "the victim reported: {recorded:?}"
+        "the victim did not start its daemon in time, so this run proves nothing: {recorded:?}"
     );
     let deadline = Instant::now() + Duration::from_secs(4);
     while alive(pid) && Instant::now() < deadline {
