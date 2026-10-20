@@ -8,6 +8,7 @@
 mod common;
 
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -15,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{Fixture, SharedHost, TestClock};
-use duded::floor_actions::{Enrollment, Profile};
+use duded::config::load_operator;
 use duded::floor_session::CSRF_HEADER_NAME;
 use duded::predicate::{PredicateCaptured, PredicateOutcome, PredicateRunner};
 use duded::settings::FloorSettings;
@@ -23,15 +24,13 @@ use duded::startup::Witness;
 use duded::worktree::git::Git;
 use duded::worktree::trust;
 use dudes_host::{CapturedOutcome, OneShot, OneShotOutcome};
-use dudes_proto::goal::Predicate;
+use dudes_proto::Record;
 use dudes_proto::rpc::agent::{Checkout, HireParams, HireResult};
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_proto::rpc::{Method, RpcError};
-use dudes_proto::{AgentBudget, GoalBudget, Record};
 use dudes_providers::launch::LaunchSpec;
 use dudes_rpc::Client;
-use dudes_types::{IsolationMode, Usd};
 use serde_json::{Value, json};
 
 const FLOOR_FIXTURE: &str = concat!(
@@ -121,6 +120,39 @@ fn commit_all(dir: &Path, message: &str) {
     );
 }
 
+/// Commit `content` at `path` with the given git mode without touching the working tree, so a
+/// name that differs only by case from another can exist even on a case-insensitive file system.
+fn commit_entry(dir: &Path, mode: &str, path: &str, content: &str) {
+    let blob = dir.join(".git").join("entry-content");
+    std::fs::write(&blob, content).unwrap();
+    let oid = git(dir, &["hash-object", "-w", blob.to_str().unwrap()]);
+    std::fs::remove_file(&blob).unwrap();
+    git(
+        dir,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("{mode},{oid},{path}"),
+        ],
+    );
+    git(
+        dir,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "entry",
+        ],
+    );
+}
+
 /// A repository with one commit, outside the daemon's directories.
 fn repo(root: &Path) -> PathBuf {
     let repo = std::fs::canonicalize(root).expect("canonical").join("repo");
@@ -131,17 +163,20 @@ fn repo(root: &Path) -> PathBuf {
     repo
 }
 
-fn passing_check() -> duded::floor_actions::EnrolledCheck {
-    duded::floor_actions::EnrolledCheck {
-        may_already_pass: true,
-        ..duded::floor_actions::EnrolledCheck::enrolled(
-            "Checks pass",
-            Predicate::Command {
-                argv: vec![common::true_program().into()],
-                timeout_s: 10,
-            },
-        )
+const BUDGET: &str = "[budget]\nfloor_usd_per_day = 100\n\n[budget.per_turn_floor]\nusd = 0.000001\ntokens = 1\n\n[floor.hire]\nenabled = true\n\n[memory]\ncondense_model_enabled = false\n";
+
+/// The operator file, with the project `repo_1` at `repo` when there is one.
+fn operator_file(repo: Option<&Path>) -> String {
+    let program = serde_json::to_string(common::true_program()).expect("TOML string");
+    let mut text = BUDGET.to_owned();
+    if let Some(repo) = repo {
+        let _ = write!(
+            text,
+            "\n[[floor.onboarding.workspaces]]\nworkspace_id = 'repo_1'\nlabel = 'Service'\ncompletion_check_label = 'Checks pass'\ncwd = '{}'\ndepartment = 'engineering'\nisolation = 'default'\nagent_usd_per_day = 10\ngoal_usd = 5\nhop_cap = 3\npredicate_argv = [{program}]\npredicate_timeout_s = 10\nmay_already_pass = true\n",
+            repo.display()
+        );
     }
+    text
 }
 
 struct Floor {
@@ -153,33 +188,16 @@ struct Floor {
 
 fn floor(fixture: &Fixture) -> Floor {
     let repo = repo(fixture.runtime.path());
+    let config = fixture.state.path().join("config.toml");
+    std::fs::write(&config, operator_file(Some(&repo))).expect("operator file");
     let mut settings = fixture.settings();
     settings.floor = Some(FloorSettings {
         assets_dir: PathBuf::from(FLOOR_FIXTURE),
         port: Some(0),
     });
     settings.predicate_path = std::env::var_os("PATH");
-    settings.enrollment = Enrollment {
-        profiles: vec![Profile {
-            id: "repo_1".into(),
-            label: "Service".into(),
-            checks: vec![passing_check()],
-            cwd: repo.clone(),
-            written_cwd: repo.clone(),
-            department: "engineering".into(),
-            isolation: IsolationMode::Default,
-            agent_budget: AgentBudget {
-                usd_per_day: Some(Usd::from_dollars(10)),
-                tokens_per_day: None,
-            },
-            goal_budget: GoalBudget {
-                usd: Some(Usd::from_dollars(5)),
-                tokens: None,
-            },
-            hop_cap: 3,
-            mark: None,
-        }],
-    };
+    settings.enrollment = load_operator(&config).expect("valid file").enrollment;
+    settings.operator_config = Some(config);
     let seams = common::seams(
         &settings,
         SharedHost::new(),
@@ -195,6 +213,25 @@ fn floor(fixture: &Fixture) -> Floor {
         addr,
         repo,
     }
+}
+
+/// Replace the operator file and have the daemon adopt it, as `dudes project add` and `remove` do.
+fn adopt(floor: &Floor, text: &str, added: &[&str], removed: &[&str]) {
+    use sha2::Digest as _;
+    std::fs::write(floor.settings.operator_config.as_ref().unwrap(), text).expect("rewrite");
+    let sha = sha2::Sha256::digest(text.as_bytes())
+        .iter()
+        .fold(String::new(), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
+    let result = operator(
+        floor,
+        Method::FloorEnrollmentReload,
+        json!({"apply": {"sha256": sha, "added": added, "removed": removed, "changed": []}}),
+    )
+    .expect("the reload");
+    assert_eq!(result["applied"], true, "{result}");
 }
 
 fn credential(floor: &Floor) -> OperatorCredential {
@@ -279,6 +316,21 @@ fn session(floor: &Floor) -> (String, String) {
 /// One browser hire of `repo_1` that asks for its own copy; the answer's status and body.
 fn hire_in_copy(floor: &Floor, attempt: char) -> (u16, Value) {
     let (cookie, csrf) = session(floor);
+    post_copy(floor.addr, &cookie, &csrf, attempt)
+}
+
+fn post_copy(addr: SocketAddr, cookie: &str, csrf: &str, attempt: char) -> (u16, Value) {
+    post_copy_at(addr, cookie, csrf, attempt, None)
+}
+
+/// A hire of a project a reload added must present that reload's revision.
+fn post_copy_at(
+    addr: SocketAddr,
+    cookie: &str,
+    csrf: &str,
+    attempt: char,
+    revision: Option<&str>,
+) -> (u16, Value) {
     let body = serde_json::to_vec(&json!({
         "attempt_id": format!("{attempt}{}", "A".repeat(42)),
         "workspace_id": "repo_1", "name": "Kim", "role": "engineer", "goal_text": "ship",
@@ -286,14 +338,15 @@ fn hire_in_copy(floor: &Floor, attempt: char) -> (u16, Value) {
         "check_revision": common::check_revision_as(
             "default", "Checks pass", &[common::true_program()], 10, true),
         "own_copy": true,
+        "workspace_revision": revision,
     }))
     .expect("request JSON");
-    let host = floor.addr.to_string();
+    let host = addr.to_string();
     let head = format!(
         "POST /floor/onboard HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\n{CSRF_HEADER_NAME}: {csrf}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         body.len()
     );
-    let mut stream = TcpStream::connect(floor.addr).expect("Floor listener");
+    let mut stream = TcpStream::connect(addr).expect("Floor listener");
     stream.set_read_timeout(Some(WAIT)).expect("timeout");
     stream.write_all(head.as_bytes()).expect("head");
     stream.write_all(&body).expect("body");
@@ -533,6 +586,23 @@ fn a_grant_is_refused_for_each_setting_it_cannot_cover() {
     std::os::unix::fs::symlink("/etc/hosts", repo.join(".mcp.json")).unwrap();
     commit_all(&repo, "mcp link");
     assert_eq!(inspect(), Err(trust::TrustRefusal::Symlink));
+    git(&repo, &["rm", "-q", "-f", ".mcp.json"]);
+    commit_all(&repo, "mcp unlink");
+    assert!(
+        inspect().is_ok(),
+        "a control: the repository is clean again"
+    );
+
+    commit_entry(&repo, "120000", ".MCP.json", "/etc/hosts");
+    assert_eq!(
+        inspect(),
+        Err(trust::TrustRefusal::Symlink),
+        "case does not hide a link"
+    );
+    git(&repo, &["rm", "-q", "--cached", ".MCP.json"]);
+    commit_entry(&repo, "100644", ".claude/a.json", "{}\n");
+    commit_entry(&repo, "100644", ".Claude/b.json", "{}\n");
+    assert_eq!(inspect(), Err(trust::TrustRefusal::CaseVariants));
 }
 
 #[test]
@@ -576,4 +646,125 @@ fn ordinary_work_keeps_the_pin_and_a_settings_change_moves_it() {
     std::fs::write(repo.join(".mcp.json"), "{}\n").unwrap();
     commit_all(&repo, "mcp");
     assert_eq!(verify(), Err(trust::TrustRefusal::Changed));
+}
+
+#[test]
+fn a_settings_entry_in_another_case_moves_the_pin() {
+    let fixture = Fixture::new();
+    let repo = repo(fixture.runtime.path());
+    let git_tool = git_for_tests();
+    let granted = trust::inspect(&git_tool, &repo).expect("vouched");
+    let verify = || {
+        let base = git_tool.commit(&repo, "HEAD").expect("HEAD");
+        trust::verify(&git_tool, &repo, base, &granted)
+    };
+    commit_entry(&repo, "100644", ".Claude/settings.json", "{}\n");
+    assert_eq!(
+        verify(),
+        Err(trust::TrustRefusal::Changed),
+        ".Claude is pinned"
+    );
+    git(&repo, &["rm", "-q", "--cached", ".Claude/settings.json"]);
+    commit_entry(&repo, "100644", ".MCP.json", "{}\n");
+    assert_eq!(
+        verify(),
+        Err(trust::TrustRefusal::Changed),
+        ".MCP.json is pinned"
+    );
+}
+
+fn trust_records(fixture: &Fixture) -> usize {
+    fixture
+        .records()
+        .iter()
+        .filter(|record| matches!(record, Record::WorkspaceTrustSet { .. }))
+        .count()
+}
+
+#[test]
+fn an_untrust_with_nothing_to_revoke_appends_nothing() {
+    let fixture = Fixture::new();
+    let floor = floor(&fixture);
+    let untrust = |id: &str| {
+        operator(
+            &floor,
+            Method::WorkspaceTrust,
+            json!({ "workspace_id": id, "trusted": false }),
+        )
+        .expect("answered")
+    };
+    assert_eq!(untrust("repo_1")["changed"], false);
+    assert_eq!(
+        untrust("gone")["changed"],
+        false,
+        "an unknown project needs no enrollment"
+    );
+    assert_eq!(trust_records(&fixture), 0, "no required record for nothing");
+
+    assert_eq!(set_trust(&floor, true).unwrap()["changed"], true);
+    assert_eq!(untrust("repo_1")["changed"], true);
+    assert_eq!(untrust("repo_1")["changed"], false);
+    assert_eq!(trust_records(&fixture), 2, "one grant and one revocation");
+}
+
+#[test]
+fn removing_a_project_revokes_its_grant_and_adding_it_back_needs_trust_again() {
+    let fixture = Fixture::new();
+    let floor = floor(&fixture);
+    set_trust(&floor, true).expect("the grant");
+    adopt(&floor, &operator_file(None), &[], &["repo_1"]);
+    assert_eq!(trust_records(&fixture), 2, "the removal revoked the grant");
+
+    adopt(&floor, &operator_file(Some(&floor.repo)), &["repo_1"], &[]);
+    // The reload that added the project back marked it with revision 1, which a hire must present.
+    let (cookie, csrf) = session(&floor);
+    let back = post_copy_at(floor.addr, &cookie, &csrf, 'A', Some("1"));
+    assert_refused_with(&back, "not trusted yet", &fixture, &floor);
+
+    set_trust(&floor, true).expect("trusted again");
+    let again = post_copy_at(floor.addr, &cookie, &csrf, 'B', Some("1"));
+    assert_eq!(again.0, 200, "and then the copy is made: {again:?}");
+}
+
+#[test]
+fn a_revoke_between_the_copy_and_the_hire_removes_the_copy_and_hires_nobody() {
+    let fixture = Fixture::new();
+    let floor = floor(&fixture);
+    set_trust(&floor, true).expect("the grant");
+    let (reached, release) = floor.running.handle.hold_after_copy();
+    let held = {
+        let (cookie, csrf) = session(&floor);
+        let addr = floor.addr;
+        std::thread::spawn(move || post_copy(addr, &cookie, &csrf, 'A'))
+    };
+    reached
+        .recv_timeout(WAIT)
+        .expect("the copy was made and the hire is waiting");
+    assert_eq!(leases(&fixture), 1, "the lease is journaled");
+    assert_eq!(trees(&floor), 1, "and the tree is on disk");
+    assert_eq!(
+        operator(
+            &floor,
+            Method::WorkspaceTrust,
+            json!({ "workspace_id": "repo_1", "trusted": false })
+        )
+        .expect("untrust")["changed"],
+        true
+    );
+    release.send(()).expect("release");
+    let reply = held.join().expect("the hire request");
+    assert_eq!(reply.0, 409, "{reply:?}");
+    assert_eq!(reply.1["reason"], "own_copy", "{reply:?}");
+    assert_eq!(hired_agents(&fixture), 0, "nobody was hired");
+    assert_eq!(trees(&floor), 0, "the copy is gone");
+    assert!(
+        fixture.records().iter().any(|record| matches!(
+            record,
+            Record::WorktreeRemoved {
+                how: dudes_proto::WorktreeRemoval::NeverAssigned,
+                ..
+            }
+        )),
+        "its lease ended"
+    );
 }

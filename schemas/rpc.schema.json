@@ -19354,13 +19354,18 @@
     "TrustResult": {
       "description": "`workspace.trust` result.",
       "properties": {
+        "changed": {
+          "description": "Whether this call changed anything. An untrust of a project that was not trusted changes\nnothing and appends nothing.",
+          "type": "boolean"
+        },
         "trusted": {
           "description": "Whether the project is trusted now.",
           "type": "boolean"
         }
       },
       "required": [
-        "trusted"
+        "trusted",
+        "changed"
       ],
       "type": "object"
     },

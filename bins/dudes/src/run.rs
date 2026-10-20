@@ -2214,7 +2214,6 @@ fn workspace_command(
         }
         WorkspaceCommand::Remove { id } => {
             let edit = workspace::remove(config, id).map_err(local)?;
-            forget_trust(env, id);
             adopt(
                 env,
                 config,
@@ -2287,16 +2286,6 @@ fn workspace_command(
     }
 }
 
-/// A removed project must not stay trusted. Best effort: with no daemon running there is no grant
-/// to revoke that a later start would find enrolled.
-fn forget_trust(env: &Environment, id: &str) {
-    let _ = operator_call(
-        env,
-        Method::WorkspaceTrust,
-        Some(serde_json::json!({ "workspace_id": id, "trusted": false })),
-    );
-}
-
 /// `dudes project trust` and `untrust`: the operator's grant, journaled by the daemon.
 fn trust_command(
     env: &Environment,
@@ -2310,7 +2299,7 @@ fn trust_command(
         Method::WorkspaceTrust,
         Some(serde_json::json!({ "workspace_id": id, "trusted": trusted })),
     )?)?;
-    render::trust_set(out, machine, id, result.trusted)
+    render::trust_set(out, machine, id, &result)
         .map_err(|error| Failure::Other(Message::Local(error.to_string())))?;
     Ok(exit::SUCCESS)
 }

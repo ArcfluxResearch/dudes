@@ -2242,6 +2242,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
         if decision.result.applied {
             self.ctx.enrollment = decision.candidate;
+            self.revoke_stale_grants();
             self.install_switches(decision.switches);
             match decision.resync {
                 Resync::None => {}
@@ -2832,14 +2833,17 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             Ok(admitted) => admitted,
             Err(refusal) => return answer(Err(refusal)),
         };
-        if self.trust_still_holds(Some(trust)).is_err() {
+        let Some(lease) = self.pending_lease(worktree) else {
+            return answer(Err(OnboardRefusal::OwnCopy(CopyRefusal::Failed)));
+        };
+        if self
+            .trust_still_holds(Some(trust), &lease.origin, &profile.cwd)
+            .is_err()
+        {
             return answer(Err(OnboardRefusal::OwnCopy(CopyRefusal::TrustChanged(
                 profile.id.clone(),
             ))));
         }
-        let Some(lease) = self.pending_lease(worktree) else {
-            return answer(Err(OnboardRefusal::OwnCopy(CopyRefusal::Failed)));
-        };
         if self.refuse_overlap(&lease.path, Some(worktree)).is_err() {
             return answer(Err(OnboardRefusal::Forbidden));
         }
@@ -4909,7 +4913,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             } => {
                 self.worktree_admission(&params)?;
                 self.refuse_overlap(&origin, None)?;
-                self.trust_still_holds(trust.as_deref())?;
+                self.trust_still_holds(trust.as_deref(), &origin, &params.cwd)?;
                 if let Some(from) = from {
                     let same =
                         self.sup.world().worktrees.get(&from).is_some_and(|row| {
@@ -5070,6 +5074,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 directory,
                 vouch,
             } => {
+                let Some((vouch, directory)) = vouch.zip(directory) else {
+                    // A revocation with no grant appends nothing, so removing a project that was
+                    // never trusted does not put a required record in anyone's journal.
+                    if !self.sup.world().workspace_trust.contains_key(&workspace_id) {
+                        return Ok(Answered::TrustSet(false));
+                    }
+                    self.revoke_grant(workspace_id)?;
+                    return Ok(Answered::TrustSet(true));
+                };
                 let enrolled = self
                     .ctx
                     .enrollment
@@ -5084,17 +5097,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         ),
                     ));
                 }
-                let (repository, pin) = match vouch {
-                    Some(vouch) => (Some(vouch.repository), Some(vouch.pin)),
-                    None => (None, None),
-                };
                 self.pump_or_refuse(Input::Command(Command::SetWorkspaceTrust {
                     workspace_id,
-                    trusted: repository.is_some(),
-                    repository,
-                    pin,
+                    trusted: true,
+                    repository: Some(vouch.repository),
+                    pin: Some(vouch.pin),
                 }))?;
-                Ok(Answered::Done)
+                Ok(Answered::TrustSet(true))
             }
             Ask::WorktreePending => {
                 let world = self.sup.world();
@@ -6929,22 +6938,61 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
     }
 
+    /// Append the revocation of the grant for `workspace_id`.
+    fn revoke_grant(&mut self, workspace_id: String) -> Result<(), RpcError> {
+        self.pump_or_refuse(Input::Command(Command::SetWorkspaceTrust {
+            workspace_id,
+            trusted: false,
+            repository: None,
+            pin: None,
+        }))
+    }
+
+    /// Revoke every grant whose project is no longer enrolled, or is enrolled somewhere that is not
+    /// inside the repository that was vouched for. Run in the loop step that replaces the
+    /// enrollment, so a removed project cannot come back trusted. Appends only where a grant exists.
+    fn revoke_stale_grants(&mut self) {
+        let stale: Vec<String> = self
+            .sup
+            .world()
+            .workspace_trust
+            .iter()
+            .filter(|(id, grant)| {
+                self.ctx.enrollment.profile(id).is_none_or(|profile| {
+                    !crate::worktree::contains(&grant.repository.directory, &profile.cwd)
+                })
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            if let Err(error) = self.revoke_grant(id.clone()) {
+                tracing::warn!(project = %id, %error.message, "could not revoke a trust grant");
+            }
+        }
+    }
+
     /// A copy for the Floor rests on one grant. It holds only while that grant is still the
-    /// project's latest, so an untrust or a new grant between steps ends the hire.
+    /// project's latest, so an untrust or a new grant between steps ends the hire, and only while
+    /// `origin` is still the directory the grant vouched for, by path and by identity.
     fn trust_still_holds(
         &self,
         ticket: Option<&crate::worktree::hire::TrustTicket>,
+        origin: &std::path::Path,
+        project: &std::path::Path,
     ) -> Result<(), RpcError> {
         let Some(ticket) = ticket else {
             return Ok(());
         };
-        let current = self
+        let holds = self
             .sup
             .world()
             .workspace_trust
             .get(&ticket.workspace_id)
-            .map(|grant| grant.lsn);
-        if current == Some(ticket.lsn) {
+            .is_some_and(|grant| {
+                grant.lsn == ticket.lsn
+                    && crate::worktree::trust::still_there(&grant.repository, origin, project)
+            });
+        if holds {
             Ok(())
         } else {
             Err(crate::worktree::unavailable(

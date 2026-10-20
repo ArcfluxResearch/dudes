@@ -631,8 +631,8 @@ pub enum Ask {
     TrustSet {
         /// The enrolled project.
         workspace_id: String,
-        /// The directory the vouch was read from.
-        directory: PathBuf,
+        /// The directory the vouch was read from. Absent for a revocation.
+        directory: Option<PathBuf>,
         /// What the operator vouched for.
         vouch: Option<Box<crate::worktree::trust::Vouch>>,
     },
@@ -701,6 +701,8 @@ pub enum Answered {
     WorktreeEntries(Vec<dudes_proto::rpc::worktree::WorktreeEntry>),
     /// The directory an enrolled project is.
     TrustTarget(PathBuf),
+    /// Whether a trust call appended a record: a revocation with no grant to revoke appends none.
+    TrustSet(bool),
     /// Nothing to report; any record the command appended is durable.
     Done,
 }
@@ -1128,6 +1130,12 @@ pub struct Handle {
     stopping: Arc<AtomicBool>,
     /// The worktree path a browser hire into its own copy uses. Weak, because it holds a handle.
     worktrees: Arc<std::sync::OnceLock<std::sync::Weak<crate::worktree::hire::WorktreeHires>>>,
+    /// Armed only by a test, to hold a copy between its making and its hire.
+    #[allow(
+        clippy::type_complexity,
+        reason = "one channel pair, read in one place"
+    )]
+    copy_hold: Arc<Mutex<Option<(Sender<()>, Receiver<()>)>>>,
 }
 
 /// How long a hook waits for the loop's answer in production.
@@ -1276,23 +1284,53 @@ impl Handle {
                 Why::Other => CopyRefusal::Failed,
             })
         })?;
-        let answer = self
-            .onboard_step(|reply| Job::OnboardCopied {
-                session,
-                request,
-                baseline,
-                worktree: lease.worktree,
-                trust: Box::new(trust),
-                reply,
-            })
-            .and_then(|step| match step {
-                OnboardStep::Answer(answer) => answer,
-                _ => Err(OnboardRefusal::Unavailable),
-            });
+        self.hold_for_a_test();
+        let step = self.onboard_step(|reply| Job::OnboardCopied {
+            session,
+            request,
+            baseline,
+            worktree: lease.worktree,
+            trust: Box::new(trust),
+            reply,
+        });
+        let answer = match step {
+            // The loop never answered because it is stopping. The job it may still run hires into
+            // this copy, so this thread must not remove the tree under it. A copy left pending is
+            // cleaned up when the daemon next starts.
+            Err(refusal) => return Err(refusal),
+            Ok(OnboardStep::Answer(answer)) => answer,
+            Ok(_) => Err(OnboardRefusal::Unavailable),
+        };
         if answer.is_err() {
             worktrees.discard(lease.worktree);
         }
         answer
+    }
+
+    /// Stop a browser hire in its own copy once the copy exists and before the loop is asked to
+    /// hire into it: tell the test it is there, then wait to be released. Does nothing unless a
+    /// test armed it.
+    #[doc(hidden)]
+    pub fn hold_after_copy(&self) -> (Receiver<()>, Sender<()>) {
+        let (reached, wait_for_it) = mpsc::channel();
+        let (release, held) = mpsc::channel();
+        *self
+            .copy_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((reached, held));
+        (wait_for_it, release)
+    }
+
+    fn hold_for_a_test(&self) {
+        let armed = self
+            .copy_hold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some((reached, held)) = armed {
+            let _ = reached.send(());
+            let _ = held.recv_timeout(Duration::from_secs(20));
+        }
     }
 
     /// The worktree path the daemon wired in, once it has.
@@ -1637,6 +1675,7 @@ impl Handle {
             hook_reply_timeout: DEFAULT_HOOK_REPLY_TIMEOUT,
             stopping: Arc::new(AtomicBool::new(false)),
             worktrees: Arc::new(std::sync::OnceLock::new()),
+            copy_hold: Arc::new(Mutex::new(None)),
         }
     }
 

@@ -264,32 +264,38 @@ impl WorktreeHires {
             message: format!("workspace.trust: {text}"),
             data: None,
         };
-        let Answered::TrustTarget(directory) = self
-            .handle
-            .ask(Ask::TrustTarget(params.workspace_id.clone()))?
-        else {
-            return Err(refused(
-                "the loop did not name the project's folder".to_owned(),
-            ));
-        };
-        let vouch = if params.trusted {
+        // A revocation needs no enrolled project: a removed project's grant must still be undone.
+        let (directory, vouch) = if params.trusted {
+            let Answered::TrustTarget(directory) = self
+                .handle
+                .ask(Ask::TrustTarget(params.workspace_id.clone()))?
+            else {
+                return Err(refused(
+                    "the loop did not name the project's folder".to_owned(),
+                ));
+            };
             self.git
                 .check_version()
                 .map_err(|error| refused(error.to_string()))?;
-            Some(Box::new(
+            let vouch = Box::new(
                 super::trust::inspect(&self.git, &directory)
                     .map_err(|refusal| refused(refusal.to_string()))?,
-            ))
+            );
+            (Some(directory), Some(vouch))
         } else {
-            None
+            (None, None)
         };
-        self.handle.ask(Ask::TrustSet {
+        let Answered::TrustSet(changed) = self.handle.ask(Ask::TrustSet {
             workspace_id: params.workspace_id.clone(),
             directory,
             vouch,
-        })?;
+        })?
+        else {
+            return Err(refused("the loop did not answer the trust call".to_owned()));
+        };
         Ok(dudes_proto::rpc::workspace::TrustResult {
             trusted: params.trusted,
+            changed,
         })
     }
 

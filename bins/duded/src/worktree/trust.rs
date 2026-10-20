@@ -36,6 +36,8 @@ pub enum TrustRefusal {
     Symlink,
     /// The repository's answer was too long to read whole.
     TooLarge,
+    /// Two pinned entries differ only by letter case, so one file system would show only one.
+    CaseVariants,
     /// The repository is not the one that was trusted.
     Moved,
     /// The repository's settings differ from the ones that were trusted.
@@ -58,6 +60,9 @@ impl std::fmt::Display for TrustRefusal {
             Self::Symlink => {
                 f.write_str("`.claude/` or `.mcp.json` holds a symbolic link at the current commit")
             }
+            Self::CaseVariants => f.write_str(
+                "`.claude/` or `.mcp.json` holds two entries that differ only by letter case",
+            ),
             Self::TooLarge => f.write_str("the repository's configuration is too large to pin"),
             Self::Moved => f.write_str("the repository is not the directory that was trusted"),
             Self::Changed => {
@@ -133,6 +138,17 @@ pub fn verify(
     Ok(())
 }
 
+/// Whether `origin` is still the directory a grant vouched for, by path and by the identity of
+/// it and of its git common directory, and `project` is still inside it. Reads the file system
+/// only, so the loop can ask it at each append.
+#[must_use]
+pub fn still_there(repository: &TrustedRepository, origin: &Path, project: &Path) -> bool {
+    origin == repository.directory
+        && super::contains(&repository.directory, project)
+        && identity(&repository.directory).is_ok_and(|now| now == repository.directory_identity)
+        && identity(&repository.common_dir).is_ok_and(|now| now == repository.common_identity)
+}
+
 fn vouch_for(git: &Git, origin: &Path, base: GitCommit) -> Result<Vouch, TrustRefusal> {
     let common = super::plain_git_dir(origin).ok_or(TrustRefusal::NotARepository)?;
     let repository = TrustedRepository {
@@ -142,10 +158,10 @@ fn vouch_for(git: &Git, origin: &Path, base: GitCommit) -> Result<Vouch, TrustRe
         common_identity: identity(&common)?,
     };
     let base = base.to_string();
-    refuse_symlinks(git, origin, &base)?;
+    let (claude_tree, mcp_json) = settings_entries(git, origin, &base)?;
     let pin = TrustPin {
-        claude_tree: object(git, origin, &base, ".claude")?,
-        mcp_json: object(git, origin, &base, ".mcp.json")?,
+        claude_tree,
+        mcp_json,
         attributes: attributes_digest(&common)?,
         config: config_digest(git, origin, &common)?,
     };
@@ -167,59 +183,74 @@ fn identity(_path: &Path) -> Result<FileIdentity, TrustRefusal> {
     Err(TrustRefusal::Unsupported("this platform"))
 }
 
-/// The id of the object `path` names at `base`, or `None` when the commit has none.
-fn object(
+/// What the root tree of `base` holds under the two pinned names.
+///
+/// Names are matched ignoring ASCII case, because a checkout on a case-insensitive file system
+/// puts `.Claude` where the agent reads `.claude`. Every such entry is pinned by name and object
+/// id, a symbolic link at any depth is refused, and so are two entries that differ only by case.
+fn settings_entries(
     git: &Git,
     origin: &Path,
     base: &str,
-    path: &str,
-) -> Result<Option<String>, TrustRefusal> {
-    let spec = format!("{base}:{path}");
-    match git.status(
-        origin,
-        &[
-            OsStr::new("rev-parse"),
-            OsStr::new("--verify"),
-            OsStr::new("--quiet"),
-            OsStr::new(&spec),
-        ],
-        QUICK,
-    )? {
-        (Some(0), text) => Ok(Some(text.trim().to_owned())),
-        (Some(1), _) => Ok(None),
-        (exit, text) => Err(TrustRefusal::Git(format!("exit {exit:?}: {text}"))),
+) -> Result<(Option<String>, Option<String>), TrustRefusal> {
+    let root = listing(git, origin, &["ls-tree", "-z"], base)?;
+    let mut claude = None;
+    let mut mcp = None;
+    for (mode, kind, oid, name) in entries(&root) {
+        let slot = match name.to_ascii_lowercase().as_str() {
+            ".claude" => &mut claude,
+            ".mcp.json" => &mut mcp,
+            _ => continue,
+        };
+        if slot.is_some() {
+            return Err(TrustRefusal::CaseVariants);
+        }
+        if mode == "120000" {
+            return Err(TrustRefusal::Symlink);
+        }
+        if kind == "tree" {
+            let inside = listing(git, origin, &["ls-tree", "-r", "-z"], oid)?;
+            let mut seen = std::collections::BTreeSet::new();
+            for (mode, _, _, path) in entries(&inside) {
+                if mode == "120000" {
+                    return Err(TrustRefusal::Symlink);
+                }
+                if !seen.insert(path.to_ascii_lowercase()) {
+                    return Err(TrustRefusal::CaseVariants);
+                }
+            }
+        }
+        *slot = Some(format!("{name}:{oid}"));
     }
+    Ok((claude, mcp))
 }
 
-/// Refuse a symbolic link anywhere under `.claude/`, or at `.mcp.json`, at `base`.
-fn refuse_symlinks(git: &Git, origin: &Path, base: &str) -> Result<(), TrustRefusal> {
-    let (exit, out, truncated) = git.capture(
-        origin,
-        &[
-            OsStr::new("ls-tree"),
-            OsStr::new("-r"),
-            OsStr::new("-z"),
-            OsStr::new(base),
-            OsStr::new("--"),
-            OsStr::new(".claude"),
-            OsStr::new(".mcp.json"),
-        ],
-        QUICK,
-        READ_CAP,
-    )?;
+/// The entries of an `ls-tree -z` listing: mode, type, object id and path.
+fn entries(listing: &[u8]) -> impl Iterator<Item = (&str, &str, &str, String)> {
+    listing.split(|byte| *byte == 0).filter_map(|entry| {
+        let at = entry.iter().position(|byte| *byte == b'\t')?;
+        let meta = std::str::from_utf8(&entry[..at]).ok()?;
+        let mut parts = meta.split(' ');
+        Some((
+            parts.next()?,
+            parts.next()?,
+            parts.next()?,
+            String::from_utf8_lossy(&entry[at + 1..]).into_owned(),
+        ))
+    })
+}
+
+fn listing(git: &Git, origin: &Path, words: &[&str], rev: &str) -> Result<Vec<u8>, TrustRefusal> {
+    let mut command: Vec<&OsStr> = words.iter().map(OsStr::new).collect();
+    command.push(OsStr::new(rev));
+    let (exit, out, truncated) = git.capture(origin, &command, QUICK, READ_CAP)?;
     if exit != Some(0) {
         return Err(TrustRefusal::Git(format!("ls-tree exited with {exit:?}")));
     }
     if truncated {
         return Err(TrustRefusal::TooLarge);
     }
-    if out
-        .split(|byte| *byte == 0)
-        .any(|entry| entry.starts_with(b"120000 "))
-    {
-        return Err(TrustRefusal::Symlink);
-    }
-    Ok(())
+    Ok(out)
 }
 
 fn absent(what: &[u8]) -> Hex32 {

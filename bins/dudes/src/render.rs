@@ -555,28 +555,40 @@ pub fn worktree_already_removed(
 /// # Errors
 ///
 /// Whatever writing returns.
-pub fn trust_set(out: &mut dyn Write, machine: bool, id: &str, trusted: bool) -> io::Result<()> {
+pub fn trust_set(
+    out: &mut dyn Write,
+    machine: bool,
+    id: &str,
+    result: &dudes_proto::rpc::workspace::TrustResult,
+) -> io::Result<()> {
     if machine {
         return json(
             out,
-            &serde_json::json!({"workspace_id": id, "trusted": trusted}),
+            &serde_json::json!({
+                "workspace_id": id, "trusted": result.trusted, "changed": result.changed
+            }),
         );
     }
-    if trusted {
+    if result.trusted {
         writeln!(
             out,
             "Trusted project {}. The Floor may now hire a Claude agent into its own copy of it. \
-             Those agents run the repository's own Claude settings, so the settings' environment \
-             values and helper commands apply without asking. A change to the repository's .claude \
-             directory, .mcp.json or git configuration ends this until you run the command again.",
+             Anyone holding a live Floor session, including a stolen one, can then hire up to four \
+             agents into their own copies and branches of this project, and those stay until you \
+             remove them. Those agents run the repository's own Claude settings, so the settings' \
+             environment values and helper commands apply without asking. A change to the \
+             repository's .claude directory, .mcp.json or git configuration ends this until you \
+             run the command again.",
             Escaped(id)
         )
-    } else {
+    } else if result.changed {
         writeln!(
             out,
             "Stopped trusting project {}. Agents already hired into copies keep working.",
             Escaped(id)
         )
+    } else {
+        writeln!(out, "Project {} was not trusted.", Escaped(id))
     }
 }
 

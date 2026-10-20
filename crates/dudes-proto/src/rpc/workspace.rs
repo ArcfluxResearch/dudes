@@ -18,4 +18,7 @@ pub struct TrustParams {
 pub struct TrustResult {
     /// Whether the project is trusted now.
     pub trusted: bool,
+    /// Whether this call changed anything. An untrust of a project that was not trusted changes
+    /// nothing and appends nothing.
+    pub changed: bool,
 }

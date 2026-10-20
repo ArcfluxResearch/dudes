@@ -17,7 +17,7 @@ const PLACES = 40;
  * It includes `dudes project trust`, the one named exit of the optional own-copy box on Hire, which
  * the page shows only for an untrusted project another agent already works in.
  */
-const DISTINCT_DUDES_COMMANDS = 18;
+const DISTINCT_DUDES_COMMANDS = 19;
 
 const renderer = resolve(import.meta.dirname, '../src/renderer');
 
