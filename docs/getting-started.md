@@ -94,7 +94,7 @@ Dudes reads no engine's credentials or files.
    says it did and the files it changed, then choose **Accept**, or **Ask for changes** with a
    message. See [Tickets](tickets.md).
 
-5. Hire more agents. On the Floor, click **Hire an agent**, choose the workspace and an engine it
+5. Hire more agents. On the Floor, click **Hire an agent**, choose the project and an engine it
    offers, and write the briefing. The Floor offers Claude Code, and Codex or Pi once they are
    turned on. From the command line, hire an agent, then give it a goal with the id that `hire`
    prints. This one gets a folder of its own. Dudes cannot check another agent's engine settings

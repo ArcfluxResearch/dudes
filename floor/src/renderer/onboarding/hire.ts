@@ -71,6 +71,7 @@ export type FieldName = 'name' | 'role' | 'workspace_id' | 'engine' | 'check_id'
 export type HireOffer = Pick<FloorState, 'onboarding' | 'checks' | 'agents'>;
 
 export const NO_CHECK = 'No completion check is offered for this project, so Hire is unavailable.';
+export const NO_PROJECT_LIST = 'Hire cannot list your projects right now. Reload the page, and check Settings if this stays.';
 
 export interface HireDraft {
   readonly name: string;
@@ -347,7 +348,7 @@ export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldPr
   const workspace = chosenWorkspace(draft, catalog);
   if (catalog === null) {
     problems.push({ field: 'workspace_id', section: 'workspace',
-      message: 'No project is offered to this session, so Hire is unavailable.' });
+      message: NO_PROJECT_LIST });
   } else if (draft.workspaceId === '') {
     problems.push({ field: 'workspace_id', section: 'workspace', message: 'Choose a project.' });
   } else if (workspace === null) {

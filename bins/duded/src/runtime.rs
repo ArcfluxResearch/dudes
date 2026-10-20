@@ -5066,7 +5066,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 Some(profile) => Ok(Answered::TrustTarget(profile.cwd.clone())),
                 None => Err(error(
                     ErrorCode::InvalidParams,
-                    format!("workspace.trust: no enrolled project is named `{workspace_id}`"),
+                    format!("project trust: no project is named `{workspace_id}`"),
                 )),
             },
             Ask::TrustSet {
@@ -5092,8 +5092,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     return Err(error(
                         ErrorCode::Refused,
                         format!(
-                            "workspace.trust: `{workspace_id}` is no longer enrolled at the \
-                             directory that was read; run the command again"
+                            "project trust: `{workspace_id}` is no longer set up at the folder \
+                             that was read; run the command again"
                         ),
                     ));
                 }

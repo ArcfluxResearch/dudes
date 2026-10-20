@@ -65,7 +65,7 @@ checks the engine again when the login exits cleanly and the hire carries on. Th
 `floor.hire` and needs no terminal switch. Closing the terminal, waiting ten minutes or stopping the
 daemon ends the login. Dudes does not keep or log what the terminal shows or what you type, and the
 engine writes its own credentials. **Settings** shows the running Floor switches, budget ceilings, per-turn reserves,
-registered providers and enrolled workspace labels. The Floor reads configuration without editing
+registered providers and your projects. The Floor reads configuration without editing
 it. **About**, within Settings, shows the daemon, Floor build and browser wire versions.
 
 ## Hire an agent into its own copy of the project

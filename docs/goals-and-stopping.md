@@ -10,7 +10,7 @@ already passes, because that check could not show when the goal is done. A check
 passing, such as a test suite, can be declared with `--check-may-already-pass`. It is then not run
 first, and Done means only that it passes after the agent's work.
 
-Each enrolled workspace offers the Floor its own check and any more you add with
+Each project offers the Floor its own check and any more you add with
 `dudes project check add`. A Floor hire or goal change names the one its goal uses.
 
 The completion check runs in the agent's working directory with no sandbox. See
@@ -30,7 +30,7 @@ hexadecimal request id for each proposal, and retain that exact file for retries
 
 Replacement refuses unsettled work and stale goals, and preserves remaining optional budgets and
 hops. It never resumes the agent automatically. The Floor shows only the configured check summary.
-Its goal form keeps the existing check or names another check enrolled for the agent's workspace,
+Its goal form keeps the existing check or names another check set up for the agent's project,
 and runs it once first.
 
 ## Pause, resume, halt and retire
