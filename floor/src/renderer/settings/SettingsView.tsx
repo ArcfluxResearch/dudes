@@ -130,7 +130,7 @@ export function SettingsView({ floor, onSetup }: {
     <section className="settings-about" aria-labelledby="settings-about"><h3 id="settings-about">About</h3>
       {report.about.daemon_version === __FLOOR_BUILD_VERSION__ ? null : <p role="status">
         This page and daemon have different builds. The page is {__FLOOR_BUILD_VERSION__} and the daemon is {report.about.daemon_version}.
-        {' '}Run <code>dudes floor open</code> to load the matching page. Keep any draft text before leaving this page.
+        {' '}Open Dudes to load the matching page. Keep any draft text before leaving this page.
       </p>}
       <dl><div><dt>Daemon</dt><dd>{report.about.daemon_version}</dd></div>
         <div><dt>Floor build</dt><dd>{__FLOOR_BUILD_VERSION__}</dd></div>

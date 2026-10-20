@@ -274,13 +274,10 @@ test('a link refused for a different build says so, keeps the page, and a matchi
   assert.equal(entry.pastedLinkBuildMismatch(), false);
 });
 
-const USED = 'This sign-in link did not work\. A link works once, for 60 seconds\. Run <code>dudes floor open</code> for a new one and paste it here\. '
-  + 'If the new link is refused too, four Dudes tabs are probably already open: close the ones you no longer use and try again after 30 minutes, or run '
-  + '<code>dudes stop</code> then <code>dudes start</code> to sign every tab out \\(this ends running turns\\), and then <code>dudes floor open</code>\.';
-const NO_LINK = 'The sign-in link in the address of this page is not a Dudes sign-in link\. Run '
-  + '<code>dudes floor open</code> and paste the new link here within 60 seconds\.';
-const EXPIRED = 'You are signed out of this Floor\. That happens after 30 minutes without use, or when Dudes restarts\. Run '
-  + '<code>dudes floor open</code> for a new link\. Each link works once, in one browser\.';
+const USED = 'This sign-in link did not work\. A link works once, for 60 seconds\. Open Dudes for a new one\.';
+const NO_LINK = 'The sign-in link in the address of this page is not a Dudes sign-in link\. Open Dudes to sign in\.';
+const EXPIRED = 'You are signed out of this Floor\. That happens after a day without use, after 30 days, when you sign out, or when Dudes restarts and cannot keep sign-ins\. '
+  + 'Open Dudes to sign in again\.';
 
 test('a refused first link leads with the used-or-expired line, names no secret, and a session taken since clears it', async () => {
   const session = await server.ssrLoadModule('/src/session.ts');

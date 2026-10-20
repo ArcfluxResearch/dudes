@@ -121,6 +121,6 @@ export function checkRefusalText(reason: CheckRefusal, label: string | null, rou
     case 'check_running':
       return 'A check is still running for this Floor session. Try again when it ends.';
     case 'check_limit':
-      return 'This Floor session has run its 32 checks. Open a new Floor session from a terminal (dudes floor open).';
+      return 'This Floor session has run its 32 checks. Open Dudes to start a new Floor session.';
   }
 }

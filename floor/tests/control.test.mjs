@@ -530,7 +530,7 @@ test('403 with a live snapshot says this page can no longer act; with a dead str
   noteTransport('close');
   html = status();
   assert.match(html, /data-control-session="ended"/);
-  assert.match(html, /Your Floor session has ended or was revoked\. Paste a new link from dudes floor open into this tab’s address bar/);
+  assert.match(html, /Your Floor session has ended or was revoked\. Open Dudes to sign in again in this browser/);
   assert.doesNotMatch(html, /control-success/);
 
   // After signing in again, the message speaks for the new session.
@@ -836,7 +836,7 @@ test('a 403 says what a press does next: an ended session keeps no settled reque
   noteTransport('close');
   let html = status();
   assert.match(html, /data-control-session="ended"/);
-  assert.match(html, /into this tab’s address bar, then press Pause or Resume again\./);
+  assert.match(html, /Open Dudes to sign in again in this browser, then press Pause or Resume again\./);
   assert.doesNotMatch(html, /keeps the request/, 'a settled request is said to be kept');
   // Ended, an earlier reply unresolved: that request is kept, for Check status.
   resetFloorStore();
@@ -858,7 +858,7 @@ test('a 403 says what a press does next: an ended session keeps no settled reque
   subscribe({ agents: [agent(), GRACE_ROW()] }); // the fresh snapshot, on the same session
   html = status(net.generation);
   assert.match(html, /data-control-session="live"/);
-  assert.match(html, /Paste a new Floor link into this tab’s address bar to act again\./);
+  assert.match(html, /Open Dudes to sign in again, then act again\./);
   for (const id of [ADA, GRACE]) {
     assert.match(strip(id, net.generation), /class="control-pause" aria-disabled="true"/,
       `${id}’s Pause is offered beside a request to paste a new link`);

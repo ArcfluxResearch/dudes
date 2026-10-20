@@ -210,6 +210,18 @@ export function reauthenticateFloorStream(session: FloorSessionLike): boolean {
   return true;
 }
 
+/**
+ * What the stream does when its first socket of a run closes, to tell a session the daemon no longer
+ * knows from a daemon that blinked. `ask` is the daemon's own answer about the session; only
+ * `unknown` calls `onUnknown`, which decides what the page does about it.
+ */
+export interface StandingPorts {
+  ask(session: FloorSessionLike): Promise<'live' | 'unknown' | 'unclear'>;
+  onUnknown(): void;
+}
+
+const NO_STANDING: StandingPorts = { ask: async () => 'unclear', onUnknown: () => {} };
+
 /** What the page asks when the daemon has gone away: the browser's own request and the files it was loaded with. */
 const BROWSER_AWAY: AwayPorts = { fetchIndex: browserIndexFetch, ownRefs: loadedAssetRefs() };
 
@@ -239,6 +251,7 @@ export function openFloorStream(
   connect: SocketFactory,
   timers: StreamTimers = browserTimers,
   away: AwayPorts = BROWSER_AWAY,
+  standing: StandingPorts = NO_STANDING,
 ): () => void {
   // The session every socket is opened for. It changes only when the page is
   // re-authenticated in place, and the next socket then offers the new nonce.
@@ -411,6 +424,10 @@ export function openFloorStream(
       answeredAtFirstClose = false;
       void indexAnswers(away).then((answered) => {
         if (!disposed) answeredAtFirstClose = answered;
+      });
+      const asked = session;
+      void standing.ask(asked).then((answer) => {
+        if (!disposed && session === asked && answer === 'unknown') standing.onUnknown();
       });
     }
     // Clearing here rather than on the next open: the rows stop being confirmed

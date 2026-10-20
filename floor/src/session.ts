@@ -15,6 +15,7 @@ const SECRET_KEY = 'dudes.floor.secret';
 export interface SecretStore {
   read(): string | null;
   write(secret: string): void;
+  forget(): void;
 }
 
 function browserStorage(): Storage {
@@ -32,6 +33,11 @@ export const browserSecretStore: SecretStore = Object.freeze({
   write(secret: string): void {
     try {
       browserStorage().setItem(SECRET_KEY, secret);
+    } catch {}
+  },
+  forget(): void {
+    try {
+      browserStorage().removeItem(SECRET_KEY);
     } catch {}
   },
 });
@@ -98,6 +104,80 @@ function settle(ticket: number, session: FloorSession | null, keep: boolean): vo
   if (ticket <= holding || (session === null && keep)) return;
   current = session;
   holding = ticket;
+}
+
+/**
+ * What the daemon says of the session the page holds. `unknown` is its plain answer that no such
+ * session exists, and nothing else counts as it: a daemon that cannot be reached, a refusal that is
+ * not about the session, or any other reply is `unclear`, and the page keeps what it holds. A
+ * transient close of the stream therefore never signs a live session out.
+ */
+export type Standing = 'live' | 'unknown' | 'unclear';
+
+export async function askFloorStanding(
+  session: FloorSession,
+  fetch: FetchPort = floorFetch,
+): Promise<Standing> {
+  try {
+    const response = await fetch('/floor/session/check', {
+      method: 'POST',
+      body: '{}',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': session.csrf },
+    });
+    if (response.ok) return 'live';
+    if (response.status !== 401) return 'unclear';
+    const answer: unknown = await response.json();
+    return typeof answer === 'object' && answer !== null && 'session' in answer && answer.session === 'unknown'
+      ? 'unknown'
+      : 'unclear';
+  } catch {
+    return 'unclear';
+  }
+}
+
+/** The page lost its session: forget it and the secret kept for it, so a reload starts signed out. */
+export function endFloorSession(store: SecretStore = browserSecretStore): void {
+  store.forget();
+  settle(++started, null, false);
+}
+
+/**
+ * Another tab of this browser signed in since this page did, and left its secret in the storage the
+ * tabs share, along with the cookie that goes with it. Take that secret as this page's own. `null`
+ * when the store holds nothing new, which is the page's cue that its session really is gone.
+ */
+export function adoptStoredFloorSession(store: SecretStore = browserSecretStore): FloorSession | null {
+  const secret = store.read();
+  if (secret === null || !SECRET.test(secret) || secret === current?.csrf) return null;
+  const session: FloorSession = Object.freeze({ csrf: secret });
+  settle(++started, session, false);
+  return session;
+}
+
+/**
+ * Sign out. The daemon ends the session and closes its sockets; the page forgets the secret
+ * whether or not the daemon could be asked, since a page that cannot reach the daemon cannot act
+ * either.
+ */
+export async function signOutFloorSession(
+  session: FloorSession,
+  fetch: FetchPort = floorFetch,
+  store: SecretStore = browserSecretStore,
+): Promise<void> {
+  try {
+    await fetch('/floor/session/end', {
+      method: 'POST',
+      body: '{}',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': session.csrf },
+    });
+  } catch {}
+  endFloorSession(store);
 }
 
 export async function establishFloorSession(): Promise<FloorSession | null> {

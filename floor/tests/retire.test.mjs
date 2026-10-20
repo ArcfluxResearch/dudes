@@ -810,7 +810,7 @@ test('a 403 says what this page can do next, and a request whose effect is unkno
   subscribe({ agents: [agent(), GRACE_ROW()] });
   let html = status(net.generation);
   assert.match(html, /data-retire-session="live"/);
-  assert.match(html, /this page can no longer retire with its session\. Paste a new Floor link into this tab’s address bar to act again\. Nothing was retired\./);
+  assert.match(html, /this page can no longer retire with its session\. Open Dudes to sign in again, then act again\. Nothing was retired\./);
   // The refused session can no longer act: every Retire waits until a new one.
   for (const id of [ADA, GRACE]) assert.match(stripView(id, net.generation), /aria-disabled="true"/, id);
   retire.confirmRetire(offer(GRACE), net.generation);
@@ -832,7 +832,7 @@ test('a 403 says what this page can do next, and a request whose effect is unkno
   noteTransport('close');
   html = status();
   assert.match(html, /data-retire-session="ended"/);
-  assert.match(html, /Your Floor session has ended or was revoked\. Paste a new link from dudes floor open into this tab’s address bar to act again\. Nothing was retired\./);
+  assert.match(html, /Your Floor session has ended or was revoked\. Open Dudes to sign in again in this browser to act again\. Nothing was retired\./);
 
   // After an unresolved reply, a 403 keeps the request, and Check status from a fresh session sends the same bytes.
   resetFloorStore();

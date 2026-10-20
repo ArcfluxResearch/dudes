@@ -426,7 +426,7 @@ test('403 with a live snapshot says this page can no longer answer; with a dead 
   html = status();
   assert.match(html, /data-answer-session="ended"/);
   assert.match(html,
-    /Your Floor session has ended or was revoked\. Paste a new link from dudes floor open into this tab’s address bar/);
+    /Your Floor session has ended or was revoked\. Open Dudes to sign in again in this browser/);
   assert.doesNotMatch(html, /answer-success/);
 });
 
@@ -628,7 +628,7 @@ test('after 202 or 503 and a session end, a same-request_id Check from a new ses
     assert.notEqual(answer.getAnswerState().attempt, null);
     const html = status();
     assert.match(html, /data-answer-session="ended"/);
-    assert.match(html, /into this tab’s address bar: this page keeps the answer\. Check status then asks again with the same request/);
+    assert.match(html, /Open Dudes to sign in again in this browser: this page keeps the answer\. Check status then asks again with the same request/);
     assert.doesNotMatch(html, />Edit and send again</);
     assert.match(html, /<button type="button" aria-disabled="true" aria-busy="false"[^>]*>Check status<\/button>/,
       'Check status is offered with no session to send it on');
@@ -647,7 +647,7 @@ test('after 202 or 503 and a session end, a same-request_id Check from a new ses
 
 test('after signing in again, a 403’s message speaks for the new session, not the one it was received under', async () => {
   const saysCanAnswer = /under a Floor session this page no longer uses\. This page has signed in again and can answer now/;
-  const saysPasteAgain = /this page can no longer answer with its session\. Paste a new Floor link/;
+  const saysPasteAgain = /this page can no longer answer with its session\. Open Dudes to sign in again/;
   for (const [first, next] of [
     [PENDING, /Check status asks again with the same request, which never answers twice\./],
     [null, /Edit and send again sends it under the new session\./],

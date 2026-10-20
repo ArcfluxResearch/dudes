@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 
+import { currentFloorSession, signOutFloorSession } from './session';
 import { firstLinkProblem, pastedLinkBuildMismatch, pastedLinkRefused, subscribeToPastedLink } from './connect';
 import { AgentDrawer, Receipts } from './renderer/AgentDrawer';
 import { CONTROL_VIEWS, Control, ControlNav, FocusRoster, toggledView, viewButtonId } from './renderer/Control';
@@ -42,14 +43,11 @@ import {
 /**
  * Said when the link this page was opened with, or one pasted into it, was
  * refused. Without it the page looks as it did, which reads as the link having
- * worked. It names no part of the link: the secret stays out of the page. The
- * daemon does not say why it refused a first link, so the page names both
- * causes, a link that was already used or expired and a full set of four Floor
- * sessions, with a way out of each. A closed tab frees its place only once its
- * sign-in lapses after 30 minutes without use; stopping and starting the daemon
- * ends every sign-in at once. A page opened with no link, as a
- * copied address is because a browser
- * scrubs the secret as soon as it signs in, is told its sign-in has expired.
+ * worked. It names no part of the link: the secret stays out of the page. A
+ * link is refused only when it was already used or has expired, since a full
+ * set of four Floor sessions makes room by ending the least recently used one.
+ * A page opened with no link, as a copied address is because a browser scrubs
+ * the secret as soon as it signs in, is told it is signed out.
  */
 export function PastedLinkNotice() {
   const first = useSyncExternalStore(subscribeToPastedLink, firstLinkProblem, firstLinkProblem);
@@ -58,19 +56,14 @@ export function PastedLinkNotice() {
   if (first === 'refused') {
     return (
       <p className="link-refused" role="alert">
-        This sign-in link did not work. A link works once, for 60 seconds. Run <code>dudes floor open</code> for a new
-        one and paste it here. If the new link is refused too, four Dudes tabs are probably already open: close the
-        ones you no longer use and try again after 30 minutes, or run <code>dudes stop</code> then{' '}
-        <code>dudes start</code> to sign every tab out (this ends running turns), and then{' '}
-        <code>dudes floor open</code>.
+        This sign-in link did not work. A link works once, for 60 seconds. Open Dudes for a new one.
       </p>
     );
   }
   if (first === 'missing') {
     return (
       <p className="link-refused" role="alert">
-        The sign-in link in the address of this page is not a Dudes sign-in link. Run{' '}
-        <code>dudes floor open</code> and paste the new link here within 60 seconds.
+        The sign-in link in the address of this page is not a Dudes sign-in link. Open Dudes to sign in.
       </p>
     );
   }
@@ -88,8 +81,7 @@ export function PastedLinkNotice() {
   return (
     <p className="link-refused" role="alert">
       The Floor link pasted into this tab was refused, or the daemon could not be reached to take it. This page is
-      as it was and keeps what it holds. For a new link, run dudes floor open and paste it into this
-      tab’s address bar.
+      as it was and keeps what it holds. Open Dudes for a new sign-in.
     </p>
   );
 }
@@ -109,6 +101,13 @@ function SignedOutShell() {
       <p className="signed-out-line" role="status">This tab is not signed in, so the Floor shows no agents yet.</p>
     </main>
   );
+}
+
+/** End this browser's session in the daemon, then reload into the signed-out screen. */
+function signOut(): void {
+  const session = currentFloorSession();
+  if (session === null) return;
+  void signOutFloorSession(session).then(() => window.location.reload());
 }
 
 export function WebFloorShell() {
@@ -371,6 +370,7 @@ function SignedInShell() {
             onClick={() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))}>
             Use {effectiveTheme === 'dark' ? 'light' : 'dark'} theme
           </button>
+          <button type="button" className="sign-out" onClick={signOut}>Sign out</button>
         </div>
         <PastedLinkNotice />
         <JournalStoppedBanner stopped={floor.journalStopped} />

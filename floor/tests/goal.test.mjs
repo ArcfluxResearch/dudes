@@ -658,7 +658,7 @@ const GOAL_REFUSALS = (check) => ({
     + 'Try again, or ask the operator to raise its timeout.',
   check_cannot_run: `${check} could not run, so nothing changed. The daemon log says why.`,
   check_running: 'A check is still running for this Floor session. Try again when it ends.',
-  check_limit: 'This Floor session has run its 32 checks. Open a new Floor session from a terminal (dudes floor open).',
+  check_limit: 'This Floor session has run its 32 checks. Open Dudes to start a new Floor session.',
 });
 
 test('each check refusal reads as the Hire’s with Nothing changed, names the chosen or kept check, and keeps the choice', async () => {

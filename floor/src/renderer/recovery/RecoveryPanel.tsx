@@ -126,7 +126,7 @@ export function RecoveryReceiptsView({ floor, memory }: { readonly floor: FloorS
     {request.read?.state === 'unknown' ? <p>{receipt === null
       ? 'The receipt reply was lost or unreadable. Its presence and absence remain unknown.'
       : 'The latest receipt reply was lost or unreadable. Its current lifecycle could not be read. Earlier authorization facts are retained.'}</p> : null}
-    {request.read?.state === 'forbidden' ? <p>This reader cannot check the receipt. Paste a new link from dudes floor open into this tab,
+    {request.read?.state === 'forbidden' ? <p>This reader cannot check the receipt. Open Dudes to sign in again in this browser,
       then press Check receipt explicitly. The earlier request is kept and is never resubmitted.</p> : null}
     <button type="button" aria-disabled={request.submitting || request.checking || !liveReader(floor)} aria-busy={request.checking}
       ref={handFocusOnLeave} data-focus-on-leave={`recovery-receipt-${id}`}
@@ -152,7 +152,7 @@ function SubmissionOutcome({ request, historical }: { readonly request: Recovery
       Resume {outcome.prefix.resume ?? 'none'}. These records do not authorize work.</p>}</>;
   if (outcome?.state === 'forbidden' && historical) return <p>The original submission was refused under its Floor session. Its frozen request and outcome are kept.</p>;
   if (outcome?.state === 'forbidden') return <p role="alert">This Floor session could not authorize recovery. The frozen request is kept.
-    Paste a new link from dudes floor open into this tab, then inspect explicitly. Nothing is resent automatically.</p>;
+    Open Dudes to sign in again in this browser, then inspect explicitly. Nothing is resent automatically.</p>;
   if (historical) return <p>Original submission outcome was unknown. A later matching receipt established authorization. The original outcome is kept in this request's history.</p>;
   return <p role="status">Authorization is unknown. The daemon may have recorded this choice, but the submission response did not establish it.
     Keep this request identity and check its receipt. This page never resubmits it.</p>;

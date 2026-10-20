@@ -79,7 +79,7 @@ export function FirstRunGuideView({ floor, step, onStep, onClose, onHire }: {
       {step === 'hire' ? <>
         <p>{current.status === 'Done' ? 'An agent is on the Floor.' : 'Open the Hire wizard, review its choices, and hire your first agent.'}</p>
         {floor.onboarding === null ? <p>Hire is unavailable. Check Projects and Floor actions, then Recheck.
-          If the session has used its Hire allowance, open a fresh Floor link.</p> : null}
+          If the session has used its Hire allowance, open Dudes to start a new Floor session.</p> : null}
         <button type="button" disabled={!confirmed || floor.onboarding === null}
           onClick={(event) => onHire(event.currentTarget)}>Open Hire wizard</button>
       </> : null}

@@ -9,7 +9,10 @@
 
 import { openFloorStream, reauthenticateFloorStream } from './renderer/floor/stream.ts';
 import type { LocationLike, SocketFactory, StreamTimers } from './renderer/floor/stream.ts';
-import { BuildMismatch, currentFloorSession, floorSessionGeneration } from './session.ts';
+import {
+  BuildMismatch, adoptStoredFloorSession, askFloorStanding, currentFloorSession, endFloorSession,
+  floorSessionGeneration,
+} from './session.ts';
 import type { FloorSession } from './session.ts';
 
 /** What the stream is opened with: where the page is, how a socket is made, and its clock. */
@@ -29,7 +32,28 @@ export function connect(session: FloorSession, ports: StreamPorts): void {
   if (session !== currentFloorSession()) return;
   clearFirstLinkProblem();
   if (reauthenticateFloorStream(session)) return;
-  openFloorStream(session, ports.location, ports.socket, ports.timers);
+  stopStream = openFloorStream(session, ports.location, ports.socket, ports.timers, undefined, {
+    ask: askFloorStanding,
+    onUnknown: () => sessionUnknown(ports),
+  });
+}
+
+let stopStream: () => void = () => {};
+
+/**
+ * The daemon said it does not know this page's session. When another tab of this browser has signed
+ * in since, its secret and cookie are the ones to use and the stream follows them. Otherwise the
+ * session is gone, and the page says it is signed out.
+ */
+function sessionUnknown(ports: StreamPorts): void {
+  const next = adoptStoredFloorSession();
+  if (next !== null) {
+    connect(next, ports);
+    return;
+  }
+  stopStream();
+  endFloorSession();
+  noteSignInExpired();
 }
 
 /**
@@ -99,6 +123,8 @@ export function noteSignInExpired(): void {
 
 /** What a reload does: forget the refusal. For tests; the page gets a fresh module per load. */
 export function resetPastedLink(): void {
+  stopStream();
+  stopStream = () => {};
   refusedUnder = null;
   refusedForBuild = false;
   firstProblem = null;

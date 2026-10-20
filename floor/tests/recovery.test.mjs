@@ -619,7 +619,7 @@ test('receipt reader forbidden, unavailable and lost replies never recover authe
   const original = await inspected(net); model.chooseRecovery(original.key, 'try_recorded'); await model.submitRecovery(original.key, net.deps);
   const pending = model.checkRecoveryReceipt(ID, net.deps); await model.checkRecoveryReceipt(ID, net.deps);
   assert.equal(net.calls.length, 2); check.resolve(reply(403, '')); await pending;
-  assert.match(receipts(), /Paste a new link from dudes floor open/);
+  assert.match(receipts(), /Open Dudes to sign in again/);
   net.reauth(); panel(); receipts(); assert.equal(net.calls.length, 2);
   await model.checkRecoveryReceipt(ID, net.deps); assert.match(receipts(), /presence and absence could not be certified/);
   await model.checkRecoveryReceipt(ID, net.deps); assert.match(receipts(), /receipt reply was lost or unreadable/);

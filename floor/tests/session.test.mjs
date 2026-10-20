@@ -187,7 +187,7 @@ test('the entry point opens one stream or surfaces the closed phase', async () =
   assert.match(main, /const BROWSER: StreamPorts = \{ location: window\.location, socket: browserSocket \};/);
   assert.match(entry, /if \(session === null\) return;\s*try \{\s*connect\(session, ports\);\s*\} catch \{/);
   assert.match(entry,
-    /if \(reauthenticateFloorStream\(session\)\) return;\s*openFloorStream\(session, ports\.location, ports\.socket, ports\.timers\);/);
+    /if \(reauthenticateFloorStream\(session\)\) return;\s*stopStream = openFloorStream\(session, ports\.location, ports\.socket, ports\.timers, undefined, \{/);
   for (const text of [main, entry]) {
     assert.doesNotMatch(text, /location\.(?:reload|assign|replace)\(|location\.href\s*=/,
       'the page reloads to take a new session');

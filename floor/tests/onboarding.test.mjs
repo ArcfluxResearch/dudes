@@ -598,7 +598,7 @@ const HIRE_REFUSALS = Object.freeze({
     + 'Nothing was hired. Try again, or ask the operator to raise its timeout.',
   check_cannot_run: '“CONTRIBUTING.md exists” could not run, so nothing was hired. The daemon log says why.',
   check_running: 'A check is still running for this Floor session. Try again when it ends.',
-  check_limit: 'This Floor session has run its 32 checks. Open a new Floor session from a terminal (dudes floor open).',
+  check_limit: 'This Floor session has run its 32 checks. Open Dudes to start a new Floor session.',
 });
 
 test('each check refusal keeps the wizard open on its check choice, in its own words, and keeps the catalog', async () => {
@@ -1269,7 +1269,7 @@ test('after hired_without_goal for session_expired or session_revoked, a fresh l
     const html = render();
     assert.match(html, /Hired without its goal/);
     assert.match(html, />Check status</, 'a goal the session lost cannot be set from a fresh one');
-    assert.match(html, /Paste a new link from dudes floor open into this tab’s address bar: this page keeps the Hire, and Check status then sets only the goal this Hire recorded\./);
+    assert.match(html, /Open Dudes to sign in again in this browser: this page keeps the Hire, and Check status then sets only the goal this Hire recorded\./);
 
     csrf = FRESH; // a fresh link pasted into this tab
     subscribe({ agents: [agentRow(AGENT, 'Kim')] });
@@ -1307,7 +1307,7 @@ test('a 403 after pending, a 503 or a lost reply keeps the Hire, and a same-body
     assert.doesNotMatch(html, /No agent was hired/, 'the page says no agent was hired, which nothing proves');
     assert.doesNotMatch(html, />Edit the form</);
     assert.match(html, /an earlier request for this Hire has no known result, so an agent may already have been hired/);
-    assert.match(html, /Paste a new link from dudes floor open into this tab’s address bar/);
+    assert.match(html, /Open Dudes to sign in again in this browser/);
     assert.match(html, />Check status</);
 
     csrf = FRESH;
@@ -1438,13 +1438,13 @@ test('a recorded hire keeps its AgentId through every later reply, and after a f
   // The session ends: the page asks for a new link.
   invalidateFloorEpoch();
   noteTransport('close');
-  assert.match(shown('the session ended'), /Paste a new link from dudes floor open/);
+  assert.match(shown('the session ended'), /Open Dudes to sign in again/);
 
   // A fresh link, and a snapshot of that session offering hiring: the next step is Check status.
   csrf = FRESH;
   subscribe({ agents: [agentRow(AGENT, 'Kim')] });
   const html = shown('a fresh snapshot');
-  assert.doesNotMatch(html, /Paste a new link/, 'the page asks for another link beside an enabled Check status');
+  assert.doesNotMatch(html, /Open Dudes to sign in again/, 'the page asks for another sign-in beside an enabled Check status');
   assert.match(html, /Check status asks again with the same attempt, which never hires twice/);
   assert.match(html, /<button type="button" aria-disabled="false" aria-busy="false"[^>]*>Check status<\/button>/);
 });

@@ -1104,7 +1104,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(7).fill(FIRST_RUN_GUIDE),
     ...Array(5).fill('src/renderer/setup/FirstTask.tsx'),
     ...Array(10).fill(TERMINAL_PANEL),
-    ...Array(4).fill('src/shell.tsx'),
+    ...Array(5).fill('src/shell.tsx'),
   ];
   assert.deepEqual(buttons.sort(), [...expected, AGENT_ORDER].sort());
   expected.sort();
@@ -1260,6 +1260,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     'toggleFocus',
     '(event) => openHire(event.currentTarget)',
     '() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))',
+    'signOut',
   ]);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, ANSWER_FORM), 'utf8')).sort(), [
     'dismissReceipt',
@@ -1582,9 +1583,11 @@ const REQUESTS = {
     fetches: [],
   },
   'src/session.ts': {
-    paths: ['/floor/assets/', '/floor/session', 'text/plain;charset=UTF-8', '/floor/'],
-    methods: ['POST', 'GET'],
-    fetches: ['floorFetch', 'floorFetch', 'FetchPort', 'fetch', 'floorFetch', 'FetchPort', 'fetch', 'FetchPort', 'fetch',
+    paths: ['/floor/assets/', '/floor/session/check', 'application/json', '/floor/session/end', 'application/json', '/floor/session',
+      'text/plain;charset=UTF-8', '/floor/'],
+    methods: ['POST', 'POST', 'POST', 'GET'],
+    fetches: ['floorFetch', 'FetchPort', 'floorFetch', "fetch('/floor/session/check')", 'FetchPort', 'floorFetch',
+      "fetch('/floor/session/end')", 'floorFetch', 'FetchPort', 'fetch', 'floorFetch', 'FetchPort', 'fetch', 'FetchPort', 'fetch',
       'FetchPort', 'fetch', "fetch('/floor/session')", 'FetchPort', "fetch('/floor/')"],
   },
 };
@@ -1876,11 +1879,11 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
   const targets = [...session.matchAll(/fetch\(\s*'([^']+)'/g)].map((match) => match[1]);
   assert.deepEqual(
     targets,
-    ['/floor/session', '/floor/'],
+    ['/floor/session/check', '/floor/session/end', '/floor/session', '/floor/'],
     'session startup calls somewhere else too',
   );
   const methods = [...session.matchAll(/method:\s*'([A-Z]+)'/g)].map((match) => match[1]);
-  assert.deepEqual(methods, ['POST', 'GET'], 'session startup uses a method other than POST, or the one index GET');
+  assert.deepEqual(methods, ['POST', 'POST', 'POST', 'GET'], 'session startup uses a method other than POST, or the one index GET');
 
   assert.equal(valueBindingsIn(parsedByExtension(controlText, CONTROL_MODULE)).filter(({ name }) => name === 'ROUTES')
     .length, 1, 'control.ts binds ROUTES more than once, so the pinned routes may not be the ones it fetches');
@@ -2135,13 +2138,13 @@ test('font preference storage admits one exact getter in its own module and stil
   }
 });
 
-test('the session secret is kept in one localStorage key, written only from the exchange', async () => {
+test('the session secret is kept in one localStorage key, written only from the exchange and removed only when the session ends', async () => {
   const text = await readFile(resolve(source, 'session.ts'), 'utf8');
   const clean = unadmittedSinksIn(text, ADMITTED_SESSION_STORAGE.path);
   assert.deepEqual(clean.found, []);
   assert.equal(clean.sessionStorageHits, 1);
   assert.deepEqual([...text.matchAll(/\b(?:getItem|setItem|removeItem|clear|key)\(([^)]*)\)/g)].map((match) => match[0]),
-    ['getItem(SECRET_KEY)', 'setItem(SECRET_KEY, secret)']);
+    ['getItem(SECRET_KEY)', 'setItem(SECRET_KEY, secret)', 'removeItem(SECRET_KEY)']);
   assert.deepEqual([...text.matchAll(/\bstore\.write\(([^)]*)\)/g)].map((match) => match[1]), ['session.csrf']);
   assert.deepEqual(unadmittedSinksIn(text, 'src/other.ts').found, ['localStorage']);
   for (const extra of ["localStorage.setItem('csrf', secret);", 'sessionStorage.csrf = secret;', 'console.log(secret);']) {
@@ -3342,6 +3345,8 @@ function credentialsByPath(text) {
 test('the session module reads the served index with no credentials and sends each exchange with its own', async () => {
   const text = await readFile(resolve(source, 'session.ts'), 'utf8');
   assert.deepEqual(credentialsByPath(text), {
+    '/floor/session/check': 'same-origin',
+    '/floor/session/end': 'same-origin',
     '/floor/session': 'same-origin',
     '/floor/': 'omit',
   });

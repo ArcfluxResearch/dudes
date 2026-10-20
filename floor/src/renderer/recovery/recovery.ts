@@ -130,7 +130,7 @@ export async function inspectRecovery(agent: string, deps: RecoveryDeps): Promis
   const row = floor.agents.find(row => row.id === agent) ?? null;
   if (!recoveryEnabled(floor, row) || state.inspections.get(agent)?.kind === 'loading') return;
   const csrf = deps.csrf();
-  if (csrf === null) { view(agent, { kind: 'problem', text: 'This page has no Floor session. Paste a new link from dudes floor open into this tab. Nothing was sent.' }); return; }
+  if (csrf === null) { view(agent, { kind: 'problem', text: 'This page has no Floor session. Open Dudes to sign in again in this browser. Nothing was sent.' }); return; }
   const session = deps.session();
   const sequence = ++inspectionNumber;
   const marker: InspectionView = { kind: 'loading' };
@@ -144,7 +144,7 @@ export async function inspectRecovery(agent: string, deps: RecoveryDeps): Promis
   } catch {}
   if (state.inspections.get(agent) !== marker) return;
   if (result === null) {
-    view(agent, { kind: 'problem', text: forbidden ? 'This Floor session cannot inspect recovery. Paste a new link from dudes floor open into this tab, then inspect explicitly.'
+    view(agent, { kind: 'problem', text: forbidden ? 'This Floor session cannot inspect recovery. Open Dudes to sign in again in this browser, then inspect explicitly.'
       : 'Recovery could not be inspected. No choice was submitted. Inspect again when the daemon is available.' });
     return;
   }

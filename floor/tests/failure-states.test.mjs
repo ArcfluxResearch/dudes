@@ -71,7 +71,7 @@ test('About explains a page and daemon build mismatch in plain text', () => {
   const rendered = html(SettingsView, floor({ phase: 'live', epoch: 1, snapshotEpoch: 1, settings }));
   assert.match(rendered, /page and daemon.*different builds/i);
   assert.match(rendered, /99\.0\.0/);
-  assert.match(rendered, /Run <code>dudes floor open<\/code> to load the matching page/);
+  assert.match(rendered, /Open Dudes to load the matching page/);
 });
 
 for (const [name, component] of [['Setup', () => SetupView], ['Settings', () => SettingsView], ['Archived', () => ArchivedAgents]]) {
@@ -87,7 +87,7 @@ test('a silent open stream says it is waiting rather than retrying', () => {
   const rendered = html(StreamNotice, floor({ phase: 'live', epoch: 1, snapshotEpoch: 1, stale: true }));
   assert.match(rendered, /connection is still open/);
   assert.match(rendered, /waiting for a frame and is not retrying/);
-  assert.match(rendered, /fresh link.*dudes floor/);
+  assert.match(rendered, /open Dudes to sign in again/);
 });
 
 test('the stream notice reports the actual retry schedule and then says the daemon stopped answering', async () => {

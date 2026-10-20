@@ -4,8 +4,8 @@
 export function SignInExpired() {
   return (
     <p className="link-refused" role="alert">
-      You are signed out of this Floor. That happens after 30 minutes without use, or when Dudes restarts. Run{' '}
-      <code>dudes floor open</code> for a new link. Each link works once, in one browser.
+      You are signed out of this Floor. That happens after a day without use, after 30 days, when you sign out, or
+      when Dudes restarts and cannot keep sign-ins. Open Dudes to sign in again.
     </p>
   );
 }
