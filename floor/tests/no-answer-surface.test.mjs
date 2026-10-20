@@ -1094,7 +1094,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(RENAME_PANEL),
     ...Array(4).fill(LOOK_PANEL),
     ...Array(3).fill(SETUP_VIEW),
-    ...Array(6).fill(SETTINGS_VIEW),
+    ...Array(8).fill(SETTINGS_VIEW),
     ...Array(7).fill(FIRST_RUN_GUIDE),
     ...Array(5).fill('src/renderer/setup/FirstTask.tsx'),
     ...Array(10).fill(TERMINAL_PANEL),
@@ -1207,7 +1207,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(center, /onSetup=\{\(\) => onView\('setup'\)\}/);
   assert.match(shell, /function openView\(next: ControlView\): void \{\s*setFocused\(false\);\s*setView\(next\);\s*if \(CONTROL_VIEWS\.some\(\(entry\) => entry\.view === next && entry\.refresh\)\) refreshFloorSnapshot\(\);\s*\}/);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETTINGS_VIEW), 'utf8')), ['onSetup', 'onSetup',
-    '() => { void changeSetting(key, next); }',
+    '() => { void changeSetting(key, next); }', '() => { void confirmSetting(); }', '() => cancelSetting()',
     '() => { void desktopNotificationPreference.setEnabled(!on); }', '() => setOfficePin(id)', 'onCopyAdd']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETUP_VIEW), 'utf8')).sort(), [
     '() => copyToClipboard(install)',

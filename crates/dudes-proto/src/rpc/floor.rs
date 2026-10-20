@@ -567,7 +567,7 @@ pub struct RecoveryView {}
 #[non_exhaustive]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "the explicit read-only wire reports nine configured switch facts"
+    reason = "the explicit wire reports twelve configured switch facts"
 )]
 pub struct SettingsSwitches {
     /// Browser question answering.
@@ -588,6 +588,12 @@ pub struct SettingsSwitches {
     pub terminal: bool,
     /// Browser Git tab reads of an agent's checkout.
     pub git: bool,
+    /// Browser tickets: making them and giving them to agents.
+    pub board: bool,
+    /// Browser reads of a ticket's changed files, served only with the Git reads.
+    pub diff: bool,
+    /// Browser project add.
+    pub project: bool,
 }
 
 /// Dollar amounts are decimal micro-dollar strings and token amounts are decimal strings.

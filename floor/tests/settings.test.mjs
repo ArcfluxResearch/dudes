@@ -5,7 +5,7 @@ import { applyServerFrame, beginFloorEpoch, getFloorState, noteTransport, resetF
 import { decodeSettingsReport } from '../src/renderer/settings/report.ts';
 
 const REPORT = {
-  switches: { answer: false, control: true, recovery: false, goal: false, retire: true, terminal: false, hire: true, git: true, renew: false },
+  switches: { answer: false, control: true, recovery: false, goal: false, retire: true, terminal: false, hire: true, git: true, renew: false, board: false, diff: false, project: false },
   budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '1234', per_turn_tokens: '9007199254740993' },
   providers: ['claude', 'codex'],
   workspaces: [{ workspace_id: 'repo_1', label: '<Service>', agent_usd_per_day_micros: '10000000',

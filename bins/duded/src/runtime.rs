@@ -2116,6 +2116,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         switches.retire = live.control.retire();
         switches.terminal = self.ctx.browser_grants.is_some();
         switches.git = live.git;
+        switches.board = live.board;
+        switches.diff = live.diff;
+        switches.project = live.project;
         let settings = crate::floor_settings::view(
             switches,
             self.sup.config().floor_usd_per_day,

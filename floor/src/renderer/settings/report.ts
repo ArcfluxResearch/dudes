@@ -27,7 +27,7 @@ export interface SettingsReport {
 
 const UTF8 = new TextEncoder();
 const DECIMAL = /^(?:0|[1-9][0-9]{0,19})$/;
-const SWITCHES = ['answer', 'control', 'recovery', 'goal', 'retire', 'terminal', 'hire', 'git', 'renew'] as const;
+const SWITCHES = ['answer', 'control', 'recovery', 'goal', 'retire', 'terminal', 'hire', 'git', 'renew', 'board', 'diff', 'project'] as const;
 const WORKSPACE_KEYS = ['workspace_id', 'label', 'agent_usd_per_day_micros', 'agent_tokens_per_day',
   'goal_usd_micros', 'goal_tokens'];
 
@@ -75,7 +75,8 @@ export function decodeSettingsReport(value: unknown): SettingsReport | null {
   const switches = value.switches as unknown as SettingsReport['switches'];
   return Object.freeze({
     switches: Object.freeze({ answer: switches.answer, control: switches.control, recovery: switches.recovery, goal: switches.goal,
-      retire: switches.retire, terminal: switches.terminal, hire: switches.hire, git: switches.git, renew: switches.renew }),
+      retire: switches.retire, terminal: switches.terminal, hire: switches.hire, git: switches.git, renew: switches.renew,
+      board: switches.board, diff: switches.diff, project: switches.project }),
     budget: Object.freeze({ floor_usd_per_day_micros: value.budget.floor_usd_per_day_micros,
       per_turn_usd_micros: value.budget.per_turn_usd_micros, per_turn_tokens: value.budget.per_turn_tokens }),
     providers: Object.freeze([...value.providers] as ProviderName[]), workspaces: Object.freeze(workspaces),

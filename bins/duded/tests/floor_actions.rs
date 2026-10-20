@@ -13785,7 +13785,7 @@ fn browser_settings_view_is_an_exact_read_only_allowlist() {
     assert_eq!(
         frame["settings"],
         json!({
-            "switches": { "answer": true, "hire": true, "control": true, "recovery": false, "goal": true, "renew": true, "retire": true, "terminal": true, "git": true },
+            "switches": { "answer": true, "hire": true, "control": true, "recovery": false, "goal": true, "renew": true, "retire": true, "terminal": true, "git": true, "board": false, "diff": false, "project": false },
             "budget": { "floor_usd_per_day_micros": "100000000", "per_turn_usd_micros": "1234", "per_turn_tokens": "9007199254740993" },
             "providers": ["claude"],
             "workspaces": [{ "workspace_id": "repo_1", "label": "Service workspace",
@@ -13833,7 +13833,7 @@ fn browser_settings_survive_unavailable_hire_and_provider_check() {
     assert_eq!(
         frame["settings"]["switches"],
         json!({
-            "answer": false, "hire": false, "control": false, "recovery": false, "goal": false, "renew": false,
+            "answer": false, "hire": false, "control": false, "recovery": false, "goal": false, "renew": false, "board": false, "diff": false, "project": false,
             "retire": false, "terminal": false, "git": false
         })
     );
@@ -17791,5 +17791,28 @@ fn the_settings_route_writes_only_the_closed_list_of_keys() {
         assert_eq!(body["reason"], reason, "{key}: {body}");
         assert_eq!(std::fs::read(&file).unwrap(), before, "{key} wrote");
     }
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// A switch turned off from the Settings route refuses the very next action with `action_off`,
+/// without a restart.
+#[test]
+fn a_switch_turned_off_from_the_settings_route_refuses_the_next_action() {
+    let fixture = Fixture::new();
+    let mut settings = reload_settings(&fixture, "[floor.hire]\nenabled = true\n");
+    settings.floor_hire_enabled = true;
+    let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
+    let (head, body) = post_onboard(addr, &cookie, &csrf, &hire_request('A', None));
+    assert_ne!(body["reason"], "action_off", "{head} {body}");
+
+    let off = serde_json::to_vec(&json!({"key": "floor.hire", "value": "off"})).expect("JSON");
+    let (head, body) = post_bytes(addr, "/floor/settings", &cookie, &csrf, &off, None);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
+    assert_eq!(body["applied"], json!(["floor.hire"]), "{body}");
+
+    let (head, body) = post_onboard(addr, &cookie, &csrf, &hire_request('B', None));
+    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
+    assert_eq!(body["reason"], "action_off", "{body}");
+    assert_eq!(browser_hires(&fixture), []);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }

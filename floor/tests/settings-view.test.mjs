@@ -12,7 +12,7 @@ import { createServer } from 'vite';
 import { applyServerFrame, beginFloorEpoch, getFloorState, noteTransport, resetFloorStore } from '../src/renderer/floor/store.ts';
 
 const REPORT = {
-  switches: { answer: false, control: false, recovery: false, goal: false, retire: false, terminal: false, hire: false, git: false, renew: false },
+  switches: { answer: false, control: false, recovery: false, goal: false, retire: false, terminal: false, hire: false, git: false, renew: false, board: false, diff: false, project: false },
   budget: { floor_usd_per_day_micros: '0', per_turn_usd_micros: '1234', per_turn_tokens: '9007199254740993' },
   providers: ['claude', 'codex'],
   workspaces: [{ workspace_id: 'repo_1', label: '<Service>', agent_usd_per_day_micros: '10000000',
@@ -80,7 +80,7 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.match(hint('retire'), /dudes config set floor.control on floor.retire on/);
     assert.match(hint('terminal'), /dudes config set floor.terminal on/);
 
-    assert.match(html, /only reads/);
+    assert.match(html, /Turn a switch on or off here/);
     noteTransport('close');
     const closed = renderToStaticMarkup(createElement(SettingsView, { floor: getFloorState(), onSetup() {} }));
     assert.match(closed, /Settings is unavailable while the stream is disconnected/);
@@ -144,4 +144,37 @@ test('PIN_UNSHOWN mutant: Settings offers Automatic and each office, and presses
     setOfficePin(null);
     assert.deepEqual(pressed(), ['Automatic: true', 'Studio, 8 desks: false', 'Workshop, 12 desks: false', 'HQ, 16 desks: false']);
   } finally { await server.close(); }
+});
+
+test('Settings asks on the page before the terminal goes on or retire or control goes off', async () => {
+  const root = resolve(import.meta.dirname, '..');
+  const server = await createServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
+  try {
+    const { SettingsView } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
+    const edit = await server.ssrLoadModule('/src/renderer/settings/edit.ts');
+    const on = { ...REPORT.switches, control: true, retire: true };
+    const view = () => renderToStaticMarkup(createElement(SettingsView, { floor: floor({ ...REPORT, switches: on }), onSetup() {} }));
+    assert.doesNotMatch(view(), /aria-label="Turn (on|off) floor\./);
+
+    await edit.changeSetting('floor.terminal', 'on');
+    assert.deepEqual(edit.getSettingsEditState().asking, { key: 'floor.terminal', value: 'on' });
+    assert.equal(edit.getSettingsEditState().sending, null, 'nothing was sent yet');
+    assert.match(view(), /aria-label="Turn on floor\.terminal"> [^<]*takes effect after a restart of the daemon\. <button type="button">Turn on<\/button> <button type="button">Cancel<\/button>/);
+    edit.cancelSetting();
+    assert.equal(edit.getSettingsEditState().asking, null);
+    assert.doesNotMatch(view(), /aria-label="Turn (on|off) floor\./);
+
+    for (const key of ['floor.retire', 'floor.control']) {
+      await edit.changeSetting(key, 'off');
+      assert.equal(edit.getSettingsEditState().asking?.key, key);
+      assert.match(view(), new RegExp(`aria-label="Turn off ${key.replace('.', '\\.')}"`));
+      edit.cancelSetting();
+    }
+
+    await edit.changeSetting('floor.answer', 'on');
+    assert.equal(edit.getSettingsEditState().asking, null, 'a plain switch is written without a question');
+    edit.resetSettingsEdit();
+  } finally {
+    await server.close();
+  }
 });

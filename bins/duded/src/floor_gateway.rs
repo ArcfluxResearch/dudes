@@ -2106,11 +2106,7 @@ fn retire_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -
 
 /// The Settings page's edit. Setting a key to a value twice is the same as once, so the route
 /// keeps no request identity.
-fn settings_response<'a>(
-    session: SessionIdentity,
-    handle: &Handle,
-    body: &[u8],
-) -> Response<'a> {
+fn settings_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -> Response<'a> {
     let refused = |refusal: &SettingsRefusal| {
         let detail = match refusal {
             SettingsRefusal::StartRule(text) => Some(text.as_str()),

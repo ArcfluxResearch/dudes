@@ -15,10 +15,12 @@ export type SettingsEditResult =
 
 export interface SettingsEditState {
   readonly sending: string | null;
+  /** The switch the page is asking about before it writes. */
+  readonly asking: { readonly key: string; readonly value: 'on' | 'off' } | null;
   readonly last: { readonly key: string; readonly result: SettingsEditResult } | null;
 }
 
-const IDLE: SettingsEditState = Object.freeze({ sending: null, last: null });
+const IDLE: SettingsEditState = Object.freeze({ sending: null, asking: null, last: null });
 let state: SettingsEditState = IDLE;
 const listeners = new Set<() => void>();
 
@@ -76,12 +78,43 @@ export async function saveSetting(
   }
 }
 
+/** What the page says before it writes this switch, or `null` when the switch needs no question. */
+export function confirmation(key: string, value: 'on' | 'off'): string | null {
+  if (key === 'floor.terminal' && value === 'on') {
+    return 'This lets this page open a terminal inside an agent\'s checkout. It takes effect after a restart of the daemon.';
+  }
+  if (key === 'floor.retire' && value === 'off') return 'Without this, the page can no longer retire agents.';
+  if (key === 'floor.control' && value === 'off') {
+    return 'Without this, the page can no longer pause, resume or rename agents. Changing goals, retiring and recovery stop with it.';
+  }
+  return null;
+}
+
+async function write(key: string, value: 'on' | 'off'): Promise<void> {
+  commit({ sending: key, asking: null, last: null });
+  const result = await saveSetting(key, value);
+  commit({ sending: null, asking: null, last: { key, result } });
+  if (result.kind === 'saved') refreshFloorSnapshot();
+}
+
+/** Writes the switch, or first asks when it is one that needs a question. */
 export async function changeSetting(key: string, value: 'on' | 'off'): Promise<void> {
   if (state.sending !== null) return;
-  commit({ sending: key, last: null });
-  const result = await saveSetting(key, value);
-  commit({ sending: null, last: { key, result } });
-  if (result.kind === 'saved') refreshFloorSnapshot();
+  if (confirmation(key, value) !== null) {
+    commit({ sending: null, asking: { key, value }, last: null });
+    return;
+  }
+  await write(key, value);
+}
+
+export async function confirmSetting(): Promise<void> {
+  const asking = state.asking;
+  if (state.sending !== null || asking === null) return;
+  await write(asking.key, asking.value);
+}
+
+export function cancelSetting(): void {
+  if (state.asking !== null) commit({ sending: null, asking: null, last: null });
 }
 
 /** The sentence under a switch after its request. */

@@ -2,7 +2,9 @@
 
 import { useSyncExternalStore } from 'react';
 
-import { changeSetting, editLine, getSettingsEditState, subscribeToSettingsEdit } from './edit.ts';
+import {
+  cancelSetting, changeSetting, confirmation, confirmSetting, editLine, getSettingsEditState, subscribeToSettingsEdit,
+} from './edit.ts';
 
 import type { FloorState } from '../floor/store.ts';
 import type { SettingsReport } from './report.ts';
@@ -17,6 +19,7 @@ const SWITCHES = [
   ['answer', 'Answer questions'], ['control', 'Pause, resume and rename'], ['recovery', 'Recover interrupted goals'], ['goal', 'Change goals'],
   ['retire', 'Retire agents'], ['terminal', 'Attach terminals'], ['git', 'Read checkouts in the Git tab'],
   ['hire', 'Hire agents'], ['renew', 'Start new goals'],
+  ['board', 'Make tickets'], ['diff', 'Read ticket changes'], ['project', 'Add projects'],
 ] as const;
 const OFFICE_CHOICES = [{ id: null, label: 'Automatic' },
   ...OFFICES.map((office) => ({ id: office.id, label: `${office.definition.label}, ${office.capacity} desks` }))] as const;
@@ -74,7 +77,7 @@ export function SettingsView({ floor, onSetup }: {
       message="Settings are not reported by this daemon, or this page could not read them." /></div>;
   return <div className="settings-view">
     <DesktopNotificationChoice />
-    <p>The Floor only reads daemon settings. Run the commands locally to change them.</p>
+    <p>Turn a switch on or off here, or run its command locally. The budget numbers change only with the commands.</p>
     {floor.stale ? <p role="status">View unconfirmed. These values are from the last snapshot.</p> : null}
     <p>After a config edit, restart with <code>dudes quickstart --restart</code>, which ends any running turn.
       Project commands apply enrollment changes to the running daemon.</p>
@@ -84,6 +87,7 @@ export function SettingsView({ floor, onSetup }: {
         const next = report.switches[key] ? 'off' : 'on';
         const renewOff = report.switches.renew ? ' floor.renew off' : '';
         const companions = (key === 'goal' || key === 'retire' || key === 'recovery') && next === 'on' ? ' floor.control on'
+          : key === 'diff' && next === 'on' ? ' floor.git on'
           : key === 'control' && next === 'off' ? ` floor.goal off floor.retire off floor.recovery off${renewOff}`
             : (key === 'goal' || key === 'hire') && next === 'off' ? renewOff : '';
         if (key === 'renew' && !report.switches.renew) {
@@ -145,9 +149,13 @@ export function SettingsView({ floor, onSetup }: {
 function SwitchButton({ switchKey, next }: { readonly switchKey: string; readonly next: 'on' | 'off' }) {
   const edit = useSyncExternalStore(subscribeToSettingsEdit, getSettingsEditState, getSettingsEditState);
   const key = `floor.${switchKey}`;
+  const question = edit.asking?.key === key ? confirmation(key, edit.asking.value) : null;
   return <>
     <button type="button" aria-disabled={edit.sending !== null || undefined}
       onClick={() => { void changeSetting(key, next); }}>Turn {next}</button>
+    {question === null ? null : <span role="group" aria-label={`Turn ${next} ${key}`}> {question}
+      {' '}<button type="button" onClick={() => { void confirmSetting(); }}>Turn {next}</button>
+      {' '}<button type="button" onClick={() => cancelSetting()}>Cancel</button></span>}
     {edit.last?.key === key ? <span role="status"> {editLine(edit.last.result)}</span> : null}
   </>;
 }
