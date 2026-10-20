@@ -12,8 +12,12 @@ import {
 
 /** Source lines in `src/renderer` that can show a terminal command. Lower it when you remove one. */
 const PLACES = 40;
-/** The different `dudes ...` commands those lines name. Lower it when the last mention of one goes. */
-const DISTINCT_DUDES_COMMANDS = 17;
+/**
+ * The different `dudes ...` commands those lines name. Lower it when the last mention of one goes.
+ * It includes `dudes project trust`, the one named exit of the optional own-copy box on Hire, which
+ * the page shows only for an untrusted project another agent already works in.
+ */
+const DISTINCT_DUDES_COMMANDS = 18;
 
 const renderer = resolve(import.meta.dirname, '../src/renderer');
 

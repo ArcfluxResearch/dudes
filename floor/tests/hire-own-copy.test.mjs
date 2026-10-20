@@ -107,7 +107,9 @@ test('the App step explains the copy, or says what trusting the project allows, 
     assert.match(trusted, /separate checkout of this project on its own branch/);
     assert.match(trusted, /the copy and its branch stay/);
     assert.doesNotMatch(trusted, /dudes hire/);
-    const untrusted = await page(floor({ onboarding: catalog({ trusted: false }) }));
+    const untrusted = await page(floor({ onboarding: catalog({ trusted: false }), agents: working }));
+    const quiet = await page(floor({ onboarding: catalog({ trusted: false }) }));
+    assert.doesNotMatch(quiet, /dudes project trust|<code>/, 'no command unless another agent shares the folder');
     assert.doesNotMatch(untrusted, /name="own_copy"/);
     assert.match(untrusted, /environment values and helper commands/);
     assert.match(untrusted, /<code>dudes project trust parser<\/code>/);

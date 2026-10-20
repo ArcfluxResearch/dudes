@@ -113,6 +113,9 @@ function OwnCopyChoice({ copy, workspace, names, frozen }: {
 }) {
   if (copy.state === 'none') return null;
   if (copy.state === 'untrusted') {
+    // The one place the Hire flow names a terminal command: only where a copy matters, because
+    // another agent already works in the project's folder.
+    if (names.length === 0) return null;
     return <div className="hire-copy" data-hire-copy="untrusted">
       <p className="hire-note">
         This agent can work in its own copy of the project once you trust the project. {COPY_EXPLAINED}{' '}
