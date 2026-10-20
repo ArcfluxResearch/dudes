@@ -813,19 +813,21 @@ pub(crate) fn process(
 /// A daemon leaves its starter's process group, so the runner's kill of the test's group misses
 /// it. This starts a watcher in a group of its own, holding the read end of a pipe whose write end
 /// only the test holds. When the pipe closes the watcher reads the pids each `duded.log` under
-/// `root` records and stops those that are still a `duded`. Dropping this ends the watcher first,
-/// so a test that finishes normally leaves it nothing to do.
+/// `root` records and stops those still running `root/bin/duded`, so a pid that has since been
+/// reused by any other process, another daemon included, is left alone. Dropping this ends the
+/// watcher first, so a test that finishes normally leaves it nothing to do.
 #[cfg(unix)]
 pub(crate) struct Lifeline(std::process::Child);
 
 #[cfg(unix)]
 impl Lifeline {
     const WATCHER: &'static str = r#"
+root=$1
 cat >/dev/null
-pids=$(find "$1" -name duded.log -exec sed -n 's/^quickstart started duded pid \([0-9][0-9]*\)$/\1/p' {} +)
+pids=$(find "$root" -name duded.log -exec sed -n 's/^quickstart started duded pid \([0-9][0-9]*\)$/\1/p' {} +)
 stop() {
     for pid in $pids; do
-        case $(ps -o comm= -p "$pid") in */duded) kill "$@" "$pid" ;; esac
+        case $(ps -ww -o command= -p "$pid") in "$root/bin/duded" | "$root/bin/duded "*) kill "$@" "$pid" ;; esac
     done
 }
 stop -TERM
