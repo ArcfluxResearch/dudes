@@ -165,7 +165,7 @@ fn launch_refusal_peers(
 }
 
 #[test]
-fn launch_refusal_keeps_the_issued_task_until_the_exact_peer_boundary_is_absent() {
+fn launch_refusal_stays_held_while_the_peer_boundary_is_unresolved() {
     let fixture = Fixture::new();
     let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
     let (mut running, peer, candidate) = launch_refusal_peers(&fixture, &host);
@@ -173,7 +173,7 @@ fn launch_refusal_keeps_the_issued_task_until_the_exact_peer_boundary_is_absent(
         &running.handle,
         common::goal_params(peer, &["/usr/bin/true"]),
     );
-    let (peer_turn, pid, start) = fixture.await_record("peer child", |record| match record {
+    let (_, pid, start) = fixture.await_record("peer child", |record| match record {
         Record::TurnSpawned {
             agent,
             turn,
@@ -188,10 +188,8 @@ fn launch_refusal_keeps_the_issued_task_until_the_exact_peer_boundary_is_absent(
         &running.handle,
         common::goal_params(candidate, &["/usr/bin/true"]),
     );
-    let (turn, task) = fixture.await_record("candidate issue", |record| match record {
-        Record::TurnIssued {
-            agent, turn, task, ..
-        } if *agent == candidate => Some((*turn, task.clone())),
+    let turn = fixture.await_record("candidate issue", |record| match record {
+        Record::TurnIssued { agent, turn, .. } if *agent == candidate => Some(*turn),
         _ => None,
     });
     let reason = fixture.await_record("durable named admission hold", |record| match record {
@@ -243,6 +241,65 @@ fn launch_refusal_keeps_the_issued_task_until_the_exact_peer_boundary_is_absent(
     let reason = next_refusal(&fixture, candidate, before);
     assert!(reason.contains("unresolved liveness") && !reason.contains("is live"));
     assert_eq!(host.spawned().len(), 1);
+    running.stop(ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn launch_refusal_keeps_the_issued_task_until_the_exact_peer_boundary_is_absent() {
+    let fixture = Fixture::new();
+    let host = common::SharedHost::with_native_evidence(fixture.journal_dir());
+    let (mut running, peer, candidate) = launch_refusal_peers(&fixture, &host);
+    common::set_goal(
+        &running.handle,
+        common::goal_params(peer, &["/usr/bin/true"]),
+    );
+    let (peer_turn, pid) = fixture.await_record("peer child", |record| match record {
+        Record::TurnSpawned {
+            agent, turn, pid, ..
+        } if *agent == peer => Some((*turn, *pid)),
+        _ => None,
+    });
+    running.handle.ask(Ask::Pause(peer)).unwrap();
+    common::set_goal(
+        &running.handle,
+        common::goal_params(candidate, &["/usr/bin/true"]),
+    );
+    let (turn, task) = fixture.await_record("candidate issue", |record| match record {
+        Record::TurnIssued {
+            agent, turn, task, ..
+        } if *agent == candidate => Some((*turn, task.clone())),
+        _ => None,
+    });
+    let reason = fixture.await_record("durable named admission hold", |record| match record {
+        Record::AgentHeld {
+            agent,
+            cause: dudes_proto::AutomaticHold::LaunchRefused { reason },
+            ..
+        } if *agent == candidate => Some(reason.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        reason,
+        format!(
+            "Claude inherit is refused while Hector ({peer}) is live in the same folder; use a worktree"
+        )
+    );
+    assert_eq!(host.spawned().len(), 1);
+    assert!(fixture.records().iter().all(|record| !matches!(record,
+        Record::TurnEnded { turn: ended, .. } if *ended == turn)));
+    fixture.await_record(
+        "the refused attempt's explicit no-host-call proof",
+        |record| {
+            matches!(record, Record::InstructionObservationFinished {
+            owner: dudes_proto::InstructionObservationOwner::Managed { agent, turn: refused, .. },
+            settlement: dudes_proto::InstructionSettlement::NoProcess {
+                proof: dudes_proto::InstructionNoProcessProof::NoHostCall, ..
+            }, ..
+        } if *agent == candidate && *refused == turn)
+            .then_some(())
+        },
+    );
+
     common::end_turn_with_native(&fixture, &running.handle, &host, peer_turn);
     let key = host.peek(|host| host.key_for(pid));
     assert!(host.native_acknowledged(&key));
