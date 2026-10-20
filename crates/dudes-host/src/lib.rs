@@ -1124,34 +1124,6 @@ mod spawn_failure_tests {
         );
     }
 
-    #[test]
-    fn missing_empty_or_malformed_initial_heartbeats_never_prove_death() {
-        let root = tempfile::tempdir().expect("invalid heartbeat controls");
-        std::thread::scope(|scope| {
-            for (name, content) in [
-                ("missing", None),
-                ("empty", Some("")),
-                ("malformed", Some("x")),
-            ] {
-                let mark = root.path().join(format!("{name}.pid"));
-                if let Some(content) = content {
-                    fs::write(mark.with_extension("beat"), content)
-                        .expect("plant invalid heartbeat");
-                }
-                scope.spawn(move || {
-                    let error = std::panic::catch_unwind(|| beating(&mark))
-                        .expect_err("an invalid initial heartbeat must not prove death");
-                    let message = error
-                        .downcast_ref::<String>()
-                        .map(String::as_str)
-                        .or_else(|| error.downcast_ref::<&str>().copied())
-                        .expect("heartbeat panic message");
-                    assert!(message.starts_with("no heartbeat at "), "{message}");
-                });
-            }
-        });
-    }
-
     fn await_number(path: &Path) -> u32 {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {

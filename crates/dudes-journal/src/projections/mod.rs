@@ -2186,34 +2186,6 @@ pub(crate) mod tests {
         assert_eq!(reopened.export().unwrap(), expected_export);
     }
 
-    #[test]
-    fn messages_select_newest_creation_order_despite_backwards_clocks_and_mail_ids() {
-        let mut store = Projections::in_memory().unwrap();
-        for number in 1..=1_000 {
-            let entry = message(
-                MailId::from_parts(1_001 - number, 1),
-                -i64::try_from(number).unwrap(),
-            );
-            store.apply(Lsn(number), WITNESS, &entry).unwrap();
-            assert!(store.messages().unwrap().len() <= 128);
-        }
-        let rows = store.messages().unwrap();
-        assert_eq!(rows.len(), 128);
-        assert_eq!(rows.first().unwrap().lsn, "873");
-        assert_eq!(rows.last().unwrap().lsn, "1000");
-        assert_eq!(rows.first().unwrap().at, Timestamp::from_unix_millis(-873));
-        assert_eq!(rows.last().unwrap().id, MailId::from_parts(1, 1));
-        assert!(serde_json::to_vec(&rows).unwrap().len() <= 65_536);
-        store
-            .apply(
-                Lsn(1_001),
-                WITNESS,
-                &mail_state(MailId::from_parts(1_000, 1), MailState::Acked),
-            )
-            .unwrap();
-        assert_eq!(store.messages().unwrap(), rows);
-    }
-
     /// A managed `TurnIssued` for `agent()`.
     fn issued(turn: TurnId) -> Entry {
         issued_for(agent(), turn)

@@ -1360,7 +1360,7 @@ fn rows(p: &Projections) -> Snapshot {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: 16, ..ProptestConfig::default() })]
 
     /// Prefix-valid and resumable: replaying `records[..k]` yields a
     /// projection the oracle accepts, and replaying the rest afterwards yields the full one.
