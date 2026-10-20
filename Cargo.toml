@@ -148,6 +148,7 @@ dudes-proto = { path = "crates/dudes-proto", version = "0.91.0" }
 dudes-journal = { path = "crates/dudes-journal", version = "0.91.0" }
 dudes-policy = { path = "crates/dudes-policy", version = "0.91.0" }
 dudes-providers = { path = "crates/dudes-providers", version = "0.91.0" }
+dudes-config = { path = "crates/dudes-config", version = "0.91.0" }
 dudes-rpc = { path = "crates/dudes-rpc", version = "0.91.0" }
 dudes-supervisor = { path = "crates/dudes-supervisor", version = "0.91.0" }
 dudes-host = { path = "crates/dudes-host", version = "0.91.0" }

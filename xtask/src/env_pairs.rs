@@ -56,6 +56,9 @@ const RULES: &[Rule] = &[
     Rule { member: "duded" },
     Rule { member: "dudes" },
     Rule {
+        member: "dudes-config",
+    },
+    Rule {
         member: "dudes-host",
     },
     Rule {

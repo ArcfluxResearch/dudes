@@ -311,6 +311,7 @@ version = "0.91.0"
 dependencies = [
  "chrono",
  "duded",
+ "dudes-config",
  "dudes-journal",
  "dudes-policy",
  "dudes-proto",
@@ -333,6 +334,17 @@ dependencies = [
  "toml_edit",
  "ulid",
  "windows-spawn",
+]
+
+[[package]]
+name = "dudes-config"
+version = "0.91.0"
+dependencies = [
+ "dudes-proto",
+ "dudes-types",
+ "sha2",
+ "thiserror 2.0.21",
+ "toml_edit",
 ]
 
 [[package]]

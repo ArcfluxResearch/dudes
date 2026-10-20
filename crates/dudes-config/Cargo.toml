@@ -1,0 +1,22 @@
+[package]
+name = "dudes-config"
+description = "Edits the operator's config file in place: the settings keys, the enrolled projects and their start rules. File I/O only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[dependencies]
+dudes-proto.workspace = true
+dudes-types = { workspace = true, features = ["std"] }
+sha2.workspace = true
+thiserror = { workspace = true, features = ["std"] }
+toml_edit.workspace = true
+
+[lints]
+workspace = true

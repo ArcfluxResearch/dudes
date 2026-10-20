@@ -32,6 +32,7 @@ path = "src/main.rs"
 # journals, decides, owns a child or runs a runtime. `cargo xtask layering`'s `dudes` row is the
 # enforcement; this list is only what it reads.
 [dependencies]
+dudes-config.workspace = true
 dudes-proto.workspace = true
 dudes-providers.workspace = true
 dudes-rpc.workspace = true

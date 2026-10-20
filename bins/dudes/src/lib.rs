@@ -52,7 +52,7 @@
 pub mod args;
 pub mod call;
 mod checkout;
-pub mod config;
+pub use dudes_config::config;
 pub mod credential;
 mod editor;
 pub mod env;
