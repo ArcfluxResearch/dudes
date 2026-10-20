@@ -173,7 +173,7 @@ const GATE: &str = "#[cfg(any(test, feature = \"testing\"))]";
 /// which has stopped seeing packages fails rather than reading as clean, and a floor with slack in
 /// it tolerates losing precisely the packages that matter. A new member is one line of churn here
 /// and a diff someone reads.
-const MIN_PACKAGES: usize = 14;
+const MIN_PACKAGES: usize = 15;
 
 /// The source at `path`, with CRLF line endings normalised to LF.
 ///
