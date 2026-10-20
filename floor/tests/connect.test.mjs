@@ -32,6 +32,9 @@ const CSRF_B = `F${'g'.repeat(41)}M`;
 const HERE = { protocol: 'http:', host: '127.0.0.1:7717' };
 const SNAPSHOT = JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 3, agents: [] } });
 
+/** The stream opens its socket once the daemon has been proved, which is a few microtasks away. */
+const tick = () => new Promise((done) => setImmediate(done));
+
 function reply(status, payload = {}) {
   return { ok: status >= 200 && status < 300, status, async json() { return payload; } };
 }
@@ -108,7 +111,7 @@ test('two pasted links race: the stale one neither re-keys nor closes the stream
   resetPastedLink();
   const { sockets, connect } = socketFactory();
   const timers = manualTimers();
-  const ports = { location: HERE, socket: connect, timers };
+  const ports = { location: HERE, socket: connect, timers, prove: async () => true };
 
   // Link A is pasted, and its exchange is held in flight.
   let release;
@@ -119,6 +122,7 @@ test('two pasted links race: the stale one neither re-keys nor closes the stream
   }), ports);
   // Link B is pasted after it, settles first, and connects.
   await takePastedLink(exchange(async () => reply(200, { csrf: CSRF_B })), ports);
+  await tick();
   assert.equal(sockets.length, 1);
   assert.deepEqual(sockets[0].protocols, streamProtocols(CSRF_B));
   sockets[0].emit('open');
@@ -128,6 +132,7 @@ test('two pasted links race: the stale one neither re-keys nor closes the stream
   // A settles now. Its result is stale: B was pasted after it and already holds the page.
   release();
   await first;
+  await tick();
   timers.runPending(); // any reconnect a re-key would have scheduled
   assert.equal(currentFloorSession()?.csrf, CSRF_B, 'the stale result became the page’s session');
   assert.equal(sockets[0].closed, 0, 'the stale link closed the live socket');
@@ -162,7 +167,7 @@ test('a taken link whose stream throws as it opens still settles, and leaves no 
     const entry = await runnerWithNoOpenStream.import('/src/connect.ts');
     let throws = 0;
     const broken = { ...manualTimers(), now() { throws += 1; throw new Error('the stream clock is gone'); } };
-    const ports = { location: HERE, socket: socketFactory().connect, timers: broken };
+    const ports = { location: HERE, socket: socketFactory().connect, timers: broken, prove: async () => true };
 
     void entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_A }), session), ports);
     await new Promise((done) => setImmediate(done));
@@ -193,7 +198,7 @@ test('a refused pasted link is said, names no secret, and keeps what the page ho
   const control = await server.ssrLoadModule('/src/renderer/control/control.ts');
   const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
   const page = () => renderToStaticMarkup(createElement(WebFloorShell));
-  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers() };
+  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers(), prove: async () => true };
 
   // The page holds a session, a live floor with one Waiting agent, and one of each attempt.
   await entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_A }), session), ports);
@@ -253,7 +258,7 @@ test('a link refused for a different build says so, keeps the page, and a matchi
   const entry = await server.ssrLoadModule('/src/connect.ts');
   const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
   const page = () => renderToStaticMarkup(createElement(WebFloorShell));
-  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers() };
+  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers(), prove: async () => true };
   session.resetFloorSession();
   entry.resetPastedLink();
   await entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_A }), session), ports);
@@ -285,7 +290,7 @@ test('a refused first link leads with the used-or-expired line, names no secret,
   const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
   const page = () => renderToStaticMarkup(createElement(WebFloorShell));
-  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers() };
+  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers(), prove: async () => true };
   session.resetFloorSession();
   entry.resetPastedLink();
   store.resetFloorStore();
@@ -322,7 +327,7 @@ test('a good pasted link tells the signed-out page its first-link problem is gon
   const entry = await server.ssrLoadModule('/src/connect.ts');
   session.resetFloorSession();
   entry.resetPastedLink();
-  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers() };
+  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers(), prove: async () => true };
   let told = 0;
   entry.subscribeToPastedLink(() => { told += 1; });
   entry.noteFirstLinkRefused();

@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import type { FloorState } from './floor/store.ts';
+import { getProofState, subscribeToProof } from '../proof.ts';
 import { getAway, subscribeToAway } from './floor/away.ts';
 import { getStreamRetry, subscribeToStreamRetry, STALE_AFTER_MS } from './floor/stream.ts';
 import { SignInExpired } from './SignInExpired.tsx';
@@ -9,6 +10,10 @@ import { SignInExpired } from './SignInExpired.tsx';
 export function StreamNotice({ floor }: { readonly floor: FloorState }) {
   const retry = useSyncExternalStore(subscribeToStreamRetry, getStreamRetry, getStreamRetry);
   const away = useSyncExternalStore(subscribeToAway, getAway, getAway);
+  const proof = useSyncExternalStore(subscribeToProof, getProofState, getProofState);
+  if (proof === 'refused') return <p className="office-closed stream-notice" role="alert">
+    Dudes is not answering as itself. Open Dudes again.
+  </p>;
   if (away.kind === 'watching') return <p className="office-closed stream-notice" role="status">
     Dudes stopped answering. This page keeps checking and will ask you to reload when it is back.
   </p>;

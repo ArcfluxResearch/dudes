@@ -1613,9 +1613,9 @@ const REQUESTS = {
     fetches: ["window.fetch('/floor/')", 'ports.fetchIndex()', 'ports.fetchIndex()'],
   },
   'src/transport.ts': {
-    paths: [],
-    methods: [],
-    fetches: ['window.fetch(url)'],
+    paths: ['/floor/session/prove', 'application/json'],
+    methods: ['POST'],
+    fetches: ['window.fetch(PROVE_PATH)', 'window.fetch(url)'],
   },
   'src/renderer/onboarding/hire.ts': {
     paths: ['/floor/onboard', 'application/json'],

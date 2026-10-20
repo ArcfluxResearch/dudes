@@ -14,6 +14,7 @@ import {
   floorSessionGeneration,
 } from './session.ts';
 import type { FloorSession } from './session.ts';
+import { proveFloorDaemon } from './transport.ts';
 
 /** What the stream is opened with: where the page is, how a socket is made, and its clock. */
 export interface StreamPorts {
@@ -21,6 +22,8 @@ export interface StreamPorts {
   readonly socket: SocketFactory;
   /** The stream's own clock; the browser's when left out. */
   readonly timers?: StreamTimers;
+  /** How the daemon is proved before the secret is sent; the browser's own request when left out. */
+  readonly prove?: (secret: string) => Promise<boolean>;
 }
 
 /**
@@ -35,10 +38,23 @@ export function connect(session: FloorSession, ports: StreamPorts): void {
   stopStream = openFloorStream(session, ports.location, ports.socket, ports.timers, undefined, {
     ask: askFloorStanding,
     onUnknown: () => sessionUnknown(ports),
-  });
+  }, { prove: (next) => proveOrAdopt(next, ports) });
 }
 
 let stopStream: () => void = () => {};
+
+/**
+ * Before the stream sends the secret, make sure the daemon holds this session. A daemon that does
+ * not leaves the page signed in with what it has, and says so. Another tab of this browser may have
+ * signed in since, which replaces the cookie this page sends along with it: its secret is the one
+ * that goes with that cookie, so the stream follows it and proves the daemon again.
+ */
+async function proveOrAdopt(session: FloorSession, ports: StreamPorts): Promise<boolean> {
+  if (await (ports.prove ?? proveFloorDaemon)(session.csrf)) return true;
+  const next = adoptStoredFloorSession();
+  if (next !== null) setTimeout(() => connect(next, ports), 0);
+  return false;
+}
 
 /**
  * The daemon said it does not know this page's session. When another tab of this browser has signed

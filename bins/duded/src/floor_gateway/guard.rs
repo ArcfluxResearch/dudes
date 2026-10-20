@@ -12,6 +12,10 @@
 //! 3. the session cookie and the session secret, which must both name one live session;
 //! 4. the body: no NUL byte and valid UTF-8.
 //!
+//! A proof of the daemon to the page needs no session and no secret, since it is asked for before
+//! the secret is sent: it checks the Host and Origin and the peer, and answers every cookie in the
+//! same shape.
+//!
 //! Sign-in reads its body first, then checks the peer, and only then does the exchange spend the
 //! one-time link, so a refused agent never spends it. A socket checks the peer before it takes a
 //! slot. A check or a sign-out of the session checks the peer too, then looks the session up
@@ -30,9 +34,9 @@ use super::{
     LOOK_PATH, MEMORY_ENTRY_PATH, MEMORY_PAGE_PATH, ONBOARD_PATH, PAUSE_PATH, PROJECT_ADD_PATH,
     PROJECT_PREVIEW_PATH, PROJECT_REMOVE_PATH, RECEIPT_RECOVERY_PATH, RENAME_PATH, RENEW_PATH,
     RESUME_PATH, RETIRE_PATH, ReceiptSession, RecoveryRoute, Response, SESSION_CHECK_PATH,
-    SESSION_END_PATH, SETTINGS_PATH, SIGN_IN_PATH, STREAM_PATH, SUBMIT_RECOVERY_PATH,
-    SessionIdentity, SocketAddr, SocketRoute, SocketSession, TERMINAL_PATH, TicketRoute,
-    error_response,
+    SESSION_END_PATH, SESSION_PROVE_PATH, SETTINGS_PATH, SIGN_IN_PATH, STREAM_PATH,
+    SUBMIT_RECOVERY_PATH, SessionIdentity, SocketAddr, SocketRoute, SocketSession, TERMINAL_PATH,
+    TicketRoute, error_response,
 };
 use crate::floor_peer::Verdict;
 
@@ -42,6 +46,7 @@ pub(super) const DYNAMIC_PATHS: &[&str] = &[
     SIGN_IN_PATH,
     SESSION_CHECK_PATH,
     SESSION_END_PATH,
+    SESSION_PROVE_PATH,
     STREAM_PATH,
     TERMINAL_PATH,
     ENGINE_LOGIN_PATH,
@@ -79,6 +84,7 @@ pub(super) const DYNAMIC_PATHS: &[&str] = &[
 #[derive(Clone, Copy)]
 enum Kind {
     SignIn,
+    Proof,
     Standing(StandingRoute),
     Action(ActionRoute),
     Socket(SocketRoute),
@@ -106,6 +112,8 @@ impl Route {
         let path = DYNAMIC_PATHS.iter().copied().find(|known| *known == path)?;
         let kind = if method == "POST" && path == SIGN_IN_PATH {
             Kind::SignIn
+        } else if method == "POST" && path == SESSION_PROVE_PATH {
+            Kind::Proof
         } else if method == "POST" && path == SESSION_CHECK_PATH {
             Kind::Standing(StandingRoute::Check)
         } else if method == "POST" && path == SESSION_END_PATH {
@@ -121,14 +129,14 @@ impl Route {
     pub(super) const fn action(self) -> Option<ActionRoute> {
         match self.kind {
             Kind::Action(route) => Some(route),
-            Kind::SignIn | Kind::Standing(_) | Kind::Socket(_) => None,
+            Kind::SignIn | Kind::Proof | Kind::Standing(_) | Kind::Socket(_) => None,
         }
     }
 
     pub(super) const fn standing(self) -> Option<StandingRoute> {
         match self.kind {
             Kind::Standing(route) => Some(route),
-            Kind::SignIn | Kind::Action(_) | Kind::Socket(_) => None,
+            Kind::SignIn | Kind::Proof | Kind::Action(_) | Kind::Socket(_) => None,
         }
     }
 
@@ -136,10 +144,14 @@ impl Route {
         matches!(self.kind, Kind::SignIn)
     }
 
+    pub(super) const fn is_proof(self) -> bool {
+        matches!(self.kind, Kind::Proof)
+    }
+
     pub(super) const fn socket(self) -> Option<SocketRoute> {
         match self.kind {
             Kind::Socket(route) => Some(route),
-            Kind::SignIn | Kind::Standing(_) | Kind::Action(_) => None,
+            Kind::SignIn | Kind::Proof | Kind::Standing(_) | Kind::Action(_) => None,
         }
     }
 
@@ -154,6 +166,7 @@ impl Route {
     const fn acting(self) -> bool {
         match self.kind {
             Kind::SignIn
+            | Kind::Proof
             | Kind::Standing(StandingRoute::Check)
             | Kind::Socket(SocketRoute::Stream) => false,
             Kind::Standing(StandingRoute::End)
@@ -180,6 +193,9 @@ pub(super) struct Credentials {
 pub(super) struct Head {
     pub(super) host: String,
     pub(super) origin: String,
+    /// The session cookie, when the head carried a well-formed one. Only a proof reads it alone;
+    /// every other route that acts reads it with the secret, in `credentials`.
+    pub(super) cookie: Option<String>,
     pub(super) credentials: Option<Credentials>,
     pub(super) content_length: usize,
     /// The WebSocket accept value for a socket upgrade; empty for everything else.
@@ -192,9 +208,17 @@ pub(super) struct SignIn {
     pub(super) origin: String,
 }
 
+/// A request for the daemon's proof of itself, with the cookie it named. The cookie is only a
+/// name: it is never checked here, so a request without one is answered like one for a session the
+/// daemon does not know.
+pub(super) struct ProofAsk {
+    pub(super) cookie: Option<String>,
+}
+
 /// What a request has earned. Handlers take these and nothing less.
 pub(super) enum Admitted {
     SignIn(SignIn),
+    Proof(ProofAsk),
     /// The session a check or a sign-out named, or `None` when the daemon does not know it.
     Standing(Option<SessionIdentity>),
     Session(SessionIdentity),
@@ -264,6 +288,17 @@ impl Guard<'_> {
                     admitted: Admitted::SignIn(SignIn {
                         host: head.host.clone(),
                         origin: head.origin.clone(),
+                    }),
+                    body,
+                })
+            }
+            Kind::Proof => {
+                self.peer(route, endpoints)?;
+                let body = read_body()?;
+                clean_body(&body)?;
+                Ok(Admission {
+                    admitted: Admitted::Proof(ProofAsk {
+                        cookie: head.cookie.clone(),
                     }),
                     body,
                 })

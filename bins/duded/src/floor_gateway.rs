@@ -63,7 +63,8 @@ mod guard;
 mod guard_tests;
 mod recovery;
 use guard::{
-    Admission, Admitted, Credentials, Denied, Endpoints, Guard, Head, Route, SignIn, StandingRoute,
+    Admission, Admitted, Credentials, Denied, Endpoints, Guard, Head, ProofAsk, Route, SignIn,
+    StandingRoute,
 };
 use recovery::RecoveryRoute;
 
@@ -90,6 +91,9 @@ const SIGN_IN_PATH: &str = "/floor/session";
 const SESSION_CHECK_PATH: &str = "/floor/session/check";
 /// Signs the session out.
 const SESSION_END_PATH: &str = "/floor/session/end";
+/// Proves to the page that the daemon holds its session, before the page sends its secret.
+const SESSION_PROVE_PATH: &str = "/floor/session/prove";
+const MAX_PROOF_BODY: usize = 128;
 const INSPECT_RECOVERY_PATH: &str = "/floor/recovery/inspect";
 const SUBMIT_RECOVERY_PATH: &str = "/floor/recovery/submit";
 const RECEIPT_RECOVERY_PATH: &str = "/floor/recovery/receipt";
@@ -1440,6 +1444,7 @@ fn dispatch<'a>(
     } = guard;
     let response = match (admitted, route.action()) {
         (Admitted::SignIn(sign_in), _) => exchange_response(sessions, &sign_in, body),
+        (Admitted::Proof(ask), _) => proof_response(sessions, &ask, body),
         (Admitted::Standing(identity), _) => match route.standing() {
             Some(StandingRoute::Check) => {
                 standing_response(identity.as_ref(), sessions.is_running(), &head, false)
@@ -1600,6 +1605,14 @@ fn parse_request<'a>(head: &[u8], catalog: Catalog<'a>, sessions: &FloorSessions
             upgrade_request(route, socket, request.version, request.headers, sessions)
         } else if route.is_sign_in() {
             exchange_request(route, request.version, request.headers, sessions)
+        } else if route.is_proof() {
+            browser_head(
+                route,
+                request.version,
+                request.headers,
+                MAX_PROOF_BODY,
+                false,
+            )
         } else if route.standing().is_some() {
             standing_request(route, request.version, request.headers)
         } else {
@@ -1682,6 +1695,7 @@ fn exchange_request(
         head: Head {
             host: host.to_owned(),
             origin: origin.to_owned(),
+            cookie: None,
             credentials: None,
             content_length,
             accept: String::new(),
@@ -1759,6 +1773,30 @@ fn standing_response<'a>(
     }
 }
 
+/// The daemon's proof that it holds the session the cookie names, for the nonce in the body. The
+/// answer is `{"proof":"<43 characters>"}` whether or not the cookie names a live session, so a
+/// process that holds no session digest can ask but cannot tell which sessions exist. Neither the
+/// secret nor the digest is read, logged or sent.
+fn proof_response<'a>(sessions: &FloorSessions, ask: &ProofAsk, body: &[u8]) -> Response<'a> {
+    let nonce = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| match value {
+            serde_json::Value::Object(map) if map.len() == 1 => match map.get("nonce") {
+                Some(serde_json::Value::String(nonce)) if valid_nonce(nonce) => Some(nonce.clone()),
+                _ => None,
+            },
+            _ => None,
+        });
+    let Some(nonce) = nonce else {
+        return error_response(400, "Bad Request");
+    };
+    action_json(
+        200,
+        "OK",
+        &serde_json::json!({ "proof": sessions.prove(ask.cookie.as_deref(), &nonce) }),
+    )
+}
+
 /// The shape of a browser action's head: HTTP/1.1; one Host, Origin, Cookie and secret each; JSON;
 /// and a decimal `Content-Length` within the route's cap, refused with `413` before any body is
 /// read. Whether the cookie and the secret name a live session, and who sent the request, are
@@ -1823,6 +1861,7 @@ fn browser_head(
     let secret = secret
         .and_then(|value| std::str::from_utf8(value).ok())
         .filter(|value| valid_nonce(value));
+    let named = cookie.map(str::to_owned);
     let credentials = match (cookie, secret) {
         (Some(cookie), Some(secret)) => Some(Credentials {
             cookie: cookie.to_owned(),
@@ -1852,6 +1891,7 @@ fn browser_head(
         head: Head {
             host: host.to_owned(),
             origin: origin.to_owned(),
+            cookie: named,
             credentials,
             content_length,
             accept: String::new(),
@@ -2714,6 +2754,7 @@ fn upgrade_request(
         head: Head {
             host: host.to_owned(),
             origin: origin.to_owned(),
+            cookie: Some(cookie.to_owned()),
             credentials: Some(Credentials {
                 cookie: cookie.to_owned(),
                 secret: csrf.to_owned(),

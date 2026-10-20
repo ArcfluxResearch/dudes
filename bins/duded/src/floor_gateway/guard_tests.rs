@@ -118,6 +118,7 @@ enum Outcome {
 /// the audit record for a refusal.
 struct Driven {
     outcome: Outcome,
+    body: Vec<u8>,
     reached_a_handler: usize,
     audit: Vec<(&'static str, Option<AgentId>, FloorPeerRefusal)>,
 }
@@ -173,9 +174,11 @@ fn drive(request: &[u8], sessions: &FloorSessions, peer: &PeerGate) -> Driven {
     let action = read_request(&mut input, guard, &AtomicU8::new(READY))
         .expect("the request is read")
         .expect("the request gets an answer");
-    let outcome = match action {
-        ConnectionAction::Response(response) => Outcome::Status(response.code),
-        ConnectionAction::Upgrade(_) => Outcome::Upgraded,
+    let (outcome, body) = match action {
+        ConnectionAction::Response(response) => {
+            (Outcome::Status(response.code), response.body.into_owned())
+        }
+        ConnectionAction::Upgrade(_) => (Outcome::Upgraded, Vec::new()),
     };
     let mut reached_a_handler = 0;
     let mut audit = Vec::new();
@@ -191,6 +194,7 @@ fn drive(request: &[u8], sessions: &FloorSessions, peer: &PeerGate) -> Driven {
     }
     Driven {
         outcome,
+        body,
         reached_a_handler,
         audit,
     }
@@ -438,7 +442,12 @@ fn no_post_route_acts_without_a_clean_session_secret_body_and_peer() {
                 STREAM_PATH | TERMINAL_PATH | ENGINE_LOGIN_PATH | SIGN_IN_PATH
             )
         })
-        .filter(|path| !matches!(*path, SESSION_CHECK_PATH | SESSION_END_PATH))
+        .filter(|path| {
+            !matches!(
+                *path,
+                SESSION_CHECK_PATH | SESSION_END_PATH | SESSION_PROVE_PATH
+            )
+        })
         .filter(|path| !matches!(*path, GIT_PATH | DIFF_PATH))
         .collect();
     assert!(routes.len() >= 22);
@@ -568,6 +577,70 @@ fn the_session_routes_say_unknown_only_to_a_clean_peer_and_end_only_for_the_sess
         Outcome::Status(200)
     );
     assert_eq!(check(&signed.sessions), Outcome::Status(401));
+}
+
+#[test]
+fn the_proof_needs_no_secret_and_answers_every_cookie_alike_to_a_clean_peer() {
+    let signed = signed_in();
+    let other = signed_in();
+    let nonce = "D".repeat(43);
+    let body = format!(r#"{{"nonce":"{nonce}"}}"#);
+    let ask = |cookie: Option<&str>, peer: &PeerGate| {
+        let request = json_post(SESSION_PROVE_PATH, cookie, None, body.as_bytes());
+        drive(&request, &signed.sessions, peer)
+    };
+    let proof_of = |driven: &Driven| {
+        let answer: serde_json::Value = serde_json::from_slice(&driven.body).expect("JSON");
+        answer["proof"].as_str().expect("a proof").to_owned()
+    };
+
+    let right = ask(Some(&signed.cookie), &outside());
+    assert_eq!(right.outcome, Outcome::Status(200));
+    assert_eq!(
+        proof_of(&right),
+        signed.sessions.prove(Some(&signed.cookie), &nonce),
+        "the right session proves, with no secret sent"
+    );
+    for cookie in [None, Some(other.cookie.as_str()), Some(&*"E".repeat(43))] {
+        let wrong = ask(cookie, &outside());
+        assert_eq!(wrong.outcome, Outcome::Status(200), "same shape");
+        assert_eq!(proof_of(&wrong).len(), 43);
+        assert_ne!(proof_of(&wrong), proof_of(&right));
+    }
+
+    let from_an_agent = ask(Some(&signed.cookie), &inside_an_agent());
+    assert_eq!(from_an_agent.outcome, Outcome::Status(403));
+    assert!(from_an_agent.body.is_empty());
+    assert_eq!(
+        from_an_agent.audit,
+        vec![(
+            path_of(SESSION_PROVE_PATH),
+            Some(agent()),
+            FloorPeerRefusal::Agent
+        )]
+    );
+    let foreign_origin = String::from_utf8(json_post(
+        SESSION_PROVE_PATH,
+        Some(&signed.cookie),
+        None,
+        body.as_bytes(),
+    ))
+    .expect("text")
+    .replace(
+        &format!("Origin: http://{HOST}"),
+        "Origin: http://localhost.invalid",
+    );
+    assert_eq!(
+        drive(foreign_origin.as_bytes(), &signed.sessions, &outside()).outcome,
+        Outcome::Status(403)
+    );
+    for bad in [&b"{}"[..], b"{\"nonce\":\"short\"}", b"[]"] {
+        let request = json_post(SESSION_PROVE_PATH, Some(&signed.cookie), None, bad);
+        assert_eq!(
+            drive(&request, &signed.sessions, &outside()).outcome,
+            Outcome::Status(400)
+        );
+    }
 }
 
 fn path_of(path: &str) -> &'static str {
@@ -848,6 +921,7 @@ fn the_guard_admits_a_clean_request_from_outside_every_agent() {
     let head = Head {
         host: HOST.to_owned(),
         origin: format!("http://{HOST}"),
+        cookie: Some(signed.cookie.clone()),
         credentials: Some(Credentials {
             cookie: signed.cookie.clone(),
             secret: signed.secret.clone(),

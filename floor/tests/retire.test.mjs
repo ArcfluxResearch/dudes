@@ -39,6 +39,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 import { loadStage } from './helpers/page.mjs';
+import { PROVE_PATH, proofFrom } from './helpers/daemon-proof.mjs';
 
 import { ATTEMPT_ID } from '../src/renderer/onboarding/hire.ts';
 import { accessibleNameOfHeading } from './helpers/heading-name.mjs';
@@ -164,6 +165,7 @@ let server;
 let retire;
 let control;
 let session;
+let transport;
 let applyServerFrame;
 let beginFloorEpoch;
 let getFloorState;
@@ -188,6 +190,7 @@ before(async () => {
   });
   retire = await server.ssrLoadModule('/src/renderer/retire/retire.ts');
   control = await server.ssrLoadModule('/src/renderer/control/control.ts');
+  transport = await server.ssrLoadModule('/src/transport.ts');
   session = await server.ssrLoadModule('/src/session.ts');
   ({ applyServerFrame, beginFloorEpoch, getFloorState, invalidateFloorEpoch, noteStale, noteTransport,
     resetFloorStore } = await server.ssrLoadModule('/src/renderer/floor/store.ts'));
@@ -275,12 +278,14 @@ async function withBrowser(reply, run) {
     { read: () => CSRF, write() {} });
   globalThis.window = {
     async fetch(url, init) {
+      if (url === PROVE_PATH) return proofFrom(CSRF, init);
       calls.push({ url, init });
       const response = reply(JSON.parse(init.body), url);
       return { status: response.status, text: async () => response.body ?? '' };
     },
   };
   try {
+    assert.equal(await transport.proveFloorDaemon(CSRF), true, 'the fake daemon proves itself');
     await run(calls);
   } finally {
     delete globalThis.window;

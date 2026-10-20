@@ -34,6 +34,7 @@ import {
   subscribeToFloor,
 } from './store.ts';
 import type { OutputMode } from './store.ts';
+import { forgetProof, isProven } from '../../proof.ts';
 import { loadedAssetRefs } from '../../session.ts';
 import { floorRequestsPaused } from '../../transport.ts';
 import { beginAway, browserIndexFetch, indexAnswers } from './away.ts';
@@ -220,6 +221,17 @@ export interface StandingPorts {
   onUnknown(): void;
 }
 
+/**
+ * How the stream makes sure the daemon is the one the page signed in to before a socket carries
+ * the page's secret. `prove` says whether it is; the stream treats `false` as a failed attempt and
+ * climbs the same ladder, so a daemon that comes back is proved and joined, and one that never
+ * does is given up on. Left out, the socket opens at once, which is for tests that drive the
+ * stream with a fake socket.
+ */
+export interface ProvePort {
+  prove(session: FloorSessionLike): Promise<boolean>;
+}
+
 const NO_STANDING: StandingPorts = { ask: async () => 'unclear', onUnknown: () => {} };
 
 /** What the page asks when the daemon has gone away: the browser's own request and the files it was loaded with. */
@@ -252,6 +264,7 @@ export function openFloorStream(
   timers: StreamTimers = browserTimers,
   away: AwayPorts = BROWSER_AWAY,
   standing: StandingPorts = NO_STANDING,
+  proof?: ProvePort,
 ): () => void {
   // The session every socket is opened for. It changes only when the page is
   // re-authenticated in place, and the next socket then offers the new nonce.
@@ -273,10 +286,34 @@ export function openFloorStream(
   let reconcileSelection = () => {};
   const stopSelectionWatch = subscribeToFloor(() => reconcileSelection());
 
+  // Which subscription's proof the stream is waiting for; a newer one makes an older answer stale.
+  let proving = 0;
+
   function subscribe(): void {
     // The epoch is minted before the socket exists, so there is no window in
     // which a frame could arrive unstamped.
     const epoch = beginFloorEpoch();
+    if (proof === undefined) {
+      open(epoch);
+      return;
+    }
+    const asked = session;
+    const turn = ++proving;
+    socket = null;
+    ended = false;
+    void proof.prove(asked).then((proved) => {
+      if (disposed || turn !== proving || session !== asked) return;
+      if (proved) {
+        open(epoch);
+        return;
+      }
+      ended = true;
+      noteTransport('close');
+      retry();
+    });
+  }
+
+  function open(epoch: number): void {
     const live = connect(streamUrl(location), streamProtocols(session.csrf));
     socket = live;
     ended = false;
@@ -396,6 +433,7 @@ export function openFloorStream(
       ready = false;
       ended = true;
       reconcileSelection = () => {};
+      forgetProof();
       noteTransport('close');
       // The bound this transport is closed for is a queue bound, so the close
       // is the whole of the message: there is no code to read and nothing says
@@ -505,6 +543,10 @@ export function openFloorStream(
 
 /** The browser's own socket. Separate so the rest of the file needs no DOM. */
 export const browserSocket: SocketFactory = (url, protocols) => {
+  const offered = protocols.find((protocol) => protocol.startsWith(CSRF_PROTOCOL_PREFIX));
+  if (offered !== undefined && !isProven(offered.slice(CSRF_PROTOCOL_PREFIX.length))) {
+    throw new TypeError('Dudes has not proved it holds this session');
+  }
   if (floorRequestsPaused()) throw new TypeError('The Floor page is waiting for a reload');
   return new WebSocket(url, [...protocols]) as unknown as SocketLike;
 };
