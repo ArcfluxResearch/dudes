@@ -265,7 +265,7 @@ fn repeated_http_receipt_reads_cannot_extend_the_registry_idle_deadline() {
     owned.sessions.issue().unwrap();
     assert_eq!(owned.sessions.registry_counts_for_test(), (1, 1));
     let before = owned.fixture.entries();
-    owned.clock.advance(29 * 60_000);
+    owned.clock.advance((24 * 60 - 1) * 60_000);
     let (code, absent) = owned.post("/floor/recovery/receipt", &request);
     assert_eq!(code, 200);
     assert_eq!(absent["state"], "absent");
@@ -482,7 +482,7 @@ fn serialized_receipt_read_revalidates_current_registry_and_expiry() {
         .sessions
         .authorize_receipt(&host, &origin, &owned.exchange.cookie, &owned.exchange.csrf)
         .unwrap();
-    owned.clock.advance(30 * 60_000);
+    owned.clock.advance(24 * 60 * 60_000);
     assert_eq!(
         owned
             .running

@@ -443,6 +443,45 @@ fn it_installs_the_binaries_and_floor_and_says_what_to_run_next() {
     }
 }
 
+#[test]
+fn it_adds_a_launcher_that_runs_dudes_open() {
+    for (system, machine, target) in [
+        ("Darwin", "arm64", "aarch64-apple-darwin"),
+        ("Linux", "x86_64", "x86_64-unknown-linux-musl"),
+    ] {
+        let served = tempfile::tempdir().expect("a release directory");
+        release(served.path(), &[target]);
+        let url = serve(served.path()).url;
+        let host = Host::new(system, machine);
+        let bin = host.prefix().join("bin");
+
+        let installed = host.install(&url, &[]);
+
+        assert!(installed.status.success(), "{system}: {installed:?}");
+        let (launcher, expected) = if system == "Darwin" {
+            (
+                host.home
+                    .path()
+                    .join("Applications/Dudes.app/Contents/MacOS/Dudes"),
+                format!("#!/bin/sh\nexec '{}/dudes' open\n", bin.display()),
+            )
+        } else {
+            (
+                host.home
+                    .path()
+                    .join(".local/share/applications/dudes.desktop"),
+                format!("Exec=\"{}/dudes\" open\n", bin.display()),
+            )
+        };
+        let text = std::fs::read_to_string(&launcher).expect("the launcher was written");
+        assert!(text.contains(&expected), "{system}: {text}");
+        assert!(
+            stdout(&installed).contains("the Dudes launcher in "),
+            "{system}"
+        );
+    }
+}
+
 /// What an upgrade says after installing, given the version of the daemon already running, if any,
 /// and the `dudes` it tells the user to run, which is off `PATH` here.
 fn upgrade_says(daemon: Option<&str>) -> (String, String) {

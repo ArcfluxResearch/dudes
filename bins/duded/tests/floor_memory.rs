@@ -522,7 +522,7 @@ fn authentication_fails_closed_before_any_read_and_near_misses_are_not_routes() 
         page.page(agent, None).to_string().contains(SENTINEL),
         "positive control: the signed-in page reads the entry"
     );
-    daemon.clock.advance(31 * 60_000);
+    daemon.clock.advance(25 * 60 * 60_000);
     let expired = page.page_reply(agent, None);
     assert_eq!(expired.status, 403, "an expired session: {}", expired.head);
     assert!(expired.body.is_empty());
@@ -960,7 +960,7 @@ fn a_session_that_expires_while_the_loop_answers_gets_no_page() {
         .expect("one read answers while the loop is held");
     assert_eq!(busy.json()["state"], "busy");
 
-    daemon.clock.advance(31 * 60_000);
+    daemon.clock.advance(25 * 60 * 60_000);
     daemon.pause.release();
     assert!(appending.join().expect("the append").is_ok());
     let held = answered.recv_timeout(WAIT).expect("the held read answers");

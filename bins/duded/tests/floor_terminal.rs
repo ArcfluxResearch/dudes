@@ -741,14 +741,14 @@ fn grant_idle_expiry_writes_nothing() {
     let (cookie, csrf) = session(&floor);
     let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
     let handle = terminal.attach(agent);
-    for minute in [20, 40] {
-        floor.clock.advance(20 * 60_000);
-        let typed = format!("typed at minute {minute}");
+    for hour in [20, 40] {
+        floor.clock.advance(20 * 60 * 60_000);
+        let typed = format!("typed at hour {hour}");
         terminal.write(&handle, typed.as_bytes());
         await_write(&floor.ptys, typed.as_bytes());
     }
     let before = host_bytes(&floor.ptys);
-    floor.clock.advance(31 * 60_000);
+    floor.clock.advance(25 * 60 * 60_000);
     terminal.write(&handle, b"after idle expiry");
     terminal.expect_policy_close();
     await_system_detach(&fixture, agent, 1);
@@ -766,7 +766,7 @@ fn grant_output_after_absolute_expiry_sends_no_frame() {
     let (cookie, csrf) = session(&floor);
     let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
     terminal.attach(agent);
-    floor.clock.advance(8 * 60 * 60_000);
+    floor.clock.advance(30 * 24 * 60 * 60_000);
     floor
         .ptys
         .produce_output(newest_pty(&floor.ptys), b"after absolute expiry");
@@ -791,7 +791,7 @@ fn grant_a_silent_expired_channel_closes_within_two_seconds() {
     let opened = Instant::now();
     let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
     terminal.attach(agent);
-    floor.clock.advance(8 * 60 * 60_000);
+    floor.clock.advance(30 * 24 * 60 * 60_000);
     terminal.expect_terminal_closed();
     let silent = opened.elapsed();
     assert!(

@@ -1345,7 +1345,7 @@ fn an_old_journal_with_ceilings_replays_and_its_ceilings_still_bind() {
         pause.wait_reached(Duration::from_secs(3)),
         "the hire is durable before the goal"
     );
-    clock.advance(8 * 60 * 60 * 1000);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
     pause.release();
     let (_, partial) = owner.join().expect("partial response");
     assert_eq!(partial["reason"], "session_expired");
@@ -2634,7 +2634,7 @@ fn session_expiry_before_each_append_has_distinct_truthful_outcomes() {
         pause.wait_reached(Duration::from_secs(3)),
         "first permit cut"
     );
-    clock.advance(8 * 60 * 60 * 1000);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
     pause.release();
     let (head, body) = owner.join().expect("no-effect response");
     assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{head}");
@@ -2672,7 +2672,7 @@ fn session_expiry_before_each_append_has_distinct_truthful_outcomes() {
         })
         .count();
     assert_eq!(durable_hire, 1);
-    clock.advance(8 * 60 * 60 * 1000);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
     pause.release();
     let (head, body) = owner.join().expect("partial response");
     assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
@@ -2740,7 +2740,7 @@ fn expired_follower_after_registry_lock_wait_gets_empty_forbidden() {
     sent_rx
         .recv_timeout(Duration::from_secs(3))
         .expect("same-key follower sent while registry locked");
-    clock.advance(8 * 60 * 60 * 1000);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
     pause.release();
     let (owner_head, owner_body) = owner.join().expect("owner response");
     assert!(
@@ -2809,8 +2809,8 @@ fn expired_same_key_follower_blocked_in_reservation_gets_empty_forbidden() {
     let origin = format!("http://{host}");
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
     // Idle-fresh up to one minute short of the absolute bound, so only that bound can pass.
-    for _ in 0..16 {
-        clock.advance(29 * 60 * 1000);
+    for _ in 0..31 {
+        clock.advance(23 * 60 * 60 * 1000);
         assert!(
             authorizer
                 .authorize_read(&host, &origin, &cookie, &csrf)
@@ -2818,7 +2818,7 @@ fn expired_same_key_follower_blocked_in_reservation_gets_empty_forbidden() {
             "activity keeps the session idle-fresh"
         );
     }
-    clock.advance(15 * 60 * 1000);
+    clock.advance((7 * 60 - 1) * 60 * 1000);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
@@ -2905,7 +2905,7 @@ fn replayed_partial_refuses_every_effective_profile_change() {
         pause.wait_reached(Duration::from_secs(3)),
         "durable partial hire"
     );
-    clock.advance(8 * 60 * 60 * 1000);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
     pause.release();
     let (_, partial) = owner.join().expect("partial result");
     assert_eq!(partial["reason"], "session_expired");
@@ -5183,7 +5183,7 @@ fn browser_answer_expiry_waiting_on_registry_lock_is_forbidden() {
         .recv_timeout(Duration::from_secs(5))
         .expect("B is sent while A holds the lock");
     let sampled_while_held = probe.recv_timeout(Duration::from_millis(500)).is_ok();
-    clock.inner.advance(8 * 60 * 60 * 1000);
+    clock.inner.advance(30 * 24 * 60 * 60 * 1000);
     pause.release();
     let (head, winner) = holder.join().expect("A");
     assert!(
@@ -7159,7 +7159,7 @@ fn browser_pause_resume_expiry_waiting_on_registry_lock_is_forbidden() {
         .recv_timeout(Duration::from_secs(5))
         .expect("B is sent while A holds the lock");
     let sampled_while_held = probe.recv_timeout(Duration::from_millis(500)).is_ok();
-    clock.inner.advance(8 * 60 * 60 * 1000);
+    clock.inner.advance(30 * 24 * 60 * 60 * 1000);
     pause.release();
     let (head, winner) = holder.join().expect("A");
     applied(&head, &winner, "paused");
@@ -9144,7 +9144,7 @@ fn browser_goal_expiry_waiting_on_registry_lock_is_forbidden() {
         .recv_timeout(Duration::from_secs(5))
         .expect("B is sent while A holds the lock");
     let sampled_while_held = probe.recv_timeout(Duration::from_millis(500)).is_ok();
-    clock.inner.advance(8 * 60 * 60 * 1000);
+    clock.inner.advance(30 * 24 * 60 * 60 * 1000);
     pause.release();
     let (head, winner) = holder.join().expect("A");
     changed(&head, &winner);
@@ -11849,7 +11849,7 @@ fn browser_retire_expiry_waiting_on_registry_lock_is_forbidden() {
         .recv_timeout(Duration::from_secs(5))
         .expect("B is sent while A holds the lock");
     let sampled_while_held = probe.recv_timeout(Duration::from_millis(500)).is_ok();
-    clock.inner.advance(8 * 60 * 60 * 1000);
+    clock.inner.advance(30 * 24 * 60 * 60 * 1000);
     pause.release();
     let (head, winner) = holder.join().expect("A");
     retired_at(&head, &winner);
@@ -15016,7 +15016,7 @@ fn browser_renew_expiry_waiting_on_registry_lock_is_forbidden() {
         .recv_timeout(Duration::from_secs(5))
         .expect("B is sent while A holds the lock");
     let sampled_while_held = probe.recv_timeout(Duration::from_millis(500)).is_ok();
-    clock.inner.advance(8 * 60 * 60 * 1000);
+    clock.inner.advance(30 * 24 * 60 * 60 * 1000);
     pause.release();
     let (head, winner) = holder.join().expect("A");
     renewed(&head, &winner);
@@ -15866,7 +15866,7 @@ fn browser_onboard_partial_retry_reruns_the_baseline() {
         pause.wait_reached(Duration::from_secs(5)),
         "the hire is durable"
     );
-    clock.advance(8 * 60 * 60 * 1000);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
     pause.release();
     let (_, partial) = owner.join().expect("the partial answer");
     assert_eq!(partial["reason"], "session_expired");

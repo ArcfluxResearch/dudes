@@ -975,7 +975,7 @@ fn stream_admission_limits_refuse_then_recover() {
 
 #[test]
 fn stream_idle_and_absolute_expiry_release_slots() {
-    const MINUTE_MS: i64 = 60_000;
+    const HOUR_MS: i64 = 60 * 60_000;
 
     let fixture = Fixture::new();
     let port = free_port();
@@ -1001,7 +1001,7 @@ fn stream_idle_and_absolute_expiry_release_slots() {
     let (quiet_cookie, quiet_csrf) = exchange(addr, &quiet_issue.bootstrap);
     let mut quiet = WebSocket::connect(addr, &quiet_cookie, &quiet_csrf);
     wait_for_live(&probe, 1);
-    clock.advance(30 * MINUTE_MS);
+    clock.advance(24 * HOUR_MS);
     quiet.expect_closed(&probe);
     drop(quiet);
     wait_for_live(&probe, 0);
@@ -1011,10 +1011,10 @@ fn stream_idle_and_absolute_expiry_release_slots() {
     let mut outbound = WebSocket::connect(addr, &outbound_cookie, &outbound_csrf);
     outbound.send(r#"{"type":"floor.subscribe"}"#);
     assert_eq!(outbound.json()["type"], "floor.snapshot");
-    clock.advance(29 * MINUTE_MS);
+    clock.advance(23 * HOUR_MS);
     pause(&running.handle, agent);
     assert_eq!(outbound.json()["type"], "floor.delta");
-    clock.advance(MINUTE_MS);
+    clock.advance(HOUR_MS);
     outbound.expect_closed(&probe);
     drop(outbound);
     wait_for_live(&probe, 0);
@@ -1022,13 +1022,13 @@ fn stream_idle_and_absolute_expiry_release_slots() {
     let absolute_issue = issue(&settings);
     let (absolute_cookie, absolute_csrf) = exchange(addr, &absolute_issue.bootstrap);
     let mut held_socket = WebSocket::connect(addr, &absolute_cookie, &absolute_csrf);
-    for _ in 0..16 {
-        clock.advance(29 * MINUTE_MS);
+    for _ in 0..31 {
+        clock.advance(23 * HOUR_MS);
         let activity = WebSocket::connect(addr, &absolute_cookie, &absolute_csrf);
         drop(activity);
         wait_for_live(&probe, 1);
     }
-    clock.advance(16 * MINUTE_MS);
+    clock.advance(8 * HOUR_MS);
     held_socket.expect_closed(&probe);
     drop(held_socket);
     wait_for_live(&probe, 0);

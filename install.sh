@@ -212,7 +212,7 @@ add_launcher() {
 	case $(uname -s) in
 	Darwin)
 		app=$HOME/Applications/Dudes.app
-		quoted=$(printf '%s' "$program" | sed "s/'/'\\\\''/g")
+		quoted=$(printf '%s' "$program" | sed "s/'/'\\\\''/g") || return 0
 		{
 			rm -rf "$app" &&
 				mkdir -p "$app/Contents/MacOS" &&
@@ -504,7 +504,7 @@ main() {
 	say "  the Floor in $share/floor"
 	say "  the licence notices in $share"
 	launcher=
-	add_launcher
+	add_launcher 2>/dev/null || true
 	[ -z "$launcher" ] || say "  the Dudes launcher in $launcher"
 	run=dudes
 	case ":${PATH:-}:" in
