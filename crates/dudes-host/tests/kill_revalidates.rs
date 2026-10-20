@@ -56,6 +56,12 @@ fn the_helper_entry_point() {
 /// Short, because both arms wait it out and neither is about how long a child is given.
 const GRACE: Duration = Duration::from_millis(300);
 
+/// How long the owner's watcher thread has to reap after the hard signal. Reaping is not part of
+/// the kill's promise, and a starved CI runner can delay that thread past the kill grace; a child
+/// that never receives the hard signal still never goes `Gone`, so this only delays that failure.
+#[cfg(unix)]
+const REAP_DEADLINE: Duration = Duration::from_secs(5);
+
 /// What the host answers for a child it killed and reaped. Windows never claims positive absence:
 /// `src/windows.rs` documents why a pid that no longer opens answers `Unknown`, not `Gone`.
 const REAPED: Liveness = if cfg!(windows) {
@@ -138,14 +144,18 @@ fn term_ignoring_spec(
 /// actually become absent. A final heartbeat can race the signal delivery, while `Gone` cannot.
 #[cfg(unix)]
 fn await_observed_gone(owner: &RealHost, key: &AdoptionKey) {
-    let deadline = std::time::Instant::now() + GRACE;
+    let started = std::time::Instant::now();
+    let deadline = started + REAP_DEADLINE;
     loop {
-        if owner.alive(key) == Liveness::Gone {
+        let liveness = owner.alive(key);
+        if liveness == Liveness::Gone {
             return;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the TERM-ignoring adopted child was not observed gone after the hard signal"
+            "the TERM-ignoring adopted child was not observed gone after the hard signal: \
+             last observed {liveness:?} after {:?}",
+            started.elapsed()
         );
         std::thread::sleep(Duration::from_millis(10));
     }
