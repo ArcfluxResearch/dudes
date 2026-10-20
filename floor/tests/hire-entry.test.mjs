@@ -80,7 +80,7 @@ test('Crew folds the Hire reason behind a chip that names it, with the reason\'s
     const { hireUnavailable } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
     const folded = (floor) => renderToStaticMarkup(createElement(HireEntry, { floor, id: 'hire-open-crew', onAddAgent() {}, folded: true }));
     assert.equal(folded(off), '<details class="hire-off"><summary>Hire is off</summary>'
-      + '<p class="hire-entry-off">Hire is off. Turn it on with dudes config set floor.hire on, then restart the daemon.</p></details>');
+      + '<p class="hire-entry-off">Hire is off. Turn on Hire agents under Floor switches in Settings.</p></details>');
     const unknown = { ...on, settings: null, onboarding: null };
     assert.equal(folded(unknown), '<details class="hire-off"><summary>Hire is unavailable</summary>'
       + `<p class="hire-entry-off">${hireUnavailable(unknown).replaceAll("'", '&#x27;')}</p></details>`);

@@ -99,13 +99,13 @@ test('Floor actions reads the real switches, the Hire switch and the Hire offer'
   snapshot();
   const html = view('actions');
   assert.match(html, /<dt>Hire switch<\/dt><dd>Off<\/dd>/);
-  assert.match(html, /<p>Hire is off\. Turn it on with dudes config set floor\.hire on, then restart the daemon\.<\/p>/);
+  assert.match(html, /<p>Hire is off\. Turn on Hire agents under Floor switches in Settings\.<\/p>/);
   assert.match(html, /<code>dudes config set floor.hire on<\/code>/);
   assert.match(html, /dudes config set floor.control on/);
   assert.match(html, /dudes config set floor.terminal on/);
   assert.doesNotMatch(html, /budget\.|positive ceilings/, 'Hire no longer needs a budget');
   snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, hire: true } } });
-  assert.match(view('actions'), /<p>Hire needs a project enrolled with dudes project add, at least one engine/);
+  assert.match(view('actions'), /<p>Hire needs a project \(add its folder in Settings\), at least one engine/);
   assert.match(view('actions'), /<code>dudes config set floor.hire off<\/code>/);
   snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, control: true, terminal: true, hire: true } },
     onboarding: CATALOG });

@@ -331,7 +331,7 @@ test('with the terminal switch off, the header says how to turn it on', async ()
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
     providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 3 },
   };
-  const hint = /<p class="settings-guidance">Terminal needs <code>floor\.terminal<\/code>\.\s*Run <code>dudes config set floor\.terminal on<\/code>, then restart the daemon\.<\/p>/;
+  const hint = /<p class="settings-guidance">Terminal is off\. Turn on Attach terminals under Floor switches in Settings\.<\/p>/;
   assert.match(header(center({ settings, terminal: false })), hint);
   const on = { ...settings, switches: { ...settings.switches, terminal: true } };
   assert.doesNotMatch(center({ settings: on, terminal: true }), hint);
@@ -348,9 +348,8 @@ test('the switches that are off fold into one Enable more controls disclosure, w
   const DISCLOSURE = /<details class="enable-controls"><summary>Enable more controls <span class="enable-controls-count">(\d)<\/span><\/summary>([\s\S]*?)<\/details>/;
   const hints = (html) => [...html.matchAll(/<p class="settings-guidance">([\s\S]*?)<\/p>/g)]
     .map(([, words]) => words.replace(/<[^>]+>/g, '').replace(/\s+/g, ' '));
-  const RETIRE = 'Retire needs floor.control and floor.retire. Run dudes config set floor.control on floor.retire on, '
-    + 'then restart the daemon.';
-  const TERMINAL = 'Terminal needs floor.terminal. Run dudes config set floor.terminal on, then restart the daemon.';
+  const RETIRE = 'Retire is off. Turn on Pause, resume and rename and Retire agents under Floor switches in Settings.';
+  const TERMINAL = 'Terminal is off. Turn on Attach terminals under Floor switches in Settings.';
 
   const both = header(center({ settings, retire: false, terminal: false }));
   const [, count, inside] = DISCLOSURE.exec(both) ?? [];

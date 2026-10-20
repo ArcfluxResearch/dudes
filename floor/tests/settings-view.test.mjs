@@ -77,8 +77,8 @@ test('Settings shows read-only running values, local commands, Setup and About',
       assert.ok(renewing.includes(command), `a command the CLI refuses while renewal needs it: ${command}`);
     }
     const hint = (control) => renderToStaticMarkup(createElement(UnavailableControls, { floor: floor(), control }));
-    assert.match(hint('retire'), /dudes config set floor.control on floor.retire on/);
-    assert.match(hint('terminal'), /dudes config set floor.terminal on/);
+    assert.match(hint('retire'), /Turn on Pause, resume and rename and Retire agents under\s+Floor switches in Settings/);
+    assert.match(hint('terminal'), /Turn on Attach terminals under Floor switches in Settings/);
 
     assert.match(html, /Turn a switch on or off here/);
     const diffRow = (git) => renderToStaticMarkup(createElement(SettingsView,
@@ -101,9 +101,9 @@ test('Hire says it is off when its switch is off, and names every other reason w
     const { UnavailableControls } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
     const hint = (hire) => renderToStaticMarkup(createElement(UnavailableControls,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, hire } }), control: 'hire' }));
-    assert.equal(hint(false), '<p class="settings-guidance">Hire is off. Turn it on with dudes config set floor.hire on, '
-      + 'then restart the daemon.</p>');
-    assert.equal(hint(true), '<p class="settings-guidance">Hire needs a project enrolled with dudes project add, at '
+    assert.equal(hint(false), '<p class="settings-guidance">Hire is off. Turn on Hire agents under Floor '
+      + 'switches in Settings.</p>');
+    assert.equal(hint(true), '<p class="settings-guidance">Hire needs a project (add its folder in Settings), at '
       + 'least one engine offered for it, and a free Hire slot in this session. An engine is withdrawn when the '
       + 'daemon&#x27;s configuration turns it off, or when the daemon holds a billing key for it and the project has '
       + 'no ceiling that key requires.</p>');

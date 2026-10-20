@@ -36,10 +36,10 @@ function ceiling(value: string | null, dollars = true): string {
 /** Why this session is offered no Hire, or `null` when it is offered one. */
 export function hireUnavailable(floor: FloorState): string | null {
   if (floor.settings?.switches.hire === false) {
-    return 'Hire is off. Turn it on with dudes config set floor.hire on, then restart the daemon.';
+    return 'Hire is off. Turn on Hire agents under Floor switches in Settings.';
   }
   if (floor.onboarding !== null) return null;
-  return 'Hire needs a project enrolled with dudes project add, at least one engine offered for it, and a free Hire '
+  return 'Hire needs a project (add its folder in Settings), at least one engine offered for it, and a free Hire '
     + 'slot in this session. An engine is withdrawn when the daemon\'s configuration turns it off, or when the '
     + 'daemon holds a billing key for it and the project has no ceiling that key requires.';
 }
@@ -60,11 +60,10 @@ export function UnavailableControls({ floor, control }: {
   }
   if (!switchedOffControls(floor).includes(control)) return null;
   if (control === 'retire') {
-    return <p className="settings-guidance">Retire needs <code>floor.control</code> and <code>floor.retire</code>.
-      Run <code>dudes config set floor.control on floor.retire on</code>, then restart the daemon.</p>;
+    return <p className="settings-guidance">Retire is off. Turn on Pause, resume and rename and Retire agents under
+      Floor switches in Settings.</p>;
   }
-  return <p className="settings-guidance">Terminal needs <code>floor.terminal</code>.
-    Run <code>dudes config set floor.terminal on</code>, then restart the daemon.</p>;
+  return <p className="settings-guidance">Terminal is off. Turn on Attach terminals under Floor switches in Settings.</p>;
 }
 
 export function SettingsView({ floor, onSetup }: {

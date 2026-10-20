@@ -746,7 +746,7 @@ test('project setup guidance keeps an explicit Hire-off command visible', () => 
   } });
   hire.showSection('workspace');
   const html = render();
-  assert.match(html, /Hire is off\. Turn it on with dudes config set floor.hire on, then restart the daemon\./);
+  assert.match(html, /Hire is off\. Turn on Hire agents under Floor switches in Settings\./);
   assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes project add<\/code>\./);
 });
 const WITHDRAWN = '<p class="hire-note">An engine missing here is turned off in the daemon&#x27;s configuration, or '
