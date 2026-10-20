@@ -24,13 +24,13 @@ fn agent() -> AgentId {
 }
 
 fn owner(lineage: &[(u32, u32)]) -> SocketOwnerLookup {
-    SocketOwnerLookup::Found(SocketOwner {
+    SocketOwnerLookup::Found(vec![SocketOwner {
         uid: ME,
         lineage: lineage
             .iter()
             .map(|&(pid, group)| ProcessRef { pid, group })
             .collect(),
-    })
+    }])
 }
 
 #[derive(Debug)]
@@ -52,6 +52,7 @@ fn gate(lookup: SocketOwnerLookup) -> PeerGate {
         Box::new(move |_, _| lookup.clone()),
         Box::new(Some),
         Some(ME),
+        None,
     )
 }
 

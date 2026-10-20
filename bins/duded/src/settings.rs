@@ -39,6 +39,7 @@ pub struct RunOptions {
     chat_key_ignored: bool,
     providers: crate::config::ProviderTables,
     mcp_servers: dudes_providers::mcp::DeclaredServers,
+    daemon_pid: Option<u32>,
     #[cfg(feature = "fault-injection")]
     recovery_stop: Option<crate::fault::RecoveryStop>,
 }
@@ -87,6 +88,18 @@ impl RunOptions {
 
     pub(crate) fn mcp_servers(&self) -> &dudes_providers::mcp::DeclaredServers {
         &self.mcp_servers
+    }
+
+    /// Name the daemon's own process, so the Floor refuses a connection held by anything that
+    /// descends from it. Left unset by a test that runs the daemon and its client in one process.
+    #[must_use]
+    pub const fn with_daemon_pid(mut self, pid: Option<u32>) -> Self {
+        self.daemon_pid = pid;
+        self
+    }
+
+    pub(crate) const fn daemon_pid(&self) -> Option<u32> {
+        self.daemon_pid
     }
 
     /// Whether the operator file carried a `[floor.chat]` table this run ignores.

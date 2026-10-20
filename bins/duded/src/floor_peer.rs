@@ -5,7 +5,13 @@
 //! process inside an agent. Nothing the sender writes is read: the owner comes from the socket
 //! tables, never from a header.
 //!
-//! A process that left its agent's tree and group (a double fork with `setsid`) is not caught.
+//! A request is refused when any process holding the connection is inside an agent, when any
+//! holder's chain of parents cannot be followed to the top, and when any holder descends from the
+//! daemon itself: the browser is started by the user or the CLI, never by the daemon, so a daemon
+//! descendant is an agent whose pid is not registered yet.
+//!
+//! A process that left its agent's tree and group (a double fork with `setsid`) and reparented to
+//! the init process is not caught.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -65,6 +71,7 @@ pub(crate) struct PeerGate {
     owner_of: Box<OwnerOf>,
     group_of: Box<GroupOf>,
     own_uid: Option<u32>,
+    daemon_pid: Option<u32>,
     journaled: Mutex<BTreeMap<Option<AgentId>, Timestamp>>,
 }
 
@@ -76,12 +83,15 @@ impl fmt::Debug for PeerGate {
 
 impl PeerGate {
     /// The gate over the operating system's socket tables.
-    pub(crate) fn system(roots: Arc<dyn AgentRoots>) -> Self {
+    ///
+    /// `daemon_pid` is the daemon's own process; nothing that descends from it may use the Floor.
+    pub(crate) fn system(roots: Arc<dyn AgentRoots>, daemon_pid: Option<u32>) -> Self {
         Self::with(
             roots,
             Box::new(tcp_peer::loopback_socket_owner),
             Box::new(tcp_peer::process_group),
             tcp_peer::current_uid(),
+            daemon_pid,
         )
     }
 
@@ -90,12 +100,14 @@ impl PeerGate {
         owner_of: Box<OwnerOf>,
         group_of: Box<GroupOf>,
         own_uid: Option<u32>,
+        daemon_pid: Option<u32>,
     ) -> Self {
         Self {
             roots,
             owner_of,
             group_of,
             own_uid,
+            daemon_pid,
             journaled: Mutex::new(BTreeMap::new()),
         }
     }
@@ -108,23 +120,28 @@ impl PeerGate {
         let (SocketAddr::V4(client), SocketAddr::V4(server)) = (client, server) else {
             return refused(FloorPeerRefusal::NoOwner, None);
         };
-        let owner = match (self.owner_of)(client, server) {
+        let owners = match (self.owner_of)(client, server) {
             SocketOwnerLookup::Unsupported => {
                 return refused(FloorPeerRefusal::Unsupported, None);
             }
             SocketOwnerLookup::NotFound => return refused(FloorPeerRefusal::NoOwner, None),
-            SocketOwnerLookup::Found(owner) => owner,
+            SocketOwnerLookup::Found(owners) if owners.is_empty() => {
+                return refused(FloorPeerRefusal::NoOwner, None);
+            }
+            SocketOwnerLookup::Found(owners) => owners,
         };
-        if self.own_uid != Some(owner.uid) {
+        if owners.iter().any(|owner| self.own_uid != Some(owner.uid)) {
             return refused(FloorPeerRefusal::OtherUser, None);
+        }
+        let lineage = || owners.iter().flat_map(|owner| owner.lineage.iter());
+        if let Some(daemon) = self.daemon_pid
+            && lineage().any(|process| process.pid == daemon)
+        {
+            return refused(FloorPeerRefusal::Agent, None);
         }
         for root in self.roots.live() {
             let group = (self.group_of)(root.pid);
-            let inside = owner
-                .lineage
-                .iter()
-                .any(|process| process.pid == root.pid || Some(process.group) == group);
-            if inside {
+            if lineage().any(|process| process.pid == root.pid || Some(process.group) == group) {
                 return refused(FloorPeerRefusal::Agent, root.agent);
             }
         }
@@ -169,6 +186,7 @@ mod tests {
 
     const ME: u32 = 501;
     const AGENT_ROOT: u32 = 900;
+    const DAEMON: u32 = 700;
 
     fn agent() -> AgentId {
         AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap()
@@ -184,17 +202,22 @@ mod tests {
             Box::new(move |_, _| lookup.clone()),
             Box::new(Some),
             Some(ME),
+            Some(DAEMON),
         )
     }
 
-    fn owner(uid: u32, lineage: &[(u32, u32)]) -> SocketOwnerLookup {
-        SocketOwnerLookup::Found(SocketOwner {
+    fn holder(uid: u32, lineage: &[(u32, u32)]) -> SocketOwner {
+        SocketOwner {
             uid,
             lineage: lineage
                 .iter()
                 .map(|&(pid, group)| ProcessRef { pid, group })
                 .collect(),
-        })
+        }
+    }
+
+    fn owner(uid: u32, lineage: &[(u32, u32)]) -> SocketOwnerLookup {
+        SocketOwnerLookup::Found(vec![holder(uid, lineage)])
     }
 
     fn root() -> AgentRoot {
@@ -236,6 +259,37 @@ mod tests {
             Verdict::Refused {
                 reason: FloorPeerRefusal::Agent,
                 agent: Some(agent())
+            }
+        );
+    }
+
+    #[test]
+    fn a_connection_held_by_two_processes_is_refused_whatever_the_order() {
+        let browser = holder(ME, &[(3000, 3000), (1, 1)]);
+        let agent_child = holder(ME, &[(4000, 4000), (AGENT_ROOT, AGENT_ROOT), (1, 1)]);
+        for holders in [
+            vec![browser.clone(), agent_child.clone()],
+            vec![agent_child, browser],
+        ] {
+            assert_eq!(
+                gate(SocketOwnerLookup::Found(holders), vec![root()])
+                    .check(addr(50000), addr(8080)),
+                Verdict::Refused {
+                    reason: FloorPeerRefusal::Agent,
+                    agent: Some(agent())
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn an_owner_descending_from_the_daemon_is_refused_before_any_agent_is_registered() {
+        let new_agent = owner(ME, &[(4000, 4000), (DAEMON, DAEMON), (1, 1)]);
+        assert_eq!(
+            gate(new_agent, Vec::new()).check(addr(50000), addr(8080)),
+            Verdict::Refused {
+                reason: FloorPeerRefusal::Agent,
+                agent: None
             }
         );
     }
@@ -293,6 +347,7 @@ mod tests {
             Box::new(|_, _| owner(ME, &[(3000, 3000)])),
             Box::new(|_| None),
             None,
+            None,
         );
         assert!(matches!(
             unknown_self.check(addr(50000), addr(8080)),
@@ -322,13 +377,16 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (_held, _) = listener.accept().unwrap();
-        let gate = PeerGate::system(Arc::new(NoAgents));
+        let gate = PeerGate::system(Arc::new(NoAgents), None);
         let here = (client.local_addr().unwrap(), listener.local_addr().unwrap());
         assert_eq!(gate.check(here.0, here.1), Verdict::Allowed);
-        let inside = PeerGate::system(Arc::new(Roots(vec![AgentRoot {
-            pid: std::process::id(),
-            agent: Some(agent()),
-        }])));
+        let inside = PeerGate::system(
+            Arc::new(Roots(vec![AgentRoot {
+                pid: std::process::id(),
+                agent: Some(agent()),
+            }])),
+            None,
+        );
         assert_eq!(
             inside.check(here.0, here.1),
             Verdict::Refused {

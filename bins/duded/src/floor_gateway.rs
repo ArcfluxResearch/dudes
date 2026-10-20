@@ -518,10 +518,15 @@ impl PreparedAssets {
         self
     }
 
-    /// Refuse requests from inside any of these agent processes, read afresh on every request.
+    /// Refuse requests from inside any of these agent processes, read afresh on every request, and
+    /// from anything that descends from `daemon_pid`.
     #[must_use]
-    pub(crate) fn with_agent_roots(mut self, roots: Arc<dyn AgentRoots>) -> Self {
-        self.peer = Arc::new(PeerGate::system(roots));
+    pub(crate) fn with_agent_roots(
+        mut self,
+        roots: Arc<dyn AgentRoots>,
+        daemon_pid: Option<u32>,
+    ) -> Self {
+        self.peer = Arc::new(PeerGate::system(roots, daemon_pid));
         self
     }
 
@@ -3000,7 +3005,10 @@ pub fn prepare(settings: &FloorSettings) -> Result<PreparedAssets> {
         git: None,
         diff: None,
         board: Arc::new(TicketLimits::new()),
-        peer: Arc::new(PeerGate::system(Arc::new(crate::floor_peer::NoAgents))),
+        peer: Arc::new(PeerGate::system(
+            Arc::new(crate::floor_peer::NoAgents),
+            None,
+        )),
     })
 }
 
@@ -3267,16 +3275,17 @@ mod tests {
                 Box::new(|_, _| allowed_owner()),
                 Box::new(|_| None),
                 Some(1),
+                None,
             )
         });
         &OPEN
     }
 
     fn allowed_owner() -> crate::floor_peer::SocketOwnerLookup {
-        crate::floor_peer::SocketOwnerLookup::Found(crate::floor_peer::SocketOwner {
+        crate::floor_peer::SocketOwnerLookup::Found(vec![crate::floor_peer::SocketOwner {
             uid: 1,
             lineage: Vec::new(),
-        })
+        }])
     }
 
     /// The catalog these unit tests serve: no answer route, as in the default configuration.

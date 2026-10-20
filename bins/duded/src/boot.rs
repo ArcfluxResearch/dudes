@@ -345,6 +345,7 @@ where
 {
     #[cfg(feature = "fault-injection")]
     let recovery_stop = options.recovery_stop().cloned();
+    let daemon_pid = options.daemon_pid();
     let Seams {
         host,
         pty_host,
@@ -516,7 +517,7 @@ where
         .map(|prepared| {
             prepared
                 .with_switches(switches.clone())
-                .with_agent_roots(resolver.agent_roots())
+                .with_agent_roots(resolver.agent_roots(), daemon_pid)
                 .with_remembered_port(crate::floor_port::remembered(&settings.state_dir))
         });
     if prepared_floor.is_some() {

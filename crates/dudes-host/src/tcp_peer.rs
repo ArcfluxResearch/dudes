@@ -10,6 +10,10 @@
 //! a union that only unsafe code can read. The offsets into those bytes are pinned by a test
 //! against that typed layout.
 //!
+//! Every holder of the socket is reported, and a holder counts only when its chain of parents is
+//! followed to the top of the process tree. A walk that stops early (a parent that cannot be read,
+//! a loop, too many hops) is an answer nobody can trust, so the whole lookup is "not found".
+//!
 //! Every answer here is a fact about one instant. A client that exits before the lookup is not
 //! found, and callers must treat "not found" as a refusal.
 
@@ -29,23 +33,23 @@ pub struct ProcessRef {
 pub struct SocketOwner {
     /// The user the owner runs as.
     pub uid: u32,
-    /// The owner first, then its parent, then that parent's parent, up to the first process the
-    /// walk cannot read or [`MAX_LINEAGE`] hops.
+    /// The owner first, then its parent, then that parent's parent, up to the process with no
+    /// parent. Never a walk that stopped early.
     pub lineage: Vec<ProcessRef>,
 }
 
 /// What the lookup found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SocketOwnerLookup {
-    /// A process holds the socket.
-    Found(SocketOwner),
+    /// These processes hold the socket, never none. Each has a complete lineage.
+    Found(Vec<SocketOwner>),
     /// No process this daemon may inspect holds it, or the holder left before it could be read.
     NotFound,
     /// This platform cannot answer.
     Unsupported,
 }
 
-/// The most parents followed from the owner.
+/// The most processes in one lineage. A longer chain is refused, not cut short.
 pub const MAX_LINEAGE: usize = 64;
 
 /// Find the holder of the client end of a loopback connection.
@@ -56,8 +60,12 @@ pub const MAX_LINEAGE: usize = 64;
 pub fn loopback_socket_owner(client: SocketAddrV4, server: SocketAddrV4) -> SocketOwnerLookup {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        platform::owner_pid(client, server)
-            .and_then(lineage)
+        let owners: Option<Vec<SocketOwner>> = platform::owner_pids(client, server)
+            .into_iter()
+            .map(|pid| lineage(pid, platform::row))
+            .collect();
+        owners
+            .filter(|owners| !owners.is_empty())
             .map_or(SocketOwnerLookup::NotFound, SocketOwnerLookup::Found)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -108,23 +116,31 @@ struct Row {
     uid: u32,
 }
 
+/// The first process. macOS does not let a user read it, so the walk ends at the child it adopted
+/// instead of reading it.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn lineage(owner: u32) -> Option<SocketOwner> {
-    let first = platform::row(owner)?;
+const INIT: u32 = 1;
+
+/// The owner and every parent up to the first process (or one with no parent), or `None` when the walk cannot
+/// reach it: an unreadable process, a loop, or more than [`MAX_LINEAGE`] processes.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn lineage(owner: u32, row: impl Fn(u32) -> Option<Row>) -> Option<SocketOwner> {
+    let first = row(owner)?;
     let mut chain = vec![ProcessRef {
         pid: owner,
         group: first.group,
     }];
     let mut parent = first.parent;
-    while parent != 0 && chain.len() < MAX_LINEAGE && chain.iter().all(|seen| seen.pid != parent) {
-        let Some(row) = platform::row(parent) else {
-            break;
-        };
+    while parent != 0 && parent != INIT {
+        if chain.len() >= MAX_LINEAGE || chain.iter().any(|seen| seen.pid == parent) {
+            return None;
+        }
+        let next = row(parent)?;
         chain.push(ProcessRef {
             pid: parent,
-            group: row.group,
+            group: next.group,
         });
-        parent = row.parent;
+        parent = next.parent;
     }
     Some(SocketOwner {
         uid: first.uid,
@@ -151,17 +167,24 @@ mod platform {
         Some(Row { parent, group, uid })
     }
 
-    pub(super) fn owner_pid(client: SocketAddrV4, server: SocketAddrV4) -> Option<u32> {
-        let inode =
+    pub(super) fn owner_pids(client: SocketAddrV4, server: SocketAddrV4) -> Vec<u32> {
+        let Some(inode) =
             inode_of("/proc/net/tcp", &v4_field(client), &v4_field(server)).or_else(|| {
                 inode_of(
                     "/proc/net/tcp6",
                     &mapped_field(client),
                     &mapped_field(server),
                 )
-            })?;
+            })
+        else {
+            return Vec::new();
+        };
         let wanted = format!("socket:[{inode}]");
-        for entry in fs::read_dir("/proc").ok()?.flatten() {
+        let mut holders = Vec::new();
+        let Ok(processes) = fs::read_dir("/proc") else {
+            return holders;
+        };
+        for entry in processes.flatten() {
             let Some(pid) = entry
                 .file_name()
                 .to_str()
@@ -176,10 +199,10 @@ mod platform {
                 fs::read_link(fd.path()).is_ok_and(|target| target.as_os_str() == wanted.as_str())
             });
             if holds {
-                return Some(pid);
+                holders.push(pid);
             }
         }
-        None
+        holders
     }
 
     /// `/proc/net/tcp` prints an address as the host-order bytes of the `u32`, in hex.
@@ -288,9 +311,14 @@ mod platform {
             && address(FOREIGN_V4_AT) == *server.ip()
     }
 
-    pub(super) fn owner_pid(client: SocketAddrV4, server: SocketAddrV4) -> Option<u32> {
-        let uid = super::current_uid()?;
-        let pids = pids_by_type(ProcFilter::ByUID { uid }).ok()?;
+    pub(super) fn owner_pids(client: SocketAddrV4, server: SocketAddrV4) -> Vec<u32> {
+        let mut holders = Vec::new();
+        let Some(uid) = super::current_uid() else {
+            return holders;
+        };
+        let Ok(pids) = pids_by_type(ProcFilter::ByUID { uid }) else {
+            return holders;
+        };
         for pid in pids.into_iter().filter(|pid| *pid != 0) {
             let Ok(raw) = i32::try_from(pid) else {
                 continue;
@@ -308,11 +336,12 @@ mod platform {
                 if let Ok(SocketBytes(bytes)) = pidfdinfo::<SocketBytes>(raw, fd.proc_fd)
                     && is_connection(&bytes, client, server)
                 {
-                    return Some(pid);
+                    holders.push(pid);
+                    break;
                 }
             }
         }
-        None
+        holders
     }
 }
 
@@ -342,9 +371,11 @@ mod tests {
             v4(client.local_addr().unwrap()),
             v4(listener.local_addr().unwrap()),
         );
-        let SocketOwnerLookup::Found(owner) = found else {
+        let SocketOwnerLookup::Found(owners) = found else {
             panic!("this process holds the client socket, got {found:?}");
         };
+        assert_eq!(owners.len(), 1);
+        let owner = &owners[0];
         assert_eq!(owner.uid, current_uid().unwrap());
         assert_eq!(owner.lineage[0].pid, std::process::id());
         assert_eq!(
@@ -353,6 +384,46 @@ mod tests {
         );
         assert!(owner.lineage.len() > 1, "the test runner is its parent");
         assert_eq!(owner.lineage[1].pid, std::os::unix::process::parent_id());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn row_of(parent: u32) -> Row {
+        Row {
+            parent,
+            group: 7,
+            uid: 501,
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_walk_that_reaches_the_top_of_the_tree_is_kept() {
+        let owner = lineage(30, |pid| Some(row_of(pid / 10 * 10 - 10))).unwrap();
+        assert_eq!(
+            owner.lineage.iter().map(|p| p.pid).collect::<Vec<_>>(),
+            [30, 20, 10]
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_walk_that_stops_early_is_refused() {
+        let unreadable_parent = |pid| match pid {
+            30 => Some(row_of(20)),
+            _ => None,
+        };
+        assert!(lineage(30, unreadable_parent).is_none());
+        let cycle = |pid| Some(row_of(if pid == 30 { 20 } else { 30 }));
+        assert!(lineage(30, cycle).is_none());
+        let too_deep = |pid| Some(row_of(pid + 1));
+        let unreadable_init = |pid| (pid != INIT).then(|| row_of(INIT));
+        assert_eq!(lineage(30, unreadable_init).unwrap().lineage.len(), 1);
+        assert!(lineage(1, too_deep).is_none());
+        let exactly_full = |pid: u32| {
+            let top = pid as usize == MAX_LINEAGE;
+            Some(row_of(if top { 0 } else { pid + 1 }))
+        };
+        assert_eq!(lineage(1, exactly_full).unwrap().lineage.len(), MAX_LINEAGE);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
