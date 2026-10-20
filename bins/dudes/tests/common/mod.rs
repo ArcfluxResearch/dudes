@@ -807,6 +807,61 @@ pub(crate) fn process(
     command
 }
 
+/// Stops the daemons a test started if the test process itself dies without running its
+/// destructors, as when the runner kills it at the slow-test limit.
+///
+/// A daemon leaves its starter's process group, so the runner's kill of the test's group misses
+/// it. This starts a watcher in a group of its own, holding the read end of a pipe whose write end
+/// only the test holds. When the pipe closes the watcher reads the pids each `duded.log` under
+/// `root` records and stops those still running `root/bin/duded`, so a pid that has since been
+/// reused by any other process, another daemon included, is left alone. Dropping this ends the
+/// watcher first, so a test that finishes normally leaves it nothing to do.
+#[cfg(unix)]
+pub(crate) struct Lifeline(std::process::Child);
+
+#[cfg(unix)]
+impl Lifeline {
+    const WATCHER: &'static str = r#"
+root=$1
+cat >/dev/null
+pids=$(find "$root" -name duded.log -exec sed -n 's/^quickstart started duded pid \([0-9][0-9]*\)$/\1/p' {} +)
+stop() {
+    for pid in $pids; do
+        case $(ps -ww -o command= -p "$pid") in "$root/bin/duded" | "$root/bin/duded "*) kill "$@" "$pid" ;; esac
+    done
+}
+stop -TERM
+sleep 2
+stop -KILL
+"#;
+
+    pub(crate) fn start(root: &Path) -> Self {
+        use std::os::unix::process::CommandExt as _;
+        let args: Vec<OsString> = vec![
+            "-c".into(),
+            Self::WATCHER.into(),
+            "watcher".into(),
+            root.as_os_str().to_owned(),
+        ];
+        let child = process(OsStr::new("/bin/sh"), &args, None)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("start the daemon lifeline");
+        Self(child)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Lifeline {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Argument lines the suite reuses
 // ---------------------------------------------------------------------------------------------
