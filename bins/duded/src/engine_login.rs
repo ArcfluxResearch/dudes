@@ -255,9 +255,14 @@ fn scratch_dir() -> io::Result<PathBuf> {
     getrandom::fill(&mut random).map_err(io::Error::other)?;
     let path =
         std::env::temp_dir().join(format!("dudes-sign-in-{:016x}", u64::from_le_bytes(random)));
-    let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    let builder = {
+        let mut builder = std::fs::DirBuilder::new();
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+    };
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
     builder.create(&path)?;
     Ok(path)
 }

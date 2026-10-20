@@ -152,9 +152,9 @@ pub const JOIN_BOUND: Duration = Duration::from_secs(2);
 const FAULT_WAIT: Duration = Duration::from_secs(5);
 
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
-/// A terminal-enabled daemon admits inline styles for the terminal's renderer. Every
+/// A daemon that draws a terminal admits inline text in style elements for the renderer. Every
 /// other directive is byte-identical to [`CSP`].
-const TERMINAL_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
+const TERMINAL_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; style-src-elem 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
 
 const STARTING: u8 = 0;
 const READY: u8 = 1;
