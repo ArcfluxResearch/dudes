@@ -62,8 +62,8 @@ test('hash suffix and served extensions use the shared finite contract', () => {
 test('runtime notices are exactly the copied code set', () => {
   const notices = [
     { name: '@xterm/xterm', version: '6.0.0', identifier: 'MIT', text: 'notice' },
-    { name: 'react', version: '19.3.0', identifier: 'MIT', text: 'notice' },
-    { name: 'react-dom', version: '19.3.0', identifier: 'MIT', text: 'notice' },
+    { name: 'react', version: '19.3.1', identifier: 'MIT', text: 'notice' },
+    { name: 'react-dom', version: '19.3.1', identifier: 'MIT', text: 'notice' },
     { name: 'scheduler', version: '0.28.0', identifier: 'MIT', text: 'notice' },
     { name: 'three', version: '0.186.1', identifier: 'MIT', text: 'notice' },
   ];
