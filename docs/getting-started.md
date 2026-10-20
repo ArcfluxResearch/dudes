@@ -26,8 +26,8 @@ Dudes reads no engine's credentials or files.
      program is on your `PATH`, and left as your file has them when it is not. Codex streaming is
      never asked about; see [Chat](chat.md) to opt in.
    - **Floor actions (one question).** Let the Floor hire, pause and resume, answer, change goals,
-     give tickets to agents, retire and attach a terminal. Yes turns all seven on and No turns them
-     off. A ticket given to an agent starts it, and agents then run and spend under your account.
+     give tickets to agents, retire, recover, add projects and read changes. Yes turns all eleven
+     on and No turns them off, and the terminal stays off. A ticket given to an agent starts it, and agents then run and spend under your account.
      Anyone holding your one-time Floor link could start agents that act with your account's full
      reach. When your
      file already turns on only some of them, quickstart keeps that choice and does not ask.
@@ -168,7 +168,7 @@ followed by `dudes quickstart --restart`.
 Without a terminal and without options, `dudes quickstart` only starts the daemon and prints its
 version and control socket, plus a missing-project hint unless `--json` is set. With options it asks nothing,
 prints no live Floor link: it prints `dudes floor open`, and `dudes login
-<engine>` for each engine that is signed out. `--yes` takes every default, including turning on the Floor's hire, goal, control, answer and board actions when the file turns none on (terminal, renew, retire and the git and diff views stay off), `--set <key> <value>`
+<engine>` for each engine that is signed out. `--yes` takes every default, including turning on the same eleven Floor actions as a Yes when the file turns none on (the terminal stays off), `--set <key> <value>`
 sets what `dudes config set` sets, `--enroll` enrolls the current repository and `--hire <name>`
 hires a first agent there, with the completion check after `--`; a setting that breaks one of the
 file's start rules is refused by name, and nothing is written. A script restarts a running daemon

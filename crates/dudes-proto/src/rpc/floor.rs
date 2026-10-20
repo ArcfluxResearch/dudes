@@ -201,6 +201,10 @@ pub struct EnrollmentReloadResult {
     pub removed: Vec<String>,
     /// Entries the file changes, sorted by id.
     pub changed: Vec<ChangedWorkspace>,
+    /// `[floor.*]` switches the file turns on or off, by their `dudes config` keys. An applied
+    /// reload runs them at once, with no restart.
+    #[serde(default)]
+    pub switches: Vec<String>,
     /// Other sections whose value differs from the running one; each still needs a restart.
     pub not_applied: Vec<String>,
 }

@@ -44,11 +44,12 @@ use crate::floor_session::{
     StreamSession, TerminalSession,
 };
 use crate::floor_stream::{ClientMessage, FloorStreams, QueueRead, decode_client};
+use crate::floor_switches::{SharedSwitches, Switches};
 use crate::floor_ticket::{
     MAX_TICKET_BODY_BYTES, TicketLimits, TicketReply, TicketRequest, TicketRoute,
 };
 use crate::floor_websocket::{Decoder, Message, accept_key, close_frame, pong_frame};
-use crate::settings::{FloorControl, FloorSettings};
+use crate::settings::FloorSettings;
 use crate::{ExitCause, Handle};
 
 mod recovery;
@@ -224,17 +225,17 @@ pub struct PreparedAssets {
     pub(crate) port: Option<u16>,
     /// The port the last run bound, asked for first when `port` is `None`.
     remembered: Option<u16>,
-    /// Whether `POST /floor/answer` is routed at all: `[floor.answer] enabled`, fixed for the run.
-    pub(crate) answer: bool,
-    pub(crate) control: FloorControl,
-    recovery: bool,
-    pub(crate) terminal: bool,
-    /// `Some` exactly when `[floor.git] enabled`: the route's reader and limits.
+    /// Which routes exist right now. The loop thread swaps it when the operator file changes.
+    switches: SharedSwitches,
+    /// Whether the daemon started with the terminal on, which decides the page's security policy
+    /// for the whole run.
+    terminal_csp: bool,
+    /// The Git route's reader and limits, served only while `[floor.git]` is on.
     git: Option<Arc<GitReads>>,
-    /// `Some` exactly when `[floor.git]` and `[floor.diff]` are both enabled.
+    /// The diff route's reader, served only while `[floor.git]` and `[floor.diff]` are on.
     diff: Option<Arc<DiffReads>>,
-    /// `Some` exactly when `[floor.board] enabled`: the ticket routes' per-session limits.
-    board: Option<Arc<TicketLimits>>,
+    /// The ticket routes' per-session limits, served only while `[floor.board]` is on.
+    board: Arc<TicketLimits>,
 }
 
 impl PreparedAssets {
@@ -488,49 +489,22 @@ impl FloorStartFault {
 }
 
 impl PreparedAssets {
-    /// Route the Floor's answer action on this listener, or leave it an unrouted path.
+    /// Serve the routes that `switches` turns on, now and after every later swap.
     #[must_use]
-    pub(crate) const fn with_answer(mut self, enabled: bool) -> Self {
-        self.answer = enabled;
+    pub(crate) fn with_switches(mut self, switches: SharedSwitches) -> Self {
+        self.terminal_csp = switches.load().terminal;
+        self.switches = switches;
         self
     }
 
-    /// Route the Floor's loop-control actions the operator enabled on this listener, and leave
-    /// the rest unrouted paths.
-    #[must_use]
-    pub(crate) const fn with_control(mut self, control: FloorControl) -> Self {
-        self.control = control;
-        self
-    }
-
-    #[must_use]
-    pub(crate) const fn with_recovery(mut self, enabled: bool) -> Self {
-        self.recovery = enabled;
-        self
-    }
-
-    #[must_use]
-    pub(crate) const fn with_terminal(mut self, enabled: bool) -> Self {
-        self.terminal = enabled;
-        self
-    }
-
-    /// Route the seven `POST /floor/ticket` paths when `enabled`, and leave them unrouted paths
-    /// otherwise.
-    #[must_use]
-    pub(crate) fn with_board(mut self, enabled: bool) -> Self {
-        self.board = enabled.then(|| Arc::new(TicketLimits::new()));
-        self
-    }
-
-    /// Route `POST /floor/git` over `reads`, and leave it an unrouted path otherwise.
+    /// Serve `POST /floor/git` over `reads` while `[floor.git]` is on.
     #[must_use]
     pub(crate) fn with_git(mut self, reads: Arc<GitReads>) -> Self {
         self.git = Some(reads);
         self
     }
 
-    /// Route `POST /floor/diff` over `reads`, and leave it an unrouted path otherwise.
+    /// Serve `POST /floor/diff` over `reads` while `[floor.git]` and `[floor.diff]` are on.
     #[must_use]
     pub(crate) fn with_diff(mut self, reads: Arc<DiffReads>) -> Self {
         self.diff = Some(reads);
@@ -665,14 +639,12 @@ impl PreparedAssets {
         let thread_fault = fault.clone();
         let assets = Arc::new(self.assets);
         let manifest = Arc::new(self.manifest);
-        let answer = self.answer;
-        let control = self.control;
-        let recovery = self.recovery && control.pause_resume();
-        let terminal = self.terminal;
+        let switches = self.switches;
+        let terminal_csp = self.terminal_csp;
         let git = self.git;
         let diff = self.diff;
         let board = self.board;
-        let tickets = board.clone();
+        let tickets = Some(Arc::clone(&board));
         let memory = fault
             .0
             .memory_interval
@@ -695,13 +667,11 @@ impl PreparedAssets {
                         Catalog {
                             assets: &assets,
                             manifest: &manifest,
-                            answer,
-                            control,
-                            recovery,
-                            terminal,
+                            switches: &switches,
+                            terminal_csp,
                             git: git.as_deref(),
                             diff: diff.as_deref(),
-                            board: board.as_deref(),
+                            board: &board,
                             memory: &memory,
                         },
                         &thread_sessions,
@@ -1069,20 +1039,38 @@ fn handle_connection(
 struct Catalog<'a> {
     assets: &'a BTreeMap<String, Asset>,
     manifest: &'a [u8],
-    answer: bool,
-    control: FloorControl,
-    recovery: bool,
-    terminal: bool,
+    switches: &'a SharedSwitches,
+    terminal_csp: bool,
     git: Option<&'a GitReads>,
     diff: Option<&'a DiffReads>,
-    board: Option<&'a TicketLimits>,
+    board: &'a TicketLimits,
     memory: &'a MemoryReads,
 }
 
-impl Catalog<'_> {
-    /// The switch is read once at start, so one run stamps one CSP.
+impl<'a> Catalog<'a> {
+    /// The terminal switch at start decides the page's policy, so one run stamps one CSP.
     const fn csp(self) -> &'static str {
-        if self.terminal { TERMINAL_CSP } else { CSP }
+        if self.terminal_csp { TERMINAL_CSP } else { CSP }
+    }
+
+    /// The switches as they are now. A route reads this once per request.
+    fn live(self) -> Switches {
+        self.switches.load()
+    }
+
+    /// The Git reads while `[floor.git]` is on.
+    fn git(self) -> Option<&'a GitReads> {
+        self.git.filter(|_| self.live().git)
+    }
+
+    /// The diff reads while `[floor.git]` and `[floor.diff]` are on.
+    fn diff(self) -> Option<&'a DiffReads> {
+        self.diff.filter(|_| self.live().serves_diff())
+    }
+
+    /// The ticket limits while `[floor.board]` is on.
+    fn board(self) -> Option<&'a TicketLimits> {
+        self.live().board.then_some(self.board)
     }
 }
 
@@ -1110,30 +1098,31 @@ impl ActionRoute {
         if method != "POST" {
             return None;
         }
+        let live = catalog.live();
         match path {
             CHAT_SEND_PATH => Some(Self::Chat(ChatVerb::Send)),
             CHAT_CANCEL_PATH => Some(Self::Chat(ChatVerb::Cancel)),
             ONBOARD_PATH => Some(Self::Onboard),
-            INSPECT_RECOVERY_PATH if catalog.recovery => {
+            INSPECT_RECOVERY_PATH if live.serves_recovery() => {
                 Some(Self::Recovery(RecoveryRoute::Inspect))
             }
-            SUBMIT_RECOVERY_PATH if catalog.recovery => Some(Self::Recovery(RecoveryRoute::Submit)),
-            RECEIPT_RECOVERY_PATH => Some(Self::Recovery(RecoveryRoute::Receipt)),
-            ANSWER_PATH if catalog.answer => Some(Self::Answer),
-            PAUSE_PATH if catalog.control.pause_resume() => Some(Self::Control(ControlVerb::Pause)),
-            RESUME_PATH if catalog.control.pause_resume() => {
-                Some(Self::Control(ControlVerb::Resume))
+            SUBMIT_RECOVERY_PATH if live.serves_recovery() => {
+                Some(Self::Recovery(RecoveryRoute::Submit))
             }
-            GOAL_PATH if catalog.control.goal() => Some(Self::Goal),
-            RENEW_PATH if catalog.control.renew() => Some(Self::Renew),
-            RENAME_PATH if catalog.control.pause_resume() => Some(Self::Rename),
-            LOOK_PATH if catalog.control.pause_resume() => Some(Self::Look),
-            RETIRE_PATH if catalog.control.retire() => Some(Self::Retire),
-            GIT_PATH if catalog.git.is_some() => Some(Self::Git),
-            DIFF_PATH if catalog.diff.is_some() => Some(Self::Diff),
+            RECEIPT_RECOVERY_PATH => Some(Self::Recovery(RecoveryRoute::Receipt)),
+            ANSWER_PATH if live.answer => Some(Self::Answer),
+            PAUSE_PATH if live.control.pause_resume() => Some(Self::Control(ControlVerb::Pause)),
+            RESUME_PATH if live.control.pause_resume() => Some(Self::Control(ControlVerb::Resume)),
+            GOAL_PATH if live.control.goal() => Some(Self::Goal),
+            RENEW_PATH if live.control.renew() => Some(Self::Renew),
+            RENAME_PATH if live.control.pause_resume() => Some(Self::Rename),
+            LOOK_PATH if live.control.pause_resume() => Some(Self::Look),
+            RETIRE_PATH if live.control.retire() => Some(Self::Retire),
+            GIT_PATH if catalog.git().is_some() => Some(Self::Git),
+            DIFF_PATH if catalog.diff().is_some() => Some(Self::Diff),
             MEMORY_PAGE_PATH => Some(Self::Memory(MemoryRoute::Page)),
             MEMORY_ENTRY_PATH => Some(Self::Memory(MemoryRoute::Entry)),
-            _ => catalog.board.and(TicketRoute::of(path)).map(Self::Ticket),
+            _ => catalog.board().and(TicketRoute::of(path)).map(Self::Ticket),
         }
     }
 
@@ -1218,7 +1207,7 @@ impl SocketRoute {
     fn of(method: &str, path: &str, catalog: Catalog<'_>) -> Option<Self> {
         match (method, path) {
             ("GET", STREAM_PATH) => Some(Self::Stream),
-            ("GET", TERMINAL_PATH) if catalog.terminal => Some(Self::Terminal),
+            ("GET", TERMINAL_PATH) if catalog.live().terminal => Some(Self::Terminal),
             _ => None,
         }
     }
@@ -2225,7 +2214,7 @@ fn git_response<'a>(
     head: &ActionHead,
     body: &[u8],
 ) -> Option<Response<'a>> {
-    let reads = catalog.git?;
+    let reads = catalog.git()?;
     let Some(session) =
         sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
     else {
@@ -2261,7 +2250,7 @@ fn diff_response<'a>(
     head: &ActionHead,
     body: &[u8],
 ) -> Option<Response<'a>> {
-    let reads = catalog.diff?;
+    let reads = catalog.diff()?;
     let Some(session) =
         sessions.authorize_onboard(&head.host, &head.origin, &head.cookie, &head.csrf)
     else {
@@ -2327,7 +2316,7 @@ fn ticket_response<'a>(
     body: &[u8],
 ) -> Response<'a> {
     // A lost answer to a create is not retried; Remove clears a duplicate.
-    let Some(limits) = catalog.board else {
+    let Some(limits) = catalog.board() else {
         return error_response(403, "Forbidden");
     };
     let Some(session) =
@@ -3147,13 +3136,11 @@ pub fn prepare(settings: &FloorSettings) -> Result<PreparedAssets> {
         manifest: manifest_bytes,
         port: settings.port,
         remembered: None,
-        answer: false,
-        control: FloorControl::Off,
-        recovery: false,
-        terminal: false,
+        switches: SharedSwitches::default(),
+        terminal_csp: false,
         git: None,
         diff: None,
-        board: None,
+        board: Arc::new(TicketLimits::new()),
     })
 }
 
@@ -3432,18 +3419,19 @@ mod tests {
     }
 
     /// The catalog these unit tests serve: no answer route, as in the default configuration.
-    const fn catalog<'a>(assets: &'a BTreeMap<String, Asset>, manifest: &'a [u8]) -> Catalog<'a> {
+    fn catalog<'a>(assets: &'a BTreeMap<String, Asset>, manifest: &'a [u8]) -> Catalog<'a> {
         static MEMORY: MemoryReads = MemoryReads::new();
+        static BOARD: TicketLimits = TicketLimits::new();
+        static SWITCHES: std::sync::LazyLock<SharedSwitches> =
+            std::sync::LazyLock::new(SharedSwitches::default);
         Catalog {
             assets,
             manifest,
-            answer: false,
-            control: FloorControl::Off,
-            recovery: false,
-            terminal: false,
+            switches: &SWITCHES,
+            terminal_csp: false,
             git: None,
             diff: None,
-            board: None,
+            board: &BOARD,
             memory: &MEMORY,
         }
     }

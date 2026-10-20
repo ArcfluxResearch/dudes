@@ -4106,6 +4106,14 @@
           "pattern": "^[0-9a-f]{64}$",
           "type": "string"
         },
+        "switches": {
+          "default": [],
+          "description": "`[floor.*]` switches the file turns on or off, by their `dudes config` keys. An applied\nreload runs them at once, with no restart.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "workspaces": {
           "description": "The workspace ids running after the call, in admission order.",
           "items": {

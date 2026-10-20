@@ -84,6 +84,7 @@ pub mod floor_session;
 mod floor_settings;
 #[doc(hidden)]
 pub mod floor_stream;
+pub mod floor_switches;
 pub mod floor_terminal;
 pub mod floor_ticket;
 mod floor_websocket;

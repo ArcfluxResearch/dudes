@@ -1,5 +1,5 @@
-//! `dudes config`: show and edit the settings the daemon reads from the operator's file only when
-//! it starts.
+//! `dudes config`: show and edit the settings the daemon reads from the operator's file when it
+//! starts. A running daemon adopts the `floor.*` switches on its next reload.
 //!
 //! An edit keeps the file's other settings and comments where `toml_edit` can. It writes line
 //! endings as LF, can respace a header it rewrites, and drops the comments of a table that `unset`
@@ -56,6 +56,8 @@ pub enum Key {
     /// `[floor.diff] enabled`: with `floor.git` also on, the Floor reads a ticket's changed files
     /// for its Changes view.
     Diff,
+    /// `[floor.project] enabled`: the Floor adds a project.
+    Project,
     /// `[budget] floor_usd_per_day`: the floor-wide daily dollar ceiling; none when absent.
     FloorUsdPerDay,
     /// `[budget.per_turn_floor] usd`: the dollars reserved for each turn whose cost is unseen.
@@ -114,7 +116,7 @@ const RULES: [(Key, Key); 7] = [
 
 impl Key {
     /// Every key, in the order `dudes config` shows them.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Codex,
         Self::CodexStreaming,
         Self::Pi,
@@ -129,6 +131,7 @@ impl Key {
         Self::Terminal,
         Self::Git,
         Self::Diff,
+        Self::Project,
         Self::FloorUsdPerDay,
         Self::PerTurnUsd,
         Self::PerTurnTokens,
@@ -152,6 +155,7 @@ impl Key {
             Self::Terminal => "floor.terminal",
             Self::Git => "floor.git",
             Self::Diff => "floor.diff",
+            Self::Project => "floor.project",
             Self::FloorUsdPerDay => "budget.floor_usd_per_day",
             Self::PerTurnUsd => "budget.per_turn_floor.usd",
             Self::PerTurnTokens => "budget.per_turn_floor.tokens",
@@ -184,6 +188,7 @@ impl Key {
             Self::Terminal => Place::Switch(&["floor", "terminal"], "enabled"),
             Self::Git => Place::Switch(&["floor", "git"], "enabled"),
             Self::Diff => Place::Switch(&["floor", "diff"], "enabled"),
+            Self::Project => Place::Switch(&["floor", "project"], "enabled"),
             Self::FloorUsdPerDay => Place::Dollars(&["budget"], "floor_usd_per_day"),
             Self::PerTurnUsd => Place::Dollars(&["budget", "per_turn_floor"], "usd"),
             Self::PerTurnTokens => Place::Tokens(&["budget", "per_turn_floor"], "tokens"),

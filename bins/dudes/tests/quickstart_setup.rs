@@ -27,7 +27,7 @@ mod common;
 use common::{Cli, run_program};
 
 const SPAWN_MARKER: &str = "quickstart started duded pid ";
-const FLOOR_QUESTION: &str = "Let the Floor act on your agents: hire, pause, answer, change goals, give tickets to agents, retire and attach a terminal? A ticket given to an agent starts it, and agents then run and spend under your account. Anyone holding your one-time Floor link could start agents that act with your account's full reach. [Y/n]";
+const FLOOR_QUESTION: &str = "Let the Floor act on your agents: hire, pause, answer, change goals, give tickets to agents, retire, recover, add projects and read their changes? A ticket given to an agent starts it, and agents then run and spend under your account. Anyone holding your one-time Floor link could start agents that act with your account's full reach. [Y/n]";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -236,6 +236,21 @@ fn assert_only_status_checks(layout: &Layout) {
     );
 }
 
+/// The Floor switches a new install turns on. The terminal is not among them.
+const NEW_INSTALL_ON: [Key; 11] = [
+    Key::Answer,
+    Key::Hire,
+    Key::Control,
+    Key::Goal,
+    Key::Retire,
+    Key::Renew,
+    Key::Recovery,
+    Key::Board,
+    Key::Project,
+    Key::Git,
+    Key::Diff,
+];
+
 /// The file both setups write: Codex, the Floor switches in `floor_on`, no budget, and the workspace
 /// with no ceiling.
 fn assert_written(layout: &Layout, floor_on: &[Key], label: &str) {
@@ -253,14 +268,15 @@ fn assert_written(layout: &Layout, floor_on: &[Key], label: &str) {
         (Key::Answer, switch(Key::Answer)),
         (Key::Hire, switch(Key::Hire)),
         (Key::Control, switch(Key::Control)),
-        (Key::Recovery, "off"),
+        (Key::Recovery, switch(Key::Recovery)),
         (Key::Goal, switch(Key::Goal)),
-        (Key::Renew, "off"),
+        (Key::Renew, switch(Key::Renew)),
         (Key::Retire, switch(Key::Retire)),
         (Key::Board, switch(Key::Board)),
         (Key::Terminal, switch(Key::Terminal)),
-        (Key::Git, "off"),
-        (Key::Diff, "off"),
+        (Key::Git, switch(Key::Git)),
+        (Key::Diff, switch(Key::Diff)),
+        (Key::Project, switch(Key::Project)),
         (Key::FloorUsdPerDay, "none"),
         (Key::PerTurnUsd, "0.25"),
         (Key::PerTurnTokens, "20000"),
@@ -477,7 +493,7 @@ fn a_script_restarts_a_daemon_with_other_settings_only_when_asked() {
     assert_eq!(
         unasked.stderr,
         format!(
-            "dudes: wrote {}, but the running daemon reads other settings (floor.answer, memory) and \
+            "dudes: wrote {}, but the running daemon reads other settings (memory) and \
              reads the file only when it starts. Nothing was stopped. To apply them, restart it, \
              which ends any turn it is running: dudes quickstart --restart\n",
             layout.config().display()
@@ -1162,17 +1178,16 @@ fn a_responding_daemon_without_a_config_defaults_hiring_to_no() {
 }
 
 #[test]
-fn yes_turns_on_five_floor_actions_and_leaves_the_rest_off() {
+fn yes_turns_on_the_new_install_floor_actions_and_leaves_the_terminal_off() {
     let layout = Layout::new();
     let started = layout.cli().args(["quickstart", "--yes"]).run();
     assert_eq!(started.code(), 0, "{started:?}");
     let file = Settings::read(&layout.config()).unwrap();
-    for key in [Key::Answer, Key::Hire, Key::Control, Key::Goal, Key::Board] {
+    for key in NEW_INSTALL_ON {
         assert!(file.satisfies(key), "{key}");
     }
-    for key in [Key::Terminal, Key::Retire, Key::Git, Key::Diff] {
-        assert!(!file.satisfies(key), "{key}");
-    }
+    assert!(!file.satisfies(Key::Terminal));
+    assert!(file.problems().is_empty());
 }
 
 #[test]
@@ -1282,19 +1297,7 @@ fn a_terminal_is_asked_each_step_and_gets_the_same_setup() {
         screen.shown()
     );
     assert_set_up(&screen.shown(), &layout, true);
-    assert_written(
-        &layout,
-        &[
-            Key::Answer,
-            Key::Hire,
-            Key::Control,
-            Key::Goal,
-            Key::Retire,
-            Key::Board,
-            Key::Terminal,
-        ],
-        "/usr/bin/true",
-    );
+    assert_written(&layout, &NEW_INSTALL_ON, "/usr/bin/true");
 }
 
 /// On a terminal, a running daemon is named before the operator confirms, with what a restart

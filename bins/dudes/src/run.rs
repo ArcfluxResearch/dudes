@@ -1486,10 +1486,16 @@ fn write_and_start(
         let differences = match running_differences(env, config).map_err(put_back)? {
             Comparison::Unknown(reason) => vec![reason],
             Comparison::Known {
+                sha256,
                 settings,
                 workspaces,
-                ..
-            } => workspaces.into_iter().chain(settings).collect(),
+                switches,
+            } => {
+                if workspaces.is_empty() && !switches.is_empty() {
+                    let _ = adopt_switches(env, &sha256);
+                }
+                workspaces.into_iter().chain(settings).collect()
+            }
         };
         if !differences.is_empty() {
             if !restart {
@@ -1685,6 +1691,8 @@ enum Comparison {
         /// Workspace entries the file adds, removes or changes, which a reload adopts while it
         /// runs.
         workspaces: Vec<String>,
+        /// `[floor.*]` switches the file changes, which a reload runs at once.
+        switches: Vec<String>,
     },
 }
 
@@ -1783,7 +1791,23 @@ fn running_differences(env: &Environment, config: &Path) -> Result<Comparison, F
         sha256: check.sha256,
         settings,
         workspaces,
+        switches: check.switches,
     })
+}
+
+/// Ask the running daemon to adopt the `[floor.*]` switches in the file it read with this hash.
+/// The call names no project change, so the daemon declines it if one has appeared since.
+fn adopt_switches(env: &Environment, sha256: &str) -> Result<EnrollmentReloadResult, Failure> {
+    reload(
+        &mut connect(env)?,
+        env,
+        Some(EnrollmentApply {
+            sha256: sha256.to_owned(),
+            added: Vec::new(),
+            removed: Vec::new(),
+            changed: Vec::new(),
+        }),
+    )
 }
 
 /// Whether `read` and `config` name one file, as given or once canonicalized.
@@ -2268,12 +2292,13 @@ fn restart_advice(env: &Environment, config: &Path, out: &mut dyn Write) -> std:
     use render::Escaped;
     let written = config.display();
     let restart = RESTART_COMMANDS;
-    let (sha256, settings, workspaces) = match running_differences(env, config) {
+    let (sha256, settings, workspaces, switches) = match running_differences(env, config) {
         Ok(Comparison::Known {
             sha256,
             settings,
             workspaces,
-        }) => (sha256, settings, workspaces),
+            switches,
+        }) => (sha256, settings, workspaces, switches),
         Ok(Comparison::Unknown(reason)) => {
             return writeln!(
                 out,
@@ -2298,11 +2323,40 @@ fn restart_advice(env: &Environment, config: &Path, out: &mut dyn Write) -> std:
             );
         }
     };
-    if settings.is_empty() {
+    let applied = if switches.is_empty() || !workspaces.is_empty() {
+        Vec::new()
+    } else {
+        match adopt_switches(env, &sha256) {
+            Ok(result) if result.applied => result.switches,
+            _ => Vec::new(),
+        }
+    };
+    if !applied.is_empty() {
+        writeln!(
+            out,
+            "wrote {written}; the running daemon now runs {}, with no restart",
+            Escaped(&applied.join(", "))
+        )?;
+        if !settings.is_empty() {
+            writeln!(
+                out,
+                "it reads other settings ({}) only when it starts, so restart it to apply them: \
+                 {restart}",
+                Escaped(&settings.join(", "))
+            )?;
+        }
+    } else if settings.is_empty() && switches.is_empty() {
         writeln!(
             out,
             "wrote {written}; the running daemon already runs these settings, so no restart is \
              needed"
+        )?;
+    } else if settings.is_empty() {
+        writeln!(
+            out,
+            "wrote {written}; the running daemon runs the switches ({}) once it adopts the \
+             project changes below",
+            Escaped(&switches.join(", "))
         )?;
     } else {
         writeln!(

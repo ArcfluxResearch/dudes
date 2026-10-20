@@ -2805,7 +2805,12 @@ fn existing_browser_and_operator_look_admission_preserves_chat_reservation() {
     let agent = common::hire(&initial.handle, fixture.state.path());
     initial.stop(ExitCause::Ended);
     chat_capacity_history(&fixture, agent);
-    let settings = fixture.settings();
+    let mut settings = fixture.settings();
+    settings.floor_control = crate::settings::FloorControl::On {
+        goal: false,
+        retire: false,
+        renew: false,
+    };
     let daemon = boot_with_options(
         &settings,
         with_owned_program(

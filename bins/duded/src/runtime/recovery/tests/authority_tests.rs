@@ -1140,11 +1140,27 @@ fn disabled_grants_and_a_foreign_identity_refuse_before_any_command_append() {
         let before = owned.fixture.entries();
         let identity = match denied {
             0 => {
-                owned.daemon.ctx.recovery_enabled = false;
+                let live = owned.daemon.ctx.switches.load();
+                owned
+                    .daemon
+                    .ctx
+                    .switches
+                    .store(crate::floor_switches::Switches {
+                        recovery: false,
+                        ..live
+                    });
                 owned.identity.clone()
             }
             1 => {
-                owned.daemon.ctx.control = FloorControl::Off;
+                let live = owned.daemon.ctx.switches.load();
+                owned
+                    .daemon
+                    .ctx
+                    .switches
+                    .store(crate::floor_switches::Switches {
+                        control: FloorControl::Off,
+                        ..live
+                    });
                 owned.identity.clone()
             }
             _ => foreign.identity.clone(),

@@ -1280,8 +1280,8 @@ fn browser_hire_is_refused_while_the_hire_switch_is_off() {
         if enabled {
             assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
         } else {
-            assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{head}");
-            assert!(body.is_null());
+            assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
+            assert_eq!(body["reason"], "action_off", "{body}");
         }
         assert_eq!(browser_hires(&fixture).len(), usize::from(enabled));
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -10456,7 +10456,7 @@ fn browser_enrollment_view_follows_an_operator_reload() {
             "applied": true, "sha256": sha,
             "path": settings.operator_config.as_ref().and_then(|p| p.to_str()),
             "workspaces": ["repo_1", "repo_2"], "added": ["repo_2"], "removed": [],
-            "changed": [], "not_applied": []
+            "changed": [], "switches": [], "not_applied": []
         })
     );
     assert_eq!(fixture.records().len(), journal, "a reload appends nothing");
@@ -17700,4 +17700,64 @@ fn browser_onboarded_hires_allow_mcp_read_and_noop_but_refuse_changed_sets() {
     );
     assert_eq!(fixture.records(), before);
     running.stop(ExitCause::ShutdownRpc);
+}
+
+/// A switch changed in the operator file and adopted by a reload routes at once on the running
+/// gateway, with no restart, and an off switch is exactly an unrouted path again.
+#[test]
+fn a_reload_runs_a_floor_switch_without_a_restart() {
+    let fixture = Fixture::new();
+    let hire = "[floor.hire]\nenabled = true\n";
+    let mut settings = reload_settings(&fixture, hire);
+    settings.floor_answer_enabled = false;
+    settings.floor_hire_enabled = true;
+    let daemon = boot(
+        &settings,
+        seams(
+            &settings,
+            SharedHost::new(),
+            Arc::new(ScriptedRunner::default()),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+        ),
+    )
+    .expect("boot Floor");
+    let addr = daemon.floor_addr().expect("Floor address");
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let body = serde_json::to_vec(&answer_body(
+        &request_id(1),
+        AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("an agent id"),
+        Lsn(1),
+        "main",
+    ))
+    .expect("answer JSON");
+    let answer_route = || {
+        let (answered, _) = post_bytes(addr, "/floor/answer", &cookie, &csrf, &body, None);
+        let (unrouted, _) = post_bytes(addr, "/floor/unrouted", &cookie, &csrf, &body, None);
+        (answered, unrouted)
+    };
+    let (answered, unrouted) = answer_route();
+    assert_eq!(answered, unrouted, "off is an unrouted path");
+
+    let sha256 = rewrite(
+        &settings,
+        &format!("{hire}[floor.answer]\nenabled = true\n"),
+    );
+    let result = operator_reload(&settings, apply(&sha256, &[], &[], &[])).expect("reload");
+    assert_eq!(result["applied"], json!(true), "{result}");
+    assert_eq!(result["switches"], json!(["floor.answer"]), "{result}");
+    let (answered, unrouted) = answer_route();
+    assert_ne!(answered, unrouted, "the route exists without a restart");
+    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    assert_eq!(frame["answer"], json!({ "max_text_bytes": 4096 }));
+
+    let sha256 = rewrite(&settings, hire);
+    let result = operator_reload(&settings, apply(&sha256, &[], &[], &[])).expect("reload");
+    assert_eq!(result["switches"], json!(["floor.answer"]), "{result}");
+    let (answered, unrouted) = answer_route();
+    assert_eq!(answered, unrouted, "off again is an unrouted path");
+    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    assert!(frame.get("answer").is_none(), "{frame}");
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }

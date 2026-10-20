@@ -396,7 +396,7 @@ fn a_value_the_key_does_not_take_is_refused_before_any_write() {
             &["floor.bogus", "on"],
             "`floor.bogus` is not a config key; the keys are providers.codex, providers.codex.streaming, providers.pi, \
              floor.answer, floor.hire, floor.control, floor.recovery, floor.goal, floor.renew, floor.retire, floor.board, floor.terminal, \
-             floor.git, floor.diff, budget.floor_usd_per_day, budget.per_turn_floor.usd, budget.per_turn_floor.tokens"
+             floor.git, floor.diff, floor.project, budget.floor_usd_per_day, budget.per_turn_floor.usd, budget.per_turn_floor.tokens"
                 .to_owned(),
         ),
     ] {
@@ -472,6 +472,7 @@ floor.board                   off
 floor.terminal                off
 floor.git                     off
 floor.diff                    off
+floor.project                 off
 budget.floor_usd_per_day      5
 budget.per_turn_floor.usd     0
 budget.per_turn_floor.tokens  20000
@@ -593,6 +594,13 @@ fn restart(config: &Path, differences: &str) -> String {
     )
 }
 
+fn live(config: &Path, switches: &str) -> String {
+    format!(
+        "wrote {}; the running daemon now runs {switches}, with no restart\n",
+        config.display()
+    )
+}
+
 fn no_restart(config: &Path) -> String {
     format!(
         "wrote {}; the running daemon already runs these settings, so no restart is needed\n",
@@ -600,11 +608,9 @@ fn no_restart(config: &Path) -> String {
     )
 }
 
-/// An edit names the settings that differ from what the daemon runs, and an edit back to them
-/// needs no restart. A `floor.retire` still waiting for a restart stays named while other keys go
-/// and come back.
+/// A `[floor.*]` switch runs at once, with no restart, and runs again when turned off.
 #[test]
-fn an_edit_asks_for_a_restart_only_for_settings_the_running_daemon_does_not_run() {
+fn a_floor_switch_runs_at_once_in_both_directions() {
     let fixture = Fixture::new();
     let home = fixture.state.path().join("home");
     let config = config_for(&home);
@@ -612,70 +618,84 @@ fn an_edit_asks_for_a_restart_only_for_settings_the_running_daemon_does_not_run(
 
     assert_eq!(
         set(&cli, "floor.answer", "on"),
-        restart(&config, "floor.answer")
-    );
-    assert_eq!(set(&cli, "floor.answer", "off"), no_restart(&config));
-    assert_eq!(
-        set(&cli, "floor.retire", "on"),
-        restart(&config, "floor.retire")
-    );
-    assert_eq!(
-        set(&cli, "floor.answer", "on"),
-        restart(&config, "floor.answer, floor.retire")
+        live(&config, "floor.answer")
     );
     assert_eq!(
         set(&cli, "floor.answer", "off"),
-        restart(&config, "floor.retire")
+        live(&config, "floor.answer")
     );
+}
+
+/// A terminal the daemon did not start with is named for a restart, and stays named while other
+/// switches change.
+#[test]
+fn a_terminal_turned_on_needs_a_restart_while_other_switches_run_at_once() {
+    let fixture = Fixture::new();
+    let home = fixture.state.path().join("home");
+    let config = config_for(&home);
+    let (_running, cli) = running_on(&fixture, &home, RUNNING, &home);
+
+    assert_eq!(
+        set(&cli, "floor.terminal", "on"),
+        restart(&config, "floor.terminal")
+    );
+    assert_eq!(
+        set(&cli, "floor.answer", "on"),
+        format!(
+            "{}it reads other settings (floor.terminal) only when it starts, so restart it to \
+             apply them: `dudes stop`, then `dudes start`\n",
+            live(&config, "floor.answer")
+        )
+    );
+}
+
+/// Turning the unstarted terminal back off needs no restart.
+#[test]
+fn turning_an_unstarted_terminal_off_again_needs_no_restart() {
+    let fixture = Fixture::new();
+    let home = fixture.state.path().join("home");
+    let config = config_for(&home);
+    let (_running, cli) = running_on(&fixture, &home, RUNNING, &home);
+    set(&cli, "floor.terminal", "on");
     let reload = cli.clone().args(["project", "reload"]).run();
     assert!(
         reload
             .stdout
-            .contains("\nneeds a daemon restart: floor.retire\n"),
+            .contains("\nneeds a daemon restart: floor.terminal\n"),
         "{}",
         reload.output()
     );
-    assert_eq!(set(&cli, "floor.retire", "off"), no_restart(&config));
+    assert_eq!(set(&cli, "floor.terminal", "off"), no_restart(&config));
 }
 
-/// Renewal is read only at start: turning it on beside a running goal change and Hire names it for
-/// a restart, and turning it off again needs none.
+/// Renewal is a live switch beside a running goal change and Hire.
 #[test]
-fn turning_renewal_on_asks_for_a_restart() {
+fn turning_renewal_on_runs_at_once() {
     let fixture = Fixture::new();
     let home = fixture.state.path().join("home");
     let config = config_for(&home);
     let running = format!("{RUNNING}[floor.goal]\nenabled = true\n[floor.hire]\nenabled = true\n");
     let (_running, cli) = running_with(&fixture, &home, &running, &home, true);
 
+    assert_eq!(set(&cli, "floor.renew", "on"), live(&config, "floor.renew"));
     assert_eq!(
-        set(&cli, "floor.renew", "on"),
-        restart(&config, "floor.renew")
+        set(&cli, "floor.renew", "off"),
+        live(&config, "floor.renew")
     );
-    assert_eq!(set(&cli, "floor.renew", "off"), no_restart(&config));
 }
 
 #[test]
-fn recovery_can_be_configured_without_control_but_requires_restart() {
+fn recovery_can_be_configured_without_control_and_runs_at_once() {
     let fixture = Fixture::new();
     let home = fixture.state.path().join("home");
     let config = config_for(&home);
     let (_running, cli) = running_on(&fixture, &home, RUNNING, &home);
     assert_eq!(
         set(&cli, "floor.recovery", "on"),
-        restart(&config, "floor.recovery")
+        live(&config, "floor.recovery")
     );
     let loaded = duded::config::load_operator(&config).unwrap();
     assert!(loaded.recovery_enabled);
-    let report = cli.clone().args(["project", "reload"]).run();
-    assert!(
-        report
-            .stdout
-            .contains("\nneeds a daemon restart: floor.recovery\n"),
-        "{}",
-        report.output()
-    );
-    assert_eq!(set(&cli, "floor.recovery", "off"), no_restart(&config));
     let off = "[floor.recovery]\nenabled = true\n[memory]\ncondense_model_enabled = false\n";
     std::fs::write(&config, off).unwrap();
     assert!(Settings::read(&config).unwrap().problems().is_empty());
@@ -780,9 +800,11 @@ fn an_edit_names_workspace_changes_apart_and_points_to_the_reload() {
     assert_eq!(
         written,
         format!(
-            "{}the running daemon has not adopted the file's project changes (project repo_1 \
-             added); `dudes project reload --apply {}` adopts them without a restart\n",
-            restart(&config, "floor.answer"),
+            "wrote {}; the running daemon runs the switches (floor.answer) once it adopts the \
+             project changes below\nthe running daemon has not adopted the file's project \
+             changes (project repo_1 added); `dudes project reload --apply {}` adopts them \
+             without a restart\n",
+            config.display(),
             check.sha256
         )
     );

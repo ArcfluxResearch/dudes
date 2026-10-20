@@ -25,6 +25,7 @@ use crate::config::{
     ConfigError, OperatorConfig, parse_operator_and_memory_with_options, read_operator_for_reload,
 };
 use crate::floor_actions::{Enrollment, MarkKind, Profile, ReloadMark};
+use crate::floor_switches::Switches;
 use crate::ports::Handle;
 use crate::runtime::{OnboardingPause, OnboardingPausePoint};
 
@@ -215,6 +216,9 @@ pub(crate) struct Decision {
     pub(crate) result: EnrollmentReloadResult,
     /// The enrollment the file describes, marks set. Installed only when `result.applied`.
     pub(crate) candidate: Enrollment,
+    /// The switches the file describes, as the run can serve them. Installed only when
+    /// `result.applied`.
+    pub(crate) switches: Switches,
     pub(crate) resync: Resync,
 }
 
@@ -265,12 +269,17 @@ impl Decision {
 ///
 /// A catalog refused by admission: an added or changed entry whose canonical `cwd` differs from
 /// the file, or a catalog over the cap once marked. A refusal changes nothing.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass: diff the profiles, diff the switches, then decide the apply"
+)]
 pub(crate) fn decide(
     running: &Enrollment,
     state: &mut ReloadState,
     read: &ReloadRead,
     running_sections: &OperatorConfig,
     running_memory: MemoryCondenseConfig,
+    running_switches: Switches,
     now: Timestamp,
 ) -> Result<Decision, ConfigError> {
     let before: BTreeMap<&str, &Profile> = running
@@ -326,10 +335,17 @@ pub(crate) fn decide(
         .map_err(|error| ConfigError::catalog(&read.path, error))?;
 
     let marked = !added.is_empty() || !changed.is_empty();
+    // A daemon started without the terminal cannot serve it until it restarts, whatever the file
+    // says. `not_applied` names that case.
+    let switches = Switches {
+        terminal: read.config.terminal_enabled && running_switches.terminal,
+        ..Switches::from_operator(&read.config)
+    };
+    let switches_changed = running_switches.differing(switches);
     let resync = match (added.is_empty(), removed.is_empty() && changed.is_empty()) {
-        (_, false) => Resync::Now,
-        (true, true) => Resync::None,
         (false, true) => Resync::Coalesced,
+        (true, true) if switches_changed.is_empty() => Resync::None,
+        _ => Resync::Now,
     };
     let mut result = EnrollmentReloadResult {
         applied: false,
@@ -340,12 +356,14 @@ pub(crate) fn decide(
         added,
         removed,
         changed,
+        switches: switches_changed.into_iter().map(str::to_owned).collect(),
         not_applied: not_applied(running_sections, running_memory, read),
     };
     let Some(apply) = &read.apply else {
         return Ok(Decision {
             result,
             candidate,
+            switches,
             resync: Resync::None,
         });
     };
@@ -354,6 +372,7 @@ pub(crate) fn decide(
         return Ok(Decision {
             result,
             candidate,
+            switches,
             resync: Resync::None,
         });
     }
@@ -369,6 +388,7 @@ pub(crate) fn decide(
     Ok(Decision {
         result,
         candidate,
+        switches,
         resync,
     })
 }
@@ -415,34 +435,9 @@ fn not_applied(
         ),
         ("providers.pi", running.providers.pi != file.providers.pi),
         (
-            "floor.answer",
-            running.answer_enabled != file.answer_enabled,
-        ),
-        ("floor.hire", running.hire_enabled != file.hire_enabled),
-        (
-            "floor.recovery",
-            running.recovery_enabled != file.recovery_enabled,
-        ),
-        (
-            "floor.control",
-            running.control.pause_resume() != file.control.pause_resume(),
-        ),
-        ("floor.goal", running.control.goal() != file.control.goal()),
-        (
-            "floor.retire",
-            running.control.retire() != file.control.retire(),
-        ),
-        (
-            "floor.renew",
-            running.control.renew() != file.control.renew(),
-        ),
-        (
             "floor.terminal",
-            running.terminal_enabled != file.terminal_enabled,
+            file.terminal_enabled && !running.terminal_enabled,
         ),
-        ("floor.git", running.git_enabled != file.git_enabled),
-        ("floor.diff", running.diff_enabled != file.diff_enabled),
-        ("floor.board", running.board_enabled != file.board_enabled),
         ("mcp.servers", running.mcp_servers != file.mcp_servers),
         (
             "memory",
@@ -556,6 +551,7 @@ mod tests {
                 &read(2, &text, false, (&[], &[], &[])),
                 &sections,
                 running.memory_config,
+                Switches::default(),
                 at(1),
             )
             .expect("admitted");
@@ -603,6 +599,7 @@ mod tests {
                     &read(seq, &text, true, change),
                     &sections,
                     start.memory_config,
+                    Switches::default(),
                     when,
                 )
                 .expect("admitted");
@@ -754,89 +751,83 @@ mod tests {
         );
     }
 
-    /// Each start-time section the file sets differently from the running daemon is named once,
-    /// by its table, and a file that matches names none.
+    /// A start-time section the file sets differently from the running daemon is named once, by
+    /// its table, and a file that matches names none. The terminal needs a restart only to turn on.
     #[test]
     fn each_start_time_section_that_differs_needs_a_restart() {
         let running = OperatorConfig {
-            control: crate::settings::FloorControl::On {
-                goal: false,
-                retire: false,
-                renew: false,
-            },
+            condense_model_enabled: true,
             ..OperatorConfig::default()
-        };
-        let with = |edit: fn(&mut OperatorConfig)| {
-            let mut file = running.clone();
-            edit(&mut file);
-            file
         };
         let mut file_read = read(1, "", false, (&[], &[], &[]));
-        for (section, file) in [
-            (
-                "budget",
-                with(|file| {
-                    file.budget.floor_usd_per_day = Some(dudes_types::Usd::from_dollars(1));
-                }),
-            ),
-            ("floor.answer", with(|file| file.answer_enabled = true)),
-            ("floor.hire", with(|file| file.hire_enabled = true)),
-            ("floor.recovery", with(|file| file.recovery_enabled = true)),
-            (
-                "floor.control",
-                with(|file| file.control = crate::settings::FloorControl::Off),
-            ),
-            (
-                "floor.goal",
-                with(|file| {
-                    file.control = crate::settings::FloorControl::On {
-                        goal: true,
-                        retire: false,
-                        renew: false,
-                    };
-                }),
-            ),
-            (
-                "floor.retire",
-                with(|file| {
-                    file.control = crate::settings::FloorControl::On {
-                        goal: false,
-                        retire: true,
-                        renew: false,
-                    };
-                }),
-            ),
-            ("floor.terminal", with(|file| file.terminal_enabled = true)),
-            ("floor.git", with(|file| file.git_enabled = true)),
-            ("floor.diff", with(|file| file.diff_enabled = true)),
-            ("floor.board", with(|file| file.board_enabled = true)),
-        ] {
-            file_read.config = file;
-            assert_eq!(
-                not_applied(&running, MemoryCondenseConfig::default(), &file_read),
-                [section]
-            );
-        }
-        file_read.config = running.clone();
+        file_read.config.budget.floor_usd_per_day = Some(dudes_types::Usd::from_dollars(1));
         assert_eq!(
             not_applied(&running, MemoryCondenseConfig::default(), &file_read),
-            Vec::<String>::new()
+            ["budget"]
         );
-
-        let control = |renew| OperatorConfig {
-            control: crate::settings::FloorControl::On {
-                goal: true,
-                retire: false,
-                renew,
-            },
-            ..OperatorConfig::default()
-        };
-        file_read.config = control(true);
+        file_read.config = running.clone();
+        assert!(not_applied(&running, MemoryCondenseConfig::default(), &file_read).is_empty());
+        file_read.config.terminal_enabled = true;
         assert_eq!(
-            not_applied(&control(false), MemoryCondenseConfig::default(), &file_read),
-            ["floor.renew"]
+            not_applied(&running, MemoryCondenseConfig::default(), &file_read),
+            ["floor.terminal"]
+        );
+        let started_with_terminal = OperatorConfig {
+            terminal_enabled: true,
+            ..running.clone()
+        };
+        file_read.config = running.clone();
+        assert!(
+            not_applied(
+                &started_with_terminal,
+                MemoryCondenseConfig::default(),
+                &file_read
+            )
+            .is_empty(),
+            "turning the terminal off is a switch, not a restart"
         );
     }
+
+    /// An applied reload carries every `[floor.*]` switch the file changes, by its key, and a
+    /// terminal the daemon did not start with stays off.
+    #[test]
+    fn a_reload_runs_the_switches_the_file_changes() {
+        let running = read(1, "", false, (&[], &[], &[]));
+        let sections = OperatorConfig {
+            condense_model_enabled: true,
+            ..OperatorConfig::default()
+        };
+        let text = "[floor.answer]\nenabled = true\n[floor.control]\nenabled = true\n\
+                    [floor.goal]\nenabled = true\n[floor.terminal]\nenabled = true\n\
+                    [floor.project]\nenabled = true\n";
+        let file = read(2, text, true, (&[], &[], &[]));
+        let mut state = ReloadState::new(&running.config.enrollment);
+        let decision = decide(
+            &running.config.enrollment,
+            &mut state,
+            &file,
+            &sections,
+            running.memory_config,
+            Switches::default(),
+            at(1),
+        )
+        .expect("admitted");
+        assert!(decision.result.applied, "{:?}", decision.result);
+        assert_eq!(
+            decision.result.switches,
+            [
+                "floor.answer",
+                "floor.control",
+                "floor.goal",
+                "floor.project"
+            ]
+        );
+        assert_eq!(decision.result.not_applied, ["floor.terminal"]);
+        assert!(decision.switches.answer && decision.switches.project);
+        assert!(!decision.switches.terminal, "no restart, no terminal");
+        assert_eq!(decision.resync, Resync::Now);
+    }
+
     #[test]
     fn pi_restart_comparison_covers_changed_restored_and_omitted_settings() {
         let mut running = OperatorConfig::default();

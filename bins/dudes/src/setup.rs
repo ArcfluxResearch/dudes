@@ -241,15 +241,20 @@ fn runnable(candidate: &Path) -> bool {
     candidate.is_file()
 }
 
-/// The Floor switches the single Floor question turns on and off together.
-const FLOOR_ACTIONS: [Key; 7] = [
+/// The Floor switches the single Floor question turns on and off together. The terminal is not
+/// one of them: a new install leaves it off, and turning it on takes a restart.
+const FLOOR_ACTIONS: [Key; 11] = [
     Key::Answer,
     Key::Hire,
     Key::Control,
     Key::Goal,
     Key::Retire,
+    Key::Renew,
+    Key::Recovery,
     Key::Board,
-    Key::Terminal,
+    Key::Project,
+    Key::Git,
+    Key::Diff,
 ];
 
 /// Ask for every choice, applying each setting to `draft` as it is answered.
@@ -372,9 +377,9 @@ fn floor_step(term: &mut Terminal<'_>, draft: &mut Draft, plan: &mut Plan) -> Re
     }
     let allow = term.yes(
         "Let the Floor act on your agents: hire, pause, answer, change goals, give tickets to agents, \
-         retire and attach a terminal? A ticket given to an agent starts it, and agents then run and \
-         spend under your account. Anyone holding your one-time Floor link could start agents that \
-         act with your account's full reach.",
+         retire, recover, add projects and read their changes? A ticket given to an agent starts it, \
+         and agents then run and spend under your account. Anyone holding your one-time Floor link \
+         could start agents that act with your account's full reach.",
         true,
     )?;
     set_floor(draft, plan, allow)
@@ -390,10 +395,7 @@ pub fn floor_is_uniform(settings: &Settings) -> bool {
     on == 0 || on == FLOOR_ACTIONS.len()
 }
 
-/// The Floor actions `--yes` turns on. Terminal, renew and retire stay as they are.
-const YES_ACTIONS: [Key; 5] = [Key::Answer, Key::Hire, Key::Control, Key::Goal, Key::Board];
-
-/// Turn on [`YES_ACTIONS`] when the file turns no Floor action on yet.
+/// Turn on [`FLOOR_ACTIONS`] when the file turns no Floor action on yet.
 ///
 /// # Errors
 ///
@@ -405,13 +407,10 @@ pub fn set_yes_floor(draft: &mut Draft, plan: &mut Plan) -> Result<(), Stopped> 
     {
         return Ok(());
     }
-    for key in YES_ACTIONS {
-        set(draft, plan, key, true)?;
-    }
-    Ok(())
+    set_floor(draft, plan, true)
 }
 
-/// Turn every Floor action on or off, and Renew off with them.
+/// Turn every Floor action on or off. Turning them off also turns the terminal off.
 ///
 /// # Errors
 ///
@@ -422,8 +421,8 @@ pub fn set_floor(draft: &mut Draft, plan: &mut Plan, allow: bool) -> Result<(), 
             set(draft, plan, key, allow)?;
         }
     }
-    if !allow && draft.settings().satisfies(Key::Renew) {
-        set(draft, plan, Key::Renew, false)?;
+    if !allow && draft.settings().satisfies(Key::Terminal) {
+        set(draft, plan, Key::Terminal, false)?;
     }
     Ok(())
 }
@@ -865,7 +864,7 @@ pub fn summary(term: &mut Terminal<'_>, plan: &Plan, cwd: Option<&Path>) -> io::
 mod tests {
     use super::*;
 
-    const ACTIONS: [Key; 7] = FLOOR_ACTIONS;
+    const ACTIONS: [Key; 11] = FLOOR_ACTIONS;
 
     fn host(found: &[Provider], billed: &[Provider]) -> Host {
         Host {
@@ -937,7 +936,7 @@ mod tests {
         Change::set(key, text).expect("a value the key takes")
     }
 
-    const FLOOR: &str = "Let the Floor act on your agents: hire, pause, answer, change goals, give tickets to agents, retire and attach a terminal? A ticket given to an agent starts it, and agents then run and spend under your account. Anyone holding your one-time Floor link could start agents that act with your account's full reach. [Y/n]";
+    const FLOOR: &str = "Let the Floor act on your agents: hire, pause, answer, change goals, give tickets to agents, retire, recover, add projects and read their changes? A ticket given to an agent starts it, and agents then run and spend under your account. Anyone holding your one-time Floor link could start agents that act with your account's full reach. [Y/n]";
 
     /// Enter at every question on a fresh file asks at most five questions and leaves a Floor
     /// that can act, a repository enrolled with its suggested check, and one agent hired.
@@ -967,7 +966,7 @@ mod tests {
                 "{key} is off:\n{shown}"
             );
         }
-        assert!(!run.draft.settings().satisfies(Key::Renew), "{shown}");
+        assert!(!run.draft.settings().satisfies(Key::Terminal), "{shown}");
         assert_eq!(
             plan.check.as_ref().map(|check| check.argv.clone()),
             Some(vec!["cargo".to_owned(), "test".to_owned()])
@@ -1042,7 +1041,7 @@ mod tests {
         );
     }
 
-    /// Yes turns on the seven actions and leaves Renew; No turns them and Renew off.
+    /// Yes turns on the eleven actions and leaves the terminal off; No turns them and the terminal off.
     #[test]
     fn one_floor_question_turns_the_actions_on_or_off_together() {
         let quiet = host(&[Provider::Claude], &[]);
@@ -1060,39 +1059,50 @@ mod tests {
                 change(Key::Control, "on"),
                 change(Key::Goal, "on"),
                 change(Key::Retire, "on"),
+                change(Key::Renew, "on"),
+                change(Key::Recovery, "on"),
                 change(Key::Board, "on"),
-                change(Key::Terminal, "on"),
+                change(Key::Project, "on"),
+                change(Key::Git, "on"),
+                change(Key::Diff, "on"),
             ]
         );
 
-        let all_on = "[floor.answer]\nenabled = true\n[floor.hire]\nenabled = true\n[floor.control]\nenabled = true\n[floor.goal]\nenabled = true\n[floor.renew]\nenabled = true\n[floor.retire]\nenabled = true\n[floor.board]\nenabled = true\n[floor.terminal]\nenabled = true\n";
+        let all_on =
+            ACTIONS
+                .into_iter()
+                .chain([Key::Terminal])
+                .fold(String::new(), |mut text, key| {
+                    use std::fmt::Write as _;
+                    let _ = write!(text, "[{}]\nenabled = true\n", key.name());
+                    text
+                });
         let run = run_guided(
-            Some(all_on),
+            Some(&all_on),
             &[(FLOOR, "n"), ("Project folder (Enter to skip):", "")],
             None,
             &quiet,
         );
         let shown = run.shown;
         run.plan.expect("answered");
-        for key in ACTIONS.into_iter().chain([Key::Renew]) {
+        for key in ACTIONS.into_iter().chain([Key::Terminal]) {
             assert!(!run.draft.settings().satisfies(key), "{key}:\n{shown}");
         }
         assert!(run.draft.settings().problems().is_empty(), "{shown}");
     }
 
-    /// `--yes` turns on what the first task needs; terminal, renew, retire and the git views stay off.
+    /// `--yes` turns on the same eleven actions as a Yes answer and leaves the terminal off.
     #[test]
-    fn the_yes_floor_turns_on_five_actions_only() {
+    fn the_yes_floor_turns_on_the_new_install_actions() {
         let home = tempfile::tempdir().expect("a home");
         let mut draft = Draft::open(&home.path().join("config.toml")).expect("opens");
         let mut plan = Plan::default();
         set_yes_floor(&mut draft, &mut plan).expect("sets");
-        for key in YES_ACTIONS {
+        for key in ACTIONS {
             assert!(draft.settings().satisfies(key), "{key}");
         }
-        for key in [Key::Terminal, Key::Retire, Key::Renew, Key::Git, Key::Diff] {
-            assert!(!draft.settings().satisfies(key), "{key}");
-        }
+        assert!(!draft.settings().satisfies(Key::Terminal));
+        assert!(draft.settings().problems().is_empty());
     }
 
     /// A file that already mixes the switches keeps its mix and is told so, with no question.

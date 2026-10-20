@@ -74,9 +74,10 @@ fn key(subject: &CheckedClaimSubject) -> Option<RecoverySubjectKey> {
 
 impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     pub(in crate::runtime) fn recovery_grants(&self) -> RecoveryGrants {
+        let live = self.switches.load();
         RecoveryGrants {
-            recovery: self.recovery_enabled,
-            pause_resume: self.control.pause_resume(),
+            recovery: live.serves_recovery(),
+            pause_resume: live.control.pause_resume(),
         }
     }
 

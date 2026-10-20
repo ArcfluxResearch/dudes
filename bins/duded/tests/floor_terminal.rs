@@ -64,7 +64,18 @@ fn floor(fixture: &Fixture, terminal: bool) -> Floor {
 }
 
 fn floor_with(fixture: &Fixture, terminal: bool, control: FloorControl) -> Floor {
+    floor_reading(fixture, terminal, control, None)
+}
+
+/// [`floor_with`] on a daemon that reloads `config`, the operator file.
+fn floor_reading(
+    fixture: &Fixture,
+    terminal: bool,
+    control: FloorControl,
+    config: Option<PathBuf>,
+) -> Floor {
     let mut settings = fixture.settings();
+    settings.operator_config = config;
     settings.floor = Some(FloorSettings {
         assets_dir: PathBuf::from(FLOOR_FIXTURE),
         port: Some(0),
@@ -1750,5 +1761,77 @@ fn browser_retire_lost_permit_closes_nothing() {
     let _ = csrf;
     terminal.expect_terminal_closed();
     await_system_detach(&fixture, agent, 1);
+    floor.stop();
+}
+
+/// Turning the terminal off in the operator file, then reloading, revokes a live grant and closes
+/// its socket with no restart. The terminal is then an unrouted path, and turning it back on
+/// needs a restart.
+#[test]
+fn turning_the_terminal_off_revokes_a_live_grant() {
+    const HIRE: &str = "[floor.hire]\nenabled = true\n";
+    const ON: &str = "[floor.hire]\nenabled = true\n[floor.terminal]\nenabled = true\n";
+    let fixture = Fixture::new();
+    let root = tempfile::tempdir().expect("operator config root");
+    let config = root.path().join("config.toml");
+    std::fs::write(&config, ON).expect("operator config");
+    let mut floor = floor_reading(&fixture, true, FloorControl::Off, Some(config.clone()));
+    let agent = attachable(&floor, &fixture);
+    let (cookie, csrf) = session(&floor);
+    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    terminal.attach(agent);
+    let pty = newest_pty(&floor.ptys);
+
+    let reload = |text: &str| {
+        std::fs::write(&config, text).expect("operator config");
+        let sha256 = Sha256::digest(text.as_bytes())
+            .iter()
+            .fold(String::new(), |hex, byte| format!("{hex}{byte:02x}"));
+        let mut client = Client::connect(floor.settings.socket()).expect("daemon socket");
+        let reply = client
+            .call_as_operator(
+                Method::FloorEnrollmentReload,
+                Some(json!({"apply": {
+                    "sha256": sha256, "added": [], "removed": [], "changed": []
+                }})),
+                OperatorCredential::new(credential(&floor.settings)).expect("credential"),
+            )
+            .expect("reload response");
+        reply.result.expect("a reload result")
+    };
+    let result = reload(HIRE);
+    assert_eq!(result["applied"], json!(true), "{result}");
+    assert_eq!(result["switches"], json!(["floor.terminal"]), "{result}");
+
+    terminal.expect_terminal_closed();
+    await_system_detach(&fixture, agent, 1);
+    assert!(
+        floor.ptys.closes().contains(&pty),
+        "the host closed the PTY"
+    );
+    let refused = raw_response(
+        floor.addr,
+        &upgrade(
+            floor.addr,
+            "/floor/terminal",
+            "dudes-terminal-v1",
+            &cookie,
+            &csrf,
+        ),
+    );
+    assert!(
+        String::from_utf8_lossy(&refused).starts_with("HTTP/1.1 400 Bad Request"),
+        "{}",
+        String::from_utf8_lossy(&refused)
+    );
+
+    let result = reload(ON);
+    assert!(
+        result["not_applied"]
+            .as_array()
+            .is_some_and(|names| names.contains(&json!("floor.terminal"))),
+        "{result}"
+    );
+    assert_eq!(result["switches"], json!([]), "{result}");
     floor.stop();
 }

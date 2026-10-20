@@ -286,6 +286,8 @@ pub struct Settings {
     pub floor_git_enabled: bool,
     /// [`crate::config::OperatorConfig::diff_enabled`].
     pub floor_diff_enabled: bool,
+    /// [`crate::config::OperatorConfig::project_enabled`].
+    pub floor_project_enabled: bool,
     /// [`crate::config::OperatorConfig::condense_model_enabled`].
     pub condense_model_enabled: bool,
     /// [`crate::config::OperatorConfig::condense_model`].
@@ -442,7 +444,7 @@ pub struct Seams<H: ProcessHost, P: PredicateRunner, C: Clock, R: Rng> {
     pub witness: Witness,
 }
 
-/// Which of the Floor's control actions the operator enabled, fixed for the run. `[floor.control]`
+/// Which of the Floor's control actions the operator enabled, as of the last applied reload. `[floor.control]`
 /// enables pause and resume, and also the display rename, which is not a
 /// loop-control action and needs nothing from pause. Goal change and retirement exist only beside
 /// pause and resume: Pause opens the window a change needs on a busy agent, and it

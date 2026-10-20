@@ -82,6 +82,9 @@ pub struct OperatorConfig {
     /// `false` registers no route. The route also needs `[floor.git]` on; with either off it
     /// does not exist.
     pub diff_enabled: bool,
+    /// `[floor.project] enabled`: whether the Floor may add a project. It only gates; the route
+    /// that adds one checks it.
+    pub project_enabled: bool,
     /// The `[providers.<name>]` tables the operator wrote.
     pub providers: ProviderTables,
     /// `[memory] condense_model_enabled`: whether a condense may spend a one-shot model call for
@@ -338,20 +341,28 @@ struct FloorTable {
     terminal: Option<TerminalTable>,
     git: Option<GitTable>,
     diff: Option<DiffTable>,
+    project: Option<ProjectTable>,
     chat: Option<ChatTable>,
 }
 
-/// `[floor.git]`: the operator's opt-in to the Floor's Git tab, read once at start.
+/// `[floor.git]`: the operator's opt-in to the Floor's Git tab, read at start and on each reload.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct GitTable {
     enabled: bool,
 }
 
-/// `[floor.diff]`: the operator's opt-in to the Floor's ticket diff route, read once at start.
+/// `[floor.diff]`: the operator's opt-in to the Floor's ticket diff route, read at start and on each reload.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct DiffTable {
+    enabled: bool,
+}
+
+/// `[floor.project]`: whether the Floor may add a project.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ProjectTable {
     enabled: bool,
 }
 
@@ -367,7 +378,7 @@ struct TerminalTable {
     enabled: bool,
 }
 
-/// `[floor.hire]`: the operator's opt-in to the Floor's hire, read once at start.
+/// `[floor.hire]`: the operator's opt-in to the Floor's hire, read at start and on each reload.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct HireTable {
@@ -388,7 +399,7 @@ struct RecoveryTable {
     enabled: bool,
 }
 
-/// `[floor.goal]`: the operator's opt-in to the Floor's goal change, read once at start.
+/// `[floor.goal]`: the operator's opt-in to the Floor's goal change, read at start and on each reload.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct GoalTable {
@@ -396,14 +407,14 @@ struct GoalTable {
 }
 
 /// `[floor.renew]`: the operator's opt-in to the Floor's renewal of a goal that has nothing left,
-/// read once at start.
+/// read at start and on each reload.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RenewTable {
     enabled: bool,
 }
 
-/// `[floor.board]`: the operator's opt-in to the Floor's tickets, read once at start.
+/// `[floor.board]`: the operator's opt-in to the Floor's tickets, read at start and on each reload.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct BoardTable {
@@ -418,7 +429,7 @@ struct RetireTable {
     enabled: bool,
 }
 
-/// `[floor.answer]`: the operator's opt-in to the Floor's answer action, read once at start.
+/// `[floor.answer]`: the operator's opt-in to the Floor's answer action, read at start and on each reload.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct AnswerTable {
@@ -776,6 +787,7 @@ pub(crate) fn parse_operator_and_memory_with_options(
     let terminal_enabled = floor.terminal.unwrap_or_default().enabled;
     let git_enabled = floor.git.unwrap_or_default().enabled;
     let diff_enabled = floor.diff.unwrap_or_default().enabled;
+    let project_enabled = floor.project.unwrap_or_default().enabled;
     let floor_usd_per_day = budget
         .floor_usd_per_day
         .map(|value| {
@@ -839,6 +851,7 @@ pub(crate) fn parse_operator_and_memory_with_options(
                 terminal_enabled,
                 git_enabled,
                 diff_enabled,
+                project_enabled,
                 providers,
                 condense_model_enabled,
                 condense_model,

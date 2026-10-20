@@ -1062,6 +1062,9 @@ pub fn reload(
     writeln!(out, "added    {}", list(&result.added))?;
     writeln!(out, "removed  {}", list(&result.removed))?;
     writeln!(out, "changed  {}", list(&changed))?;
+    if !result.switches.is_empty() {
+        writeln!(out, "switches {}", list(&result.switches))?;
+    }
     if !result.not_applied.is_empty() {
         writeln!(
             out,
@@ -1083,6 +1086,7 @@ pub fn reload(
         None if result.added.is_empty()
             && result.removed.is_empty()
             && result.changed.is_empty()
+            && result.switches.is_empty()
             && result.not_applied.is_empty() =>
         {
             writeln!(
@@ -1846,6 +1850,7 @@ mod tests {
                 id: HOSTILE.to_owned(),
                 fields: vec![HOSTILE.to_owned()],
             }],
+            switches: vec![],
             not_applied: vec![HOSTILE.to_owned()],
         };
         assert_eq!(
@@ -1880,6 +1885,7 @@ mod tests {
             added: vec![],
             removed: vec![],
             changed: vec![],
+            switches: vec![],
             not_applied: vec![],
         };
         let said = text(|out| reload(out, false, &result));

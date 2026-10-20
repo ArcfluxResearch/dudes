@@ -22,7 +22,8 @@ without a goal authorizes one turn; messages to an agent with a goal join its ne
 
 The office is a view of the daemon's state, never a source of truth. The daemon's journal, an append-only log of everything it records, is the
 only record, and the Floor changes that state only through the Floor actions you turn on. `dudes quickstart` asks once whether to turn on hire,
-pause, answer, change goals, retire and attach a terminal together.
+pause, answer, change goals, retire, recover, add projects and read changes together. The terminal
+stays off until you turn it on with `dudes config set floor.terminal on` and restart.
 
 The Floor draws the smallest office that seats the whole crew. The Studio has 8 desks, the Workshop
 has 12 and HQ has 16. **Settings** can pin one office in this browser instead. When the office has
@@ -79,7 +80,7 @@ an earlier check is history. Unknown applicability is not a pass.
 
 With `floor.board` on, the Board view makes tickets and moves them. It needs `floor.control` and
 `floor.goal` on too, and the daemon refuses to start without them. Turn it on with
-`dudes config set floor.board on`, then restart the daemon. `dudes quickstart` turns it on with the
+`dudes config set floor.board on`, which applies at once. `dudes quickstart` turns it on with the
 other Floor actions when you say yes to its one question.
 
 **Giving a ticket to an agent starts that agent, which then runs and spends under your account.**

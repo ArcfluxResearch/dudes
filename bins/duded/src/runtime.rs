@@ -90,6 +90,7 @@ use crate::floor_goal::{GoalOutcome, GoalRefusal, GoalRequest, GoalStep};
 use crate::floor_look::{LookOutcome, LookRefusal, LookRequest};
 use crate::floor_rename::{RenameOutcome, RenameRefusal, RenameRequest};
 use crate::floor_retire::{RetireOutcome, RetireRefusal, RetireRequest};
+use crate::floor_switches::ACTION_OFF;
 use crate::lock::StateLock;
 use crate::ports::{
     Answered, Ask, DoctorSnapshot, ExitCause, Handle, HookAnswer, Job, PtyCloseOutcome,
@@ -888,10 +889,6 @@ type RecoveryRecordHook = Box<dyn FnMut(&Record) + Send>;
 #[cfg(test)]
 type RecoveryInputHook = Box<dyn FnMut(&Input) + Send>;
 
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each is an independent `[floor.*]` operator switch, fixed for the run"
-)]
 pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) writer: Writer,
     pub(crate) mailbox: Option<crate::mailbox::Mailbox>,
@@ -913,15 +910,10 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) running_mcp: dudes_providers::mcp::DeclaredServers,
     pub(crate) browser_launches: crate::chat_launch::LaunchPreparations,
     pub(crate) resolved_browser_turn: Option<(TurnId, u64)>,
-    /// `[floor.answer] enabled`, fixed for the run: whether snapshots carry the `answer` sibling.
-    pub(crate) answer_enabled: bool,
-    /// `[floor.hire] enabled`, fixed for the run: whether the Floor may hire at all.
-    pub(crate) hire_enabled: bool,
+    /// Every `[floor.*]` switch as the last applied reload left it, shared with the gateway.
+    pub(crate) switches: crate::floor_switches::SharedSwitches,
     /// Only attributed durable pauses and resumes populate this replayable request index.
     pub(crate) control_index: crate::floor_control::ControlIndex,
-    /// Fixed for the run: whether snapshots carry the `control`, `goal` and `retire` siblings.
-    pub(crate) control: crate::settings::FloorControl,
-    pub(crate) recovery_enabled: bool,
     pub(crate) recovery_authority: Option<crate::floor_session::FloorRecoveryAuthority>,
     #[cfg(test)]
     pub(crate) before_recovery_dispatch: Option<Box<dyn FnOnce() + Send>>,
@@ -937,14 +929,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     pub(crate) look_index: crate::floor_look::DurableLookIndex,
     /// Only attributed durable retirements populate this replayable request index.
     pub(crate) retire_index: crate::floor_retire::RetireIndex,
-    /// `[floor.git] enabled`, fixed for the run: whether snapshots carry the `git` sibling.
-    pub(crate) git_enabled: bool,
-    /// `[floor.diff] enabled`, fixed for the run. Nothing is advertised; it only decides whether
-    /// a reload that changes it asks for a restart.
-    pub(crate) diff_enabled: bool,
-    /// `[floor.board] enabled`, fixed for the run: whether snapshots carry the `ticket` sibling.
-    pub(crate) board_enabled: bool,
-    /// `None` while `[floor.terminal]` is off, for the whole run.
+    /// `None` once `[floor.terminal]` is off: it is off from the start, or a reload turned it off
+    /// and revoked every grant.
     pub(crate) browser_grants: Option<BTreeMap<AgentId, crate::floor_terminal::LiveGrant>>,
     #[cfg(feature = "testing")]
     pub(crate) terminal_skew: crate::floor_terminal::TerminalSkew,
@@ -1444,6 +1430,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             };
             let check_run_ended =
                 matches!(job, Job::BaselineEnded { .. } | Job::PredicateEnded { .. });
+            // A switch can go off between the gateway's check and this job, so each Floor action
+            // reads the swapped snapshot again before it runs.
+            let Some(job) = refuse_action_off(self.ctx.switches.load(), job) else {
+                continue;
+            };
             match job {
                 Job::Chat {
                     session,
@@ -2071,7 +2062,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             .ok_or_else(|| "Floor stream unavailable".to_owned())?;
         // Offered with the switch on, a Hire slot left and, per workspace, an
         // eligible profile with at least one offered engine. No ceiling or reserve is required.
-        let offered: Vec<_> = if self.ctx.hire_enabled
+        let live = self.ctx.switches.load();
+        let offered: Vec<_> = if live.hire
             && !self.ctx.journal_writes_stopped()
             && self.ctx.onboarding_index.count(session.digest()) < 4
         {
@@ -2089,18 +2081,17 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         let onboarding = (!offered.is_empty()).then(|| {
             crate::floor_actions::Enrollment::view(self.sup.config().floor_usd_per_day, offered)
         });
-        let checks = (self.ctx.hire_enabled || self.ctx.control.goal())
-            .then(|| self.ctx.enrollment.checks_view());
+        let checks = (live.hire || live.control.goal()).then(|| self.ctx.enrollment.checks_view());
         let mut switches = dudes_proto::rpc::floor::SettingsSwitches::default();
-        switches.answer = self.ctx.answer_enabled;
-        switches.hire = self.ctx.hire_enabled;
-        switches.control = self.ctx.control.pause_resume();
-        switches.recovery = self.ctx.recovery_enabled && self.ctx.control.pause_resume();
-        switches.goal = self.ctx.control.goal();
-        switches.renew = self.ctx.control.renew();
-        switches.retire = self.ctx.control.retire();
+        switches.answer = live.answer;
+        switches.hire = live.hire;
+        switches.control = live.control.pause_resume();
+        switches.recovery = live.serves_recovery();
+        switches.goal = live.control.goal();
+        switches.renew = live.control.renew();
+        switches.retire = live.control.retire();
         switches.terminal = self.ctx.browser_grants.is_some();
-        switches.git = self.ctx.git_enabled;
+        switches.git = live.git;
         let settings = crate::floor_settings::view(
             switches,
             self.sup.config().floor_usd_per_day,
@@ -2108,10 +2099,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             &self.ctx.enrollment,
             self.sup.adapters(),
         );
-        let goal = self.ctx.control.goal().then(|| {
-            crate::floor_goal::GoalView::new(
-                self.ctx.control.renew().then_some(&self.ctx.enrollment),
-            )
+        let goal = live.control.goal().then(|| {
+            crate::floor_goal::GoalView::new(live.control.renew().then_some(&self.ctx.enrollment))
         });
         let projections = &self.ctx.projections;
         streams
@@ -2121,12 +2110,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 crate::floor_stream::Siblings {
                     onboarding: onboarding.as_ref(),
                     checks: checks.as_ref(),
-                    answer: self
-                        .ctx
-                        .answer_enabled
-                        .then_some(&crate::floor_answer::ANSWER_VIEW),
-                    control: self
-                        .ctx
+                    answer: live.answer.then_some(&crate::floor_answer::ANSWER_VIEW),
+                    control: live
                         .control
                         .pause_resume()
                         .then_some(&crate::floor_control::CONTROL_VIEW),
@@ -2134,8 +2119,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         .recovery
                         .then_some(dudes_proto::rpc::floor::RecoveryView {}),
                     goal: goal.as_ref(),
-                    retire: self
-                        .ctx
+                    retire: live
                         .control
                         .retire()
                         .then_some(&crate::floor_retire::RETIRE_VIEW),
@@ -2144,16 +2128,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                         .browser_grants
                         .is_some()
                         .then_some(&crate::floor_terminal::TERMINAL_VIEW),
-                    git: self
-                        .ctx
-                        .git_enabled
-                        .then_some(&crate::floor_git::GIT_SWITCH),
-                    diff: (self.ctx.git_enabled && self.ctx.diff_enabled)
+                    git: live.git.then_some(&crate::floor_git::GIT_SWITCH),
+                    diff: live
+                        .serves_diff()
                         .then_some(&crate::floor_diff::DIFF_SWITCH),
-                    ticket: self
-                        .ctx
-                        .board_enabled
-                        .then_some(&crate::floor_ticket::TICKET_SWITCH),
+                    ticket: live.board.then_some(&crate::floor_ticket::TICKET_SWITCH),
                     journal_stopped: None,
                     chat: None,
                     finished_today: None,
@@ -2174,21 +2153,23 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if read.apply.is_some() {
             self.require_journal_writes()?;
         }
-        let running = crate::config::OperatorConfig {
+        let running = self.ctx.switches.load();
+        let running_config = crate::config::OperatorConfig {
             providers: self.ctx.running_providers.clone(),
             mcp_servers: self.ctx.running_mcp.clone(),
             budget: crate::config::BudgetConfig {
                 floor_usd_per_day: self.sup.config().floor_usd_per_day,
                 per_turn_floor: self.sup.config().per_turn_floor,
             },
-            answer_enabled: self.ctx.answer_enabled,
-            hire_enabled: self.ctx.hire_enabled,
-            control: self.ctx.control,
-            recovery_enabled: self.ctx.recovery_enabled,
+            answer_enabled: running.answer,
+            hire_enabled: running.hire,
+            control: running.control,
+            recovery_enabled: running.recovery,
             terminal_enabled: self.ctx.browser_grants.is_some(),
-            git_enabled: self.ctx.git_enabled,
-            diff_enabled: self.ctx.diff_enabled,
-            board_enabled: self.ctx.board_enabled,
+            git_enabled: running.git,
+            diff_enabled: running.diff,
+            board_enabled: running.board,
+            project_enabled: running.project,
             condense_model_enabled: self.ctx.condense_model_enabled,
             condense_model: self.ctx.condense_model.clone(),
             ..crate::config::OperatorConfig::default()
@@ -2197,8 +2178,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             &self.ctx.enrollment,
             &mut self.ctx.reloads,
             read,
-            &running,
+            &running_config,
             self.ctx.memory_config,
+            running,
             self.ctx.clock.now(),
         )
         .map_err(|error| crate::enrollment_reload::invalid(&error))?;
@@ -2207,6 +2189,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         }
         if decision.result.applied {
             self.ctx.enrollment = decision.candidate;
+            self.install_switches(decision.switches);
             match decision.resync {
                 Resync::None => {}
                 Resync::Now => self.resync_floor(),
@@ -2224,6 +2207,21 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             }
         }
         Ok(decision.result)
+    }
+
+    /// Swap in the switches an applied reload read. Turning the terminal off revokes every live
+    /// grant and closes its attachment first, so no socket outlives the switch.
+    fn install_switches(&mut self, next: crate::floor_switches::Switches) {
+        let was = self.ctx.switches.load();
+        if was.terminal && !next.terminal {
+            if let Some(grants) = &self.ctx.browser_grants {
+                for live in grants.values() {
+                    self.revoke_and_close(live, TERMINAL_OFF);
+                }
+            }
+            self.ctx.browser_grants = None;
+        }
+        self.ctx.switches.store(next);
     }
 
     /// Send `floor.resync` on every open projection stream.
@@ -2452,6 +2450,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         run: u64,
     ) -> OnboardNext {
         self.ctx.baselines.end(run);
+        if !self.ctx.switches.load().hire {
+            return OnboardNext::Reply(OnboardStep::Answer(Err(OnboardRefusal::Check(ACTION_OFF))));
+        }
         let indexed = self
             .ctx
             .onboarding_index
@@ -2482,7 +2483,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         session: &crate::floor_session::SessionIdentity,
         request: &OnboardRequest,
     ) -> Result<(Profile, crate::floor_actions::EnrolledCheck), OnboardRefusal> {
-        if !self.ctx.hire_enabled || self.ctx.onboarding_index.count(session.digest()) >= 4 {
+        if !self.ctx.switches.load().hire || self.ctx.onboarding_index.count(session.digest()) >= 4
+        {
             return Err(OnboardRefusal::Forbidden);
         }
         let profile = self
@@ -2637,7 +2639,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if !Self::recorded_profile_matches(attempt, profile, request.provider) {
             return partial("profile_changed");
         }
-        if !self.ctx.hire_enabled
+        if !self.ctx.switches.load().hire
             || !self.onboarding_profile_eligible(profile)
             || !self.offered_engines(profile).contains(&request.provider)
         {
@@ -3188,6 +3190,12 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         self.ctx.baselines.end(run);
         if self.exited {
             return Err(GoalRefusal::UnavailableNoEffect);
+        }
+        if !goal_switch_on(self.ctx.switches.load(), request) {
+            return Ok(GoalOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            });
         }
         match self.browser_goal_admission(request) {
             Ok(change) => self.append_browser_goal(session, request, change, baseline),
@@ -7062,6 +7070,69 @@ fn closing_pump_error(failure: &anyhow::Error) -> RpcError {
         )
 }
 const AGENT_HALTED: &str = "agent halted";
+/// Answer a Floor action whose switch is off now with [`ACTION_OFF`] and no effect, or hand the
+/// job back to run. A hire or goal change whose check already ran is refused where it resumes,
+/// because that step must also end its check run.
+pub(crate) fn refuse_action_off(live: crate::floor_switches::Switches, job: Job) -> Option<Job> {
+    match job {
+        Job::Onboard { reply, .. } if !live.hire => {
+            let _ = reply.send(OnboardStep::Answer(Err(OnboardRefusal::Check(ACTION_OFF))));
+        }
+        Job::Answer { request, reply, .. } if !live.answer => {
+            let _ = reply.send(Ok(AnswerOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            }));
+        }
+        Job::Control { request, reply, .. } if !live.control.pause_resume() => {
+            let _ = reply.send(Ok(ControlOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            }));
+        }
+        Job::Rename { request, reply, .. } if !live.control.pause_resume() => {
+            let _ = reply.send(Ok(RenameOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            }));
+        }
+        Job::Look { request, reply, .. } if !live.control.pause_resume() => {
+            let _ = reply.send(Ok(LookOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            }));
+        }
+        Job::Goal { request, reply, .. } if !goal_switch_on(live, &request) => {
+            let _ = reply.send(GoalStep::Answer(Ok(GoalOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            })));
+        }
+        Job::Retire { request, reply, .. } if !live.control.retire() => {
+            let _ = reply.send(Ok(RetireOutcome::Refused {
+                request_id: request.request_wire.clone(),
+                reason: ACTION_OFF,
+            }));
+        }
+        Job::Ticket { reply, .. } if !live.board => {
+            let _ = reply.send(crate::floor_ticket::TicketReply::Refused(ACTION_OFF));
+        }
+        job => return Some(job),
+    }
+    None
+}
+
+/// Whether the switch that this goal request needs is on: goal change for a text change, renewal
+/// for a renewal.
+fn goal_switch_on(live: crate::floor_switches::Switches, request: &GoalRequest) -> bool {
+    if request.renewal.is_some() {
+        live.control.renew()
+    } else {
+        live.control.goal()
+    }
+}
+
+const TERMINAL_OFF: &str = "terminal switched off";
 const JOURNAL_UNRESOLVED: &str = "journal durability unresolved";
 const DAEMON_SHUTDOWN: &str = "daemon shutdown";
 
@@ -7482,7 +7553,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             &self.local_days,
         ));
         // With the board off a ticket is a card like any other, and the page is told nothing more.
-        if !self.board_enabled {
+        if !self.switches.load().board {
             for card in &mut snapshot.cards {
                 card.ticket = None;
             }

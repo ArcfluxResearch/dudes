@@ -505,6 +505,9 @@ where
     // would pair replay-derived supervisor health with an empty-journal ping until the next append.
     let last_lsn = Arc::new(AtomicU64::new(projections.last_applied_lsn().0));
 
+    let switches = crate::floor_switches::SharedSwitches::new(
+        crate::floor_switches::Switches::from_settings(settings),
+    );
     let prepared_floor = settings
         .floor
         .as_ref()
@@ -512,11 +515,7 @@ where
         .transpose()?
         .map(|prepared| {
             prepared
-                .with_answer(settings.floor_answer_enabled)
-                .with_control(settings.floor_control)
-                .with_recovery(settings.floor_recovery_enabled)
-                .with_terminal(settings.floor_terminal_enabled)
-                .with_board(settings.floor_board_enabled)
+                .with_switches(switches.clone())
                 .with_remembered_port(crate::floor_port::remembered(&settings.state_dir))
         });
     if prepared_floor.is_some() {
@@ -596,11 +595,8 @@ where
             running_providers: options.into_providers(),
             browser_launches,
             resolved_browser_turn: None,
-            answer_enabled: settings.floor_answer_enabled,
-            hire_enabled: settings.floor_hire_enabled,
+            switches,
             control_index,
-            control: settings.floor_control,
-            recovery_enabled: settings.floor_recovery_enabled,
             recovery_authority: None,
             #[cfg(test)]
             before_recovery_dispatch: None,
@@ -614,9 +610,6 @@ where
             rename_index,
             look_index,
             retire_index,
-            git_enabled: settings.floor_git_enabled,
-            diff_enabled: settings.floor_diff_enabled,
-            board_enabled: settings.floor_board_enabled,
             browser_grants: settings.floor_terminal_enabled.then(BTreeMap::new),
             #[cfg(feature = "testing")]
             terminal_skew: crate::floor_terminal::TerminalSkew::default(),
@@ -707,19 +700,13 @@ where
     witness.startup.record(StartupStep::FirstDecide);
 
     if let Some(prepared) = prepared_floor {
-        let prepared = if settings.floor_git_enabled {
-            prepared.with_git(Arc::new(git_reads(settings, &daemon)))
-        } else {
-            prepared
-        };
-        let prepared = if settings.floor_git_enabled && settings.floor_diff_enabled {
-            prepared.with_diff(Arc::new(diff_reads(&daemon)))
-        } else {
-            if settings.floor_diff_enabled {
-                tracing::warn!("[floor.diff] needs [floor.git]; the diff route is not served");
-            }
-            prepared
-        };
+        if settings.floor_diff_enabled && !settings.floor_git_enabled {
+            tracing::warn!("[floor.diff] needs [floor.git]; the diff route is not served");
+        }
+        // Built whether or not the switch is on, so a reload can turn the route on.
+        let prepared = prepared
+            .with_git(Arc::new(git_reads(settings, &daemon)))
+            .with_diff(Arc::new(diff_reads(&daemon)));
         daemon.sup.enable_activity_sampling();
         daemon.activity_flusher = Some(start_activity_flusher(
             handle.clone(),
