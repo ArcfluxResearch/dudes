@@ -457,7 +457,7 @@ test('closing nested Hire skips a connected Give opener hidden by revoked author
   } finally { await app.close(); }
 });
 
-test('successful Hire preserves selection and returns to the underlying composer', async () => {
+test('successful Hire reveals the agent without opening it, and returns to the underlying composer', async () => {
   const app = await mount([], { agents: [], hireAvailable: true });
   try {
     await act(async () => press(app.page.host.querySelector('.ticket-new-toggle')));
@@ -467,7 +467,7 @@ test('successful Hire preserves selection and returns to the underlying composer
     const { completeHire, closeHire, selections } = await closeHireCallback(app.page, hire.dialog, opener);
     completeHire();
     app.page.flushFocus();
-    assert.deepEqual(selections, [['revealed', ADA], ['selected', ADA]]);
+    assert.deepEqual(selections, [['revealed', ADA]]);
     assert.equal(app.page.document.activeElement.getAttribute('class'), 'ticket-dialog-close');
     await act(async () => press(app.page.host.querySelector('.ticket-dialog-close')));
     app.page.flushFocus();
@@ -491,7 +491,7 @@ test('the composer explains revoked authority inside its modal and keeps the dra
       seen.length = 0;
       await app.render({ ...app.floor, ...closed });
       const dialog = app.page.host.querySelector('.ticket-dialog');
-      assert.ok(textOf(dialog).includes(closed.stale ? 'View unconfirmed — waiting for the stream'
+      assert.ok(textOf(dialog).includes(closed.stale ? 'Not connected to Dudes'
         : 'Tickets are off. Turn them on with dudes config set floor.board on, then restart the daemon.'));
       assert.equal(dialog.querySelector('.ticket-create').disabled, true);
       await act(async () => propsOf(dialog.querySelector('form')).onSubmit({ preventDefault() {} }));
@@ -549,7 +549,7 @@ test('Give, Edit and changes retain unsent fields while authority is unavailable
         await app.render({ ...app.floor, ...closed });
         assert.notEqual(mode.getAttribute('hidden'), null);
         assert.ok(textOf(app.page.host.querySelector('.ticket-dialog')).includes(closed.stale
-          ? 'View unconfirmed — waiting for the stream' : 'Tickets are off. Turn them on with'));
+          ? 'Not connected to Dudes' : 'Tickets are off. Turn them on with'));
         assert.equal(app.page.host.querySelector('.ticket-action'), null);
         const form = mode.querySelector('form');
         await act(async () => propsOf(form).onSubmit({ preventDefault() {} }));

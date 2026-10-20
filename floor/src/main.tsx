@@ -1,6 +1,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { connect, noteFirstLinkRefused, noteNoFirstLink, noteSignInExpired, takePastedLink } from './connect';
+import {
+  connect, noteFirstLinkRefused, noteLinkWaitsForReload, noteNoFirstLink, noteSignInExpired, takePastedLink,
+} from './connect';
 import type { StreamPorts } from './connect';
 import { noteTransport } from './renderer/floor/store';
 import { browserSocket } from './renderer/floor/stream';
@@ -40,8 +42,11 @@ void establishFloorSession()
 // in memory survives the session it was sent under. A link the daemon refuses
 // leaves the page as it was, and the page says so.
 window.addEventListener('hashchange', () => {
-  // A page waiting for a reload leaves the link in its address, so the reload takes it.
-  if (floorRequestsPaused()) return;
+  // A page waiting for a reload leaves the link in its address, so the reload takes it, and says so.
+  if (floorRequestsPaused()) {
+    if (window.location.hash.startsWith('#bootstrap=')) noteLinkWaitsForReload();
+    return;
+  }
   void takePastedLink(reauthenticateFloorSession, BROWSER);
 });
 

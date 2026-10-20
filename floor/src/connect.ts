@@ -79,6 +79,7 @@ function sessionUnknown(ports: StreamPorts): void {
  */
 let refusedUnder: number | null = null;
 let refusedForBuild = false;
+let linkWaitsForReload = false;
 const listeners = new Set<() => void>();
 
 /** Whether the last link pasted into this tab was refused, and nothing newer has signed the page in since. */
@@ -89,6 +90,22 @@ export function pastedLinkRefused(): boolean {
 /** Whether the refusal stands because the daemon now serves a different build from this page's own. */
 export function pastedLinkBuildMismatch(): boolean {
   return pastedLinkRefused() && refusedForBuild;
+}
+
+/** Whether a fresh link was opened in this tab while the page was waiting for a reload, so only a reload can use it. */
+export function pastedLinkWaitsForReload(): boolean {
+  return linkWaitsForReload;
+}
+
+/**
+ * Say that a fresh link reached this tab while the page is paused for a reload. The page does not
+ * exchange it: a paused page may belong to an older build than the daemon now serves, and the link
+ * stays in the address so the reload takes it.
+ */
+export function noteLinkWaitsForReload(): void {
+  if (linkWaitsForReload) return;
+  linkWaitsForReload = true;
+  for (const listener of [...listeners]) listener();
 }
 
 export function subscribeToPastedLink(listener: () => void): () => void {
@@ -143,6 +160,7 @@ export function resetPastedLink(): void {
   stopStream = () => {};
   refusedUnder = null;
   refusedForBuild = false;
+  linkWaitsForReload = false;
   firstProblem = null;
   listeners.clear();
 }

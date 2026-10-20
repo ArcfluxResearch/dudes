@@ -2,7 +2,6 @@
 
 .ticket-banner {
   box-sizing: border-box;
-  flex: 0 0 100%;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -12,10 +11,6 @@
   border: 1px solid var(--accent-ink);
   background: var(--question);
   color: var(--ink);
-}
-
-.top-bar:has(.ticket-banner) {
-  flex-wrap: wrap;
 }
 
 .ticket-banner-text {
@@ -563,4 +558,45 @@
 
 @media (prefers-reduced-motion: reduce) {
   .ticket-card { transition: none; }
+}
+
+@media (max-width: 800px) {
+  .ticket-card-regions > .task-columns {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.1rem;
+  }
+}
+
+/* Inside the ticket sheet a notice hangs from the sheet's top edge, over the content, and takes no room. */
+.ticket-notice-slot {
+  display: contents;
+}
+
+.ticket-dialog .ticket-notice-slot {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: block;
+  height: 0;
+  overflow: visible;
+}
+
+.ticket-dialog .ticket-notice {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.75rem;
+  left: 0.75rem;
+  box-sizing: border-box;
+  margin: 0;
+  border-radius: 0.4rem;
+  background-color: var(--surface);
+  box-shadow: 0 8px 28px var(--panel-shadow);
+}
+
+.ticket-dialog .ticket-notice[data-tone='problem'] {
+  background-color: var(--danger-background);
+}
+
+.ticket-dialog .ticket-notice[data-tone='done'] {
+  background-color: var(--success-background);
 }

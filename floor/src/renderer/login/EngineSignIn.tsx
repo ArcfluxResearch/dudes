@@ -7,7 +7,7 @@
 // terminal the daemon owns, and draws the terminal in place. The page picks
 // only the engine. It never shows or types a command.
 
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { currentFloorSession } from '../../session.ts';
 import { browserSocket, refreshFloorSnapshot } from '../floor/stream.ts';
@@ -21,6 +21,7 @@ import {
   abandonLogin, bindLoginScreen, closeLogin, getLoginState, resizeLogin, startLogin, subscribeToLogin, writeLogin,
 } from './login.ts';
 import type { LoginChannel, LoginEnding, LoginPorts } from './login.ts';
+import { hyperlinkTarget, printedLink } from './signInLink.ts';
 
 type OpenChannel = Exclude<LoginChannel, { readonly phase: 'idle' }>;
 
@@ -110,19 +111,47 @@ function LoginPanel({ engine, channel }: { readonly engine: HireEngine; readonly
   const ended = channel.phase === 'ended';
   const failed = ended && channel.ending !== 'succeeded';
   const progress = channel.phase === 'opening' || channel.phase === 'starting' ? PROGRESS[channel.phase] : null;
+  const [link, setLink] = useState<string | null>(null);
   return (
     <section className="login-panel" aria-label={`Sign in to ${HIRE_ENGINES[engine]}`}
       data-login-phase={channel.phase} data-login-ending={ended ? channel.ending : undefined}>
       <p className={`login-state${failed ? ' login-failed' : ''}`} role={failed ? 'alert' : 'status'}>
         {ended ? endingText(engine, channel.ending) : progress ?? STEPS[engine]}
       </p>
-      <LoginScreen phase={channel.phase} />
+      {link !== null && !ended ? <SignInLink link={link} /> : null}
+      <LoginScreen phase={channel.phase} onLink={setLink} />
       <div className="login-actions">
         {failed ? <button type="button" className="login-retry"
           onClick={() => startLogin(engine, browserLoginPorts())}>Try again</button> : null}
-        <button type="button" className="login-close" onClick={closeLogin}>Close</button>
+        <button type="button" className="login-close" onClick={closeLogin}>{ended ? 'Close' : 'Cancel sign-in'}</button>
       </div>
     </section>
+  );
+}
+
+/** The link the engine printed, shown whole so it can be read and selected, with a way to open or copy it. */
+function SignInLink({ link }: { readonly link: string }) {
+  const field = useRef<HTMLInputElement>(null);
+  const [copy, setCopy] = useState<'idle' | 'copied' | 'select'>('idle');
+  const copyLink = () => {
+    const clipboard = navigator.clipboard;
+    const refused = () => {
+      field.current?.select();
+      setCopy('select');
+    };
+    if (clipboard === undefined) refused();
+    else clipboard.writeText(link).then(() => setCopy('copied'), refused);
+  };
+  return (
+    <div className="login-link">
+      <input ref={field} className="login-link-text" type="text" readOnly value={link} spellCheck={false}
+        aria-label="Sign-in link" />
+      <a className="login-link-open" href={link} target="_blank" rel="noopener noreferrer">Open link</a>
+      <button type="button" className="login-link-copy" onClick={copyLink}>Copy link</button>
+      <span className="login-link-note" role="status">
+        {copy === 'copied' ? 'Copied.' : copy === 'select' ? 'The browser blocked copying. The link is selected: press Ctrl+C or Cmd+C.' : ''}
+      </span>
+    </div>
   );
 }
 
@@ -149,7 +178,7 @@ function fit(term: Terminal, host: HTMLElement): void {
  * The grid itself: output as the daemon sent it, and the person's own input.
  * Its code loads only when a sign-in opens.
  */
-function LoginScreen({ phase }: { readonly phase: OpenChannel['phase'] }) {
+function LoginScreen({ phase, onLink }: { readonly phase: OpenChannel['phase']; readonly onLink: (link: string | null) => void }) {
   const host = useRef<HTMLDivElement>(null);
   const screen = useRef<Terminal | null>(null);
 
@@ -172,12 +201,44 @@ function LoginScreen({ phase }: { readonly phase: OpenChannel['phase'] }) {
       // program's own terminal queries, as any terminal's input does. The page
       // adds nothing.
       const input = term.onData((data) => writeLogin(data));
-      const unbind = bindLoginScreen({ size: () => ({ cols: term.cols, rows: term.rows }), write: (bytes) => term.write(bytes) });
+      // The link the engine wrote, as a terminal hyperlink when it sent one and otherwise as the rows it drew.
+      let hyperlink: string | null = null;
+      let scan = 0;
+      const rescan = () => {
+        scan = 0;
+        const buffer = term.buffer.active;
+        const rows = [];
+        for (let y = 0; y < buffer.length; y += 1) {
+          const row = buffer.getLine(y);
+          if (row !== undefined) rows.push({ text: row.translateToString(true), wrapped: row.isWrapped });
+        }
+        onLink(printedLink(rows, term.cols) ?? hyperlink);
+      };
+      const hyperlinks = term.parser.registerOscHandler(8, (data) => {
+        hyperlink = hyperlinkTarget(data) ?? hyperlink;
+        return false;
+      });
+      const unbind = bindLoginScreen({
+        size: () => ({ cols: term.cols, rows: term.rows }),
+        write: (bytes) => {
+          term.write(bytes, () => {
+            if (scan === 0) scan = window.setTimeout(rescan, 150);
+          });
+        },
+      });
       const observer = new ResizeObserver(() => fit(term, element));
       observer.observe(element);
       screen.current = term;
       term.options.disableStdin = getLoginState().phase !== 'running';
+      const retheme = () => { term.options.theme = themeOf(element); };
+      // The shell names the scheme it draws in, which follows the browser's own when the theme is left on system.
+      const shell = element.closest('.shell');
+      const themes = new MutationObserver(retheme);
+      if (shell !== null) themes.observe(shell, { attributes: true, attributeFilter: ['data-scheme'] });
       release = () => {
+        window.clearTimeout(scan);
+        hyperlinks.dispose();
+        themes.disconnect();
         observer.disconnect();
         unbind();
         input.dispose();

@@ -348,7 +348,7 @@ test('RECEIPT_BUTTONS_UNSTYLED mutant: the Pause all receipt\'s buttons share th
   }
 });
 
-test('RECEIPT_OVER_STAGE and BOX_FLOATS mutants: the receipt sits with the other receipts beside the office, and neither box floats over anything', async () => {
+test('RECEIPT_OVER_STAGE and BOX_FLOATS mutants: the receipt sits with the other receipts beside the office, and the confirmation is a popover from its button', async () => {
   // The stage reads the floor and the Pause all state the page's own modules hold, so the pause goes through those.
   const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   const pauseAll = await server.ssrLoadModule('/src/renderer/control/pauseAll.ts');
@@ -366,9 +366,10 @@ test('RECEIPT_OVER_STAGE and BOX_FLOATS mutants: the receipt sits with the other
   assert.match(beside,
     /<div class="receipts"><section class="pause-all-receipt" aria-live="polite" aria-label="Pause all result"><p[^>]*>Paused 2 agents\.<\/p>/,
     'the result is the first of the receipts beside the office, above the drawer');
-  // A box placed out of the flow would cover the drawer, its close button or a row of the top bar; in the flow it moves them instead.
-  const placed = placements(await styleRules(), /\.pause-all-(confirm|receipt)\b/);
-  assert.deepEqual(placed, []);
+  // The result stays in the flow beside the office. The confirmation is a popover from its button, so it moves nothing in the bar.
+  const rules = await styleRules();
+  assert.deepEqual(placements(rules, /\.pause-all-receipt\b/), []);
+  assert.ok(placements(rules, /\.pause-all-confirm\b/).includes('position: absolute'));
 });
 
 test('RECEIPT_RENDERED_LAST mutant: the Pause all receipt renders first in the stack, ahead of a Pause request receipt open at the same time', async () => {

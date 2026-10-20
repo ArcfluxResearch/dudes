@@ -18,6 +18,7 @@ import * as hire from '../src/renderer/onboarding/hire.ts';
 import {
   MAX_WRITE_BYTES, bindLoginScreen, closeLogin, getLoginState, loginUrl, resetLogin, resizeLogin, startLogin, writeLogin,
 } from '../src/renderer/login/login.ts';
+import { hyperlinkTarget, offerableLink, printedLink } from '../src/renderer/login/signInLink.ts';
 import { decodeDaemonReport } from '../src/renderer/setup/daemon.ts';
 
 const root = resolve(import.meta.dirname, '..');
@@ -309,7 +310,7 @@ test('the person is told what to do while the login runs, and in plain words how
   assert.match(view('claude', live('running')), /Paste the code it shows into this window, then press Enter\./);
   assert.match(view('codex', live('running', 'codex')), /This window finishes by itself\./);
   assert.match(view('pi', live('running', 'pi'), 'unknown'), /Type \/login/);
-  assert.match(view('claude', live('running')), /<button type="button" class="login-close">Close<\/button>/);
+  assert.match(view('claude', live('running')), /<button type="button" class="login-close">Cancel sign-in<\/button>/);
   assert.doesNotMatch(view('claude', live('running')), /Try again/);
 
   const done = (ending) => view('claude', { phase: 'ended', id: 1, engine: 'claude', ending });
@@ -437,4 +438,52 @@ test('the engine sign-in asks for the daemon’s proof before it opens a socket,
   resetLogin();
   startLogin('codex', { ...portsFor(fakeSocket()), socket: () => { throw new TypeError('not proven'); } });
   assert.deepEqual([getLoginState().phase, getLoginState().ending], ['ended', 'unopened'], 'a socket that cannot open threw out of the click');
+});
+
+test('the sign-in link offered is exactly the one the engine printed, joined only across rows the grid wrapped', () => {
+  const LINK = 'https://claude.example.invalid/oauth/authorize?code=true&client_id=a&state=abcdefghijklmnopqrstuvwxyz0123456789';
+  const rows = (text, cols, wrapAfter = true) => {
+    const out = [];
+    for (let at = 0; at < text.length; at += cols) out.push({ text: text.slice(at, at + cols), wrapped: wrapAfter && at > 0 });
+    return out;
+  };
+  const screen = [{ text: 'Opening browser to sign in...', wrapped: false }, ...rows(LINK, 40), { text: '', wrapped: false },
+    { text: 'Paste code here if prompted >', wrapped: false }];
+  assert.equal(printedLink(screen, 40), LINK, 'a soft-wrapped link is joined, character for character');
+  assert.equal(printedLink([{ text: `Visit ${LINK}`, wrapped: false }], 200), LINK);
+  // A newline the engine wrote itself cannot be told from two lines of text, so nothing is offered.
+  assert.equal(printedLink([{ text: LINK.slice(0, 40), wrapped: false }, { text: LINK.slice(40), wrapped: false }], 40), null);
+  assert.equal(printedLink([{ text: 'no link here', wrapped: false }], 40), null);
+  const newer = 'https://claude.example.invalid/oauth/authorize?state=newer';
+  assert.equal(printedLink([{ text: LINK, wrapped: false }, { text: newer, wrapped: false }], 200), newer, 'a retry prints a newer link');
+  assert.equal(printedLink([{ text: 'see http://example.invalid/x', wrapped: false }], 200), null, 'only https is offered');
+  for (const refused of ['javascript:alert(1)', 'https://', 'https://user@evil.invalid/', 'https://a b.invalid/', 'ftp://x.invalid/']) {
+    assert.equal(offerableLink(refused), false, refused);
+  }
+  assert.equal(hyperlinkTarget(`id=1;${LINK}`), LINK, 'a terminal hyperlink names its target');
+  assert.equal(hyperlinkTarget(';'), null, 'the sequence that ends a hyperlink names nothing');
+  assert.equal(hyperlinkTarget('id=1;javascript:alert(1)'), null);
+  assert.equal(offerableLink('https://claude.example.invalid/a\ufeffb'), false, 'a byte order mark is refused');
+  for (const hidden of ['\u202e', '\u200b', '\u0085']) {
+    assert.equal(offerableLink(`https://claude.example.invalid/a${hidden}b`), false, `a hidden ${escape(hidden)} is refused`);
+    assert.equal(printedLink([{ text: `https://claude.example.invalid/a${hidden}b`, wrapped: false }], 200),
+      null, 'a printed link with a hidden character is not offered, not even in part');
+  }
+});
+
+test('a screen drawn before the daemon is proved still gets the sign-in started', async () => {
+  // The terminal's code is cached after the first sign-in, so on the next one the screen is ready before the proof returns.
+  const socket = fakeSocket();
+  let proved;
+  startLogin('claude', { ...portsFor(socket), prove: () => new Promise((settle) => { proved = settle; }) });
+  const screen = fakeScreen(90, 20);
+  const release = bindLoginScreen(screen);
+  proved(true);
+  await new Promise((settle) => setImmediate(settle));
+  socket.emit('open');
+  assert.deepEqual(frames(socket), [{ type: 'login.start', engine: 'claude', cols: 90, rows: 20 }]);
+  release();
+  socket.emit('message', frame({ type: 'login.started' }));
+  socket.emit('message', frame({ type: 'login.data', bytes: 'aGk=' }));
+  assert.deepEqual(screen.written, [], 'a released screen is not drawn into');
 });

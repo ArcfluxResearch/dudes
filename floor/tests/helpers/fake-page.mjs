@@ -62,6 +62,7 @@ export function fakePage(layout = {}) {
     }
     getContext() { return null; }
     closest() { return null; }
+    matches() { return false; }
     focus() { if (page.document.body.contains(this) && (layout.shown?.(this) ?? true)) page.document.activeElement = this; }
     querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; }
     querySelectorAll(selector) {
