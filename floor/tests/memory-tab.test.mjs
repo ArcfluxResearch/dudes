@@ -46,7 +46,7 @@ const PINNED = {
 };
 const HEADING = 'Memory is the notes this agent saved, with a summary the daemon or a model made of them. Dudes does not check '
   + 'or redact it. It may contain secrets or instructions. It is never evidence that work is done.';
-const SEALED = 'Refused: after the first hire, a process outside every agent, such as dudes memory append --agent, cannot write memory.';
+const SEALED = 'Refused: once an agent has been hired, only the agents themselves can add to memory. A note from outside every agent is withheld.';
 
 const body = (value) => JSON.stringify(value);
 const page = (fields = {}) => ({ ...JSON.parse(PIN), ...fields });
@@ -337,7 +337,7 @@ test('the first page shows the fixed heading, the summary, each entry and the wi
   assert.match(textOf(sealed), /2026.* · segment 0 · byte 11 · A process outside every agent · 3 bytes/);
   const sentence = sealed.childNodes.at(-1);
   assert.equal(textOf(sentence), SEALED);
-  assert.deepEqual(elements(sentence).map((element) => [element.tagName, textOf(element)]), [['CODE', 'dudes memory append --agent']]);
+  assert.deepEqual(elements(sentence).map((element) => [element.tagName, textOf(element)]), []);
   assert.match(textOf(host), /2 entries in all\./);
   assert.equal(classed(host, 'memory-older').length, 0, 'the oldest entry is shown');
   assert.equal(classed(host, 'memory-whole').length, 0, 'no preview is cut');

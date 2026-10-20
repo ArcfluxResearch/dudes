@@ -421,7 +421,7 @@ export const WITHHELD_REASON_TEXT: Readonly<Record<WithheldReason, string>> = Ob
   other: 'Refused for a reason this page does not name.',
 });
 
-/** The commonest withheld append: the operator's own `dudes memory append --agent` after the first hire. */
+/** The commonest withheld append: an operator's note from outside every agent after the first hire. */
 export function isSealedOperatorAppend(marker: WithheldMarker): boolean {
   return marker.writer.kind === 'outside_agents' && marker.reason === 'authority_unavailable';
 }
