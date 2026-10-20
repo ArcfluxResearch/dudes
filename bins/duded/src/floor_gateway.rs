@@ -44,6 +44,7 @@ use crate::floor_session::{
     ActionKind, FloorSessionAuthorizer, FloorSessions, ReceiptSession, ReserveResult,
     SESSION_COOKIE_NAME, SessionIdentity, StreamSession, TerminalSession,
 };
+use crate::floor_settings_edit::{MAX_SETTINGS_BODY_BYTES, SettingsRefusal, SettingsRequest};
 use crate::floor_stream::{ClientMessage, FloorStreams, QueueRead, decode_client};
 use crate::floor_switches::{SharedSwitches, Switches};
 use crate::floor_ticket::{
@@ -100,6 +101,7 @@ const LOOK_PATH: &str = "/floor/look";
 /// Routed only when the operator enabled retiring; otherwise a POST here is any
 /// unrouted POST.
 const RETIRE_PATH: &str = "/floor/retire";
+const SETTINGS_PATH: &str = "/floor/settings";
 const TERMINAL_PATH: &str = "/floor/terminal";
 /// Routed only when the operator enabled the Git tab; otherwise a POST here is any
 /// unrouted POST.
@@ -1113,6 +1115,7 @@ enum ActionRoute {
     Rename,
     Look,
     Retire,
+    Settings,
     Git,
     Diff,
     Memory(MemoryRoute),
@@ -1146,6 +1149,7 @@ impl ActionRoute {
             RENAME_PATH if live.control.pause_resume() => Some(Self::Rename),
             LOOK_PATH if live.control.pause_resume() => Some(Self::Look),
             RETIRE_PATH if live.control.retire() => Some(Self::Retire),
+            SETTINGS_PATH => Some(Self::Settings),
             GIT_PATH if catalog.git().is_some() => Some(Self::Git),
             DIFF_PATH if catalog.diff().is_some() => Some(Self::Diff),
             MEMORY_PAGE_PATH => Some(Self::Memory(MemoryRoute::Page)),
@@ -1165,6 +1169,7 @@ impl ActionRoute {
             Self::Rename => MAX_RENAME_BODY_BYTES,
             Self::Look => MAX_LOOK_BODY_BYTES,
             Self::Retire => MAX_RETIRE_BODY_BYTES,
+            Self::Settings => MAX_SETTINGS_BODY_BYTES,
             Self::Git => MAX_GIT_BODY_BYTES,
             Self::Diff => MAX_DIFF_BODY_BYTES,
             Self::Memory(_) => MAX_MEMORY_BODY_BYTES,
@@ -1412,6 +1417,9 @@ fn dispatch<'a>(
                 }
                 (ActionRoute::Retire, Admitted::Session(session)) => {
                     retire_response(session, handle, body)
+                }
+                (ActionRoute::Settings, Admitted::Session(session)) => {
+                    settings_response(session, handle, body)
                 }
                 (ActionRoute::Git, Admitted::Session(session)) => {
                     return git_response(&session, handle, catalog, phase, body)
@@ -2093,6 +2101,44 @@ fn retire_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -
             error_response(503, "Service Unavailable")
         }
         Err(RetireRefusal::UnavailableNoEffect) => error_response(503, "Service Unavailable"),
+    }
+}
+
+/// The Settings page's edit. Setting a key to a value twice is the same as once, so the route
+/// keeps no request identity.
+fn settings_response<'a>(
+    session: SessionIdentity,
+    handle: &Handle,
+    body: &[u8],
+) -> Response<'a> {
+    let refused = |refusal: &SettingsRefusal| {
+        let detail = match refusal {
+            SettingsRefusal::StartRule(text) => Some(text.as_str()),
+            _ => None,
+        };
+        action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({ "state": "refused", "reason": refusal.reason(), "detail": detail }),
+        )
+    };
+    let request = match SettingsRequest::parse(body) {
+        Ok(request) => request,
+        Err(None) => return error_response(400, "Bad Request"),
+        Err(Some(refusal)) => return refused(&refusal),
+    };
+    match handle.settings_edit(session, request) {
+        Ok(saved) => action_json(
+            200,
+            "OK",
+            &serde_json::json!({
+                "state": "saved", "wrote": saved.wrote,
+                "applied": saved.applied, "restart": saved.restart
+            }),
+        ),
+        Err(SettingsRefusal::Forbidden) => error_response(403, "Forbidden"),
+        Err(SettingsRefusal::Unavailable) => error_response(503, "Service Unavailable"),
+        Err(refusal) => refused(&refusal),
     }
 }
 

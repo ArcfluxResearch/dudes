@@ -282,6 +282,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "duded",
+ "dudes-config",
  "dudes-host",
  "dudes-journal",
  "dudes-policy",

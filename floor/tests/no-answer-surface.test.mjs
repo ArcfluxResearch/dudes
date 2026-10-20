@@ -262,6 +262,7 @@ const TERMINAL_MODULE = 'src/renderer/terminal/terminal.ts';
 const TERMINAL_CONTROLS = 'src/renderer/terminal/controls.ts';
 const RETIRE_PANEL = 'src/renderer/retire/RetirePanel.tsx';
 const RETIRE_MODULE = 'src/renderer/retire/retire.ts';
+const SETTINGS_EDIT_MODULE = 'src/renderer/settings/edit.ts';
 const TICKET_MODULE = 'src/renderer/ticket/ticket.ts';
 const TICKET_BOARD = 'src/renderer/ticket/TicketBoard.tsx';
 const TICKET_PANEL = 'src/renderer/ticket/TicketPanel.tsx';
@@ -1093,7 +1094,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(4).fill(RENAME_PANEL),
     ...Array(4).fill(LOOK_PANEL),
     ...Array(3).fill(SETUP_VIEW),
-    ...Array(5).fill(SETTINGS_VIEW),
+    ...Array(6).fill(SETTINGS_VIEW),
     ...Array(7).fill(FIRST_RUN_GUIDE),
     ...Array(5).fill('src/renderer/setup/FirstTask.tsx'),
     ...Array(10).fill(TERMINAL_PANEL),
@@ -1206,6 +1207,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(center, /onSetup=\{\(\) => onView\('setup'\)\}/);
   assert.match(shell, /function openView\(next: ControlView\): void \{\s*setFocused\(false\);\s*setView\(next\);\s*if \(CONTROL_VIEWS\.some\(\(entry\) => entry\.view === next && entry\.refresh\)\) refreshFloorSnapshot\(\);\s*\}/);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETTINGS_VIEW), 'utf8')), ['onSetup', 'onSetup',
+    '() => { void changeSetting(key, next); }',
     '() => { void desktopNotificationPreference.setEnabled(!on); }', '() => setOfficePin(id)', 'onCopyAdd']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETUP_VIEW), 'utf8')).sort(), [
     '() => copyToClipboard(install)',
@@ -1510,6 +1512,11 @@ const REQUESTS = {
     methods: ['POST'],
     fetches: ['deps.fetch', "fetch('/floor/retire')"],
   },
+  [SETTINGS_EDIT_MODULE]: {
+    paths: ['/floor/settings', 'application/json'],
+    methods: ['POST'],
+    fetches: ['floorFetch', 'floorFetch', 'floorFetch', "fetch('/floor/settings')"],
+  },
   [TICKET_MODULE]: {
     paths: ['/floor/ticket', '/floor/ticket/edit', '/floor/ticket/assign', '/floor/ticket/accept', '/floor/ticket/stop',
       '/floor/ticket/remove', '/floor/ticket/read', 'application/json'],
@@ -1701,7 +1708,7 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
     {
       WebSocket: ['src/renderer/floor/stream.ts'],
       fetch: [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE,
-        TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
+        SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
     },
     'the page reaches the network somewhere new',
   );
@@ -1802,7 +1809,7 @@ test('fetch and new WebSocket match in fifteen known files, and requestsIn yield
 
   const fetching = reaching.get('fetch') ?? [];
   assert.deepEqual(fetching.sort(),
-    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
+    [ANSWER_MODULE, CHAT_MODULE, CONTROL_MODULE, DIFF_MODULE, 'src/renderer/floor/away.ts', GIT_MODULE, GOAL_MODULE, LOOK_MODULE, MEMORY_MODULE, 'src/renderer/onboarding/hire.ts', RECOVERY_MODULE, RENAME_MODULE, RETIRE_MODULE, SETTINGS_EDIT_MODULE, TICKET_MODULE, 'src/session.ts', 'src/transport.ts'],
     'something other than the admitted action, read, session and transport modules fetches');
   assert.deepEqual(calling.sort(), fetching,
     'a module other than those six calls fetch with a space before the parenthesis');

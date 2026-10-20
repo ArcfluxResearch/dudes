@@ -63,12 +63,12 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.doesNotMatch(html, /floor\.chat/);
     const gitRow = (git) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, git } }), onSetup() {} }));
-    assert.match(gitRow(false), /<dt>Read checkouts in the Git tab <code>floor\.git<\/code><\/dt><dd>Off<code>dudes config set floor\.git on<\/code><\/dd>/);
-    assert.match(gitRow(true), /<dt>Read checkouts in the Git tab <code>floor\.git<\/code><\/dt><dd>On<code>dudes config set floor\.git off<\/code><\/dd>/);
+    assert.match(gitRow(false), /<dt>Read checkouts in the Git tab <code>floor\.git<\/code><\/dt><dd>Off<code>dudes config set floor\.git on<\/code><button type="button">Turn on<\/button><\/dd>/);
+    assert.match(gitRow(true), /<dt>Read checkouts in the Git tab <code>floor\.git<\/code><\/dt><dd>On<code>dudes config set floor\.git off<\/code><button type="button">Turn off<\/button><\/dd>/);
     assert.match(html, /<dt>Start new goals <code>floor\.renew<\/code><\/dt><dd>Renew is off\. Turn it on with <code>dudes config set floor\.renew on<\/code>, then restart the daemon\. It needs goal change and Hire\.<\/dd>/);
     const renewOn = renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, renew: true } }), onSetup() {} }));
-    assert.match(renewOn, /<dt>Start new goals <code>floor\.renew<\/code><\/dt><dd>On<code>dudes config set floor\.renew off<\/code><\/dd>/);
+    assert.match(renewOn, /<dt>Start new goals <code>floor\.renew<\/code><\/dt><dd>On<code>dudes config set floor\.renew off<\/code><button type="button">Turn off<\/button><\/dd>/);
     assert.doesNotMatch(renewOn, /Renew is off/);
     const renewing = renderToStaticMarkup(createElement(SettingsView, { floor: floor({ ...REPORT,
       switches: { ...REPORT.switches, control: true, goal: true, hire: true, renew: true } }), onSetup() {} }));

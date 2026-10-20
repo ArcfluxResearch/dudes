@@ -598,6 +598,7 @@ where
             browser_launches,
             resolved_browser_turn: None,
             switches,
+            operator_config: settings.operator_config.clone(),
             control_index,
             recovery_authority: None,
             #[cfg(test)]

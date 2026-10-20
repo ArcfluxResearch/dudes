@@ -83,6 +83,7 @@ pub mod floor_rename;
 pub mod floor_retire;
 pub mod floor_session;
 mod floor_settings;
+pub mod floor_settings_edit;
 #[doc(hidden)]
 pub mod floor_stream;
 pub mod floor_switches;

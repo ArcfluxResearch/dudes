@@ -28,7 +28,7 @@ use super::{
     FloorSessions, GIT_PATH, GOAL_PATH, Handle, INSPECT_RECOVERY_PATH, LOOK_PATH,
     MEMORY_ENTRY_PATH, MEMORY_PAGE_PATH, ONBOARD_PATH, PAUSE_PATH, RECEIPT_RECOVERY_PATH,
     RENAME_PATH, RENEW_PATH, RESUME_PATH, RETIRE_PATH, ReceiptSession, RecoveryRoute, Response,
-    SIGN_IN_PATH, STREAM_PATH, SUBMIT_RECOVERY_PATH, SessionIdentity, SocketAddr, SocketRoute,
+    SETTINGS_PATH, SIGN_IN_PATH, STREAM_PATH, SUBMIT_RECOVERY_PATH, SessionIdentity, SocketAddr, SocketRoute,
     SocketSession, TERMINAL_PATH, TicketRoute, error_response,
 };
 use crate::floor_peer::Verdict;
@@ -51,6 +51,7 @@ pub(super) const DYNAMIC_PATHS: &[&str] = &[
     RENAME_PATH,
     LOOK_PATH,
     RETIRE_PATH,
+    SETTINGS_PATH,
     GIT_PATH,
     DIFF_PATH,
     MEMORY_PAGE_PATH,

@@ -861,6 +861,20 @@ pub enum Job {
         /// What the projection holds. Dropped unanswered at shutdown.
         reply: Sender<crate::floor_memory::MemoryAnswer>,
     },
+    /// One authenticated Floor edit of the operator file's closed list of settings.
+    SettingsEdit {
+        /// Registry-derived admitting session.
+        session: crate::floor_session::SessionIdentity,
+        /// The key and value, already checked against the closed list.
+        request: crate::floor_settings_edit::SettingsRequest,
+        /// What the daemon now runs, or the refusal.
+        reply: Sender<
+            Result<
+                crate::floor_settings_edit::SettingsSaved,
+                crate::floor_settings_edit::SettingsRefusal,
+            >,
+        >,
+    },
     /// One authenticated Floor retirement of the agent it names.
     Retire {
         /// Registry-derived admitting session.
@@ -1393,6 +1407,24 @@ impl Handle {
         let (reply, answers) = mpsc::channel();
         self.send_floor(Job::FloorMemory { request, reply }).ok()?;
         answers.recv().ok()
+    }
+    pub(crate) fn settings_edit(
+        &self,
+        session: crate::floor_session::SessionIdentity,
+        request: crate::floor_settings_edit::SettingsRequest,
+    ) -> Result<
+        crate::floor_settings_edit::SettingsSaved,
+        crate::floor_settings_edit::SettingsRefusal,
+    > {
+        use crate::floor_settings_edit::SettingsRefusal;
+        let (reply, answers) = mpsc::channel();
+        self.send_floor(Job::SettingsEdit {
+            session,
+            request,
+            reply,
+        })
+        .map_err(|_| SettingsRefusal::Unavailable)?;
+        answers.recv().map_err(|_| SettingsRefusal::Unavailable)?
     }
     pub(crate) fn retire(
         &self,

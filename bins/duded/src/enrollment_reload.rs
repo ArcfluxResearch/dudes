@@ -108,7 +108,7 @@ pub(crate) fn invalid(error: &ConfigError) -> RpcError {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes
         .iter()
@@ -144,6 +144,12 @@ impl ReloadState {
             add_pending: false,
             window_id: 0,
         }
+    }
+
+    /// A sequence number that no applied reload has passed, for a reload the loop thread reads
+    /// itself.
+    pub(crate) const fn local_seq(&self) -> u64 {
+        self.applied_seq
     }
 
     /// Whether an add-only change may resync now; otherwise how long until the window ends.

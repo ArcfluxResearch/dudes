@@ -57,6 +57,7 @@ name = "stub-agent"
 required-features = ["stub-provider"]
 
 [dependencies]
+dudes-config.workspace = true
 dudes-journal.workspace = true
 dudes-policy.workspace = true
 dudes-proto.workspace = true

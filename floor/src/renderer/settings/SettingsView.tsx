@@ -2,6 +2,8 @@
 
 import { useSyncExternalStore } from 'react';
 
+import { changeSetting, editLine, getSettingsEditState, subscribeToSettingsEdit } from './edit.ts';
+
 import type { FloorState } from '../floor/store.ts';
 import type { SettingsReport } from './report.ts';
 import { OFFICES } from '../office3d/offices.ts';
@@ -90,7 +92,8 @@ export function SettingsView({ floor, onSetup }: {
               It needs goal change and Hire.</dd></div>;
         }
         return <div key={key}><dt>{label} <code>floor.{key}</code></dt>
-          <dd>{report.switches[key] ? 'On' : 'Off'}<code>dudes config set floor.{key} {next}{companions}</code></dd></div>;
+          <dd>{report.switches[key] ? 'On' : 'Off'}<code>dudes config set floor.{key} {next}{companions}</code>
+            <SwitchButton switchKey={key} next={next} /></dd></div>;
       })}</dl>
       <p>Recovery needs both <code>floor.recovery</code> and <code>floor.control</code>. It keeps existing budgets and admission gates.
         Receipt lookup remains read-only when recovery is off.</p>
@@ -136,6 +139,17 @@ export function SettingsView({ floor, onSetup }: {
       <p>This page never checks for updates. To look for a newer version, run <code>dudes upgrade --check</code>.</p>
     </section>
   </div>;
+}
+
+/** Turns one switch on or off through the daemon, which keeps the file's start rules. */
+function SwitchButton({ switchKey, next }: { readonly switchKey: string; readonly next: 'on' | 'off' }) {
+  const edit = useSyncExternalStore(subscribeToSettingsEdit, getSettingsEditState, getSettingsEditState);
+  const key = `floor.${switchKey}`;
+  return <>
+    <button type="button" aria-disabled={edit.sending !== null || undefined}
+      onClick={() => { void changeSetting(key, next); }}>Turn {next}</button>
+    {edit.last?.key === key ? <span role="status"> {editLine(edit.last.result)}</span> : null}
+  </>;
 }
 
 export function DesktopNotificationChoice() {

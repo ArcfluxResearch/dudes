@@ -17737,3 +17737,59 @@ fn a_reload_runs_a_floor_switch_without_a_restart() {
     assert!(frame.get("answer").is_none(), "{frame}");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
+
+/// The Settings page edits the operator file through the daemon: a listed key is written and runs
+/// at once, a key outside the list is refused and the file is untouched, and an edit that breaks
+/// a start rule is refused whole.
+#[test]
+fn the_settings_route_writes_only_the_closed_list_of_keys() {
+    let fixture = Fixture::new();
+    let hire = "[floor.hire]\nenabled = true\n";
+    let mut settings = reload_settings(&fixture, hire);
+    settings.floor_answer_enabled = false;
+    settings.floor_hire_enabled = true;
+    let daemon = boot(
+        &settings,
+        seams(
+            &settings,
+            SharedHost::new(),
+            Arc::new(ScriptedRunner::default()),
+            Arc::new(TestClock::new()),
+            Witness::default(),
+        ),
+    )
+    .expect("boot Floor");
+    let addr = daemon.floor_addr().expect("Floor address");
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let file = settings.operator_config.clone().expect("a file");
+    let post = |key: &str, value: &str| {
+        let body = serde_json::to_vec(&json!({"key": key, "value": value})).expect("JSON");
+        post_bytes(addr, "/floor/settings", &cookie, &csrf, &body, None)
+    };
+
+    let (head, body) = post("floor.answer", "on");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
+    assert_eq!(body["applied"], json!(["floor.answer"]), "{body}");
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("[floor.answer]")
+    );
+    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    assert_eq!(frame["answer"], json!({ "max_text_bytes": 4096 }));
+
+    let before = std::fs::read(&file).unwrap();
+    for (key, value, reason) in [
+        ("providers.codex.streaming", "on", "key_not_editable"),
+        ("mcp.servers", "on", "key_not_editable"),
+        ("floor.answer", "maybe", "bad_value"),
+        ("floor.goal", "on", "start_rule"),
+    ] {
+        let (head, body) = post(key, value);
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{key}: {head}");
+        assert_eq!(body["reason"], reason, "{key}: {body}");
+        assert_eq!(std::fs::read(&file).unwrap(), before, "{key} wrote");
+    }
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
