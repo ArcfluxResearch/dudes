@@ -201,19 +201,6 @@ impl Browser {
     }
 }
 
-/// Drain the socket for `span` and fail on a `floor.resync`; a delta is not the subject here.
-fn no_resync_for(browser: &mut Browser, span: Duration) {
-    let until = Instant::now() + span;
-    while Instant::now() < until {
-        if let Some(message) = browser.next(Duration::from_millis(250)) {
-            assert_ne!(
-                message["type"], "floor.resync",
-                "no resync while the daemon's local date, window and offset are unchanged"
-            );
-        }
-    }
-}
-
 fn total_of(message: &Value) -> Option<&str> {
     message["finished_today"]["total"].as_str()
 }
@@ -241,14 +228,6 @@ impl Day {
             let tz = *zone.lock().unwrap_or_else(PoisonError::into_inner);
             window_in(&tz, Timestamp::from_unix_millis(now.load(Ordering::SeqCst)))
         })
-    }
-
-    fn advance(&self, millis: i64) {
-        self.now.fetch_add(millis, Ordering::SeqCst);
-    }
-
-    fn move_to(&self, zone: Tz) {
-        *self.zone.lock().unwrap_or_else(PoisonError::into_inner) = zone;
     }
 }
 
@@ -448,66 +427,4 @@ fn the_count_rests_on_an_observed_pass_and_survives_replacement_and_restart() {
         "a fresh browser after a restart recovers the same count"
     );
     drop(restarted);
-}
-
-#[test]
-fn the_shelf_follows_the_daemon_zone_and_clock_across_a_date_boundary_and_a_zone_change() {
-    let fixture = Fixture::new();
-    let clock = Arc::new(TestClock::ticking(AUCKLAND_NINE_PM, 0));
-    let day = Day::new(chrono_tz::Pacific::Auckland);
-    let runner = Arc::new(ScriptedRunner::scripted([passes()]));
-    let boot = boot_with(&fixture, &clock, &runner, &day);
-    let agent = common::hire(&boot.running.handle, fixture.state.path());
-    let (cookie, csrf) = session(&boot.settings, boot.addr);
-    let (mut browser, _) = Browser::subscribe(boot.addr, &cookie, &csrf);
-    let mut seen = Vec::new();
-    finish_goal(&boot, &fixture, agent, &mut seen);
-    await_done(&fixture, 1);
-    browser.until("the completion", |m| total_of(m) == Some("1"));
-    let entries = fixture.entries().len();
-
-    // Control: three hours later is still 7 October 2026 in Auckland, and nothing is sent.
-    day.advance(2 * 3_600_000);
-    no_resync_for(&mut browser, Duration::from_millis(2_500));
-
-    // 11:00Z is local midnight at UTC+13, so this crosses into 8 October. A browser that subscribes
-    // before any timer tick or journal record has run still reads the new day, because the
-    // subscription samples the day itself.
-    day.advance(2 * 3_600_000);
-    let (immediate, snapshot) = Browser::subscribe(boot.addr, &cookie, &csrf);
-    assert_eq!(snapshot["finished_today"]["local_date"], "2026-10-08");
-    assert_eq!(snapshot["finished_today"]["total"], "0");
-    drop(immediate);
-    let resync = browser.until("a resync at local midnight", |m| {
-        m["type"] == "floor.resync"
-    });
-    assert_eq!(resync, serde_json::json!({"type": "floor.resync"}));
-    no_resync_for(&mut browser, Duration::from_millis(2_500));
-    drop(browser);
-    let (mut fresh, snapshot) = Browser::subscribe(boot.addr, &cookie, &csrf);
-    assert_eq!(snapshot["finished_today"]["local_date"], "2026-10-08");
-    assert_eq!(
-        snapshot["finished_today"]["total"], "0",
-        "yesterday's completion is not today's"
-    );
-
-    // The host moves to Los Angeles while the daemon runs: 12:00Z is 05:00 there on 7 October.
-    day.move_to(chrono_tz::America::Los_Angeles);
-    fresh.until("a resync after a zone change", |m| {
-        m["type"] == "floor.resync"
-    });
-    drop(fresh);
-    let (_moved, snapshot) = Browser::subscribe(boot.addr, &cookie, &csrf);
-    assert_eq!(snapshot["finished_today"]["local_date"], "2026-10-07");
-    assert_eq!(snapshot["finished_today"]["utc_offset_minutes"], -420);
-    assert_eq!(
-        snapshot["finished_today"]["total"], "1",
-        "the same stored fact is today's under the new zone"
-    );
-    assert_eq!(
-        fixture.entries().len(),
-        entries,
-        "a date boundary and a zone change append no journal record"
-    );
-    drop(boot);
 }

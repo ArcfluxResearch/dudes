@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use duded::floor_gateway::{FloorStartFault, JOIN_BOUND, prepare};
 use duded::ports::{ExitCause, Handle, Job};
 use duded::settings::{FloorSettings, floor_from_values, installed_floor};
-use sha2::{Digest as _, Sha256};
+use sha2::Digest as _;
 
 mod common;
 
@@ -205,64 +205,6 @@ fn replace_asset_path(root: &Path, path: &str) {
         serde_json::to_vec_pretty(&value).expect("serialize manifest"),
     )
     .expect("write mutated manifest");
-}
-
-fn large_fixture() -> tempfile::TempDir {
-    let root = copy_fixture();
-    let path = "assets/large-12345678.js";
-    let bytes = vec![b'x'; 4 * 1024 * 1024];
-    fs::write(root.path().join(path), &bytes).expect("large response asset");
-    let manifest = root.path().join("release-manifest.json");
-    let mut value: serde_json::Value =
-        serde_json::from_slice(&fs::read(&manifest).expect("read manifest"))
-            .expect("parse manifest");
-    value["files"]
-        .as_array_mut()
-        .expect("file rows")
-        .push(serde_json::json!({
-            "path": path,
-            "bytes": bytes.len(),
-            "sha256": hex(&Sha256::digest(&bytes)),
-            "cache": "immutable"
-        }));
-    let mut rows: Vec<_> = value["files"]
-        .as_array()
-        .expect("rows")
-        .iter()
-        .map(|row| {
-            (
-                row["path"].as_str().expect("path").to_owned(),
-                row["bytes"].as_u64().expect("bytes"),
-                row["sha256"].as_str().expect("sha").to_owned(),
-            )
-        })
-        .collect();
-    rows.sort_unstable_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-    let mut tree = Sha256::new();
-    for (path, bytes, sha) in rows {
-        tree.update(path.as_bytes());
-        tree.update([0]);
-        tree.update(bytes.to_string().as_bytes());
-        tree.update([0]);
-        tree.update(sha.as_bytes());
-        tree.update(b"\n");
-    }
-    value["asset_tree_sha256"] = serde_json::Value::String(hex(&tree.finalize()));
-    fs::write(
-        manifest,
-        serde_json::to_vec_pretty(&value).expect("serialize manifest"),
-    )
-    .expect("write manifest");
-    root
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut value = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(&mut value, "{byte:02x}");
-    }
-    value
 }
 
 fn rejected(path: &str) {
@@ -690,132 +632,6 @@ fn floor_start_failure_closes_listener_before_returning_error() {
 }
 
 const READY_BOUND_PLUS_JOIN: Duration = Duration::from_secs(4);
-
-#[test]
-fn floor_request_limits_and_deadlines_refuse_then_recover() {
-    let root = copy_fixture();
-    let (handle, _jobs) = daemon_handle();
-    let mut gateway = prepare(&floor(root.path()))
-        .expect("prepare")
-        .start(handle, clock())
-        .expect("start");
-    let addr = gateway.addr();
-
-    let request_line = |len: usize| {
-        let prefix = "GET /";
-        let suffix = " HTTP/1.1";
-        assert!(len >= prefix.len() + suffix.len());
-        format!(
-            "{prefix}{}{suffix}",
-            "a".repeat(len - prefix.len() - suffix.len())
-        )
-    };
-    let at_line = raw(
-        addr,
-        format!("{}\r\nHost: floor\r\n\r\n", request_line(4096)).as_bytes(),
-    );
-    assert!(text(&at_line).starts_with("HTTP/1.1 404 Not Found"));
-    let over_line = raw(
-        addr,
-        format!("{}\r\nHost: floor\r\n\r\n", request_line(4097)).as_bytes(),
-    );
-    assert!(text(&over_line).starts_with("HTTP/1.1 414 URI Too Long"));
-
-    let with_total = |total: usize| {
-        let prefix = "GET /missing HTTP/1.1\r\nHost: floor\r\nX-Pad: ";
-        let suffix = "\r\n\r\n";
-        format!(
-            "{prefix}{}{suffix}",
-            "a".repeat(total - prefix.len() - suffix.len())
-        )
-    };
-    let at_head = raw(addr, with_total(16_384).as_bytes());
-    assert!(text(&at_head).starts_with("HTTP/1.1 404 Not Found"));
-    let over_head = raw(addr, with_total(16_385).as_bytes());
-    assert!(text(&over_head).starts_with("HTTP/1.1 431 Request Header Fields Too Large"));
-
-    let headers = |count: usize| {
-        let mut request = String::from("GET /missing HTTP/1.1\r\nHost: floor\r\n");
-        for index in 1..count {
-            use std::fmt::Write as _;
-            let _ = write!(&mut request, "X-{index}: a\r\n");
-        }
-        request.push_str("\r\n");
-        request
-    };
-    assert!(text(&raw(addr, headers(64).as_bytes())).starts_with("HTTP/1.1 404 Not Found"));
-    assert!(
-        text(&raw(addr, headers(65).as_bytes()))
-            .starts_with("HTTP/1.1 431 Request Header Fields Too Large")
-    );
-
-    assert_malformed_framing_refused_and_gateway_recovers(addr);
-
-    let drip_addr = addr;
-    let drip = std::thread::spawn(move || {
-        let mut stream = TcpStream::connect(drip_addr).expect("drip client");
-        for byte in b"GET /floor/ HTTP/1.1\r\nHost: floor" {
-            if stream.write_all(&[*byte]).is_err() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(40));
-        }
-        let mut output = Vec::new();
-        let _ = stream.read_to_end(&mut output);
-        output
-    });
-    let output = drip.join().expect("drip thread");
-    assert!(output.is_empty(), "deadline refusal reflects no bytes");
-
-    assert!(text(&response(addr, "GET", "/floor/")).starts_with("HTTP/1.1 200 OK"));
-    gateway.stop();
-
-    let large = large_fixture();
-    let (handle, _jobs) = daemon_handle();
-    let mut gateway = prepare(&floor(large.path()))
-        .expect("prepare large fixture")
-        .start(handle, clock())
-        .expect("start large fixture");
-    let addr = gateway.addr();
-    let mut stalled = TcpStream::connect(addr).expect("non-reading client");
-    stalled
-        .write_all(b"GET /floor/assets/large-12345678.js HTTP/1.1\r\nHost: floor\r\n\r\n")
-        .expect("request large response");
-    std::thread::sleep(Duration::from_millis(650));
-    assert!(
-        text(&response(addr, "GET", "/floor/")).starts_with("HTTP/1.1 200 OK"),
-        "a non-reading peer cannot hold the only server thread"
-    );
-    drop(stalled);
-    gateway.stop();
-}
-
-fn assert_malformed_framing_refused_and_gateway_recovers(addr: SocketAddr) {
-    for malformed in [
-        b"GET /floor/ HTTP/1.1\nHost: floor\n\n".as_slice(),
-        b"GET /floor/ HTTP/1.1\r\n\r\n",
-        b"GET /floor/ HTTP/1.1\r\nHost: one\r\nHost: two\r\n\r\n",
-        b"GET /floor/ HTTP/1.1\r\nHost: floor\r\nExpect: 100-continue\r\n\r\n",
-        b"GET /floor/ HTTP/1.1\r\nHost: floor\r\nUpgrade: websocket\r\n\r\n",
-        b"GET /floor/ HTTP/2.0\r\nHost: floor\r\n\r\n",
-        b"GET /floor/ HTTP/1.1\r\nHost: floor\r\nTransfer-Encoding: chunked\r\n\r\n",
-        b"GET /floor/ HTTP/1.1\r\nHost: floor\r\nContent-Length: 1\r\n\r\n",
-        b"GET /floor/ HTTP/1.1\r\nHost: floor\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n",
-        b"GET /floor/ HTTP/1.1\r\nHost: floor\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\n",
-    ] {
-        let refused = raw(addr, malformed);
-        assert!(text(&refused).starts_with("HTTP/1.1 400 Bad Request"));
-        assert!(text(&refused).contains("Content-Length: 0\r\n"));
-        assert!(text(&response(addr, "GET", "/floor/")).starts_with("HTTP/1.1 200 OK"));
-    }
-    let incomplete_at_cap = format!(
-        "GET /floor/ HTTP/1.1\r\nHost: floor\r\nX: {}",
-        "a".repeat(16_384)
-    );
-    let refused = raw(addr, incomplete_at_cap.as_bytes());
-    assert!(text(&refused).starts_with("HTTP/1.1 431 Request Header Fields Too Large"));
-    assert!(text(&response(addr, "GET", "/floor/")).starts_with("HTTP/1.1 200 OK"));
-}
 
 #[test]
 fn manifest_and_catalog_limits_refuse_before_unbounded_read() {

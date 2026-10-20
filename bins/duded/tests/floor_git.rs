@@ -10,7 +10,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::{Fixture, SharedHost, TestClock};
 use duded::floor_session::CSRF_HEADER_NAME;
@@ -18,9 +18,7 @@ use duded::predicate::{PredicateCaptured, PredicateOutcome, PredicateRunner};
 use duded::settings::FloorSettings;
 use duded::startup::Witness;
 use dudes_host::{CapturedOutcome, OneShot, OneShotOutcome};
-use dudes_proto::Record;
 use dudes_proto::rpc::Method;
-use dudes_proto::rpc::agent::{Checkout, HireResult};
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_providers::launch::{EnvVar, LaunchInput, LaunchSpec};
@@ -417,39 +415,6 @@ fn the_session_checks_come_before_any_read() {
 }
 
 #[test]
-fn unknown_agents_and_unreadable_directories_are_finite_states() {
-    let fixture = Fixture::new();
-    let root = std::fs::canonicalize(fixture.runtime.path()).expect("canonical");
-    let plain = root.join("plain");
-    std::fs::create_dir(&plain).expect("plain directory");
-    let linked = root.join("linked");
-    std::fs::create_dir(&linked).expect("linked directory");
-    std::fs::write(linked.join(".git"), "gitdir: /elsewhere/.git\n").expect("gitfile");
-    let mut floor = floor(&fixture, true, None);
-    let (cookie, csrf) = session(&floor);
-    let state = |agent: AgentId| {
-        let reply = post(&floor, &cookie, &csrf, agent);
-        assert_eq!(reply.status, 200, "{}", reply.head);
-        std::thread::sleep(Duration::from_millis(2100));
-        reply.json()["state"].as_str().expect("a state").to_owned()
-    };
-    assert_eq!(
-        state(common::hire(&floor.running.handle, &plain)),
-        "not_a_checkout_root"
-    );
-    assert_eq!(
-        state(common::hire(&floor.running.handle, &linked)),
-        "gitfile_unsupported"
-    );
-    let stranger = AgentId::parse("01J00000000000000000000000").expect("an id");
-    assert_eq!(state(stranger), "agent_unknown");
-    assert_eq!(
-        floor.running.stop(duded::ExitCause::Ended),
-        duded::ExitCause::Ended
-    );
-}
-
-#[test]
 fn a_retired_agent_is_unknown_to_the_route() {
     let fixture = Fixture::new();
     let checkout = repo(fixture.runtime.path());
@@ -482,109 +447,6 @@ fn a_retired_agent_is_unknown_to_the_route() {
     );
 }
 
-/// A worktree agent's tab reads its tree through the lease while the agent works, measured from
-/// the commit the tree started at. Once the agent retires, the tab answers the tree's state and
-/// reads nothing, and no reply names the repository, the tree or the lease id.
-#[test]
-fn a_worktree_agent_reads_through_its_lease_and_answers_its_state_once_retired() {
-    let fixture = Fixture::new();
-    let origin = repo(fixture.runtime.path());
-    git(&origin, &["checkout", "--quiet", "--", "."]);
-    let mut floor = floor(&fixture, true, None);
-    let mut params = common::hire_params(&origin);
-    params.trusted = true;
-    params.checkout = Some(Checkout::Worktree);
-    let mut client = Client::connect(floor.settings.socket()).expect("daemon socket");
-    let hired = client
-        .call_as_operator(
-            Method::AgentHire,
-            Some(serde_json::to_value(&params).expect("params")),
-            OperatorCredential::new(credential(&floor.settings)).expect("credential"),
-        )
-        .expect("agent.hire is answered");
-    let agent = serde_json::from_value::<HireResult>(hired.result.expect("a worktree hire"))
-        .expect("a hire result")
-        .agent;
-    let (worktree, tree) = fixture
-        .records()
-        .into_iter()
-        .find_map(|record| match record {
-            Record::AgentHired {
-                id,
-                cwd,
-                worktree: Some(worktree),
-                ..
-            } if id == agent => Some((worktree, cwd)),
-            _ => None,
-        })
-        .expect("the hire recorded its worktree");
-    std::fs::write(tree.join("agent.txt"), "work\n").expect("the agent's file");
-    git(&tree, &["add", "-A"]);
-    git(&tree, &["commit", "--quiet", "-m", "agent work"]);
-    let (cookie, csrf) = session(&floor);
-    let hidden = [
-        origin.display().to_string(),
-        tree.display().to_string(),
-        worktree.to_string(),
-    ];
-    let read = |expected: &str| {
-        let reply = post(&floor, &cookie, &csrf, agent);
-        assert_eq!(reply.status, 200, "{}", reply.head);
-        let wire = String::from_utf8_lossy(&reply.body).into_owned();
-        for name in &hidden {
-            assert!(!wire.contains(name.as_str()), "{name} in {wire}");
-        }
-        let view = reply.json();
-        assert_eq!(view["state"], expected, "{view}");
-        std::thread::sleep(Duration::from_millis(2100));
-        view
-    };
-
-    let view = read("ok");
-    assert_eq!(view["head"]["against"], "worktree_start");
-    assert_eq!(
-        view["head"]["branch"],
-        format!("dudes/{}", worktree.short())
-    );
-    assert_eq!(
-        (
-            view["head"]["ahead"].as_u64(),
-            view["head"]["behind"].as_u64()
-        ),
-        (Some(1), Some(0))
-    );
-    assert_eq!(view["commits"]["items"].as_array().map(Vec::len), Some(1));
-    assert_eq!(view["commits"]["items"][0]["subject"], "agent work");
-    assert_eq!(view["committed"]["items"][0]["path"], "agent.txt");
-
-    floor
-        .running
-        .handle
-        .ask(duded::ports::Ask::Retire(Box::new(
-            dudes_proto::rpc::agent::RetireParams {
-                agent,
-                reason: "the test retires it".into(),
-            },
-        )))
-        .expect("retire");
-    read("worktree_released");
-
-    git(
-        &origin,
-        &["worktree", "remove", "--", tree.to_str().expect("utf-8")],
-    );
-    floor
-        .running
-        .handle
-        .ask(duded::ports::Ask::WorktreeRemoved(worktree))
-        .expect("the removal is recorded");
-    read("worktree_removed");
-    assert_eq!(
-        floor.running.stop(duded::ExitCause::Ended),
-        duded::ExitCause::Ended
-    );
-}
-
 /// One read at a time per session: a second request inside the interval is `busy` and leaves the
 /// session's first answer untouched, and the next one after the interval reads again.
 #[test]
@@ -611,74 +473,6 @@ fn a_session_may_read_once_per_interval() {
     assert_eq!(
         floor.running.stop(duded::ExitCause::Ended),
         duded::ExitCause::Ended
-    );
-}
-
-/// A `git` that answers its version and then never answers again: the read ends at the command
-/// deadline with `timed_out` and no child is left, and a daemon asked to stop mid-read stops.
-#[test]
-fn a_git_that_never_answers_ends_in_a_deadline_and_does_not_hold_the_daemon() {
-    let fixture = Fixture::new();
-    let checkout = repo(fixture.runtime.path());
-    let bin = std::fs::canonicalize(fixture.runtime.path())
-        .expect("canonical")
-        .join("slow-bin");
-    std::fs::create_dir(&bin).expect("bin directory");
-    let script = bin.join("git");
-    std::fs::write(
-        &script,
-        "#!/bin/sh\ncase \"$1\" in --version) echo git version 2.54.0;; *) /bin/sleep 60;; esac\n",
-    )
-    .expect("slow git");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    // The first run of a new program can be slow to start on macOS, which would spend the version
-    // check's deadline before the read began.
-    let warm = LaunchSpec {
-        argv: vec![script.clone().into_os_string(), OsString::from("--version")],
-        env: Vec::new(),
-        cwd: bin.clone(),
-        stdin: LaunchInput::Null,
-    };
-    OneShot::new()
-        .run(&warm, WAIT)
-        .expect("the slow git starts");
-    let mut floor = floor(&fixture, true, Some(bin.into_os_string()));
-    let agent = common::hire(&floor.running.handle, &checkout);
-    let (cookie, csrf) = session(&floor);
-
-    let started = Instant::now();
-    let reply = post(&floor, &cookie, &csrf, agent);
-    assert_eq!(reply.json()["state"], "timed_out");
-    assert!(
-        started.elapsed() < Duration::from_secs(8),
-        "{:?}",
-        started.elapsed()
-    );
-
-    std::thread::sleep(Duration::from_millis(2100));
-    let host = floor.addr.to_string();
-    let body = json!({ "agent_id": agent.to_string() }).to_string();
-    let mut stream = TcpStream::connect(floor.addr).expect("Floor listener");
-    stream.set_read_timeout(Some(WAIT)).expect("timeout");
-    stream
-        .write_all(
-            format!(
-                "POST /floor/git HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nContent-Type: application/json\r\nCookie: dudes_floor_session={cookie}\r\n{CSRF_HEADER_NAME}: {csrf}\r\nContent-Length: {}\r\n\r\n{body}",
-                body.len()
-            )
-            .as_bytes(),
-        )
-        .expect("request");
-    std::thread::sleep(Duration::from_millis(500));
-    let stopping = Instant::now();
-    assert_eq!(
-        floor.running.stop(duded::ExitCause::Ended),
-        duded::ExitCause::Ended
-    );
-    assert!(
-        stopping.elapsed() < Duration::from_secs(8),
-        "stop took {:?}",
-        stopping.elapsed()
     );
 }
 

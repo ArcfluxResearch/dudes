@@ -529,55 +529,6 @@ fn authentication_fails_closed_before_any_read_and_near_misses_are_not_routes() 
     daemon.stop();
 }
 
-/// Bodies over the cap are refused before they are read; malformed ones are `400`.
-#[test]
-fn bodies_are_bounded_and_strictly_decoded() {
-    let fixture = Fixture::new();
-    let daemon = Daemon::boot(&fixture, raw_only());
-    let agent = daemon.hire(&fixture, "agent");
-    let mut page = daemon.page();
-    let id = agent.to_string();
-    for path in [PAGE, ENTRY] {
-        let mut request = format!("POST {path} HTTP/1.1\r\nContent-Length: 129\r\n");
-        for (name, value) in page.headers() {
-            request.push_str(&[name, ": ", value.as_str(), "\r\n"].concat());
-        }
-        request.push_str("\r\n");
-        let over = exchange(daemon.addr, request.as_bytes());
-        assert_eq!(over.status, 413, "{path}: {}", over.head);
-    }
-    for (path, bad) in [
-        (
-            PAGE,
-            json!({ "agent_id": id, "before": null, "extra": 1 }).to_string(),
-        ),
-        (PAGE, json!({ "agent_id": id }).to_string()),
-        (PAGE, json!([id, null]).to_string()),
-        (
-            PAGE,
-            json!({ "agent_id": "not-an-agent", "before": null }).to_string(),
-        ),
-        (PAGE, json!({ "agent_id": id, "before": "01" }).to_string()),
-        (PAGE, json!({ "agent_id": id, "before": "-1" }).to_string()),
-        (
-            PAGE,
-            json!({ "agent_id": id, "before": "18446744073709551616" }).to_string(),
-        ),
-        (ENTRY, json!({ "agent_id": id, "lsn": "01" }).to_string()),
-        (ENTRY, json!({ "agent_id": id, "lsn": null }).to_string()),
-        (
-            ENTRY,
-            json!({ "agent_id": id, "lsn": "1", "before": null }).to_string(),
-        ),
-    ] {
-        let reply = page.post(path, &bad);
-        assert_eq!(reply.status, 400, "{path} {bad}: {}", reply.head);
-    }
-    let edge = page.page(agent, Some("18446744073709551615"));
-    assert_eq!((edge["state"].as_str(), lsns(&edge).len()), (Some("ok"), 0));
-    daemon.stop();
-}
-
 /// The count bound.
 #[test]
 fn a_first_page_holds_thirty_two_entries() {

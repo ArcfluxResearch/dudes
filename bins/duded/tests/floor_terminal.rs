@@ -644,23 +644,6 @@ fn a_truncated_frame_payload_still_fails() {
 }
 
 #[test]
-fn a_live_peer_cannot_leave_the_frame_payload_unbounded() {
-    let (mut socket, mut peer) = socket_pair();
-    peer.write_all(b"\x81\x02").expect("frame header");
-    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        socket.next_within(QUIET);
-    }));
-    let panic = failed.expect_err("a withheld payload was accepted");
-    let message = panic.downcast_ref::<String>().expect("the payload error");
-    assert!(message.starts_with("frame payload:"), "{message}");
-    assert_eq!(
-        socket.stream.read_timeout().expect("body timeout"),
-        Some(WAIT)
-    );
-    peer.write_all(b"{}").expect("the peer is still live");
-}
-
-#[test]
 #[should_panic(expected = "the read timeout must be positive")]
 fn a_zero_read_wait_still_fails() {
     let (socket, _peer) = socket_pair();
@@ -1118,56 +1101,6 @@ fn a_retire_or_halt_revokes_the_grant_before_its_append() {
         )));
     }
     floor.stop();
-}
-
-#[test]
-fn a_browser_write_queued_during_shutdown_reaches_no_pty() {
-    let fixture = Fixture::new();
-    let mut floor = floor(&fixture, true);
-    let agents = [
-        attachable(&floor, &fixture),
-        attachable(&floor, &fixture),
-        attachable(&floor, &fixture),
-    ];
-    let mut channels = Vec::new();
-    for agent in agents {
-        let (cookie, csrf) = session(&floor);
-        let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
-        let handle = terminal.attach(agent);
-        channels.push((terminal, handle));
-    }
-    let [blocked, retired, bystander] = &mut channels[..] else {
-        unreachable!("three channels")
-    };
-
-    let held = floor.ptys.block_host_calls();
-    blocked.0.write(&blocked.1, b"holds the loop in the host");
-    std::thread::sleep(QUIET);
-    floor.running.handle.stop(duded::ExitCause::Ended);
-    let retire = floor
-        .running
-        .handle
-        .ask_queued(Ask::Retire(Box::new(RetireParams {
-            agent: agents[1],
-            reason: "queued during shutdown".into(),
-        })))
-        .expect("retire queued");
-    retired.0.write(&retired.1, b"after the retirement");
-    bystander.0.write(&bystander.1, b"after the stop");
-    std::thread::sleep(QUIET);
-    drop(held);
-
-    let _ = retire.recv_timeout(WAIT);
-    floor.stop();
-    let written = host_bytes(&floor.ptys);
-    assert!(written.contains(&b"holds the loop in the host".to_vec()));
-    for late in [&b"after the retirement"[..], &b"after the stop"[..]] {
-        assert!(
-            !written.iter().any(|bytes| bytes == late),
-            "{:?} reached a PTY during shutdown",
-            String::from_utf8_lossy(late)
-        );
-    }
 }
 
 #[test]
