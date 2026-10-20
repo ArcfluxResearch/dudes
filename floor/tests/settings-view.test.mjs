@@ -34,16 +34,12 @@ test('Settings shows read-only running values, local commands, Setup and About',
   try {
     const { SettingsView, UnavailableControls } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
     const html = renderToStaticMarkup(createElement(SettingsView, { floor: floor(), onSetup() {} }));
-    for (const expected of ['Floor switches', 'budget.floor_usd_per_day', '$0', '$0.001234', '9007199254740993',
-      'dudes config set floor.answer on', 'dudes config set floor.control on', 'dudes config set floor.goal on',
-      'dudes config set floor.retire on', 'dudes config set floor.terminal on', 'dudes config set floor.hire on',
-      'dudes config set floor.git on', 'dudes config set floor.recovery on floor.control on',
-      'dudes config set providers.codex on', 'default to $0.25 and 20000 tokens',
-      'dudes project add', 'dudes project remove repo_1', '&lt;Service&gt;', '$10', '$5', '456',
+    for (const expected of ['Floor switches', '$0', '$0.001234', '9007199254740993',
+      'default to $0.25 and 20000 tokens', 'dudes project remove repo_1', '&lt;Service&gt;', '$10', '$5', '456',
       'Setup', 'About', 'Daemon', '0.12.3', 'Floor build', 'Browser wire', 'browser-wire-v3', 'restart']) {
       assert.ok(html.includes(expected), `missing ${expected}: ${html}`);
     }
-    assert.doesNotMatch(html, /<(?:input|textarea|form)\b/);
+    assert.doesNotMatch(html, /dudes config|dudes project (?:add|list)|--completion-check-label/);
     const anchors = [...html.matchAll(/<a ([^>]*)>/g)].map((match) => match[1]).filter((attrs) => attrs.includes('github.com'));
     const link = (href) => `href="${href}" target="_blank" rel="noopener noreferrer"`;
     assert.deepEqual(anchors, [
@@ -63,28 +59,21 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.doesNotMatch(html, /floor\.chat/);
     const gitRow = (git) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, git } }), onSetup() {} }));
-    assert.match(gitRow(false), /<dt>Read checkouts in the Git tab <code>floor\.git<\/code><\/dt><dd>Off<code>dudes config set floor\.git on<\/code><button type="button">Turn on<\/button><\/dd>/);
-    assert.match(gitRow(true), /<dt>Read checkouts in the Git tab <code>floor\.git<\/code><\/dt><dd>On<code>dudes config set floor\.git off<\/code><button type="button">Turn off<\/button><\/dd>/);
-    assert.match(html, /<dt>Start new goals <code>floor\.renew<\/code><\/dt><dd>Renew is off\. Turn it on with <code>dudes config set floor\.renew on<\/code>, then restart the daemon\. It needs goal change and Hire\.<\/dd>/);
+    assert.match(gitRow(false), /<dt>Read checkouts in the Git tab <code>floor\.git<\/code><\/dt><dd>Off<button type="button">Turn on<\/button><\/dd>/);
+    assert.match(gitRow(true), /<dt>Read checkouts in the Git tab <code>floor\.git<\/code><\/dt><dd>On<button type="button">Turn off<\/button><\/dd>/);
+    assert.match(html, /<dt>Start new goals <code>floor\.renew<\/code><\/dt><dd>Off It needs goal change and Hire\.<button type="button">Turn on<\/button><\/dd>/);
     const renewOn = renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, renew: true } }), onSetup() {} }));
-    assert.match(renewOn, /<dt>Start new goals <code>floor\.renew<\/code><\/dt><dd>On<code>dudes config set floor\.renew off<\/code><button type="button">Turn off<\/button><\/dd>/);
-    assert.doesNotMatch(renewOn, /Renew is off/);
-    const renewing = renderToStaticMarkup(createElement(SettingsView, { floor: floor({ ...REPORT,
-      switches: { ...REPORT.switches, control: true, goal: true, hire: true, renew: true } }), onSetup() {} }));
-    for (const command of ['dudes config set floor.control off floor.goal off floor.retire off floor.recovery off floor.renew off',
-      'dudes config set floor.goal off floor.renew off', 'dudes config set floor.hire off floor.renew off']) {
-      assert.ok(renewing.includes(command), `a command the CLI refuses while renewal needs it: ${command}`);
-    }
+    assert.match(renewOn, /<dt>Start new goals <code>floor\.renew<\/code><\/dt><dd>On<button type="button">Turn off<\/button><\/dd>/);
     const hint = (control) => renderToStaticMarkup(createElement(UnavailableControls, { floor: floor(), control }));
     assert.match(hint('retire'), /Turn on Pause, resume and rename and Retire agents under\s+Floor switches in Settings/);
     assert.match(hint('terminal'), /Turn on Attach terminals under Floor switches in Settings/);
 
-    assert.match(html, /Turn a switch on or off here/);
+    assert.match(html, /Turn a switch or an engine on or off here, and set the spending limits/);
     const diffRow = (git) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, diff: true, git } }), onSetup() {} }));
     assert.match(diffRow(false), /floor\.diff<\/code><\/dt><dd>On, but needs Git</);
-    assert.match(diffRow(true), /floor\.diff<\/code><\/dt><dd>On<code>/);
+    assert.match(diffRow(true), /floor\.diff<\/code><\/dt><dd>On<button/);
     noteTransport('close');
     const closed = renderToStaticMarkup(createElement(SettingsView, { floor: getFloorState(), onSetup() {} }));
     assert.match(closed, /Settings is unavailable while the stream is disconnected/);
@@ -129,7 +118,6 @@ test('Settings gives usable guidance for reserved workspace ids and optional cei
       }
       assert.doesNotMatch(html, /Before enabling Control, Goal or Retire/);
       assert.match(html, /No ceiling/);
-      assert.match(html, /\[--agent-usd-per-day &lt;usd&gt;\] \[--goal-usd &lt;usd&gt;\]/);
     }
   } finally { await server.close(); }
 });
@@ -161,7 +149,7 @@ test('Settings asks on the page before the terminal goes on or retire or control
     assert.doesNotMatch(view(), /aria-label="Turn (on|off) floor\./);
 
     await edit.changeSetting('floor.terminal', 'on');
-    assert.deepEqual(edit.getSettingsEditState().asking, { key: 'floor.terminal', value: 'on' });
+    assert.equal(edit.getSettingsEditState().asking?.key, 'floor.terminal');
     assert.equal(edit.getSettingsEditState().sending, null, 'nothing was sent yet');
     assert.match(view(), /aria-label="Turn on floor\.terminal"> [^<]*takes effect after a restart of the daemon\. <button type="button">Turn on<\/button> <button type="button">Cancel<\/button>/);
     edit.cancelSetting();
@@ -181,4 +169,28 @@ test('Settings asks on the page before the terminal goes on or retire or control
   } finally {
     await server.close();
   }
+});
+
+test('Settings has a button for each engine and a box for each spending limit, and no command for either', async () => {
+  const root = resolve(import.meta.dirname, '..');
+  const server = await createServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
+  try {
+    const { SettingsView } = await server.ssrLoadModule('/src/renderer/settings/SettingsView.tsx');
+    const render = (providers) => renderToStaticMarkup(createElement(SettingsView,
+      { floor: floor({ ...REPORT, providers }), onSetup() {} }));
+    const off = render(['claude']);
+    assert.match(off, /Codex is off\.<\/span><button type="button">Turn on<\/button>/);
+    assert.match(off, /Pi is off\.<\/span><button type="button">Turn on<\/button>/);
+    const on = render(['claude', 'codex', 'pi']);
+    assert.match(on, /Codex is on\.<\/span><button type="button">Turn off<\/button>/);
+    assert.equal(on.match(/<form class="settings-limit">/g).length, 3);
+    assert.match(on, /cannot remove a limit once it is set/);
+    assert.doesNotMatch(on, /dudes config|Register optional providers/);
+    const edit = await server.ssrLoadModule('/src/renderer/settings/edit.ts');
+    const change = edit.limitChange('usd', '7.5', '5000000');
+    await edit.changeSetting('budget.floor_usd_per_day', change.value, change.question, 'Raise limit');
+    assert.match(render(['claude']), /aria-label="Change Floor daily dollars"> This raises the limit from \$5 to \$7\.5\. <button type="button">Raise limit<\/button> <button type="button">Cancel<\/button>/);
+    assert.equal(edit.getSettingsEditState().sending, null, 'nothing is written until the person confirms');
+    edit.resetSettingsEdit();
+  } finally { await server.close(); }
 });

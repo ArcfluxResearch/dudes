@@ -5,7 +5,7 @@ import type { FloorState } from '../floor/store.ts';
 import type { GuideStep } from './guide.ts';
 import { guideSnapshotConfirmed, guideSteps } from './guide.ts';
 import { SetupView, copyToClipboard } from './SetupView.tsx';
-import { ADD_WORKSPACE, WorkspaceSettings, hireUnavailable } from '../settings/SettingsView.tsx';
+import { WorkspaceSettings, hireUnavailable } from '../settings/SettingsView.tsx';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 
 function Command({ text }: { readonly text: string }) {
@@ -73,7 +73,7 @@ export function FirstRunGuideView({ floor, step, onStep, onClose, onHire }: {
       </> : null}
       {step === 'workspaces' ? floor.settings === null ? <p>Settings are not reported. Recheck to ask again.</p> : <>
         <p>Enroll a repository locally. The list updates when the running daemon adopts the enrollment.</p>
-        <WorkspaceSettings report={floor.settings} headingId="guide-workspaces" onCopyAdd={() => copyToClipboard(ADD_WORKSPACE)} />
+        <WorkspaceSettings report={floor.settings} floor={floor} headingId="guide-workspaces" />
       </> : null}
       {step === 'actions' ? <FloorActions floor={floor} /> : null}
       {step === 'hire' ? <>

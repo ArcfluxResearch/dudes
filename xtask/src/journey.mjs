@@ -11,11 +11,7 @@ const pause = (ms) => new Promise((done) => setTimeout(done, ms));
  * when the screen stops showing the command: an entry that matches nothing fails the run.
  */
 export const ALLOWED_EXITS = [
-  { name: 'Settings shows the command for each switch', screen: 'settings', text: /^dudes config set floor\./ },
-  { name: 'Settings shows the commands for the budget numbers', screen: 'settings', text: /^dudes config (?:set|unset) budget\./ },
-  { name: 'Settings shows the commands for turning engines on and off', screen: 'settings', text: /^dudes config set providers\./ },
-  { name: 'Settings points to the config command', screen: 'settings', text: /^dudes config(?! (?:set|unset))/ },
-  { name: 'Settings shows the project commands', screen: 'settings', text: /^dudes project (?:add|remove|list|reload)/ },
+  { name: 'Settings shows the remove and reload commands for a project', screen: 'settings', text: /^dudes project (?:remove|reload)/ },
   { name: 'Settings sends a restart to the terminal', screen: 'settings', text: /^dudes quickstart --restart/ },
   { name: 'Settings sends the update check to the terminal', screen: 'settings', text: /^dudes upgrade/ },
 ];

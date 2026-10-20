@@ -11,9 +11,9 @@ import {
 } from './helpers/terminal-commands.mjs';
 
 /** Source lines in `src/renderer` that can show a terminal command. Lower it when you remove one. */
-const PLACES = 55;
+const PLACES = 42;
 /** The different `dudes ...` commands those lines name. Lower it when the last mention of one goes. */
-const DISTINCT_DUDES_COMMANDS = 21;
+const DISTINCT_DUDES_COMMANDS = 18;
 
 const renderer = resolve(import.meta.dirname, '../src/renderer');
 

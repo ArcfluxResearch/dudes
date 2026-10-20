@@ -322,6 +322,7 @@ const ADMITTED = new Map([
   [CHAT_PANEL, Object.freeze(['a textarea', 'a change handler', 'a key handler'])],
   [RENAME_PANEL, Object.freeze(['an input', 'a change handler', 'a key handler'])],
   [ADD_PROJECT_FORM, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
+  [SETTINGS_VIEW, Object.freeze(['an input', 'a form', 'a change handler', 'a submit handler'])],
   [LOOK_PANEL, Object.freeze(['an input', 'a form', 'a textarea', 'a select', 'a change handler',
     'a submit handler', 'a key handler'])],
   [FLOOR_SHELL, Object.freeze(['a key handler', 'a pointer handler'])],
@@ -409,6 +410,9 @@ const ADMITTED_HANDLERS = [
   { file: RENAME_PANEL, tag: 'input', handler: 'onKeyDown' },
   { file: ADD_PROJECT_FORM, tag: 'form', className: 'add-project', handler: 'onSubmit' },
   { file: ADD_PROJECT_FORM, tag: 'input', handler: 'onChange' },
+  { file: SETTINGS_VIEW, tag: 'form', className: 'settings-limit', handler: 'onSubmit' },
+  { file: SETTINGS_VIEW, tag: 'input', handler: 'onChange',
+    expression: '(event) => { setTyped(event.target.value); setProblem(null); }' },
   { file: LOOK_PANEL, tag: 'form', handler: 'onSubmit',
     expression: '(event) => { event.preventDefault(); void submitLook(row, browserLookDeps); }' },
   { file: LOOK_PANEL, tag: 'form', handler: 'onKeyDown',
@@ -946,7 +950,9 @@ test('the floor admits only the named controls and forms', async () => {
   }
   assert.deepEqual(carrying, [], 'the floor grew a mutation control');
   // Each exemption is for exactly what its form carries, and it does carry it.
-  for (const [file, kinds] of [...ADMITTED, ...ADMITTED_WITHOUT_HANDLER]) {
+  const exempt = new Map();
+  for (const [file, kinds] of [...ADMITTED, ...ADMITTED_WITHOUT_HANDLER]) exempt.set(file, [...(exempt.get(file) ?? []), ...kinds]);
+  for (const [file, kinds] of exempt) {
     assert.deepEqual((admitted.get(file) ?? []).sort(), [...kinds].sort(), `${file} was not scanned as itself`);
   }
   const byFile = (map) => [...map].map(([file, kinds]) => `${file}: ${[...kinds].sort().join(', ')}`).sort();
@@ -1102,7 +1108,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(2).fill(ADD_PROJECT_FORM),
     ...Array(4).fill(LOOK_PANEL),
     ...Array(3).fill(SETUP_VIEW),
-    ...Array(8).fill(SETTINGS_VIEW),
+    ...Array(9).fill(SETTINGS_VIEW),
     ...Array(7).fill(FIRST_RUN_GUIDE),
     ...Array(5).fill('src/renderer/setup/FirstTask.tsx'),
     ...Array(10).fill(TERMINAL_PANEL),
@@ -1119,6 +1125,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
   // The folder form submits with a button that has no click handler of its own.
   clickExpected.splice(clickExpected.indexOf(ADD_PROJECT_FORM), 1);
+  // Each spending limit's Save button submits its form.
+  clickExpected.splice(clickExpected.indexOf(SETTINGS_VIEW), 1);
   clickExpected.splice(clickExpected.indexOf(TICKET_PANEL), 1);
   clickExpected.push(RECOVERED_REVIEW);
   assert.deepEqual(clicks.sort(), clickExpected.sort());
@@ -1217,9 +1225,9 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
   assert.match(center, /\{ view: 'settings', label: 'Settings', refresh: true \}/);
   assert.match(center, /onSetup=\{\(\) => onView\('setup'\)\}/);
   assert.match(shell, /function openView\(next: ControlView\): void \{\s*setFocused\(false\);\s*setView\(next\);\s*if \(CONTROL_VIEWS\.some\(\(entry\) => entry\.view === next && entry\.refresh\)\) refreshFloorSnapshot\(\);\s*\}/);
-  assert.deepEqual(clicksIn(await readFile(resolve(floor, SETTINGS_VIEW), 'utf8')), ['onSetup', 'onSetup',
-    '() => { void changeSetting(key, next); }', '() => { void confirmSetting(); }', '() => cancelSetting()',
-    '() => { void desktopNotificationPreference.setEnabled(!on); }', '() => setOfficePin(id)', 'onCopyAdd']);
+  assert.deepEqual(clicksIn(await readFile(resolve(floor, SETTINGS_VIEW), 'utf8')), ['onSetup', 'onSetup', 'onSetup',
+    '() => { void changeSetting(settingKey, next); }', '() => { void confirmSetting(); }', '() => cancelSetting()',
+    '() => { void desktopNotificationPreference.setEnabled(!on); }', '() => setOfficePin(id)']);
   assert.deepEqual(clicksIn(await readFile(resolve(floor, SETUP_VIEW), 'utf8')).sort(), [
     '() => copyToClipboard(install)',
     '() => refreshFloorSnapshot()',

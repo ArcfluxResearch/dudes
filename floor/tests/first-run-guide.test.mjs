@@ -83,8 +83,8 @@ test('Workspaces changes from not done to done on the enrollment resync without 
   const epoch = snapshot();
   assert.equal(done('workspaces'), false);
   assert.match(view('workspaces'), /No enrolled projects/);
-  assert.match(view('workspaces'), /dudes project add &lt;path&gt;/);
-  assert.match(view('workspaces'), />Copy<\/button>/);
+  assert.match(view('workspaces'), /Adding a project from this page is off/);
+  assert.doesNotMatch(view('workspaces'), /dudes project add/);
   applyServerFrame('{"type":"floor.resync"}', epoch);
   assert.equal(done('workspaces'), false);
   snapshot({ settings: { ...SETTINGS, workspaces: [WORKSPACE] } });
