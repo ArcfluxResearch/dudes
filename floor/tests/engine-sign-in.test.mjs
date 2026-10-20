@@ -462,6 +462,12 @@ test('the sign-in link offered is exactly the one the engine printed, joined onl
   assert.equal(hyperlinkTarget(`id=1;${LINK}`), LINK, 'a terminal hyperlink names its target');
   assert.equal(hyperlinkTarget(';'), null, 'the sequence that ends a hyperlink names nothing');
   assert.equal(hyperlinkTarget('id=1;javascript:alert(1)'), null);
+  assert.equal(offerableLink('https://claude.example.invalid/a\ufeffb'), false, 'a byte order mark is refused');
+  for (const hidden of ['\u202e', '\u200b', '\u0085']) {
+    assert.equal(offerableLink(`https://claude.example.invalid/a${hidden}b`), false, `a hidden ${escape(hidden)} is refused`);
+    assert.equal(printedLink([{ text: `https://claude.example.invalid/a${hidden}b`, wrapped: false }], 200),
+      null, 'a printed link with a hidden character is not offered, not even in part');
+  }
 });
 
 test('a screen drawn before the daemon is proved still gets the sign-in started', async () => {

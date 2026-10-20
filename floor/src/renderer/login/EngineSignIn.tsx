@@ -212,7 +212,7 @@ function LoginScreen({ phase, onLink }: { readonly phase: OpenChannel['phase']; 
           const row = buffer.getLine(y);
           if (row !== undefined) rows.push({ text: row.translateToString(true), wrapped: row.isWrapped });
         }
-        onLink(hyperlink ?? printedLink(rows, term.cols));
+        onLink(printedLink(rows, term.cols) ?? hyperlink);
       };
       const hyperlinks = term.parser.registerOscHandler(8, (data) => {
         hyperlink = hyperlinkTarget(data) ?? hyperlink;

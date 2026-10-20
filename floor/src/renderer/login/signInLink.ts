@@ -13,11 +13,14 @@ export interface ScreenRow {
   readonly wrapped: boolean;
 }
 
+/** Characters that make a link read differently from where it goes: controls, zero-width marks and direction overrides. */
+const HIDDEN = '\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff';
 const LINK = /https:\/\/[^\s"'<>\u0000-\u001f\u007f]+/g;
 
 /** Whether `text` is a link the page will offer: https, with a plain host and no credentials in it. */
 export function offerableLink(text: string): boolean {
-  return /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?(?:[/?#]|$)/.test(text);
+  return /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?(?:[/?#]|$)/.test(text)
+    && !new RegExp(`[${HIDDEN}]`).test(text);
 }
 
 /** The last link printed on `rows`, exactly as printed, or `null` when none is certain. `cols` is the grid's width. */
