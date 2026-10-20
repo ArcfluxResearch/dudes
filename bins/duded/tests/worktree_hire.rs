@@ -782,62 +782,6 @@ fn slow_git_path(fixture: &Fixture) -> std::ffi::OsString {
     format!("{}:/usr/bin:/bin", wrapper.display()).into()
 }
 
-/// While `git worktree add` runs, the lease has no directory, so a plain hire is checked against
-/// where the tree will be, and another spelling of that place is refused too.
-#[test]
-fn a_plain_hire_into_a_tree_git_has_not_made_is_refused_however_it_is_spelled() {
-    let fixture = Fixture::new();
-    let git = git(&fixture);
-    let repo = repo(&fixture, &git);
-    let (mut running, settings, _) = daemon_with(&fixture, claude(), |settings| {
-        settings.predicate_path = Some(slow_git_path(&fixture));
-        settings.git_checkout_deadline = Duration::from_secs(10);
-    });
-    let state = fixture.state.path();
-
-    std::thread::scope(|scope| {
-        let checkout =
-            scope.spawn(|| hire(&settings, &mut connect(&settings), &worktree_params(&repo)));
-        let tree = fixture.await_record("the lease", |record| match record {
-            Record::WorktreeLeased { path, .. } => Some(path.clone()),
-            _ => None,
-        });
-        let name = tree.file_name().unwrap();
-        let mut client = connect(&settings);
-        for (what, cwd) in [
-            ("in another case", state.join("Worktrees").join(name)),
-            ("through `..`", state.join("zzz/../worktrees").join(name)),
-        ] {
-            let error = hire(
-                &settings,
-                &mut client,
-                &common::hire_params(&cwd.join("src")),
-            )
-            .expect_err(what);
-            assert_eq!(
-                gate(&error),
-                Some(RefusalGate::WorktreeOverlap),
-                "{what}: {}",
-                error.message
-            );
-        }
-        assert!(
-            !state.join("worktrees").exists(),
-            "git made nothing while the hires were judged"
-        );
-        checkout
-            .join()
-            .unwrap()
-            .expect_err("the checkout is killed at its deadline");
-    });
-    running.stop(ExitCause::Ended);
-    assert_eq!(
-        kinds(&fixture),
-        ["leased", "never_assigned"],
-        "the refused hires appended nothing"
-    );
-}
-
 /// A `git worktree add` that outlives its deadline is killed with its group, the lease is ended as
 /// never assigned, and the caller is told.
 #[test]

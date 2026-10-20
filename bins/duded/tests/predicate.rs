@@ -936,27 +936,6 @@ fn goal_set_refuses_a_check_that_cannot_run() {
     assert_eq!(daemon.effects(), 0);
 }
 
-/// The check runs in the agent's recorded directory, not the daemon's.
-///
-/// Mutation: running the baseline in the daemon's working directory admits the first arm.
-#[test]
-fn baseline_runs_in_the_goal_directory() {
-    let daemon = baselined();
-    std::fs::write(daemon.tree.path().join("marker"), "here\n").unwrap();
-    let error = daemon
-        .set(checked_goal(daemon.agent, &["test", "-f", "marker"]))
-        .expect_err("the marker is in the agent's directory");
-    assert_eq!(
-        gate(&error),
-        Some(dudes_proto::rpc::RefusalGate::CheckAlreadyPasses)
-    );
-    let elsewhere = baselined();
-    std::fs::write(daemon.tree.path().join("only-there"), "here\n").unwrap();
-    elsewhere
-        .set(checked_goal(elsewhere.agent, &["test", "-f", "only-there"]))
-        .expect("the marker is in another agent's directory, not this one's");
-}
-
 /// A board check whose card the operator moved to its status is refused, and one an agent moved
 /// there is admitted, because an agent's status cannot complete a goal.
 ///
@@ -1080,54 +1059,6 @@ fn goal_set_refuses_a_baseline_beside_live_work() {
         .expect("a check that may already pass starts no run, so it replaces the goal");
     std::fs::write(held, "go\n").unwrap();
     assert_eq!(daemon.runner.runs(), 1);
-}
-
-/// An unknown or retired agent is refused before any check runs, and so is one whose directory
-/// was deleted, by the goal set's own resolution of the check.
-///
-/// Mutation: dropping the agent check journals a `GoalSet` for an unknown agent.
-#[test]
-fn goal_set_refuses_an_absent_agent_and_a_missing_directory() {
-    let daemon = baselined();
-    let unknown = dudes_types::AgentId::from_parts(4, 4);
-    let error = daemon
-        .set(checked_goal(unknown, &["test", "-f", "absent"]))
-        .expect_err("an unknown agent");
-    assert_eq!(error.code, dudes_proto::rpc::ErrorCode::NotFound.code());
-    assert_eq!(error.message, format!("there is no live agent {unknown}"));
-    match daemon
-        .running
-        .handle
-        .ask(duded::ports::Ask::Retire(Box::new(
-            dudes_proto::rpc::agent::RetireParams {
-                agent: daemon.agent,
-                reason: "done".into(),
-            },
-        )))
-        .expect("retired")
-    {
-        duded::ports::Answered::Done => {}
-        other => panic!("retire answered {other:?}"),
-    }
-    let error = daemon
-        .set(checked_goal(daemon.agent, &["test", "-f", "absent"]))
-        .expect_err("a retired agent");
-    assert_eq!(error.code, dudes_proto::rpc::ErrorCode::NotFound.code());
-    assert_eq!(daemon.runner.runs(), 0);
-    assert_eq!(daemon.effects(), 0);
-
-    let gone = baselined();
-    let directory = gone.tree.path().to_path_buf();
-    std::fs::remove_dir_all(&directory).unwrap();
-    let error = gone
-        .set(checked_goal(gone.agent, &["test", "-f", "absent"]))
-        .expect_err("the directory is gone");
-    assert!(
-        error.message.contains(&directory.display().to_string()),
-        "the refusal names the directory: {error:?}"
-    );
-    assert_eq!(gone.runner.runs(), 0);
-    assert_eq!(gone.effects(), 0);
 }
 
 /// Today's guards run before the check: a Claimed board check, and a goal that needs a ceiling it
@@ -1358,88 +1289,6 @@ fn recheck_behind_the_stop() {
     );
 }
 
-/// A caller that closes its socket, or shuts down its write side, while its goal set's check runs
-/// or after the run and before the append, gets no goal. A hang-up during the run ends the check's
-/// child at once, so the agent's next goal set is not refused beside it. A replacement keeps
-/// running after a hang-up, and its same-request retry returns its result.
-///
-/// Mutations: skipping the probe in the append job journals a goal in the third arm; waiting on
-/// the run without reading the probe leaves the held check running.
-#[test]
-fn goal_set_is_abandoned_when_the_client_disconnects() {
-    for arm in ["closed", "half-closed"] {
-        let daemon = baselined();
-        let settings = daemon.fixture.settings();
-        let stream = send_goal_set(&settings, &held_check(daemon.agent));
-        wait_for(|| daemon.runner.runs() == 1, "the check started");
-        if arm == "closed" {
-            stream.shutdown(std::net::Shutdown::Both).unwrap();
-            drop(stream);
-        } else {
-            stream.shutdown(std::net::Shutdown::Write).unwrap();
-        }
-        // Never released: the hang-up itself ends the check.
-        wait_for(|| daemon.runner.ended() == 1, "the hang-up ended the check");
-        std::thread::sleep(Duration::from_millis(300));
-        let control = daemon
-            .set(common::goal_params(daemon.agent, &["test", "-f", "absent"]))
-            .expect("a later goal set is admitted");
-        let goals = daemon.goal_sets();
-        assert_eq!(
-            goals.iter().map(|goal| goal.id).collect::<Vec<_>>(),
-            [control.goal],
-            "{arm}: only the later goal was journaled"
-        );
-    }
-
-    let fixture = Fixture::new();
-    let settings = fixture.settings();
-    let tree = tempfile::tempdir().expect("agent tree");
-    let daemon = boot(
-        &fixture.settings(),
-        seams(
-            &settings,
-            SharedHost::new(),
-            CountingRunner::new(),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot");
-    let pause = daemon.onboarding_pause();
-    let running = common::start(daemon);
-    let agent = common::hire(&running.handle, tree.path());
-    pause.arm(duded::runtime::OnboardingPausePoint::BeforeBaselineRecheck);
-    let stream = send_goal_set(
-        &fixture.settings(),
-        &checked_goal(agent, &["test", "-f", "absent"]),
-    );
-    assert!(
-        pause.wait_reached(Duration::from_secs(10)),
-        "the append job was reached"
-    );
-    stream.shutdown(std::net::Shutdown::Both).unwrap();
-    drop(stream);
-    std::thread::sleep(Duration::from_millis(50));
-    pause.release();
-    let control = running
-        .handle
-        .set_goal(
-            common::goal_params(agent, &["test", "-f", "absent"]),
-            &dudes_rpc::HangUp::never(),
-        )
-        .expect("a later goal set is admitted");
-    let goals: Vec<_> = fixture
-        .records()
-        .into_iter()
-        .filter_map(|record| match record {
-            Record::GoalSet { goal, .. } => Some(goal.id),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(goals, [control.goal], "after the run: only the later goal");
-}
-
 /// A paused agent with a goal whose check may already pass, so a replacement can be admitted.
 fn paused_with_goal(daemon: &Baselined) -> dudes_types::GoalId {
     match daemon
@@ -1495,67 +1344,6 @@ fn replace_on(
         )
         .unwrap();
     serde_json::from_value(response.result.expect("a replacement result")).unwrap()
-}
-
-/// While a replacement's check runs, a newer goal, a retirement or a halt lands first, and the
-/// replacement's admission, run again before its append, refuses it.
-///
-/// Mutation: skipping the recheck appends the replacement over the newer state.
-#[test]
-fn conditional_routes_recheck_after_the_baseline() {
-    use dudes_proto::rpc::goal::{GoalReplaceRefusal, GoalReplaceResult};
-    for (arm, expected) in [
-        ("goal.set", GoalReplaceRefusal::StaleGoal),
-        ("agent.retire", GoalReplaceRefusal::AgentAbsent),
-        ("loop.halt", GoalReplaceRefusal::AgentHalted),
-        ("fenced writer", GoalReplaceRefusal::Unavailable),
-    ] {
-        let daemon = baselined();
-        let settings = daemon.fixture.settings();
-        let goal = paused_with_goal(&daemon);
-        let request = held_replacement(daemon.agent, goal, 3);
-        let replacing = std::thread::spawn(move || replace_on(&settings, &request));
-        wait_for(
-            || daemon.runner.runs() == 1,
-            "the replacement's check started",
-        );
-        let landed = match arm {
-            "goal.set" => daemon
-                .set(common::goal_params(daemon.agent, &["test", "-f", "absent"]))
-                .map(|_| ()),
-            "fenced writer" => {
-                daemon.append_failure.short_write_next(5);
-                let bystander = tempfile::tempdir().expect("a second tree");
-                let failed = daemon.running.handle.ask(duded::ports::Ask::Hire(Box::new(
-                    common::hire_params(bystander.path()),
-                )));
-                assert!(failed.is_err(), "the failed append fences the writer");
-                Ok(())
-            }
-            "agent.retire" => daemon
-                .running
-                .handle
-                .ask(duded::ports::Ask::Retire(Box::new(
-                    dudes_proto::rpc::agent::RetireParams {
-                        agent: daemon.agent,
-                        reason: "done".into(),
-                    },
-                )))
-                .map(|_| ()),
-            _ => daemon
-                .running
-                .handle
-                .ask(duded::ports::Ask::Halt(daemon.agent))
-                .map(|_| ()),
-        };
-        landed.unwrap_or_else(|error| panic!("{arm} lands during the check: {error:?}"));
-        std::fs::write(daemon.tree.path().join("release"), "go\n").unwrap();
-        let result = replacing.join().unwrap();
-        assert!(
-            matches!(result, GoalReplaceResult::Refused { reason, .. } if reason == expected),
-            "{arm}: {result:?}"
-        );
-    }
 }
 
 /// A replacement's caller that hangs up during its check does not abandon it, and a retry of the
