@@ -211,6 +211,9 @@ struct WorkspaceView {
     agent_tokens_per_day: Option<String>,
     goal_tokens: Option<String>,
     hop_cap: u32,
+    /// The operator trusts this project, so a hire may ask for its own copy of it. Nothing else
+    /// of the grant is shown.
+    trusted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     reload_mark: Option<MarkView>,
 }
@@ -263,7 +266,7 @@ impl Enrollment {
             floor_usd_per_day,
             self.profiles
                 .iter()
-                .map(|profile| (profile, BROWSER_ENGINES.to_vec())),
+                .map(|profile| (profile, BROWSER_ENGINES.to_vec(), true)),
         );
         let bytes = serde_json::to_vec(&view).map_err(|_| CatalogError::TooLarge)?;
         if bytes.len() > 16_384 {
@@ -301,10 +304,10 @@ impl Enrollment {
     }
 
     /// The sole safe wire form of eligible profiles, already sorted at config admission, each
-    /// beside the engines offered for it.
+    /// beside the engines offered for it and whether the operator trusts it.
     pub(crate) fn view<'a>(
         floor: Option<Usd>,
-        profiles: impl IntoIterator<Item = (&'a Profile, Vec<Provider>)>,
+        profiles: impl IntoIterator<Item = (&'a Profile, Vec<Provider>, bool)>,
     ) -> OnboardingView {
         let dollars = |usd: Option<Usd>| usd.map(|usd| usd.micros().to_string());
         let tokens = |tokens: Option<Tokens>| tokens.map(|tokens| tokens.count().to_string());
@@ -312,7 +315,7 @@ impl Enrollment {
             floor_usd_per_day_micros: dollars(floor),
             workspaces: profiles
                 .into_iter()
-                .map(|(profile, engines)| WorkspaceView {
+                .map(|(profile, engines, trusted)| WorkspaceView {
                     workspace_id: profile.id.clone(),
                     label: profile.label.clone(),
                     engines,
@@ -321,6 +324,7 @@ impl Enrollment {
                     agent_tokens_per_day: tokens(profile.agent_budget.tokens_per_day),
                     goal_tokens: tokens(profile.goal_budget.tokens),
                     hop_cap: profile.hop_cap,
+                    trusted,
                     reload_mark: profile.mark.map(|mark| MarkView {
                         kind: mark.kind,
                         at: rfc3339_seconds(mark.at),
@@ -503,6 +507,8 @@ pub struct OnboardRequest {
     /// The enrolled check the hire names, by id and revision. Absent only on a retry of an
     /// attempt the onboarding index already holds.
     pub(crate) check: Option<(String, Hex32)>,
+    /// The agent works in a git worktree of its own rather than in the project folder.
+    pub(crate) own_copy: bool,
 }
 
 impl fmt::Debug for OnboardRequest {
@@ -552,6 +558,70 @@ pub enum OnboardStep {
         /// new attempt, which answers the refusal.
         on_refusal: Option<OnboardOutcome>,
     },
+    /// The hire asked for its own copy of the project: the connection thread makes the copy,
+    /// then asks for the hire into it.
+    Copy {
+        /// The hire the copy is made for. Only the copy's admission reads it.
+        params: Box<dudes_proto::rpc::agent::HireParams>,
+        /// What the hire's check run saw, for the hire that follows.
+        baseline: dudes_proto::CheckBaseline,
+        /// The operator's grant the copy rests on.
+        trust: Box<crate::worktree::hire::TrustTicket>,
+    },
+}
+
+/// Why a browser hire's own copy was not made. Each is a sentence the page shows as it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CopyRefusal {
+    /// Only Claude Code agents can work in a copy for now.
+    Engine,
+    /// The platform cannot make copies.
+    Platform,
+    /// The operator has not trusted this project.
+    NotTrusted(String),
+    /// The operator trusted this project, but its location or settings are not what they vouched
+    /// for any more.
+    TrustChanged(String),
+    /// The project's folder is not inside a git repository.
+    NotARepository,
+    /// Anything else that stopped the copy: git, the folder, or the daemon's admission.
+    Failed,
+}
+
+impl fmt::Display for CopyRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Engine => f.write_str(
+                "Only Claude Code agents can work in their own copy for now. Choose Claude Code, \
+                 or hire without a copy. Nobody was hired.",
+            ),
+            Self::Platform => f.write_str(
+                "Own copies are not available on Windows yet. Hire without a copy. Nobody was hired.",
+            ),
+            Self::NotTrusted(id) => write!(
+                f,
+                "This project is not trusted yet, so Dudes will not make a copy of it. A copy runs \
+                 the repository's own Claude settings, such as environment values and helper \
+                 commands, without asking. To allow it, run `dudes project trust {id}` in a \
+                 terminal, or hire without a copy. Nobody was hired."
+            ),
+            Self::TrustChanged(id) => write!(
+                f,
+                "This project's folder or settings changed since you trusted it, so Dudes did not \
+                 make a copy. Run `dudes project trust {id}` again to vouch for what it holds \
+                 now, or hire without a copy. Nobody was hired."
+            ),
+            Self::NotARepository => f.write_str(
+                "This project's folder is not a git repository, so Dudes cannot make a separate \
+                 copy of it. Hire without a copy, or turn the folder into a git repository first. \
+                 Nobody was hired.",
+            ),
+            Self::Failed => f.write_str(
+                "Dudes could not make the copy, so nobody was hired. Check that git is installed \
+                 and the project's folder is healthy, then try again, or hire without a copy.",
+            ),
+        }
+    }
 }
 
 /// An empty HTTP refusal with no invented domain identity.
@@ -576,6 +646,8 @@ pub enum OnboardRefusal {
     Check(&'static str),
     /// Current owned-child admission refused before a hire was appended.
     SharedFolder(dudes_supervisor::SharedFolderRefusal),
+    /// The hire's own copy was refused or could not be made; nothing was hired.
+    OwnCopy(CopyRefusal),
 }
 
 #[derive(Deserialize)]
@@ -598,19 +670,34 @@ struct OnboardJson {
     check_id: Option<String>,
     #[serde(default)]
     check_revision: Option<Hex32>,
+    #[serde(default)]
+    own_copy: Option<bool>,
 }
 
 /// The request digest's domain and the fields it frames after the four text fields. v1 frames
 /// none, v2 adds the appearance, v3, for a request that names an engine, always frames all seven,
-/// and v4, for a request that names a check, frames v3's seven and then the check. A request valid
-/// under an older domain keeps its bytes.
+/// v4, for a request that names a check, frames v3's seven and then the check, and v5, for a request
+/// that asks for its own copy, frames v4's fields and then the choice. A request valid under an
+/// older domain keeps its bytes.
 fn request_framing<'a>(
     check: Option<(&'a str, &'a str)>,
     names_engine: bool,
+    own_copy: bool,
     seven: [(&'static str, &'a str); 3],
 ) -> (&'static [u8], Vec<(&'static str, &'a str)>) {
     let [_, character, accent] = seven;
     match (check, names_engine, character.1, accent.1) {
+        (Some((id, revision)), ..) if own_copy => (
+            b"dudes.onboard.v5\0",
+            seven
+                .into_iter()
+                .chain([
+                    ("check_id", id),
+                    ("check_revision", revision),
+                    ("own_copy", "true"),
+                ])
+                .collect(),
+        ),
         (Some((id, revision)), ..) => (
             b"dudes.onboard.v4\0",
             seven
@@ -678,11 +765,16 @@ impl OnboardRequest {
         let revision = check
             .as_ref()
             .map(|(id, revision)| (id.as_str(), crate::goal_replacement::hex(*revision)));
+        let own_copy = raw.own_copy.unwrap_or(false);
+        if own_copy && check.is_none() {
+            bail!("a browser hire in its own copy names a check");
+        }
         let (domain, extra) = request_framing(
             revision
                 .as_ref()
                 .map(|(id, revision)| (*id, revision.as_str())),
             raw.provider.is_some(),
+            own_copy,
             [
                 ("provider", provider.as_str()),
                 ("character", character),
@@ -714,6 +806,7 @@ impl OnboardRequest {
             role,
             goal_text,
             check,
+            own_copy,
         })
     }
 }
@@ -997,6 +1090,7 @@ mod tests {
                 profile_id: "repo_1".into(),
                 session_digest: Hex32::new([5; 32]),
                 intended_goal: goal,
+                trust_lsn: None,
             }));
             let mut index = OnboardingIndex::default();
             index.apply(&hire).unwrap();

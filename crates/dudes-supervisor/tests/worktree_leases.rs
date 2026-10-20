@@ -539,7 +539,10 @@ fn the_latest_trust_record_wins_and_a_restart_keeps_it() {
     let second = harness.supervisor.world().workspace_trust["repo"].lsn;
     assert!(second > first, "a new grant replaces the old one");
     harness.restart();
-    assert_eq!(harness.supervisor.world().workspace_trust["repo"].lsn, second);
+    assert_eq!(
+        harness.supervisor.world().workspace_trust["repo"].lsn,
+        second
+    );
     set_trust(&mut harness, false);
     assert!(harness.supervisor.world().workspace_trust.is_empty());
     harness.restart();

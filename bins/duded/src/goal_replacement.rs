@@ -999,6 +999,7 @@ mod tests {
                 profile_id: "repo".into(),
                 session_digest: Hex32::new([4; 32]),
                 intended_goal: goal,
+                trust_lsn: None,
             }));
             hire
         };

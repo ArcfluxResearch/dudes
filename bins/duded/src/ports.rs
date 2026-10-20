@@ -596,6 +596,8 @@ pub enum Ask {
         base: dudes_types::GitCommit,
         /// The lease it is based on.
         from: Option<dudes_types::WorktreeId>,
+        /// The trust grant a copy for the Floor rests on, checked again here.
+        trust: Option<Box<crate::worktree::hire::TrustTicket>>,
     },
     /// Step 5: admit again, then hire into the tree that was just created.
     WorktreeHire {
@@ -622,6 +624,18 @@ pub enum Ask {
     WorktreeEntries,
     /// `worktree.removed`.
     WorktreeRemoved(dudes_types::WorktreeId),
+    /// The directory an enrolled project is, for a trust grant to read.
+    TrustTarget(String),
+    /// `workspace.trust`: journal the grant, or its revocation when `vouch` is absent, once the
+    /// project is still enrolled at `directory`.
+    TrustSet {
+        /// The enrolled project.
+        workspace_id: String,
+        /// The directory the vouch was read from.
+        directory: PathBuf,
+        /// What the operator vouched for.
+        vouch: Option<Box<crate::worktree::trust::Vouch>>,
+    },
 }
 
 /// What the loop answered.
@@ -685,6 +699,8 @@ pub enum Answered {
     WorktreeList(Vec<crate::worktree::hire::LeaseView>),
     /// Every lease that is not removed, with its path.
     WorktreeEntries(Vec<dudes_proto::rpc::worktree::WorktreeEntry>),
+    /// The directory an enrolled project is.
+    TrustTarget(PathBuf),
     /// Nothing to report; any record the command appended is durable.
     Done,
 }
@@ -802,6 +818,21 @@ pub enum Job {
         baseline: dudes_proto::CheckBaseline,
         /// The run's count, which this job ends.
         run: u64,
+        /// The original HTTP request's response channel.
+        reply: Sender<crate::floor_actions::OnboardStep>,
+    },
+    /// A browser hire into its own copy, once the copy exists: the admission again, then the hire.
+    OnboardCopied {
+        /// The same admitted session.
+        session: crate::floor_session::SessionIdentity,
+        /// The exact original request fields.
+        request: crate::floor_actions::OnboardRequest,
+        /// What the hire's check run saw.
+        baseline: dudes_proto::CheckBaseline,
+        /// The pending lease whose tree the agent is hired into.
+        worktree: dudes_types::WorktreeId,
+        /// The grant the copy was made under, checked again at the hire.
+        trust: Box<crate::worktree::hire::TrustTicket>,
         /// The original HTTP request's response channel.
         reply: Sender<crate::floor_actions::OnboardStep>,
     },
@@ -1095,6 +1126,8 @@ pub struct Handle {
     /// Set once the exit path starts. A thread waiting on a goal's check run, or on the append
     /// after it, stops waiting, so it never holds the exit path's join on connections.
     stopping: Arc<AtomicBool>,
+    /// The worktree path a browser hire into its own copy uses. Weak, because it holds a handle.
+    worktrees: Arc<std::sync::OnceLock<std::sync::Weak<crate::worktree::hire::WorktreeHires>>>,
 }
 
 /// How long a hook waits for the loop's answer in production.
@@ -1185,6 +1218,11 @@ impl Handle {
         let (ticket, on_refusal) = match step {
             OnboardStep::Answer(answer) => return answer,
             OnboardStep::Check { ticket, on_refusal } => (ticket, on_refusal),
+            OnboardStep::Copy {
+                params,
+                baseline,
+                trust,
+            } => return self.onboard_copy(session, request, &params, baseline, *trust),
         };
         let no_effect = if on_refusal.is_some() {
             OnboardRefusal::Unavailable
@@ -1192,21 +1230,79 @@ impl Handle {
             OnboardRefusal::UnavailableNoEffect
         };
         let never = dudes_rpc::HangUp::never();
-        match crate::baseline::admit_after_baseline(&ticket, &self.stopping, &never, |baseline| {
-            self.onboard_step(|reply| Job::OnboardChecked {
-                session,
-                request,
-                baseline,
-                run: ticket.id,
-                reply,
-            })
-        }) {
+        let checked =
+            crate::baseline::admit_after_baseline(&ticket, &self.stopping, &never, |baseline| {
+                self.onboard_step(|reply| Job::OnboardChecked {
+                    session: session.clone(),
+                    request: request.clone(),
+                    baseline,
+                    run: ticket.id,
+                    reply,
+                })
+            });
+        match checked {
             Ok(Ok(OnboardStep::Answer(answer))) => answer,
+            Ok(Ok(OnboardStep::Copy {
+                params,
+                baseline,
+                trust,
+            })) => self.onboard_copy(session, request, &params, baseline, *trust),
             Err(crate::baseline::Baseline::Refused(refusal)) => {
                 on_refusal.ok_or(OnboardRefusal::Check(refusal.reason()))
             }
             Ok(Ok(OnboardStep::Check { .. }) | Err(_)) | Err(_) => Err(no_effect),
         }
+    }
+
+    /// A browser hire into its own copy: make the copy here, off the loop, then ask the loop to
+    /// hire into it. A copy made for a hire that does not happen is removed.
+    fn onboard_copy(
+        &self,
+        session: crate::floor_session::SessionIdentity,
+        request: crate::floor_actions::OnboardRequest,
+        params: &HireParams,
+        baseline: dudes_proto::CheckBaseline,
+        trust: crate::worktree::hire::TrustTicket,
+    ) -> Result<crate::floor_actions::OnboardOutcome, crate::floor_actions::OnboardRefusal> {
+        use crate::floor_actions::{CopyRefusal, OnboardRefusal, OnboardStep};
+        use crate::worktree::hire::Why;
+        let Some(worktrees) = self.worktrees() else {
+            return Err(OnboardRefusal::OwnCopy(CopyRefusal::Failed));
+        };
+        let lease = worktrees.prepare(params, Some(&trust)).map_err(|failure| {
+            OnboardRefusal::OwnCopy(match failure.why {
+                Why::NotARepository => CopyRefusal::NotARepository,
+                Why::TrustChanged => CopyRefusal::TrustChanged(trust.workspace_id.clone()),
+                Why::Other => CopyRefusal::Failed,
+            })
+        })?;
+        let answer = self
+            .onboard_step(|reply| Job::OnboardCopied {
+                session,
+                request,
+                baseline,
+                worktree: lease.worktree,
+                trust: Box::new(trust),
+                reply,
+            })
+            .and_then(|step| match step {
+                OnboardStep::Answer(answer) => answer,
+                _ => Err(OnboardRefusal::Unavailable),
+            });
+        if answer.is_err() {
+            worktrees.discard(lease.worktree);
+        }
+        answer
+    }
+
+    /// The worktree path the daemon wired in, once it has.
+    fn worktrees(&self) -> Option<Arc<crate::worktree::hire::WorktreeHires>> {
+        self.worktrees.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    /// Wire in the worktree path, so a browser hire into its own copy can make one.
+    pub fn wire_worktrees(&self, worktrees: &Arc<crate::worktree::hire::WorktreeHires>) {
+        let _ = self.worktrees.set(Arc::downgrade(worktrees));
     }
 
     /// Send one onboarding job and wait for its step, answering unavailable once the daemon is
@@ -1540,6 +1636,7 @@ impl Handle {
             journal_stopped: Arc::new(Mutex::new(None)),
             hook_reply_timeout: DEFAULT_HOOK_REPLY_TIMEOUT,
             stopping: Arc::new(AtomicBool::new(false)),
+            worktrees: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -2147,6 +2244,18 @@ impl Control for LoopControl {
                 "the loop answered {other:?} for worktree.list"
             ))),
         }
+    }
+
+    fn workspace_trust(
+        &self,
+        params: dudes_proto::rpc::workspace::TrustParams,
+    ) -> Result<dudes_proto::rpc::workspace::TrustResult, RpcError> {
+        let Some(worktrees) = &self.worktrees else {
+            return Err(crate::worktree::unavailable(
+                "this daemon was started without worktree support",
+            ));
+        };
+        worktrees.trust(&params)
     }
 
     fn worktree_removed(

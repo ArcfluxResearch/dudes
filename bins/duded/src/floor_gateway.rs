@@ -1937,6 +1937,14 @@ fn onboard_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) 
                 "note": refusal.to_string()
             }),
         ),
+        Err(OnboardRefusal::OwnCopy(refusal)) => action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({
+                "attempt_id": attempt_wire, "state": "refused", "reason": "own_copy",
+                "note": refusal.to_string()
+            }),
+        ),
     }
 }
 

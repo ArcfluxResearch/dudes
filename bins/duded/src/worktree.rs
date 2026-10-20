@@ -13,6 +13,7 @@ use dudes_types::WorktreeId;
 
 pub mod git;
 pub mod hire;
+pub mod trust;
 
 /// The refusal for a worktree hire this daemon cannot serve.
 pub(crate) fn unavailable(message: impl Into<String>) -> RpcError {

@@ -31,7 +31,7 @@ use std::time::Duration;
 use dudes_providers::launch::{EnvVar, LaunchInput, LaunchSpec};
 use dudes_types::GitCommit;
 
-use crate::predicate::{PredicateOutcome, PredicateRunner};
+use crate::predicate::{PredicateCaptured, PredicateOutcome, PredicateRunner};
 
 /// The oldest git with `git worktree remove`.
 const MIN_VERSION: (u32, u32) = (2, 17);
@@ -133,6 +133,22 @@ impl Git {
         args: &[&OsStr],
         deadline: Duration,
     ) -> Result<(Option<i32>, String), GitError> {
+        let spec = self.spec(cwd, args)?;
+        match self.runner.run(&spec, deadline) {
+            Ok(PredicateOutcome::Finished {
+                timed_out: true, ..
+            }) => Err(GitError::TimedOut),
+            Ok(PredicateOutcome::Finished {
+                exit, output_tail, ..
+            }) => Ok((exit, output_tail.trim().to_owned())),
+            Ok(PredicateOutcome::Swept) => Err(GitError::Swept),
+            Err(error) => Err(GitError::Failed(format!("git could not start: {error}"))),
+        }
+    }
+
+    /// The launch of `git <args>` in `cwd`: no hooks, no filesystem monitor, no system or user
+    /// configuration, and no prompt.
+    fn spec(&self, cwd: &Path, args: &[&OsStr]) -> Result<LaunchSpec, GitError> {
         let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
         let mut command: Vec<OsString> = vec![
             self.program()?.into_os_string(),
@@ -153,20 +169,39 @@ impl Git {
         if let Some(path) = &self.path {
             env.push(EnvVar::new("PATH", path.clone()));
         }
-        let spec = LaunchSpec {
+        Ok(LaunchSpec {
             argv: command,
             env,
             cwd: cwd.to_path_buf(),
             stdin: LaunchInput::Null,
-        };
-        match self.runner.run(&spec, deadline) {
-            Ok(PredicateOutcome::Finished {
+        })
+    }
+
+    /// Run `git <args>` in `cwd` and return its exit code and the first `cap` bytes of its
+    /// standard output, untrimmed, and whether it wrote more.
+    ///
+    /// # Errors
+    ///
+    /// [`GitError`] for a missing git, a deadline, a daemon exit, or a runner that cannot capture.
+    pub fn capture(
+        &self,
+        cwd: &Path,
+        args: &[&OsStr],
+        deadline: Duration,
+        cap: usize,
+    ) -> Result<(Option<i32>, Vec<u8>, bool), GitError> {
+        let spec = self.spec(cwd, args)?;
+        match self.runner.run_captured(&spec, deadline, cap) {
+            Ok(PredicateCaptured::Finished {
                 timed_out: true, ..
             }) => Err(GitError::TimedOut),
-            Ok(PredicateOutcome::Finished {
-                exit, output_tail, ..
-            }) => Ok((exit, output_tail.trim().to_owned())),
-            Ok(PredicateOutcome::Swept) => Err(GitError::Swept),
+            Ok(PredicateCaptured::Finished {
+                exit,
+                stdout,
+                truncated,
+                ..
+            }) => Ok((exit, stdout, truncated)),
+            Ok(PredicateCaptured::Swept) => Err(GitError::Swept),
             Err(error) => Err(GitError::Failed(format!("git could not start: {error}"))),
         }
     }

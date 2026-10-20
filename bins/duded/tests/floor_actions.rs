@@ -721,7 +721,7 @@ fn browser_enrollment_view_is_finite_and_safe() {
                 "workspace_id":"repo_1", "label":"Service workspace", "engines":["claude"],
                 "goal_usd_micros":"5000000",
                 "agent_usd_per_day_micros":"10000000", "agent_tokens_per_day":null,
-                "goal_tokens":null, "hop_cap":3
+                "goal_tokens":null, "hop_cap":3, "trusted":false
             }]
         })
     );
@@ -1125,7 +1125,7 @@ fn uncapped_hires_of_every_engine_need_no_budget() {
             "workspaces": [{
                 "workspace_id":"repo_1", "label":"Service workspace",
                 "engines":["claude", "codex", "pi"], "goal_usd_micros":null, "agent_usd_per_day_micros":null,
-                "agent_tokens_per_day":null, "goal_tokens":null, "hop_cap":3
+                "agent_tokens_per_day":null, "goal_tokens":null, "hop_cap":3, "trusted":false
             }]
         })
     );
@@ -2048,6 +2048,7 @@ fn browser_onboarding_goal_text_holding_nul_is_refused_before_effect() {
                     profile_id: profile.id.clone(),
                     session_digest: admitting,
                     intended_goal: planted_goal.clone(),
+                    trust_lsn: None,
                 })),
             },
             Record::GoalSet {
@@ -9535,6 +9536,7 @@ fn browser_goal_index_refuses_a_goal_set_with_both_attributions() {
                         profile_id: "repo_1".to_owned(),
                         session_digest,
                         intended_goal: intended.clone(),
+                        trust_lsn: None,
                     })),
                 },
                 Record::GoalSet {

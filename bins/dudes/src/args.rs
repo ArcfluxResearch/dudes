@@ -449,6 +449,16 @@ pub enum WorkspaceCommand {
     },
     /// The file's entries beside the running set.
     List,
+    /// Trust one enrolled project, so the Floor may hire an agent into its own copy of it.
+    Trust {
+        /// The workspace id.
+        id: String,
+    },
+    /// Stop trusting one enrolled project.
+    Untrust {
+        /// The workspace id.
+        id: String,
+    },
     /// Add one row to a workspace's checks table, then have the daemon adopt that change.
     CheckAdd(Box<crate::workspace::NewCheck>),
     /// Delete one row of a workspace's checks table, then have the daemon adopt that change.
@@ -885,6 +895,19 @@ COMMANDS
 
     project list
         The configuration's projects beside the ones the daemon runs.
+
+    project trust <id>
+    project untrust <id>
+        Trust an enrolled project, or stop trusting it. While a project is trusted the Floor
+        may hire a Claude agent into its own copy of it (a git worktree on a new branch). The
+        daemon records what you vouch for: the project's folder, the repository's .claude
+        directory and .mcp.json at the current commit, and its git configuration. A change
+        to any of them, or a different folder at the same path, stops the Floor's copies
+        until you trust the project again. A trusted copy runs the repository's own Claude
+        settings, so their environment values and helper commands apply without asking. The
+        grant is refused for a repository whose configuration includes other files or defines a
+        filter, or whose .claude or .mcp.json is a symbolic link. Agents already hired keep
+        working after an untrust. Needs the daemon running.
 
     project check add <project> --id <id> --label <text> [--timeout-s <n>]
                         [--may-already-pass] -- <program> [args...]
@@ -1929,6 +1952,22 @@ fn workspace(
             reject_leftovers(rest)?;
             Ok(WorkspaceCommand::List)
         }
+        word @ ("trust" | "untrust") => match rest {
+            [] => Err(ArgError::Missing("<id>")),
+            [first, ..] if asks_for_help(first) => Err(ArgError::HelpRequested),
+            [id] => {
+                let id = id
+                    .clone()
+                    .into_string()
+                    .map_err(|_| ArgError::NotUtf8("<id>"))?;
+                Ok(if word == "trust" {
+                    WorkspaceCommand::Trust { id }
+                } else {
+                    WorkspaceCommand::Untrust { id }
+                })
+            }
+            [_, extra, ..] => Err(ArgError::UnknownFlag(extra.to_string_lossy().into_owned())),
+        },
         "check" => workspace_check(rest, payload),
         other => Err(ArgError::UnknownCommand(format!("project {other}"))),
     }
@@ -4217,6 +4256,31 @@ mod worktree_tests {
         assert!(matches!(
             hired(&["--trusted", "--worktree", "--from", "not-an-id"]),
             Err(ArgError::BadValue { flag: "--from", .. })
+        ));
+    }
+
+    #[test]
+    fn project_trust_and_untrust_take_exactly_one_project_id() {
+        let command = |parts: &[&str]| parse(&argv(parts)).map(|parsed| parsed.command);
+        assert_eq!(
+            command(&["project", "trust", "repo_1"]).unwrap(),
+            Command::Workspace(WorkspaceCommand::Trust {
+                id: "repo_1".into()
+            })
+        );
+        assert_eq!(
+            command(&["project", "untrust", "repo_1"]).unwrap(),
+            Command::Workspace(WorkspaceCommand::Untrust {
+                id: "repo_1".into()
+            })
+        );
+        assert!(matches!(
+            command(&["project", "trust"]),
+            Err(ArgError::Missing("<id>"))
+        ));
+        assert!(matches!(
+            command(&["project", "trust", "a", "b"]),
+            Err(ArgError::UnknownFlag(_))
         ));
     }
 

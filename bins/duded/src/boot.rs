@@ -1087,6 +1087,7 @@ where
         daemon.handle(),
         git,
     ));
+    daemon.handle().wire_worktrees(&worktrees);
     let cleanup = Arc::clone(&worktrees);
     let _ = std::thread::Builder::new()
         .name("worktree-cleanup".to_owned())
