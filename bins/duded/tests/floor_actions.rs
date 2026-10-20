@@ -10101,7 +10101,7 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
             .expect_err("a non-canonical cwd is refused");
         assert_eq!(code, -32602, "InvalidParams");
         assert!(
-            message.contains("workspace `repo_2` whose cwd is not its canonical form"),
+            message.contains("project `repo_2` in [floor.onboarding] workspaces whose cwd is not its canonical form"),
             "{message}"
         );
         assert_eq!(offered(addr, &cookie, &csrf), only_repo_1);

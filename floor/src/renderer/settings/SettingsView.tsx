@@ -226,8 +226,8 @@ export function WorkspaceSettings({ report, floor, headingId = 'settings-workspa
   readonly floor?: FloorState;
   readonly headingId?: string;
 }) {
-  return <section aria-labelledby={headingId}><h3 id={headingId}>Enrolled projects</h3>
-      {report.workspaces.length === 0 ? <p>No enrolled projects.</p> : <ul>{report.workspaces.map((workspace) =>
+  return <section aria-labelledby={headingId}><h3 id={headingId}>Projects</h3>
+      {report.workspaces.length === 0 ? <p>No projects yet.</p> : <ul>{report.workspaces.map((workspace) =>
         <li key={workspace.workspace_id}><h4>{workspace.label}</h4><p>Project <code>{workspace.workspace_id}</code></p>
           <dl>
             <div><dt>Agent daily dollar ceiling</dt><dd>{ceiling(workspace.agent_usd_per_day_micros)}</dd></div>
