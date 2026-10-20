@@ -42,7 +42,7 @@ const KIND_LABEL: Readonly<Record<GitChangeKind, string>> = Object.freeze({
 
 type Mode = 'none' | 'give' | 'changes' | 'edit' | 'remove' | 'stop';
 
-function focusHeading(node: HTMLHeadingElement | null): (() => void) | void {
+function focusSheet(node: HTMLElement | null): (() => void) | void {
   if (node === null) return undefined;
   node.focus();
   return handFocusOnLeave(node);
@@ -99,12 +99,17 @@ function ChangedFiles({ floor, card }: { readonly floor: FloorState; readonly ca
   </section>;
 }
 
-function InstructionEvidence({ floor, review }: {
+function InstructionEvidence({ floor, review, reviewing }: {
   readonly floor: FloorState;
   readonly review: InstructionReview;
+  /** False while the agent is still working: nothing is offered to accept yet. */
+  readonly reviewing: boolean;
 }) {
   const holding = groupGaps(review);
   return <section aria-label="Instruction review"><h4>Instruction review</h4>
+    <p>{!reviewing ? 'Dudes is watching the instruction files while the agent works. You can review the work when it is ready.'
+      : holding.length === 0 ? 'Nothing unusual was recorded about the instruction files.'
+        : 'Dudes could not see everything the agent relied on, so look over the work yourself.'}</p>
     <h5>Known changed paths</h5>
     {review.changed_paths.length === 0 ? <p>No known changed paths were retained.</p>
       : <ul className="ticket-files">{review.changed_paths.map((row, at) => <li key={at}>
@@ -119,12 +124,12 @@ function InstructionEvidence({ floor, review }: {
           return typeof name === 'string' && name !== '' ? name : 'a recorded agent';
         }).join(', ')}.</>}
       </li>)}</ul>}
-    <p>Look at the changed files above{holding.length === 0 ? '' : ' or the paths named here'}, then Accept if the work is fine.
+    {!reviewing ? null : <p>Look at the changed files above{holding.length === 0 ? '' : ' or the paths named here'}, then Accept if the work is fine.
       {holding.length === 0 ? ' Accept records that you reviewed the change.'
-        : ' Accept records that you reviewed it despite these gaps.'} If it is not fine, choose Ask for changes.</p>
-    <p>These observations compare sampled endpoints. They do not identify an exclusive writer or prove that instructions were unchanged between samples.</p>
-    {review.pending_comparison ? <p role="status">The instruction comparison is still pending. Review actions are unavailable.</p> : null}
+        : ' Accept records that you reviewed it despite these gaps.'} If it is not fine, choose Ask for changes.</p>}
+    {review.pending_comparison ? <p role="status">Dudes is still comparing the instruction files. Review actions are unavailable until it finishes.</p> : null}
     <details><summary>Observation details</summary>
+      <p>These observations compare sampled endpoints. They do not identify an exclusive writer or prove that instructions were unchanged between samples.</p>
       <p>Review through record {review.watermark.through_lsn}.</p>
       <p>Review digest <code>{review.watermark.set_digest}</code>.</p>
       {review.gaps.length === 0 ? null : <>
@@ -320,7 +325,9 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
   const modeAllowed = mode === 'none' || (mode === 'give'
     ? actions.includes('give') || actions.includes('try_again') : actions.includes(mode));
 
-  const reviewReady = !requiresInstructionReview(card) || reviewedWatermark(detail, card) !== null;
+  const reviewing = card.status === 'review' || card.status === 'blocked';
+  const needsReview = requiresInstructionReview(card) && reviewing;
+  const reviewReady = !needsReview || reviewedWatermark(detail, card) !== null;
 
   const actionButton = (action: TicketAction) => <button key={action} type="button" className="ticket-action" data-action={action}
     disabled={sending || (action === 'edit' && editable === null)
@@ -345,17 +352,17 @@ export function TicketPanel({ floor, card, onHire, onReviewRecovery }: {
   }
 
   return <section className="card-detail ticket-panel" aria-labelledby="card-detail-title" data-selected-card-id={card.id}
-    data-ticket-status={card.status} data-mode={mode}>
-    <h3 id="card-detail-title" ref={focusHeading} tabIndex={-1}
-      data-focus-on-leave="view-board">{card.title}</h3>
+    data-ticket-status={card.status} data-mode={mode} ref={focusSheet} tabIndex={-1} data-focus-on-leave="view-board">
+    <h3 id="card-detail-title">{card.title}</h3>
     <TicketNotice card={card.id} floor={floor} />
     <Facts floor={floor} card={card} />
     <StuckActions floor={floor} card={card} onReviewRecovery={onReviewRecovery} />
     {loaded?.context == null ? null : <RecoveredReview context={loaded.context} fresh={fresh} />}
-    {loaded?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={loaded.instruction_review} />}
-    {(requiresInstructionReview(card) && !reviewReady) || (detail.card === card.id && detail.phase === 'failed')
+    {loaded?.instruction_review == null ? null : <InstructionEvidence floor={floor} review={loaded.instruction_review}
+      reviewing={reviewing} />}
+    {(needsReview && !reviewReady) || (detail.card === card.id && detail.phase === 'failed')
       || (actions.includes('edit') && detail.phase === 'ready' && editable === null) ? <div>
-      <p className="ticket-hint" role="status">{requiresInstructionReview(card)
+      <p className="ticket-hint" role="status">{needsReview
         ? 'Read the current instruction evidence before reviewing this ticket.'
         : 'Read the complete current note before editing this ticket.'}</p>
       <button type="button" className="ticket-look" disabled={detail.phase === 'loading'}

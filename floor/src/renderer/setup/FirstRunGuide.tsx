@@ -62,7 +62,8 @@ export function FirstRunGuideView({ floor, step, onStep, onClose, onHire }: {
         {entry.label}<span>{entry.status}</span></button>
     </li>)}</ol>
     <div className="guide-body">
-      <h3>{current.label}</h3><p className="guide-status" role="status">{current.status}</p>
+      <h3>{current.label}</h3>
+      {step === 'welcome' ? null : <p className="guide-status" role="status">{current.status}</p>}
       {!confirmed ? <p role="status">Waiting for a confirmed snapshot from the daemon. Recheck to try again.</p> : null}
       {step === 'welcome' ? <p>Dudes supervises coding agents while they work towards a goal.
         The Floor shows their current state and offers the actions you enable locally.</p> : null}
@@ -77,7 +78,7 @@ export function FirstRunGuideView({ floor, step, onStep, onClose, onHire }: {
       </> : null}
       {step === 'actions' ? <FloorActions floor={floor} /> : null}
       {step === 'hire' ? <>
-        <p>{current.status === 'Done' ? 'An agent is on the Floor.' : 'Open the Hire wizard, review its choices, and hire your first agent.'}</p>
+        <p>{current.status === 'Complete' ? 'An agent is on the Floor.' : 'Open the Hire wizard, review its choices, and hire your first agent.'}</p>
         {floor.onboarding === null ? <p>Hire is unavailable. Check Projects and Floor actions, then Recheck.
           If the session has used its Hire allowance, open Dudes to start a new Floor session.</p> : null}
         <button type="button" disabled={!confirmed || floor.onboarding === null}

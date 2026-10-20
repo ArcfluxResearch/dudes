@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -88,10 +89,13 @@ test('Crew folds the Hire reason behind a chip that names it, with the reason\'s
   } finally { await server.close(); }
 });
 
-test('EMPTY_OFFICE_ENTRY mutant shows Add agent in an empty office only with Hire on', async () => {
+test('an empty Floor has one way into Hire, the header and the first-task card, not the office or Crew', async () => {
+  const shell = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');
+  assert.match(shell, /addAgent=\{floor\.agents\.length === 0 && hireSwitchOn\(floor\) \? null/);
   const props = { floor: on, selectedId: null, onSelectAgent() {}, onOpenTasks() {}, onAddAgent() {} };
   const enabled = await render('OfficeCanvas', props);
-  assert.match(enabled, /id="hire-open-office"[^>]*>Add agent<\/button>/);
+  assert.match(enabled, /No current agents/);
+  assert.doesNotMatch(enabled, /id="hire-open-office"|Add agent/);
   const occupied = await render('OfficeCanvas', { ...props, floor: { ...on, agents: [{ id: '01ARZ3NDEKTSV4RRFFQ69G5FAV' }] } });
   assert.doesNotMatch(occupied, /id="hire-open-office"/);
   const disabled = await render('OfficeCanvas', { ...props, floor: off });

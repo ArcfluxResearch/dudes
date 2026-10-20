@@ -372,7 +372,7 @@ exec /bin/sleep 120
       return committed.origin === page.origin && committed.pathname === '/floor/'
         && (!navigation.loaderId || frameTree.frame.loaderId === navigation.loaderId);
     }, 'Chrome did not commit the Floor navigation', navigateTimeout);
-    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-open-office'))`), 'Floor bundle did not render Hire');
+    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-open'))`), 'Floor bundle did not render Hire');
   }
 
   async browser() {
@@ -391,7 +391,7 @@ exec /bin/sleep 120
       el.dispatchEvent(new Event('input', { bubbles: true })); return true;
     })()`);
     const next = () => this.cdp.evaluate(`(() => { const el = [...document.querySelectorAll('.hire-actions button')].find(el => el.textContent === 'Next'); if (!el) return false; el.click(); return true; })()`);
-    check(await click('#hire-open-office'), 'Hire opener missing');
+    check(await click('#hire-open'), 'Hire opener missing');
     await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-name'))`), 'Hire wizard did not open');
     check(await fill('#hire-name', 'Smoke agent'), 'Hire name missing');
     check(await fill('#hire-role', 'First-run smoke'), 'Hire role missing');

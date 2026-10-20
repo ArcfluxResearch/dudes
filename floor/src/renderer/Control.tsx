@@ -262,7 +262,8 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
     if (!showing) return undefined;
     const node = dialog.current;
     node?.showModal();
-    node?.querySelector<HTMLElement>(overlay?.kind === 'new' ? 'input[name="title"]' : '#card-detail-title')?.focus();
+    (overlay?.kind === 'new' ? node?.querySelector<HTMLElement>('input[name="title"]')
+      : node?.querySelector<HTMLElement>('.ticket-panel') ?? node?.querySelector<HTMLElement>('#card-detail-title'))?.focus();
     return () => { node?.close(); };
   }, [showing]);
   const panels: Record<ControlView, ReactNode> = {

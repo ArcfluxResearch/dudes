@@ -1101,7 +1101,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(2).fill('src/renderer/ticket/TicketBanner.tsx'),
     ...Array(8).fill(TICKET_BOARD),
     ...Array(10).fill(TICKET_PANEL),
-    ...Array(11).fill(HIRE_FORM),
+    ...Array(12).fill(HIRE_FORM),
     HIRE_ENTRY,
     ...Array(6).fill(RETIRE_PANEL),
     ...Array(2).fill(GIT_PANEL),
@@ -1252,16 +1252,17 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
 
   // The Hire form's activators, each named: sections, Back, Next, the one
   // Hire, Check again for a missing engine, Check status on the same attempt,
-  // Edit after a no-effect refusal, Hire another after a durable answer, and
-  // Close. The shell opens it.
+  // Edit after a no-effect refusal, Hire another after a durable answer, Open the
+  // hired agent, and Close. The shell opens it.
   assert.deepEqual(clicksIn(await readFile(resolve(floor, HIRE_FORM), 'utf8')).sort(), [
     '() => copyToClipboard(INSTALL_COMMANDS[engine]!)',
     '() => { if (at !== 0 && !frozen && !stuck) moveSection(-1, floor); }',
-    '() => { if (at !== SECTIONS.length - 1 && !frozen && !stuck) moveSection(1, floor); }',
+    '() => { if (!frozen && !stuck) moveSection(1, floor); }',
     '() => { if (!stuck) showSection(entry.key); }',
     '() => refreshFloorSnapshot()',
     '() => { if (!hire.sending && !waiting) void checkHireStatus(browserHireDeps); }',
     '() => { if (blocked === null && !frozen && !hire.sending) void submitHire(floor, browserHireDeps); }',
+    'onClose',
     'onClose',
     'onClose',
     '() => { if (!hire.sending) releaseAttempt(); }',

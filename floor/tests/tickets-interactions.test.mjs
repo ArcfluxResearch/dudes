@@ -132,8 +132,8 @@ async function closeHireCallback(page, dialog, opener) {
   assert.ok(callback && completion && cancellation);
   const code = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const closeHire = new Function('backdropPress', 'hireDialog', 'hireOpener', 'document', 'setHiring', 'restoreFocusAfterDialog',
-    `${code}\nreturn closeHire;`)({ current: null }, { current: dialog }, { current: opener }, page.document,
-    () => {}, restoreFocusAfterDialog);
+    'leaveHire', `${code}\nreturn closeHire;`)({ current: null }, { current: dialog }, { current: opener }, page.document,
+    () => {}, restoreFocusAfterDialog, () => {});
   const selections = [];
   const completed = ts.transpileModule(`const complete = ${completion};`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -305,7 +305,7 @@ test('a card opens a modal and Escape closes only that modal and returns focus',
     await act(async () => press(button));
     const dialog = app.page.host.querySelector('.ticket-dialog');
     assert.notEqual(dialog.getAttribute('open'), null);
-    assert.equal(app.page.document.activeElement.id, 'card-detail-title');
+    assert.equal(app.page.document.activeElement.getAttribute('data-selected-card-id'), cardId(1), 'the sheet, not its title, holds focus');
     assert.ok(textOf(dialog).includes('<b>Agent text</b>'));
     assert.equal(dialog.querySelector('b'), null);
     let prevented = false, stopped = false;

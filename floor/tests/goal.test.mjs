@@ -584,7 +584,7 @@ test('the check choice offers Keep and then the agent’s workspace checks, with
   assert.deepEqual(goalChecks(html), [
     ['keep', true, 'Keep “Parser tests pass”'],
     ['default', false, 'Parser tests pass'],
-    ['contributing', false, 'CONTRIBUTING.md exists (may already pass)'],
+    ['contributing', false, 'CONTRIBUTING.md exists (may already be true)'],
   ]);
   assert.ok(html.includes('</fieldset><p class="hire-note">Changing the goal runs the check once first. If it already '
     + 'passes, nothing changes.</p>'), 'the choice does not say the check runs once first');

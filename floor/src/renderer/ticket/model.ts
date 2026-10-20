@@ -114,7 +114,9 @@ export function requiresInstructionReview(card: CardRow): boolean {
 
 /** Every state has an action, so none is a dead end. */
 export function actionsOf(card: CardRow): readonly TicketAction[] {
-  if (requiresInstructionReview(card)) return ['accept', 'changes', 'stop'];
+  if (requiresInstructionReview(card) && (card.status === 'review' || card.status === 'blocked')) {
+    return ['accept', 'changes', 'stop'];
+  }
   switch (card.status) {
     case 'todo':
     case 'claimed': return ['give', 'edit', 'remove'];

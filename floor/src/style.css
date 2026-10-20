@@ -2128,6 +2128,7 @@ samp,
 .focus-toggle[aria-pressed='true'],
 .settings-office button[aria-pressed='true'],
 .hire-actions .hire-submit,
+.hire-actions .hire-next,
 .answer-actions .answer-send,
 .goal-actions .goal-send {
   border-color: var(--accent-ink);
@@ -3348,6 +3349,8 @@ samp,
 .first-task button:disabled { opacity: .55; cursor: default; }
 .first-task button:focus-visible,
 .first-task textarea:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+
+.ticket-panel:focus { outline: none; }
 
 /* Hire: its footer stays in view, so Hire is never below the fold of a phone. */
 .hire-wizard .hire-actions {

@@ -340,7 +340,7 @@ test('the new ticket form is a title, and everything else is optional', () => {
   assert.match(html, /<label[^>]*>Title<\/label><input[^>]*required=""[^>]*name="title"/);
   assert.match(html, /Note \(optional\)/);
   assert.match(html, /Done when/);
-  assert.match(html, /<option value="default" selected="">default passes \(may already pass\)<\/option>|<option value="default">default passes \(may already pass\)<\/option>/);
+  assert.match(html, /<option value="default" selected="">default passes \(may already be true\)<\/option>|<option value="default">default passes \(may already be true\)<\/option>/);
   assert.match(html, /<option value="second">second passes<\/option>/);
   assert.match(html, /Give to agent \(optional\)/);
   assert.match(html, /<option value=""[^>]*>Not yet<\/option>/);

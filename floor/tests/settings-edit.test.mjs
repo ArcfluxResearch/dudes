@@ -58,3 +58,23 @@ test('a limit asks before it goes up or is set where there was none, and never w
     }
   } finally { await server.close(); }
 });
+
+test('a restart question and a "takes a restart" line go once the daemon has come back', async () => {
+  const root = resolve(import.meta.dirname, '..');
+  const server = await createServer({ root, server: { middlewareMode: true, hmr: false }, appType: 'custom', logLevel: 'silent' });
+  try {
+    const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
+    store.resetFloorStore();
+    const edit = await server.ssrLoadModule('/src/renderer/settings/edit.ts');
+    store.beginFloorEpoch();
+    store.noteTransport('open');
+    await edit.changeSetting('floor.terminal', 'on');
+    assert.match(edit.getSettingsEditState().asking.question, /restart of the daemon/);
+    store.noteTransport('open');
+    assert.notEqual(edit.getSettingsEditState().asking, null, 'a stream that never dropped is not a restart');
+    store.noteTransport('close');
+    store.noteTransport('open');
+    assert.equal(edit.getSettingsEditState().asking, null);
+    edit.resetSettingsEdit();
+  } finally { await server.close(); }
+});

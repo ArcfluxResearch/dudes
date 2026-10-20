@@ -579,6 +579,17 @@ export function releaseAttempt(): void {
     recordedAgent: null });
 }
 
+/**
+ * What closing the dialog does: a form nobody sent, and a hire that completed, are forgotten, so the
+ * dialog reopens on the first step with empty fields. An attempt still waiting on an answer, or one whose
+ * goal is not yet set, stays so it can be checked and never repeated.
+ */
+export function leaveHire(): void {
+  const kind = state.outcome?.kind;
+  if (state.sending || (state.attempt !== null && kind !== 'complete') || state === INITIAL) return;
+  commit({ ...INITIAL });
+}
+
 /** Start over after a hire the journal holds, with an empty form. */
 export function startAnotherHire(): void {
   const kind = state.outcome?.kind;

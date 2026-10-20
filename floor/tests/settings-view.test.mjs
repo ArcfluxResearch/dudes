@@ -59,12 +59,12 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.doesNotMatch(html, /floor\.chat/);
     const gitRow = (git) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, git } }), onSetup() {} }));
-    assert.match(gitRow(false), /<dt>Read checkouts in the Git tab <code>floor\.git<\/code><\/dt><dd>Off<button type="button">Turn on<\/button><\/dd>/);
-    assert.match(gitRow(true), /<dt>Read checkouts in the Git tab <code>floor\.git<\/code><\/dt><dd>On<button type="button">Turn off<\/button><\/dd>/);
-    assert.match(html, /<dt>Start new goals <code>floor\.renew<\/code><\/dt><dd>Off It needs goal change and Hire\.<button type="button">Turn on<\/button><\/dd>/);
+    assert.match(gitRow(false), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> Off <button type="button">Turn on<\/button><small class="settings-key"> Setting name: <code>floor\.git<\/code><\/small><\/dd>/);
+    assert.match(gitRow(true), /<dt>Show changed files<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><small class="settings-key"> Setting name: <code>floor\.git<\/code><\/small><\/dd>/);
+    assert.match(html, /<dt>Start new goals<\/dt><dd><span class="settings-says">[^<]*<\/span> Off It needs Change goals and Hire agents\. <button type="button">Turn on<\/button><small class="settings-key"> Setting name: <code>floor\.renew<\/code><\/small><\/dd>/);
     const renewOn = renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, renew: true } }), onSetup() {} }));
-    assert.match(renewOn, /<dt>Start new goals <code>floor\.renew<\/code><\/dt><dd>On<button type="button">Turn off<\/button><\/dd>/);
+    assert.match(renewOn, /<dt>Start new goals<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button type="button">Turn off<\/button><small class="settings-key"> Setting name: <code>floor\.renew<\/code><\/small><\/dd>/);
     const hint = (control) => renderToStaticMarkup(createElement(UnavailableControls, { floor: floor(), control }));
     assert.match(hint('retire'), /Turn on Pause, resume and rename and Retire agents under\s+Floor switches in Settings/);
     assert.match(hint('terminal'), /Turn on Attach terminals under Floor switches in Settings/);
@@ -72,8 +72,8 @@ test('Settings shows read-only running values, local commands, Setup and About',
     assert.match(html, /Turn a switch or an engine on or off here, and set the spending limits/);
     const diffRow = (git) => renderToStaticMarkup(createElement(SettingsView,
       { floor: floor({ ...REPORT, switches: { ...REPORT.switches, diff: true, git } }), onSetup() {} }));
-    assert.match(diffRow(false), /floor\.diff<\/code><\/dt><dd>On, but needs Git</);
-    assert.match(diffRow(true), /floor\.diff<\/code><\/dt><dd>On<button/);
+    assert.match(diffRow(false), /<dt>Read ticket changes<\/dt><dd><span class="settings-says">[^<]*<\/span> On, but it needs Show changed files /);
+    assert.match(diffRow(true), /<dt>Read ticket changes<\/dt><dd><span class="settings-says">[^<]*<\/span> On <button/);
     noteTransport('close');
     const closed = renderToStaticMarkup(createElement(SettingsView, { floor: getFloorState(), onSetup() {} }));
     assert.match(closed, /Settings is unavailable while the stream is disconnected/);

@@ -337,6 +337,23 @@ test('instruction review renders known paths, independent uncertainty and physic
   assert.ok(!/data-action="accept" disabled/.test(html));
 });
 
+test('a ticket still being worked on offers no Accept or Ask for changes, and keeps the technical review under its disclosure', async () => {
+  subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'doing', { claimed_by: ADA }, {
+    instruction_review: instructionSummary(),
+  })] });
+  const card = store.getFloorState().cards[0];
+  const { deps } = daemon(() => json(200, reply({ instruction_review: instructionReview() })));
+  await detail.loadDetail(card, deps);
+  const html = panel();
+  assert.doesNotMatch(html, /data-action="accept"|data-action="changes"/);
+  assert.match(html, /data-action="stop"/);
+  assert.doesNotMatch(html, />Accept<|>Ask for changes</);
+  const start = html.indexOf('<section aria-label="Instruction review">');
+  const visible = html.slice(start, html.indexOf('<details', start));
+  assert.doesNotMatch(visible, /exclusive writer|sampled endpoints/);
+  assert.match(html, /<details><summary>Observation details<\/summary><p>These observations compare sampled endpoints/);
+});
+
 test('instruction actions require a completed read at the current sequence and exact watermark', async () => {
   subscribe(store, { cards: [ticketCard(1, 'blocked', {}, { instruction_review: instructionSummary() })] });
   const card = store.getFloorState().cards[0];
@@ -441,7 +458,8 @@ test('gap evidence names only agents that were not working on the ticket and kee
   assert.ok(trace.includes(`<code>${ADA}</code>`), trace);
   assert.ok(trace.includes(`<code>${GRACE}</code>`), trace);
   assert.match(trace, /Coverage gap 3\. configuration unknown\. Unresolved context\.[\s\S]*?Found during this ticket\./);
-  assert.match(visible, /do not identify an exclusive writer/);
+  assert.doesNotMatch(visible, /exclusive writer/, 'the technical caveat is not in the first view');
+  assert.match(trace, /do not identify an exclusive writer/);
 });
 
 test('every gap kind reads as a plain sentence and the review says what to do next', async () => {

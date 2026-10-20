@@ -7,6 +7,7 @@
 import { currentFloorSession } from '../../session.ts';
 import { floorFetch } from '../../transport.ts';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
+import { getFloorState, subscribeToFloor } from '../floor/store.ts';
 
 export type SettingsEditResult =
   | { readonly kind: 'saved'; readonly applied: readonly string[]; readonly restart: readonly string[] }
@@ -38,6 +39,16 @@ function commit(next: SettingsEditState): void {
 }
 
 export function resetSettingsEdit(): void { commit(IDLE); }
+
+/**
+ * The daemon came back, so a change that was waiting for a restart has had it: drop the question and the
+ * "takes a restart" line, which would otherwise keep saying so. A request still in flight is left alone.
+ */
+function forgetPendingRestart(): void {
+  if (state.sending !== null) return;
+  const waiting = state.last?.result.kind === 'saved' && state.last.result.restart.length > 0;
+  if (state.asking !== null || waiting) commit(IDLE);
+}
 
 function strings(value: unknown): readonly string[] | null {
   return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value as string[] : null;
@@ -125,6 +136,13 @@ export async function confirmSetting(): Promise<void> {
 export function cancelSetting(): void {
   if (state.asking !== null) commit({ sending: null, asking: null, last: null });
 }
+
+let lastPhase = getFloorState().phase;
+subscribeToFloor(() => {
+  const phase = getFloorState().phase;
+  if (lastPhase === 'closed' && phase === 'live') forgetPendingRestart();
+  lastPhase = phase;
+});
 
 export type LimitUnit = 'usd' | 'tokens';
 

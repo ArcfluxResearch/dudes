@@ -359,9 +359,9 @@ test('a u64::MAX ceiling renders exactly, never through Number', () => {
   hire.editDraft({ workspaceId: 'repo_1' });
   hire.showSection('briefing');
   const html = render();
-  assert.match(html, /<dt>Goal ceiling<\/dt><dd>\$18,446,744,073,709\.551615<\/dd>/);
-  assert.match(html, /<dt>Agent ceiling<\/dt><dd>\$9,007,199,254\.740993 per day<\/dd>/);
-  assert.match(html, /<dt>Floor ceiling<\/dt><dd>\$18,446,744,073,709\.551615 per day<\/dd>/);
+  assert.match(html, /<dt>Spending limit for this task<\/dt><dd>\$18,446,744,073,709\.551615<\/dd>/);
+  assert.match(html, /<dt>Daily spending limit for this agent<\/dt><dd>\$9,007,199,254\.740993 per day<\/dd>/);
+  assert.match(html, /<dt>Daily spending limit for the whole Floor<\/dt><dd>\$18,446,744,073,709\.551615 per day<\/dd>/);
 });
 
 test('field limits count UTF-8 bytes after trimming ASCII whitespace only', () => {
@@ -442,9 +442,9 @@ test('the four sections show only enrolled choices and the configured limits', (
     'a workspace offering one engine offers it chosen');
   assert.match(sections.briefing, /data-check-choice="hire" aria-invalid="false"><legend>The task is done when<\/legend>/);
   assert.deepEqual(checkOptions(sections.briefing), [['default', true, 'Site builds']]);
-  for (const [dt, dd] of [['Hop cap', '3 Managed turns'],
-    ['Goal ceiling', '\\$1\\.5'], ['Goal token ceiling', 'No cap'], ['Agent ceiling', '\\$3 per day'],
-    ['Agent token ceiling', 'No cap'], ['Floor ceiling', '\\$100 per day']]) {
+  for (const [dt, dd] of [['Most turns for this task', '3'],
+    ['Spending limit for this task', '\\$1\\.5'], ['Token limit for this task', 'No limit'], ['Daily spending limit for this agent', '\\$3 per day'],
+    ['Daily token limit for this agent', 'No limit'], ['Daily spending limit for the whole Floor', '\\$100 per day']]) {
     assert.match(sections.briefing, new RegExp(`<dt>${dt}</dt><dd>${dd}</dd>`));
   }
   const all = Object.values(sections).join('\n');
@@ -519,18 +519,18 @@ test('Briefing offers the workspace’s checks by label, the first chosen, and s
   assert.match(html, /<fieldset class="hire-choices" data-check-choice="hire" aria-invalid="false"><legend>The task is done when<\/legend>/);
   assert.deepEqual(checkOptions(html), [
     ['default', true, 'Parser tests pass'],
-    ['contributing', false, 'CONTRIBUTING.md exists (may already pass)'],
+    ['contributing', false, 'CONTRIBUTING.md exists (may already be true)'],
   ]);
-  assert.match(html, /<\/fieldset><p class="hire-note">Dudes runs this check once before hiring\. If it already passes, there is nothing to do, so nobody is hired\.<\/p>/);
+  assert.match(html, /<\/fieldset><p class="hire-note">Dudes tries this check once before hiring\. If it already passes, there is nothing for the agent to do, so no one is hired\.<\/p>/);
   assert.doesNotMatch(html, /<dt>Completion check<\/dt>/, 'the old configured-limits row is still drawn');
 
   hire.editDraft({ checkId: 'contributing' });
   assert.deepEqual(checkOptions(render()), [
     ['default', false, 'Parser tests pass'],
-    ['contributing', true, 'CONTRIBUTING.md exists (may already pass)'],
+    ['contributing', true, 'CONTRIBUTING.md exists (may already be true)'],
   ]);
-  assert.match(render(), /<p class="hire-note">This check may already pass, so Dudes hires without running it first\./);
-  assert.doesNotMatch(render(), /nobody is hired/, 'a check that may already pass still says a pass hires nobody');
+  assert.match(render(), /<p class="hire-note">This check might already be true before the agent starts, so Dudes does not try it first\./);
+  assert.doesNotMatch(render(), /no one is hired/, 'a check that may already pass still says a pass hires nobody');
   // Another workspace has its own checks; a choice it does not offer falls back to its first.
   hire.editDraft({ workspaceId: 'repo_2' });
   html = render();
@@ -625,7 +625,7 @@ test('each check refusal keeps the wizard open on its check choice, in its own w
       + `${text}</p>`), `${reason} is not shown as itself`);
     assert.deepEqual(checkOptions(html), [
       ['default', false, 'Parser tests pass'],
-      ['contributing', true, 'CONTRIBUTING.md exists (may already pass)'],
+      ['contributing', true, 'CONTRIBUTING.md exists (may already be true)'],
     ], `${reason} lost the check choice`);
     const sessionLimit = reason === 'check_running' || reason === 'check_limit';
     assert.match(html, new RegExp(`data-check-choice="hire" aria-invalid="${!sessionLimit}"`),
@@ -684,23 +684,23 @@ test('the Engine step states what each offered engine can touch', () => {
   const lines = [...render().matchAll(/<span class="hire-choice-label">([^<]+)<\/span><span class="hire-note">([^<]+)</g)]
     .map(([, engine, line]) => [engine, line]);
   assert.deepEqual(lines, [
-    ['Claude', 'Runs with permission prompts skipped. It can change any file your account can.'],
-    ['Codex', 'Codex&#x27;s sandbox limits its own writes to this project. The completion check runs this '
-      + 'project&#x27;s code with no sandbox.'],
-    ['Pi', 'Has no sandbox. It can change any file your account can.'],
+    ['Claude', 'Does not ask before it acts. It can change any file your account can.'],
+    ['Codex', 'Can only write inside this project. The check that decides the task is done runs the '
+      + 'project&#x27;s own code without that protection.'],
+    ['Pi', 'Nothing stops it changing files. It can change any file your account can.'],
   ]);
 });
 
-test('an unset ceiling reads No cap, and the hop cap and the engine bound the goal', () => {
+test('an unset ceiling reads No limit, and the hop cap and the engine bound the goal', () => {
   subscribe({ onboarding: { ...UNCAPPED, workspaces: [{ ...UNCAPPED.workspaces[0], goal_tokens: '9007199254740993' }] } });
   hire.editDraft({ workspaceId: 'repo_3', engine: 'pi' });
   hire.showSection('briefing');
   const html = render();
-  for (const [dt, dd] of [['Goal ceiling', 'No cap'], ['Goal token ceiling', '9007199254740993 tokens'],
-    ['Agent ceiling', 'No cap'], ['Agent token ceiling', 'No cap'], ['Floor ceiling', 'No cap']]) {
+  for (const [dt, dd] of [['Spending limit for this task', 'No limit'], ['Token limit for this task', '9007199254740993 tokens'],
+    ['Daily spending limit for this agent', 'No limit'], ['Daily token limit for this agent', 'No limit'], ['Daily spending limit for the whole Floor', 'No limit']]) {
     assert.match(html, new RegExp(`<dt>${dt}</dt><dd>${dd}</dd>`), dt);
   }
-  assert.match(html, /<p class="hire-note">This agent runs at most 8 turns for this task\. Pi&#x27;s own plan limits apply, and so does any ceiling shown above\.<\/p>/);
+  assert.match(html, /<p class="hire-note">This agent runs at most 8 turns for this task\. Pi&#x27;s own plan limits apply, and so does any limit shown above\.<\/p>/);
   assert.doesNotMatch(html, /ceilings are the admission limits/);
 });
 
@@ -717,7 +717,8 @@ test('with no project the Workspace step gives one setup command and no jargon',
   assert.match(html, /Agents work in a project, and none is set up yet\. In your project&#x27;s folder run <code>dudes project add<\/code>\./);
   assert.equal((html.match(/none is set up yet/g) ?? []).length, 1);
   assert.doesNotMatch(html, /No enrolled project|operator enrolled|Hire needs a project|by its ID/);
-  assert.match(html, /class="hire-submit"[^>]*aria-disabled="true"/);
+  assert.doesNotMatch(html, /class="hire-submit"/, 'Hire is not offered on the Project step');
+  assert.match(html, /class="hire-next"/);
   hire.moveSection(1, getFloorState());
   const afterNext = render();
   assert.equal((afterNext.match(/none is set up yet/g) ?? []).length, 1);
@@ -763,6 +764,43 @@ test('a registered engine this project lacks is explained as configuration or a 
   }
 });
 
+test('Next is the main button on every step but the last, and Hire is offered only on the last', () => {
+  subscribe();
+  for (const section of ['identity', 'workspace', 'engine']) {
+    hire.showSection(section);
+    const html = render();
+    assert.match(html, /class="hire-next"[^>]*>Next</, section);
+    assert.doesNotMatch(html, /class="hire-submit"/, `${section} offers Hire`);
+  }
+  hire.showSection('briefing');
+  const last = render();
+  assert.match(last, /class="hire-submit"/);
+  assert.doesNotMatch(last, /class="hire-next"|>Next</, 'the last step offers Next');
+});
+
+test('closing the dialog forgets a form nobody sent and a hire that completed, and keeps one the daemon has not settled', async () => {
+  subscribe();
+  fillDraft();
+  hire.showSection('briefing');
+  hire.leaveHire();
+  assert.equal(hire.getHireState().section, 'identity');
+  assert.equal(hire.getHireState().draft.name, '');
+  assert.equal(hire.getHireState().draft.goalText, '');
+
+  await hireOnce(daemon(COMPLETE));
+  assert.equal(hire.getHireState().outcome?.kind, 'complete');
+  hire.leaveHire();
+  assert.equal(hire.getHireState().outcome, null);
+  assert.equal(hire.getHireState().draft.name, '');
+
+  hire.resetHire();
+  await hireOnce(daemon(PENDING));
+  const pending = hire.getHireState();
+  assert.equal(pending.outcome?.kind, 'pending');
+  hire.leaveHire();
+  assert.equal(hire.getHireState(), pending, 'an attempt the daemon has not answered must survive a close');
+});
+
 test('a second Hire is refused while the first is in flight', async () => {
   subscribe();
   let release;
@@ -773,6 +811,7 @@ test('a second Hire is refused while the first is in flight', async () => {
   const first = hire.submitHire(getFloorState(), slow);
   const second = hire.submitHire(getFloorState(), slow);
   assert.equal(hire.getHireState().sending, true);
+  hire.showSection('briefing');
   assert.match(render(), /class="hire-submit" aria-disabled="true"[^>]*aria-busy="true">Hiring…/);
   release();
   await Promise.all([first, second]);
@@ -956,10 +995,10 @@ test('typed 409 shows the durable agent, its reason and the projection’s goal,
   resubscribe({ agents: [agentRow(AGENT, 'Kim', goalView(LOCAL_GOAL, 'A goal set locally', 'in_progress'))] });
   let html = render();
   assert.doesNotMatch(html, SUCCESS);
-  assert.match(html, /class="hire-warning"[^>]*>Hired without its goal/);
+  assert.match(html, /class="hire-warning"[^>]*>Hired [^<]*, but the first task was not set/);
   assert.match(html, new RegExp(`data-hire-agent-id="${AGENT}"`));
   assert.match(html, /data-hire-reason="goal_conflict">Another goal was set on this agent first/);
-  assert.match(html, new RegExp(`<dt>Goal when answered</dt><dd>GoalId ${LOCAL_GOAL}</dd>`));
+  assert.match(html, /<dt>Goal when answered<\/dt><dd>Another goal is set<\/dd>/);
   assert.match(html, new RegExp(`A goal set locally · in_progress`));
   assert.doesNotMatch(html, new RegExp(GOAL), 'the intended goal is shown as if it were set');
   assert.equal(hire.agentToReveal(hire.getHireState(), getFloorState()), AGENT);
@@ -1268,7 +1307,7 @@ test('after hired_without_goal for session_expired or session_revoked, a fresh l
     invalidateFloorEpoch();
     noteTransport('close');
     const html = render();
-    assert.match(html, /Hired without its goal/);
+    assert.match(html, /but the first task was not set/);
     assert.match(html, />Check status</, 'a goal the session lost cannot be set from a fresh one');
     assert.match(html, /Open Dudes to sign in again in this browser: this page keeps the Hire, and Check status then sets only the goal this Hire recorded\./);
 
@@ -1415,7 +1454,7 @@ test('a recorded hire keeps its AgentId through every later reply, and after a f
   const shown = (step) => {
     const html = render();
     assert.match(html, new RegExp(`data-hire-agent-id="${AGENT}"`), `${step}: the hired agent left the screen`);
-    assert.match(html, /The agent (?:below )?is in the journal/, `${step}: the page no longer says the agent is in the journal`);
+    assert.match(html, /The agent below is in the journal|Hired [^<]*, but the first task was not set/, `${step}: the page no longer says the agent exists`);
     assert.doesNotMatch(html, /No agent was hired/, `${step}: the page says no agent was hired while the journal holds one`);
     assert.doesNotMatch(html, /cannot say whether an agent was hired/, `${step}: the page doubts a hire the journal holds`);
     return html;

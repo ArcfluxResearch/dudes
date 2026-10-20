@@ -31,10 +31,10 @@ import type { EnrolledWorkspace } from './catalog.ts';
 
 /** What each engine may touch, as the operator must read it before choosing. */
 const ENGINE_REACH: Readonly<Record<HireEngine, string>> = Object.freeze({
-  claude: 'Runs with permission prompts skipped. It can change any file your account can.',
-  codex: "Codex's sandbox limits its own writes to this project. The completion check runs this project's code "
-    + 'with no sandbox.',
-  pi: 'Has no sandbox. It can change any file your account can.',
+  claude: 'Does not ask before it acts. It can change any file your account can.',
+  codex: 'Can only write inside this project. The check that decides the task is done runs the '
+    + "project's own code without that protection.",
+  pi: 'Nothing stops it changing files. It can change any file your account can.',
 });
 
 function text(value: unknown): string {
@@ -58,7 +58,7 @@ function LengthNote({ value, limit }: { value: string; limit: number }) {
 }
 
 function cap(value: string | null, unit: 'usd' | 'tokens', perDay = false): string {
-  if (value === null) return 'No cap';
+  if (value === null) return 'No limit';
   const amount = unit === 'usd' ? formatUsdMicros(value) : `${value} tokens`;
   return perDay ? `${amount} per day` : amount;
 }
@@ -179,7 +179,7 @@ export function HireWizardView({ hire, floor, onClose }: {
       {floor.onboarding === null && noProjects(floor) && floor.settings?.switches.hire !== false
         ? null : <UnavailableControls floor={floor} control="hire" />}
       {hire.outcome === null ? <HireForm hire={hire} floor={floor} onClose={onClose} />
-        : <HireAnswer hire={hire} floor={floor} />}
+        : <HireAnswer hire={hire} floor={floor} onClose={onClose} />}
     </section>
   );
 }
@@ -374,25 +374,26 @@ function HireForm({ hire, floor, onClose }: {
                         ))}
                       </fieldset>
                       {check?.mayAlreadyPass === true
-                        ? <p className="hire-note">This check may already pass, so Dudes hires without running it first.
-                          After the agent&apos;s turn it runs the check again. A pass does not prove the task is done, so
-                          review the change yourself.</p>
-                        : <p className="hire-note">Dudes runs this check once before hiring. If it already passes, there is nothing to do, so nobody is hired.</p>}
+                        ? <p className="hire-note">This check might already be true before the agent starts, so Dudes does not
+                          try it first. It checks again when the agent finishes, but a pass does not prove the work is
+                          right, so look at the result yourself.</p>
+                        : <p className="hire-note">Dudes tries this check once before hiring. If it already passes, there
+                          is nothing for the agent to do, so no one is hired.</p>}
                     </>
                   )}
                   <SharedProjectNote names={sharing} copy={copy} />
-                  <details className="hire-more"><summary>Limits</summary>
+                  <details className="hire-more"><summary>Spending and turn limits</summary>
                   <dl className="hire-facts" aria-label="Configured limits">
-                    <div><dt>Hop cap</dt><dd>{workspace.hopCap} Managed turns</dd></div>
-                    <div><dt>Goal ceiling</dt><dd>{cap(workspace.goalUsdMicros, 'usd')}</dd></div>
-                    <div><dt>Goal token ceiling</dt><dd>{cap(workspace.goalTokens, 'tokens')}</dd></div>
-                    <div><dt>Agent ceiling</dt><dd>{cap(workspace.agentUsdPerDayMicros, 'usd', true)}</dd></div>
-                    <div><dt>Agent token ceiling</dt><dd>{cap(workspace.agentTokensPerDay, 'tokens', true)}</dd></div>
-                    <div><dt>Floor ceiling</dt><dd>{cap(catalog.floorUsdPerDayMicros, 'usd', true)}</dd></div>
+                    <div><dt>Most turns for this task</dt><dd>{workspace.hopCap}</dd></div>
+                    <div><dt>Spending limit for this task</dt><dd>{cap(workspace.goalUsdMicros, 'usd')}</dd></div>
+                    <div><dt>Token limit for this task</dt><dd>{cap(workspace.goalTokens, 'tokens')}</dd></div>
+                    <div><dt>Daily spending limit for this agent</dt><dd>{cap(workspace.agentUsdPerDayMicros, 'usd', true)}</dd></div>
+                    <div><dt>Daily token limit for this agent</dt><dd>{cap(workspace.agentTokensPerDay, 'tokens', true)}</dd></div>
+                    <div><dt>Daily spending limit for the whole Floor</dt><dd>{cap(catalog.floorUsdPerDayMicros, 'usd', true)}</dd></div>
                   </dl>
                   {engine === null ? null : <p className="hire-note">
                     {`This agent runs at most ${workspace.hopCap} turns for this task. ${HIRE_ENGINES[engine]}'s own `
-                      + 'plan limits apply, and so does any ceiling shown above.'}
+                      + 'plan limits apply, and so does any limit shown above.'}
                   </p>}
                   </details>
                 </>
@@ -415,13 +416,14 @@ function HireForm({ hire, floor, onClose }: {
           onClick={onClose}>Cancel</button>
         <button type="button" aria-disabled={at === 0 || frozen || stuck}
           onClick={() => { if (at !== 0 && !frozen && !stuck) moveSection(-1, floor); }}>Back</button>
-        <button type="button" aria-disabled={at === SECTIONS.length - 1 || frozen || stuck}
-          onClick={() => { if (at !== SECTIONS.length - 1 && !frozen && !stuck) moveSection(1, floor); }}>Next</button>
-        <button type="button" className="hire-submit" aria-disabled={blocked !== null || frozen || hire.sending}
-          ref={handFocusOnLeave} data-focus-on-leave="hire-title" aria-busy={hire.sending}
-          onClick={() => { if (blocked === null && !frozen && !hire.sending) void submitHire(floor, browserHireDeps); }}>
-          {hire.sending ? 'Hiring…' : 'Hire'}
-        </button>
+        {at === SECTIONS.length - 1
+          ? <button type="button" className="hire-submit" aria-disabled={blocked !== null || frozen || hire.sending}
+            ref={handFocusOnLeave} data-focus-on-leave="hire-title" aria-busy={hire.sending}
+            onClick={() => { if (blocked === null && !frozen && !hire.sending) void submitHire(floor, browserHireDeps); }}>
+            {hire.sending ? 'Hiring…' : 'Hire'}
+          </button>
+          : <button type="button" className="hire-next" aria-disabled={frozen || stuck}
+            onClick={() => { if (!frozen && !stuck) moveSection(1, floor); }}>Next</button>}
       </footer>
       {hire.sending && hire.attempt !== null ? (
         <p className="hire-note" role="status">{`Running “${hire.attempt.checkLabel}” once before hiring.`}</p>
@@ -475,7 +477,11 @@ function Reconciliation({ floor }: { readonly floor: FloorState }) {
   );
 }
 
-function HireAnswer({ hire, floor }: { readonly hire: HireState; readonly floor: FloorState }) {
+function HireAnswer({ hire, floor, onClose }: {
+  readonly hire: HireState;
+  readonly floor: FloorState;
+  readonly onClose: () => void;
+}) {
   const outcome = hire.outcome as HireOutcome;
   const settled = outcome.kind === 'complete' || outcome.kind === 'partial';
   const noEffect = releasable(hire);
@@ -486,9 +492,17 @@ function HireAnswer({ hire, floor }: { readonly hire: HireState; readonly floor:
   const fresh = freshSince(floor, hire.askedAtEpoch);
   // An attempt that hired an agent checks only on a fresh session that offers hiring.
   const waiting = hire.recordedAgent !== null && !mayCheckRecorded(hire, floor);
+  const hired = outcome.kind === 'complete' || outcome.kind === 'partial' ? outcome.agent : null;
+  const shown = hired !== null && presenceOf(hired, floor, hire.askedAtEpoch) === 'present';
+  const hiredName = hired === null ? '' : agentName(hire, floor, hired);
   return (
     <div className="hire-answer" data-hire-outcome={outcome.kind} aria-live="polite">
       <AnswerBody outcome={outcome} hire={hire} floor={floor} />
+      {!waiting || (settled && !retryable) ? null : (
+        <p className="hire-note">Check status waits for a fresh Floor session that offers hiring.</p>
+      )}
+      {!settled ? null : !fresh ? <p className="hire-note">You can hire another once the Floor has refreshed.</p>
+        : floor.onboarding === null ? <p className="hire-note">This session offers no further hires.</p> : null}
       <footer className="hire-actions">
         {settled && !retryable ? null : (
           <button type="button" aria-disabled={hire.sending || waiting} aria-busy={hire.sending}
@@ -505,19 +519,29 @@ function HireAnswer({ hire, floor }: { readonly hire: HireState; readonly floor:
             ref={handFocusOnLeave} data-focus-on-leave="hire-title"
             onClick={() => { if (fresh && floor.onboarding !== null) startAnotherHire(); }}>Hire another</button>
         ) : null}
+        {shown ? <button type="button" className="hire-next" ref={handFocusOnLeave} data-focus-on-leave="hire-open"
+          onClick={onClose}>Open {hiredName}</button> : null}
       </footer>
-      {!waiting || (settled && !retryable) ? null : (
-        <p className="hire-note">Check status waits for a fresh Floor session that offers hiring.</p>
-      )}
-      {!settled ? null : (
-        <p className="hire-note">
-          {!fresh ? 'Another Hire is offered once a fresh snapshot lists an project.'
-            : floor.onboarding === null ? 'This session offers no further hires.'
-              : 'The fresh snapshot offers another Hire.'}
-        </p>
-      )}
     </div>
   );
+}
+
+/** The name this Hire gave the agent, or the Floor's name for it. */
+function agentName(hire: HireState, floor: FloorState, agent: string): string {
+  const named = hire.attempt?.payload.name ?? '';
+  if (named !== '') return named;
+  const row = floor.agents.find((entry) => entry.id === agent);
+  return row === undefined ? 'The agent' : text(row.name);
+}
+
+/** The record ids, for the rare reader who needs them; the names above are what to read. */
+function RecordIds({ agent, goal }: { readonly agent: string; readonly goal?: string }) {
+  return <details className="hire-more"><summary>Technical details</summary>
+    <dl className="hire-facts">
+      <div><dt>AgentId</dt><dd data-hire-agent-id={agent}>{agent}</dd></div>
+      {goal === undefined ? null : <div><dt>GoalId</dt><dd data-hire-goal-id={goal}>{goal}</dd></div>}
+    </dl>
+  </details>;
 }
 
 /** Every reply a Check can get on an attempt that has already hired its agent, but the two that settle it. */
@@ -595,18 +619,19 @@ function AnswerBody({ outcome, hire, floor }: {
               Hired, then retired: this agent is no longer on the floor, so its initial goal is not being worked.
             </p>
           ) : (
-            <p className="hire-success" role="status">Hired. The agent and its initial goal are in the journal.</p>
+            <p className="hire-success" role="status">
+              {`Hired ${agentName(hire, floor, outcome.agent)}, who now has a first task.`}
+            </p>
           )}
           <dl className="hire-facts">
-            <div><dt>AgentId</dt><dd data-hire-agent-id={outcome.agent}>{outcome.agent}</dd></div>
-            <div><dt>GoalId</dt><dd data-hire-goal-id={outcome.goal}>{outcome.goal}</dd></div>
             {hire.attempt?.payload.own_copy === true ? (
               <div><dt>Works in</dt><dd data-hire-own-copy="true">Its own copy of the project, on its own branch</dd></div>
             ) : null}
             <div><dt>On the floor</dt><dd>{presence === 'present' ? 'Yes, selected on the floor'
-              : presence === 'absent' ? 'No, retired since the Hire' : 'Waiting for a fresh snapshot'}</dd></div>
-            {row === null ? null : <div><dt>Current goal</dt><dd>{goalLine(row)}</dd></div>}
+              : presence === 'absent' ? 'No, retired since the Hire' : 'Waiting for the Floor to refresh'}</dd></div>
+            {row === null ? null : <div><dt>Current task</dt><dd>{goalLine(row)}</dd></div>}
           </dl>
+          <RecordIds agent={outcome.agent} goal={outcome.goal} />
           {row === null || currentGoal === outcome.goal ? null : (
             <p className="hire-note">Its goal has changed since the Hire; the current goal is shown above.</p>
           )}
@@ -619,21 +644,21 @@ function AnswerBody({ outcome, hire, floor }: {
       return (
         <>
           <p className="hire-warning" role="status">
-            Hired without its goal. The agent is in the journal; its initial goal is not.
+            {`Hired ${agentName(hire, floor, outcome.agent)}, but the first task was not set.`}
           </p>
           <dl className="hire-facts">
-            <div><dt>AgentId</dt><dd data-hire-agent-id={outcome.agent}>{outcome.agent}</dd></div>
             <div><dt>Reason</dt><dd data-hire-reason={outcome.reason}>{PARTIAL_REASONS[outcome.reason]}</dd></div>
             {hire.attempt?.payload.own_copy === true ? (
               <div><dt>Works in</dt><dd data-hire-own-copy="true">Its own copy of the project, on its own branch</dd></div>
             ) : null}
             <div><dt>Goal when answered</dt><dd>{outcome.currentGoal === null ? 'None'
-              : `GoalId ${outcome.currentGoal}`}</dd></div>
+              : 'Another goal is set'}</dd></div>
             <div><dt>Retired when answered</dt><dd>{outcome.retired ? 'Yes' : 'No'}</dd></div>
             <div><dt>On the floor</dt><dd>{presence === 'present' ? 'Yes'
               : presence === 'absent' ? 'No, retired' : 'Waiting for a fresh snapshot'}</dd></div>
             {row === null ? null : <div><dt>Current goal</dt><dd>{goalLine(row)}</dd></div>}
           </dl>
+          <RecordIds agent={outcome.agent} />
           <p className="hire-note">
             {outcome.reason === 'session_expired' || outcome.reason === 'session_revoked'
               ? 'Open Dudes to sign in again in this browser: this page keeps the '

@@ -240,8 +240,9 @@ const wizard = () => renderToStaticMarkup(createElement(HireWizardView, {
   hire: hire.getHireState(), floor: getFloorState(), onClose() {},
 }));
 
-const NEXT_DISABLED = /<button type="button" aria-disabled="true">Next<\/button>/;
+const NEXT_DISABLED = /<button type="button" class="hire-next" aria-disabled="true">Next<\/button>/;
 const HIRE_DISABLED = /<button type="button" class="hire-submit" aria-disabled="true"/;
+const HIRE_OFFERED = /class="hire-submit"/;
 
 test('the Hire wizard holds on Engine when the enrolled engine is not found, and never on an absent report', () => {
   const missing = { providers: [{ provider: 'claude', program: 'claude', found: false }] };
@@ -253,10 +254,10 @@ test('the Hire wizard holds on Engine when the enrolled engine is not found, and
   assert.match(html, /role="alert"><p>Claude is not installed on this computer, so this agent could not start\./);
   assert.match(html, /<button type="button">Check again<\/button>/);
   assert.match(html, NEXT_DISABLED);
-  assert.match(html, HIRE_DISABLED);
+  assert.doesNotMatch(html, HIRE_OFFERED, 'Hire is not offered before the last step');
 
   hire.showSection('briefing');
-  assert.match(wizard(), HIRE_DISABLED, 'Hire stays disabled from any section');
+  assert.match(wizard(), HIRE_DISABLED, 'Hire stays disabled on the last step');
 
   for (const [name, daemon] of [
     ['an absent report', null],
@@ -281,9 +282,9 @@ test('the engine block follows the chosen engine', () => {
   hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'codex', goalText: 'Make the tests pass' });
   hire.showSection('engine');
   assert.match(wizard(), /role="alert"><p>Codex is not installed on this computer, so this agent could not start\./);
-  assert.match(wizard(), HIRE_DISABLED);
+  assert.match(wizard(), NEXT_DISABLED);
   hire.editDraft({ engine: 'claude' });
   assert.doesNotMatch(wizard(), /Check again/);
-  assert.doesNotMatch(wizard(), HIRE_DISABLED);
+  assert.doesNotMatch(wizard(), NEXT_DISABLED);
   assert.match(wizard(), /data-engine-found="true">Claude is installed on this computer\./);
 });

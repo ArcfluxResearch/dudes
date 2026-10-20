@@ -18,7 +18,7 @@ import { shelfCaption, shelfParcels, shelfView } from './finished-today.ts';
 import type { FloorState } from './floor/store.ts';
 import { getFloorState, subscribeToFloor } from './floor/store.ts';
 import { subscribeToProjection } from './floor/projection.ts';
-import { HireEntry } from './onboarding/HireEntry.tsx';
+import { HireEntry, hireSwitchOn } from './onboarding/HireEntry.tsx';
 import { watchCover } from './office3d/cover.ts';
 import { furnish, noteAnchors } from './office3d/furnish.ts';
 import type { Furnished } from './office3d/furnish.ts';
@@ -806,7 +806,7 @@ export function OfficeCanvas({ floor, selectedId, onSelectAgent, onOpenQuestion,
         {floor.agents.length !== 0 || floor.phase !== 'live' || floor.stale ? null : (
           <div className="office-empty">
             <p>No current agents.</p>
-            <HireEntry floor={floor} id="hire-open-office" onAddAgent={onAddAgent} />
+            {hireSwitchOn(floor) ? null : <HireEntry floor={floor} id="hire-open-office" onAddAgent={onAddAgent} />}
           </div>
         )}
       </div>

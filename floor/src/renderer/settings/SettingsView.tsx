@@ -19,10 +19,18 @@ import { releaseNotesLabel, releaseNotesUrl } from '../releaseLinks.ts';
 import { AddProject, RemoveNotice, RemoveProject } from '../project/AddProject.tsx';
 
 const SWITCHES = [
-  ['answer', 'Answer questions'], ['control', 'Pause, resume and rename'], ['recovery', 'Recover interrupted goals'], ['goal', 'Change goals'],
-  ['retire', 'Retire agents'], ['terminal', 'Attach terminals'], ['git', 'Read checkouts in the Git tab'],
-  ['hire', 'Hire agents'], ['renew', 'Start new goals'],
-  ['board', 'Make tickets'], ['diff', 'Read ticket changes'], ['project', 'Add and remove projects'],
+  ['answer', 'Answer questions', "Lets this page answer an agent's question for you."],
+  ['control', 'Pause, resume and rename', 'Lets this page pause an agent, resume it, or change its name.'],
+  ['recovery', 'Recover interrupted goals', 'Lets this page pick up work an agent was doing when it was interrupted.'],
+  ['goal', 'Change goals', "Lets this page change what an agent is working toward."],
+  ['retire', 'Retire agents', 'Lets this page retire an agent, which takes it off the Floor.'],
+  ['terminal', 'Attach terminals', "Lets this page open a terminal in an agent's project folder."],
+  ['git', 'Show changed files', 'Lets this page read which files an agent has changed in its project.'],
+  ['hire', 'Hire agents', 'Lets this page hire a new agent.'],
+  ['renew', 'Start new goals', 'Lets this page give an agent a new goal after the last one ends.'],
+  ['board', 'Make tickets', 'Lets this page create tickets and give them to agents.'],
+  ['diff', 'Read ticket changes', "Lets a ticket show the changes the agent made."],
+  ['project', 'Add and remove projects', 'Lets this page add a project folder or take one away.'],
 ] as const;
 const OFFICE_CHOICES = [{ id: null, label: 'Automatic' },
   ...OFFICES.map((office) => ({ id: office.id, label: `${office.definition.label}, ${office.capacity} desks` }))] as const;
@@ -81,12 +89,14 @@ export function SettingsView({ floor, onSetup }: {
     <p>After a config edit, restart with <code>dudes quickstart --restart</code>, which ends any running turn.</p>
     <section aria-labelledby="settings-switches"><h3 id="settings-switches">Floor switches</h3>
       <dl><div><dt>Chat messages</dt><dd>Always on, with no setting</dd></div>
-      {SWITCHES.map(([key, label]) => {
+      {SWITCHES.map(([key, label, says]) => {
         const on = report.switches[key];
-        return <div key={key}><dt>{label} <code>floor.{key}</code></dt>
-          <dd>{key === 'diff' && on && !report.switches.git ? 'On, but needs Git' : on ? 'On' : 'Off'}
-            {key === 'renew' && !on ? ' It needs goal change and Hire.' : null}
-            <SwitchButton settingKey={`floor.${key}`} next={on ? 'off' : 'on'} /></dd></div>;
+        return <div key={key}><dt>{label}</dt>
+          <dd><span className="settings-says">{says}</span>{' '}
+            {key === 'diff' && on && !report.switches.git ? 'On, but it needs Show changed files' : on ? 'On' : 'Off'}
+            {key === 'renew' && !on ? ' It needs Change goals and Hire agents.' : null}{' '}
+            <SwitchButton settingKey={`floor.${key}`} next={on ? 'off' : 'on'} />
+            <small className="settings-key"> Setting name: <code>floor.{key}</code></small></dd></div>;
       })}</dl>
       <p>Recovery needs both <code>floor.recovery</code> and <code>floor.control</code>. It keeps existing budgets and admission gates.
         Receipt lookup remains read-only when recovery is off.</p>

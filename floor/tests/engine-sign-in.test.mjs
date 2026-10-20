@@ -359,8 +359,9 @@ const wizard = () => renderToStaticMarkup(createElement(HireWizardView, {
   hire: hire.getHireState(), floor: getFloorState(), onClose() {},
 }));
 
-const NEXT_DISABLED = /<button type="button" aria-disabled="true">Next<\/button>/;
+const NEXT_DISABLED = /<button type="button" class="hire-next" aria-disabled="true">Next<\/button>/;
 const HIRE_DISABLED = /<button type="button" class="hire-submit" aria-disabled="true"/;
+const HIRE_OFFERED = /class="hire-submit"/;
 
 test('the Hire wizard holds on Engine while the chosen engine is signed out, offers Sign in, and shows no command', () => {
   const found = { provider: 'claude', program: 'claude', found: true, path: '~/bin/claude' };
@@ -372,7 +373,7 @@ test('the Hire wizard holds on Engine while the chosen engine is signed out, off
   assert.match(html, /<button type="button">Check again<\/button>/);
   assert.match(html, />Sign in to Claude</);
   assert.match(html, NEXT_DISABLED);
-  assert.match(html, HIRE_DISABLED);
+  assert.doesNotMatch(html, HIRE_OFFERED, 'Hire is not offered before the last step');
   assert.doesNotMatch(html, /<code>/, 'no terminal command is shown on this path');
   assert.doesNotMatch(html, /claude auth login|npm install/);
 

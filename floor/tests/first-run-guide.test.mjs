@@ -33,7 +33,7 @@ function snapshot({ settings = SETTINGS, found = false, onboarding = null, agent
 }
 const status = (key, actionsSeen = false) =>
   guideSteps(getFloorState(), actionsSeen).find((step) => step.key === key)?.status;
-const done = (key) => status(key) === 'Done';
+const done = (key) => status(key) === 'Complete';
 const indexStatus = (html, label) => html.match(new RegExp(`>${label}<span>([^<]+)</span>`))?.[1];
 let server;
 let FirstRunGuideView;
@@ -119,10 +119,10 @@ test('ACTIONS_GATED_ON_SWITCHES mutant: Floor actions is Optional until seen, ne
         snapshot({ settings: { ...SETTINGS, switches: { ...SETTINGS.switches, control, terminal, hire: true } }, onboarding });
         const at = `control ${control}, terminal ${terminal}, Hire ${onboarding === null ? 'unavailable' : 'available'}`;
         assert.equal(indexStatus(view('hire'), 'Floor actions'), 'Optional', at);
-        assert.equal(indexStatus(view('actions'), 'Floor actions'), 'Done', at);
-        assert.match(view('actions'), /<p class="guide-status" role="status">Done<\/p>/, at);
+        assert.equal(indexStatus(view('actions'), 'Floor actions'), 'Complete', at);
+        assert.match(view('actions'), /<p class="guide-status" role="status">Complete<\/p>/, at);
         assert.equal(status('actions'), 'Optional', at);
-        assert.equal(status('actions', true), 'Done', at);
+        assert.equal(status('actions', true), 'Complete', at);
       }
     }
   }
@@ -185,9 +185,9 @@ test('a disconnected snapshot never claims that a setup step is done', () => {
   snapshot({ found: true, settings: { ...SETTINGS, workspaces: [WORKSPACE],
     switches: { ...SETTINGS.switches, control: true, terminal: true, hire: true } }, onboarding: CATALOG,
   agents: [{ id: ID }] });
-  const unseen = ['Done', 'Done', 'Done', 'Optional', 'Done'];
+  const unseen = ['Complete', 'Complete', 'Complete', 'Optional', 'Complete'];
   assert.deepEqual(guideSteps(getFloorState(), false).map((step) => step.status), unseen);
-  assert.deepEqual(guideSteps(getFloorState(), true).map((step) => step.status), ['Done', 'Done', 'Done', 'Done', 'Done']);
+  assert.deepEqual(guideSteps(getFloorState(), true).map((step) => step.status), ['Complete', 'Complete', 'Complete', 'Complete', 'Complete']);
   const waiting = ['Not done', 'Not done', 'Not done', 'Optional', 'Not done'];
   for (const unconfirmed of [{ ...getFloorState(), stale: true },
     { ...getFloorState(), snapshotEpoch: getFloorState().epoch - 1 }]) {
