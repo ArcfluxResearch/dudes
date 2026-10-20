@@ -318,36 +318,48 @@ fn hook_response(stopped: &Stopped, event: &str) -> dudes_proto::rpc::Response {
     )
 }
 
-#[test]
-fn poisoned_journal_preserves_paused_halted_and_retired_hook_controls() {
-    for state in ["paused", "halted", "retired"] {
-        let stopped = Stopped::with_state(false, Some(state));
-        for event in ["PreToolUse", "UserPromptSubmit"] {
-            let response = hook_response(&stopped, event);
-            assert!(response.error.is_none(), "{state} {event}: {response:?}");
-            let reply: dudes_proto::VendorReply =
-                serde_json::from_value(response.result.unwrap()).unwrap();
-            let expected = if state == "paused" {
-                dudes_proto::VendorReply {
-                    exit_code: 2,
-                    body: Some(if event == "PreToolUse" {
-                        serde_json::json!({ "hookSpecificOutput": {
-                            "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                            "permissionDecisionReason": "the loop is paused"
-                        }})
-                    } else {
-                        serde_json::json!({"decision": "block", "reason": "the loop is paused"})
-                    }),
-                }
-            } else {
-                dudes_proto::VendorReply {
-                    exit_code: 0,
-                    body: Some(serde_json::json!({"continue": false})),
-                }
-            };
-            assert_eq!(reply, expected, "{state} {event}");
-        }
+fn assert_poisoned_journal_preserves_hook_controls(state: &str) {
+    let stopped = Stopped::with_state(false, Some(state));
+    for event in ["PreToolUse", "UserPromptSubmit"] {
+        let response = hook_response(&stopped, event);
+        assert!(response.error.is_none(), "{state} {event}: {response:?}");
+        let reply: dudes_proto::VendorReply =
+            serde_json::from_value(response.result.unwrap()).unwrap();
+        let expected = if state == "paused" {
+            dudes_proto::VendorReply {
+                exit_code: 2,
+                body: Some(if event == "PreToolUse" {
+                    serde_json::json!({ "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                        "permissionDecisionReason": "the loop is paused"
+                    }})
+                } else {
+                    serde_json::json!({"decision": "block", "reason": "the loop is paused"})
+                }),
+            }
+        } else {
+            dudes_proto::VendorReply {
+                exit_code: 0,
+                body: Some(serde_json::json!({"continue": false})),
+            }
+        };
+        assert_eq!(reply, expected, "{state} {event}");
     }
+}
+
+#[test]
+fn poisoned_journal_preserves_paused_hook_controls() {
+    assert_poisoned_journal_preserves_hook_controls("paused");
+}
+
+#[test]
+fn poisoned_journal_preserves_halted_hook_controls() {
+    assert_poisoned_journal_preserves_hook_controls("halted");
+}
+
+#[test]
+fn poisoned_journal_preserves_retired_hook_controls() {
+    assert_poisoned_journal_preserves_hook_controls("retired");
 }
 
 #[test]
