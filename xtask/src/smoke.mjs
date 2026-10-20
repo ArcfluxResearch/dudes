@@ -571,7 +571,8 @@ exec /bin/sleep 120
     check(stopped, 'daemon still answers after stop');
   }
 
-  async cleanup() {
+  // Ends Chrome and every helper it started. Returns what went wrong, so cleanup can report it.
+  async closeChrome() {
     const failures = [];
     const clean = async (action) => {
       try { await action(); } catch (error) { failures.push(error.message); }
@@ -585,6 +586,14 @@ exec /bin/sleep 120
       for (const identity of chromeIdentities) await clean(() => this.killOwned(identity));
       await clean(() => waitFor(async () => (await Promise.all(chromeIdentities.map((identity) => this.ownedAlive(identity)))).every((alive) => !alive), 'Chrome helper survived cleanup', 10_000, true));
     }
+    return failures;
+  }
+
+  async cleanup() {
+    const failures = await this.closeChrome();
+    const clean = async (action) => {
+      try { await action(); } catch (error) { failures.push(error.message); }
+    };
     for (const child of [...this.groups.values()]) await clean(() => this.stopGroup(child.pid, child));
     await clean(() => this.rememberManaged());
     await this.cli(['stop', '--hard']).catch(() => {});
@@ -603,6 +612,9 @@ async function newcomerJourney(first, chrome) {
   const root = await mkdtemp(join(tmpdir(), 'dudes-jrny-'));
   await chmod(root, 0o700);
   const second = new ScratchRun(root, first.workspace, first.xtask, first.version, chrome, first.prefix);
+  // The same Chrome: a wrapper that admits one proof browser at a time would refuse a second.
+  Object.assign(second, { chrome: first.chrome, chromeChild: first.chromeChild, chromeIdentity: first.chromeIdentity,
+    chromeChildren: first.chromeChildren, cdp: first.cdp });
   journeyRun = second;
   try {
     await second.prepare();

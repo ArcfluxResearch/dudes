@@ -120,16 +120,16 @@ export class Journey {
     const { run } = this;
     await run.cli(['quickstart', '--yes', '--set', 'providers.codex', 'on']);
     await run.rememberManaged();
-    await run.launchChrome();
+    if (!run.cdp) await run.launchChrome();
     await run.cdp.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }, run.cdp.session);
-    await run.cli(['open']);
+    const { stdout: opened } = await run.cli(['open']);
     let link;
     const end = Date.now() + 15_000;
     while (!link && Date.now() < end) {
       link = (await readFile(this.linkFile, 'utf8').catch(() => '')).trim() || undefined;
       if (!link) await pause(100);
     }
-    check(link, 'dudes open did not hand a link to the opener');
+    check(link, `dudes open did not hand a link to the opener: ${opened.replace(/#bootstrap=\S+/g, '#bootstrap=...').trim()}`);
     await rm(this.linkFile, { force: true });
     await run.openFloor(link);
   }
@@ -217,6 +217,7 @@ export class Journey {
 
   /** The whole path from a fresh home to an accepted ticket. */
   async walk() {
+    await this.prepare();
     await this.start();
     await this.addProject();
     await this.hire();
