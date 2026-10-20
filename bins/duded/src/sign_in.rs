@@ -81,6 +81,7 @@ struct Slot {
     finished: u64,
     answer: Option<Answer>,
     signed_in_at: Option<Instant>,
+    signed_out_at: Option<Instant>,
 }
 
 impl SignInCheck {
@@ -112,6 +113,29 @@ impl SignInCheck {
     /// Set each row's `sign_in`, starting a check where one is due and waiting at most
     /// [`Timing::wait`] for the checks that run. A row whose program was not found keeps none.
     pub fn annotate(&self, rows: &mut [ProviderProbe], busy: &BTreeSet<Provider>) {
+        self.annotate_rows(rows, busy, false);
+    }
+
+    /// [`Self::annotate`] for the Floor's engine rows, which are asked for on every page load: a
+    /// signed-out answer is reused for [`Timing::reuse`] like a signed-in one.
+    pub(crate) fn annotate_for_page(&self, rows: &mut [ProviderProbe], busy: &BTreeSet<Provider>) {
+        self.annotate_rows(rows, busy, true);
+    }
+
+    /// Drop what is remembered about `provider`, because its sign-in may have changed.
+    pub(crate) fn forget(&self, provider: Provider) {
+        if let Some(slot) = self.0.lock().get_mut(&provider) {
+            slot.signed_in_at = None;
+            slot.signed_out_at = None;
+        }
+    }
+
+    fn annotate_rows(
+        &self,
+        rows: &mut [ProviderProbe],
+        busy: &BTreeSet<Provider>,
+        cache_out: bool,
+    ) {
         let shared = &self.0;
         let mut waiting = Vec::new();
         {
@@ -147,6 +171,14 @@ impl SignInCheck {
                     .is_some_and(|at| at.elapsed() < shared.timing.reuse)
                 {
                     set(row, (SignIn::SignedIn, None));
+                    continue;
+                }
+                if cache_out
+                    && slot
+                        .signed_out_at
+                        .is_some_and(|at| at.elapsed() < shared.timing.reuse)
+                {
+                    set(row, (SignIn::SignedOut, None));
                     continue;
                 }
                 if slot.started == slot.finished {
@@ -252,6 +284,7 @@ fn finish(slot: &mut Slot, answer: Answer) {
     slot.finished = slot.started;
     slot.answer = Some(answer);
     slot.signed_in_at = (answer.0 == SignIn::SignedIn).then(Instant::now);
+    slot.signed_out_at = (answer.0 == SignIn::SignedOut).then(Instant::now);
 }
 
 /// 0 is signed in, 1 is signed out, and every other outcome is unknown.

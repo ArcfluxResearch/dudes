@@ -473,7 +473,7 @@ where
                     .map(|adapter| (provider, adapter.child_env(&settings.daemon_env)))
             })
             .collect(),
-        settings.state_dir.clone(),
+        sign_in.clone(),
         settings.engine_login,
     );
 

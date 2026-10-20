@@ -10,7 +10,7 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 
 import { currentFloorSession } from '../../session.ts';
-import { browserSocket } from '../floor/stream.ts';
+import { browserSocket, refreshFloorSnapshot } from '../floor/stream.ts';
 import { HIRE_ENGINES } from '../onboarding/catalog.ts';
 import type { HireEngine } from '../onboarding/catalog.ts';
 import type { ProviderRow } from '../setup/daemon.ts';
@@ -48,6 +48,7 @@ const ENDINGS: Readonly<Record<LoginEnding, string>> = Object.freeze({
   not_installed: 'Dudes could not find this app on this computer.',
   unavailable: 'This app cannot be signed in from the Floor on this computer.',
   could_not_start: 'The sign-in could not start.',
+  needs_terminal: 'Signing in to Pi needs the Floor\u2019s terminal turned on in Settings.',
   lost: 'The connection to the sign-in was lost.',
   unopened: 'The sign-in did not open. The Floor session may have ended, so reload this page.',
   unloaded: 'This page could not load its terminal. Reload the page.',
@@ -62,21 +63,35 @@ export function signInOffered(engine: HireEngine, row: ProviderRow | null): bool
   return row?.found === true && (row.signIn === 'signed_out' || engine === 'pi');
 }
 
-export function EngineSignIn({ engine, row }: { readonly engine: HireEngine; readonly row: ProviderRow | null }) {
+export function EngineSignIn({ engine, row, terminal }: {
+  readonly engine: HireEngine;
+  readonly row: ProviderRow | null;
+  readonly terminal: boolean;
+}) {
   const channel = useSyncExternalStore(subscribeToLogin, getLoginState, getLoginState);
-  return <EngineSignInView engine={engine} row={row} channel={channel} />;
+  return <EngineSignInView engine={engine} row={row} channel={channel} terminal={terminal} />;
 }
 
-export function EngineSignInView({ engine, row, channel }: {
+export function EngineSignInView({ engine, row, channel, terminal }: {
   readonly engine: HireEngine;
   readonly row: ProviderRow | null;
   readonly channel: LoginChannel;
+  /** Whether the Floor's terminal is on, which Pi's sign-in needs. */
+  readonly terminal: boolean;
 }) {
   const name = HIRE_ENGINES[engine];
   if (channel.phase !== 'idle' && channel.engine === engine) {
     return <LoginPanel key={channel.id} engine={engine} channel={channel} />;
   }
   if (!signInOffered(engine, row)) return null;
+  if (engine === 'pi' && !terminal) {
+    return (
+      <div className="login-offer" data-login-offer="pi">
+        <p className="hire-note" role="status">{ENDINGS.needs_terminal}</p>
+        <button type="button" className="login-recheck" onClick={() => refreshFloorSnapshot()}>Check again</button>
+      </div>
+    );
+  }
   const busy = channel.phase !== 'idle' && channel.phase !== 'ended';
   return (
     <div className="login-offer" data-login-offer={engine}>

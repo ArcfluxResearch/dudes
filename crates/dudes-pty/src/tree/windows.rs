@@ -90,6 +90,10 @@ impl Session {
             .write(bytes)
     }
 
+    pub(crate) fn write_ready(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.write(&bytes[..bytes.len().min(256)])
+    }
+
     pub(crate) fn resize(&mut self, size: PtySize) -> io::Result<()> {
         self.console
             .as_ref()

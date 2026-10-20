@@ -840,16 +840,35 @@ impl FloorStreams {
         {
             opened.snapshot = joined;
         }
+        let busy = self.busy_providers();
         if let Some(joined) = self
             .0
             .daemon
             .as_ref()
-            .and_then(|daemon| daemon.sibling(self.0.sign_in.as_ref()))
+            .and_then(|daemon| daemon.sibling(self.0.sign_in.as_ref(), &busy))
             .and_then(|daemon| with_sibling(&opened.snapshot, "daemon", &daemon))
         {
             opened.snapshot = joined;
         }
         Ok(opened)
+    }
+
+    /// The engines with an agent whose turn is running or whose keyboard a person holds, so a
+    /// status command stays away from their credentials.
+    fn busy_providers(&self) -> std::collections::BTreeSet<dudes_types::Provider> {
+        let state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state
+            .current
+            .agents
+            .iter()
+            .filter(|agent| {
+                matches!(
+                    agent.status,
+                    dudes_types::AgentStatus::Running | dudes_types::AgentStatus::Attached
+                )
+            })
+            .map(|agent| agent.provider)
+            .collect()
     }
 
     fn join_settings(

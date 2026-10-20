@@ -87,7 +87,7 @@ fn install_engine(path: &Path, signed: &Path, login: &str) {
         format!(
             "#!/bin/sh\n\
              case \"$1 $2\" in\n\
-             'auth status') [ -f '{signed}' ]; exit $? ;;\n\
+             'auth status') echo run >> '{signed}.runs'; [ -f '{signed}' ]; exit $? ;;\n\
              'auth login') {login} ;;\n\
              esac\n\
              exit 2\n",
@@ -164,6 +164,10 @@ impl PtyHostPort for RealPty {
         self.host.write(pty, bytes)
     }
 
+    fn write_ready(&mut self, pty: PtyId, bytes: &[u8]) -> io::Result<usize> {
+        self.host.write_ready(pty, bytes)
+    }
+
     fn resize(&mut self, pty: PtyId, cols: u16, rows: u16) -> io::Result<()> {
         self.host.resize(pty, dudes_pty::PtySize { cols, rows })
     }
@@ -206,7 +210,11 @@ fn floor(fixture: &Fixture, bin: &Path, timeout: Duration) -> Floor {
     // The stand-in finds the system's `sleep` on the same path it was found on.
     let mut path = bin.as_os_str().to_owned();
     path.push(":/usr/bin:/bin");
-    settings.daemon_env = vec![EnvVar::new("PATH", path)];
+    settings.daemon_env = vec![
+        EnvVar::new("PATH", path),
+        EnvVar::new("HOME", fixture.state.path()),
+        EnvVar::new("DUDES_TEST_OTHER_KEY", "not-for-the-engine"),
+    ];
     settings.floor_hire_enabled = true;
     settings.engine_login = Some(EngineLogin {
         host: RealPty::make,
@@ -599,4 +607,212 @@ fn stopping_the_daemon_ends_the_login() {
     stop(&mut floor);
     await_gone(child);
     drop(login);
+}
+
+/// Send `messages` pastes of 4 KiB, the most one message carries, to a login that reads none of it.
+fn paste(login: &mut Socket, messages: usize) {
+    let block = common::base64_standard(&[b'a'; 4096]);
+    for _ in 0..messages {
+        login.send(&json!({"type": "login.write", "data": block}));
+    }
+}
+
+/// Bound on how long a close, a time limit or a stop may take behind a flood of typing.
+const END_BOUND: Duration = Duration::from_secs(3);
+
+fn ended_within_bound(pid: i32) {
+    let began = Instant::now();
+    await_gone(pid);
+    assert!(
+        began.elapsed() < END_BOUND,
+        "the end waited behind the typing"
+    );
+}
+
+#[test]
+fn a_flood_of_typing_cannot_hold_back_closing_the_page() {
+    let fixture = Fixture::new();
+    let bin = fixture.state.path().join("bin");
+    install_engine(
+        &bin.join("prog"),
+        &fixture.state.path().join("s"),
+        WITH_CHILD,
+    );
+    let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
+    let page = session(&floor);
+    let mut login = start(&floor, &page, "child=");
+    let child = child_of(&login);
+    paste(&mut login, 6);
+    drop(login);
+    ended_within_bound(child);
+    stop(&mut floor);
+}
+
+#[test]
+fn a_flood_of_typing_cannot_hold_back_the_time_limit() {
+    let fixture = Fixture::new();
+    let bin = fixture.state.path().join("bin");
+    install_engine(
+        &bin.join("prog"),
+        &fixture.state.path().join("s"),
+        WITH_CHILD,
+    );
+    let mut floor = floor(&fixture, &bin, Duration::from_millis(1_500));
+    let page = session(&floor);
+    let mut login = start(&floor, &page, "child=");
+    let child = child_of(&login);
+    paste(&mut login, 6);
+    assert_eq!(login.until("login.ended")["outcome"], "timed_out");
+    ended_within_bound(child);
+    stop(&mut floor);
+}
+
+#[test]
+fn a_flood_of_typing_cannot_hold_back_stopping_the_daemon() {
+    let fixture = Fixture::new();
+    let bin = fixture.state.path().join("bin");
+    install_engine(
+        &bin.join("prog"),
+        &fixture.state.path().join("s"),
+        WITH_CHILD,
+    );
+    let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
+    let page = session(&floor);
+    let mut login = start(&floor, &page, "child=");
+    let child = child_of(&login);
+    paste(&mut login, 6);
+    stop(&mut floor);
+    ended_within_bound(child);
+    drop(login);
+}
+
+#[test]
+fn typing_over_the_limits_ends_the_sign_in() {
+    let fixture = Fixture::new();
+    let bin = fixture.state.path().join("bin");
+    install_engine(
+        &bin.join("prog"),
+        &fixture.state.path().join("s"),
+        WITH_CHILD,
+    );
+    let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
+    let page = session(&floor);
+    let mut login = start(&floor, &page, "child=");
+    let child = child_of(&login);
+    login.send(&json!({
+        "type": "login.write",
+        "data": common::base64_standard(&[b'a'; 4097]),
+    }));
+    loop {
+        if login.next().is_none() {
+            break;
+        }
+    }
+    ended_within_bound(child);
+    stop(&mut floor);
+}
+
+#[test]
+fn a_sign_in_starts_in_an_empty_directory_with_a_minimal_environment() {
+    let fixture = Fixture::new();
+    let bin = fixture.state.path().join("bin");
+    install_engine(
+        &bin.join("prog"),
+        &fixture.state.path().join("s"),
+        "echo \"cwd=$(pwd -P) other=${DUDES_TEST_OTHER_KEY-unset} home=${HOME-unset} files=$(ls | wc -l)\"",
+    );
+    let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
+    let page = session(&floor);
+    let mut login = Socket::open(
+        floor.addr,
+        "/floor/engine-login",
+        PROTOCOL,
+        &page.0,
+        &page.1,
+    );
+    login.send(&json!({"type": "login.start", "engine": "claude", "cols": 80, "rows": 24}));
+    login.until("login.ended");
+    let line = login
+        .shown
+        .lines()
+        .find(|line| line.starts_with("cwd="))
+        .expect("the report");
+    assert!(line.contains(" other=unset "), "{line}");
+    assert!(
+        line.contains(&format!(" home={}", fixture.state.path().display())),
+        "{line}"
+    );
+    assert!(
+        line.trim_end().ends_with('0') && line.contains("files="),
+        "{line}"
+    );
+    let cwd = line
+        .split_whitespace()
+        .next()
+        .expect("cwd")
+        .trim_start_matches("cwd=");
+    assert!(
+        !cwd.starts_with(
+            &*fixture
+                .state
+                .path()
+                .canonicalize()
+                .expect("state")
+                .to_string_lossy()
+        ),
+        "{cwd}"
+    );
+    let give_up = Instant::now() + WAIT;
+    while Path::new(cwd).exists() {
+        assert!(
+            Instant::now() < give_up,
+            "the scratch directory outlived the sign-in"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    stop(&mut floor);
+}
+
+#[test]
+fn signing_in_to_pi_needs_the_terminal_switch() {
+    let fixture = Fixture::new();
+    let bin = fixture.state.path().join("bin");
+    install_engine(
+        &bin.join("prog"),
+        &fixture.state.path().join("s"),
+        WITH_CHILD,
+    );
+    let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
+    let page = session(&floor);
+    let mut login = Socket::open(
+        floor.addr,
+        "/floor/engine-login",
+        PROTOCOL,
+        &page.0,
+        &page.1,
+    );
+    login.send(&json!({"type": "login.start", "engine": "pi", "cols": 80, "rows": 24}));
+    assert_eq!(login.until("login.refused")["reason"], "needs_terminal");
+    assert!(login.next().is_none());
+    stop(&mut floor);
+}
+
+#[test]
+fn the_floor_asks_the_status_command_once_in_the_reuse_window() {
+    let fixture = Fixture::new();
+    let bin = fixture.state.path().join("bin");
+    let signed = fixture.state.path().join("signed-in");
+    install_engine(&bin.join("prog"), &signed, WITH_CHILD);
+    let mut floor = floor(&fixture, &bin, Duration::from_secs(60));
+    let page = session(&floor);
+    for _ in 0..3 {
+        assert_eq!(engine_sign_in(&floor, &page.0, &page.1), "signed_out");
+    }
+    let runs = std::fs::read_to_string(fixture.state.path().join("signed-in.runs")).expect("runs");
+    assert_eq!(
+        runs.lines().count(),
+        1,
+        "a signed-out answer is reused like a signed-in one"
+    );
+    stop(&mut floor);
 }

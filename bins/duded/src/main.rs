@@ -206,6 +206,10 @@ impl duded::ports::PtyHostPort for MainPtyHost {
         self.host.write(pty, bytes)
     }
 
+    fn write_ready(&mut self, pty: PtyId, bytes: &[u8]) -> io::Result<usize> {
+        self.host.write_ready(pty, bytes)
+    }
+
     fn resize(&mut self, pty: PtyId, cols: u16, rows: u16) -> io::Result<()> {
         self.host.resize(pty, dudes_pty::PtySize { cols, rows })
     }

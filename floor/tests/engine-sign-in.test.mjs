@@ -16,7 +16,7 @@ import { createServer } from 'vite';
 import { applyServerFrame, beginFloorEpoch, getFloorState, noteTransport, resetFloorStore } from '../src/renderer/floor/store.ts';
 import * as hire from '../src/renderer/onboarding/hire.ts';
 import {
-  MAX_CHUNK_BYTES, bindLoginScreen, closeLogin, getLoginState, loginUrl, resetLogin, resizeLogin, startLogin, writeLogin,
+  MAX_WRITE_BYTES, bindLoginScreen, closeLogin, getLoginState, loginUrl, resetLogin, resizeLogin, startLogin, writeLogin,
 } from '../src/renderer/login/login.ts';
 import { decodeDaemonReport } from '../src/renderer/setup/daemon.ts';
 
@@ -192,7 +192,7 @@ test('output reaches the screen byte for byte, and only from a login that starte
   assert.equal(ending(), 'lost');
 });
 
-test('the person\'s typing goes out as login.write, split at 65,536 bytes, and nothing else is ever sent', () => {
+test('the person\'s typing goes out as login.write, split at 4,096 bytes, and nothing else is ever sent', () => {
   const { socket, screen } = running('claude');
   writeLogin('abc-code\r');
   writeLogin('é');
@@ -201,8 +201,8 @@ test('the person\'s typing goes out as login.write, split at 65,536 bytes, and n
     { type: 'login.write', data: 'YWJjLWNvZGUN' },
     { type: 'login.write', data: 'w6k=' },
   ]);
-  writeLogin('x'.repeat(MAX_CHUNK_BYTES + 3));
-  assert.deepEqual(frames(socket).slice(3).map(({ data }) => atob(data).length), [65_536, 3]);
+  writeLogin('x'.repeat(MAX_WRITE_BYTES + 3));
+  assert.deepEqual(frames(socket).slice(3).map(({ data }) => atob(data).length), [4_096, 3]);
   screen.shown = { cols: 90, rows: 20 };
   resizeLogin();
   resizeLogin();
@@ -236,7 +236,7 @@ test('each way the daemon ends a login is kept, and the socket is let go', () =>
 });
 
 test('a refusal at the start says why', () => {
-  for (const reason of ['not_installed', 'unavailable', 'could_not_start']) {
+  for (const reason of ['not_installed', 'unavailable', 'could_not_start', 'needs_terminal']) {
     resetLogin();
     const socket = fakeSocket();
     startLogin('claude', portsFor(socket));
@@ -286,8 +286,8 @@ test('closing lets the socket go, and a new sign-in can start afterwards', () =>
 
 const row = (extra = {}) => ({ provider: 'claude', program: 'claude', found: true, path: '~/bin/claude', detail: null,
   signIn: null, ...extra });
-const view = (engine, channel, signIn = 'signed_out') =>
-  renderToStaticMarkup(createElement(EngineSignInView, { engine, row: row({ provider: engine, signIn }), channel }));
+const view = (engine, channel, signIn = 'signed_out', terminal = true) =>
+  renderToStaticMarkup(createElement(EngineSignInView, { engine, row: row({ provider: engine, signIn }), channel, terminal }));
 
 test('Sign in is offered for a signed-out engine, for Pi always, and for no other state', () => {
   const idle = { phase: 'idle' };
@@ -298,7 +298,7 @@ test('Sign in is offered for a signed-out engine, for Pi always, and for no othe
   assert.equal(view('claude', idle, null), '');
   assert.match(view('pi', idle, 'unknown'), /Open Pi to sign in/);
   assert.equal(renderToStaticMarkup(createElement(EngineSignInView, {
-    engine: 'claude', row: { ...row(), found: false, signIn: null }, channel: idle,
+    engine: 'claude', row: { ...row(), found: false, signIn: null }, channel: idle, terminal: true,
   })), '', 'an engine that is not installed keeps its install note and Check again');
 });
 
@@ -334,13 +334,24 @@ test('the person is told what to do while the login runs, and in plain words how
     'another engine\'s login is not drawn here');
 });
 
+test('Pi\'s sign-in needs the terminal switch, and the other engines\' do not', () => {
+  const idle = { phase: 'idle' };
+  const off = view('pi', idle, 'unknown', false);
+  assert.match(off, /Signing in to Pi needs the Floor.s terminal turned on in Settings\./);
+  assert.match(off, /<button type="button" class="login-recheck">Check again<\/button>/);
+  assert.doesNotMatch(off, /Open Pi to sign in|login-start/);
+  assert.match(view('claude', idle, 'signed_out', false), />Sign in to Claude</);
+  assert.match(view('codex', idle, 'signed_out', false), />Sign in to Codex</);
+  assert.match(view('pi', idle, 'unknown', true), /Open Pi to sign in/);
+});
+
 // --- the hire flow -------------------------------------------------------------------------
 
-function subscribe(providers) {
+function subscribe(providers, extra = {}) {
   const epoch = beginFloorEpoch();
   noteTransport('open');
   applyServerFrame(JSON.stringify({
-    type: 'floor.snapshot', projection: { lsn: 3, agents: [] }, onboarding: CATALOG, daemon: { providers },
+    type: 'floor.snapshot', projection: { lsn: 3, agents: [] }, onboarding: CATALOG, daemon: { providers }, ...extra,
   }), epoch);
 }
 
@@ -388,11 +399,23 @@ test('a missing engine keeps its install command and Check again, and offers no 
   assert.doesNotMatch(html, /Sign in to/);
 });
 
-test('Pi is offered its own terminal without blocking the Hire', () => {
-  subscribe([{ provider: 'pi', program: 'pi', found: true, path: '~/bin/pi', sign_in: 'unknown' }]);
-  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'pi', goalText: 'Make the tests pass' });
-  hire.showSection('engine');
-  const html = wizard();
+test('Pi is offered its own terminal only with the Floor terminal on, and never blocks the Hire', () => {
+  const pi = [{ provider: 'pi', program: 'pi', found: true, path: '~/bin/pi', sign_in: 'unknown' }];
+  const draft = () => {
+    hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', engine: 'pi', goalText: 'Make the tests pass' });
+    hire.showSection('engine');
+  };
+  subscribe(pi);
+  draft();
+  let html = wizard();
+  assert.match(html, /Signing in to Pi needs the Floor.s terminal turned on in Settings\./);
+  assert.doesNotMatch(html, /Open Pi to sign in/);
+  assert.doesNotMatch(html, NEXT_DISABLED);
+  assert.doesNotMatch(html, HIRE_DISABLED);
+
+  resetFloorStore();
+  subscribe(pi, { terminal: {} });
+  html = wizard();
   assert.match(html, /Open Pi to sign in/);
   assert.doesNotMatch(html, NEXT_DISABLED);
   assert.doesNotMatch(html, HIRE_DISABLED);

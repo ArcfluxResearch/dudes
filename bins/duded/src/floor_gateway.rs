@@ -250,9 +250,6 @@ pub struct PreparedAssets {
     remembered: Option<u16>,
     /// Which routes exist right now. The loop thread swaps it when the operator file changes.
     switches: SharedSwitches,
-    /// Whether the daemon started with a terminal to draw on, which decides the page's security
-    /// policy for the whole run: the terminal, or the engine sign-in that hiring carries.
-    terminal_csp: bool,
     /// The engine sign-ins, served only while `[floor.hire]` is on.
     logins: Option<EngineLogins>,
     /// The Git route's reader and limits, served only while `[floor.git]` is on.
@@ -519,8 +516,6 @@ impl PreparedAssets {
     /// Serve the routes that `switches` turns on, now and after every later swap.
     #[must_use]
     pub(crate) fn with_switches(mut self, switches: SharedSwitches) -> Self {
-        let live = switches.load();
-        self.terminal_csp = live.terminal || live.hire;
         self.switches = switches;
         self
     }
@@ -687,7 +682,6 @@ impl PreparedAssets {
         let assets = Arc::new(self.assets);
         let manifest = Arc::new(self.manifest);
         let switches = self.switches;
-        let terminal_csp = self.terminal_csp;
         let git = self.git;
         let diff = self.diff;
         let logins = self.logins;
@@ -717,7 +711,6 @@ impl PreparedAssets {
                             assets: &assets,
                             manifest: &manifest,
                             switches: &switches,
-                            terminal_csp,
                             git: git.as_deref(),
                             diff: diff.as_deref(),
                             logins: logins.as_ref(),
@@ -1109,7 +1102,6 @@ struct Catalog<'a> {
     assets: &'a BTreeMap<String, Asset>,
     manifest: &'a [u8],
     switches: &'a SharedSwitches,
-    terminal_csp: bool,
     git: Option<&'a GitReads>,
     diff: Option<&'a DiffReads>,
     logins: Option<&'a EngineLogins>,
@@ -1119,9 +1111,15 @@ struct Catalog<'a> {
 }
 
 impl<'a> Catalog<'a> {
-    /// The terminal switch at start decides the page's policy, so one run stamps one CSP.
-    const fn csp(self) -> &'static str {
-        if self.terminal_csp { TERMINAL_CSP } else { CSP }
+    /// The page's policy follows the live switches: the terminal and the engine sign-in that hiring
+    /// carries both draw a terminal, which needs inline styles.
+    fn csp(self) -> &'static str {
+        let live = self.live();
+        if live.terminal || live.hire {
+            TERMINAL_CSP
+        } else {
+            CSP
+        }
     }
 
     /// The switches as they are now. A route reads this once per request.
@@ -3272,7 +3270,6 @@ pub fn prepare(settings: &FloorSettings) -> Result<PreparedAssets> {
         port: settings.port,
         remembered: None,
         switches: SharedSwitches::default(),
-        terminal_csp: false,
         logins: None,
         git: None,
         diff: None,
@@ -3570,7 +3567,6 @@ mod tests {
             assets,
             manifest,
             switches: &SWITCHES,
-            terminal_csp: false,
             git: None,
             diff: None,
             logins: None,

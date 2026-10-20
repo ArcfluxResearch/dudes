@@ -1060,7 +1060,7 @@ test('the goal form has one text field, named goal, and one check choice, each w
 });
 
 test('the only activators are named selection, retry, view, Hire, answer, Chat, the Needs you strip\'s card, action and Chat buttons, pause, Pause all, resume, goal change, look edit and dismiss buttons, '
-  + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again and Close, Retire\'s own four, the Git tab\'s Refresh and Copy path, '
+  + 'the office\'s speech marks and its two turn and two zoom buttons, the terminal\'s Attach, Detach, Close, zoom, copy and expand, the engine sign-in\'s Sign in, Try again, Check again and Close, Retire\'s own four, the Git tab\'s Refresh and Copy path, '
   + 'the Memory tab\'s Refresh, Try again, Load older entries and Read whole entry, Setup\'s Recheck, Copy and guide opener, '
   + 'Settings\' office layout and desktop notification choices, recovery inspection, context choices, one authorization and inert receipt lookup, earlier acknowledged-review disclosure, the guide\'s navigation and Hire opener, '
   + 'and checkout differences\' explicit show, refresh, hide, open and more-files controls', async () => {
@@ -1106,7 +1106,7 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(7).fill(FIRST_RUN_GUIDE),
     ...Array(5).fill('src/renderer/setup/FirstTask.tsx'),
     ...Array(10).fill(TERMINAL_PANEL),
-    ...Array(3).fill(LOGIN_PANEL),
+    ...Array(4).fill(LOGIN_PANEL),
     ...Array(5).fill('src/shell.tsx'),
   ];
   assert.deepEqual(buttons.sort(), [...expected, AGENT_ORDER].sort());

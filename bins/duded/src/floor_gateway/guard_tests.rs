@@ -63,7 +63,8 @@ fn gate(lookup: SocketOwnerLookup) -> PeerGate {
 /// Sign-ins that start nothing: these tests look at admission, not at the engine.
 fn engine_logins() -> EngineLogins {
     EngineLogins::new(
-        |_| Err(Refusal::NotInstalled),
+        |_, _| Err(Refusal::NotInstalled),
+        |_| {},
         Box::new(ClosedPtyHost),
         ENGINE_LOGIN_TIMEOUT,
     )
@@ -150,7 +151,6 @@ fn drive(request: &[u8], sessions: &FloorSessions, peer: &PeerGate) -> Driven {
         assets: &assets,
         manifest: &[],
         switches: &switches,
-        terminal_csp: false,
         git: None,
         diff: None,
         logins: Some(&logins),
@@ -324,7 +324,6 @@ fn every_listed_path_is_a_route_when_its_switch_is_on_and_only_git_and_diff_are_
         assets: &assets,
         manifest: &[],
         switches: &switches,
-        terminal_csp: false,
         git: None,
         diff: None,
         logins: Some(&logins),
@@ -411,7 +410,6 @@ fn max_body_of(path: &str) -> usize {
         assets: &assets,
         manifest: &[],
         switches: &switches,
-        terminal_csp: false,
         git: None,
         diff: None,
         logins: None,
@@ -830,7 +828,6 @@ fn the_guard_admits_a_clean_request_from_outside_every_agent() {
         assets: &assets,
         manifest: &[],
         switches: &switches,
-        terminal_csp: false,
         git: None,
         diff: None,
         logins: None,
@@ -870,4 +867,51 @@ fn the_guard_admits_a_clean_request_from_outside_every_agent() {
         guard.admit(route, &head, body, None).is_err(),
         "a transport that cannot name its endpoints is not admitted"
     );
+}
+
+#[test]
+fn the_pages_style_policy_follows_the_live_switches() {
+    let assets = BTreeMap::new();
+    let memory = MemoryReads::new();
+    let board = TicketLimits::new();
+    let peer = outside();
+    let switches = SharedSwitches::new(Switches {
+        hire: false,
+        terminal: false,
+        ..all_on()
+    });
+    let catalog = Catalog {
+        assets: &assets,
+        manifest: &[],
+        switches: &switches,
+        git: None,
+        diff: None,
+        logins: None,
+        board: &board,
+        memory: &memory,
+        peer: &peer,
+    };
+    assert_eq!(catalog.csp(), CSP);
+    switches.store(Switches {
+        hire: true,
+        terminal: false,
+        ..all_on()
+    });
+    assert_eq!(
+        catalog.csp(),
+        TERMINAL_CSP,
+        "turning hiring on by reload loosens it"
+    );
+    switches.store(Switches {
+        hire: false,
+        terminal: true,
+        ..all_on()
+    });
+    assert_eq!(catalog.csp(), TERMINAL_CSP);
+    switches.store(Switches {
+        hire: false,
+        terminal: false,
+        ..all_on()
+    });
+    assert_eq!(catalog.csp(), CSP, "and turning both off tightens it again");
 }

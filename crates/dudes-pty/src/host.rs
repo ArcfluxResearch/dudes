@@ -417,6 +417,14 @@ impl PtyHost {
         session.native.write(bytes)
     }
 
+    /// Write a few bytes of the caller's slice if the terminal has room now, and return how many,
+    /// which is `0` when it has none. Unlike [`Self::write`] this never waits for room on Unix, so
+    /// a child that is not reading cannot hold the caller.
+    pub fn write_ready(&mut self, pty: PtyId, bytes: &[u8]) -> io::Result<usize> {
+        let session = self.active_session_mut(pty)?;
+        session.native.write_ready(bytes)
+    }
+
     /// Change the PTY's character-cell dimensions.
     pub fn resize(&mut self, pty: PtyId, size: PtySize) -> io::Result<()> {
         validate_size(size)?;

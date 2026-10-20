@@ -130,12 +130,16 @@ impl ProviderCheck {
     ///
     /// With `sign_in`, each found engine's row also says whether the engine is signed in, waiting for
     /// its status command as `system.doctor` does.
-    pub(crate) fn sibling(&self, sign_in: Option<&crate::sign_in::SignInCheck>) -> Option<Vec<u8>> {
+    pub(crate) fn sibling(
+        &self,
+        sign_in: Option<&crate::sign_in::SignInCheck>,
+        busy: &std::collections::BTreeSet<Provider>,
+    ) -> Option<Vec<u8>> {
         let shared = &self.0.0;
         let found = shared.found()?;
         let mut rows: Vec<ProviderProbe> = found.iter().map(probe).collect();
         if let Some(sign_in) = sign_in {
-            sign_in.annotate(&mut rows, &std::collections::BTreeSet::new());
+            sign_in.annotate_for_page(&mut rows, busy);
         }
         serde_json::to_vec(&shared.view(&found, &rows)).ok()
     }

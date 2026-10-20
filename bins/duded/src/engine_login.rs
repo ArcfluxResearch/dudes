@@ -15,7 +15,8 @@
 use std::collections::BTreeMap;
 use std::io::{self, Read as _};
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -31,18 +32,26 @@ use crate::floor_switches::SharedSwitches;
 use crate::floor_websocket::{
     Decoder, Message, base64, close_frame, policy_close_frame, pong_frame, text_frame,
 };
-use crate::ports::{ClosedPtyHost, PtyHostPort};
+use crate::ports::{ClosedPtyHost, PtyCloseOutcome, PtyHostPort};
 use crate::provider_check::ProviderCheck;
 use crate::pty_output::{Output, OutputSubscription};
 use crate::runtime::terminal_size_in_bounds;
 use crate::settings::{ENGINE_LOGIN_TIMEOUT, EngineLogin};
+use crate::sign_in::SignInCheck;
 
 pub(crate) const PROTOCOL: &str = "dudes-engine-login-v1";
 
 /// How long the daemon waits for the engine to report an exit after its output closes.
 const EXIT_WAIT: Duration = Duration::from_secs(2);
 
-const MAX_INPUT_BYTES: usize = 65_536;
+/// The most one message of the person's typing carries. A paste is split by the page.
+const MAX_INPUT_BYTES: usize = 4_096;
+
+/// The most the person may type into one sign-in, which no login takes more than a code of.
+const MAX_TOTAL_INPUT_BYTES: usize = 64 * 1024;
+
+/// How long the daemon offers the person's typing to a terminal that has no room.
+const INPUT_WAIT: Duration = Duration::from_millis(200);
 
 /// A silent socket's session and switch are rechecked this often.
 const RECHECK_AFTER: Duration = Duration::from_millis(1_500);
@@ -101,9 +110,11 @@ pub(crate) enum Refusal {
     Unavailable,
     /// The terminal could not be opened.
     CouldNotStart,
+    /// Pi opens a full agent session, so signing in to it needs the Floor's terminal switched on.
+    NeedsTerminal,
 }
 
-type Launch = dyn Fn(Engine) -> Result<LaunchSpec, Refusal> + Send + Sync;
+type Launch = dyn Fn(Engine, &Path) -> Result<LaunchSpec, Refusal> + Send + Sync;
 
 /// The daemon's sign-ins. Clones share them.
 #[derive(Clone)]
@@ -119,6 +130,8 @@ impl std::fmt::Debug for EngineLogins {
 
 struct Shared {
     launch: Box<Launch>,
+    /// Told when an engine's sign-in ends, since its credentials may have changed.
+    ended: Box<dyn Fn(Provider) + Send + Sync>,
     timeout: Duration,
     host: Mutex<Box<dyn PtyHostPort>>,
     live: Mutex<BTreeMap<Engine, Arc<Login>>>,
@@ -128,7 +141,9 @@ struct Shared {
 impl Shared {
     /// End every sign-in's process tree.
     fn stop(&self) {
-        let _ = locked(&self.host).shutdown();
+        if let Err(error) = locked(&self.host).shutdown() {
+            tracing::warn!(%error, "engine sign-in terminals were not all confirmed closed at stop");
+        }
     }
 }
 
@@ -144,8 +159,12 @@ struct Login {
     engine: Engine,
     pty: PtyId,
     deadline: Instant,
+    /// The empty directory it runs in.
+    scratch: PathBuf,
     /// The first reason anyone gave for ending it. The first reason wins.
     stop: Mutex<Option<Outcome>>,
+    /// Whether the host confirmed its whole tree gone.
+    closed: AtomicBool,
 }
 
 fn locked<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -154,12 +173,14 @@ fn locked<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl EngineLogins {
     pub(crate) fn new(
-        launch: impl Fn(Engine) -> Result<LaunchSpec, Refusal> + Send + Sync + 'static,
+        launch: impl Fn(Engine, &Path) -> Result<LaunchSpec, Refusal> + Send + Sync + 'static,
+        ended: impl Fn(Provider) + Send + Sync + 'static,
         host: Box<dyn PtyHostPort>,
         timeout: Duration,
     ) -> Self {
         Self(Arc::new(Shared {
             launch: Box::new(launch),
+            ended: Box::new(ended),
             timeout,
             host: Mutex::new(host),
             live: Mutex::default(),
@@ -167,12 +188,12 @@ impl EngineLogins {
         }))
     }
 
-    /// The sign-ins the daemon runs: the provider check's program for each engine, in the
-    /// environment a managed turn of it starts with, in a terminal host of their own.
+    /// The sign-ins the daemon runs: the provider check's program for each engine, in a minimal
+    /// environment and an empty directory, in a terminal host of their own.
     pub(crate) fn for_daemon(
         check: ProviderCheck,
         envs: BTreeMap<Provider, Vec<EnvVar>>,
-        cwd: std::path::PathBuf,
+        sign_in: SignInCheck,
         login: Option<EngineLogin>,
     ) -> Self {
         let (host, timeout) = match login {
@@ -183,22 +204,74 @@ impl EngineLogins {
             ),
         };
         Self::new(
-            move |engine| launch_spec(&check, &envs, &cwd, engine),
+            move |engine, scratch| launch_spec(&check, &envs, scratch, engine),
+            move |provider| sign_in.forget(provider),
             host,
             timeout,
         )
     }
 
-    /// Start `engine`'s sign-in, ending any earlier one for it first. The returned handle ends
-    /// the sign-in when it drops.
+    /// Start `engine`'s sign-in. A live one for the same engine ends only after this one opened.
+    /// The returned handle ends the sign-in when it drops.
     fn start(&self, engine: Engine, cols: u16, rows: u16) -> Result<Running, Refusal> {
         let shared = &self.0;
-        let spec = (shared.launch)(engine)?;
-        let mut live = locked(&shared.live);
-        if let Some(earlier) = live.remove(&engine) {
+        let id = shared.next.fetch_add(1, Ordering::Relaxed);
+        let scratch = scratch_dir().map_err(|_| Refusal::CouldNotStart)?;
+        let started = shared.open(engine, &scratch, cols, rows);
+        let (pty, output) = match started {
+            Ok(opened) => opened,
+            Err(refusal) => {
+                let _ = std::fs::remove_dir_all(&scratch);
+                return Err(refusal);
+            }
+        };
+        let login = Arc::new(Login {
+            id,
+            engine,
+            pty,
+            deadline: Instant::now() + shared.timeout,
+            scratch,
+            stop: Mutex::new(None),
+            closed: AtomicBool::new(false),
+        });
+        let earlier = locked(&shared.live).insert(engine, Arc::clone(&login));
+        if let Some(earlier) = earlier {
             shared.end(&earlier, Outcome::Replaced);
         }
-        let mut host = locked(&shared.host);
+        Ok(Running {
+            shared: Arc::clone(shared),
+            login,
+            output,
+            outcome: None,
+            natural: None,
+            typed: 0,
+        })
+    }
+}
+
+/// An empty directory only the daemon's user can enter, for a sign-in to start in.
+fn scratch_dir() -> io::Result<PathBuf> {
+    let mut random = [0_u8; 8];
+    getrandom::fill(&mut random).map_err(io::Error::other)?;
+    let path =
+        std::env::temp_dir().join(format!("dudes-sign-in-{:016x}", u64::from_le_bytes(random)));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&path)?;
+    Ok(path)
+}
+
+impl Shared {
+    fn open(
+        &self,
+        engine: Engine,
+        scratch: &Path,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(PtyId, OutputSubscription), Refusal> {
+        let spec = (self.launch)(engine, scratch)?;
+        let mut host = locked(&self.host);
         let opened = host
             .open(spec, cols, rows)
             .map_err(|_| Refusal::CouldNotStart)?;
@@ -206,29 +279,28 @@ impl EngineLogins {
             let _ = host.close(opened.pty);
             return Err(Refusal::CouldNotStart);
         };
-        drop(host);
-        let login = Arc::new(Login {
-            id: shared.next.fetch_add(1, Ordering::Relaxed),
-            engine,
-            pty: opened.pty,
-            deadline: Instant::now() + shared.timeout,
-            stop: Mutex::new(None),
-        });
-        live.insert(engine, Arc::clone(&login));
-        Ok(Running {
-            shared: Arc::clone(shared),
-            login,
-            output,
-            outcome: None,
-        })
+        Ok((opened.pty, output))
     }
-}
 
-impl Shared {
-    /// Record why `login` is ending, then stop and reap its whole tree before returning.
-    fn end(&self, login: &Login, reason: Outcome) {
+    /// Record why `login` is ending, then stop and reap its whole tree before returning. Whether
+    /// the host confirmed the tree gone is answered, and logged when it is not.
+    fn end(&self, login: &Login, reason: Outcome) -> bool {
         locked(&login.stop).get_or_insert(reason);
-        let _ = locked(&self.host).close(login.pty);
+        self.close(login)
+    }
+
+    fn close(&self, login: &Login) -> bool {
+        let confirmed = match locked(&self.host).close(login.pty) {
+            PtyCloseOutcome::Failed(error) => {
+                tracing::warn!(engine = ?login.engine, %error, "an engine sign-in's process tree is not confirmed closed");
+                false
+            }
+            PtyCloseOutcome::Closed | PtyCloseOutcome::AlreadyClosed => true,
+        };
+        if confirmed {
+            login.closed.store(true, Ordering::Release);
+        }
+        confirmed
     }
 
     /// How the engine ended by itself: exit 0 is success, and anything else, including no answer in
@@ -245,6 +317,7 @@ impl Shared {
         }
     }
 
+    /// The sign-in is over: forget it, and its directory, and tell the status check.
     fn release(&self, login: &Login) {
         let mut live = locked(&self.live);
         if live
@@ -253,6 +326,9 @@ impl Shared {
         {
             live.remove(&login.engine);
         }
+        drop(live);
+        let _ = std::fs::remove_dir_all(&login.scratch);
+        (self.ended)(login.engine.provider());
     }
 }
 
@@ -261,8 +337,12 @@ struct Running {
     shared: Arc<Shared>,
     login: Arc<Login>,
     output: OutputSubscription,
-    /// Set once the terminal's tree is gone.
+    /// Set once the terminal's tree is confirmed gone.
     outcome: Option<Outcome>,
+    /// How the engine ended by itself, once its output closed.
+    natural: Option<Outcome>,
+    /// Bytes the person has typed so far.
+    typed: usize,
 }
 
 impl Drop for Running {
@@ -275,24 +355,35 @@ impl Drop for Running {
 /// What the terminal has produced since the last poll.
 struct Polled {
     output: Vec<Vec<u8>>,
-    /// Set once the terminal's output ended and its tree is gone, with all output handed over.
+    /// Set once the terminal's output ended and its tree is confirmed gone, with all output handed
+    /// over.
     ended: Option<Outcome>,
 }
 
 impl Running {
     fn poll(&mut self) -> Polled {
-        if self.outcome.is_none() && Instant::now() >= self.login.deadline {
-            self.shared.end(&self.login, Outcome::TimedOut);
+        if self.outcome.is_none() {
+            let stopped = *locked(&self.login.stop);
+            if let Some(reason) = stopped
+                .or_else(|| (Instant::now() >= self.login.deadline).then_some(Outcome::TimedOut))
+                && !self.login.closed.load(Ordering::Acquire)
+            {
+                self.shared.end(&self.login, reason);
+            }
         }
         let mut output = Vec::new();
         while self.outcome.is_none() {
             match self.output.next(Duration::ZERO) {
                 Output::Data(bytes) => output.push(bytes),
                 Output::Idle => break,
-                Output::Ended => self.finish(),
+                Output::Ended => {
+                    self.finish();
+                    break;
+                }
                 Output::Overflowed => {
                     locked(&self.login.stop).get_or_insert(Outcome::Failed);
                     self.finish();
+                    break;
                 }
             }
         }
@@ -302,24 +393,38 @@ impl Running {
         }
     }
 
-    /// The terminal's output closed: say how the engine ended, with its tree gone.
+    /// The terminal's output closed: say how the engine ended, once its tree is confirmed gone. An
+    /// unconfirmed close is tried again at the next poll and the page is told nothing yet.
     fn finish(&mut self) {
-        let natural = self.shared.exit_outcome(&self.login);
-        let _ = locked(&self.shared.host).close(self.login.pty);
+        let natural = *self
+            .natural
+            .get_or_insert_with(|| self.shared.exit_outcome(&self.login));
+        if !self.shared.close(&self.login) {
+            return;
+        }
         self.shared.release(&self.login);
         let stopped = *locked(&self.login.stop);
         self.outcome = Some(stopped.unwrap_or(natural));
     }
 
-    fn write(&self, mut bytes: &[u8]) -> io::Result<()> {
-        while !bytes.is_empty() {
-            let written = locked(&self.shared.host).write(self.login.pty, bytes)?;
-            if written == 0 {
-                return Err(io::ErrorKind::WriteZero.into());
-            }
-            bytes = &bytes[written..];
+    /// Hand the person's typing to the terminal, a few bytes at a time and only while it has room.
+    /// A terminal that stays full for [`INPUT_WAIT`] is not reading, and the rest is dropped. This
+    /// never waits on the engine, so nothing that ends the sign-in can sit behind it. `false`
+    /// means the person has typed more than a sign-in takes.
+    fn write(&mut self, mut bytes: &[u8]) -> bool {
+        self.typed += bytes.len();
+        if self.typed > MAX_TOTAL_INPUT_BYTES {
+            return false;
         }
-        Ok(())
+        let give_up = Instant::now() + INPUT_WAIT;
+        while !bytes.is_empty() {
+            match locked(&self.shared.host).write_ready(self.login.pty, bytes) {
+                Ok(0) if Instant::now() < give_up => std::thread::sleep(Duration::from_millis(5)),
+                Ok(0) | Err(_) => break,
+                Ok(written) => bytes = &bytes[written..],
+            }
+        }
+        true
     }
 
     fn resize(&self, cols: u16, rows: u16) {
@@ -327,11 +432,54 @@ impl Running {
     }
 }
 
+/// The environment a sign-in starts with: what a program needs to find its home, its terminal and
+/// the network, and the engine's own configuration directory. Nothing else of the daemon's
+/// environment, which can hold other programs' keys, reaches it.
+fn login_env(env: &[EnvVar], engine: Engine) -> Vec<EnvVar> {
+    const NAMES: &[&str] = &[
+        "HOME",
+        "PATH",
+        "LANG",
+        "TERM",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+    ];
+    const PREFIXES: &[&str] = &["LC_", "XDG_"];
+    let own: &[&str] = match engine {
+        Engine::Claude => &["CLAUDE_CONFIG_DIR"],
+        Engine::Codex => &["CODEX_HOME"],
+        Engine::Pi => &["PI_CODING_AGENT_DIR"],
+    };
+    let mut kept: Vec<EnvVar> = env
+        .iter()
+        .filter(|var| {
+            var.name().to_str().is_some_and(|name| {
+                NAMES.contains(&name)
+                    || own.contains(&name)
+                    || PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+            })
+        })
+        .cloned()
+        .collect();
+    if !kept.iter().any(|var| var.name() == "TERM") {
+        kept.push(EnvVar::new("TERM", "xterm-256color"));
+    }
+    kept
+}
+
 /// The fixed command for `engine`, from what the provider check found.
 fn launch_spec(
     check: &ProviderCheck,
     envs: &BTreeMap<Provider, Vec<EnvVar>>,
-    cwd: &std::path::Path,
+    scratch: &Path,
     engine: Engine,
 ) -> Result<LaunchSpec, Refusal> {
     let provider = engine.provider();
@@ -344,17 +492,12 @@ fn launch_spec(
         .command
         .filter(|program| probe.ok && program.is_absolute())
         .ok_or(Refusal::NotInstalled)?;
-    let mut env = envs.get(&provider).cloned().unwrap_or_default();
-    crate::sign_in::strip_agent_vars(&mut env);
-    if !env.iter().any(|var| var.name() == "TERM") {
-        env.push(EnvVar::new("TERM", "xterm-256color"));
-    }
     let mut spec = LaunchSpec {
         argv: std::iter::once(program.into_os_string())
             .chain(engine.args().iter().map(Into::into))
             .collect(),
-        env,
-        cwd: cwd.to_path_buf(),
+        env: login_env(envs.get(&provider).map_or(&[][..], Vec::as_slice), engine),
+        cwd: scratch.to_path_buf(),
         stdin: LaunchInput::Null,
     };
     match probe.login_home {
@@ -521,12 +664,17 @@ impl Channel<'_> {
     }
 
     fn client(&mut self, client: ClientMessage, stream: &mut TcpStream, phase: &AtomicU8) -> Flow {
-        match (client, &self.running) {
+        match (client, &mut self.running) {
             (ClientMessage::Start { engine, cols, rows }, None) => {
                 if !terminal_size_in_bounds(cols, rows) || !self.session.touch() {
                     return Err(Ending::Policy);
                 }
-                match self.logins.start(engine, cols, rows) {
+                let started = if engine == Engine::Pi && !self.switches.load().terminal {
+                    Err(Refusal::NeedsTerminal)
+                } else {
+                    self.logins.start(engine, cols, rows)
+                };
+                match started {
                     Ok(running) => {
                         self.running = Some(running);
                         write_bytes(stream, &message_frame(&ServerMessage::Started), phase)?;
@@ -549,8 +697,11 @@ impl Channel<'_> {
                 if !self.session.touch() {
                     return Err(Ending::Left);
                 }
-                running.write(&bytes)?;
-                Ok(())
+                if running.write(&bytes) {
+                    Ok(())
+                } else {
+                    Err(Ending::Policy)
+                }
             }
             (ClientMessage::Resize { cols, rows }, Some(running)) => {
                 if !terminal_size_in_bounds(cols, rows) {
@@ -580,5 +731,93 @@ impl Channel<'_> {
             return Err(Ending::Done);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(env: &[EnvVar]) -> Vec<String> {
+        let mut names: Vec<String> = env
+            .iter()
+            .map(|var| var.name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_sign_in_gets_only_the_allowlisted_environment() {
+        let daemon: Vec<EnvVar> = [
+            "HOME",
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "TERM",
+            "USER",
+            "LOGNAME",
+            "SHELL",
+            "TMPDIR",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+            "CLAUDE_CONFIG_DIR",
+            "CODEX_HOME",
+            "PI_CODING_AGENT_DIR",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+            "GITHUB_TOKEN",
+            "DUDES_TOKEN",
+            "DUDES_SOCK",
+            "SSH_AUTH_SOCK",
+            "ALL_PROXY",
+        ]
+        .into_iter()
+        .map(|name| EnvVar::new(name, "v"))
+        .collect();
+        let common = [
+            "HOME",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "LOGNAME",
+            "NO_PROXY",
+            "PATH",
+            "SHELL",
+            "TERM",
+            "TMPDIR",
+            "USER",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+        ];
+        for (engine, own) in [
+            (Engine::Claude, "CLAUDE_CONFIG_DIR"),
+            (Engine::Codex, "CODEX_HOME"),
+            (Engine::Pi, "PI_CODING_AGENT_DIR"),
+        ] {
+            let mut want: Vec<String> = common.iter().map(|name| (*name).to_owned()).collect();
+            want.push(own.to_owned());
+            want.sort();
+            assert_eq!(names(&login_env(&daemon, engine)), want, "{engine:?}");
+        }
+    }
+
+    #[test]
+    fn a_sign_in_always_has_a_terminal_type() {
+        let env = login_env(&[EnvVar::new("HOME", "/h")], Engine::Claude);
+        assert_eq!(names(&env), ["HOME", "TERM"]);
     }
 }

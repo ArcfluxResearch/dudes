@@ -17,8 +17,10 @@ import type { LocationLike, MessageLike, SocketFactory, SocketLike } from '../fl
 import { floorRequestsPaused } from '../../transport.ts';
 
 const LOGIN_PROTOCOL = 'dudes-engine-login-v1';
-/** At most this many decoded bytes in one write or one output frame. */
+/** At most this many decoded bytes in one output frame. */
 export const MAX_CHUNK_BYTES = 65_536;
+/** At most this many bytes of the person's typing go in one message. */
+export const MAX_WRITE_BYTES = 4_096;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{4}|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)$/;
 const UTF8 = new TextEncoder();
 
@@ -45,6 +47,7 @@ export type LoginEnding =
   | 'not_installed'
   | 'unavailable'
   | 'could_not_start'
+  | 'needs_terminal'
   /** The channel closed without a word from the daemon, or spoke something this page cannot read. */
   | 'lost'
   /** The channel never opened. */
@@ -53,7 +56,7 @@ export type LoginEnding =
   | 'unloaded';
 
 const ENDINGS: readonly LoginEnding[] = Object.freeze([
-  'succeeded', 'failed', 'timed_out', 'replaced', 'not_installed', 'unavailable', 'could_not_start',
+  'succeeded', 'failed', 'timed_out', 'replaced', 'not_installed', 'unavailable', 'could_not_start', 'needs_terminal',
 ]);
 
 /** Where the one channel is. */
@@ -172,8 +175,8 @@ export function bindLoginScreen(screen: LoginScreen): () => void {
 export function writeLogin(data: string): void {
   if (live === null || state.phase !== 'running') return;
   const bytes = UTF8.encode(data);
-  for (let at = 0; at < bytes.length; at += MAX_CHUNK_BYTES) {
-    send(live, { type: 'login.write', data: toBase64(bytes.subarray(at, at + MAX_CHUNK_BYTES)) });
+  for (let at = 0; at < bytes.length; at += MAX_WRITE_BYTES) {
+    send(live, { type: 'login.write', data: toBase64(bytes.subarray(at, at + MAX_WRITE_BYTES)) });
   }
 }
 

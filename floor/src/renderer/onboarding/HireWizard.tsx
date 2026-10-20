@@ -288,7 +288,7 @@ function HireForm({ hire, floor, onClose }: {
                   <button type="button" onClick={() => refreshFloorSnapshot()}>Check again</button>
                 </div>
               )}
-              {engine === null ? null : <EngineSignIn engine={engine} row={row} />}
+              {engine === null ? null : <EngineSignIn engine={engine} row={row} terminal={floor.terminal} />}
             </>
           )}
           {hire.section !== 'briefing' ? null : (
