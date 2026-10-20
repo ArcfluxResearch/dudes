@@ -2931,7 +2931,7 @@ fn a_hold_moves_the_working_ticket_to_needs_you_and_keeps_the_project() {
     assert_eq!(ticket.reason, Some(TicketReason::HeldLaunch));
     assert_eq!(
         TicketReason::HeldLaunch.sentence(),
-        "The agent's engine would not start. Fix the cause, then resume the agent in the Floor or with `dudes resume`."
+        "The agent's engine would not start. Fix the cause, then resume the agent."
     );
 
     let other = flow.create("Other");

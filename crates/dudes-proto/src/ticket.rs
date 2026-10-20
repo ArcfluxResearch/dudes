@@ -154,7 +154,7 @@ impl TicketReason {
     pub const fn sentence(self) -> &'static str {
         match self {
             Self::RecoveryRequired => {
-                "This work was interrupted. Recovery keeps the same goal and ticket round. Review recovery in the agent drawer when available, or run `dudes recovery inspect <agent-id>` in a terminal. Earlier effects may repeat."
+                "This work was interrupted. Recovery keeps the same goal and ticket round. Review recovery to see what was recorded and choose how to continue. Earlier effects may repeat."
             }
             Self::ProjectUnavailable => {
                 "This project is not set up any more. Enroll it again with `dudes project add`, then Give to agent, or Remove the ticket."
@@ -181,10 +181,10 @@ impl TicketReason {
                 "The agent used all its turns on this ticket. Give to agent to try again, or Stop."
             }
             Self::HeldLaunch => {
-                "The agent's engine would not start. Fix the cause, then resume the agent in the Floor or with `dudes resume`."
+                "The agent's engine would not start. Fix the cause, then resume the agent."
             }
             Self::HeldFailing => {
-                "The agent's turns kept failing at once. Fix the cause, then resume the agent in the Floor or with `dudes resume`."
+                "The agent's turns kept failing at once. Fix the cause, then resume the agent."
             }
             Self::HeldUnsure => {
                 "Dudes could not confirm how the agent's last turn ended. Resume the agent, or Stop."
