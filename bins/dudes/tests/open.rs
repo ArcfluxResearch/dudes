@@ -46,6 +46,20 @@ fn opener(dir: &Path, status: u8) -> (PathBuf, PathBuf) {
     (script, record)
 }
 
+/// What the opener wrote. It may still be starting when `dudes open` returns, on a busy machine.
+fn recorded_by_the_opener(record: &Path) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match std::fs::read_to_string(record) {
+            Ok(text) if text.ends_with('\n') => return text,
+            _ if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            other => panic!("the opener never recorded its argument: {other:?}"),
+        }
+    }
+}
+
 fn open(settings: &Settings, opener: &Path) -> common::Run {
     Cli::new(&settings.socket(), &settings.runtime_dir)
         .env("DUDES_STATE_DIR", &settings.state_dir)
@@ -82,7 +96,7 @@ fn dudes_open_hands_one_link_to_the_opener_and_the_link_signs_a_session_in() {
     let run = open(&settings, &script);
 
     assert_eq!(run.code(), exit::SUCCESS, "{}", run.output());
-    let recorded = std::fs::read_to_string(&record).expect("the opener ran");
+    let recorded = recorded_by_the_opener(&record);
     let arguments: Vec<&str> = recorded.lines().collect();
     assert_eq!(
         arguments.len(),
@@ -173,4 +187,47 @@ fn an_opener_that_fails_leaves_the_link_printed_once_for_pasting() {
         run.stdout
     );
     assert!(!run.stderr.contains("#bootstrap="), "{}", run.stderr);
+}
+
+/// An opener that is still running when `dudes open` returns is left alone: the browser it may be
+/// waiting on must outlive the command.
+#[test]
+fn an_opener_still_running_after_the_wait_is_left_alive() {
+    let fixture = Fixture::new();
+    let settings = with_floor(&fixture);
+    let _daemon = start(
+        &settings,
+        SharedHost::new(),
+        Arc::new(OpenRunner::default()),
+    );
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let pid_file = scratch.path().join("pid");
+    let script = scratch.path().join("slow-opener.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho $$ > '{}'\nexec sleep 60\n",
+            pid_file.display()
+        ),
+    )
+    .expect("an opener script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("executable");
+
+    let run = open(&settings, &script);
+
+    assert_eq!(run.code(), exit::SUCCESS, "{}", run.output());
+    assert!(
+        run.stdout.contains("Opened Dudes in your browser."),
+        "{}",
+        run.stdout
+    );
+    let pid = nix::unistd::Pid::from_raw(
+        recorded_by_the_opener(&pid_file)
+            .trim()
+            .parse()
+            .expect("the opener wrote its pid"),
+    );
+    let alive = nix::sys::signal::kill(pid, None).is_ok();
+    let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+    assert!(alive, "dudes open signalled the opener it left running");
 }

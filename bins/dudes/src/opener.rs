@@ -6,13 +6,30 @@
 //! page exchanges the link as it loads.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::env::Environment;
 
-/// How long to wait for the opener to hand the link over before assuming it has.
-const HANDOFF: Duration = Duration::from_secs(5);
+/// How long to wait for the opener to fail before counting the link as handed over. An opener
+/// still running then is left alone: it may be waiting on a browser it just started, and the
+/// browser must outlive this command.
+const HANDOFF: Duration = Duration::from_secs(2);
+
+/// What the opener needs to find a browser and a display, and nothing else: the rest of this
+/// process's environment, including any agent token, stays behind.
+const OPENER_ENV: &[&str] = &[
+    "HOME",
+    "PATH",
+    "LANG",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "XDG_RUNTIME_DIR",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_SESSION_TYPE",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "BROWSER",
+];
 
 /// What came of trying to open a link.
 #[derive(Debug, PartialEq, Eq)]
@@ -68,34 +85,59 @@ fn system_opener() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-#[expect(
-    clippy::disallowed_types,
-    reason = "the link goes to the operator's chosen opener as one typed argument"
-)]
+/// Start the opener and wait briefly for it to fail. It is never signalled: it leads a process
+/// group of its own, its three standard streams are `/dev/null`, and it is dropped without a wait.
+#[cfg(unix)]
 fn run(program: &Path, url: &str) -> Launch {
-    let mut child = match std::process::Command::new(program)
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+    let mut child = match spawn(program, url) {
         Ok(child) => child,
         Err(error) => {
             return Launch::Failed(format!("could not start {}: {error}", program.display()));
         }
     };
-    let deadline = Instant::now() + HANDOFF;
+    let deadline = std::time::Instant::now() + HANDOFF;
     loop {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => return Launch::Opened,
-            Ok(Some(status)) => {
-                return Launch::Failed(format!("{} exited with {status}", program.display()));
+            Ok(Some(_)) => {
+                return Launch::Failed(format!("{} refused the link", program.display()));
             }
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            // Some openers stay until the browser they started exits; the link is handed over.
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
             Ok(None) => return Launch::Opened,
             Err(error) => return Launch::Failed(format!("waiting for the opener: {error}")),
         }
     }
+}
+
+#[cfg(not(unix))]
+fn run(_program: &Path, _url: &str) -> Launch {
+    Launch::Skipped("opening a browser is not supported on this system")
+}
+
+/// The one process this module creates: an absolute program, the link as its only argument, an
+/// environment cleared down to [`OPENER_ENV`], no standard input and no output.
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_types,
+    reason = "the link goes to the operator's opener as one typed argument; the source gate confines it"
+)]
+fn spawn(program: &Path, url: &str) -> std::io::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt as _;
+    use std::process::Stdio;
+
+    let mut command = std::process::Command::new(program);
+    command.env_clear();
+    for name in OPENER_ENV {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command.arg(url);
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::null());
+    command.stderr(Stdio::null());
+    command.process_group(0);
+    command.spawn()
 }

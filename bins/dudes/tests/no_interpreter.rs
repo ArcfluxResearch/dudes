@@ -110,7 +110,13 @@ const QUOTED_ROUTES: &[&str] = &["\"sh\"", "\"bash\"", "\"/bin/sh\"", "\"-c\""];
 const MIN_FILES: usize = 6;
 
 /// The files that may name a command type, each with one spawn item.
-const ROUTE_FILES: [&str; 4] = ["quickstart.rs", "login.rs", "editor.rs", "runner.rs"];
+const ROUTE_FILES: [&str; 5] = [
+    "quickstart.rs",
+    "login.rs",
+    "editor.rs",
+    "runner.rs",
+    "opener.rs",
+];
 
 /// The one interpreter `dudes upgrade` runs: the release's `install.sh`, as `/bin/sh <file> ...`.
 /// `src/upgrade.rs` names it exactly once, and its test module may repeat the path to assert the
@@ -131,11 +137,12 @@ const BAN_LINTS: [&str; 5] = [
 /// The files of this package that may carry one `#[expect(clippy::disallowed_types)]`, and nothing
 /// else from [`BAN_LINTS`]: the three route items, and the two test helpers that start a real
 /// process (`bins/dudes/clippy.toml` item 3).
-const ADMITTED_EXPECTATIONS: [&str; 6] = [
+const ADMITTED_EXPECTATIONS: [&str; 7] = [
     "src/quickstart.rs",
     "src/login.rs",
     "src/editor.rs",
     "src/runner.rs",
+    "src/opener.rs",
     "tests/common/mod.rs",
     "tests/windows_pipe_owner.rs",
 ];
@@ -390,6 +397,7 @@ fn route_violations(package: &Path) -> Vec<String> {
         ("login.rs", &COMMAND_ROUTES[..1]),
         ("editor.rs", &COMMAND_ROUTES[..1]),
         ("runner.rs", &COMMAND_ROUTES[..1]),
+        ("opener.rs", &COMMAND_ROUTES[..1]),
     ] {
         for route in routes {
             if !found
@@ -3585,6 +3593,189 @@ mod runner_item {
                 "a process group of its own",
                 "    command.process_group(0);\n",
                 "",
+            ),
+        ] {
+            assert_eq!(
+                text.matches(from).count(),
+                1,
+                "{name}: the mutation target drifted"
+            );
+            assert!(
+                !violations(&text.replacen(from, to, 1)).is_empty(),
+                "surviving {name}"
+            );
+        }
+    }
+}
+
+/// `src/opener.rs` is the one place `dudes open` creates a process. It starts the operator's
+/// opener with an absolute program, the link as its one argument, a cleared environment, no
+/// standard streams and a process group of its own, and it never signals it: the browser the opener
+/// starts must outlive this command.
+mod opener_item {
+    use std::path::Path;
+
+    use syn::visit::{self, Visit};
+    use syn::{Expr, ExprCall, ExprMethodCall};
+
+    /// A method with one of these names creates, feeds or ends a process.
+    const SENSITIVE: &[&str] = &[
+        "arg",
+        "args",
+        "arg0",
+        "env",
+        "envs",
+        "env_clear",
+        "env_remove",
+        "current_dir",
+        "stdin",
+        "stdout",
+        "stderr",
+        "process_group",
+        "pre_exec",
+        "spawn",
+        "status",
+        "output",
+        "exec",
+        "kill",
+        "wait",
+        "wait_with_output",
+        "try_wait",
+    ];
+
+    #[derive(Default)]
+    struct Calls {
+        methods: Vec<String>,
+        paths: Vec<String>,
+        programs: Vec<String>,
+    }
+
+    impl<'ast> Visit<'ast> for Calls {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            let name = call.method.to_string();
+            if SENSITIVE.contains(&name.as_str()) {
+                self.methods.push(name);
+            }
+            visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+            if let Expr::Path(path) = &*call.func {
+                let name = path
+                    .path
+                    .segments
+                    .iter()
+                    .map(|segment| segment.ident.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                if name.ends_with("Command::new") {
+                    self.programs.push(
+                        call.args
+                            .iter()
+                            .map(|arg| match arg {
+                                Expr::Path(path) => path
+                                    .path
+                                    .get_ident()
+                                    .map_or_else(|| "?".to_owned(), ToString::to_string),
+                                _ => "?".to_owned(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    );
+                }
+                if name.contains("Command") || name.contains("Stdio") || name.contains("process") {
+                    self.paths.push(name);
+                }
+            }
+            visit::visit_expr_call(self, call);
+        }
+    }
+
+    fn violations(text: &str) -> Vec<String> {
+        let file = syn::parse_file(text).expect("the opener parses");
+        let mut calls = Calls::default();
+        calls.visit_file(&file);
+        calls.methods.sort();
+        calls.paths.sort();
+        let mut found = Vec::new();
+        let methods = [
+            "arg",
+            "env",
+            "env_clear",
+            "process_group",
+            "spawn",
+            "stderr",
+            "stdin",
+            "stdout",
+            "try_wait",
+        ];
+        if calls.methods != methods {
+            found.push(format!("methods: {:?}", calls.methods));
+        }
+        let paths = [
+            "Stdio::null",
+            "Stdio::null",
+            "Stdio::null",
+            "std::process::Command::new",
+        ];
+        if calls.paths != paths {
+            found.push(format!("calls: {:?}", calls.paths));
+        }
+        if calls.programs != ["program"] {
+            found.push(format!("program: {:?}", calls.programs));
+        }
+        found
+    }
+
+    fn source() -> String {
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/opener.rs"))
+            .expect("the opener source")
+    }
+
+    #[test]
+    fn the_opener_makes_only_its_admitted_calls() {
+        assert_eq!(violations(&source()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn opener_mutants_are_rejected() {
+        let text = source();
+        for (name, from, to) in [
+            (
+                "a second spawn",
+                "    command.spawn()\n",
+                "    let _first = command.spawn()?;\n    command.spawn()\n",
+            ),
+            ("inherited environment", "    command.env_clear();\n", ""),
+            (
+                "a composed program",
+                "Command::new(program)",
+                "Command::new(\"/usr/bin/true\")",
+            ),
+            (
+                "an inherited stdin",
+                "command.stdin(Stdio::null());",
+                "command.stdin(Stdio::inherit());",
+            ),
+            (
+                "an inherited stdout",
+                "command.stdout(Stdio::null());",
+                "command.stdout(Stdio::piped());",
+            ),
+            (
+                "a process group of its own removed",
+                "    command.process_group(0);\n",
+                "",
+            ),
+            (
+                "a second argument",
+                "    command.arg(url);\n",
+                "    command.arg(url);\n    command.arg(\"-c\");\n",
+            ),
+            (
+                "a signal to the opener",
+                "            Ok(None) => return Launch::Opened,\n",
+                "            Ok(None) => {\n                let _ = child.kill();\n                return Launch::Opened;\n            }\n",
             ),
         ] {
             assert_eq!(
