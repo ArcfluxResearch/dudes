@@ -1859,6 +1859,37 @@ fn replay_after_a_completed_write_repeats_no_bytes() {
         1,
         "control: that run really held this host, so its empty write log is evidence"
     );
+    let pty = session.pty;
+    // ---- arm 6d: replay after a request with no outcome repeats no bytes ----------------------
+    //
+    // The crash window: the request is durable, the host was called or was not,
+    // and nothing says which. Replay must invent neither answer, and must not re-send the bytes.
+    let orphan_lsn = seed_orphan_request(&fixture, pty);
+    let orphaned = SharedPtyHost::new(fixture.journal_dir());
+    let orphan_replay_lsn = replay_run(&fixture, orphaned.clone());
+    // Without this the arm's green would also be satisfied by a run that stopped short of the
+    // seeded request — "no bytes were repeated" is cheap to satisfy by never reading the record.
+    assert!(
+        orphan_replay_lsn >= orphan_lsn,
+        "the restarted daemon read past the orphaned request ({orphan_replay_lsn:?} < {orphan_lsn:?})"
+    );
+    assert_eq!(
+        orphaned.writes(),
+        Vec::new(),
+        "an unmatched request is an audit fact, not an instruction"
+    );
+    assert_eq!(
+        orphaned.shutdowns(),
+        1,
+        "control: this host was the wired one"
+    );
+    assert!(
+        !fixture.records().iter().any(|record| matches!(
+            record,
+            Record::PtyWriteCompleted { request_lsn, .. } if *request_lsn == orphan_lsn
+        )),
+        "replay invented no outcome for the unmatched request"
+    );
 }
 
 /// Append one mail with an inline `body`, before any daemon opens this journal.
@@ -1938,7 +1969,7 @@ fn replay_run(fixture: &Fixture, ptys: SharedPtyHost) -> dudes_types::Lsn {
 }
 
 #[test]
-fn attached_claude_refuses_a_live_peer_before_pty_open() {
+fn attached_claude_refuses_a_live_peer_before_pty_open_and_attaches_once_it_ends() {
     let fixture = Fixture::new();
     let settings = fixture.settings();
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
@@ -2006,6 +2037,25 @@ fn attached_claude_refuses_a_live_peer_before_pty_open() {
     assert!(fixture.records().iter().any(|record| matches!(record,
         Record::AgentHeld { agent, cause: dudes_proto::AutomaticHold::LaunchRefused { reason }, .. }
             if *agent == candidate && reason.contains(&peer.to_string()))));
+
+    let peer_turn = fixture.await_record("exact live peer turn", |record| match record {
+        Record::TurnSpawned {
+            agent,
+            turn,
+            pid: spawned,
+            ..
+        } if *agent == peer && *spawned == pid => Some(*turn),
+        _ => None,
+    });
+    common::end_turn_with_native(&fixture, &running.handle, &host, peer_turn);
+    running
+        .handle
+        .ask(duded::ports::Ask::Resume(candidate))
+        .unwrap();
+    let response = attach(&mut client, &settings, candidate);
+    assert!(response.error.is_none(), "{response:?}");
+    assert_eq!(ptys.opens().len(), 1);
+    assert!(detach(&mut client, &settings, candidate).error.is_none());
     running.stop(duded::ExitCause::ShutdownRpc);
 }
 
@@ -3229,4 +3279,31 @@ fn seed_orphan_close_request(fixture: &Fixture, pty: dudes_proto::rpc::pty::PtyI
             },
         })
         .expect("seed one unmatched close request");
+}
+
+fn seed_orphan_request(fixture: &Fixture, pty: dudes_proto::rpc::pty::PtyId) -> dudes_types::Lsn {
+    let options = dudes_journal::JournalOptions {
+        fsync: dudes_journal::Fsync::Full,
+        checkpoint_every: 0,
+        ..dudes_journal::JournalOptions::default()
+    };
+    let (mut writer, _) =
+        dudes_journal::open(&fixture.journal_dir(), options).expect("open the seed journal");
+    writer
+        .append(&dudes_proto::Entry {
+            at: dudes_types::Timestamp::from_unix_millis(1_787_394_700_000),
+            record: Record::PtyWriteRequested {
+                pty,
+                actor: Actor::Peer {
+                    pid: 4242,
+                    uid: None,
+                },
+                provenance: Some(PeerProvenance::NoRecordedAgent),
+                payload: dudes_proto::PayloadDigest {
+                    decoded_len: 5,
+                    blake3: blake3::hash(b"crash").to_hex().to_string(),
+                },
+            },
+        })
+        .expect("seed the orphan request")
 }
