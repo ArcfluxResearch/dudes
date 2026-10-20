@@ -27,7 +27,9 @@
 import { isAccentColour, isCastCharacter } from '../appearance.ts';
 import type { AccentColour } from '../appearance.ts';
 import type { RetiredAgentRow } from '../archive.ts';
+import type { AgentRow } from '../scene/cast.ts';
 import { rowFor } from '../setup/daemon.ts';
+import { decodeWorkspace } from '../workspace.ts';
 
 import { currentFloorSession } from '../../session.ts';
 import { AGENT_ID, getFloorState } from '../floor/store.ts';
@@ -66,7 +68,7 @@ export function lengthNote(value: string, limit: number): string | null {
 export type FieldName = 'name' | 'role' | 'workspace_id' | 'engine' | 'check_id' | 'goal_text';
 
 /** What the page offers a Hire from: the enrolled workspaces, and the checks each offers. */
-export type HireOffer = Pick<FloorState, 'onboarding' | 'checks'>;
+export type HireOffer = Pick<FloorState, 'onboarding' | 'checks' | 'agents'>;
 
 export const NO_CHECK = 'No completion check is offered for this project, so Hire is unavailable.';
 
@@ -79,6 +81,11 @@ export interface HireDraft {
   /** The check chosen, which counts only while the chosen workspace offers it. */
   readonly checkId?: string;
   readonly goalText: string;
+  /**
+   * Whether the agent works in its own copy of the project. Absent until the person decides, so a
+   * project another agent already works in can start with the box ticked and say why.
+   */
+  readonly ownCopy?: boolean;
   readonly character?: string;
   readonly accent?: AccentColour;
 }
@@ -107,6 +114,8 @@ export interface HirePayload {
   readonly role: string;
   readonly goal_text: string;
   readonly provider?: Exclude<HireEngine, 'claude'>;
+  /** Sent only when the agent should work in its own copy of the project. */
+  readonly own_copy?: true;
   readonly character?: string;
   readonly accent?: AccentColour;
 }
@@ -144,7 +153,7 @@ export type HireOutcome =
   | { readonly kind: 'unavailable' }
   /** A lost response, an unexpected status or an unreadable body. No agent. */
   | { readonly kind: 'unknown' }
-  /** Empty 403 or a structured 409 shared-folder refusal, before any effect. */
+  /** Empty 403 or a structured 409 shared-folder or own-copy refusal, before any effect. */
   | { readonly kind: 'refused'; readonly note?: string }
   /** Empty 409: this attempt names a different request. Refused before any effect. */
   | { readonly kind: 'conflict' }
@@ -296,6 +305,36 @@ export function chosenEngine(draft: HireDraft, workspace: EnrolledWorkspace | nu
   return workspace.engines.length === 1 ? workspace.engines[0]! : null;
 }
 
+/** The agents the projection shows working in the project `workspaceId`. */
+export function agentsIn(agents: readonly AgentRow[], workspaceId: string): readonly AgentRow[] {
+  return agents.filter((row) => decodeWorkspace(row.workspace)?.id === workspaceId);
+}
+
+/**
+ * Whether this hire can work in its own copy of the project, and whether the box is ticked.
+ *
+ * - `untrusted`: the operator has not trusted the project, so there is no box, only the way to
+ *   allow it.
+ * - `engine`: the project is trusted but only Claude can work in a copy.
+ * - `available`: the box shows. It starts ticked, with its reason, when another agent already
+ *   works in the project's folder and the person has not decided; their own choice wins after that.
+ */
+export type OwnCopy =
+  | { readonly state: 'none' }
+  | { readonly state: 'untrusted' }
+  | { readonly state: 'engine' }
+  | { readonly state: 'available'; readonly checked: boolean; readonly preselected: boolean };
+
+export function ownCopyOffer(
+  draft: HireDraft, workspace: EnrolledWorkspace | null, engine: HireEngine | null, sharing: number,
+): OwnCopy {
+  if (workspace === null || engine === null) return { state: 'none' };
+  if (!workspace.trusted) return { state: 'untrusted' };
+  if (engine !== 'claude') return { state: 'engine' };
+  const preselected = draft.ownCopy === undefined && sharing > 0;
+  return { state: 'available', checked: draft.ownCopy ?? preselected, preselected };
+}
+
 /** Every problem with a draft, in section order. */
 export function problemsIn(draft: HireDraft, offer: HireOffer): readonly FieldProblem[] {
   const catalog = offer.onboarding;
@@ -343,7 +382,12 @@ export function editDraft(patch: Partial<HireDraft>): void {
   }
   // The payload is frozen with its attempt: while one is open, nothing edits it.
   if (state.attempt !== null) return;
-  commit({ ...state, draft: Object.freeze({ ...state.draft, ...patch }), problem: null });
+  const next = { ...state.draft, ...patch };
+  // A choice about one project's copy says nothing about another's.
+  if (patch.workspaceId !== undefined && patch.workspaceId !== state.draft.workspaceId && !('ownCopy' in patch)) {
+    delete next.ownCopy;
+  }
+  commit({ ...state, draft: Object.freeze(next), problem: null });
 }
 
 export function prepareArchiveHire(row: RetiredAgentRow, floor: FloorState): boolean {
@@ -447,6 +491,7 @@ export async function submitHire(offer: HireOffer, deps: HireDeps): Promise<void
   const revision = workspace?.reloadMark?.revision;
   const engine = chosenEngine(state.draft, workspace);
   const check = chosenCheck(state.draft, offer.checks)!;
+  const copy = ownCopyOffer(state.draft, workspace, engine, agentsIn(offer.agents, state.draft.workspaceId).length);
   const payload: HirePayload = Object.freeze({
     attempt_id: mintAttemptId(deps.random),
     workspace_id: state.draft.workspaceId,
@@ -457,6 +502,7 @@ export async function submitHire(offer: HireOffer, deps: HireDeps): Promise<void
     role: trimAsciiSpace(state.draft.role) || DEFAULT_ROLE,
     goal_text: trimAsciiSpace(state.draft.goalText),
     ...(engine === 'codex' || engine === 'pi' ? { provider: engine } : {}),
+    ...(copy.state === 'available' && copy.checked ? { own_copy: true as const } : {}),
     ...(state.draft.character ? { character: state.draft.character } : {}),
     ...(state.draft.accent ? { accent: state.draft.accent } : {}),
   });
@@ -608,7 +654,8 @@ export function decodeHireResponse(status: number, text: string, attemptId: stri
       if (text === '') return Object.freeze({ kind: 'conflict' });
       const body = json(text);
       if (exactly(body, ['attempt_id', 'state', 'reason', 'note'])
-        && body.attempt_id === attemptId && body.state === 'refused' && body.reason === 'shared_folder'
+        && body.attempt_id === attemptId && body.state === 'refused'
+        && (body.reason === 'shared_folder' || body.reason === 'own_copy')
         && typeof body.note === 'string' && body.note.length > 0 && body.note.length <= 512
         && !/[\u0000-\u001f\u007f]/u.test(body.note)) {
         return Object.freeze({ kind: 'refused', note: body.note });

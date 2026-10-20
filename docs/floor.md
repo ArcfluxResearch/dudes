@@ -68,6 +68,26 @@ engine writes its own credentials. **Settings** shows the running Floor switches
 registered providers and enrolled workspace labels. The Floor reads configuration without editing
 it. **About**, within Settings, shows the daemon, Floor build and browser wire versions.
 
+## Hire an agent into its own copy of the project
+
+Two agents in one folder can overwrite each other. The Hire dialog's **App** step offers **Work in
+its own copy of the project** for a Claude Code agent. A copy is a separate checkout of the project
+on a new branch named `dudes/<id>`, kept in Dudes' own data folder and not inside your project. When
+the agent is retired the copy and its branch stay, so nothing it wrote is lost. Dudes never merges,
+pushes or deletes them.
+
+The box starts unticked. It starts ticked, and says why, when another agent already works in the
+project's folder. Your own choice wins after that.
+
+The box appears only for a project you have trusted. In a terminal, run `dudes project trust <id>`
+(`dudes project untrust <id>` takes it back). Trusting records the project's folder, its `.claude`
+directory and `.mcp.json` at the current commit, and its git configuration. An agent in a copy runs the
+repository's own Claude settings, so their environment values and helper commands apply without
+asking. If any of those change, or the folder is replaced, copies stop until you trust the project
+again. Trust is refused for a repository whose git configuration includes other files or defines a
+filter, or whose `.claude` or `.mcp.json` is a symbolic link. Codex and Pi agents cannot work in a copy,
+and neither can any agent on Windows. Agents already in a copy keep working after an untrust.
+
 ## Recover an interrupted goal
 
 **Recover interrupted goal** appears in an eligible agent's drawer when both `floor.recovery` and

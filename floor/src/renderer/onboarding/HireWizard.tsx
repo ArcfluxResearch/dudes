@@ -21,12 +21,13 @@ import { HIRE_ENGINES, formatUsdMicros, isHireEngine } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
 import { checkRefusalText, checksFor, choiceLabel } from './checks.ts';
 import {
-  LIMITS, NO_CHECK, lengthNote, PARTIAL_REASONS, SECTIONS, browserHireDeps, checkHireStatus, chosenCheck, chosenWorkspace,
+  LIMITS, NO_CHECK, agentsIn, lengthNote, ownCopyOffer, PARTIAL_REASONS, SECTIONS, browserHireDeps, checkHireStatus, chosenCheck, chosenWorkspace,
   chosenEngine, editDraft, freshSince, getHireState, mayCheckRecorded, moveSection, presenceOf, releasable,
   releaseAttempt,
   sessionAfterRefusal, showSection, startAnotherHire, submitHire, subscribeToHire,
 } from './hire.ts';
-import type { FieldName, HireAttempt, HireDraft, HireOutcome, HireState } from './hire.ts';
+import type { FieldName, HireAttempt, HireDraft, HireOutcome, HireState, OwnCopy } from './hire.ts';
+import type { EnrolledWorkspace } from './catalog.ts';
 
 /** What each engine may touch, as the operator must read it before choosing. */
 const ENGINE_REACH: Readonly<Record<HireEngine, string>> = Object.freeze({
@@ -78,19 +79,65 @@ function engineMissing(row: ProviderRow | null, engine: HireEngine | null): stri
   return null;
 }
 
-/** The plain warning for a project that already has a live agent, or `null`. */
+/** The names of the agents already working in a project. */
 function sharedProject(floor: FloorState, workspaceId: string): readonly string[] {
-  return floor.agents.filter((row) => decodeWorkspace(row.workspace)?.id === workspaceId)
-    .map((row) => text(row.name));
+  return agentsIn(floor.agents, workspaceId).map((row) => text(row.name));
 }
 
-function SharedProjectNote({ names }: { readonly names: readonly string[] }) {
+/** What an own copy is, where it lives and what becomes of it, in the words the person reads. */
+const COPY_EXPLAINED = 'A copy is a separate checkout of this project on its own branch, so two agents do not edit '
+  + "the same files. Dudes keeps it in its own data folder, not inside your project. When the agent is retired the "
+  + 'copy and its branch stay, so nothing it wrote is lost. Dudes never merges, pushes or deletes them for you.';
+
+/** What trusting a project allows, said once. */
+const TRUST_ALLOWS = "A copy runs the repository's own Claude settings, such as environment values and helper "
+  + 'commands, without asking.';
+
+function SharedProjectNote({ names, copy }: { readonly names: readonly string[]; readonly copy: OwnCopy }) {
   if (names.length === 0) return null;
   return <p className="hire-note hire-shared" role="note" data-hire-shared="true">
     {names.join(' and ')} already {names.length === 1 ? 'works' : 'work'} in this project. Two agents in one
-    folder can overwrite each other, so Dudes holds their finished tickets for your review. To keep them apart,
-    give a Claude Code agent its own copy with <code>dudes hire --worktree</code>, or choose another project.
+    folder can overwrite each other, so Dudes holds their finished tickets for your review.{' '}
+    {copy.state === 'available'
+      ? 'To keep them apart, work in its own copy (on the App step), or choose another project.'
+      : 'To keep them apart, choose another project.'}
   </p>;
+}
+
+/** The own-copy choice on the App step: a box, or why there is none. */
+function OwnCopyChoice({ copy, workspace, names, frozen }: {
+  readonly copy: OwnCopy;
+  readonly workspace: EnrolledWorkspace;
+  readonly names: readonly string[];
+  readonly frozen: boolean;
+}) {
+  if (copy.state === 'none') return null;
+  if (copy.state === 'untrusted') {
+    return <div className="hire-copy" data-hire-copy="untrusted">
+      <p className="hire-note">
+        This agent can work in its own copy of the project once you trust the project. {COPY_EXPLAINED}{' '}
+        {TRUST_ALLOWS} To trust it, run <code>{`dudes project trust ${workspace.workspaceId}`}</code> in a terminal,
+        then reload this page.
+      </p>
+    </div>;
+  }
+  if (copy.state === 'engine') {
+    return <div className="hire-copy" data-hire-copy="engine">
+      <p className="hire-note">Only Claude can work in its own copy of the project for now.</p>
+    </div>;
+  }
+  return <div className="hire-copy" data-hire-copy="available">
+    <label className="hire-choice">
+      <input type="checkbox" name="own_copy" checked={copy.checked} disabled={frozen}
+        onChange={(event) => editDraft({ ownCopy: event.target.checked })} />
+      <span className="hire-choice-label">Work in its own copy of the project</span>
+    </label>
+    {copy.preselected && copy.checked
+      ? <p className="hire-note" data-hire-copy-reason="shared">{`Ticked because ${names.join(' and ')} already `
+        + `${names.length === 1 ? 'works' : 'work'} in this project's folder. You can untick it.`}</p>
+      : null}
+    <p className="hire-note">{COPY_EXPLAINED}</p>
+  </div>;
 }
 
 /** Why Hire cannot be pressed right now, or `null` when it can. */
@@ -145,6 +192,8 @@ function HireForm({ hire, floor, onClose }: {
   const workspace = chosenWorkspace(hire.draft, catalog);
   const engine = chosenEngine(hire.draft, workspace);
   const checks = workspace === null ? null : checksFor(floor.checks, workspace.workspaceId);
+  const sharing = workspace === null ? [] : sharedProject(floor, workspace.workspaceId);
+  const copy = ownCopyOffer(hire.draft, workspace, engine, sharing.length);
   const check = chosenCheck(hire.draft, floor.checks);
   const row = engine === null ? null : rowFor(floor.daemon, engine);
   const missing = engineMissing(row, engine);
@@ -253,7 +302,7 @@ function HireForm({ hire, floor, onClose }: {
                 </fieldset>
               )}
               {catalog === null ? null : <p className="hire-note">Choose the project where this agent will work.</p>}
-              {workspace === null ? null : <SharedProjectNote names={sharedProject(floor, workspace.workspaceId)} />}
+              {workspace === null ? null : <SharedProjectNote names={sharing} copy={copy} />}
             </>
           )}
           {hire.section !== 'engine' ? null : (
@@ -271,6 +320,8 @@ function HireForm({ hire, floor, onClose }: {
                   ))}
                 </fieldset>
               )}
+              {workspace === null ? null
+                : <OwnCopyChoice copy={copy} workspace={workspace} names={sharing} frozen={frozen} />}
               {withdrawn ? <p className="hire-note">{"An engine missing here is turned off in the daemon's "
                 + 'configuration, or needs a ceiling on this project because the daemon holds a billing key for it.'}</p>
                 : null}
@@ -326,7 +377,7 @@ function HireForm({ hire, floor, onClose }: {
                         : <p className="hire-note">Dudes runs this check once before hiring. If it already passes, there is nothing to do, so nobody is hired.</p>}
                     </>
                   )}
-                  <SharedProjectNote names={sharedProject(floor, workspace.workspaceId)} />
+                  <SharedProjectNote names={sharing} copy={copy} />
                   <details className="hire-more"><summary>Limits</summary>
                   <dl className="hire-facts" aria-label="Configured limits">
                     <div><dt>Hop cap</dt><dd>{workspace.hopCap} Managed turns</dd></div>
@@ -546,6 +597,9 @@ function AnswerBody({ outcome, hire, floor }: {
           <dl className="hire-facts">
             <div><dt>AgentId</dt><dd data-hire-agent-id={outcome.agent}>{outcome.agent}</dd></div>
             <div><dt>GoalId</dt><dd data-hire-goal-id={outcome.goal}>{outcome.goal}</dd></div>
+            {hire.attempt?.payload.own_copy === true ? (
+              <div><dt>Works in</dt><dd data-hire-own-copy="true">Its own copy of the project, on its own branch</dd></div>
+            ) : null}
             <div><dt>On the floor</dt><dd>{presence === 'present' ? 'Yes, selected on the floor'
               : presence === 'absent' ? 'No, retired since the Hire' : 'Waiting for a fresh snapshot'}</dd></div>
             {row === null ? null : <div><dt>Current goal</dt><dd>{goalLine(row)}</dd></div>}
@@ -567,6 +621,9 @@ function AnswerBody({ outcome, hire, floor }: {
           <dl className="hire-facts">
             <div><dt>AgentId</dt><dd data-hire-agent-id={outcome.agent}>{outcome.agent}</dd></div>
             <div><dt>Reason</dt><dd data-hire-reason={outcome.reason}>{PARTIAL_REASONS[outcome.reason]}</dd></div>
+            {hire.attempt?.payload.own_copy === true ? (
+              <div><dt>Works in</dt><dd data-hire-own-copy="true">Its own copy of the project, on its own branch</dd></div>
+            ) : null}
             <div><dt>Goal when answered</dt><dd>{outcome.currentGoal === null ? 'None'
               : `GoalId ${outcome.currentGoal}`}</dd></div>
             <div><dt>Retired when answered</dt><dd>{outcome.retired ? 'Yes' : 'No'}</dd></div>

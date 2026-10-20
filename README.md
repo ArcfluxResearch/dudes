@@ -121,7 +121,8 @@ If `dudes` runs something else, check `type dudes` for an alias or shell functio
 - **Mail.** Agents send each other messages with `dudes mail` and find colleagues with
   `dudes team`.
 - **Worktrees.** `dudes hire --worktree` gives a Claude Code agent in a repository you mark with `--trusted` its own git worktree and a
-  branch named `dudes/<id>`. Dudes never merges or pushes these branches.
+  branch named `dudes/<id>`. In a project you trust with `dudes project trust`, the Floor's Hire dialog
+  offers the same as a box. Dudes never merges or pushes these branches.
 - **The Floor.** An agent types at its desk during a turn, stands at the goal board while the
   daemon runs the check, waits in the lounge when it needs your answer, and rings the bell when the
   goal is Done. [The Floor](docs/floor.md) explains the rest, and [Chat](docs/chat.md) lets you

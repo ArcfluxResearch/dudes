@@ -243,6 +243,8 @@ const HIRE_FIELDS = Object.freeze([
   { tag: 'input', name: 'workspace_id', type: 'radio', change: '() => editDraft({ workspaceId: space.workspaceId })' },
   { tag: 'input', name: 'engine', type: 'radio', change: '() => editDraft({ engine: name })' },
   { tag: 'input', name: 'check_id', type: 'radio', change: '() => editDraft({ checkId: option.id })' },
+  { tag: 'input', name: 'own_copy', type: 'checkbox',
+    change: '(event) => editDraft({ ownCopy: event.target.checked })' },
   { tag: 'textarea', name: 'goal_text', type: null, change: '(event) => editDraft({ goalText: event.target.value })' },
 ]);
 const ADMITTED_IN_HIRE_FORM = Object.freeze(['an input', 'a textarea', 'a select', 'a change handler']);

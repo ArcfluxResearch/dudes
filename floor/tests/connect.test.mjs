@@ -210,8 +210,8 @@ test('a refused pasted link is said, names no secret, and keeps what the page ho
   hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', goalText: 'ship' });
   void hire.submitHire({ onboarding: { floorUsdPerDayMicros: '1', workspaces: [{ workspaceId: 'repo_1', label: 'Repo',
     engines: ['claude'], goalUsdMicros: '1', agentUsdPerDayMicros: '1', agentTokensPerDay: null, goalTokens: null,
-    hopCap: 1 }] }, checks: { workspaces: [{ workspaceId: 'repo_1', checks: [{ id: 'default', label: 'tests',
-    revision: 'a'.repeat(64), mayAlreadyPass: false }] }] } }, deps);
+    hopCap: 1, trusted: false }] }, checks: { workspaces: [{ workspaceId: 'repo_1', checks: [{ id: 'default',
+    label: 'tests', revision: 'a'.repeat(64), mayAlreadyPass: false }] }] }, agents: [] }, deps);
   const gate = answer.answerGate(store.getFloorState(), store.getFloorState().agents[0]);
   answer.editAnswerDraft(gate.agent, gate.questionLsn, 'use main');
   void answer.submitAnswer(gate, deps);

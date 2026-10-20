@@ -208,9 +208,9 @@ test('the enrollment sibling decodes exactly, and anything absent or malformed m
     floorUsdPerDayMicros: '100000000',
     workspaces: [
       { workspaceId: 'repo_1', label: 'Parser repository', engines: ['claude'], goalUsdMicros: '5000000',
-        agentUsdPerDayMicros: '20000000', agentTokensPerDay: null, goalTokens: null, hopCap: 8 },
+        agentUsdPerDayMicros: '20000000', agentTokensPerDay: null, goalTokens: null, hopCap: 8, trusted: false },
       { workspaceId: 'repo_2', label: 'Docs site', engines: ['claude'], goalUsdMicros: '1500000',
-        agentUsdPerDayMicros: '3000000', agentTokensPerDay: null, goalTokens: null, hopCap: 3 },
+        agentUsdPerDayMicros: '3000000', agentTokensPerDay: null, goalTokens: null, hopCap: 3, trusted: false },
     ],
   });
   assert.equal(decodeOnboardingCatalog({ ...structuredClone(CATALOG), floor_usd_per_day_micros: U64_MAX })
@@ -265,7 +265,8 @@ test('unset ceilings decode as null, engines as an ordered list, and the old eng
   assert.deepEqual(decodeOnboardingCatalog(structuredClone(UNCAPPED)), {
     floorUsdPerDayMicros: null,
     workspaces: [{ workspaceId: 'repo_3', label: 'Service', engines: ['claude', 'codex', 'pi'],
-      goalUsdMicros: null, agentUsdPerDayMicros: null, agentTokensPerDay: null, goalTokens: null, hopCap: 8 }],
+      goalUsdMicros: null, agentUsdPerDayMicros: null, agentTokensPerDay: null, goalTokens: null, hopCap: 8,
+      trusted: false }],
   });
   const workspace = (patch, floor = null) => ({ floor_usd_per_day_micros: floor,
     workspaces: [{ ...UNCAPPED.workspaces[0], ...patch }] });
