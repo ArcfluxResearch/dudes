@@ -2066,7 +2066,7 @@ fn ping_once(env: &Environment) -> Result<PingResult, Failure> {
 fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
     Ok(match command {
         Command::Ping => (Method::SystemPing, None),
-        Command::Doctor | Command::Status => (Method::SystemDoctor, None),
+        Command::Status => (Method::SystemDoctor, None),
         Command::StopHard => (Method::SystemShutdown, None),
         Command::Agents => (Method::AgentList, None),
         Command::Hire(params) => (Method::AgentHire, Some(encode(&**params)?)),

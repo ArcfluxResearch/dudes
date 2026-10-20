@@ -5,7 +5,7 @@ For network traffic, engine telemetry controls, and privacy documentation, read
 
 - **Questions** about installing, setting up or running Dudes: ask in
   [Discussions Q&A](https://github.com/ArcfluxResearch/dudes/discussions/categories/q-a). Include
-  the output of `dudes --version` and, when it helps, `dudes doctor`.
+  the output of `dudes --version` and, when it helps, `dudes status`.
 - **Ideas** for features or changes: start a thread in
   [Discussions Ideas](https://github.com/ArcfluxResearch/dudes/discussions/categories/ideas).
 - **Bugs** you can reproduce: [open an issue](https://github.com/ArcfluxResearch/dudes/issues/new/choose)

@@ -71,8 +71,6 @@ pub enum Command {
     Open,
     /// `system.ping`.
     Ping,
-    /// `system.doctor` diagnostics.
-    Doctor,
     /// `system.doctor` current daemon status.
     Status,
     /// `system.closingTime`, then wait for completion and the final acknowledgement census.
@@ -622,9 +620,6 @@ COMMANDS
         with --json. Keep that ID. If the reply is lost, use recovery receipt with
         that ID; do not resend the submission. Authorization does not promise launch.
 
-    doctor
-        Show daemon health and any stopped-journal recovery guidance.
-
     status
         Show current daemon status and any stopped-journal recovery guidance.
 
@@ -938,14 +933,13 @@ COMMANDS
         a ceiling in that unit. With a daemon running, an edit names the settings it
         runs differently, which a restart applies: dudes stop, then dudes start.
 
-    floor open [--no-browser]
+    floor open
         Mint a Floor session and print its one-time sign-in link; `dudes open` opens it
         for you instead. The session can view
         the Floor, and it can also act on agents (hire, answer, pause, retire and the
         rest) for each floor.* action that is on. Paste the link into any browser. It
         expires in 60 seconds and works once, in one browser; run the command again for
         a new one. Nothing is opened for you.
-        --no-browser is accepted and changes nothing: printing is now the default.
 
     login claude|codex|pi
         Sign in to an engine with its own login command: `claude auth login` or
@@ -1069,13 +1063,9 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "start" => without_arguments(tail, Command::Start)?,
         "open" => without_arguments(tail, Command::Open)?,
         "ping" => without_arguments(tail, Command::Ping)?,
-        "doctor" | "status" => {
+        "status" => {
             reject_leftovers(tail)?;
-            if command_word == "doctor" {
-                Command::Doctor
-            } else {
-                Command::Status
-            }
+            Command::Status
         }
         "stop" => stop(tail)?,
         "closing" => closing(tail)?,
@@ -1797,7 +1787,7 @@ fn board_status(flags: &mut Flags<'_>, flag: &'static str) -> Result<CardStatus,
     }
 }
 
-/// `floor open [--no-browser]`; the flag is accepted for scripts that still pass it.
+/// `floor open`.
 ///
 /// The only subcommand is `open`. `dudes floor` alone is refused by name rather than folded into
 /// `UnknownCommand`, because it is what an operator typing from memory will actually type.
@@ -1814,15 +1804,11 @@ fn floor(tail: &[OsString]) -> Result<Command, ArgError> {
             subcommand.to_string_lossy()
         )));
     }
-    for flag in flags {
-        if asks_for_help(flag) {
-            return Err(ArgError::HelpRequested);
-        }
-        if flag != "--no-browser" {
-            return Err(ArgError::UnknownFlag(flag.to_string_lossy().into_owned()));
-        }
+    match flags.first() {
+        None => Ok(Command::FloorOpen),
+        Some(flag) if asks_for_help(flag) => Err(ArgError::HelpRequested),
+        Some(flag) => Err(ArgError::UnknownFlag(flag.to_string_lossy().into_owned())),
     }
-    Ok(Command::FloorOpen)
 }
 
 /// `login <claude|codex|pi>`.
