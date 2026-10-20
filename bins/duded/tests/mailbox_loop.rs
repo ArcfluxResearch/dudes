@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use common::hook_shim::{RecordingResolver, minted_token, payload};
+use common::hook_shim::{RecordingResolver, payload};
 use common::{
     Fixture, Running, ScriptedRunner, SharedHost, TestClock, goal_params, hire, seams_with,
     set_goal,
@@ -18,10 +18,8 @@ use duded::startup::Witness;
 use duded::{ExitCause, boot};
 use dudes_proto::rpc::Method;
 use dudes_proto::rpc::cred::OperatorCredential;
-use dudes_proto::rpc::hook::{HookEventParams, HookToken};
 use dudes_proto::rpc::system::{DoctorMailboxResult, MailboxProblem};
-use dudes_proto::{HookDecision, HookReply, PeerProvenance, Record, VendorReply};
-use dudes_rpc::LocalClient;
+use dudes_proto::{HookDecision, HookReply, PeerProvenance, Record};
 use dudes_rpc::auth::PeerResolver;
 use dudes_supervisor::Clock as _;
 use dudes_types::{AgentId, MailId};
@@ -33,9 +31,6 @@ struct Floor {
     fixture: Fixture,
     settings: duded::Settings,
     running: Running,
-    socket: PathBuf,
-    token: String,
-    tokens: dudes_supervisor::testing::FakeTokens,
     resolver: Arc<RecordingResolver>,
     agents: Vec<AgentId>,
 }
@@ -54,24 +49,16 @@ impl Floor {
             Witness::default(),
             Arc::clone(&resolver) as Arc<dyn PeerResolver>,
         );
-        let tokens = parts.rng.tokens();
         let daemon = boot(&settings, parts).expect("boot daemon");
-        let socket = daemon.socket().to_path_buf();
         let running = common::start(daemon);
         let agents: Vec<_> = (0..count)
             .map(|_| hire(&running.handle, fixture.state.path()))
             .collect();
         set_goal(&running.handle, goal_params(agents[0], &["true"]));
-        let token = minted_token(&fixture, &tokens, agents[0])
-            .expose()
-            .to_owned();
         Self {
             fixture,
             settings,
             running,
-            socket,
-            token,
-            tokens,
             resolver,
             agents,
         }
@@ -98,26 +85,6 @@ impl Floor {
             .unwrap(),
         )
         .unwrap();
-    }
-
-    fn hook(&self) -> VendorReply {
-        self.resolver.set(PeerProvenance::Agent(self.agents[0]));
-        let response = LocalClient::connect(&self.socket)
-            .expect("connect the hook peer")
-            .call(
-                Method::HookEvent,
-                Some(
-                    serde_json::to_value(HookEventParams {
-                        token: HookToken::new(self.token.clone()).unwrap(),
-                        raw: payload("PreToolUse"),
-                    })
-                    .unwrap(),
-                ),
-            )
-            .expect("the hook is answered");
-        assert!(response.error.is_none(), "{response:?}");
-        serde_json::from_value(response.result.expect("a hook result"))
-            .expect("a vendor hook reply")
     }
 
     /// `system.doctor` from a peer the daemon cannot attribute to an agent, as an operator calls it.

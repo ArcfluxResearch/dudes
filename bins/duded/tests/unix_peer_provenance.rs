@@ -1123,30 +1123,13 @@ impl ProcessRelation for FixedRelation {
 }
 
 #[derive(Clone, Copy)]
-enum PendingSetup {
-    None,
-    Abort,
-    Wait,
-}
-
-#[derive(Clone, Copy)]
 enum NegativeDispatch {
     Completed,
     ConnectionRefused,
 }
 
-fn dispatch_matrix_negative(label: &str, relation: Relation, finish: bool, setup: PendingSetup) {
+fn dispatch_matrix_negative(label: &str, relation: Relation, finish: bool) {
     let resolver = Resolver::processes(Arc::new(FixedRelation { relation, finish }));
-    match setup {
-        PendingSetup::None => {}
-        PendingSetup::Abort => {
-            let pending = resolver.begin_spawn().expect("arm aborted owner");
-            resolver.abort_spawn(pending);
-        }
-        PendingSetup::Wait => {
-            let _ = resolver.begin_spawn().expect("arm waiting owner");
-        }
-    }
     let expected = match relation {
         Relation::NoMatch | Relation::Unresolvable => NegativeDispatch::Completed,
         Relation::Pending(_) | Relation::Abandoned => NegativeDispatch::ConnectionRefused,
@@ -1369,14 +1352,9 @@ fn sibling_escape_unreadable_and_absent_identity_are_refused() {
     assert_eq!(running.stop(ExitCause::Ended), ExitCause::Ended);
 
     for label in ["escaped peer", "full adoption-key mismatch", "parent cycle"] {
-        dispatch_matrix_negative(label, Relation::NoMatch, true, PendingSetup::None);
+        dispatch_matrix_negative(label, Relation::NoMatch, true);
     }
-    dispatch_matrix_negative(
-        "unreadable or dead start",
-        Relation::Unresolvable,
-        true,
-        PendingSetup::None,
-    );
+    dispatch_matrix_negative("unreadable or dead start", Relation::Unresolvable, true);
     #[cfg(target_os = "macos")]
     {
         assert_real_macos_dead_and_version_mismatch_are_unresolvable();

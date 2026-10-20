@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use duded::floor_stream::FloorStreamFault;
 use duded::settings::{FloorSettings, Seams};
 use duded::startup::Witness;
-use duded::{ChildEnds, ChildTurn, ExitCause, boot};
+use duded::{ChildEnds, ChildTurn, ExitCause};
 use dudes_host::{ChildExit, ChildStream, ChildStreams, RealHost};
 use dudes_proto::ExitStatus;
 use dudes_proto::rpc::Method;

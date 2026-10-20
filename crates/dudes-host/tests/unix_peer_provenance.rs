@@ -5,8 +5,6 @@
 mod common;
 
 use std::fs;
-#[cfg(target_os = "macos")]
-use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 
@@ -89,21 +87,6 @@ fn call_order(source: &str) -> Result<(), &'static str> {
         return Err("the buffered row is not consumed only on validation success");
     }
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn copy_fixture(source: &Path, destination: &Path) {
-    fs::create_dir_all(destination).expect("create fixture directory");
-    for entry in fs::read_dir(source).expect("read fixture directory") {
-        let entry = entry.expect("fixture entry");
-        let source = entry.path();
-        let destination = destination.join(entry.file_name());
-        if source.is_dir() {
-            copy_fixture(&source, &destination);
-        } else {
-            fs::copy(source, destination).expect("copy fixture file");
-        }
-    }
 }
 
 #[test]

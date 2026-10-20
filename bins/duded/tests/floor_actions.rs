@@ -54,8 +54,6 @@ use common::{
     Fixture, ScriptedRunner, SharedHost, TestClock, seams, seams_with, system32_program,
     true_program,
 };
-use dudes_proto::PeerProvenance;
-use dudes_rpc::auth::PeerResolver;
 
 #[test]
 fn predicate_path_uses_the_system_root_and_survives_fixture_escaping() {

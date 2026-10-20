@@ -42,12 +42,11 @@ impl PeerResolver for Resolver {
 }
 
 struct Rig {
-    fixture: Fixture,
+    _fixture: Fixture,
     running: common::Running,
     socket: std::path::PathBuf,
     agent: AgentId,
     token: HookToken,
-    resolver: Arc<Resolver>,
     rpc_connections: Box<dyn Fn() -> usize + Send + Sync>,
 }
 
@@ -81,12 +80,11 @@ fn rig() -> Rig {
     await_hook_subject(&fixture, &running, agent);
     *resolver.provenance.lock().unwrap() = PeerProvenance::Agent(agent);
     Rig {
-        fixture,
+        _fixture: fixture,
         running,
         socket,
         agent,
         token,
-        resolver,
         rpc_connections,
     }
 }

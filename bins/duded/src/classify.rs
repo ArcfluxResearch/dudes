@@ -1356,36 +1356,12 @@ mod tests {
         assert_forwarded(&host, &sentinel);
     }
 
-    /// A relation that reports a peer as waiting on a spawn slot and confirms every finish.
-    #[derive(Debug)]
-    struct PendingRelation;
-
-    impl super::ProcessRelation for PendingRelation {
-        fn begin_spawn(&self) -> u64 {
-            1
-        }
-
-        fn finish_spawn(&self, _slot: u64, _key: Option<&super::AdoptionKey>) -> bool {
-            true
-        }
-
-        fn published(&self, _children: &[super::AdoptionKey]) -> Vec<(u64, usize)> {
-            Vec::new()
-        }
-
-        fn resolve(
-            &self,
-            _peer: u32,
-            _pidversion: Option<u32>,
-            _children: &[super::AdoptionKey],
-        ) -> super::Relation {
-            super::Relation::Pending(1)
-        }
-    }
-
     #[test]
     fn a_peer_waiting_on_an_aborted_spawn_is_refused() {
-        let resolver = super::Resolver::processes(Arc::new(PendingRelation));
+        let resolver = super::Resolver::processes(Arc::new(PendingRelation {
+            answer: super::Relation::Pending(1),
+            finish: true,
+        }));
         let peer = PeerIdentity {
             uid: Some(501),
             gid: Some(20),

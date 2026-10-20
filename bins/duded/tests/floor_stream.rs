@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use duded::floor_stream::FloorStreamFault;
-use duded::ports::{Answered, Ask};
+use duded::ports::Ask;
 use duded::settings::FloorSettings;
 use duded::startup::Witness;
 use dudes_proto::rpc::Method;

@@ -490,7 +490,6 @@ struct Attached {
     /// *ownership* row rather than the authority row. The method's `Requirement` admits it; the pty-write row does not.
     sibling: LocalClient,
     append_failure: duded::runtime::AppendFailure,
-    host: SharedHost,
 }
 
 /// Boot, hire, confirm a session, and attach — the state every `pty.write` test starts from.
@@ -507,7 +506,7 @@ fn attach_one(fixture: &Fixture, ptys: &SharedPtyHost) -> Attached {
         mut owner,
         sibling,
         append_failure,
-        host,
+        host: _,
     } = hired(fixture, ptys, fixture.settings());
     let response = attach(&mut owner, &settings, agent);
     assert!(response.error.is_none(), "attach was refused: {response:?}");
@@ -521,7 +520,6 @@ fn attach_one(fixture: &Fixture, ptys: &SharedPtyHost) -> Attached {
         owner,
         sibling,
         append_failure,
-        host,
     }
 }
 
@@ -2359,6 +2357,10 @@ fn an_attach_whose_cleanup_is_uncertain_is_refused_and_retried_at_exit() {
 /// A physical open that failed leaves a durable unresolved launch attempt that refuses another
 /// attachment and survives every replay unchanged.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one failed open is followed through its refusal and two replays"
+)]
 fn a_failed_physical_open_leaves_an_unresolved_launch_attempt() {
     let fixture = Fixture::new();
     let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());

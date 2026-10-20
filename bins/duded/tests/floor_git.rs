@@ -7,7 +7,6 @@ mod common;
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;

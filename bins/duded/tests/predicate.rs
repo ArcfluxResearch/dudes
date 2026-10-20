@@ -556,7 +556,6 @@ struct Baselined {
     host: SharedHost,
     running: common::Running,
     agent: dudes_types::AgentId,
-    append_failure: duded::runtime::AppendFailure,
     pause: duded::runtime::OnboardingPause,
 }
 
@@ -599,7 +598,6 @@ fn baselined_with(edit: impl FnOnce(&mut duded::Settings), seeded: Vec<Record>) 
     );
     host.bind_child_ends(Arc::clone(&seams.children));
     let daemon = boot(&settings, seams).expect("boot");
-    let append_failure = daemon.append_failure();
     let pause = daemon.onboarding_pause();
     let running = common::start(daemon);
     let agent = common::hire(&running.handle, tree.path());
@@ -610,7 +608,6 @@ fn baselined_with(edit: impl FnOnce(&mut duded::Settings), seeded: Vec<Record>) 
         host,
         running,
         agent,
-        append_failure,
         pause,
     }
 }

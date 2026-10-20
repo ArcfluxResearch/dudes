@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 use duded::floor_gateway::{FloorStartFault, JOIN_BOUND, prepare};
 use duded::ports::{ExitCause, Handle, Job};
 use duded::settings::{FloorSettings, floor_from_values, installed_floor};
-use sha2::Digest as _;
 
 mod common;
 

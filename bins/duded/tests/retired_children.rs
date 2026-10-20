@@ -168,7 +168,6 @@ struct Daemon {
     append_failure: AppendFailure,
     post_fsync_failure: OnboardingFailure,
     owner: Option<LocalClient>,
-    rpc_connections: Box<dyn Fn() -> usize + Send + Sync>,
     floor: Option<std::net::SocketAddr>,
 }
 
@@ -237,7 +236,6 @@ impl Daemon {
         host.bind_child_ends(Arc::clone(&seams.children));
         let tokens = seams.rng.tokens();
         let daemon = duded::boot(&settings, seams).expect("boot");
-        let rpc_connections = daemon.rpc_connections_for_test();
         let append_failure = daemon.append_failure();
         let post_fsync_failure = daemon.onboarding_failure();
         let floor = daemon.floor_addr();
@@ -256,7 +254,6 @@ impl Daemon {
             append_failure,
             post_fsync_failure,
             owner: Some(owner),
-            rpc_connections,
             floor,
         }
     }
@@ -520,77 +517,6 @@ fn record_control_receipt(receipt: &Value) {
     log.write_all(b"\n").unwrap();
 }
 
-fn control_peer(state: DeadlineState) -> (Daemon, AgentId, HookToken, PtyId) {
-    let mut daemon = Daemon::start_with_short_hook_deadline();
-    let (agent, token) = daemon.idle_agent();
-    let (pty, key) = daemon.attach(agent);
-    match state {
-        DeadlineState::Paused => assert!(matches!(
-            daemon.running.handle.ask(Ask::Pause(agent)),
-            Ok(Answered::Done)
-        )),
-        DeadlineState::Halted => assert!(matches!(
-            daemon.running.handle.ask(Ask::Halt(agent)),
-            Ok(Answered::Done)
-        )),
-        DeadlineState::Running | DeadlineState::Retired => {}
-    }
-    daemon.relation.walk(Walk::Inside(key));
-    (daemon, agent, token, pty)
-}
-
-fn control_handlers(agent: AgentId, fixture: &Fixture) -> dudes_proto::providers::claude::Settings {
-    let binary = std::env::var_os("DUDES_TEST_HOOK_BINARY").map_or_else(
-        || {
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/debug/dudes-hook")
-        },
-        std::path::PathBuf::from,
-    );
-    assert!(binary.is_file(), "preflight the standalone hook shim");
-    handlers_for(agent, fixture.state.path(), &binary)
-}
-
-fn deadline_shutdown(daemon: &mut Daemon) -> String {
-    let credential = daemon.credential();
-    let response = daemon
-        .owner()
-        .call_as_operator(Method::SystemShutdown, None, credential)
-        .expect("authenticated shutdown");
-    let shutdown: ShutdownResult =
-        serde_json::from_value(response.result.expect("shutdown result")).unwrap();
-    daemon.owner = None;
-    assert_eq!(daemon.running.join(), duded::ExitCause::ShutdownRpc);
-    let receipt = shutdown.completion.expect("complete receipt");
-    let completion = std::fs::read_to_string(receipt.path).unwrap();
-    assert_eq!(completion, format!("complete {}\n", receipt.run));
-    assert_eq!(daemon.host.shutdowns(), 1);
-    completion
-}
-
-#[derive(Clone, Copy, Debug)]
-enum DeadlineState {
-    Running,
-    Paused,
-    Halted,
-    Retired,
-}
-
-fn control_deadline_body(event: &str) -> Value {
-    match event {
-        "PreToolUse" => json!({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": "the daemon did not answer the control hook; retry, and restart duded if this persists"
-        }}),
-        "UserPromptSubmit" => json!({
-            "decision": "block",
-            "reason": "the daemon did not answer the control hook; retry, and restart duded if this persists"
-        }),
-        _ => panic!("a control event is required"),
-    }
-}
-
 fn assert_control_deadline(output: &std::process::Output, event: &str) {
     assert_eq!(output.status.code(), Some(2), "{event}: {output:?}");
     assert_eq!(
@@ -601,7 +527,7 @@ fn assert_control_deadline(output: &std::process::Output, event: &str) {
 }
 
 fn control_peer(state: DeadlineState) -> (Daemon, AgentId, HookToken, PtyId) {
-    let mut daemon = Daemon::start();
+    let mut daemon = Daemon::start_with_short_hook_deadline();
     let (agent, token) = daemon.idle_agent();
     let (pty, key) = daemon.attach(agent);
     match state {
