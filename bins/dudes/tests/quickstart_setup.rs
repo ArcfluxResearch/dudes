@@ -1084,66 +1084,73 @@ fn start_floor_and_quickstart_show_a_missing_project_hint_only_to_people() {
 }
 
 #[test]
-fn billed_and_unbilled_guides_ask_at_most_five_questions_and_hire_idle() {
-    for (billed, multiple) in [(false, false), (false, true), (true, false), (true, true)] {
-        let layout = Layout::new();
-        let engines = if multiple {
-            layout.path("engines")
-        } else {
-            let only = layout.path("one-engine");
-            std::fs::create_dir(&only).unwrap();
-            std::fs::copy(layout.path("engines/claude"), only.join("claude")).unwrap();
-            only
-        };
-        let mut cli = layout
-            .cli()
-            .env("PATH", format!("{}:/usr/bin:/bin", engines.display()));
-        if billed {
-            cli = cli.env("ANTHROPIC_API_KEY", "fixture-api-key");
-        }
-        let pty = nix::pty::openpty(
-            None::<&nix::pty::Winsize>,
-            None::<&nix::sys::termios::Termios>,
-        )
-        .unwrap();
-        let mut child = cli.clone().arg("quickstart").spawn_on_terminal(&pty.slave);
-        drop(pty.slave);
-        let mut screen = Screen::new(pty.master);
-        screen.expect(FLOOR_QUESTION);
-        screen.answer("y");
-        if billed {
-            screen.expect("Daily dollar cap for the whole floor (Enter for none):");
-            screen.answer("25");
-        }
-        screen.expect("repository [git ls-files");
-        screen.answer("/usr/bin/true");
-        if multiple {
-            screen.expect("First agent engine (claude, codex; Enter to skip):");
-            screen.answer("claude");
-        } else {
-            screen.expect("Hire a first agent named Kim on claude, idle? [Y/n]");
-            screen.answer("");
-        }
-        screen.expect("and go ahead? [Y/n]");
-        screen.answer("y");
-        screen.expect("hired ");
-        assert!(
-            exit_status(&mut child, &screen).success(),
-            "{}",
-            screen.shown()
-        );
-        let shown = screen.shown();
-        let questions = ["[Y/n]", "[y/N]", "]:", "):"]
-            .iter()
-            .map(|ending| shown.matches(ending).count())
-            .sum::<usize>();
-        assert_eq!(questions, if billed { 5 } else { 4 }, "{shown}");
-        let listed = cli.args(["--json", "agents"]).run();
-        let agents: Vec<dudes_proto::AgentView> = listed.json();
-        assert_eq!(agents[0].name, "Kim");
-        assert!(agents[0].goal.is_none(), "an idle hire has no goal");
-        assert_only_status_checks(&layout);
+fn an_unbilled_guide_with_one_engine_asks_four_questions_and_hires_idle() {
+    guide_hires_idle(false, false);
+}
+
+#[test]
+fn a_billed_guide_with_two_engines_asks_five_questions_and_hires_idle() {
+    guide_hires_idle(true, true);
+}
+
+fn guide_hires_idle(billed: bool, multiple: bool) {
+    let layout = Layout::new();
+    let engines = if multiple {
+        layout.path("engines")
+    } else {
+        let only = layout.path("one-engine");
+        std::fs::create_dir(&only).unwrap();
+        std::fs::copy(layout.path("engines/claude"), only.join("claude")).unwrap();
+        only
+    };
+    let mut cli = layout
+        .cli()
+        .env("PATH", format!("{}:/usr/bin:/bin", engines.display()));
+    if billed {
+        cli = cli.env("ANTHROPIC_API_KEY", "fixture-api-key");
     }
+    let pty = nix::pty::openpty(
+        None::<&nix::pty::Winsize>,
+        None::<&nix::sys::termios::Termios>,
+    )
+    .unwrap();
+    let mut child = cli.clone().arg("quickstart").spawn_on_terminal(&pty.slave);
+    drop(pty.slave);
+    let mut screen = Screen::new(pty.master);
+    screen.expect(FLOOR_QUESTION);
+    screen.answer("y");
+    if billed {
+        screen.expect("Daily dollar cap for the whole floor (Enter for none):");
+        screen.answer("25");
+    }
+    screen.expect("repository [git ls-files");
+    screen.answer("/usr/bin/true");
+    if multiple {
+        screen.expect("First agent engine (claude, codex; Enter to skip):");
+        screen.answer("claude");
+    } else {
+        screen.expect("Hire a first agent named Kim on claude, idle? [Y/n]");
+        screen.answer("");
+    }
+    screen.expect("and go ahead? [Y/n]");
+    screen.answer("y");
+    screen.expect("hired ");
+    assert!(
+        exit_status(&mut child, &screen).success(),
+        "{}",
+        screen.shown()
+    );
+    let shown = screen.shown();
+    let questions = ["[Y/n]", "[y/N]", "]:", "):"]
+        .iter()
+        .map(|ending| shown.matches(ending).count())
+        .sum::<usize>();
+    assert_eq!(questions, if billed { 5 } else { 4 }, "{shown}");
+    let listed = cli.args(["--json", "agents"]).run();
+    let agents: Vec<dudes_proto::AgentView> = listed.json();
+    assert_eq!(agents[0].name, "Kim");
+    assert!(agents[0].goal.is_none(), "an idle hire has no goal");
+    assert_only_status_checks(&layout);
 }
 
 fn repeat_cli(layout: &Layout) -> Cli {
