@@ -69,12 +69,12 @@ test('the mirror publishes the phase, so an empty floor says which empty it is',
   );
 });
 
-test('one shared disconnected notice sits in the shell header outside the office', () => {
+test('one shared disconnected notice sits beside the top bar, outside its stacking layer and the office', () => {
   store.resetFloorStore();
   store.noteTransport('close');
   const html = renderToStaticMarkup(createElement(WebFloorShell));
   assert.equal((html.match(/class="[^"]*stream-notice/g) ?? []).length, 1);
-  assert.match(html, /<header class="top-bar">[\s\S]*office-closed stream-notice[\s\S]*<\/header>/);
+  assert.match(html, /<div class="top-region"><header class="top-bar">[\s\S]*<\/header><div class="notice-area"><div class="notice-stack">[\s\S]*office-closed stream-notice/);
   assert.ok(html.indexOf('office-closed stream-notice') < html.indexOf('class="floor-stage"'));
 });
 

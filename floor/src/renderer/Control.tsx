@@ -12,6 +12,7 @@ import { closesPanel, handFocusOnLeave, restoreFocusAfterDialog } from './focus.
 import { StreamReadStatus } from './ReadError.tsx';
 import type { FloorState } from './floor/store.ts';
 import { NotConnected } from './StreamNotice.tsx';
+import { JournalStoppedBanner } from './JournalStoppedBanner.tsx';
 import { waitingOnYou } from './questions.ts';
 import type { WaitingItem } from './questions.ts';
 import { fieldsOf } from './scene/label.ts';
@@ -299,6 +300,7 @@ export function Control({ floor, view, selectedId, onClose, onView, onOpenQuesti
           <button type="button" className="ticket-dialog-close" aria-label="Close ticket dialog" onClick={closeOverlay}>×</button>
         </header>
         {viewConfirmed(floor) ? null : <NotConnected />}
+        <JournalStoppedBanner stopped={floor.journalStopped} className="stream-state" />
         {overlay?.kind === 'new' ? <div className="ticket-composer"><h3>New ticket</h3>
           <p>Tell an agent what you want to happen.</p><TicketNotice card={null} floor={floor} />
           {floor.ticket ? null : <TicketOffHint floor={floor} />}

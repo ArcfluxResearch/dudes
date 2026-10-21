@@ -233,7 +233,7 @@ test('notices hang under the top bar out of the page flow, so a notice never mov
     assert.equal(area('position'), 'absolute', `${width}: the notice area is in the page flow`);
     assert.equal(area('top'), '100%', `${width}: the notice area is not anchored under the top bar`);
     assert.equal(area('pointer-events'), 'none', `${width}: the empty area would take clicks from the office`);
-    const notice = (property) => declared(rules, (selector) => selector === '.notice-area > *', property);
+    const notice = (property) => declared(rules, (selector) => selector === '.notice-stack > *', property);
     assert.equal(notice('pointer-events'), 'auto', `${width}: a notice cannot be pressed`);
     assert.equal(notice('max-width'), 'min(36rem, calc(100vw - 2rem))', `${width}: a notice can grow past 36rem`);
     const stage = (property) => declared(rules, (selector) => selector === '.floor-stage:has(.terminal-panel)', property);
@@ -263,9 +263,9 @@ test('an expanded terminal takes the stage under the top bar and its banners, ab
 
 test('a Done notice keeps its goal text beside the agent name and Dismiss', async () => {
   const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
-  const goal = declared(rulesAt(css, 1440), (selector) => selector === '.notice-area .done-notice-goal', 'text-overflow');
+  const goal = declared(rulesAt(css, 1440), (selector) => selector === '.notice-stack .done-notice-goal', 'text-overflow');
   assert.equal(goal, 'ellipsis', 'long goals cover Dismiss');
-  assert.equal(declared(rulesAt(css, 1440), (selector) => selector === '.notice-area .done-notice-goal', 'clip-path'), undefined,
+  assert.equal(declared(rulesAt(css, 1440), (selector) => selector === '.notice-stack .done-notice-goal', 'clip-path'), undefined,
     'the goal is visually hidden');
 });
 

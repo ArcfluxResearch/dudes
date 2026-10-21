@@ -377,39 +377,43 @@ function SignedInShell() {
   return (
     <main className="shell" aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
       data-theme={preferences.theme} data-scheme={effectiveTheme} style={{ '--side-width': `${preferences.sidebarWidth}px` } as CSSProperties}>
-      <header className="top-bar">
-        <h1 id="floor-title" className="wordmark">dudes</h1>
-        <CrewStats agents={floor.agents} cards={floor.cards} statuses={focused} />
-        <ControlNav floor={floor} view={focused ? null : view} onToggle={toggleView} />
-        <div className="top-bar-actions" role="group" aria-label="Floor actions">
-          <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={crewOpen && !focused && view !== 'board'}
-            aria-controls={crewOpen && !focused && view !== 'board' ? 'crew-list' : undefined}
-            onClick={toggleCrew}>Crew</button>
-          <button type="button" className="focus-toggle" id="focus-toggle" aria-pressed={focused}
-            aria-keyshortcuts="Alt+Shift+F" onClick={toggleFocus}>
-            {focused ? 'Leave focus' : 'Focus agent'}
-          </button>
-          {hireSwitchOn(floor) ? <button type="button" className="hire-open" id="hire-open" aria-expanded={hiring}
-            aria-controls={hiring ? 'hire-wizard' : undefined}
-            onClick={(event) => openHire(event.currentTarget)}>Hire an agent</button> : null}
-          <PauseAllControl floor={floor} />
-          <button type="button" className="theme-toggle" aria-pressed={effectiveTheme === 'dark'}
-            onClick={() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))}>
-            Use {effectiveTheme === 'dark' ? 'light' : 'dark'} theme
-          </button>
-          <button type="button" className="sign-out" onClick={signOut}>Sign out</button>
-        </div>
-        <div className="office-bar" ref={setOfficeBar} />
+      <div className="top-region">
+        <header className="top-bar">
+          <h1 id="floor-title" className="wordmark">dudes</h1>
+          <CrewStats agents={floor.agents} cards={floor.cards} statuses={focused} />
+          <ControlNav floor={floor} view={focused ? null : view} onToggle={toggleView} />
+          <div className="top-bar-actions" role="group" aria-label="Floor actions">
+            <button type="button" className="crew-toggle" id="crew-toggle" aria-pressed={crewOpen && !focused && view !== 'board'}
+              aria-controls={crewOpen && !focused && view !== 'board' ? 'crew-list' : undefined}
+              onClick={toggleCrew}>Crew</button>
+            <button type="button" className="focus-toggle" id="focus-toggle" aria-pressed={focused}
+              aria-keyshortcuts="Alt+Shift+F" onClick={toggleFocus}>
+              {focused ? 'Leave focus' : 'Focus agent'}
+            </button>
+            {hireSwitchOn(floor) ? <button type="button" className="hire-open" id="hire-open" aria-expanded={hiring}
+              aria-controls={hiring ? 'hire-wizard' : undefined}
+              onClick={(event) => openHire(event.currentTarget)}>Hire an agent</button> : null}
+            <PauseAllControl floor={floor} />
+            <button type="button" className="theme-toggle" aria-pressed={effectiveTheme === 'dark'}
+              onClick={() => setPreferences((current) => ({ ...current, theme: toggleTheme(current.theme, osDark) }))}>
+              Use {effectiveTheme === 'dark' ? 'light' : 'dark'} theme
+            </button>
+            <button type="button" className="sign-out" onClick={signOut}>Sign out</button>
+          </div>
+          <div className="office-bar" ref={setOfficeBar} />
+        </header>
         <div className="notice-area">
-          <PastedLinkNotice />
-          {signOutFailed ? <p className="link-refused" role="alert">Could not sign out. Try again.</p> : null}
-          <JournalStoppedBanner stopped={floor.journalStopped} />
-          <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
-          {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
-          <StreamNotice floor={floor} />
-          <DoneNotices notices={floor.doneNotices} leaveFocusTo={home} />
+          <div className="notice-stack">
+            <PastedLinkNotice />
+            {signOutFailed ? <p className="link-refused" role="alert">Could not sign out. Try again.</p> : null}
+            <JournalStoppedBanner stopped={floor.journalStopped} />
+            <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
+            {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
+            <StreamNotice floor={floor} />
+            <DoneNotices notices={floor.doneNotices} leaveFocusTo={home} />
+          </div>
         </div>
-      </header>
+      </div>
       <div className="floor-stage"
         onKeyDown={(event) => { if (closesDrawer(event, drawerOpen)) { event.stopPropagation(); clearSelection(); } }}>
         {crewOpen && !focused ? <CrewList agents={floor.agents} cards={floor.cards} selectedId={currentSelectedId}
