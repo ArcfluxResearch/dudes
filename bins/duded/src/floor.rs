@@ -80,7 +80,7 @@ pub fn snapshot(projections: &mut Projections, now: Timestamp) -> Result<AgentSn
     })
 }
 
-/// Every board card, with a ticket's status, counts and latest engine exit. The note, the agent's
+/// Every board card, with a ticket's goal binding, status, counts and latest engine exit. The note, the agent's
 /// summary and the check result come from `ticket.read`.
 pub(crate) fn cards(projections: &Projections) -> Result<Vec<CardView>> {
     let mut cards = projections
@@ -117,6 +117,7 @@ pub(crate) fn cards(projections: &Projections) -> Result<Vec<CardView>> {
             _ => None,
         };
         card.ticket = Some(CardTicket {
+            goal: ticket.goal,
             position,
             round: ticket.round,
             reason: if card.status == CardStatus::Blocked {

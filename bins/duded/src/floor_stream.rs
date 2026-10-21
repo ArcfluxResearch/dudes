@@ -4169,6 +4169,91 @@ mod tests {
     }
 
     #[test]
+    fn a_ticket_snapshot_keeps_its_bound_goal_after_the_agent_starts_a_replacement() {
+        use dudes_proto::record::samples;
+        use dudes_proto::{Actor, Record, RecordKind, TicketReason};
+        use dudes_types::{CardStatus, GoalId};
+
+        let mut projected = dudes_journal::Projections::in_memory().unwrap();
+        let mut lsn = 0_u64;
+        let mut apply = |projected: &mut dudes_journal::Projections, record| {
+            lsn += 1;
+            projected
+                .apply(
+                    Lsn(lsn),
+                    0,
+                    &dudes_proto::Entry {
+                        at: Timestamp::UNIX_EPOCH,
+                        record,
+                    },
+                )
+                .unwrap();
+        };
+        for kind in [
+            RecordKind::AgentHired,
+            RecordKind::TicketCreated,
+            RecordKind::TicketAssigned,
+            RecordKind::TicketStarted,
+            RecordKind::TurnIssued,
+        ] {
+            apply(&mut projected, samples::record(kind));
+        }
+        let card = projected.cards().unwrap().remove(0);
+        apply(
+            &mut projected,
+            Record::CardTransition {
+                card: card.id,
+                from: card.status,
+                to: CardStatus::Blocked,
+                by: Actor::System,
+                expected_seq: card.seq,
+                reason: Some(TicketReason::RecoveryRequired),
+            },
+        );
+        let before = crate::floor::snapshot(&mut projected, Timestamp::UNIX_EPOCH).unwrap();
+        let original = before.agents[0].goal.as_ref().unwrap().id;
+        assert_eq!(
+            before.cards[0].ticket.as_ref().unwrap().goal,
+            Some(original)
+        );
+        assert_eq!(
+            projected.cards().unwrap()[0].ticket.as_ref().unwrap().goal,
+            Some(original)
+        );
+
+        let replacement = GoalId::from_parts(8, 99);
+        let mut changed = samples::record(RecordKind::GoalSet);
+        if let Record::GoalSet { goal, .. } = &mut changed {
+            goal.id = replacement;
+        }
+        apply(&mut projected, changed);
+        let mut issued = samples::record(RecordKind::TurnIssued);
+        if let Record::TurnIssued { goal, turn, .. } = &mut issued {
+            *goal = replacement;
+            *turn = TurnId::from_parts(9, 99);
+        }
+        apply(&mut projected, issued);
+        let after = crate::floor::snapshot(&mut projected, Timestamp::UNIX_EPOCH).unwrap();
+        assert_eq!(after.agents[0].goal.as_ref().unwrap().id, replacement);
+        assert_eq!(after.cards[0].claimed_by, Some(after.agents[0].id));
+        assert_eq!(after.cards[0].ticket.as_ref().unwrap().goal, Some(original));
+        assert_eq!(
+            after.cards[0].ticket.as_ref().unwrap().reason,
+            Some(TicketReason::RecoveryRequired)
+        );
+        let frame = serialize_snapshot(&after).unwrap();
+        let wire: Value = serde_json::from_slice(text_payload(&frame).unwrap()).unwrap();
+        assert_eq!(
+            wire["projection"]["cards"][0]["ticket"]["goal"],
+            original.to_string()
+        );
+        assert_eq!(
+            wire["projection"]["agents"][0]["goal"]["id"],
+            replacement.to_string()
+        );
+    }
+
+    #[test]
     fn card_records_reach_the_snapshot_and_changed_card_delta() {
         let mut projected = dudes_journal::Projections::in_memory().unwrap();
         let card = dudes_types::CardId::from_parts(1, 9);

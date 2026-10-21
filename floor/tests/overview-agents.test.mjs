@@ -190,9 +190,9 @@ test('a waiting question keeps priority over the last turn output', async () => 
 
 
 test('a recovery-required ticket gives the selected agent and focus roster the same needs-you label', async () => {
-  const row = { ...ada, paused: false, status: 'running' };
+  const row = { ...ada, paused: false, status: 'running', goal: { ...ada.goal, id: '01ARZ3NDEKTSV4RRFFQ69G5FAX' } };
   const card = { id: '01ARZ3NDEKTSV4RRFFQ69G5FAW', claimed_by: ADA, status: 'blocked',
-    title: 'Continue the interrupted task', ticket: { reason: 'recovery_required', round: 1 } };
+    title: 'Continue the interrupted task', ticket: { reason: 'recovery_required', round: 1, goal: row.goal.id } };
   await withViews(({ focus }) => {
     const html = focus({ ...live, agents: [row], cards: [card] }, row, ADA);
     assert.match(html, /<span data-status="needs you">needs you<\/span>/);

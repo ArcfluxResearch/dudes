@@ -332,6 +332,9 @@ const fn is_zero(count: &u32) -> bool {
 /// the snapshot's card budget has to hold the most tickets the board allows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CardTicket {
+    /// The goal installed by this ticket's latest start, retained after that work stops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<GoalId>,
     /// Its place in its holder's queue, counting from 1, while it waits there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<u32>,
@@ -569,6 +572,7 @@ mod tests {
             claimed_by: Some(AgentId::from_parts(1, 2)),
             deps: Vec::new(),
             ticket: Some(CardTicket {
+                goal: Some(GoalId::from_parts(1, 4)),
                 position: Some(2),
                 round: 1,
                 reason: None,
@@ -584,6 +588,18 @@ mod tests {
         };
         let wire = serde_json::to_value(&delta).unwrap();
         assert!(wire.get("removed_cards").is_some());
+        assert_eq!(
+            wire["cards"][0]["ticket"]["goal"],
+            GoalId::from_parts(1, 4).to_string()
+        );
+        let mut legacy_ticket = wire["cards"][0]["ticket"].clone();
+        legacy_ticket.as_object_mut().unwrap().remove("goal");
+        assert!(
+            serde_json::from_value::<CardTicket>(legacy_ticket)
+                .unwrap()
+                .goal
+                .is_none()
+        );
         let older: OlderDelta = serde_json::from_value(wire).unwrap();
         assert_eq!(older.cards.len(), 1);
         assert_eq!(older.cards[0].title, "Ticket");

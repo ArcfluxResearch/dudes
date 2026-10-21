@@ -7,6 +7,7 @@
 import type { CardRow } from '../board.ts';
 import type { FloorState } from '../floor/store.ts';
 import type { AgentRow } from '../scene/cast.ts';
+import { goalIdOf } from '../goal/goal.ts';
 import { decodeWorkspace } from '../workspace.ts';
 import { NO_AGENT_YET, noAgentInProjectSentence, placeInLine, reasonSentence, waitSentence } from './words.ts';
 import type { Wait } from './words.ts';
@@ -138,10 +139,11 @@ export function viewConfirmed(floor: FloorState): boolean {
 export function ticketWord(cards: readonly CardRow[] | undefined, row: AgentRow, status: string): string | null {
   const held = tickets(cards).filter((card) => card.claimed_by === row.id);
   const goal = row.goal;
+  const goalId = goalIdOf(row);
   if (status === 'running' && row.mode === 'managed' && row.paused !== true && row.halted !== true
     && typeof goal === 'object' && goal !== null && 'status' in goal
-    && (goal.status === 'set' || goal.status === 'in_progress')
-    && held.some((card) => card.status === 'blocked' && card.ticket?.reason === 'recovery_required')) return 'needs you';
+    && (goal.status === 'set' || goal.status === 'in_progress') && goalId !== null
+    && held.some((card) => card.status === 'blocked' && card.ticket?.reason === 'recovery_required' && card.ticket.goal === goalId)) return 'needs you';
   if (status !== 'done' && status !== 'idle') return null;
   if (held.some((card) => card.status === 'blocked')) return 'needs you';
   return held.some((card) => card.status === 'review') ? 'ready for you' : null;

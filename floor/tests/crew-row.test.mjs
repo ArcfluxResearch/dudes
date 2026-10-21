@@ -109,14 +109,16 @@ test('an automatic hold replaces idle activity with its actionable reason', () =
 
 
 test('a running Managed agent with a recovery-required ticket needs you instead of appearing to work', () => {
-  const running = { ...ada, mode: 'managed', status: 'running' };
+  const running = { ...ada, mode: 'managed', status: 'running', goal: { ...ada.goal, id: '01ARZ3NDEKTSV4RRFFQ69G5FAX' } };
   const card = { id: '01ARZ3NDEKTSV4RRFFQ69G5FAW', claimed_by: ADA, status: 'blocked',
-    ticket: { reason: 'recovery_required', round: 1 } };
+    ticket: { reason: 'recovery_required', round: 1, goal: running.goal.id } };
   const crew = crewRowOf(running, [card]);
   assert.equal(crew.status, 'needs you');
   assert.match(crew.description, /claude, needs you,/);
   for (const [row, cards, status] of [
-    [running, [], 'running'], [running, [{ ...card, claimed_by: GRACE }], 'running'],
+    [running, [], 'running'],
+    [running, [{ ...card, ticket: { ...card.ticket, goal: undefined } }], 'running'],
+    [{ ...running, goal: { ...running.goal, id: '01ARZ3NDEKTSV4RRFFQ69G5FAZ' } }, [card], 'running'], [running, [{ ...card, claimed_by: GRACE }], 'running'],
     [running, [{ ...card, ticket: { ...card.ticket, reason: 'held_launch' } }], 'running'],
     [{ ...running, status: 'waiting' }, [card], 'waiting'], [{ ...running, mode: 'attached' }, [card], 'running'],
     [{ ...running, paused: true }, [card], 'running'], [{ ...running, halted: true }, [card], 'running'],
