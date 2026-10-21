@@ -7724,6 +7724,121 @@
           "type": "object"
         },
         {
+          "description": "A browser signed in and became a device. Only digests of its cookie and its secret are\nkept. The entry's own time is the sign-in time.",
+          "properties": {
+            "cookie": {
+              "description": "SHA-256 of the device's cookie.",
+              "type": "string"
+            },
+            "device": {
+              "description": "The device's id.",
+              "type": "string"
+            },
+            "name": {
+              "description": "The label the browser chose, cleaned and capped by the daemon.",
+              "type": "string"
+            },
+            "origin": {
+              "description": "The Floor origin the browser signed in on.",
+              "type": "string"
+            },
+            "secret": {
+              "description": "SHA-256 of the secret the page sends with every request.",
+              "type": "string"
+            },
+            "t": {
+              "const": "floor_device_enrolled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "device",
+            "origin",
+            "name",
+            "cookie",
+            "secret"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A device made its first request. The entry's own time is that moment.",
+          "properties": {
+            "device": {
+              "description": "The device.",
+              "type": "string"
+            },
+            "t": {
+              "const": "floor_device_first_used",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "device"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Someone answered the \"new browser\" notice for a device with Keep.",
+          "properties": {
+            "device": {
+              "description": "The device.",
+              "type": "string"
+            },
+            "t": {
+              "const": "floor_device_acknowledged",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "device"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A device was removed and no longer signs in.",
+          "properties": {
+            "device": {
+              "description": "The device.",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/FloorDeviceRemoval",
+              "description": "Why it was removed."
+            },
+            "t": {
+              "const": "floor_device_removed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "device",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A device made a request. Written at most once a day per device; the entry's own time is the\ndevice's last use as a restart sees it.",
+          "properties": {
+            "device": {
+              "description": "The device.",
+              "type": "string"
+            },
+            "t": {
+              "const": "floor_device_used",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "device"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The Floor refused one request because the process on the other end of its connection\ncould not be shown to be outside every agent. Audit only: it changes no projection.\n\nThe daemon writes at most one per agent per minute, and one more for refusals that name no\nagent, so a looping agent cannot fill the journal.",
           "properties": {
             "agent": {
@@ -8456,6 +8571,36 @@
       },
       "title": "FloorDeltaView",
       "type": "object"
+    },
+    "FloorDeviceRemoval": {
+      "description": "Why a signed-in browser stopped being one.",
+      "oneOf": [
+        {
+          "const": "signed_out",
+          "description": "The person signed out in that browser.",
+          "type": "string"
+        },
+        {
+          "const": "removed",
+          "description": "Someone removed it from another browser or the command line.",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "It went unused for 30 days, or reached 90 days in all.",
+          "type": "string"
+        },
+        {
+          "const": "never_used",
+          "description": "It signed in and made no request within a day.",
+          "type": "string"
+        },
+        {
+          "const": "replaced",
+          "description": "A newer sign-in took its place while all eight devices were in use.",
+          "type": "string"
+        }
+      ]
     },
     "FloorFinishedToday": {
       "description": "The daemon's count of goals first finished, with an observed pass, on its own local calendar day.\nA sibling of `floor.snapshot` and `floor.delta`; a present delta replaces the whole\nvalue, and an absent sibling means the daemon does not support it, never a count of zero.\n\n`local_date` and `utc_offset_minutes` are the daemon host's at the instant it answered, so a\nbrowser in another timezone can say whose day it is showing and never converts it.",

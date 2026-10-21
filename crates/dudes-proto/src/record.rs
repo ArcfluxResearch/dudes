@@ -1827,6 +1827,50 @@ pub enum Record {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pin: Option<TrustPin>,
     },
+    /// A browser signed in and became a device. Only digests of its cookie and its secret are
+    /// kept. The entry's own time is the sign-in time.
+    FloorDeviceEnrolled {
+        /// The device's id.
+        #[schemars(with = "String")]
+        device: Hex32,
+        /// The Floor origin the browser signed in on.
+        origin: String,
+        /// The label the browser chose, cleaned and capped by the daemon.
+        name: String,
+        /// SHA-256 of the device's cookie.
+        #[schemars(with = "String")]
+        cookie: Hex32,
+        /// SHA-256 of the secret the page sends with every request.
+        #[schemars(with = "String")]
+        secret: Hex32,
+    },
+    /// A device made its first request. The entry's own time is that moment.
+    FloorDeviceFirstUsed {
+        /// The device.
+        #[schemars(with = "String")]
+        device: Hex32,
+    },
+    /// Someone answered the "new browser" notice for a device with Keep.
+    FloorDeviceAcknowledged {
+        /// The device.
+        #[schemars(with = "String")]
+        device: Hex32,
+    },
+    /// A device was removed and no longer signs in.
+    FloorDeviceRemoved {
+        /// The device.
+        #[schemars(with = "String")]
+        device: Hex32,
+        /// Why it was removed.
+        reason: FloorDeviceRemoval,
+    },
+    /// A device made a request. Written at most once a day per device; the entry's own time is the
+    /// device's last use as a restart sees it.
+    FloorDeviceUsed {
+        /// The device.
+        #[schemars(with = "String")]
+        device: Hex32,
+    },
     /// The Floor refused one request because the process on the other end of its connection
     /// could not be shown to be outside every agent. Audit only: it changes no projection.
     ///
@@ -1911,6 +1955,22 @@ pub enum FloorPeerRefusal {
     OtherUser,
     /// This platform cannot find the owner, so the Floor only shows.
     Unsupported,
+}
+
+/// Why a signed-in browser stopped being one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FloorDeviceRemoval {
+    /// The person signed out in that browser.
+    SignedOut,
+    /// Someone removed it from another browser or the command line.
+    Removed,
+    /// It went unused for 30 days, or reached 90 days in all.
+    Expired,
+    /// It signed in and made no request within a day.
+    NeverUsed,
+    /// A newer sign-in took its place while all eight devices were in use.
+    Replaced,
 }
 
 /// A directory by device and inode, so a path swapped for another directory does not match.
@@ -2166,6 +2226,11 @@ impl Record {
             Self::RecoveryInvalidated(_) => RecordKind::RecoveryInvalidated,
             Self::FloorPeerRefused { .. } => RecordKind::FloorPeerRefused,
             Self::WorkspaceTrustSet { .. } => RecordKind::WorkspaceTrustSet,
+            Self::FloorDeviceEnrolled { .. } => RecordKind::FloorDeviceEnrolled,
+            Self::FloorDeviceFirstUsed { .. } => RecordKind::FloorDeviceFirstUsed,
+            Self::FloorDeviceAcknowledged { .. } => RecordKind::FloorDeviceAcknowledged,
+            Self::FloorDeviceRemoved { .. } => RecordKind::FloorDeviceRemoved,
+            Self::FloorDeviceUsed { .. } => RecordKind::FloorDeviceUsed,
         }
     }
 
@@ -2365,6 +2430,16 @@ pub enum RecordKind {
     FloorPeerRefused = 85,
     /// [`Record::WorkspaceTrustSet`].
     WorkspaceTrustSet = 86,
+    /// [`Record::FloorDeviceEnrolled`].
+    FloorDeviceEnrolled = 87,
+    /// [`Record::FloorDeviceFirstUsed`].
+    FloorDeviceFirstUsed = 88,
+    /// [`Record::FloorDeviceAcknowledged`].
+    FloorDeviceAcknowledged = 89,
+    /// [`Record::FloorDeviceRemoved`].
+    FloorDeviceRemoved = 90,
+    /// [`Record::FloorDeviceUsed`].
+    FloorDeviceUsed = 91,
 }
 
 impl RecordKind {
@@ -2421,8 +2496,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 86] {
-        let mut kinds = [Self::AgentHired; 86];
+    const fn known_kinds() -> [Self; 91] {
+        let mut kinds = [Self::AgentHired; 91];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2468,6 +2543,11 @@ impl RecordKind {
         kinds[83] = Self::RecoveryInvalidated;
         kinds[84] = Self::FloorPeerRefused;
         kinds[85] = Self::WorkspaceTrustSet;
+        kinds[86] = Self::FloorDeviceEnrolled;
+        kinds[87] = Self::FloorDeviceFirstUsed;
+        kinds[88] = Self::FloorDeviceAcknowledged;
+        kinds[89] = Self::FloorDeviceRemoved;
+        kinds[90] = Self::FloorDeviceUsed;
         kinds
     }
 
@@ -3371,6 +3451,26 @@ pub mod samples {
                     config: Hex32::new([8; 32]),
                 }),
             },
+            RecordKind::FloorDeviceEnrolled => Record::FloorDeviceEnrolled {
+                device: Hex32::new([1; 32]),
+                origin: "http://127.0.0.1:7700".to_owned(),
+                name: "Chrome on macOS".to_owned(),
+                cookie: Hex32::new([2; 32]),
+                secret: Hex32::new([3; 32]),
+            },
+            RecordKind::FloorDeviceFirstUsed => Record::FloorDeviceFirstUsed {
+                device: Hex32::new([1; 32]),
+            },
+            RecordKind::FloorDeviceAcknowledged => Record::FloorDeviceAcknowledged {
+                device: Hex32::new([1; 32]),
+            },
+            RecordKind::FloorDeviceRemoved => Record::FloorDeviceRemoved {
+                device: Hex32::new([1; 32]),
+                reason: FloorDeviceRemoval::Removed,
+            },
+            RecordKind::FloorDeviceUsed => Record::FloorDeviceUsed {
+                device: Hex32::new([1; 32]),
+            },
             RecordKind::FloorPeerRefused => Record::FloorPeerRefused {
                 route: "/floor/answer".to_owned(),
                 agent: Some(agent()),
@@ -3787,7 +3887,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 86);
+        assert_eq!(RecordKind::KNOWN.len(), 91);
         for &kind in &RecordKind::KNOWN[46..66] {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys() {
@@ -4290,7 +4390,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            86,
+            91,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -5289,8 +5389,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 86);
-        assert_eq!(RecordKind::from_tag(87), None);
+        assert_eq!(RecordKind::KNOWN.len(), 91);
+        assert_eq!(RecordKind::from_tag(92), None);
     }
 
     const TICKET_KINDS: [(RecordKind, u16); 5] = [
@@ -5623,6 +5723,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(87), None);
+        assert_eq!(RecordKind::from_tag(92), None);
     }
 }
