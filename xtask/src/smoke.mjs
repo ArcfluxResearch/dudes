@@ -377,7 +377,7 @@ exec /bin/sleep 120
 
   async browser() {
     await this.launchChrome();
-    const { stdout } = await this.cli(['floor', 'open', '--no-browser']);
+    const { stdout } = await this.cli(['floor', 'open']);
     const link = stdout.match(/http:\/\/127\.0\.0\.1:\d+\/floor\/#bootstrap=[A-Za-z0-9_-]+/)?.[0];
     check(link, 'Floor open returned no bootstrap link');
     await this.openFloor(link);
