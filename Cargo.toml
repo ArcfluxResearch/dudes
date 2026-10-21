@@ -13,7 +13,7 @@ exclude = ["fuzz", "vendor/libproc"]
 # directory must be in the naming gate's `ROOTS`, or the gate never walks it and passes silently.
 
 [workspace.package]
-version = "0.91.0"
+version = "0.92.0"
 edition = "2024"
 # MSRV policy: two stable releases behind the pinned toolchain at the time of a release; a bump is a
 # minor change (see CONTRIBUTING.md). Tested by the `msrv` CI job.
@@ -143,19 +143,19 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.10", default-features = false }
 
 # Workspace crates, so members name each other by `workspace = true`.
-dudes-types = { path = "crates/dudes-types", version = "0.91.0", default-features = false }
-dudes-proto = { path = "crates/dudes-proto", version = "0.91.0" }
-dudes-journal = { path = "crates/dudes-journal", version = "0.91.0" }
-dudes-policy = { path = "crates/dudes-policy", version = "0.91.0" }
-dudes-providers = { path = "crates/dudes-providers", version = "0.91.0" }
-dudes-config = { path = "crates/dudes-config", version = "0.91.0" }
-dudes-rpc = { path = "crates/dudes-rpc", version = "0.91.0" }
-dudes-supervisor = { path = "crates/dudes-supervisor", version = "0.91.0" }
-dudes-host = { path = "crates/dudes-host", version = "0.91.0" }
-dudes-pty = { path = "crates/dudes-pty", version = "0.91.0" }
+dudes-types = { path = "crates/dudes-types", version = "0.92.0", default-features = false }
+dudes-proto = { path = "crates/dudes-proto", version = "0.92.0" }
+dudes-journal = { path = "crates/dudes-journal", version = "0.92.0" }
+dudes-policy = { path = "crates/dudes-policy", version = "0.92.0" }
+dudes-providers = { path = "crates/dudes-providers", version = "0.92.0" }
+dudes-config = { path = "crates/dudes-config", version = "0.92.0" }
+dudes-rpc = { path = "crates/dudes-rpc", version = "0.92.0" }
+dudes-supervisor = { path = "crates/dudes-supervisor", version = "0.92.0" }
+dudes-host = { path = "crates/dudes-host", version = "0.92.0" }
+dudes-pty = { path = "crates/dudes-pty", version = "0.92.0" }
 # Windows DACL and filesystem operations. Its source guard checks that the three process/job spellings
 # stay in `dudes-host`; the layering table covers crate dependencies.
-dudes-win = { path = "crates/dudes-win", version = "0.91.0" }
+dudes-win = { path = "crates/dudes-win", version = "0.92.0" }
 # The daemon, named here so `bins/dudes` can reach `boot` from its `[dev-dependencies]`. It goes
 # through the shared table rather than a bare `path` for the reason `crates/dudes-rpc`'s own
 # self-reference records: `cargo deny`'s `[bans.workspace-dependencies]` has
