@@ -83,7 +83,7 @@ function held() {
 
 function region() {
   const html = renderToStaticMarkup(createElement(WebFloorShell));
-  return html.match(/<div class="done-notices"[\s\S]*?<\/div>(?=<\/div><\/header>)/)?.[0] ?? null;
+  return html.match(/<div class="done-notices"[\s\S]*?<\/div>(?=<\/div><\/div><\/div>)/)?.[0] ?? null;
 }
 
 function handoffs(html) {

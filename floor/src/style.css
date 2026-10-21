@@ -3,6 +3,7 @@
   --layer-terminal: 1;
   --layer-hire-wizard: 3;
   --layer-top-bar: 4;
+  --layer-notices: 6;
   --layer-expanded-terminal: 2;
   --hire-wizard-width: 38rem;
   --ink: #2a2520;
@@ -3404,35 +3405,92 @@ samp,
 
 /*
  * Notices. One area under the top bar holds every notice the page can raise, out of the page's
- * flow, so a notice arriving never moves the office or a panel. The area takes no clicks; each
- * notice does.
+ * flow, so a notice arriving never moves the office or a panel. The area takes no clicks; the
+ * stack inside it, which scrolls once it passes its height cap, and each notice do. The area lies
+ * above the phone sheets, which would otherwise cover a failure and the button that answers it.
+ * While a panel, sheet or drawer is open its notices start below that panel's close button.
  */
+.top-region {
+  position: relative;
+}
+
 .notice-area {
   position: absolute;
   top: 100%;
   right: 0;
   left: 0;
-  z-index: 1;
+  z-index: var(--layer-notices);
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.5rem;
+  justify-content: center;
   padding: 0.6rem 1rem 0;
   pointer-events: none;
 }
 
-.notice-area > * {
+.notice-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  box-sizing: border-box;
+  max-width: 100%;
+  max-height: min(28dvh, 14rem);
+  padding: 0 0.5rem 0.5rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  pointer-events: auto;
+}
+
+.shell:has(.control-panel, .agent-drawer) .notice-area {
+  padding-top: 3.5rem;
+}
+
+/* A phone sheet fills the screen and its close button sits in the top 2.75rem, so the area hangs from just below that row. */
+@media (max-width: 800px) {
+  .shell:has(.agent-drawer, .floor-stage > .control-panel:is([data-view='setup'], [data-view='settings'], [data-view='log'])) .notice-area {
+    position: fixed;
+    top: 2.75rem;
+    padding-top: 0.3rem;
+  }
+}
+
+/*
+ * While notices show, an open panel starts its content below them. The shell carries the stack's
+ * height and data-notices; with no notice showing none of this applies and nothing moves. The
+ * offsets are where the area starts (3.5rem under the top bar, 3.05rem on a phone sheet).
+ */
+@media (min-width: 801px) {
+  .shell[data-notices] .control-panel .control-view {
+    margin-top: var(--notice-stack-height);
+  }
+
+  .shell[data-notices] .agent-drawer {
+    padding-top: calc(3.5rem + var(--notice-stack-height));
+  }
+}
+
+@media (max-width: 800px) {
+  .shell[data-notices] .floor-stage > .control-panel:is([data-view='setup'], [data-view='settings'], [data-view='log']) .control-view {
+    margin-top: max(0px, calc(var(--notice-stack-height) - 1.2rem));
+  }
+
+  .shell[data-notices] .agent-drawer {
+    padding-top: calc(3.05rem + var(--notice-stack-height));
+  }
+}
+
+.notice-stack > * {
+  flex: 0 0 auto;
   box-sizing: border-box;
   max-width: min(36rem, calc(100vw - 2rem));
   pointer-events: auto;
 }
 
-.notice-area > .done-notices {
+.notice-stack > .done-notices {
   pointer-events: none;
 }
 
-.notice-area > :is(.link-refused, .stream-notice, .journal-stopped-banner, .closing-time-banner, .ticket-banner),
-.notice-area .done-notice {
+.notice-stack > :is(.link-refused, .stream-notice, .journal-stopped-banner, .closing-time-banner, .ticket-banner),
+.notice-stack .done-notice {
   width: fit-content;
   margin: 0;
   padding: 0.55rem 0.8rem;
@@ -3444,23 +3502,23 @@ samp,
   pointer-events: auto;
 }
 
-.notice-area > :is(.link-refused, .office-closed, .journal-stopped-banner) {
+.notice-stack > :is(.link-refused, .office-closed, .journal-stopped-banner) {
   border-color: var(--danger-ink);
 }
 
-.notice-area > .ticket-banner {
+.notice-stack > .ticket-banner {
   border-color: var(--accent-ink);
   background: var(--question);
 }
 
-.notice-area .done-notices {
+.notice-stack .done-notices {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.4rem;
 }
 
-.notice-area .done-notices ol {
+.notice-stack .done-notices ol {
   display: grid;
   gap: 0.5rem;
   margin: 0;
@@ -3468,7 +3526,7 @@ samp,
   list-style: none;
 }
 
-.notice-area .done-notice {
+.notice-stack .done-notice {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -3477,15 +3535,15 @@ samp,
   background: var(--success-background);
 }
 
-.notice-area .done-notice:not(:last-child) {
+.notice-stack .done-notice:not(:last-child) {
   display: none;
 }
 
-.notice-area .done-notice p {
+.notice-stack .done-notice p {
   margin: 0;
 }
 
-.notice-area .done-notice-goal {
+.notice-stack .done-notice-goal {
   flex: 1 1 8rem;
   min-width: 0;
   overflow: hidden;

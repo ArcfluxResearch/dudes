@@ -97,6 +97,19 @@ Tickets and Floor hiring need an enrolled project.
 If `dudes` runs something else, check `type dudes` for an alias or shell function and use
 `command dudes`. After removing an old definition from your shell profile, open a new terminal.
 
+## Try it without an account
+
+[`examples/two-roles/`](examples/two-roles/) runs the whole loop on your own machine with no
+account at any model vendor and no network: two agents are hired, one is given a goal, and the goal
+closes only when the daemon's own run of the completion check passes. It drives the binaries in
+`target/release/`, so it needs a source build — see
+[Build Dudes from source](docs/building-from-source.md) for what to install. From a checkout:
+
+```sh
+cargo build --release --workspace
+./examples/two-roles/run.sh
+```
+
 ## How it works
 
 - **Daemon and CLI.** The `duded` daemon runs in the background and owns all state. The `dudes`
