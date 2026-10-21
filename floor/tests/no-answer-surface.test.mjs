@@ -251,6 +251,9 @@ const ADMITTED_IN_HIRE_FORM = Object.freeze(['an input', 'a textarea', 'a select
 
 const ANSWER_FORM = 'src/renderer/answer/AnswerPanel.tsx';
 const ANSWER_MODULE = 'src/renderer/answer/answer.ts';
+const DEVICES_MODULE = 'src/renderer/devices/devices.ts';
+const DEVICE_NOTICES = 'src/renderer/devices/DeviceNotices.tsx';
+const DEVICES_SECTION = 'src/renderer/devices/DevicesSection.tsx';
 const CHAT_PANEL = 'src/renderer/chat/ChatPanel.tsx';
 const CHAT_MODULE = 'src/renderer/chat/chat.ts';
 const ADMITTED_IN_ANSWER_FORM = Object.freeze(['a textarea', 'a change handler', 'a key handler']);
@@ -1096,6 +1099,8 @@ test('the only activators are named selection, retry, view, Hire, answer, Chat, 
     ...Array(6).fill('src/renderer/OfficeCanvas.tsx'),
     'src/renderer/ReadError.tsx',
     ...Array(4).fill(ANSWER_FORM),
+    ...Array(2).fill(DEVICE_NOTICES),
+    DEVICES_SECTION,
     ...Array(8).fill(CHAT_PANEL),
     ...Array(4).fill(CONTROL_PANEL),
     ...Array(5).fill(PAUSE_ALL_PANEL),
@@ -1533,6 +1538,11 @@ const REQUESTS = {
     paths: ['/floor/chat/send', 'application/json', '/floor/chat/cancel', 'application/json'],
     methods: ['POST', 'POST'],
     fetches: ['floorFetch', 'fetch', 'floorFetch', 'deps.fetch', "fetch('/floor/chat/send')", "fetch('/floor/chat/cancel')"],
+  },
+  [DEVICES_MODULE]: {
+    paths: ['application/json', '/floor/devices', '/floor/devices/keep', '/floor/devices/remove'],
+    methods: ['POST'],
+    fetches: ['floorFetch', 'floorFetch(path)'],
   },
   [LOOK_MODULE]: {
     paths: ['/floor/look', 'application/json'],

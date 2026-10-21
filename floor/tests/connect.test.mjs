@@ -282,7 +282,7 @@ test('a link refused for a different build says so, keeps the page, and a matchi
 const OPEN = '<span class="open-command"><code>dudes open</code><button type="button" class="open-command-copy">Copy</button></span>';
 const USED = `This sign-in link did not work\\. A link works once, for 60 seconds\\. To get a new one, run ${OPEN} in a terminal\\.`;
 const NO_LINK = `The sign-in link in the address of this page is not a Dudes sign-in link\\. To sign in, run ${OPEN} in a terminal\\.`;
-const EXPIRED = 'You are signed out of this Floor\. That happens after a day without use, after 30 days, when you sign out, or when Dudes restarts and cannot keep sign-ins\. '
+const EXPIRED = 'You are signed out of this Floor\. That happens when you sign out, when the browser is removed, or after 30 days without use or 90 days in all\. '
   + `To sign in again, run ${OPEN} in a terminal\\.`;
 
 test('a refused first link leads with the used-or-expired line, names no secret, and a session taken since clears it', async () => {

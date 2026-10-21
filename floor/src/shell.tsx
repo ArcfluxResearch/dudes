@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 
-import { currentFloorSession, signOutFloorSession } from './session';
+import { DeviceNotices } from './renderer/devices/DeviceNotices';
+import { getDevicesState, loadDevices, subscribeToDevices } from './renderer/devices/devices';
+import { signOutHere } from './renderer/devices/signOut';
 import {
   firstLinkProblem, pastedLinkBuildMismatch, pastedLinkRefused, pastedLinkWaitsForReload, subscribeToPastedLink,
 } from './connect';
@@ -139,18 +141,13 @@ function reserveNoticeRoom(shell: HTMLElement | null, stack: HTMLElement | null)
 }
 
 function SignedInShell() {
-  const [signOutFailed, setSignOutFailed] = useState(false);
-  // End this browser's session in the daemon, then reload into the signed-out screen. A daemon that
-  // does not confirm leaves the session alone, and the page says so.
-  const signOut = () => {
-    const session = currentFloorSession();
-    if (session === null) return;
-    void signOutFloorSession(session).then((ended) => {
-      if (ended) window.location.reload();
-      else setSignOutFailed(true);
-    });
-  };
+  const { signOutFailed } = useSyncExternalStore(subscribeToDevices, getDevicesState, getDevicesState);
+  const signOut = () => { void signOutHere(); };
   const floor = useSyncExternalStore(subscribeToFloor, getFloorState, getFloorState);
+  const listIsCurrent = floor.phase === 'live' && floor.snapshotEpoch === floor.epoch;
+  useEffect(() => {
+    if (listIsCurrent) void loadDevices();
+  }, [listIsCurrent, floor.epoch]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hiring, setHiring] = useState(false);
   const [guide, setGuide] = useState<'open' | 'closed'>('closed');
@@ -422,11 +419,12 @@ function SignedInShell() {
         <div className="notice-area">
           <div className="notice-stack" ref={noticeStack}>
             <PastedLinkNotice />
-            {signOutFailed ? <p className="link-refused" role="alert">Could not sign out. Try again.</p> : null}
+            {signOutFailed ? <p className="link-refused" role="alert">Could not sign out, so this browser is still signed in. Try again.</p> : null}
             <JournalStoppedBanner stopped={floor.journalStopped} />
             <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
             {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
             <StreamNotice floor={floor} />
+            <DeviceNotices />
             <DoneNotices notices={floor.doneNotices} leaveFocusTo={home} />
           </div>
         </div>

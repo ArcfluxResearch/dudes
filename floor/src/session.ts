@@ -1,3 +1,4 @@
+import { browserName } from './renderer/devices/browserName.ts';
 import { floorFetch } from './transport.ts';
 
 const SECRET = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
@@ -41,6 +42,16 @@ export const browserSecretStore: SecretStore = Object.freeze({
     } catch {}
   },
 });
+
+/** Why this page holds no session, when the daemon or the person said. */
+export type SignedOutReason = 'signed_out' | 'removed' | 'expired' | 'replaced';
+const REASONS: readonly string[] = ['removed', 'expired', 'replaced'];
+/** In memory only: a reload starts without a reason, and the page then says only that it is signed out. */
+let goneReason: SignedOutReason | null = null;
+
+export function signedOutReason(): SignedOutReason | null {
+  return goneReason;
+}
 
 export interface FloorSession {
   readonly csrf: string;
@@ -97,6 +108,7 @@ export function resetFloorSession(): void {
   current = null;
   started = 0;
   holding = 0;
+  goneReason = null;
 }
 
 /** Take a settled result, unless a newer call's result is already held. `null` leaves `current` alone when `keep`. */
@@ -104,6 +116,7 @@ function settle(ticket: number, session: FloorSession | null, keep: boolean): vo
   if (ticket <= holding || (session === null && keep)) return;
   current = session;
   holding = ticket;
+  if (session !== null) goneReason = null;
 }
 
 /**
@@ -130,9 +143,12 @@ export async function askFloorStanding(
     if (response.ok) return 'live';
     if (response.status !== 401) return 'unclear';
     const answer: unknown = await response.json();
-    return typeof answer === 'object' && answer !== null && 'session' in answer && answer.session === 'unknown'
-      ? 'unknown'
-      : 'unclear';
+    if (typeof answer !== 'object' || answer === null || !('session' in answer) || answer.session !== 'unknown') {
+      return 'unclear';
+    }
+    const reason = 'reason' in answer && typeof answer.reason === 'string' ? answer.reason : null;
+    goneReason = reason !== null && REASONS.includes(reason) ? (reason as SignedOutReason) : null;
+    return 'unknown';
   } catch {
     return 'unclear';
   }
@@ -182,6 +198,7 @@ export async function signOutFloorSession(
     return false;
   }
   endFloorSession(store);
+  goneReason = 'signed_out';
   return true;
 }
 
@@ -341,7 +358,7 @@ export async function exchangeBootstrap(
 
   const response = await fetch('/floor/session', {
     method: 'POST',
-    body: bootstrap,
+    body: `${bootstrap}\n${browserName()}`,
     credentials: 'same-origin',
     cache: 'no-store',
     referrerPolicy: 'no-referrer',

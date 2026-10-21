@@ -64,6 +64,11 @@ A new browser stays marked `new`, and stays early in the removal order below, un
 it. The Floor's **Keep**, pressed in another browser, does that. `dudes devices keep <id>` does the
 same from the terminal, for when you have no second browser.
 
+The Floor shows the same list under **Settings**, marks the browser you are using, and has a **Sign
+out** button on each row. A new sign-in is announced on every other open Floor, with **Keep** and
+**Remove**, and the notice stays until someone answers it. The signed-out screen says why a browser was
+signed out when the daemon can tell it.
+
 A device stays signed in for 30 days without use and 90 days in all. It stays signed in through
 `dudes stop` and `dudes start`, because the journal holds it, as long as the Floor comes back on the
 same port. If the Floor starts on another port, for example because its usual port is busy, the

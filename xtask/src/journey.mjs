@@ -15,6 +15,7 @@ export const ALLOWED_EXITS = [
   { name: 'Settings shows the reload command for a project', screen: 'settings', text: /^dudes project reload/ },
   { name: 'Settings sends a restart to the terminal', screen: 'settings', text: /^dudes quickstart --restart/ },
   { name: 'Settings sends the update check to the terminal', screen: 'settings', text: /^dudes upgrade/ },
+  { name: 'The signed-out page shows the sign-in command', screen: 'signed out', text: /^dudes open/ },
 ];
 
 // Stands in for the engine: it edits a file in the project, like an agent doing a task, and ends
@@ -201,6 +202,18 @@ export class Journey {
       await pause(500);
       await this.screen(name);
     }
+    await this.until(`Boolean(document.querySelector('.device-row .device-this'))`, 'Settings does not list this browser');
+    await this.screen('settings');
+  }
+
+  /** The last step: Sign out from this browser's row signs the page out, and the page says why. */
+  async signOut() {
+    await this.until(`(() => { const row = document.querySelector('.device-row .device-this')?.closest('.device-row');
+      const button = row?.querySelector('button'); if (!button) return false; button.click(); return true; })()`,
+    'this browser has no Sign out button in the list');
+    await this.until(`document.body.innerText.includes('You signed out of this Floor in this browser')`,
+      'the page did not say that this browser signed out');
+    await this.screen('signed out');
   }
 
   async finish() {
@@ -223,6 +236,7 @@ export class Journey {
     await this.hire();
     await this.ticket();
     await this.otherScreens();
+    await this.signOut();
     await this.finish();
   }
 }
