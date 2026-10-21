@@ -63,3 +63,5 @@ dl.recovery-facts dd {
 .recovery-waits ul { margin-bottom: 0; padding-inline-start: 1.25rem; }
 .recovery-details { margin-top: .75rem; }
 .recovery-details summary { min-height: 2.75rem; align-content: center; cursor: pointer; color: var(--muted-ink); }
+.recovery-receipt { background: var(--surface); }
+.receipts:has(.recovery-receipt:focus-within) { max-height: calc(100dvh - 8rem); }
