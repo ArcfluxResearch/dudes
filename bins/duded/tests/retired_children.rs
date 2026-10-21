@@ -527,7 +527,13 @@ fn assert_control_deadline(output: &std::process::Output, event: &str) {
 }
 
 fn control_peer(state: DeadlineState) -> (Daemon, AgentId, HookToken, PtyId) {
-    let mut daemon = Daemon::start_with_short_hook_deadline();
+    control_peer_on(Daemon::start_with_short_hook_deadline(), state)
+}
+
+fn control_peer_on(
+    mut daemon: Daemon,
+    state: DeadlineState,
+) -> (Daemon, AgentId, HookToken, PtyId) {
     let (agent, token) = daemon.idle_agent();
     let (pty, key) = daemon.attach(agent);
     match state {
@@ -678,7 +684,14 @@ fn halted_control_answers_before_the_deadline_keep_stop() {
 }
 
 fn confirmed_control_answers(state: DeadlineState) {
-    let (mut daemon, agent, token, pty) = control_peer(state);
+    let fixture = Fixture::new();
+    let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
+    let mut settings = fixture.settings();
+    settings.hook_reply_timeout = Duration::from_millis(100);
+    // This reply check has no crash or replay assertion; sync is not part of its outcome.
+    settings.journal.fsync = dudes_journal::Fsync::None;
+    let daemon = Daemon::boot(fixture, ptys, settings);
+    let (mut daemon, agent, token, pty) = control_peer_on(daemon, state);
     let generated = control_handlers(agent, &daemon.fixture);
     let socket = daemon.settings.socket();
     let handle = daemon.running.handle.clone();

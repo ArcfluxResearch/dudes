@@ -74,6 +74,13 @@ const LIFELINE_REPORT: &str = "DUDES_TEST_LIFELINE_REPORT";
 #[test]
 fn lifeline_victim() {
     use std::os::unix::process::CommandExt as _;
+    struct OwnedChild(std::process::Child);
+    impl Drop for OwnedChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
     let Some(report) = std::env::var_os(LIFELINE_REPORT) else {
         return;
     };
@@ -99,13 +106,6 @@ fn lifeline_victim() {
         ),
         ("PATH".into(), "/usr/bin:/bin".into()),
     ]);
-    struct OwnedChild(std::process::Child);
-    impl Drop for OwnedChild {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
     let child = common::process(program.as_os_str(), &[], Some(&env))
         .process_group(0)
         .stdin(std::process::Stdio::null())

@@ -694,7 +694,7 @@ fn active_facts_cannot_replace_the_original_hire_provider_model_lease_or_ticket(
             {
                 let mut table = txn.open_table(RECOVERY).unwrap();
                 for (key, raw) in &rows {
-                    let mut value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+                    let mut value: serde_json::Value = serde_json::from_slice(raw).unwrap();
                     if value["kind"] == "episode" || value["kind"] == "authorization" {
                         value["value"]["binding"] = serde_json::to_value(&binding).unwrap();
                         let encoded = serde_json::to_vec(&value).unwrap();

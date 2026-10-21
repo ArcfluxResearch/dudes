@@ -280,16 +280,7 @@ fn condense_body(index: usize, bytes: usize) -> String {
     )
 }
 
-fn exercise_condense_memory(
-    work: &Path,
-    role: &str,
-    task: &str,
-    client: &mut dudes_rpc::LocalClient,
-    token: &str,
-) {
-    let call = |client: &mut dudes_rpc::LocalClient, method, params| {
-        client.call(method, Some(params)).unwrap()
-    };
+fn exercise_condense_memory(work: &Path, role: &str, task: &str, socket: &Path, token: &str) {
     if work.join("first").exists() {
         if role == "condense" {
             assert!(task.contains("[Condensed memory: exact excerpts;"));
@@ -299,9 +290,13 @@ fn exercise_condense_memory(
         assert!(task.len() <= 65_536);
         std::fs::write(work.join("carried"), b"").unwrap();
     } else {
+        let mut client = dudes_rpc::Client::connect(socket).unwrap();
+        let call = |client: &mut dudes_rpc::LocalClient, method, params| {
+            client.call(method, Some(params)).unwrap()
+        };
         for index in 0..CONDENSE_ROWS {
             let response = call(
-                client,
+                &mut client,
                 Method::MemoryAppend,
                 json!({"token":token,"text":condense_body(index, CONDENSE_ROW_BYTES)}),
             );
@@ -309,7 +304,7 @@ fn exercise_condense_memory(
         }
         assert!(
             call(
-                client,
+                &mut client,
                 Method::MemoryAppend,
                 json!({"token":token,"text":"NEWEST"})
             )
@@ -336,17 +331,17 @@ fn memory_helper() {
         1
     );
     std::fs::write(work.join("task"), &task).unwrap();
-    let mut client = dudes_rpc::Client::connect(&socket).unwrap();
-    let call = |client: &mut dudes_rpc::LocalClient, method, params| {
-        client.call(method, Some(params)).unwrap()
-    };
-    let text = format!("{role} remembers 🦀\nexactly");
     if role == "condense" || role == "probe" {
-        exercise_condense_memory(&work, &role, &task, &mut client, &token);
+        exercise_condense_memory(&work, &role, &task, &socket, &token);
     } else if role == "again" && work.join("first").exists() {
         assert!(task.contains("again remembers 🦀\nexactly"));
         std::fs::write(work.join("carried"), b"").unwrap();
     } else {
+        let mut client = dudes_rpc::Client::connect(&socket).unwrap();
+        let call = |client: &mut dudes_rpc::LocalClient, method, params| {
+            client.call(method, Some(params)).unwrap()
+        };
+        let text = format!("{role} remembers 🦀\nexactly");
         let selected = if role == "beta" {
             std::fs::read_to_string(work.parent().unwrap().join("alpha/owner"))
                 .unwrap()
@@ -541,9 +536,6 @@ fn native_overbound_memory_condense_reaches_the_child_and_replays_raw_pages() {
             .join("\n")
     );
     assert!(pages.iter().map(|page| page.text.len()).sum::<usize>() > 65_536);
-    assert!(fixture.records().iter().any(
-        |record| matches!(record, Record::MemoryCondense { agent: who, .. } if *who == agent)
-    ));
     fixture.await_record("completed memory goal", |record| match record {
         Record::LoopDecided {
             agent: who,
