@@ -210,7 +210,7 @@ export interface HireResponse {
 export interface HireDeps {
   fetch(url: string, init: RequestInit): Promise<HireResponse>;
   /** The session's CSRF nonce, or `null` when the page has no session. */
-  csrf(): string | null;
+  signedIn(): boolean;
   /** Fill `bytes` with cryptographically random values. */
   random(bytes: Uint8Array<ArrayBuffer>): void;
   /** Ask the stream for a fresh snapshot of this session. */
@@ -221,7 +221,7 @@ export interface HireDeps {
 
 export const browserHireDeps: HireDeps = {
   fetch: floorFetch,
-  csrf: () => currentFloorSession()?.csrf ?? null,
+  signedIn: () => currentFloorSession() !== null,
   random: (bytes) => {
     crypto.getRandomValues(bytes);
   },
@@ -482,8 +482,7 @@ export async function submitHire(offer: HireOffer, deps: HireDeps): Promise<void
     commit({ ...state, section: problem.section, problem });
     return;
   }
-  const csrf = deps.csrf();
-  if (csrf === null) {
+  if (!deps.signedIn()) {
     commit({ ...state, problem: { field: null, section: state.section,
       message: 'This page has no Floor session, so nothing was sent.' } });
     return;
@@ -510,24 +509,23 @@ export async function submitHire(offer: HireOffer, deps: HireDeps): Promise<void
   const attempt: HireAttempt = Object.freeze({ payload, body: JSON.stringify(payload), checkLabel: check.label });
   commit({ ...state, attempt, sending: true, outcome: null, problem: null, revealed: null, revealedKind: null, uncertain: false,
     recordedAgent: null });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
 
 /** Check status: the same attempt, the same body, sent again by the operator. */
 export async function checkHireStatus(deps: HireDeps): Promise<void> {
   const attempt = state.attempt;
   if (attempt === null || state.sending) return;
-  const csrf = deps.csrf();
-  if (csrf === null) {
+  if (!deps.signedIn()) {
     commit({ ...state, outcome: { kind: 'unknown' } });
     return;
   }
   commit({ ...state, sending: true });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
 
-async function send(attempt: HireAttempt, csrf: string, deps: HireDeps): Promise<void> {
-  const outcome = await postHire(attempt, csrf, deps.fetch);
+async function send(attempt: HireAttempt, deps: HireDeps): Promise<void> {
+  const outcome = await postHire(attempt, deps.fetch);
   if (state.attempt !== attempt) return;
   // A durable hire changes the session's offer, a refusal may mean the
   // session has ended, and a stale workspace means the catalog on screen is
@@ -606,7 +604,7 @@ export function markRevealed(agent: string): void {
 
 /** Send one attempt's body and read what the answer proves. */
 export async function postHire(
-  attempt: HireAttempt, csrf: string, fetch: HireDeps['fetch'],
+  attempt: HireAttempt, fetch: HireDeps['fetch'],
 ): Promise<HireOutcome> {
   let status: number;
   let text: string;
@@ -616,7 +614,7 @@ export async function postHire(
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      headers: { 'Content-Type': 'application/json' },
       body: attempt.body,
     });
     status = response.status;

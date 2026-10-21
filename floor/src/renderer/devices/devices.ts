@@ -78,7 +78,7 @@ async function ask(path: string, body: Record<string, unknown>): Promise<Respons
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': session.csrf },
+      headers: { 'Content-Type': 'application/json' },
     });
   } catch {
     return null;

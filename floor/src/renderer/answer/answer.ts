@@ -159,7 +159,7 @@ export interface AnswerResponse {
 export interface AnswerDeps {
   fetch(url: string, init: RequestInit): Promise<AnswerResponse>;
   /** The session's CSRF nonce, or `null` when the page has no session. */
-  csrf(): string | null;
+  signedIn(): boolean;
   /** Fill `bytes` with cryptographically random values. */
   random(bytes: Uint8Array<ArrayBuffer>): void;
   /** Ask the stream for a fresh snapshot of this session. */
@@ -172,7 +172,7 @@ export interface AnswerDeps {
 
 export const browserAnswerDeps: AnswerDeps = {
   fetch: floorFetch,
-  csrf: () => currentFloorSession()?.csrf ?? null,
+  signedIn: () => currentFloorSession() !== null,
   random: (bytes) => {
     crypto.getRandomValues(bytes);
   },
@@ -314,8 +314,7 @@ export async function submitAnswer(gate: AnswerGate, deps: AnswerDeps): Promise<
   if (!gate.open || blocksForm(state, gate.agent, gate.questionLsn)) return;
   const text = draftFor(state, gate.agent, gate.questionLsn);
   if (problemWith(text, gate.maxTextBytes) !== null) return;
-  const csrf = deps.csrf();
-  if (csrf === null) {
+  if (!deps.signedIn()) {
     commit({ ...state, problem: 'This page has no Floor session, so nothing was sent.' });
     return;
   }
@@ -329,20 +328,19 @@ export async function submitAnswer(gate: AnswerGate, deps: AnswerDeps): Promise<
     deferredGoal: gate.deferredGoal });
   commit({ ...state, attempt, sending: true, outcome: null, uncertain: false, askedAtEpoch: 0, refusedUnder: null,
     problem: null });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
 
 /** Check status: the same attempt, the same bytes, sent again by the operator. */
 export async function checkAnswerStatus(deps: AnswerDeps): Promise<void> {
   const attempt = state.attempt;
   if (attempt === null || !checkable(state)) return;
-  const csrf = deps.csrf();
-  if (csrf === null) {
+  if (!deps.signedIn()) {
     commit({ ...state, problem: 'This page has no Floor session, so nothing was sent.' });
     return;
   }
   commit({ ...state, sending: true, problem: null });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
 
 /** Let go of an attempt the daemon confirmed had no effect, keeping what was typed. */
@@ -353,8 +351,8 @@ export function releaseAnswer(): void {
 
 const UNSETTLED: ReadonlySet<AnswerOutcome['kind']> = new Set(['pending', 'unavailable', 'unknown']);
 
-async function send(attempt: AnswerAttempt, csrf: string, deps: AnswerDeps): Promise<void> {
-  const outcome = await postAnswer(attempt, csrf, deps.fetch);
+async function send(attempt: AnswerAttempt, deps: AnswerDeps): Promise<void> {
+  const outcome = await postAnswer(attempt, deps.fetch);
   // The staleness guard: an answer for a request this page no longer holds is
   // not this page's to show.
   if (state.attempt !== attempt) return;
@@ -375,7 +373,7 @@ async function send(attempt: AnswerAttempt, csrf: string, deps: AnswerDeps): Pro
 
 /** Send one attempt's body and read what the answer proves. */
 export async function postAnswer(
-  attempt: AnswerAttempt, csrf: string, fetch: AnswerDeps['fetch'],
+  attempt: AnswerAttempt, fetch: AnswerDeps['fetch'],
 ): Promise<AnswerOutcome> {
   let status: number;
   let text: string;
@@ -385,7 +383,7 @@ export async function postAnswer(
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      headers: { 'Content-Type': 'application/json' },
       body: attempt.body,
     });
     status = response.status;

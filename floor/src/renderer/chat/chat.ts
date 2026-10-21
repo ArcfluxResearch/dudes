@@ -125,7 +125,7 @@ export function queuesChatOnKey(event: {
 export interface ChatDeps {
   fetch(url: string, init: RequestInit): Promise<{ readonly status: number; text(): Promise<string> }>;
   random(bytes: Uint8Array<ArrayBuffer>): void;
-  csrf(): string | null;
+  signedIn(): boolean;
   floor(): FloorState;
   session(): number;
   refresh(): void;
@@ -134,7 +134,7 @@ export interface ChatDeps {
 export const browserChatDeps: ChatDeps = {
   fetch: floorFetch,
   random: bytes => { window.crypto.getRandomValues(bytes); },
-  csrf: () => currentFloorSession()?.csrf ?? null,
+  signedIn: () => currentFloorSession() !== null,
   floor: getFloorState,
   session: floorSessionGeneration,
   refresh: () => { refreshFloorSnapshot(); },
@@ -191,7 +191,7 @@ export async function cancelChat(gate: ChatGate, note: PendingNote, deps: ChatDe
 }
 
 async function start(attempt: ChatAttempt, deps: ChatDeps): Promise<void> {
-  if (deps.csrf() === null) {
+  if (!deps.signedIn()) {
     commit({ ...state, problem: 'This page has no Floor session, so nothing was sent.' });
     return;
   }
@@ -202,14 +202,13 @@ async function start(attempt: ChatAttempt, deps: ChatDeps): Promise<void> {
 export async function retryChat(deps: ChatDeps): Promise<void> {
   const attempt = state.attempt;
   const floor = deps.floor();
-  const csrf = deps.csrf();
-  if (attempt === null || state.sending || chatSettled(state) || csrf === null
+  if (attempt === null || state.sending || chatSettled(state) || !deps.signedIn()
     || !chatGate(floor, floor.agents.find(row => row.id === attempt.payload.agent) ?? null).open) return;
   const epoch = floor.epoch;
   const selection = floor.output.localEpoch;
   const session = deps.session();
   commit({ ...state, sending: true, problem: null });
-  let outcome = await postChat(attempt, csrf, deps.fetch);
+  let outcome = await postChat(attempt, deps.fetch);
   if (state.attempt !== attempt) return;
   const current = deps.floor();
   if (current.epoch !== epoch || current.output.localEpoch !== selection || deps.session() !== session
@@ -229,13 +228,13 @@ export async function retryChat(deps: ChatDeps): Promise<void> {
   if (outcome.kind === 'forbidden') deps.refresh();
 }
 
-export async function postChat(attempt: ChatAttempt, csrf: string, fetch: ChatDeps['fetch']): Promise<ChatOutcome> {
+export async function postChat(attempt: ChatAttempt, fetch: ChatDeps['fetch']): Promise<ChatOutcome> {
   try {
     const response = attempt.verb === 'send'
       ? await fetch('/floor/chat/send', { method: 'POST', credentials: 'same-origin', cache: 'no-store',
-        referrerPolicy: 'no-referrer', headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf }, body: attempt.body })
+        referrerPolicy: 'no-referrer', headers: { 'Content-Type': 'application/json' }, body: attempt.body })
       : await fetch('/floor/chat/cancel', { method: 'POST', credentials: 'same-origin', cache: 'no-store',
-        referrerPolicy: 'no-referrer', headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf }, body: attempt.body });
+        referrerPolicy: 'no-referrer', headers: { 'Content-Type': 'application/json' }, body: attempt.body });
     return decodeChatResponse(response.status, await response.text(), attempt);
   } catch { return Object.freeze({ kind: 'unknown' }); }
 }

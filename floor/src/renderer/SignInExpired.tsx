@@ -24,11 +24,11 @@ const WHY: Readonly<Record<SignedOutReason, string>> = {
 };
 
 /** Said when this browser has no sign-in the daemon will accept, why, and the way to get one. */
-export function SignInExpired() {
+export function SignInExpired({ why }: { readonly why?: string }) {
   const reason = signedOutReason();
   return (
     <p className="link-refused" role="alert">
-      {reason === null
+      {why !== undefined ? why : reason === null
         ? 'You are signed out of this Floor. That happens when you sign out, when the browser is removed, or after 30 days without use or 90 days in all.'
         : WHY[reason]}
       {' '}To sign in again, run <OpenCommand /> in a terminal.

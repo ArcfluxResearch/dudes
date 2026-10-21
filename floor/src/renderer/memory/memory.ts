@@ -238,7 +238,7 @@ export type MemoryOutcome<T> =
   /** A refusal of the request, any other status, a network failure or a body this page cannot read. */
   | { readonly kind: 'unreadable' };
 
-export type MemoryDeps = Pick<ControlDeps, 'fetch' | 'csrf' | 'refresh' | 'epoch' | 'session'> & {
+export type MemoryDeps = Pick<ControlDeps, 'fetch' | 'signedIn' | 'refresh' | 'epoch' | 'session'> & {
   /** Runs `send` once no other memory request is in flight and 250 ms have passed since the last one settled. */
   readonly pace: <T>(send: () => Promise<T>) => Promise<T>;
 };
@@ -272,7 +272,7 @@ export const browserMemoryDeps: MemoryDeps = {
   pace: memoryPacer(() => performance.now(), (ms) => new Promise((go) => { window.setTimeout(go, ms); })),
 };
 
-async function post<T>(path: string, payload: object, csrf: string, deps: MemoryDeps,
+async function post<T>(path: string, payload: object, deps: MemoryDeps,
   decode: (body: string) => T | null): Promise<MemoryOutcome<T>> {
   let status: number;
   let body: string;
@@ -282,7 +282,7 @@ async function post<T>(path: string, payload: object, csrf: string, deps: Memory
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     status = response.status;
@@ -301,15 +301,15 @@ export type MemoryAnswer =
   | { readonly kind: 'entry'; readonly lsn: Lsn; readonly outcome: MemoryOutcome<MemoryEntryReply> };
 
 /** Both members are always sent: `before: null` asks for the newest page. */
-export async function readMemory(agent: string, request: MemoryRequest, csrf: string, deps: MemoryDeps): Promise<MemoryAnswer> {
+export async function readMemory(agent: string, request: MemoryRequest, deps: MemoryDeps): Promise<MemoryAnswer> {
   if (request.kind === 'page') {
     const { before } = request;
-    const outcome = await post('/floor/memory/page', { agent_id: agent, before }, csrf, deps,
+    const outcome = await post('/floor/memory/page', { agent_id: agent, before }, deps,
       (body) => decodeMemoryPage(body, before === null));
     return { kind: 'page', before, outcome };
   }
   const { lsn } = request;
-  const outcome = await post('/floor/memory/entry', { agent_id: agent, lsn }, csrf, deps, decodeMemoryEntry);
+  const outcome = await post('/floor/memory/entry', { agent_id: agent, lsn }, deps, decodeMemoryEntry);
   return { kind: 'entry', lsn, outcome };
 }
 

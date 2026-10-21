@@ -180,7 +180,7 @@ export interface ControlResponse {
 export interface ControlDeps {
   fetch(url: string, init: RequestInit): Promise<ControlResponse>;
   /** The session's CSRF nonce, or `null` when the page has no session. */
-  csrf(): string | null;
+  signedIn(): boolean;
   /** Fill `bytes` with cryptographically random values. */
   random(bytes: Uint8Array<ArrayBuffer>): void;
   /** Ask the stream for a fresh snapshot of this session. */
@@ -193,7 +193,7 @@ export interface ControlDeps {
 
 export const browserControlDeps: ControlDeps = {
   fetch: floorFetch,
-  csrf: () => currentFloorSession()?.csrf ?? null,
+  signedIn: () => currentFloorSession() !== null,
   random: (bytes) => {
     crypto.getRandomValues(bytes);
   },
@@ -304,8 +304,7 @@ export function checkable(control: ControlState): boolean {
 /** Press Pause or Resume. It refuses while the buttons wait, so a second press does nothing. */
 export async function submitControl(verb: ControlVerb, gate: ControlGate, deps: ControlDeps): Promise<void> {
   if (!gate.open || gate.offer !== verb || blocksControls(state, gate, deps.session())) return;
-  const csrf = deps.csrf();
-  if (csrf === null) {
+  if (!deps.signedIn()) {
     commit({ ...state, problem: 'This page has no Floor session, so nothing was sent.' });
     return;
   }
@@ -319,26 +318,25 @@ export async function submitControl(verb: ControlVerb, gate: ControlGate, deps: 
   });
   commit({ attempt, dismissedAttempt: null, sending: true, outcome: null, uncertain: false, askedAtEpoch: 0,
     refusedUnder: null, problem: null, pauseAllOwnsSlot: false });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
 
 /** Check status: the same request, the same bytes, sent again by the operator. */
 export async function checkControlStatus(deps: ControlDeps): Promise<void> {
   const attempt = state.attempt;
   if (attempt === null || !checkable(state)) return;
-  const csrf = deps.csrf();
-  if (csrf === null) {
+  if (!deps.signedIn()) {
     commit({ ...state, problem: 'This page has no Floor session, so nothing was sent.' });
     return;
   }
   commit({ ...state, sending: true, problem: null });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
 
 const UNSETTLED: ReadonlySet<ControlOutcome['kind']> = new Set(['pending', 'unavailable', 'unknown']);
 
-async function send(attempt: ControlAttempt, csrf: string, deps: ControlDeps): Promise<void> {
-  const outcome = await postControl(attempt, csrf, deps.fetch);
+async function send(attempt: ControlAttempt, deps: ControlDeps): Promise<void> {
+  const outcome = await postControl(attempt, deps.fetch);
   // The staleness guard: a reply to a request this page no longer holds is
   // not this page's to show.
   if (state.attempt !== attempt) return;
@@ -354,7 +352,7 @@ async function send(attempt: ControlAttempt, csrf: string, deps: ControlDeps): P
 
 /** Send one request's body to its verb's route and read what the answer proves. */
 export async function postControl(
-  attempt: ControlAttempt, csrf: string, fetch: ControlDeps['fetch'],
+  attempt: ControlAttempt, fetch: ControlDeps['fetch'],
 ): Promise<ControlOutcome> {
   let status: number;
   let text: string;
@@ -364,7 +362,7 @@ export async function postControl(
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      headers: { 'Content-Type': 'application/json' },
       body: attempt.body,
     });
     status = response.status;
