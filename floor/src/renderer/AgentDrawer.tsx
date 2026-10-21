@@ -66,7 +66,9 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, rec
   }, [recoveryRequested, row?.id]);
   useEffect(() => {
     if (recoveryRequested?.id !== row?.id || row === null || detailTab !== 'overview') return;
-    document.getElementById('recovery-title')?.focus();
+    const heading = document.getElementById('recovery-title');
+    heading?.focus();
+    heading?.scrollIntoView({ block: 'start' });
     onRecoveryShown?.();
   }, [recoveryRequested, row?.id, detailTab, onRecoveryShown]);
   const [fullOutput, setFullOutput] = useState(false);

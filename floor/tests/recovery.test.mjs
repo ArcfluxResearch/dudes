@@ -715,6 +715,8 @@ test('a recovery request reveals Overview from Chat and focuses its visible head
   const { AgentDrawer } = await server.ssrLoadModule('/src/renderer/AgentDrawer.tsx');
   const page = fakePage();
   const root = createRoot(page.host);
+  const scrolled = [];
+  page.host.constructor.prototype.scrollIntoView = function (options) { scrolled.push({ id: this.id, ...options }); };
   const draw = request => createElement(AgentDrawer, { floor: current, row: ROW, selectedId: AGENT,
     onClose() {}, leaveFocusTo: 'crew-toggle', recoveryRequested: request });
   try {
@@ -724,6 +726,7 @@ test('a recovery request reveals Overview from Chat and focuses its visible head
     assert.equal(page.host.querySelector('[id="agent-detail-tab-overview"]').getAttribute('aria-selected'), 'true');
     assert.equal(page.host.querySelector('[id="agent-detail-panel-overview"]').getAttribute('hidden'), null);
     assert.equal(page.document.activeElement.id, 'recovery-title');
+    assert.deepEqual(scrolled, [{ id: 'recovery-title', block: 'start' }]);
     assert.equal(model.getRecoveryState().requests.size, 0);
   } finally {
     await act(async () => root.unmount());
