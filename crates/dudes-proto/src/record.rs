@@ -4545,7 +4545,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            91,
+            92,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -5544,8 +5544,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 91);
-        assert_eq!(RecordKind::from_tag(92), None);
+        assert_eq!(RecordKind::KNOWN.len(), 92);
+        assert_eq!(RecordKind::from_tag(93), None);
     }
 
     const TICKET_KINDS: [(RecordKind, u16); 5] = [
@@ -5878,6 +5878,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(92), None);
+        assert_eq!(RecordKind::from_tag(93), None);
     }
 }

@@ -1784,19 +1784,24 @@ impl FloorSessions {
             .map(|ended| ended.reason)
     }
 
-    /// Whether the cookie names a device that is live now. A device that ran out is ended and
-    /// remembered here, so the refusal that follows can say why.
-    pub(crate) fn knows(&self, cookie: &str) -> bool {
+    /// Whether the cookie names a device that is live now. With `sweep`, a device that ran out is
+    /// ended and remembered here, so the refusal that follows can say why. A request that only
+    /// reads leaves the registry as it found it.
+    pub(crate) fn knows(&self, cookie: &str, sweep: bool) -> bool {
         let cookie = digest(cookie.as_bytes());
         let live = {
             let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
-            state.prune(now);
+            if sweep {
+                state.prune(now);
+            }
             self.0.valid.load(Ordering::Acquire)
                 && state.sessions.get(&cookie).is_some_and(|session| {
                     session.live_at(now) && !session.revoked.load(Ordering::Acquire)
                 })
         };
-        self.0.settle(None);
+        if sweep {
+            self.0.settle(None);
+        }
         live
     }
 

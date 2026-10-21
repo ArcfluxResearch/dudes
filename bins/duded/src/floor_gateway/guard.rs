@@ -353,7 +353,8 @@ impl Guard<'_> {
             Kind::Action(action) => {
                 self.peer(route, endpoints)?;
                 let cookie = head.cookie.as_deref().ok_or_else(forbidden)?;
-                if !sessions.knows(cookie) {
+                let reads_only = action == ActionRoute::Recovery(RecoveryRoute::Receipt);
+                if !sessions.knows(cookie, !reads_only) {
                     return Err(self.refused(head, Refusal::Gone));
                 }
                 let body = read_body()?;
