@@ -4371,14 +4371,14 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                         device,
                         origin,
                         name,
+                        key,
                         cookie,
-                        secret,
-                    } => Record::FloorDeviceEnrolled {
+                    } => Record::FloorDeviceKeyEnrolled {
                         device,
+                        key,
                         origin,
                         name,
                         cookie,
-                        secret,
                     },
                     Change::FirstUse(device) => Record::FloorDeviceFirstUsed { device },
                     Change::Use(device) => Record::FloorDeviceUsed { device },

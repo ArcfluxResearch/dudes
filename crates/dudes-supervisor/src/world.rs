@@ -1950,6 +1950,7 @@ impl World {
             Record::FloorPeerRefused { .. } => {} // audit only
             Record::WorkspaceTrustSet { .. } => self.fold_workspace_trust(&entry.record, lsn),
             Record::FloorDeviceEnrolled { .. }
+            | Record::FloorDeviceKeyEnrolled { .. }
             | Record::FloorDeviceFirstUsed { .. }
             | Record::FloorDeviceAcknowledged { .. }
             | Record::FloorDeviceRemoved { .. }

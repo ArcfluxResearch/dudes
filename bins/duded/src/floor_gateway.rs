@@ -45,8 +45,9 @@ use crate::floor_project::{
 use crate::floor_rename::{MAX_RENAME_BODY_BYTES, RenameOutcome, RenameRefusal, RenameRequest};
 use crate::floor_retire::{MAX_RETIRE_BODY_BYTES, RetireOutcome, RetireRefusal, RetireRequest};
 use crate::floor_session::{
-    ActionKind, FloorSessionAuthorizer, FloorSessions, GoneReason, LoginSession, ReceiptSession,
-    Removal, ReserveResult, SESSION_COOKIE_NAME, SessionIdentity, StreamSession, TerminalSession,
+    ActionKind, ExchangeRefusal, FloorSessionAuthorizer, FloorSessions, GoneReason, LoginSession,
+    ReceiptSession, Removal, ReserveResult, SESSION_COOKIE_NAME, SessionIdentity, StreamSession,
+    TerminalSession,
 };
 use crate::floor_settings_edit::{MAX_SETTINGS_BODY_BYTES, SettingsRefusal, SettingsRequest};
 use crate::floor_stream::{ClientMessage, FloorStreams, QueueRead, decode_client};
@@ -65,8 +66,7 @@ mod guard_tests;
 mod recovery;
 use devices::{DeviceVerb, MAX_DEVICES_BODY_BYTES};
 use guard::{
-    Admission, Admitted, Credentials, Denied, Endpoints, Guard, Head, ProofAsk, Route, SignIn,
-    StandingRoute,
+    Admission, Admitted, Denied, Endpoints, Guard, Head, Route, SignIn, Signed, StandingRoute,
 };
 use recovery::RecoveryRoute;
 
@@ -93,9 +93,6 @@ const SIGN_IN_PATH: &str = "/floor/session";
 const SESSION_CHECK_PATH: &str = "/floor/session/check";
 /// Signs the session out.
 const SESSION_END_PATH: &str = "/floor/session/end";
-/// Proves to the page that the daemon holds its session, before the page sends its secret.
-const SESSION_PROVE_PATH: &str = "/floor/session/prove";
-const MAX_PROOF_BODY: usize = 128;
 const INSPECT_RECOVERY_PATH: &str = "/floor/recovery/inspect";
 const SUBMIT_RECOVERY_PATH: &str = "/floor/recovery/submit";
 const RECEIPT_RECOVERY_PATH: &str = "/floor/recovery/receipt";
@@ -143,8 +140,12 @@ const CHAT_SEND_PATH: &str = "/floor/chat/send";
 const CHAT_CANCEL_PATH: &str = "/floor/chat/cancel";
 /// The onboarding body cap.
 const MAX_ONBOARD_BODY: usize = 4096;
-const FLOOR_PROTOCOL: &str = "dudes-floor-v3";
-const CSRF_PROTOCOL_PREFIX: &str = "dudes-csrf.";
+const FLOOR_PROTOCOL: &str = "dudes-floor-v4";
+/// The `Sec-WebSocket-Protocol` entries that carry a socket's signature, time and request id,
+/// because a browser socket cannot set headers.
+const SIGNATURE_PROTOCOL_PREFIX: &str = "dudes-sig.";
+const TIME_PROTOCOL_PREFIX: &str = "dudes-time.";
+const REQUEST_PROTOCOL_PREFIX: &str = "dudes-id.";
 
 /// Maximum delay between stop observation points in the idle accept loop.
 pub const ACCEPT_POLL: Duration = Duration::from_millis(25);
@@ -1476,7 +1477,6 @@ fn dispatch<'a>(
     } = guard;
     let response = match (admitted, route.action()) {
         (Admitted::SignIn(sign_in), _) => exchange_response(sessions, &sign_in, body),
-        (Admitted::Proof(ask), _) => proof_response(sessions, &ask, body),
         (Admitted::Standing(identity), _) => {
             standing_dispatch(route, identity.as_ref(), sessions, &head)
         }
@@ -1489,10 +1489,10 @@ fn dispatch<'a>(
         }
         (admitted @ (Admitted::Session(_) | Admitted::Receipt(_)), Some(action)) => {
             // Using the session renews it, so the browser's cookie is renewed with it.
-            let renewed = match (&admitted, &head.credentials) {
-                (Admitted::Session(session), Some(credentials)) => session
+            let renewed = match (&admitted, &head.cookie) {
+                (Admitted::Session(session), Some(cookie)) => session
                     .cookie_max_age_s()
-                    .map(|age| session_cookie_header(&credentials.cookie, age)),
+                    .map(|age| session_cookie_header(cookie, age)),
                 _ => None,
             };
             let mut response = match (action, admitted) {
@@ -1568,7 +1568,7 @@ fn dispatch<'a>(
 }
 
 /// The answer to a check or a sign-out. A browser whose device is gone is told why when it holds
-/// the device's cookie and secret.
+/// the device's cookie.
 fn standing_dispatch<'a>(
     route: Route,
     identity: Option<&SessionIdentity>,
@@ -1578,9 +1578,9 @@ fn standing_dispatch<'a>(
     let gone = identity
         .is_none()
         .then(|| {
-            head.credentials.as_ref().and_then(|credentials| {
-                sessions.gone_reason(&credentials.cookie, &credentials.secret)
-            })
+            head.cookie
+                .as_deref()
+                .and_then(|cookie| sessions.gone_reason(cookie))
         })
         .flatten();
     match route.standing() {
@@ -1657,22 +1657,22 @@ fn parse_request<'a>(head: &[u8], catalog: Catalog<'a>, sessions: &FloorSessions
         return Parsed::Response(error_response(400, "Bad Request"));
     };
     if let Some(route) = Route::of(method, path, catalog) {
-        return if let Some(socket) = route.socket() {
+        let parsed = if let Some(socket) = route.socket() {
             upgrade_request(route, socket, request.version, request.headers, sessions)
         } else if route.is_sign_in() {
             exchange_request(route, request.version, request.headers, sessions)
-        } else if route.is_proof() {
-            browser_head(
-                route,
-                request.version,
-                request.headers,
-                MAX_PROOF_BODY,
-                false,
-            )
         } else if route.standing().is_some() {
             standing_request(route, request.version, request.headers)
         } else {
             action_request(route, request.version, request.headers)
+        };
+        return match parsed {
+            Parsed::Dynamic { route, mut head } => {
+                method.clone_into(&mut head.method);
+                path.clone_into(&mut head.target);
+                Parsed::Dynamic { route, head }
+            }
+            response @ Parsed::Response(_) => response,
         };
     }
     if !valid_static_framing(request.version, request.headers) {
@@ -1733,7 +1733,7 @@ fn exchange_request(
     let Some(content_type) = one_header(headers, "content-type") else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
-    if !content_type.eq_ignore_ascii_case(b"text/plain;charset=UTF-8") {
+    if !content_type.eq_ignore_ascii_case(b"application/json") {
         return Parsed::Response(error_response(400, "Bad Request"));
     }
     let Some(content_length) = one_header(headers, "content-length")
@@ -1751,8 +1751,10 @@ fn exchange_request(
         head: Head {
             host: host.to_owned(),
             origin: origin.to_owned(),
+            method: String::new(),
+            target: String::new(),
             cookie: None,
-            credentials: None,
+            signed: None,
             content_length,
             accept: String::new(),
         },
@@ -1760,10 +1762,12 @@ fn exchange_request(
 }
 
 fn exchange_response<'a>(sessions: &FloorSessions, sign_in: &SignIn, body: &[u8]) -> Response<'a> {
-    let Some(exchange) = sessions.exchange(&sign_in.host, &sign_in.origin, body) else {
-        return error_response(403, "Forbidden");
+    let exchange = match sessions.exchange(&sign_in.host, &sign_in.origin, body) {
+        Ok(exchange) => exchange,
+        Err(ExchangeRefusal::Malformed) => return error_response(400, "Bad Request"),
+        Err(ExchangeRefusal::Forbidden) => return error_response(403, "Forbidden"),
     };
-    let body = serde_json::to_vec(&serde_json::json!({ "csrf": exchange.csrf }))
+    let body = serde_json::to_vec(&serde_json::json!({ "device": exchange.device }))
         .expect("a string-only Floor session response serializes");
     Response {
         code: 200,
@@ -1799,8 +1803,8 @@ fn gone_body(session: &str, gone: Option<GoneReason>) -> serde_json::Value {
 /// The answer to a check or a sign-out. A session the daemon does not know is answered `401` with
 /// `{"session":"unknown"}`, which only these two routes say: any other refusal (a wrong origin, a
 /// refused peer) is a `403` and says nothing about the session, so a page never signs itself out
-/// over a refusal that is not about its session. When the browser's cookie and secret name a
-/// device that was removed, expired or replaced, the answer carries that as `reason`.
+/// over a refusal that is not about its session. When the browser's cookie names a device that
+/// was removed, expired or replaced, the answer carries that as `reason`.
 fn standing_response<'a>(
     identity: Option<&SessionIdentity>,
     running: bool,
@@ -1822,50 +1826,26 @@ fn standing_response<'a>(
         }
         return Response {
             set_cookie: head
-                .credentials
-                .as_ref()
-                .map(|credentials| session_cookie_header(&credentials.cookie, 0)),
+                .cookie
+                .as_deref()
+                .map(|cookie| session_cookie_header(cookie, 0)),
             ..action_json(200, "OK", &serde_json::json!({ "session": "ended" }))
         };
     }
     Response {
-        set_cookie: head.credentials.as_ref().and_then(|credentials| {
+        set_cookie: head.cookie.as_deref().and_then(|cookie| {
             session
                 .cookie_max_age_s()
-                .map(|age| session_cookie_header(&credentials.cookie, age))
+                .map(|age| session_cookie_header(cookie, age))
         }),
         ..action_json(200, "OK", &serde_json::json!({ "session": "live" }))
     }
 }
 
-/// The daemon's proof that it holds the session the cookie names, for the nonce in the body. The
-/// answer is `{"proof":"<43 characters>"}` whether or not the cookie names a live session, so a
-/// process that holds no session digest can ask but cannot tell which sessions exist. Neither the
-/// secret nor the digest is read, logged or sent.
-fn proof_response<'a>(sessions: &FloorSessions, ask: &ProofAsk, body: &[u8]) -> Response<'a> {
-    let nonce = serde_json::from_slice::<serde_json::Value>(body)
-        .ok()
-        .and_then(|value| match value {
-            serde_json::Value::Object(map) if map.len() == 1 => match map.get("nonce") {
-                Some(serde_json::Value::String(nonce)) if valid_nonce(nonce) => Some(nonce.clone()),
-                _ => None,
-            },
-            _ => None,
-        });
-    let Some(nonce) = nonce else {
-        return error_response(400, "Bad Request");
-    };
-    action_json(
-        200,
-        "OK",
-        &serde_json::json!({ "proof": sessions.prove(ask.cookie.as_deref(), &nonce) }),
-    )
-}
-
-/// The shape of a browser action's head: HTTP/1.1; one Host, Origin, Cookie and secret each; JSON;
-/// and a decimal `Content-Length` within the route's cap, refused with `413` before any body is
-/// read. Whether the cookie and the secret name a live session, and who sent the request, are
-/// for [`Guard::admit`].
+/// The shape of a browser action's head: HTTP/1.1; one Host, Origin, Cookie and each signature
+/// header at most once; JSON; and a decimal `Content-Length` within the route's cap, refused with
+/// `413` before any body is read. Whether the cookie names a live device, whether the signature
+/// holds, and who sent the request, are for [`Guard::admit`].
 fn action_request(
     route: Route,
     version: Option<u8>,
@@ -1877,9 +1857,9 @@ fn action_request(
     browser_head(route, version, headers, action.max_body(), true)
 }
 
-/// The head of a check or a sign-out. Unlike an action it may carry no cookie or secret, or a
-/// malformed one: the page asks because it is not sure it still has a session, and the answer to
-/// a request with no usable credentials is that the session is unknown.
+/// The head of a check or a sign-out. Unlike an action it may carry no cookie, or a malformed
+/// one: the page asks because it is not sure it still has a session, and the answer to a request
+/// with no usable cookie is that the session is unknown.
 fn standing_request(
     route: Route,
     version: Option<u8>,
@@ -1888,12 +1868,21 @@ fn standing_request(
     browser_head(route, version, headers, MAX_STANDING_BODY, false)
 }
 
+/// The headers a page signs a request with, in the order [`Signed`] reads them: the origin it
+/// signed for, the time, the request id and the signature.
+const SIGNATURE_HEADERS: [&str; 4] = [
+    "X-Dudes-Origin",
+    "X-Dudes-Time",
+    "X-Dudes-Request",
+    "X-Dudes-Signature",
+];
+
 fn browser_head(
     route: Route,
     version: Option<u8>,
     headers: &[httparse::Header<'_>],
     max_body: usize,
-    credentials_required: bool,
+    cookie_required: bool,
 ) -> Parsed<'static> {
     if version != Some(1) || forbidden_framing(headers) {
         return Parsed::Response(error_response(400, "Bad Request"));
@@ -1911,9 +1900,13 @@ fn browser_head(
     let Ok(cookie) = unique_header(headers, "cookie") else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
-    let Ok(secret) = unique_header(headers, crate::floor_session::CSRF_HEADER_NAME) else {
-        return Parsed::Response(error_response(400, "Bad Request"));
-    };
+    let mut presented = [None; 4];
+    for (slot, name) in presented.iter_mut().zip(SIGNATURE_HEADERS) {
+        match unique_header(headers, name) {
+            Ok(value) => *slot = value.and_then(|value| std::str::from_utf8(value).ok()),
+            Err(()) => return Parsed::Response(error_response(400, "Bad Request")),
+        }
+    }
     let Some(host) = std::str::from_utf8(host).ok() else {
         return Parsed::Response(error_response(403, "Forbidden"));
     };
@@ -1923,16 +1916,16 @@ fn browser_head(
     let cookie = cookie
         .and_then(|value| std::str::from_utf8(value).ok())
         .and_then(session_cookie);
-    let secret = secret
-        .and_then(|value| std::str::from_utf8(value).ok())
-        .filter(|value| valid_nonce(value));
-    let named = cookie.map(str::to_owned);
-    let credentials = match (cookie, secret) {
-        (Some(cookie), Some(secret)) => Some(Credentials {
-            cookie: cookie.to_owned(),
-            secret: secret.to_owned(),
+    if cookie.is_none() && cookie_required {
+        return Parsed::Response(error_response(403, "Forbidden"));
+    }
+    let signed = match presented {
+        [Some(origin), Some(time), Some(request), Some(signature)] => Some(Signed {
+            origin: origin.to_owned(),
+            time: time.to_owned(),
+            request: request.to_owned(),
+            signature: signature.to_owned(),
         }),
-        _ if credentials_required => return Parsed::Response(error_response(403, "Forbidden")),
         _ => None,
     };
     let Some(content_type) = one_header(headers, "content-type") else {
@@ -1956,8 +1949,10 @@ fn browser_head(
         head: Head {
             host: host.to_owned(),
             origin: origin.to_owned(),
-            cookie: named,
-            credentials,
+            method: String::new(),
+            target: String::new(),
+            cookie: cookie.map(str::to_owned),
+            signed,
             content_length,
             accept: String::new(),
         },
@@ -2793,23 +2788,36 @@ fn upgrade_request(
     let Some(protocols) = header_text(headers, "sec-websocket-protocol") else {
         return Parsed::Response(error_response(403, "Forbidden"));
     };
-    let offered: Vec<_> = protocols.split(',').map(str::trim).collect();
-    if offered.len() != 2
-        || offered.iter().any(|item| item.is_empty())
-        || offered
-            .iter()
-            .filter(|item| **item == socket.protocol())
-            .count()
-            != 1
-    {
+    let mut route_protocols = 0;
+    let (mut signature, mut time, mut request) = (None, None, None);
+    for entry in protocols.split(',').map(str::trim) {
+        let slot = if entry == socket.protocol() {
+            route_protocols += 1;
+            continue;
+        } else if let Some(value) = entry.strip_prefix(SIGNATURE_PROTOCOL_PREFIX) {
+            (&mut signature, value)
+        } else if let Some(value) = entry.strip_prefix(TIME_PROTOCOL_PREFIX) {
+            (&mut time, value)
+        } else if let Some(value) = entry.strip_prefix(REQUEST_PROTOCOL_PREFIX) {
+            (&mut request, value)
+        } else {
+            return Parsed::Response(error_response(403, "Forbidden"));
+        };
+        if slot.0.replace(slot.1).is_some() {
+            return Parsed::Response(error_response(403, "Forbidden"));
+        }
+    }
+    if route_protocols != 1 {
         return Parsed::Response(error_response(403, "Forbidden"));
     }
-    let Some(csrf) = offered
-        .iter()
-        .find_map(|item| item.strip_prefix(CSRF_PROTOCOL_PREFIX))
-        .filter(|value| valid_nonce(value))
-    else {
-        return Parsed::Response(error_response(403, "Forbidden"));
+    let signed = match (signature, time, request) {
+        (Some(signature), Some(time), Some(request)) => Some(Signed {
+            origin: origin.to_owned(),
+            time: time.to_owned(),
+            request: request.to_owned(),
+            signature: signature.to_owned(),
+        }),
+        _ => None,
     };
     let Some(cookie) = header_text(headers, "cookie").and_then(session_cookie) else {
         return Parsed::Response(error_response(403, "Forbidden"));
@@ -2819,11 +2827,10 @@ fn upgrade_request(
         head: Head {
             host: host.to_owned(),
             origin: origin.to_owned(),
+            method: String::new(),
+            target: String::new(),
             cookie: Some(cookie.to_owned()),
-            credentials: Some(Credentials {
-                cookie: cookie.to_owned(),
-                secret: csrf.to_owned(),
-            }),
+            signed,
             content_length: 0,
             accept,
         },

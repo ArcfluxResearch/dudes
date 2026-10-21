@@ -139,6 +139,109 @@ impl<'de> Deserialize<'de> for Hex32 {
     }
 }
 
+/// A Floor device's id as people and pages write it: the SHA-256 of its public key's SPKI DER
+/// bytes, as 43 characters of unpadded base64url. Inside the daemon and the journal it is the
+/// same 32 bytes, held as a [`Hex32`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeviceId([u8; 32]);
+
+impl DeviceId {
+    /// The characters in a device id.
+    pub const LEN: usize = 43;
+    const ALPHABET: &'static [u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+    /// Wrap the exact digest bytes.
+    #[must_use]
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// The exact digest bytes.
+    #[must_use]
+    pub const fn bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Read exactly 43 base64url characters whose last character carries no stray bits.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        if text.len() != Self::LEN {
+            return None;
+        }
+        let mut bytes = [0_u8; 32];
+        let mut buffer = 0_u32;
+        let mut bits = 0_u32;
+        let mut at = 0;
+        for byte in text.bytes() {
+            let value = Self::ALPHABET.iter().position(|c| *c == byte)? as u32;
+            buffer = (buffer << 6) | value;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                bytes[at] = (buffer >> bits) as u8;
+                at += 1;
+                buffer &= (1 << bits) - 1;
+            }
+        }
+        (at == 32 && buffer == 0).then_some(Self(bytes))
+    }
+}
+
+impl From<Hex32> for DeviceId {
+    fn from(id: Hex32) -> Self {
+        Self(id.bytes())
+    }
+}
+
+impl From<DeviceId> for Hex32 {
+    fn from(id: DeviceId) -> Self {
+        Self::new(id.0)
+    }
+}
+
+impl std::fmt::Display for DeviceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut text = String::with_capacity(Self::LEN);
+        for chunk in self.0.chunks(3) {
+            let mut buffer = [0_u8; 3];
+            buffer[..chunk.len()].copy_from_slice(chunk);
+            let packed =
+                (u32::from(buffer[0]) << 16) | (u32::from(buffer[1]) << 8) | u32::from(buffer[2]);
+            for index in 0..=chunk.len() {
+                let shift = 18 - 6 * index;
+                text.push(char::from(
+                    Self::ALPHABET[((packed >> shift) & 0x3f) as usize],
+                ));
+            }
+        }
+        f.write_str(&text)
+    }
+}
+
+impl JsonSchema for DeviceId {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "DeviceId".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"})
+    }
+}
+
+impl Serialize for DeviceId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for DeviceId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value)
+            .ok_or_else(|| serde::de::Error::custom("expected a 43-character base64url device id"))
+    }
+}
+
 type PtyWriteRequestedFields = (
     crate::rpc::pty::PtyId,
     Actor,
@@ -1877,6 +1980,27 @@ pub enum Record {
         #[schemars(with = "String")]
         device: Hex32,
     },
+    /// A browser signed in with a key its page cannot read and became a device. Only a digest of
+    /// its cookie is kept, with the public key that checks its requests. The entry's own time is
+    /// the sign-in time. Later first-use, acknowledgement, removal and use records name the
+    /// device as they do for [`Record::FloorDeviceEnrolled`].
+    ///
+    /// An older reader skips this record, and with it the device: it holds no row for the
+    /// device, so the records that follow find nothing to change.
+    FloorDeviceKeyEnrolled {
+        /// The device's id: the SHA-256 of `key`'s decoded bytes.
+        #[schemars(with = "String")]
+        device: Hex32,
+        /// The device's public key as SPKI DER, in unpadded base64url.
+        key: String,
+        /// The Floor origin the browser signed in on.
+        origin: String,
+        /// The label the browser chose, cleaned and capped by the daemon.
+        name: String,
+        /// SHA-256 of the device's cookie.
+        #[schemars(with = "String")]
+        cookie: Hex32,
+    },
     /// The Floor refused one request because the process on the other end of its connection
     /// could not be shown to be outside every agent. Audit only: it changes no projection.
     ///
@@ -2136,6 +2260,7 @@ impl Record {
         matches!(
             self,
             Self::FloorDeviceEnrolled { .. }
+                | Self::FloorDeviceKeyEnrolled { .. }
                 | Self::FloorDeviceFirstUsed { .. }
                 | Self::FloorDeviceAcknowledged { .. }
                 | Self::FloorDeviceRemoved { .. }
@@ -2246,6 +2371,7 @@ impl Record {
             Self::FloorPeerRefused { .. } => RecordKind::FloorPeerRefused,
             Self::WorkspaceTrustSet { .. } => RecordKind::WorkspaceTrustSet,
             Self::FloorDeviceEnrolled { .. } => RecordKind::FloorDeviceEnrolled,
+            Self::FloorDeviceKeyEnrolled { .. } => RecordKind::FloorDeviceKeyEnrolled,
             Self::FloorDeviceFirstUsed { .. } => RecordKind::FloorDeviceFirstUsed,
             Self::FloorDeviceAcknowledged { .. } => RecordKind::FloorDeviceAcknowledged,
             Self::FloorDeviceRemoved { .. } => RecordKind::FloorDeviceRemoved,
@@ -2459,6 +2585,8 @@ pub enum RecordKind {
     FloorDeviceRemoved = 90,
     /// [`Record::FloorDeviceUsed`].
     FloorDeviceUsed = 91,
+    /// [`Record::FloorDeviceKeyEnrolled`].
+    FloorDeviceKeyEnrolled = 92,
 }
 
 impl RecordKind {
@@ -2515,8 +2643,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 91] {
-        let mut kinds = [Self::AgentHired; 91];
+    const fn known_kinds() -> [Self; 92] {
+        let mut kinds = [Self::AgentHired; 92];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2567,6 +2695,7 @@ impl RecordKind {
         kinds[88] = Self::FloorDeviceAcknowledged;
         kinds[89] = Self::FloorDeviceRemoved;
         kinds[90] = Self::FloorDeviceUsed;
+        kinds[91] = Self::FloorDeviceKeyEnrolled;
         kinds
     }
 
@@ -3477,6 +3606,13 @@ pub mod samples {
                 cookie: Hex32::new([2; 32]),
                 secret: Hex32::new([3; 32]),
             },
+            RecordKind::FloorDeviceKeyEnrolled => Record::FloorDeviceKeyEnrolled {
+                device: Hex32::new([1; 32]),
+                key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMqeMA7CvYqmm3VlWQvtK0wS0KjZS1IgpgezxoWCtn1TIfdmP2PsYn7Q64c793NcH_g2MT5eEZqO5Abl4Z15TRA".to_owned(),
+                origin: "http://127.0.0.1:7700".to_owned(),
+                name: "Chrome on macOS".to_owned(),
+                cookie: Hex32::new([2; 32]),
+            },
             RecordKind::FloorDeviceFirstUsed => Record::FloorDeviceFirstUsed {
                 device: Hex32::new([1; 32]),
             },
@@ -3906,7 +4042,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 91);
+        assert_eq!(RecordKind::KNOWN.len(), 92);
         for &kind in &RecordKind::KNOWN[46..66] {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys() {

@@ -1,6 +1,6 @@
 //! The Floor's device routes: list the signed-in browsers, sign one out, and keep a new one.
 
-use dudes_proto::record::{FloorDeviceRemoval, Hex32};
+use dudes_proto::record::{DeviceId, FloorDeviceRemoval};
 use dudes_types::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -23,12 +23,12 @@ struct Nothing {}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Target {
-    device: Hex32,
+    device: DeviceId,
 }
 
 #[derive(Serialize)]
 struct Listed<'a> {
-    id: Hex32,
+    id: DeviceId,
     name: &'a str,
     signed_in: Timestamp,
     first_used: Option<Timestamp>,
@@ -67,7 +67,7 @@ pub(super) fn response<'a>(
             let Ok(target) = serde_json::from_slice::<Target>(body) else {
                 return error_response(400, "Bad Request");
             };
-            let reason = if session.device() == Some(target.device) {
+            let reason = if session.device().map(DeviceId::from) == Some(target.device) {
                 FloorDeviceRemoval::SignedOut
             } else {
                 FloorDeviceRemoval::Removed

@@ -69,6 +69,8 @@ pub mod fault;
 pub mod floor;
 pub mod floor_actions;
 pub mod floor_answer;
+#[cfg(any(test, feature = "testing"))]
+pub mod floor_browser;
 pub mod floor_chat;
 pub mod floor_control;
 pub mod floor_diff;

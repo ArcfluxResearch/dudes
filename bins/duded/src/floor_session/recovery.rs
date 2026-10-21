@@ -118,7 +118,7 @@ impl SessionIdentity {
 }
 
 fn confirmed_live(row: &Session, now: dudes_types::Timestamp) -> bool {
-    row.csrf.is_some() && !row.revoked.load(Ordering::Acquire) && row.live_at(now)
+    !row.revoked.load(Ordering::Acquire) && row.live_at(now)
 }
 
 #[cfg(test)]

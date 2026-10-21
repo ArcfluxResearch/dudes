@@ -3,9 +3,13 @@
 //! The local RPC route and the loopback HTTP listener share this module. A browser that exchanges a
 //! link becomes a device. The device table is a projection of journal records: every change to it
 //! is handed to a [`DeviceSink`] to be made durable, and a restart seeds the table back from the
-//! journal. Links live only in memory. Raw link, cookie and secret values leave only at their one
-//! required response; the retained state contains SHA-256 digests. Stopping the owning listener
-//! invalidates and clears the complete state before the run releases its transport.
+//! journal. Links live only in memory. Raw link and cookie values leave only at their one required
+//! response; the retained state contains SHA-256 digests and each device's public key.
+//!
+//! A cookie names a device and opens nothing on its own. Every request also carries a signature
+//! made with the device's key, which [`signature`] reads and the registry checks against the clock
+//! and the device's memory of recent request ids. Stopping the owning listener invalidates and
+//! clears the complete state before the run releases its transport.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -13,7 +17,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
-use dudes_proto::record::{FloorDeviceRemoval, Hex32};
+use dudes_proto::record::{DeviceId, FloorDeviceRemoval, Hex32};
 use dudes_proto::rpc::floor::{
     ExportedSession, LinkPurpose, SESSION_EXPIRES_IN_S, SESSION_PRINTED_EXPIRES_IN_S,
     SessionExport, SessionIssueResult,
@@ -26,12 +30,14 @@ use crate::baseline::CheckRuns;
 use crate::floor_ticket::TicketLimits;
 
 mod recovery;
+pub(crate) mod signature;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub(crate) use recovery::{FloorRecoveryAuthority, RecoveryGrants, RecoveryPermitFailure};
+use signature::{DeviceKey, Presented, Subject};
 
 /// Cookie name used by the read-only Floor session.
 pub const SESSION_COOKIE_NAME: &str = "dudes_floor_session";
-/// Header carrying the session secret on every authenticated request that changes state.
-pub const CSRF_HEADER_NAME: &str = "X-Dudes-CSRF";
 
 const DAY_MS: i64 = 24 * 60 * 60_000;
 /// A link made for `dudes open` lives this long.
@@ -59,6 +65,12 @@ const MAX_NAME_CHARS: usize = 64;
 const DEFAULT_NAME: &str = "Browser";
 /// The most often an open stream on a visible page renews its session's idle time.
 const WATCH_RENEWAL_MS: i64 = 60_000;
+/// A signed request may be this far from the daemon's clock, either way.
+const SIGNATURE_WINDOW_MS: i64 = 60_000;
+/// A request id is refused for this long after it was used.
+const REQUEST_MEMORY_MS: i64 = 2 * 60_000;
+/// The most request ids a device's memory holds. A full memory refuses until ids age out.
+const MAX_REQUEST_IDS: usize = 1024;
 const MAX_WEBSOCKETS_PER_SESSION: usize = 2;
 
 /// The issue route cannot mint another link while its bounded run-local table is full.
@@ -95,15 +107,15 @@ pub(crate) trait DeviceSink: Send + Sync {
 pub(crate) enum DeviceEvent {
     /// A browser signed in.
     Enrolled {
-        device: Hex32,
+        device: DeviceId,
         name: String,
         at: Timestamp,
     },
     /// A new device was kept.
-    Acknowledged { device: Hex32 },
+    Acknowledged { device: DeviceId },
     /// A device ended.
     Removed {
-        device: Hex32,
+        device: DeviceId,
         reason: FloorDeviceRemoval,
     },
 }
@@ -111,7 +123,7 @@ pub(crate) enum DeviceEvent {
 /// One signed-in browser as the pages and the command line list it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DeviceView {
-    pub(crate) device: Hex32,
+    pub(crate) device: DeviceId,
     pub(crate) name: String,
     pub(crate) signed_in: Timestamp,
     pub(crate) first_used: Option<Timestamp>,
@@ -171,7 +183,8 @@ pub(crate) enum Keep {
 /// The one response that crosses from the session module to the HTTP writer.
 pub(crate) struct Exchange {
     pub(crate) cookie: String,
-    pub(crate) csrf: String,
+    /// The device the exchange enrolled.
+    pub(crate) device: DeviceId,
     /// How long the browser keeps the cookie, in seconds.
     pub(crate) cookie_max_age_s: i64,
 }
@@ -180,9 +193,19 @@ impl fmt::Debug for Exchange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Exchange")
             .field("cookie", &"<redacted>")
-            .field("csrf", &"<redacted>")
+            .field("device", &self.device)
             .finish()
     }
+}
+
+/// Why an exchange enrolled nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExchangeRefusal {
+    /// The body is not an enrolment with a valid key.
+    Malformed,
+    /// The link is not good, the origin is not this listener's, the run is over, or the journal
+    /// could not take the enrolment.
+    Forbidden,
 }
 
 /// An unforgeable admission to the future read-only projection facade.
@@ -193,7 +216,7 @@ pub struct ReadOnlySession {
 /// One confirmed reader, retained without extending its idle deadline.
 pub struct ReceiptSession {
     identity: SessionIdentity,
-    csrf: [u8; 32],
+    device: Hex32,
 }
 
 impl fmt::Debug for ReceiptSession {
@@ -231,7 +254,7 @@ impl FloorSessionAuthorizer {
             && !identity.revoked.load(Ordering::Acquire)
             && state.sessions.get(&identity.cookie).is_some_and(|session| {
                 Arc::ptr_eq(&session.revoked, &identity.revoked)
-                    && session.csrf == Some(reader.csrf)
+                    && session.id == reader.device
                     && session.live_at(now)
             })
     }
@@ -257,51 +280,22 @@ impl FloorSessionAuthorizer {
             .unwrap_or_else(PoisonError::into_inner) = Some(Box::new(hook));
     }
 
-    /// Admit one exact-origin read and advance only its idle deadline.
-    #[must_use]
-    pub fn authorize_read(
-        &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
-    ) -> Option<ReadOnlySession> {
-        if !self.0.authority_matches(host, origin) {
-            return None;
-        }
-        if !self.0.valid.load(Ordering::Acquire) {
-            return None;
-        }
-        let cookie = digest(cookie.as_bytes());
-        let csrf = digest(csrf.as_bytes());
-        let (admitted, used) = {
-            let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
-            if !self.0.valid.load(Ordering::Acquire) {
-                return None;
-            }
-            state.prune(now);
-            match state.sessions.get_mut(&cookie) {
-                Some(session) if session.csrf == Some(csrf) => (true, session.note_use(now)),
-                _ => (false, None),
-            }
-        };
-        self.0.settle(used);
-        admitted.then_some(ReadOnlySession { _private: () })
+    /// Admit one exact-origin signed read and advance only its idle deadline.
+    pub fn authorize_read(&self, request: &Presentation<'_>) -> Result<ReadOnlySession, Refusal> {
+        self.0
+            .admit(request, IdleClock::Advance, |_| Some(()))
+            .map(|_| ReadOnlySession { _private: () })
     }
 
     /// Authenticate one browser upgrade and atomically acquire its per-session socket slot.
-    #[must_use]
     pub(crate) fn authorize_stream(
         &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
-    ) -> Option<StreamSession> {
-        let ((), cookie, revoked) = self.admit_socket(host, origin, cookie, csrf, |session| {
+        request: &Presentation<'_>,
+    ) -> Result<StreamSession, Refusal> {
+        let ((), cookie, revoked) = self.admit_socket(request, |session| {
             (session.websockets < MAX_WEBSOCKETS_PER_SESSION).then(|| session.websockets += 1)
         })?;
-        Some(StreamSession {
+        Ok(StreamSession {
             inner: Arc::clone(&self.0),
             cookie,
             revoked,
@@ -309,27 +303,22 @@ impl FloorSessionAuthorizer {
         })
     }
 
-    #[must_use]
     pub(crate) fn authorize_terminal(
         &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
-    ) -> Option<TerminalSession> {
-        let (browser_epoch, cookie, revoked) =
-            self.admit_socket(host, origin, cookie, csrf, |session| {
-                if session.terminal.is_some() {
-                    return None;
-                }
-                let browser_epoch = self.0.last_browser_epoch.fetch_add(1, Ordering::AcqRel) + 1;
-                session.terminal = Some(TerminalSlot {
-                    browser_epoch,
-                    grant: None,
-                });
-                Some(browser_epoch)
-            })?;
-        Some(TerminalSession {
+        request: &Presentation<'_>,
+    ) -> Result<TerminalSession, Refusal> {
+        let (browser_epoch, cookie, revoked) = self.admit_socket(request, |session| {
+            if session.terminal.is_some() {
+                return None;
+            }
+            let browser_epoch = self.0.last_browser_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+            session.terminal = Some(TerminalSlot {
+                browser_epoch,
+                grant: None,
+            });
+            Some(browser_epoch)
+        })?;
+        Ok(TerminalSession {
             inner: Arc::clone(&self.0),
             cookie,
             revoked,
@@ -338,18 +327,14 @@ impl FloorSessionAuthorizer {
     }
 
     /// Authenticate one engine sign-in upgrade and claim its session's one sign-in slot.
-    #[must_use]
     pub(crate) fn authorize_login(
         &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
-    ) -> Option<LoginSession> {
-        let ((), cookie, revoked) = self.admit_socket(host, origin, cookie, csrf, |session| {
+        request: &Presentation<'_>,
+    ) -> Result<LoginSession, Refusal> {
+        let ((), cookie, revoked) = self.admit_socket(request, |session| {
             (!session.login).then(|| session.login = true)
         })?;
-        Some(LoginSession {
+        Ok(LoginSession {
             inner: Arc::clone(&self.0),
             cookie,
             revoked,
@@ -360,37 +345,78 @@ impl FloorSessionAuthorizer {
     /// Only a claimed slot advances the session's idle time.
     fn admit_socket<T>(
         &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
+        request: &Presentation<'_>,
         take: impl FnOnce(&mut Session) -> Option<T>,
-    ) -> Option<(T, [u8; 32], Arc<AtomicBool>)> {
-        if !self.0.authority_matches(host, origin) || !self.0.valid.load(Ordering::Acquire) {
-            return None;
-        }
-        let cookie = digest(cookie.as_bytes());
-        let csrf = digest(csrf.as_bytes());
-        let (admitted, used) = {
-            let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
-            if !self.0.valid.load(Ordering::Acquire) {
-                return None;
-            }
-            state.prune(now);
-            match state.sessions.get_mut(&cookie) {
-                Some(session) if session.csrf == Some(csrf) => match take(session) {
-                    Some(taken) => {
-                        let used = session.note_use(now);
-                        (Some((taken, Arc::clone(&session.revoked))), used)
-                    }
-                    None => (None, None),
-                },
-                _ => (None, None),
-            }
-        };
-        self.0.settle(used);
-        admitted.map(|(taken, revoked)| (taken, cookie, revoked))
+    ) -> Result<(T, [u8; 32], Arc<AtomicBool>), Refusal> {
+        let admitted = self.0.admit(request, IdleClock::Advance, take)?;
+        Ok((admitted.value, admitted.cookie, admitted.revoked))
     }
+}
+
+/// A request as the registry checks it: where it says it came from, the cookie it carried, the
+/// method, target and body its signature covers, and what its page presented. Nothing in it is
+/// believed yet.
+pub struct Presentation<'a> {
+    host: &'a str,
+    origin: &'a str,
+    cookie: &'a str,
+    method: &'a str,
+    target: &'a str,
+    body: &'a [u8],
+    signed: Option<Presented>,
+}
+
+impl<'a> Presentation<'a> {
+    /// A request with the `Host`, `Origin` and cookie it carried, and no signature yet.
+    #[must_use]
+    pub const fn new(
+        host: &'a str,
+        origin: &'a str,
+        cookie: &'a str,
+        method: &'a str,
+        target: &'a str,
+        body: &'a [u8],
+    ) -> Self {
+        Self {
+            host,
+            origin,
+            cookie,
+            method,
+            target,
+            body,
+            signed: None,
+        }
+    }
+
+    /// Add the four values a page presents: the origin it signed for, the time, the request id
+    /// and the signature. Values that are malformed leave the request unsigned.
+    #[must_use]
+    pub fn signed(mut self, origin: &str, time: &str, request: &str, signature: &str) -> Self {
+        self.signed = Presented::parse(origin, time, request, signature);
+        self
+    }
+
+    fn subject(&self) -> Subject<'a> {
+        Subject {
+            method: self.method,
+            target: self.target,
+            body: self.body,
+        }
+    }
+}
+
+/// Why a request earned no device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The cookie names no live device, or the run is over, or Host and Origin are not this
+    /// listener's.
+    Gone,
+    /// The cookie names a live device and the request did not prove it came from that device's
+    /// key: unsigned, signed for another origin, outside the clock window, a reused id, a full
+    /// memory of ids, or a signature that does not verify.
+    Signature,
+    /// The request was good and the socket slot it asked for is taken.
+    Busy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -872,14 +898,105 @@ struct Inner {
     reserve_hook: Mutex<Option<ReserveHook>>,
     /// Where device changes become durable and reach the open pages. Set by the daemon.
     sink: RwLock<Option<Arc<dyn DeviceSink>>>,
-    /// Random for this run. It stands in for the key of a session that does not exist, so a proof
-    /// asked for twice under such a cookie is the same both times, as it is under a live one.
-    absent_key: [u8; 32],
+}
+
+/// A request that earned its device, and what it claimed.
+struct Checked<T> {
+    value: T,
+    cookie: [u8; 32],
+    revoked: Arc<AtomicBool>,
 }
 
 impl Inner {
     fn authority_matches(&self, host: &str, origin: &str) -> bool {
         host == self.host && origin == self.origin
+    }
+
+    /// Check a request against its device and let `take` claim what it asked for under the
+    /// registry lock.
+    ///
+    /// The cookie must name a live device, or the answer is [`Refusal::Gone`] and nothing about
+    /// the request is read. Then the page's origin must be this listener's, the request's own
+    /// and the device's; its time within a minute of the clock; and its signature must verify
+    /// under the device's key. Only a request that verified spends one of the device's request
+    /// ids, so a forged request cannot use them up. `idle` says whether a good request counts as
+    /// the device's use.
+    fn admit<T>(
+        &self,
+        request: &Presentation<'_>,
+        idle: IdleClock,
+        take: impl FnOnce(&mut Session) -> Option<T>,
+    ) -> Result<Checked<T>, Refusal> {
+        if !self.authority_matches(request.host, request.origin) {
+            return Err(Refusal::Gone);
+        }
+        let cookie = digest(request.cookie.as_bytes());
+        let (device, key, device_origin, revoked, now) = {
+            let registry::Locked { mut state, now } = self.registry.lock_at_now();
+            if !self.valid.load(Ordering::Acquire) {
+                return Err(Refusal::Gone);
+            }
+            if idle == IdleClock::Advance {
+                state.prune(now);
+            }
+            let found = state
+                .sessions
+                .get(&cookie)
+                .filter(|session| session.live_at(now) && !session.revoked.load(Ordering::Acquire))
+                .map(|session| {
+                    (
+                        session.id,
+                        session.key.clone(),
+                        session.origin.clone(),
+                        Arc::clone(&session.revoked),
+                        now,
+                    )
+                });
+            let Some(found) = found else {
+                drop(state);
+                self.settle(None);
+                return Err(Refusal::Gone);
+            };
+            found
+        };
+        let presented = request.signed.as_ref().ok_or(Refusal::Signature)?;
+        if presented.origin != request.origin
+            || presented.origin != self.origin
+            || presented.origin != device_origin
+            || now.unix_millis().abs_diff(presented.millis) > SIGNATURE_WINDOW_MS.unsigned_abs()
+            || !key.verifies(device, &request.subject(), presented)
+        {
+            return Err(Refusal::Signature);
+        }
+        let (value, used) = {
+            let registry::Locked { mut state, now } = self.registry.lock_at_now();
+            if !self.valid.load(Ordering::Acquire) {
+                return Err(Refusal::Gone);
+            }
+            let Some(session) = state.sessions.get_mut(&cookie).filter(|session| {
+                Arc::ptr_eq(&session.revoked, &revoked)
+                    && session.live_at(now)
+                    && !session.revoked.load(Ordering::Acquire)
+            }) else {
+                return Err(Refusal::Gone);
+            };
+            if !session.requests.admit(now, presented.request) {
+                return Err(Refusal::Signature);
+            }
+            let Some(value) = take(session) else {
+                return Err(Refusal::Busy);
+            };
+            let used = (idle == IdleClock::Advance)
+                .then(|| session.note_use(now))
+                .flatten();
+            (value, used)
+        };
+        self.settle(used);
+        Ok(Checked {
+            value,
+            cookie,
+            revoked,
+        })
     }
 
     fn sink(&self) -> Option<Arc<dyn DeviceSink>> {
@@ -927,7 +1044,10 @@ impl Inner {
         let ended = std::mem::take(&mut self.registry.lock().ended);
         for (device, reason) in ended {
             if self.record(FloorDeviceChange::Remove { device, reason }) {
-                self.announce(&DeviceEvent::Removed { device, reason });
+                self.announce(&DeviceEvent::Removed {
+                    device: device.into(),
+                    reason,
+                });
             }
         }
     }
@@ -955,7 +1075,10 @@ impl Inner {
                 .ended
                 .retain(|(ended, _)| *ended != device);
         }
-        self.announce(&DeviceEvent::Removed { device, reason });
+        self.announce(&DeviceEvent::Removed {
+            device: device.into(),
+            reason,
+        });
         Removal::Removed
     }
 }
@@ -1024,7 +1147,6 @@ impl Link {
 /// An ended device the daemon can still name, so a page holding its cookie hears why.
 struct Ended {
     cookie: [u8; 32],
-    secret: Option<[u8; 32]>,
     reason: GoneReason,
 }
 
@@ -1045,9 +1167,12 @@ struct Session {
     id: Hex32,
     name: String,
     revoked: Arc<AtomicBool>,
-    /// The digest of the secret the page sends with every request that changes state. `None` for
-    /// a session imported from an export that carried none, which can never act.
-    csrf: Option<[u8; 32]>,
+    /// The key that checks every request this device makes.
+    key: DeviceKey,
+    /// The Floor origin it signed in on. A request signed for another origin is refused.
+    origin: String,
+    /// The request ids this device used lately, so none works twice.
+    requests: Requests,
     created: Timestamp,
     first_used: Option<Timestamp>,
     last_used: Timestamp,
@@ -1059,6 +1184,26 @@ struct Session {
     terminal: Option<TerminalSlot>,
     /// Whether this session holds its one engine sign-in socket.
     login: bool,
+}
+
+/// The ids of a device's recent requests. An id is refused while it is remembered, and nothing is
+/// admitted while the memory is full, so a flood of valid requests cannot grow it.
+#[derive(Default)]
+struct Requests {
+    seen: Vec<(Timestamp, [u8; 16])>,
+}
+
+impl Requests {
+    /// Remember `id` and say so, or say that it was used lately or that no room is left.
+    fn admit(&mut self, now: Timestamp, id: [u8; 16]) -> bool {
+        self.seen
+            .retain(|(at, _)| now.millis_since(*at) < REQUEST_MEMORY_MS);
+        if self.seen.len() >= MAX_REQUEST_IDS || self.seen.iter().any(|(_, seen)| *seen == id) {
+            return false;
+        }
+        self.seen.push((now, id));
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1129,7 +1274,7 @@ impl Session {
     /// The device as the table lists it.
     fn view(&self, key: &[u8; 32], me: Option<&[u8; 32]>) -> DeviceView {
         DeviceView {
-            device: self.id,
+            device: self.id.into(),
             name: self.name.clone(),
             signed_in: self.created,
             first_used: self.first_used,
@@ -1153,7 +1298,7 @@ impl State {
         for key in dead {
             if let Some(session) = self.sessions.remove(&key) {
                 let reason = session.expiry(now);
-                self.remember(&key, &session, reason);
+                self.remember(&key, reason);
                 self.ended.push((session.id, reason));
             }
         }
@@ -1167,18 +1312,17 @@ impl State {
             .count()
     }
 
-    fn remember(&mut self, key: &[u8; 32], session: &Session, reason: FloorDeviceRemoval) {
-        let Some(reason) = GoneReason::of(reason) else {
-            return;
-        };
+    fn remember(&mut self, key: &[u8; 32], reason: FloorDeviceRemoval) {
+        if let Some(reason) = GoneReason::of(reason) {
+            self.remember_cookie(*key, reason);
+        }
+    }
+
+    fn remember_cookie(&mut self, cookie: [u8; 32], reason: GoneReason) {
         if self.remembered.len() >= MAX_REMEMBERED_ENDED {
             self.remembered.pop_front();
         }
-        self.remembered.push_back(Ended {
-            cookie: *key,
-            secret: session.csrf,
-            reason,
-        });
+        self.remembered.push_back(Ended { cookie, reason });
     }
 
     /// End one session: it leaves the table, and everything holding its revoked flag sees it.
@@ -1186,7 +1330,7 @@ impl State {
     fn end(&mut self, key: &[u8; 32], reason: FloorDeviceRemoval) -> Option<Hex32> {
         let session = self.sessions.remove(key)?;
         session.revoked.store(true, Ordering::Release);
-        self.remember(key, &session, reason);
+        self.remember(key, reason);
         Some(session.id)
     }
 
@@ -1262,12 +1406,6 @@ fn is_format_char(c: char) -> bool {
     )
 }
 
-fn mint_device_id() -> Hex32 {
-    let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes).expect("the operating system's entropy source");
-    Hex32::new(bytes)
-}
-
 impl FloorSessions {
     #[cfg(test)]
     pub(crate) fn registry_counts_for_test(&self) -> (usize, usize) {
@@ -1292,7 +1430,7 @@ impl FloorSessions {
                         origin: origin.clone(),
                         name: session.name.clone(),
                         cookie: Hex32::new(*cookie),
-                        secret: Hex32::new(session.csrf.expect("a secret")),
+                        key: Some(session.key.text()),
                         enrolled: session.created,
                         first_used: session.first_used,
                         last_used: Some(session.last_used),
@@ -1304,89 +1442,47 @@ impl FloorSessions {
             .collect()
     }
 
-    /// Admit one exact-origin browser action — onboarding, an answer, a pause or a resume — and
-    /// retain only its session digest.
+    /// Admit one exact-origin signed browser action — onboarding, an answer, a pause or a
+    /// resume — and retain only its session digest.
     pub(crate) fn authorize_onboard(
         &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
-    ) -> Option<SessionIdentity> {
-        self.authenticate(host, origin, cookie, csrf, IdleClock::Advance)
+        request: &Presentation<'_>,
+    ) -> Result<SessionIdentity, Refusal> {
+        self.authenticate(request, IdleClock::Advance)
+            .map(|(identity, _)| identity)
     }
 
     /// Admit a request that asks about the session itself, and leave its idle deadline alone.
     pub(crate) fn authorize_standing(
         &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
-    ) -> Option<SessionIdentity> {
-        self.authenticate(host, origin, cookie, csrf, IdleClock::Hold)
+        request: &Presentation<'_>,
+    ) -> Result<SessionIdentity, Refusal> {
+        self.authenticate(request, IdleClock::Hold)
+            .map(|(identity, _)| identity)
     }
 
     pub(crate) fn authorize_receipt(
         &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
-    ) -> Option<ReceiptSession> {
-        self.authenticate(host, origin, cookie, csrf, IdleClock::Hold)
-            .map(|identity| ReceiptSession {
-                identity,
-                csrf: digest(csrf.as_bytes()),
-            })
+        request: &Presentation<'_>,
+    ) -> Result<ReceiptSession, Refusal> {
+        self.authenticate(request, IdleClock::Hold)
+            .map(|(identity, device)| ReceiptSession { identity, device })
     }
 
     fn authenticate(
         &self,
-        host: &str,
-        origin: &str,
-        cookie: &str,
-        csrf: &str,
+        request: &Presentation<'_>,
         idle: IdleClock,
-    ) -> Option<SessionIdentity> {
-        if !self.0.authority_matches(host, origin) {
-            return None;
-        }
-        let cookie = digest(cookie.as_bytes());
-        let csrf = digest(csrf.as_bytes());
-        let (identity, used) = {
-            let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
-            if !self.0.valid.load(Ordering::Acquire) {
-                return None;
-            }
-            if idle == IdleClock::Advance {
-                state.prune(now);
-            }
-            let Some(session) = state.sessions.get_mut(&cookie) else {
-                drop(state);
-                self.0.settle(None);
-                return None;
-            };
-            if session.csrf != Some(csrf)
-                || !session.live_at(now)
-                || session.revoked.load(Ordering::Acquire)
-            {
-                return None;
-            }
-            let used = (idle == IdleClock::Advance)
-                .then(|| session.note_use(now))
-                .flatten();
-            (
-                SessionIdentity {
-                    inner: Arc::clone(&self.0),
-                    cookie,
-                    revoked: Arc::clone(&session.revoked),
-                },
-                used,
-            )
-        };
-        self.0.settle(used);
-        Some(identity)
+    ) -> Result<(SessionIdentity, Hex32), Refusal> {
+        let admitted = self.0.admit(request, idle, |session| Some(session.id))?;
+        Ok((
+            SessionIdentity {
+                inner: Arc::clone(&self.0),
+                cookie: admitted.cookie,
+                revoked: admitted.revoked,
+            },
+            admitted.value,
+        ))
     }
 
     /// Create empty session state for the listener's exact run-local origin.
@@ -1405,11 +1501,6 @@ impl FloorSessions {
             registry: registry::Registry::new(clock),
             reserve_hook: Mutex::new(None),
             sink: RwLock::new(None),
-            absent_key: {
-                let mut bytes = [0_u8; 32];
-                getrandom::fill(&mut bytes).expect("the operating system's entropy source");
-                bytes
-            },
         }))
     }
 
@@ -1429,6 +1520,10 @@ impl FloorSessions {
     /// does any beyond the limit, and their removals are journaled by the first request or listing
     /// that follows. A device signed in on another origin cannot be used here, so it stays out of
     /// the table and out of the count, and is journaled as nothing: it returns if the daemon does.
+    ///
+    /// A browser that signed in before requests were signed holds no key and can never act again.
+    /// It ends once, as expired, whatever origin it signed in on, so its page hears that its
+    /// sign-in expired and the next boot finds nothing left to end.
     pub(crate) fn seed(&self, rows: &BTreeMap<Hex32, DeviceRow>) {
         let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
         let mut ended: Vec<_> = rows
@@ -1440,36 +1535,38 @@ impl FloorSessions {
             if let Some(reason) = GoneReason::of(reason)
                 && now.millis_since(at) < ABSOLUTE_EXPIRES_MS
             {
-                if state.remembered.len() >= MAX_REMEMBERED_ENDED {
-                    state.remembered.pop_front();
-                }
-                state.remembered.push_back(Ended {
-                    cookie: row.cookie.bytes(),
-                    secret: Some(row.secret.bytes()),
-                    reason,
-                });
+                state.remember_cookie(row.cookie.bytes(), reason);
             }
         }
         for (device, row) in rows.iter().filter(|(_, row)| row.removed.is_none()) {
-            let last_used = row.last_used.unwrap_or(row.enrolled);
-            let session = Session {
-                id: *device,
-                name: row.name.clone(),
-                revoked: Arc::new(AtomicBool::new(false)),
-                csrf: Some(row.secret.bytes()),
-                created: row.enrolled,
-                first_used: row.first_used,
-                last_used,
-                journaled_use: last_used,
-                acknowledged: row.acknowledged.is_some(),
-                websockets: 0,
-                terminal: None,
-                login: false,
+            let Some((key, id)) = row.key.as_deref().and_then(DeviceKey::parse) else {
+                state.remember_cookie(row.cookie.bytes(), GoneReason::Expired);
+                state.ended.push((*device, FloorDeviceRemoval::Expired));
+                continue;
             };
-            if row.origin != self.0.origin {
+            if id != *device || row.origin != self.0.origin {
                 continue;
             }
-            state.sessions.insert(row.cookie.bytes(), session);
+            let last_used = row.last_used.unwrap_or(row.enrolled);
+            state.sessions.insert(
+                row.cookie.bytes(),
+                Session {
+                    id: *device,
+                    name: row.name.clone(),
+                    revoked: Arc::new(AtomicBool::new(false)),
+                    key,
+                    origin: row.origin.clone(),
+                    requests: Requests::default(),
+                    created: row.enrolled,
+                    first_used: row.first_used,
+                    last_used,
+                    journaled_use: last_used,
+                    acknowledged: row.acknowledged.is_some(),
+                    websockets: 0,
+                    terminal: None,
+                    login: false,
+                },
+            );
         }
         state.prune(now);
         for victim in state.surplus(None) {
@@ -1549,30 +1646,45 @@ impl FloorSessions {
         })
     }
 
-    /// Exchange one valid link under this listener's exact Host and Origin. The body is the link,
-    /// then optionally a line break and the name the browser gives itself.
+    /// Exchange one valid link under this listener's exact Host and Origin. The body is JSON: the
+    /// link, the browser's public key as SPKI DER in unpadded base64url, and the name the browser
+    /// gives itself.
     ///
     /// The browser becomes a device only once its enrolment is durable, and the cookie leaves only
-    /// after that. A link is spent by the attempt, so a journal that cannot take the enrolment
-    /// costs the person one more `dudes open`.
-    #[must_use]
-    pub(crate) fn exchange(&self, host: &str, origin: &str, body: &[u8]) -> Option<Exchange> {
-        if !self.0.authority_matches(host, origin) {
-            return None;
+    /// after that. A body without a valid key is refused before the link is touched. A link is
+    /// spent by an attempt that gets past that, so a journal that cannot take the enrolment costs
+    /// the person one more `dudes open`. A key that is already a live device is replaced: its old
+    /// cookie stops working and the browser holds the new one.
+    pub(crate) fn exchange(
+        &self,
+        host: &str,
+        origin: &str,
+        body: &[u8],
+    ) -> Result<Exchange, ExchangeRefusal> {
+        use ExchangeRefusal::{Forbidden, Malformed};
+        if !self.0.authority_matches(host, origin) || !self.0.valid.load(Ordering::Acquire) {
+            return Err(Forbidden);
         }
-        if !self.0.valid.load(Ordering::Acquire) {
-            return None;
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Enrolment {
+            link: String,
+            key: String,
+            #[serde(default)]
+            name: String,
         }
-        let (link, name) = match body.iter().position(|byte| *byte == b'\n') {
-            Some(at) => (&body[..at], String::from_utf8_lossy(&body[at + 1..])),
-            None => (body, std::borrow::Cow::Borrowed("")),
-        };
+        let Enrolment {
+            link,
+            key: key_text,
+            name,
+        } = serde_json::from_slice(body).map_err(|_| Malformed)?;
+        let (device_key, device) = DeviceKey::parse(&key_text).ok_or(Malformed)?;
         let name = clean_name(&name);
-        let link = digest(link);
-        {
+        let link = digest(link.as_bytes());
+        let replaced = {
             let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
             if !self.0.valid.load(Ordering::Acquire) {
-                return None;
+                return Err(Forbidden);
             }
             state.prune(now);
             // Pruning has dropped every expired link, so a link found here is good, and nothing
@@ -1580,40 +1692,50 @@ impl FloorSessions {
             if state.pending.remove(&link).is_none() {
                 drop(state);
                 self.0.settle(None);
-                return None;
+                return Err(Forbidden);
             }
+            state
+                .sessions
+                .iter()
+                .find(|(_, session)| session.id == device)
+                .map(|(cookie, _)| *cookie)
+        };
+        if let Some(cookie) = replaced
+            && self.0.remove(cookie, FloorDeviceRemoval::Replaced) == Removal::Unavailable
+        {
+            return Err(Forbidden);
         }
-        let device = mint_device_id();
-        let (cookie, csrf) = {
+        let cookie = {
             let state = self.0.registry.lock();
-            let cookie = loop {
+            loop {
                 let candidate = mint_secret();
                 if !state.sessions.contains_key(&digest(candidate.as_bytes())) {
                     break candidate;
                 }
-            };
-            (cookie, mint_secret())
+            }
         };
         let key = digest(cookie.as_bytes());
         if !self.0.record(FloorDeviceChange::Enroll {
             device,
             origin: self.0.origin.clone(),
             name: name.clone(),
+            key: key_text,
             cookie: Hex32::new(key),
-            secret: Hex32::new(digest(csrf.as_bytes())),
         }) {
-            return None;
+            return Err(Forbidden);
         }
         let (max_age, surplus, at) = {
             let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
             if !self.0.valid.load(Ordering::Acquire) {
-                return None;
+                return Err(Forbidden);
             }
             let session = Session {
                 id: device,
                 name: name.clone(),
                 revoked: Arc::new(AtomicBool::new(false)),
-                csrf: Some(digest(csrf.as_bytes())),
+                key: device_key,
+                origin: self.0.origin.clone(),
+                requests: Requests::default(),
                 created: now,
                 first_used: None,
                 last_used: now,
@@ -1627,14 +1749,18 @@ impl FloorSessions {
             state.sessions.insert(key, session);
             (max_age, state.surplus(Some(&key)), now)
         };
-        self.0.announce(&DeviceEvent::Enrolled { device, name, at });
+        self.0.announce(&DeviceEvent::Enrolled {
+            device: device.into(),
+            name,
+            at,
+        });
         for victim in surplus {
             self.0.remove(victim, FloorDeviceRemoval::Replaced);
         }
         self.0.settle(None);
-        Some(Exchange {
+        Ok(Exchange {
             cookie,
-            csrf,
+            device: device.into(),
             cookie_max_age_s: max_age,
         })
     }
@@ -1645,18 +1771,27 @@ impl FloorSessions {
         self.0.valid.load(Ordering::Acquire)
     }
 
-    /// Why the device behind this cookie and secret is gone, when it ended for a reason the
-    /// person should hear. The secret has to match too, so a cookie alone learns nothing.
-    pub(crate) fn gone_reason(&self, cookie: &str, secret: &str) -> Option<GoneReason> {
+    /// Why the device behind this cookie is gone, when it ended for a reason the person should
+    /// hear. The reason is not authority: it opens nothing, so the cookie alone earns it.
+    pub(crate) fn gone_reason(&self, cookie: &str) -> Option<GoneReason> {
         let cookie = digest(cookie.as_bytes());
-        let secret = digest(secret.as_bytes());
         let state = self.0.registry.lock();
         state
             .remembered
             .iter()
             .rev()
-            .find(|ended| ended.cookie == cookie && ended.secret == Some(secret))
+            .find(|ended| ended.cookie == cookie)
             .map(|ended| ended.reason)
+    }
+
+    /// Whether the cookie names a device that is live now. Asking changes nothing.
+    pub(crate) fn knows(&self, cookie: &str) -> bool {
+        let cookie = digest(cookie.as_bytes());
+        let registry::Locked { state, now } = self.0.registry.lock_at_now();
+        self.0.valid.load(Ordering::Acquire)
+            && state.sessions.get(&cookie).is_some_and(|session| {
+                session.live_at(now) && !session.revoked.load(Ordering::Acquire)
+            })
     }
 
     /// The signed-in devices, newest sign-in first. `me` marks the asking browser.
@@ -1680,7 +1815,8 @@ impl FloorSessions {
     }
 
     /// Sign one device out by its id.
-    pub(crate) fn remove_device(&self, device: Hex32, reason: FloorDeviceRemoval) -> Removal {
+    pub(crate) fn remove_device(&self, device: DeviceId, reason: FloorDeviceRemoval) -> Removal {
+        let device = Hex32::from(device);
         let key = self
             .0
             .registry
@@ -1696,16 +1832,17 @@ impl FloorSessions {
 
     /// Keep a new device: someone looked at it and answered the notice. A device cannot keep
     /// itself, because whoever holds it already could.
-    pub(crate) fn keep_device(&self, device: Hex32, by: &SessionIdentity) -> Keep {
+    pub(crate) fn keep_device(&self, device: DeviceId, by: &SessionIdentity) -> Keep {
         self.keep(device, Some(by.cookie))
     }
 
     /// Keep a new device on the operator's word, which no browser has to give.
-    pub(crate) fn keep_device_as_operator(&self, device: Hex32) -> Keep {
+    pub(crate) fn keep_device_as_operator(&self, device: DeviceId) -> Keep {
         self.keep(device, None)
     }
 
-    fn keep(&self, device: Hex32, by: Option<[u8; 32]>) -> Keep {
+    fn keep(&self, device: DeviceId, by: Option<[u8; 32]>) -> Keep {
+        let device = Hex32::from(device);
         let found = {
             let state = self.0.registry.lock();
             state
@@ -1729,58 +1866,10 @@ impl FloorSessions {
         if let Some(session) = self.0.registry.lock().sessions.get_mut(&key) {
             session.acknowledged = true;
         }
-        self.0.announce(&DeviceEvent::Acknowledged { device });
+        self.0.announce(&DeviceEvent::Acknowledged {
+            device: device.into(),
+        });
         Keep::Kept
-    }
-
-    /// Prove to a page that this daemon holds the session it signed in to, before the page sends
-    /// its secret. The answer is a keyed hash of the page's nonce, bound to this purpose by a fixed
-    /// label and to this listener's own origin, keyed by the digest of the session's secret: only a
-    /// holder of that digest can make one the page accepts, a process that relays the page's nonce
-    /// to a daemon on another port gets an answer for that port's origin, and the secret itself is
-    /// never needed. A cookie that names no live
-    /// session, or none at all, gets an answer of the same shape under a key nobody holds, so the
-    /// answer says nothing about which sessions exist. Asking leaves the idle deadline alone.
-    pub(crate) fn prove(&self, cookie: Option<&str>, nonce: &str) -> String {
-        let held = cookie.and_then(|cookie| {
-            let cookie = digest(cookie.as_bytes());
-            let registry::Locked { state, now } = self.0.registry.lock_at_now();
-            if !self.0.valid.load(Ordering::Acquire) {
-                return None;
-            }
-            let Some(session) = state.sessions.get(&cookie) else {
-                // An ended device proves the daemon too, so its page can send the secret and hear
-                // why it was signed out. The proof shows only that the daemon knows the digest.
-                return state
-                    .remembered
-                    .iter()
-                    .rev()
-                    .find(|ended| ended.cookie == cookie)
-                    .and_then(|ended| ended.secret);
-            };
-            if !session.live_at(now) || session.revoked.load(Ordering::Acquire) {
-                return None;
-            }
-            session.csrf
-        });
-        let key = held.unwrap_or_else(|| {
-            digest(
-                &[
-                    self.0.absent_key.as_slice(),
-                    cookie.unwrap_or_default().as_bytes(),
-                ]
-                .concat(),
-            )
-        });
-        base64url(&hmac_sha256_key32(
-            &key,
-            &[
-                PROOF_LABEL,
-                self.0.origin.as_bytes(),
-                b"\n",
-                nonce.as_bytes(),
-            ],
-        ))
     }
 
     /// End this run's authority before its listener and connection owners are released. The
@@ -1857,7 +1946,6 @@ impl FloorCarry {
                     .map_or((0, 0), |tickets| tickets.counts(*cookie));
                 ExportedSession {
                     digest: Hex32::new(*cookie),
-                    secret: None,
                     created: session.created,
                     last_used: session.last_used,
                     ticket_creates,
@@ -1908,29 +1996,6 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
-/// Binds a proof to the one thing it is for, so it cannot be replayed as any other answer.
-const PROOF_LABEL: &[u8] = b"dudes-floor-daemon-proof-v1\n";
-
-/// HMAC-SHA-256 of the parts joined, for a 32-byte key only, which is shorter than a block.
-fn hmac_sha256_key32(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
-    const BLOCK: usize = 64;
-    let mut inner_pad = [0x36_u8; BLOCK];
-    let mut outer_pad = [0x5c_u8; BLOCK];
-    for (index, byte) in key.iter().enumerate() {
-        inner_pad[index] ^= byte;
-        outer_pad[index] ^= byte;
-    }
-    let mut inner = Sha256::new();
-    inner.update(inner_pad);
-    for part in parts {
-        inner.update(part);
-    }
-    let mut outer = Sha256::new();
-    outer.update(outer_pad);
-    outer.update(inner.finalize());
-    outer.finalize().into()
-}
-
 fn mint_secret() -> String {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).expect("the operating system's entropy source");
@@ -1961,6 +2026,7 @@ mod tests {
 
     use dudes_supervisor::testing::FakeClock;
 
+    use super::test_support::Joined;
     use super::*;
 
     struct PermitProbeClock {
@@ -1998,10 +2064,10 @@ mod tests {
         let origin = "http://127.0.0.1:43123";
         let issued = sessions.issue().expect("bootstrap");
         let exchange = sessions
-            .exchange(host, origin, issued.bootstrap.as_bytes())
+            .join(host, origin, &issued.bootstrap)
             .expect("session");
         let identity = sessions
-            .authorize_onboard(host, origin, &exchange.cookie, &exchange.csrf)
+            .enter(host, origin, &exchange)
             .expect("admitted request");
         let first = identity.permit().expect("first append permit");
         let (sampled_tx, sampled_rx) = mpsc::channel();
@@ -2055,10 +2121,10 @@ mod tests {
         let origin = "http://127.0.0.1:43125";
         let first = sessions.issue().expect("first bootstrap");
         let first = sessions
-            .exchange(host, origin, first.bootstrap.as_bytes())
+            .join(host, origin, &first.bootstrap)
             .expect("first session");
         let identity = sessions
-            .authorize_onboard(host, origin, &first.cookie, &first.csrf)
+            .enter(host, origin, &first)
             .expect("first admitted identity");
         let attempt = Hex32::new([0; 32]);
         let digest = Hex32::new([1; 32]);
@@ -2068,10 +2134,10 @@ mod tests {
         };
         let second = sessions.issue().expect("other bootstrap");
         let second = sessions
-            .exchange(host, origin, second.bootstrap.as_bytes())
+            .join(host, origin, &second.bootstrap)
             .expect("other session");
         let holder = sessions
-            .authorize_onboard(host, origin, &second.cookie, &second.csrf)
+            .enter(host, origin, &second)
             .expect("other admitted identity");
         let held = holder.permit().expect("other session holds registry lock");
         let (sampled_tx, sampled_rx) = mpsc::channel();
@@ -2127,14 +2193,14 @@ mod tests {
         let origin = "http://127.0.0.1:43126";
         let first = sessions.issue().expect("first bootstrap");
         let first = sessions
-            .exchange(host, origin, first.bootstrap.as_bytes())
+            .join(host, origin, &first.bootstrap)
             .expect("first session");
         let second = sessions.issue().expect("other bootstrap");
         let second = sessions
-            .exchange(host, origin, second.bootstrap.as_bytes())
+            .join(host, origin, &second.bootstrap)
             .expect("other session");
         let holder = sessions
-            .authorize_onboard(host, origin, &second.cookie, &second.csrf)
+            .enter(host, origin, &second)
             .expect("other admitted identity");
         let held = holder.permit().expect("other session holds registry lock");
         let (sampled_tx, sampled_rx) = mpsc::channel();
@@ -2147,9 +2213,7 @@ mod tests {
         let started = Arc::clone(&barrier);
         let follower = thread::spawn(move || {
             started.wait();
-            waiting
-                .authorize_onboard(host, origin, &first.cookie, &first.csrf)
-                .is_none()
+            waiting.enter(host, origin, &first).is_none()
         });
         barrier.wait();
         let sampled_while_held = sampled_rx
@@ -2186,17 +2250,17 @@ mod tests {
         let origin = "http://127.0.0.1:43127";
         let first = sessions.issue().expect("first bootstrap");
         let first = sessions
-            .exchange(host, origin, first.bootstrap.as_bytes())
+            .join(host, origin, &first.bootstrap)
             .expect("first session");
         let identity = sessions
-            .authorize_onboard(host, origin, &first.cookie, &first.csrf)
+            .enter(host, origin, &first)
             .expect("first admitted identity");
         let second = sessions.issue().expect("other bootstrap");
         let second = sessions
-            .exchange(host, origin, second.bootstrap.as_bytes())
+            .join(host, origin, &second.bootstrap)
             .expect("other session");
         let holder = sessions
-            .authorize_onboard(host, origin, &second.cookie, &second.csrf)
+            .enter(host, origin, &second)
             .expect("other admitted identity");
         let held = holder.permit().expect("other session holds registry lock");
         let (sampled_tx, sampled_rx) = mpsc::channel();
@@ -2248,10 +2312,10 @@ mod tests {
         (clock, sessions)
     }
 
-    fn probe_session(sessions: &FloorSessions) -> Exchange {
+    fn probe_session(sessions: &FloorSessions) -> Joined {
         let issued = sessions.issue().expect("bootstrap");
         sessions
-            .exchange(PROBE_HOST, PROBE_ORIGIN, issued.bootstrap.as_bytes())
+            .join(PROBE_HOST, PROBE_ORIGIN, &issued.bootstrap)
             .expect("live session")
     }
 
@@ -2259,7 +2323,7 @@ mod tests {
     fn probe_holder(sessions: &FloorSessions) -> SessionIdentity {
         let other = probe_session(sessions);
         sessions
-            .authorize_onboard(PROBE_HOST, PROBE_ORIGIN, &other.cookie, &other.csrf)
+            .enter(PROBE_HOST, PROBE_ORIGIN, &other)
             .expect("other admitted identity")
     }
 
@@ -2310,7 +2374,7 @@ mod tests {
         let held = holder.permit().expect("other session holds registry lock");
         let (exchanged, sampled_while_held) = behind_permit(&clock, held, OPEN_LINK_MS, || {
             sessions
-                .exchange(PROBE_HOST, PROBE_ORIGIN, pending.bootstrap.as_bytes())
+                .join(PROBE_HOST, PROBE_ORIGIN, &pending.bootstrap)
                 .is_some()
         });
         assert!(
@@ -2330,10 +2394,9 @@ mod tests {
         let holder = probe_holder(&sessions);
         let held = holder.permit().expect("other session holds registry lock");
         let authorizer = sessions.authorizer();
+        let request = reader.present(PROBE_HOST, PROBE_ORIGIN, IDLE_EXPIRES_MS);
         let (admitted, sampled_while_held) = behind_permit(&clock, held, IDLE_EXPIRES_MS, || {
-            authorizer
-                .authorize_read(PROBE_HOST, PROBE_ORIGIN, &reader.cookie, &reader.csrf)
-                .is_some()
+            authorizer.authorize_read(&request).is_ok()
         });
         assert!(
             !sampled_while_held,
@@ -2354,7 +2417,7 @@ mod tests {
         let authorizer = sessions.authorizer();
         let (opened, sampled_while_held) = behind_permit(&clock, held, IDLE_EXPIRES_MS, || {
             authorizer
-                .authorize_stream(PROBE_HOST, PROBE_ORIGIN, &browser.cookie, &browser.csrf)
+                .stream(PROBE_HOST, PROBE_ORIGIN, &browser)
                 .is_some()
         });
         assert!(
@@ -2373,7 +2436,7 @@ mod tests {
         let owner = probe_session(&sessions);
         let stream = sessions
             .authorizer()
-            .authorize_stream(PROBE_HOST, PROBE_ORIGIN, &owner.cookie, &owner.csrf)
+            .stream(PROBE_HOST, PROBE_ORIGIN, &owner)
             .expect("one stream slot");
         let holder = probe_holder(&sessions);
         let held = holder.permit().expect("other session holds registry lock");
@@ -2395,7 +2458,7 @@ mod tests {
         let owner = probe_session(&sessions);
         let stream = sessions
             .authorizer()
-            .authorize_stream(PROBE_HOST, PROBE_ORIGIN, &owner.cookie, &owner.csrf)
+            .stream(PROBE_HOST, PROBE_ORIGIN, &owner)
             .expect("one stream slot");
         let holder = probe_holder(&sessions);
         let held = holder.permit().expect("other session holds registry lock");
@@ -2423,17 +2486,11 @@ mod tests {
 
         for _ in 0..MAX_DEVICES {
             let issued = sessions.issue().expect("one bounded link");
-            assert!(
-                sessions
-                    .exchange(host, origin, issued.bootstrap.as_bytes())
-                    .is_some()
-            );
+            assert!(sessions.join(host, origin, &issued.bootstrap).is_some());
         }
         let ninth = sessions.issue().expect("a pending link still fits");
         assert!(
-            sessions
-                .exchange(host, origin, ninth.bootstrap.as_bytes())
-                .is_some(),
+            sessions.join(host, origin, &ninth.bootstrap).is_some(),
             "a ninth sign-in makes room instead of being refused"
         );
         assert_eq!(sessions.registry_counts_for_test().1, MAX_DEVICES);
@@ -2449,7 +2506,7 @@ mod tests {
     const HOUR_MS: i64 = 60 * 60_000;
 
     /// Answer a new device's notice as another device would, so it ranks as an ordinary one.
-    fn keep_for_test(sessions: &FloorSessions, session: &Exchange) {
+    fn keep_for_test(sessions: &FloorSessions, session: &Joined) {
         assert!(acts(sessions, session), "a kept device has been used");
         let mut state = sessions.0.registry.lock();
         let device = state
@@ -2470,33 +2527,23 @@ mod tests {
         (clock, sessions)
     }
 
-    fn sign_in(sessions: &FloorSessions) -> Exchange {
+    fn sign_in(sessions: &FloorSessions) -> Joined {
         let issued = sessions.issue().expect("a bootstrap");
         sessions
-            .exchange(LIFETIME_HOST, LIFETIME_ORIGIN, issued.bootstrap.as_bytes())
+            .join(LIFETIME_HOST, LIFETIME_ORIGIN, &issued.bootstrap)
             .expect("a session")
     }
 
-    fn acts(sessions: &FloorSessions, session: &Exchange) -> bool {
+    fn acts(sessions: &FloorSessions, session: &Joined) -> bool {
         sessions
-            .authorize_onboard(
-                LIFETIME_HOST,
-                LIFETIME_ORIGIN,
-                &session.cookie,
-                &session.csrf,
-            )
+            .enter(LIFETIME_HOST, LIFETIME_ORIGIN, &session)
             .is_some()
     }
 
-    fn watch(sessions: &FloorSessions, session: &Exchange, visible: bool) -> StreamSession {
+    fn watch(sessions: &FloorSessions, session: &Joined, visible: bool) -> StreamSession {
         let stream = sessions
             .authorizer()
-            .authorize_stream(
-                LIFETIME_HOST,
-                LIFETIME_ORIGIN,
-                &session.cookie,
-                &session.csrf,
-            )
+            .stream(LIFETIME_HOST, LIFETIME_ORIGIN, &session)
             .expect("an open stream");
         stream.set_visible(visible);
         stream
@@ -2613,7 +2660,7 @@ mod tests {
         );
         assert!(acts(&sessions, &used), "a device in use does not");
         assert_eq!(
-            sessions.gone_reason(&unused.cookie, &unused.csrf),
+            sessions.gone_reason(&unused.cookie),
             Some(GoneReason::Expired)
         );
     }
@@ -2627,9 +2674,9 @@ mod tests {
             24 * 3600,
             "a device nobody has used is kept a day"
         );
-        let identity = |s: &Exchange| {
+        let identity = |s: &Joined| {
             sessions
-                .authorize_onboard(LIFETIME_HOST, LIFETIME_ORIGIN, &s.cookie, &s.csrf)
+                .enter(LIFETIME_HOST, LIFETIME_ORIGIN, &s)
                 .expect("live")
         };
         clock.advance(6 * HOUR_MS);
@@ -2650,31 +2697,16 @@ mod tests {
         let staying = sign_in(&sessions);
         let socket = sessions
             .authorizer()
-            .authorize_stream(
-                LIFETIME_HOST,
-                LIFETIME_ORIGIN,
-                &leaving.cookie,
-                &leaving.csrf,
-            )
+            .stream(LIFETIME_HOST, LIFETIME_ORIGIN, &leaving)
             .expect("a stream slot");
         let kept = sessions
             .authorizer()
-            .authorize_stream(
-                LIFETIME_HOST,
-                LIFETIME_ORIGIN,
-                &staying.cookie,
-                &staying.csrf,
-            )
+            .stream(LIFETIME_HOST, LIFETIME_ORIGIN, &staying)
             .expect("a stream slot");
         assert!(socket.is_valid() && kept.is_valid());
 
         sessions
-            .authorize_standing(
-                LIFETIME_HOST,
-                LIFETIME_ORIGIN,
-                &leaving.cookie,
-                &leaving.csrf,
-            )
+            .standing(LIFETIME_HOST, LIFETIME_ORIGIN, &leaving)
             .expect("known")
             .sign_out();
 
@@ -2682,86 +2714,11 @@ mod tests {
         assert!(!acts(&sessions, &leaving), "its secret acts for no one");
         assert!(
             sessions
-                .authorize_standing(
-                    LIFETIME_HOST,
-                    LIFETIME_ORIGIN,
-                    &leaving.cookie,
-                    &leaving.csrf
-                )
+                .standing(LIFETIME_HOST, LIFETIME_ORIGIN, &leaving)
                 .is_none(),
             "the daemon now says the session is unknown"
         );
         assert!(kept.is_valid() && acts(&sessions, &staying));
-    }
-
-    #[test]
-    fn the_proof_is_the_keyed_hash_of_the_label_and_the_nonce() {
-        let key: [u8; 32] = std::array::from_fn(|index| u8::try_from(index).expect("small"));
-        let mac = hmac_sha256_key32(&key, &[PROOF_LABEL, "A".repeat(43).as_bytes()]);
-        assert_eq!(
-            base64url(&mac),
-            "vpd4EAoUA9QB6vPA9t7K-KS6G_0Tk36Kz5l6EoyaC5g"
-        );
-    }
-
-    #[test]
-    fn only_the_session_named_by_the_cookie_proves() {
-        let (_clock, sessions) = probe_registry();
-        let first = probe_session(&sessions);
-        let second = probe_session(&sessions);
-        let nonce = "B".repeat(43);
-        let expected = |secret: &str| {
-            base64url(&hmac_sha256_key32(
-                &digest(secret.as_bytes()),
-                &[
-                    PROOF_LABEL,
-                    PROBE_ORIGIN.as_bytes(),
-                    b"\n",
-                    nonce.as_bytes(),
-                ],
-            ))
-        };
-
-        assert_eq!(
-            sessions.prove(Some(&first.cookie), &nonce),
-            expected(&first.csrf)
-        );
-        assert_eq!(
-            sessions.prove(Some(&second.cookie), &nonce),
-            expected(&second.csrf)
-        );
-        assert_ne!(
-            sessions.prove(Some(&second.cookie), &nonce),
-            expected(&first.csrf),
-            "the cookie names the session, not the secret"
-        );
-        for cookie in [None, Some("C".repeat(43))] {
-            let answer = sessions.prove(cookie.as_deref(), &nonce);
-            assert_eq!(answer.len(), 43, "same shape as a real answer");
-            assert_eq!(
-                answer,
-                sessions.prove(cookie.as_deref(), &nonce),
-                "asked twice, an absent session answers as a live one does"
-            );
-            assert_ne!(answer, expected(&first.csrf));
-            assert_ne!(answer, expected(&second.csrf));
-        }
-        assert!(
-            sessions
-                .0
-                .registry
-                .lock()
-                .end(
-                    &digest(first.cookie.as_bytes()),
-                    FloorDeviceRemoval::Removed
-                )
-                .is_some()
-        );
-        assert_eq!(
-            sessions.prove(Some(&first.cookie), &nonce),
-            expected(&first.csrf),
-            "a session that ended still proves, so its page can hear why"
-        );
     }
 }
 
@@ -2774,7 +2731,9 @@ mod device_tests {
     use dudes_supervisor::testing::FakeClock;
     use dudes_types::Lsn;
 
+    use super::test_support::Joined;
     use super::*;
+    use crate::floor_browser::Browser;
 
     const HOST: &str = "127.0.0.1:43301";
     const ORIGIN: &str = "http://127.0.0.1:43301";
@@ -2841,14 +2800,14 @@ mod device_tests {
                     device,
                     origin,
                     name,
+                    key,
                     cookie,
-                    secret,
-                } => Record::FloorDeviceEnrolled {
+                } => Record::FloorDeviceKeyEnrolled {
                     device,
+                    key,
                     origin,
                     name,
                     cookie,
-                    secret,
                 },
                 FloorDeviceChange::FirstUse(device) => Record::FloorDeviceFirstUsed { device },
                 FloorDeviceChange::Use(device) => Record::FloorDeviceUsed { device },
@@ -2903,36 +2862,31 @@ mod device_tests {
         sessions
     }
 
-    fn sign_in_named(sessions: &FloorSessions, name: &str) -> Exchange {
+    fn sign_in_named(sessions: &FloorSessions, name: &str) -> Joined {
         let issued = sessions.issue().expect("a link");
-        let body = format!("{}\n{name}", issued.bootstrap);
         sessions
-            .exchange(HOST, ORIGIN, body.as_bytes())
+            .join_as(HOST, ORIGIN, &issued.bootstrap, Browser::new(), name)
             .expect("a device")
     }
 
-    fn sign_in(sessions: &FloorSessions) -> Exchange {
+    fn sign_in(sessions: &FloorSessions) -> Joined {
         sign_in_named(sessions, "Chrome on macOS")
     }
 
-    fn acts(sessions: &FloorSessions, device: &Exchange) -> bool {
-        sessions
-            .authorize_onboard(HOST, ORIGIN, &device.cookie, &device.csrf)
-            .is_some()
+    fn acts(sessions: &FloorSessions, device: &Joined) -> bool {
+        sessions.enter(HOST, ORIGIN, &device).is_some()
     }
 
-    fn key(device: &Exchange) -> [u8; 32] {
+    fn key(device: &Joined) -> [u8; 32] {
         digest(device.cookie.as_bytes())
     }
 
-    fn id_of(sessions: &FloorSessions, device: &Exchange) -> Hex32 {
+    fn id_of(sessions: &FloorSessions, device: &Joined) -> Hex32 {
         sessions.0.registry.lock().sessions[&key(device)].id
     }
 
-    fn identity(sessions: &FloorSessions, device: &Exchange) -> SessionIdentity {
-        sessions
-            .authorize_standing(HOST, ORIGIN, &device.cookie, &device.csrf)
-            .expect("live")
+    fn identity(sessions: &FloorSessions, device: &Joined) -> SessionIdentity {
+        sessions.standing(HOST, ORIGIN, &device).expect("live")
     }
 
     #[test]
@@ -2941,9 +2895,7 @@ mod device_tests {
         d.journal.refuse.store(true, Ordering::Release);
         let issued = d.sessions.issue().expect("a link");
         assert!(
-            d.sessions
-                .exchange(HOST, ORIGIN, issued.bootstrap.as_bytes())
-                .is_none(),
+            d.sessions.join(HOST, ORIGIN, &issued.bootstrap).is_none(),
             "no durable enrolment, no cookie"
         );
         assert_eq!(d.sessions.registry_counts_for_test().1, 0);
@@ -2954,10 +2906,10 @@ mod device_tests {
         assert_eq!(rows.len(), 1);
         let row = rows.values().next().expect("one device");
         assert_eq!(row.cookie.bytes(), key(&device));
-        assert_eq!(row.secret.bytes(), digest(device.csrf.as_bytes()));
+        assert_eq!(row.key.as_deref(), Some(device.browser.key()));
         assert_eq!(row.name, "Chrome on macOS");
         let written = format!("{:?}", d.journal.changes());
-        assert!(!written.contains(&device.cookie) && !written.contains(&device.csrf));
+        assert!(!written.contains(&device.cookie));
     }
 
     #[test]
@@ -2977,11 +2929,14 @@ mod device_tests {
             assert_eq!(d.journal.devices()[&id].name, expected, "{sent:?}");
         }
         let issued = d.sessions.issue().expect("a link");
-        let device = d
-            .sessions
-            .exchange(HOST, ORIGIN, issued.bootstrap.as_bytes())
-            .expect("a device without a name");
-        let id = id_of(&d.sessions, &device);
+        let browser = Browser::new();
+        let body =
+            serde_json::json!({ "link": issued.bootstrap, "key": browser.key() }).to_string();
+        assert!(
+            d.sessions.exchange(HOST, ORIGIN, body.as_bytes()).is_ok(),
+            "a page that sends no name still signs in"
+        );
+        let id = Hex32::from(browser.device());
         assert_eq!(d.journal.devices()[&id].name, "Browser");
     }
 
@@ -3025,49 +2980,49 @@ mod device_tests {
         let socket = d
             .sessions
             .authorizer()
-            .authorize_stream(HOST, ORIGIN, &leaving.cookie, &leaving.csrf)
+            .stream(HOST, ORIGIN, &leaving)
             .expect("a stream slot");
         let other = d
             .sessions
             .authorizer()
-            .authorize_stream(HOST, ORIGIN, &staying.cookie, &staying.csrf)
+            .stream(HOST, ORIGIN, &staying)
             .expect("a stream slot");
 
         let sessions = d.sessions.clone();
-        let (cookie, csrf) = (leaving.cookie.clone(), leaving.csrf.clone());
         *d.journal.during_removal.lock().expect("hook") = Some(Box::new(move || {
             assert_eq!(
                 sessions.registry_counts_for_test().1,
                 2,
                 "the removal is made durable while the device is still signed in"
             );
-            let _ = (&cookie, &csrf);
         }));
         let id = id_of(&d.sessions, &leaving);
         assert_eq!(
-            d.sessions.remove_device(id, FloorDeviceRemoval::Removed),
+            d.sessions
+                .remove_device(id.into(), FloorDeviceRemoval::Removed),
             Removal::Removed
         );
 
         assert!(!socket.is_valid(), "its socket closes");
         assert!(!acts(&d.sessions, &leaving), "its next request is refused");
         assert_eq!(
-            d.sessions.gone_reason(&leaving.cookie, &leaving.csrf),
+            d.sessions.gone_reason(&leaving.cookie),
             Some(GoneReason::Removed)
         );
         assert_eq!(
-            d.sessions.gone_reason(&leaving.cookie, &staying.csrf),
+            d.sessions.gone_reason(&staying.cookie),
             None,
-            "a cookie without its own secret learns nothing"
+            "a device still signed in has no reason to give"
         );
         assert!(other.is_valid() && acts(&d.sessions, &staying));
         assert_eq!(d.journal.removals(), [FloorDeviceRemoval::Removed]);
         assert!(d.journal.events().contains(&DeviceEvent::Removed {
-            device: id,
+            device: id.into(),
             reason: FloorDeviceRemoval::Removed
         }));
         assert_eq!(
-            d.sessions.remove_device(id, FloorDeviceRemoval::Removed),
+            d.sessions
+                .remove_device(id.into(), FloorDeviceRemoval::Removed),
             Removal::Unknown,
             "a second removal finds nothing"
         );
@@ -3081,7 +3036,8 @@ mod device_tests {
         d.journal.refuse.store(true, Ordering::Release);
         let id = id_of(&d.sessions, &device);
         assert_eq!(
-            d.sessions.remove_device(id, FloorDeviceRemoval::Removed),
+            d.sessions
+                .remove_device(id.into(), FloorDeviceRemoval::Removed),
             Removal::Unavailable
         );
         assert_eq!(
@@ -3099,7 +3055,7 @@ mod device_tests {
         assert_eq!(identity(&d.sessions, &device).sign_out(), Removal::Removed);
         assert_eq!(d.journal.removals(), [FloorDeviceRemoval::SignedOut]);
         assert_eq!(
-            d.sessions.gone_reason(&device.cookie, &device.csrf),
+            d.sessions.gone_reason(&device.cookie),
             None,
             "the person who signed out knows why"
         );
@@ -3114,7 +3070,7 @@ mod device_tests {
 
     /// Eight devices: `unused` never made a request, `new` did but nobody kept it, and the rest
     /// are kept. Returns them in sign-in order.
-    fn full_table(d: &Daemon, unused: &[usize], new: &[usize]) -> Vec<Exchange> {
+    fn full_table(d: &Daemon, unused: &[usize], new: &[usize]) -> Vec<Joined> {
         let devices: Vec<_> = (0..MAX_DEVICES)
             .map(|index| {
                 let device = sign_in(&d.sessions);
@@ -3139,14 +3095,10 @@ mod device_tests {
         devices
     }
 
-    fn survivors(d: &Daemon, devices: &[Exchange]) -> Vec<bool> {
+    fn survivors(d: &Daemon, devices: &[Joined]) -> Vec<bool> {
         devices
             .iter()
-            .map(|device| {
-                d.sessions
-                    .gone_reason(&device.cookie, &device.csrf)
-                    .is_none()
-            })
+            .map(|device| d.sessions.gone_reason(&device.cookie).is_none())
             .collect()
     }
 
@@ -3156,7 +3108,7 @@ mod device_tests {
         let devices = full_table(&d, &[5], &[2]);
         let ninth = sign_in(&d.sessions);
         assert_eq!(
-            d.sessions.gone_reason(&devices[5].cookie, &devices[5].csrf),
+            d.sessions.gone_reason(&devices[5].cookie),
             Some(GoneReason::Replaced),
             "the device nobody used goes before one still flagged new or the oldest"
         );
@@ -3178,7 +3130,7 @@ mod device_tests {
         let devices = full_table(&d, &[], &[6]);
         sign_in(&d.sessions);
         assert_eq!(
-            d.sessions.gone_reason(&devices[6].cookie, &devices[6].csrf),
+            d.sessions.gone_reason(&devices[6].cookie),
             Some(GoneReason::Replaced),
             "the flagged one goes though it is the newest and the oldest was used least"
         );
@@ -3198,7 +3150,7 @@ mod device_tests {
         }
         sign_in(&d.sessions);
         assert_eq!(
-            d.sessions.gone_reason(&devices[2].cookie, &devices[2].csrf),
+            d.sessions.gone_reason(&devices[2].cookie),
             Some(GoneReason::Replaced)
         );
 
@@ -3210,8 +3162,7 @@ mod device_tests {
         }
         sign_in(&tie.sessions);
         assert_eq!(
-            tie.sessions
-                .gone_reason(&devices[0].cookie, &devices[0].csrf),
+            tie.sessions.gone_reason(&devices[0].cookie),
             Some(GoneReason::Replaced),
             "equal use goes to the older sign-in"
         );
@@ -3250,7 +3201,7 @@ mod device_tests {
         d.clock.advance(3 * DAY);
         assert!(!acts(&d.sessions, &steady), "90 days in all");
         assert_eq!(
-            d.sessions.gone_reason(&steady.cookie, &steady.csrf),
+            d.sessions.gone_reason(&steady.cookie),
             Some(GoneReason::Expired)
         );
     }
@@ -3266,29 +3217,19 @@ mod device_tests {
         let still = d.sessions.issue_for(LinkPurpose::Open).expect("open");
         d.clock.advance(1);
         assert!(
-            d.sessions
-                .exchange(HOST, ORIGIN, open.bootstrap.as_bytes())
-                .is_none(),
+            d.sessions.join(HOST, ORIGIN, &open.bootstrap).is_none(),
             "an open link is gone at 60 s"
         );
         assert!(
-            d.sessions
-                .exchange(HOST, ORIGIN, printed.bootstrap.as_bytes())
-                .is_some(),
+            d.sessions.join(HOST, ORIGIN, &printed.bootstrap).is_some(),
             "a printed link is not"
         );
         d.clock.advance(PRINTED_LINK_MS - OPEN_LINK_MS);
-        assert!(
-            d.sessions
-                .exchange(HOST, ORIGIN, still.bootstrap.as_bytes())
-                .is_none()
-        );
+        assert!(d.sessions.join(HOST, ORIGIN, &still.bootstrap).is_none());
         let printed = d.sessions.issue_for(LinkPurpose::Print).expect("printed");
         d.clock.advance(PRINTED_LINK_MS);
         assert!(
-            d.sessions
-                .exchange(HOST, ORIGIN, printed.bootstrap.as_bytes())
-                .is_none(),
+            d.sessions.join(HOST, ORIGIN, &printed.bootstrap).is_none(),
             "a printed link is gone at 10 minutes"
         );
 
@@ -3311,20 +3252,16 @@ mod device_tests {
             .expect("a new print");
         assert!(
             d.sessions
-                .exchange(HOST, ORIGIN, printed[0].bootstrap.as_bytes())
+                .join(HOST, ORIGIN, &printed[0].bootstrap)
                 .is_none(),
             "a new print replaces the oldest unused printed link"
         );
         assert!(
             d.sessions
-                .exchange(HOST, ORIGIN, printed[1].bootstrap.as_bytes())
+                .join(HOST, ORIGIN, &printed[1].bootstrap)
                 .is_some()
         );
-        assert!(
-            d.sessions
-                .exchange(HOST, ORIGIN, newest.bootstrap.as_bytes())
-                .is_some()
-        );
+        assert!(d.sessions.join(HOST, ORIGIN, &newest.bootstrap).is_some());
     }
 
     #[test]
@@ -3336,7 +3273,7 @@ mod device_tests {
         assert!(acts(&d.sessions, &kept) && acts(&d.sessions, &removed));
         let removed_id = id_of(&d.sessions, &removed);
         d.sessions
-            .remove_device(removed_id, FloorDeviceRemoval::Removed);
+            .remove_device(removed_id.into(), FloorDeviceRemoval::Removed);
         d.clock.advance(1_000);
         assert!(acts(&d.sessions, &kept));
         d.sessions.invalidate();
@@ -3345,7 +3282,7 @@ mod device_tests {
         assert!(acts(&after, &kept), "the same cookie and secret still act");
         assert!(!acts(&after, &removed), "a removed device stays removed");
         assert_eq!(
-            after.gone_reason(&removed.cookie, &removed.csrf),
+            after.gone_reason(&removed.cookie),
             Some(GoneReason::Removed),
             "and still hears why"
         );
@@ -3393,35 +3330,26 @@ mod device_tests {
     }
 
     #[test]
-    fn a_removed_device_can_still_prove_the_daemon_so_its_page_hears_why() {
-        let d = daemon();
-        let device = sign_in(&d.sessions);
-        let before = d.sessions.prove(Some(&device.cookie), "nonce");
-        let id = id_of(&d.sessions, &device);
-        d.sessions.remove_device(id, FloorDeviceRemoval::Removed);
-        assert_eq!(d.sessions.prove(Some(&device.cookie), "nonce"), before);
-        let stranger = sign_in(&d.sessions);
-        assert_ne!(d.sessions.prove(Some(&stranger.cookie), "nonce"), before);
-    }
-
-    #[test]
     fn a_restart_over_the_limit_removes_the_surplus_as_replaced() {
         let d = daemon();
         for n in 1..=9_u8 {
             d.clock.advance(1_000);
+            let browser = Browser::seeded(u64::from(n));
             assert!(d.journal.record(FloorDeviceChange::Enroll {
-                device: Hex32::new([n; 32]),
+                device: browser.device().into(),
                 origin: ORIGIN.to_owned(),
                 name: "Browser".to_owned(),
+                key: browser.key().to_owned(),
                 cookie: Hex32::new([n; 32]),
-                secret: Hex32::new([n; 32]),
             }));
         }
         let after = restart_from(&d.clock, &d.journal);
         let listed = after.devices(None);
         assert_eq!(listed.len(), MAX_DEVICES);
         assert!(
-            listed.iter().all(|view| view.device != Hex32::new([1; 32])),
+            listed
+                .iter()
+                .all(|view| view.device != Browser::seeded(1).device()),
             "the oldest unused one goes"
         );
         assert_eq!(d.journal.removals(), [FloorDeviceRemoval::Replaced]);
@@ -3460,7 +3388,8 @@ mod device_tests {
             state.prune(now);
         }));
         assert_eq!(
-            d.sessions.remove_device(id, FloorDeviceRemoval::Removed),
+            d.sessions
+                .remove_device(id.into(), FloorDeviceRemoval::Removed),
             Removal::Removed
         );
         assert_eq!(
@@ -3479,15 +3408,15 @@ mod device_tests {
         assert!(matches!(
             d.journal.events().last(),
             Some(DeviceEvent::Enrolled { device, name, .. })
-                if *device == second_id && name == "Firefox on Linux"
+                if *device == DeviceId::from(second_id) && name == "Firefox on Linux"
         ));
         assert!(d.sessions.devices(None).iter().all(|view| view.new));
 
         let own = identity(&d.sessions, &second);
-        assert_eq!(d.sessions.keep_device(second_id, &own), Keep::Own);
+        assert_eq!(d.sessions.keep_device(second_id.into(), &own), Keep::Own);
         let other = identity(&d.sessions, &first);
-        assert_eq!(d.sessions.keep_device(second_id, &other), Keep::Kept);
-        assert_eq!(d.sessions.keep_device(second_id, &other), Keep::Kept);
+        assert_eq!(d.sessions.keep_device(second_id.into(), &other), Keep::Kept);
+        assert_eq!(d.sessions.keep_device(second_id.into(), &other), Keep::Kept);
         assert_eq!(
             d.journal
                 .changes()
@@ -3499,11 +3428,11 @@ mod device_tests {
         );
         let listed = d.sessions.devices(Some(&own));
         let me = listed.iter().find(|view| view.this).expect("this device");
-        assert_eq!(me.device, second_id);
+        assert_eq!(me.device, DeviceId::from(second_id));
         assert!(!me.new);
         assert_eq!(listed.iter().filter(|view| view.new).count(), 1);
         assert_eq!(
-            d.sessions.keep_device(Hex32::new([7; 32]), &other),
+            d.sessions.keep_device(DeviceId::new([7; 32]), &other),
             Keep::Unknown
         );
     }
@@ -3534,6 +3463,7 @@ mod device_tests {
 mod carry_tests {
     use dudes_supervisor::testing::FakeClock;
 
+    use super::test_support::Joined;
     use super::*;
     use crate::floor_ticket::Counted;
 
@@ -3559,19 +3489,19 @@ mod carry_tests {
         }
     }
 
-    fn sign_in(run: &Run) -> Exchange {
+    fn sign_in(run: &Run) -> Joined {
         let issued = run.carry.sessions().issue().expect("link");
         run.carry
             .sessions()
-            .exchange(HOST, ORIGIN, issued.bootstrap.as_bytes())
+            .join(HOST, ORIGIN, &issued.bootstrap)
             .expect("device")
     }
 
-    fn key(exchange: &Exchange) -> [u8; 32] {
+    fn key(exchange: &Joined) -> [u8; 32] {
         digest(exchange.cookie.as_bytes())
     }
 
-    fn created(run: &Run, exchange: &Exchange, creates: u32, assigns: u32, checks: u32) {
+    fn created(run: &Run, exchange: &Joined, creates: u32, assigns: u32, checks: u32) {
         for (counted, times) in [(Counted::Create, creates), (Counted::Assign, assigns)] {
             for _ in 0..times {
                 let turn = run
@@ -3629,7 +3559,7 @@ mod carry_tests {
         assert_eq!(row["last_used"], 1_000, "the export refreshes nothing");
         assert_eq!(value["run"], OLD_RUN);
         assert_eq!(value["origin"], ORIGIN);
-        assert!(!text.contains(&one.cookie) && !text.contains(&one.csrf));
+        assert!(!text.contains(&one.cookie));
         let digest = row["digest"].as_str().expect("digest");
         assert!(
             !format!("{exported:?}").contains(digest),
@@ -3660,7 +3590,6 @@ mod carry_tests {
             origin: ORIGIN.to_owned(),
             sessions: vec![ExportedSession {
                 digest: Hex32::new(digest(b"a-cookie-of-the-previous-release")),
-                secret: Some(Hex32::new(digest(b"its-secret"))),
                 created: Timestamp::from_unix_millis(500),
                 last_used: Timestamp::from_unix_millis(900),
                 ticket_creates: 4,

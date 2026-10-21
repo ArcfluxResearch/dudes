@@ -569,8 +569,8 @@ fn a_restart_keeps_the_devices_and_the_removed_stay_removed() {
                 device,
                 origin: "http://127.0.0.1:7700".into(),
                 name: "Chrome on macOS".into(),
+                key: "a2V5".into(),
                 cookie: Hex32::new([cookie; 32]),
-                secret: Hex32::new([cookie + 10; 32]),
             },
         );
     }
@@ -588,6 +588,7 @@ fn a_restart_keeps_the_devices_and_the_removed_stay_removed() {
     let devices = &harness.supervisor.world().floor_devices;
     let kept = &devices[&kept];
     assert!(kept.removed.is_none());
+    assert_eq!(kept.key.as_deref(), Some("a2V5"));
     assert!(kept.first_used.is_some() && kept.last_used.is_some());
     assert!(kept.acknowledged.is_some());
     let gone = &devices[&gone];
@@ -596,4 +597,24 @@ fn a_restart_keeps_the_devices_and_the_removed_stay_removed() {
         Some(FloorDeviceRemoval::Removed)
     );
     assert_eq!(gone.last_used, None, "a removed device is not used again");
+}
+
+#[test]
+fn records_for_a_device_the_journal_never_enrolled_change_nothing() {
+    use dudes_proto::record::FloorDeviceRemoval;
+    use dudes_supervisor::FloorDeviceChange as Change;
+    let mut harness = Harness::new();
+    let unknown = Hex32::new([9; 32]);
+    device_change(&mut harness, Change::FirstUse(unknown));
+    device_change(&mut harness, Change::Use(unknown));
+    device_change(&mut harness, Change::Acknowledge(unknown));
+    device_change(
+        &mut harness,
+        Change::Remove {
+            device: unknown,
+            reason: FloorDeviceRemoval::Expired,
+        },
+    );
+    harness.restart();
+    assert!(harness.supervisor.world().floor_devices.is_empty());
 }

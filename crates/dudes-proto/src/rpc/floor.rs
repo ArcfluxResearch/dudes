@@ -18,7 +18,7 @@ use dudes_types::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::record::Hex32;
+use crate::record::{DeviceId, Hex32};
 
 /// Largest `base_url` value in UTF-8 bytes.
 pub const SESSION_BASE_URL_MAX_BYTES: usize = 2048;
@@ -59,9 +59,9 @@ pub struct SessionIssueParams {
 /// One signed-in browser, as `floor.devices.list` reports it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DeviceEntry {
-    /// The device's id.
+    /// The device's id: 43 characters of unpadded base64url.
     #[schemars(with = "String")]
-    pub device: Hex32,
+    pub device: DeviceId,
     /// The label its browser chose. A label, not proof of what the browser is.
     pub name: String,
     /// When it signed in.
@@ -89,7 +89,7 @@ pub struct DevicesListResult {
 pub struct DeviceRemoveParams {
     /// The whole id of the device to sign out.
     #[schemars(with = "String")]
-    pub device: Hex32,
+    pub device: DeviceId,
 }
 
 /// `floor.devices.remove` result.
@@ -105,7 +105,7 @@ pub struct DeviceRemoveResult {
 pub struct DeviceKeepParams {
     /// The whole id of the device to keep.
     #[schemars(with = "String")]
-    pub device: Hex32,
+    pub device: DeviceId,
 }
 
 /// `floor.devices.keep` result.
@@ -176,11 +176,6 @@ pub struct ExportedSession {
     /// SHA-256 of the session cookie.
     #[schemars(with = "String")]
     pub digest: Hex32,
-    /// SHA-256 of the session secret the page sends on every request that changes state. Absent
-    /// from an export an older daemon made, and a session without it cannot act.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Option<String>")]
-    pub secret: Option<Hex32>,
     /// When the person signed in. The eight-hour limit keeps counting from here.
     pub created: Timestamp,
     /// When the session was last used, not refreshed by the export.

@@ -1,18 +1,38 @@
 #![cfg(test)]
 
 use super::*;
-use crate::floor_session::Exchange;
+use crate::floor_session::test_support::Joined;
 use serde_json::{Value, json};
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
-fn post(addr: SocketAddr, cookie: &str, csrf: &str, route: &str, body: &[u8]) -> (u16, Value) {
+/// The moment every fixture in this file runs at: the tests' clock is frozen there.
+const NOW_MS: i64 = 1_787_394_600_000;
+
+fn post(addr: SocketAddr, who: &Joined, route: &str, body: &[u8]) -> (u16, Value) {
+    post_at(addr, who, NOW_MS, route, body)
+}
+
+fn post_at(addr: SocketAddr, who: &Joined, now_ms: i64, route: &str, body: &[u8]) -> (u16, Value) {
+    post_with(addr, &who.cookie, &who.browser, now_ms, route, body)
+}
+
+fn post_with(
+    addr: SocketAddr,
+    cookie: &str,
+    browser: &crate::floor_browser::Browser,
+    now_ms: i64,
+    route: &str,
+    body: &[u8],
+) -> (u16, Value) {
     let mut stream = TcpStream::connect(addr).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    write!(stream, "POST {route} HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", body.len()).unwrap();
+    let origin = format!("http://{addr}");
+    let signed = browser.sign("POST", route, &origin, body, now_ms);
+    write!(stream, "POST {route} HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\nCookie: dudes_floor_session={cookie}\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n", signed.header_lines(), body.len()).unwrap();
     stream.write_all(body).unwrap();
     let mut reply = Vec::new();
     stream.read_to_end(&mut reply).unwrap();
@@ -46,18 +66,17 @@ fn authenticated_http_inspects_the_existing_checked_opportunity() {
         .sessions()
         .clone();
     let exchange = sessions
-        .exchange(
+        .join(
             &addr.to_string(),
             &format!("http://{addr}"),
-            sessions.issue().unwrap().bootstrap.as_bytes(),
+            &sessions.issue().unwrap().bootstrap,
         )
         .unwrap();
     let before = fixture.entries();
     let mut running = common::start(daemon);
     let (status, response) = post(
         addr,
-        &exchange.cookie,
-        &exchange.csrf,
+        &exchange,
         "/floor/recovery/inspect",
         &serde_json::to_vec(&json!({"agent": agent})).unwrap(),
     );
@@ -74,7 +93,7 @@ struct HttpFixture {
     fixture: common::Fixture,
     addr: SocketAddr,
     sessions: FloorSessions,
-    exchange: Exchange,
+    exchange: Joined,
     clock: Arc<common::TestClock>,
     agent: AgentId,
     host: common::SharedHost,
@@ -99,10 +118,10 @@ impl HttpFixture {
             .sessions()
             .clone();
         let exchange = sessions
-            .exchange(
+            .join(
                 &addr.to_string(),
                 &format!("http://{addr}"),
-                sessions.issue().unwrap().bootstrap.as_bytes(),
+                &sessions.issue().unwrap().bootstrap,
             )
             .unwrap();
         let host = daemon.ctx.host.clone();
@@ -119,10 +138,10 @@ impl HttpFixture {
     }
 
     fn post(&self, route: &str, body: &Value) -> (u16, Value) {
-        post(
+        post_at(
             self.addr,
-            &self.exchange.cookie,
-            &self.exchange.csrf,
+            &self.exchange,
+            self.clock.now().unix_millis(),
             route,
             &serde_json::to_vec(body).unwrap(),
         )
@@ -226,10 +245,10 @@ fn http_receipts_use_current_readers_without_observing_the_lost_original_authori
     assert_eq!(accepted["receipt"]["status"]["state"], "pending");
     let reader = owned
         .sessions
-        .exchange(
+        .join(
             &owned.addr.to_string(),
             &format!("http://{}", owned.addr),
-            owned.sessions.issue().unwrap().bootstrap.as_bytes(),
+            &owned.sessions.issue().unwrap().bootstrap,
         )
         .unwrap();
     assert!(
@@ -242,8 +261,7 @@ fn http_receipts_use_current_readers_without_observing_the_lost_original_authori
     for _ in 0..3 {
         let (code, view) = post(
             owned.addr,
-            &reader.cookie,
-            &reader.csrf,
+            &reader,
             "/floor/recovery/receipt",
             &serde_json::to_vec(&json!({"request_id": request})).unwrap(),
         );
@@ -321,14 +339,7 @@ fn http_recovery_decodes_original_bodies_and_refuses_hidden_authority_fields() {
         ),
     ] {
         assert_eq!(
-            post(
-                owned.addr,
-                &owned.exchange.cookie,
-                &owned.exchange.csrf,
-                route,
-                body.as_bytes()
-            )
-            .0,
+            post(owned.addr, &owned.exchange, route, body.as_bytes()).0,
             400
         );
     }
@@ -337,8 +348,7 @@ fn http_recovery_decodes_original_bodies_and_refuses_hidden_authority_fields() {
     assert_eq!(
         post(
             owned.addr,
-            &owned.exchange.cookie,
-            &owned.exchange.csrf,
+            &owned.exchange,
             "/floor/recovery/inspect",
             &oversized
         )
@@ -356,10 +366,10 @@ fn http_recovery_authentication_refuses_foreign_expired_and_revoked_sessions() {
     let receipt = serde_json::to_vec(&json!({"request_id": "80".repeat(32)})).unwrap();
     let foreign = FloorSessions::new(owned.addr, Arc::clone(&owned.clock));
     let foreign_exchange = foreign
-        .exchange(
+        .join(
             &owned.addr.to_string(),
             &format!("http://{}", owned.addr),
-            foreign.issue().unwrap().bootstrap.as_bytes(),
+            &foreign.issue().unwrap().bootstrap,
         )
         .unwrap();
     let before = owned.fixture.entries();
@@ -368,27 +378,18 @@ fn http_recovery_authentication_refuses_foreign_expired_and_revoked_sessions() {
         "/floor/recovery/submit",
         "/floor/recovery/receipt",
     ] {
+        assert_eq!(post(owned.addr, &foreign_exchange, route, &inspect).0, 403);
         assert_eq!(
-            post(
-                owned.addr,
-                &foreign_exchange.cookie,
-                &foreign_exchange.csrf,
-                route,
-                &inspect
-            )
-            .0,
-            403
-        );
-        assert_eq!(
-            post(
+            post_with(
                 owned.addr,
                 &owned.exchange.cookie,
-                &"A".repeat(43),
+                &foreign_exchange.browser,
+                NOW_MS,
                 route,
                 &inspect
             )
             .0,
-            403
+            401
         );
     }
     let rows = foreign.rows_for_test();
@@ -397,8 +398,7 @@ fn http_recovery_authentication_refuses_foreign_expired_and_revoked_sessions() {
     assert_eq!(
         post(
             owned.addr,
-            &foreign_exchange.cookie,
-            &foreign_exchange.csrf,
+            &foreign_exchange,
             "/floor/recovery/receipt",
             &receipt
         )
@@ -421,8 +421,7 @@ fn http_recovery_authentication_refuses_foreign_expired_and_revoked_sessions() {
     assert_eq!(
         post(
             owned.addr,
-            &owned.exchange.cookie,
-            &owned.exchange.csrf,
+            &owned.exchange,
             "/floor/recovery/receipt",
             &receipt
         )
@@ -440,15 +439,9 @@ fn serialized_receipt_read_revalidates_current_registry_and_expiry() {
     let origin = format!("http://{host}");
     let foreign = FloorSessions::new(owned.addr, Arc::clone(&owned.clock));
     let exchange = foreign
-        .exchange(
-            &host,
-            &origin,
-            foreign.issue().unwrap().bootstrap.as_bytes(),
-        )
+        .join(&host, &origin, &foreign.issue().unwrap().bootstrap)
         .unwrap();
-    let foreign_reader = foreign
-        .authorize_receipt(&host, &origin, &exchange.cookie, &exchange.csrf)
-        .unwrap();
+    let foreign_reader = foreign.receipt(&host, &origin, &exchange).unwrap();
     let before = owned.fixture.entries();
     assert_eq!(
         owned
@@ -460,8 +453,7 @@ fn serialized_receipt_read_revalidates_current_registry_and_expiry() {
     assert_eq!(
         post(
             owned.addr,
-            &owned.exchange.cookie,
-            &owned.exchange.csrf,
+            &owned.exchange,
             "/floor/recovery/receipt",
             &serde_json::to_vec(&json!({"request_id": "81".repeat(32)})).unwrap()
         )
@@ -470,7 +462,7 @@ fn serialized_receipt_read_revalidates_current_registry_and_expiry() {
     );
     let reader = owned
         .sessions
-        .authorize_receipt(&host, &origin, &owned.exchange.cookie, &owned.exchange.csrf)
+        .receipt(&host, &origin, &owned.exchange)
         .unwrap();
     owned.clock.advance(24 * 60 * 60_000);
     assert_eq!(
@@ -489,11 +481,10 @@ fn subscription_advertises_recovery_only_with_running_control_and_recovery() {
         let owned = HttpFixture::new(recovery, control);
         let identity = owned
             .sessions
-            .authorize_onboard(
+            .enter(
                 &owned.addr.to_string(),
                 &format!("http://{}", owned.addr),
-                &owned.exchange.cookie,
-                &owned.exchange.csrf,
+                &owned.exchange,
             )
             .unwrap();
         let opened = owned.running.handle.floor_subscribe(identity).unwrap();
@@ -525,7 +516,7 @@ fn raw_reply(addr: SocketAddr, request: &[u8]) -> u16 {
 }
 
 #[test]
-fn http_recovery_retains_exact_host_origin_csrf_and_framing_rejections() {
+fn http_recovery_retains_exact_host_origin_signature_and_framing_rejections() {
     let owned = HttpFixture::new(true, true);
     let before = owned.fixture.entries();
     for route in [
@@ -533,9 +524,16 @@ fn http_recovery_retains_exact_host_origin_csrf_and_framing_rejections() {
         "/floor/recovery/submit",
         "/floor/recovery/receipt",
     ] {
+        let origin = format!("http://{}", owned.addr);
+        let signed = owned
+            .exchange
+            .browser
+            .sign("POST", route, &origin, b"{}", NOW_MS);
         let valid = format!(
-            "POST {route} HTTP/1.1\r\nHost: {}\r\nOrigin: http://{}\r\nCookie: dudes_floor_session={}\r\nX-Dudes-CSRF: {}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}",
-            owned.addr, owned.addr, owned.exchange.cookie, owned.exchange.csrf
+            "POST {route} HTTP/1.1\r\nHost: {}\r\nOrigin: {origin}\r\nCookie: dudes_floor_session={}\r\n{}Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}",
+            owned.addr,
+            owned.exchange.cookie,
+            signed.header_lines()
         );
         for (request, expected) in [
             (
@@ -576,8 +574,8 @@ fn http_recovery_retains_exact_host_origin_csrf_and_framing_rejections() {
             ),
             (
                 valid.replace(
-                    "X-Dudes-CSRF:",
-                    "X-Dudes-CSRF: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nX-Dudes-CSRF:",
+                    "X-Dudes-Signature:",
+                    "X-Dudes-Signature: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nX-Dudes-Signature:",
                 ),
                 400,
             ),
@@ -602,10 +600,10 @@ fn actual_http_receipt_preserves_checked_store_unavailability() {
         .sessions()
         .clone();
     let exchange = sessions
-        .exchange(
+        .join(
             &addr.to_string(),
             &format!("http://{addr}"),
-            sessions.issue().unwrap().bootstrap.as_bytes(),
+            &sessions.issue().unwrap().bootstrap,
         )
         .unwrap();
     let position = daemon.ctx.writer.next_lsn().unwrap();
@@ -625,8 +623,7 @@ fn actual_http_receipt_preserves_checked_store_unavailability() {
     let mut running = common::start(daemon);
     let (code, view) = post(
         addr,
-        &exchange.cookie,
-        &exchange.csrf,
+        &exchange,
         "/floor/recovery/receipt",
         &serde_json::to_vec(&json!({"request_id": "82".repeat(32)})).unwrap(),
     );
@@ -650,18 +647,17 @@ fn actual_http_submission_reaches_one_result_through_the_existing_writer_continu
         .sessions()
         .clone();
     let exchange = sessions
-        .exchange(
+        .join(
             &addr.to_string(),
             &format!("http://{addr}"),
-            sessions.issue().unwrap().bootstrap.as_bytes(),
+            &sessions.issue().unwrap().bootstrap,
         )
         .unwrap();
     let host = daemon.ctx.host.clone();
     let mut running = common::start(daemon);
     let (code, inspection) = post(
         addr,
-        &exchange.cookie,
-        &exchange.csrf,
+        &exchange,
         "/floor/recovery/inspect",
         &serde_json::to_vec(&json!({"agent": agent})).unwrap(),
     );
@@ -669,21 +665,14 @@ fn actual_http_submission_reaches_one_result_through_the_existing_writer_continu
     assert_eq!(inspection["state"], "available");
     let request = "83".repeat(32);
     let body = serde_json::to_vec(&json!({"request_id": request, "expected": inspection["expected"], "choice": "fresh_with_recap"})).unwrap();
-    let (code, accepted) = post(
-        addr,
-        &exchange.cookie,
-        &exchange.csrf,
-        "/floor/recovery/submit",
-        &body,
-    );
+    let (code, accepted) = post(addr, &exchange, "/floor/recovery/submit", &body);
     assert_eq!(code, 200);
     assert_eq!(accepted["state"], "accepted");
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         let (code, view) = post(
             addr,
-            &exchange.cookie,
-            &exchange.csrf,
+            &exchange,
             "/floor/recovery/receipt",
             &serde_json::to_vec(&json!({"request_id": request})).unwrap(),
         );
