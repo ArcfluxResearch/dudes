@@ -28,7 +28,7 @@ use dudes_proto::rpc::agent::RetireParams;
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_proto::rpc::goal::GoalSetParams;
-use dudes_proto::rpc::Method;
+use dudes_proto::rpc::{CurrentMethod, Method};
 use dudes_proto::{
     AgentBudget, BudgetScope, Goal, GoalBudget, LoopDecision, Predicate, Record, Spend, TurnOutcome,
 };
@@ -16413,4 +16413,417 @@ mod project_add {
         assert_eq!(offered(addr, &cookie, &csrf).len(), 1, "still live");
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     }
+}
+
+fn issued_onboarding_fence(
+    fixture: &Fixture,
+    handle: &duded::Handle,
+    agent: AgentId,
+    goal: GoalId,
+) {
+    nth_turn(fixture, goal, 0);
+    let before = fixture.records();
+    let stopped = handle.ask(Ask::Pause(agent)).unwrap_err();
+    assert_eq!(stopped.code, dudes_proto::rpc::ErrorCode::Refused.code());
+    assert_eq!(
+        stopped.message,
+        "journal state unresolved; restart to replay before new work or writes"
+    );
+    assert_eq!(
+        fixture.records(),
+        before,
+        "the fenced probe appends nothing"
+    );
+    let counts = (
+        before.iter().filter(|record| matches!(record, Record::AgentHired { id, .. } if *id == agent)).count(),
+        before.iter().filter(|record| matches!(record, Record::GoalSet { agent: owner, goal: issued, .. } if *owner == agent && issued.id == goal)).count(),
+        before.iter().filter(|record| matches!(record, Record::TurnIssued { agent: owner, goal: issued, .. } if *owner == agent && *issued == goal)).count(),
+        before.iter().filter(|record| matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent)).count(),
+    );
+    assert_eq!(counts, (1, 1, 1, 0));
+}
+
+fn recover_owed_browser_turn(
+    settings: &duded::Settings,
+    fixture: &Fixture,
+    running: &common::Running,
+    agent: AgentId,
+    goal: GoalId,
+) {
+    use dudes_proto::rpc::recovery::{
+        RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectResult, RecoverySubmitParams,
+        RecoverySubmitResult,
+    };
+
+    let turn = nth_turn(fixture, goal, 0);
+    fixture.await_record("the owed goal's recovery barrier", |record| {
+        matches!(record, Record::RecoveryRequired(required)
+            if required.binding.work.agent == agent && required.binding.work.goal == goal
+                && required.binding.work.turn == turn)
+        .then_some(())
+    });
+    let owed: Vec<_> = fixture
+        .records()
+        .into_iter()
+        .filter(
+            |record| matches!(record, Record::TurnIssued { goal: issued, .. } if *issued == goal),
+        )
+        .collect();
+    assert_eq!(owed.len(), 1);
+    let no_spawn = || {
+        assert!(!fixture.records().iter().any(|record| {
+            matches!(record, Record::TurnSpawned { turn: seen, .. } if *seen == turn)
+        }));
+    };
+    no_spawn();
+    let call = |method, params| {
+        let credential = std::fs::read_to_string(
+            settings
+                .runtime_dir
+                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+        )
+        .expect("operator credential");
+        let response = Client::connect(settings.socket())
+            .expect("operator socket")
+            .call_current_as_operator(
+                method,
+                Some(params),
+                OperatorCredential::new(credential).expect("credential"),
+            )
+            .expect("operator response");
+        assert!(response.error.is_none(), "{response:?}");
+        response.result.expect("operator result")
+    };
+    call(
+        CurrentMethod::Legacy(Method::LoopResume),
+        json!({"agent":agent}),
+    );
+    running.handle.doctor().expect("Resume reached the writer");
+    no_spawn();
+    let inspection: RecoveryInspectResult =
+        serde_json::from_value(call(CurrentMethod::RecoveryInspect, json!({"agent":agent})))
+            .expect("typed recovery inspection");
+    let RecoveryInspectResult::Available {
+        expected,
+        choices,
+        reason,
+        ..
+    } = inspection
+    else {
+        panic!("the owed issue must offer exact recovery");
+    };
+    assert_eq!(choices, RecoveryAllowedChoices::RepeatIssuedFresh);
+    assert_eq!(reason, dudes_proto::recovery::RecoveryReason::MissingSpawn);
+    assert_eq!(expected.work.agent, agent);
+    assert_eq!(expected.work.goal, goal);
+    assert_eq!(expected.work.turn, turn);
+    let request_id = Hex32::new([231; 32]);
+    let request = RecoverySubmitParams {
+        request_id,
+        expected: *expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+    };
+    let submitted: RecoverySubmitResult = serde_json::from_value(call(
+        CurrentMethod::RecoverySubmit,
+        serde_json::to_value(request).expect("strict recovery request"),
+    ))
+    .expect("typed recovery submission");
+    let RecoverySubmitResult::Accepted { receipt } = submitted else {
+        panic!("one explicit submission must authorize the exact repeat");
+    };
+    assert_eq!(receipt.request_id, request_id);
+    assert_eq!(receipt.claim.episode.work, expected.work);
+    let records = fixture.records();
+    assert_eq!(records.iter().filter(|record| {
+        matches!(record, Record::RecoveryAuthorized(authorized) if authorized.request_id == request_id)
+    }).count(), 1);
+    assert_eq!(
+        records
+            .into_iter()
+            .filter(|record| {
+                matches!(record, Record::TurnIssued { goal: issued, .. } if *issued == goal)
+            })
+            .collect::<Vec<_>>(),
+        owed
+    );
+}
+
+#[test]
+fn an_answer_restarts_after_its_fsync_before_its_fold() {
+    let fixture = Fixture::new();
+    let settings = answer_settings(&fixture, true);
+    let host = SharedHost::new();
+    let run = || {
+        boot(
+            &settings,
+            seams(
+                &settings,
+                host.clone(),
+                Arc::new(ScriptedRunner::default()),
+                Arc::new(TestClock::new()),
+                Witness::default(),
+            ),
+        )
+        .unwrap()
+    };
+    let daemon = run();
+    let failure = daemon.onboarding_failure();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let (agent, question) = waiting_agent(&running, &fixture, "which branch?");
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let body = answer_body(&request_id(1), agent, question, "main");
+    failure.arm(OnboardingFailurePoint::Answer);
+    let (head, response) = post_answer(addr, &cookie, &csrf, &body);
+    empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
+    let (head, response) = post_answer(addr, &cookie, &csrf, &body);
+    assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
+    assert_eq!(response["state"], "pending");
+    assert_eq!(host.spawned().len(), 0);
+    running.stop(ExitCause::ShutdownRpc);
+
+    let daemon = run();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    fixture.await_record("the recovered continuation spawned", |record| {
+        matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent).then_some(())
+    });
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_answer(addr, &cookie, &csrf, &body);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(response["question_lsn"], question.0.to_string());
+    let answered = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| {
+            matches!(entry.record, Record::HumanAnswer { agent: who, .. } if who == agent)
+                .then_some(lsn)
+        })
+        .unwrap();
+    let records = fixture.records();
+    assert_eq!(answers_for(&records, agent), 1);
+    let issued: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::TurnIssued {
+                agent: who,
+                answers,
+                ..
+            } if *who == agent => Some(answers.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(issued, vec![vec![answered]]);
+    assert_eq!(host.spawned().len(), 1);
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent)
+            )
+            .count(),
+        1
+    );
+    running.stop(ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn a_resume_restarts_after_its_fsync_before_clearing_the_cause() {
+    let fixture = Fixture::new();
+    let settings = control_settings(&fixture, true);
+    let host = SharedHost::new();
+    let run = || {
+        boot(
+            &settings,
+            seams(
+                &settings,
+                host.clone(),
+                Arc::new(ScriptedRunner::default()),
+                Arc::new(TestClock::new()),
+                Witness::default(),
+            ),
+        )
+        .unwrap()
+    };
+    let daemon = run();
+    let failure = daemon.onboarding_failure();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let pause_body = control_body(&request_id(1), agent, None);
+    let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &pause_body);
+    let paused = applied(&head, &response, "paused");
+    common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &[true_program()]),
+    );
+    failure.arm(OnboardingFailurePoint::Control);
+    let body = control_body(&request_id(3), agent, Some(paused));
+    let (head, response) = post_control(addr, RESUME, &cookie, &csrf, &body);
+    empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
+    assert_eq!(host.spawned().len(), 0);
+    running.stop(ExitCause::ShutdownRpc);
+
+    let daemon = run();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    fixture.await_record("the recovered resumed turn spawned", |record| {
+        matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent).then_some(())
+    });
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_control(addr, RESUME, &cookie, &csrf, &body);
+    let resumed = applied(&head, &response, "resumed");
+    assert!(resumed > paused);
+    let records = fixture.records();
+    assert_eq!(controls_for(&records, agent), (1, 1));
+    let issued: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::TurnIssued {
+                agent: who,
+                lsn_of_decision,
+                ..
+            } if *who == agent => Some(*lsn_of_decision),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(issued.len(), 1);
+    assert!(issued[0] > resumed);
+    assert_eq!(host.spawned().len(), 1);
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent)
+            )
+            .count(),
+        1
+    );
+    running.stop(ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn a_goal_change_restarts_after_its_fsync_before_its_fold() {
+    let fixture = Fixture::new();
+    let settings = goal_settings(&fixture, true);
+    let run = || {
+        let (parts, host) = native_fixture_seams(&fixture, fake_seams(&settings));
+        (boot(&settings, parts).unwrap(), host)
+    };
+    let (daemon, host) = run();
+    let failure = daemon.onboarding_failure();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let (agent, goal) = paused_with_goal(&running, &fixture);
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let body = goal_body(&request_id(1), agent, goal, NEW_TEXT);
+    failure.arm(OnboardingFailurePoint::GoalChange);
+    let (head, response) = post_goal(addr, &cookie, &csrf, &body);
+    empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
+    let (head, response) = post_goal(addr, &cookie, &csrf, &body);
+    assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
+    assert_eq!(response["state"], "pending");
+    assert_eq!(host.spawned().len(), 0);
+    running.stop(ExitCause::ShutdownRpc);
+    let (position, new_goal, _) = browser_goals(&fixture, agent).pop().unwrap();
+    assert!(!after(&fixture, position).iter().any(
+        |(_, entry)| matches!(entry.record, Record::LoopDecided { agent: who, .. } if who == agent)
+    ));
+
+    let (daemon, restarted) = run();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_goal(addr, &cookie, &csrf, &body);
+    assert_eq!(changed(&head, &response), new_goal.id);
+    assert_eq!(browser_goals(&fixture, agent).len(), 1);
+    let records = fixture.records();
+    assert!(after(&fixture, position).iter().any(
+        |(_, entry)| matches!(entry.record, Record::LoopDecided { agent: who, .. } if who == agent)
+    ));
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::TurnIssued { goal, .. } if *goal == new_goal.id)
+            )
+            .count(),
+        0
+    );
+    assert_eq!(host.spawned().len() + restarted.spawned().len(), 0);
+    running.stop(ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn an_onboarding_turn_restarts_after_its_fsync_before_spawn() {
+    let fixture = Fixture::new();
+    let settings = enrolled_settings(&fixture);
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
+    daemon
+        .onboarding_failure()
+        .arm(OnboardingFailurePoint::TurnIssued);
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let request = json!({"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"});
+    let (head, response) = post_onboard(addr, &cookie, &csrf, &request);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    let agent: AgentId = serde_json::from_value(response["agent"].clone()).unwrap();
+    let goal: GoalId = serde_json::from_value(response["goal"].clone()).unwrap();
+    issued_onboarding_fence(&fixture, &running.handle, agent, goal);
+    let original: Vec<_> = fixture
+        .records()
+        .into_iter()
+        .filter(|record| matches!(record, Record::TurnIssued { goal: who, .. } if *who == goal))
+        .collect();
+    assert_eq!(original.len(), 1);
+    running.stop(ExitCause::ShutdownRpc);
+
+    let (parts, host) = native_fixture_seams(&fixture, fake_seams(&settings));
+    let daemon = boot(&settings, parts).unwrap();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    recover_owed_browser_turn(&settings, &fixture, &running, agent, goal);
+    fixture.await_record("the exact recovered onboarding turn spawned", |record| {
+        matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent).then_some(())
+    });
+    let (head, retried) = post_onboard(addr, &cookie, &csrf, &request);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(retried, response);
+    let records = fixture.records();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::AgentHired { id, .. } if *id == agent))
+            .count(),
+        1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::GoalSet { goal: who, .. } if who.id == goal))
+            .count(),
+        1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::TurnIssued { goal: who, .. } if *who == goal))
+            .cloned()
+            .collect::<Vec<_>>(),
+        original
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent)
+            )
+            .count(),
+        1
+    );
+    assert_eq!(host.spawned().len(), 1);
+    running.stop(ExitCause::ShutdownRpc);
 }

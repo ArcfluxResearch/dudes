@@ -83,7 +83,9 @@ fn lifeline_victim() {
     let mut built = PathBuf::from(env!("CARGO_BIN_EXE_dudes"));
     built.set_file_name("duded");
     let program = bin.join("duded");
-    std::fs::hard_link(&built, &program).unwrap();
+    std::fs::hard_link(&built, &program)
+        .or_else(|_| std::fs::copy(&built, &program).map(|_| ()))
+        .expect("install the lifeline test daemon");
     let _lifeline = Lifeline::start(root.path());
     let env = std::collections::BTreeMap::from([
         ("HOME".into(), root.path().join("home").into_os_string()),
