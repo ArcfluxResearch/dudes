@@ -266,7 +266,7 @@ impl Daemon {
     fn browser_retire(&self, agent: AgentId) -> (String, Value) {
         let addr = self.floor.expect("the Floor routes retirement");
         self.relation.walk(Walk::Unowned);
-        let page = common::floor_session(&self.settings, addr).on_clock({
+        let page = common::floor_session_on(&self.settings, addr, {
             let clock = Arc::clone(&self.clock);
             move || clock.now().unix_millis()
         });

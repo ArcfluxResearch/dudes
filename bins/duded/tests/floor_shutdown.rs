@@ -92,7 +92,9 @@ fn credential(settings: &duded::Settings) -> OperatorCredential {
 impl Browser {
     fn authenticate(settings: &duded::Settings, addr: SocketAddr, clock: &Arc<TestClock>) -> Self {
         let clock = Arc::clone(clock);
-        Self(common::floor_session(settings, addr).on_clock(move || clock.now().unix_millis()))
+        Self(common::floor_session_on(settings, addr, move || {
+            clock.now().unix_millis()
+        }))
     }
 
     fn post(&self, path: &str, agent: AgentId) -> (u16, Vec<u8>) {

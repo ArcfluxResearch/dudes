@@ -487,7 +487,7 @@ fn seams_with<H: dudes_supervisor::host::ProcessHost, P: duded::predicate::Predi
 /// Enrol a new browser with `link`; the page signs at the daemon's time.
 fn exchange(addr: SocketAddr, link: &str) -> Arc<Page> {
     let now = daemon_time();
-    Arc::new(Page::enrol_new(addr, link).on_clock(move || now()))
+    Arc::new(Page::enrol_new_on(addr, link, move || now()))
 }
 
 fn presentation<'a>(

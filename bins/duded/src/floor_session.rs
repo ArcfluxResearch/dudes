@@ -3467,13 +3467,14 @@ mod device_tests {
         let start = Timestamp::from_unix_millis(d.sessions.now_ms());
         {
             // Signing a thousand requests in a debug build is slow, so the memory starts one
-            // short of full, as a thousand and twenty-three earlier requests leave it.
+            // short of full, as a thousand and twenty-three earlier requests leave it. The
+            // enrolment's own request holds one place already.
             let mut state = d.sessions.0.registry.lock();
             let session = state
                 .sessions
                 .get_mut(&digest(device.cookie.as_bytes()))
                 .expect("signed in");
-            for n in 1..MAX_REQUEST_IDS {
+            for n in 1..MAX_REQUEST_IDS - 1 {
                 let mut id = [0_u8; 16];
                 id[8..].copy_from_slice(&(n as u64).to_be_bytes());
                 session.requests.seen.push((start, id));

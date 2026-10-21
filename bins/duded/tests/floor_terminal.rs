@@ -168,8 +168,11 @@ fn credential(settings: &duded::Settings) -> String {
 /// the daemon's fake clock, so the time it signs follows the tests that advance it.
 fn session(floor: &Floor) -> Arc<Page> {
     let clock = Arc::clone(&floor.clock);
-    let page = Page::enrol_new(floor.addr, &common::floor_link(&floor.settings))
-        .on_clock(move || clock.now().unix_millis());
+    let page = Page::enrol_new_on(
+        floor.addr,
+        &common::floor_link(&floor.settings),
+        move || clock.now().unix_millis(),
+    );
     Arc::new(page)
 }
 

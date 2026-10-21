@@ -147,8 +147,9 @@ impl Daemon {
     fn page(&self) -> Browser {
         let clock = Arc::clone(&self.clock);
         Browser {
-            page: Page::enrol_new(self.addr, &common::floor_link(&self.settings))
-                .on_clock(move || clock.now().unix_millis()),
+            page: Page::enrol_new_on(self.addr, &common::floor_link(&self.settings), move || {
+                clock.now().unix_millis()
+            }),
             last: None,
         }
     }
@@ -1252,7 +1253,7 @@ fn a_page_read_never_reaches_the_sessions_stream() {
     append(SENTINEL);
 
     let mut page = Browser {
-        page: Page::enrol_new(addr, &common::floor_link(&settings)).on_clock({
+        page: Page::enrol_new_on(addr, &common::floor_link(&settings), {
             let clock = Arc::clone(&clock);
             move || clock.now().unix_millis()
         }),

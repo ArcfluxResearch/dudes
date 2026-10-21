@@ -13,7 +13,7 @@ use serde_json::json;
 
 mod common;
 
-use common::{Fixture, ScriptedRunner, SharedHost, TestClock, floor_post, floor_session, seams};
+use common::{Fixture, ScriptedRunner, SharedHost, TestClock, floor_post, floor_session_on, seams};
 
 struct Completed {
     agent: AgentId,
@@ -229,7 +229,7 @@ fn completed_note_exact_utf8_boundary_is_issued_and_survives_restart() {
     let host = SharedHost::with_native_evidence(fixture.journal_dir());
     let (settings, mut running, addr) = start(&fixture, &host, &clock);
     let completed = complete_goal(&fixture, &running, &host);
-    let page = floor_session(&settings, addr).on_clock({
+    let page = floor_session_on(&settings, addr, {
         let clock = Arc::clone(&clock);
         move || clock.now().unix_millis()
     });

@@ -2335,6 +2335,15 @@ pub(crate) fn floor_session(
     <duded::floor_browser::Page as PageHttp>::enrol_new(addr, &floor_link(settings))
 }
 
+/// A signed-in Floor page for a daemon on a test clock: it signs with `now`, the daemon's time.
+pub(crate) fn floor_session_on(
+    settings: &Settings,
+    addr: std::net::SocketAddr,
+    now: impl Fn() -> i64 + Send + Sync + 'static,
+) -> duded::floor_browser::Page {
+    <duded::floor_browser::Page as PageHttp>::enrol_new_on(addr, &floor_link(settings), now)
+}
+
 /// One authenticated Floor action POST: the response head and its JSON body, `Null` when empty.
 pub(crate) fn floor_post(
     page: &duded::floor_browser::Page,
@@ -2407,15 +2416,33 @@ pub(crate) fn send(addr: std::net::SocketAddr, request: &[u8]) -> Reply {
 
 /// The requests a test sends a Floor listener as a signed-in page.
 pub(crate) trait PageHttp: Sized {
-    /// Enrol `browser` with `link` and keep the cookie.
+    /// Enrol `browser` with `link` and keep the cookie. The page signs with `now`, which must
+    /// read the daemon's clock for a daemon on a test clock.
+    fn enrol_on(
+        addr: std::net::SocketAddr,
+        browser: duded::floor_browser::Browser,
+        link: &str,
+        now: impl Fn() -> i64 + Send + Sync + 'static,
+    ) -> Self;
+    /// Enrol `browser` on the system clock.
     fn enrol(
         addr: std::net::SocketAddr,
         browser: duded::floor_browser::Browser,
         link: &str,
-    ) -> Self;
+    ) -> Self {
+        Self::enrol_on(addr, browser, link, duded::floor_browser::Browser::now_ms)
+    }
     /// Enrol a browser with a key of its own.
     fn enrol_new(addr: std::net::SocketAddr, link: &str) -> Self {
         Self::enrol(addr, duded::floor_browser::Browser::new(), link)
+    }
+    /// Enrol a browser with a key of its own, signing with `now`.
+    fn enrol_new_on(
+        addr: std::net::SocketAddr,
+        link: &str,
+        now: impl Fn() -> i64 + Send + Sync + 'static,
+    ) -> Self {
+        Self::enrol_on(addr, duded::floor_browser::Browser::new(), link, now)
     }
     /// Send an exchange and return whatever the listener answers.
     fn try_enrol(
@@ -2423,6 +2450,7 @@ pub(crate) trait PageHttp: Sized {
         browser: &duded::floor_browser::Browser,
         link: &str,
         name: &str,
+        now_ms: i64,
     ) -> Reply;
     /// A signed POST of JSON, as the page sends one.
     fn post(&self, path: &str, body: &serde_json::Value) -> Reply;
@@ -2438,19 +2466,20 @@ pub(crate) trait PageHttp: Sized {
 }
 
 impl PageHttp for duded::floor_browser::Page {
-    fn enrol(
+    fn enrol_on(
         addr: std::net::SocketAddr,
         browser: duded::floor_browser::Browser,
         link: &str,
+        now: impl Fn() -> i64 + Send + Sync + 'static,
     ) -> Self {
-        let reply = Self::try_enrol(addr, &browser, link, "Test browser");
+        let reply = Self::try_enrol(addr, &browser, link, "Test browser", now());
         assert_eq!(reply.status(), 200, "{}", reply.head);
         let cookie = reply.cookie().expect("a session cookie");
         assert_eq!(
             reply.json()["device"].as_str(),
             Some(browser.device().to_string().as_str())
         );
-        Self::new(addr, cookie, browser)
+        Self::new(addr, cookie, browser).on_clock(now)
     }
 
     fn try_enrol(
@@ -2458,14 +2487,11 @@ impl PageHttp for duded::floor_browser::Page {
         browser: &duded::floor_browser::Browser,
         link: &str,
         name: &str,
+        now_ms: i64,
     ) -> Reply {
         let host = addr.to_string();
         let body = browser.enrolment(link, name);
-        let lines = browser.enrolment_lines(
-            &body,
-            &format!("http://{host}"),
-            duded::floor_browser::Browser::now_ms(),
-        );
+        let lines = browser.enrolment_lines(&body, &format!("http://{host}"), now_ms);
         send(
             addr,
             format!(

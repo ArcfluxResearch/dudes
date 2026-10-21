@@ -75,7 +75,7 @@ fn issue(settings: &duded::Settings) -> SessionIssueResult {
 /// Enrol a browser with `bootstrap` and give it the clock the daemon runs on.
 fn exchange(addr: SocketAddr, bootstrap: &str, clock: &Arc<TestClock>) -> Page {
     let clock = Arc::clone(clock);
-    Page::enrol_new(addr, bootstrap).on_clock(move || clock.now().unix_millis())
+    Page::enrol_new_on(addr, bootstrap, move || clock.now().unix_millis())
 }
 
 /// The protocol entries of a signed stream handshake that offers `route`.

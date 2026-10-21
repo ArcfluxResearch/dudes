@@ -112,8 +112,11 @@ fn floor(fixture: &Fixture, enabled: bool, git_path: Option<OsString>) -> Floor 
 /// A signed-in page, signing with the clock the daemon runs on.
 fn session(floor: &Floor) -> Page {
     let clock = Arc::clone(&floor.clock);
-    Page::enrol_new(floor.addr, &common::floor_link(&floor.settings))
-        .on_clock(move || clock.now().unix_millis())
+    Page::enrol_new_on(
+        floor.addr,
+        &common::floor_link(&floor.settings),
+        move || clock.now().unix_millis(),
+    )
 }
 
 struct Reply {

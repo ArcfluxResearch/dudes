@@ -271,8 +271,11 @@ fn set_trust(floor: &Floor, trusted: bool) -> Result<Value, RpcError> {
 
 fn session(floor: &Floor) -> Page {
     let clock = Arc::clone(&floor.clock);
-    Page::enrol_new(floor.addr, &common::floor_link(&floor.settings))
-        .on_clock(move || clock.now().unix_millis())
+    Page::enrol_new_on(
+        floor.addr,
+        &common::floor_link(&floor.settings),
+        move || clock.now().unix_millis(),
+    )
 }
 
 /// One browser hire of `repo_1` that asks for its own copy; the answer's status and body.

@@ -63,7 +63,7 @@ fn read_head(stream: &mut TcpStream) -> String {
 
 fn session(settings: &duded::Settings, addr: SocketAddr, clock: &Arc<TestClock>) -> Page {
     let clock = Arc::clone(clock);
-    common::floor_session(settings, addr).on_clock(move || clock.now().unix_millis())
+    common::floor_session_on(settings, addr, move || clock.now().unix_millis())
 }
 
 /// A browser socket subscribed to the Floor stream.

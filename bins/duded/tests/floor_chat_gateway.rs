@@ -110,7 +110,7 @@ where
     let failure = daemon.append_failure();
     let addr = daemon.floor_addr().expect("Floor address");
     let running = common::start(daemon);
-    let page = common::floor_session(&settings, addr).on_clock({
+    let page = common::floor_session_on(&settings, addr, {
         let clock = Arc::clone(&clock);
         move || clock.now().unix_millis()
     });

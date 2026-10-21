@@ -471,7 +471,7 @@ fn selected_reply_arrives_before_child_completion_and_reconnects() {
     let dir = fixture.state.path().join("REPLY");
     std::fs::create_dir(&dir).unwrap();
     let agent = common::hire(&running.handle, &dir);
-    let page = common::floor_session(&settings, addr).on_clock({
+    let page = common::floor_session_on(&settings, addr, {
         let clock = Arc::clone(&clock);
         move || clock.now().unix_millis()
     });

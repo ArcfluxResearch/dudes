@@ -192,8 +192,10 @@ impl Board {
 
     fn page(&self) -> Page {
         let clock = Arc::clone(&self.clock);
-        let inner = FloorPage::enrol_new(self.addr, &common::floor_link(&self.settings))
-            .on_clock(move || clock.now().unix_millis());
+        let inner =
+            FloorPage::enrol_new_on(self.addr, &common::floor_link(&self.settings), move || {
+                clock.now().unix_millis()
+            });
         Page {
             addr: self.addr,
             cookie: inner.cookie.clone(),
