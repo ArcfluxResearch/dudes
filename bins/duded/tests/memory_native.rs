@@ -32,6 +32,8 @@ use serde_json::json;
 
 const WAIT: Duration = Duration::from_secs(10);
 const ROLE: &str = "DUDES_MEMORY_HELPER";
+const CONDENSE_ROWS: usize = 2;
+const CONDENSE_ROW_BYTES: usize = 32_768;
 
 struct Streams(Arc<ChildEnds>);
 struct Stream(ChildTurn);
@@ -269,12 +271,12 @@ fn exercise_own_memory(
     );
 }
 
-fn condense_body(index: usize) -> String {
+fn condense_body(index: usize, bytes: usize) -> String {
     let prefix = format!("Decision {index}: use typed argv\n");
     let tail = "\nCause: paths contain spaces";
     format!(
         "{prefix}{}{tail}",
-        "x".repeat(2_048 - prefix.len() - tail.len())
+        "x".repeat(bytes - prefix.len() - tail.len())
     )
 }
 
@@ -297,11 +299,11 @@ fn exercise_condense_memory(
         assert!(task.len() <= 65_536);
         std::fs::write(work.join("carried"), b"").unwrap();
     } else {
-        for index in 0..40 {
+        for index in 0..CONDENSE_ROWS {
             let response = call(
                 client,
                 Method::MemoryAppend,
-                json!({"token":token,"text":condense_body(index)}),
+                json!({"token":token,"text":condense_body(index, CONDENSE_ROW_BYTES)}),
             );
             assert!(response.error.is_none());
         }
@@ -475,9 +477,32 @@ fn native_with_rng(
 #[test]
 fn native_overbound_memory_condense_reaches_the_child_and_replays_raw_pages() {
     let fixture = common::Fixture::new();
-    let Native { mut running, .. } = native(&fixture, vec![common::fails(), common::passes()]);
+    let Native { mut running, .. } = native_with_memory_config(
+        &fixture,
+        vec![common::passes()],
+        dudes_journal::MemoryCondenseConfig::new(64, 1).unwrap(),
+    );
     let work = fixture.state.path().join("condense");
-    let agent = hire_at(&running, &work);
+    std::fs::create_dir(&work).unwrap();
+    let agent = common::hire(&running.handle, &work);
+    for text in (0..CONDENSE_ROWS)
+        .map(|index| condense_body(index, CONDENSE_ROW_BYTES))
+        .chain(std::iter::once("NEWEST".to_owned()))
+    {
+        running
+            .handle
+            .ask(Ask::MemoryAppend {
+                agent,
+                payload: text.into_bytes(),
+                provenance: dudes_proto::PeerProvenance::Agent(agent),
+            })
+            .unwrap();
+    }
+    std::fs::write(work.join("first"), b"").unwrap();
+    common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &["/usr/bin/true"]),
+    );
     await_file(&work.join("carried"));
     let task = std::fs::read_to_string(work.join("task")).unwrap();
     assert!(task.contains("[Condensed memory: exact excerpts;"));
@@ -509,12 +534,13 @@ fn native_overbound_memory_condense_reaches_the_child_and_replays_raw_pages() {
             .map(|p| p.text.as_str())
             .collect::<Vec<_>>()
             .join("\n"),
-        (0..40)
-            .map(condense_body)
+        (0..CONDENSE_ROWS)
+            .map(|index| condense_body(index, CONDENSE_ROW_BYTES))
             .chain(std::iter::once("NEWEST".to_owned()))
             .collect::<Vec<_>>()
             .join("\n")
     );
+    assert!(pages.iter().map(|page| page.text.len()).sum::<usize>() > 65_536);
     assert!(fixture.records().iter().any(
         |record| matches!(record, Record::MemoryCondense { agent: who, .. } if *who == agent)
     ));
@@ -795,7 +821,7 @@ fn a_detected_durable_summary_invalidation_fences_later_local_work() {
         .handle
         .ask(Ask::MemoryAppend {
             agent,
-            payload: condense_body(0).into_bytes(),
+            payload: condense_body(0, 2_048).into_bytes(),
             provenance: dudes_proto::PeerProvenance::Agent(agent),
         })
         .unwrap();
@@ -804,7 +830,7 @@ fn a_detected_durable_summary_invalidation_fences_later_local_work() {
     let appending = std::thread::spawn(move || {
         handle.ask(Ask::MemoryAppend {
             agent,
-            payload: condense_body(1).into_bytes(),
+            payload: condense_body(1, 2_048).into_bytes(),
             provenance: dudes_proto::PeerProvenance::Agent(agent),
         })
     });

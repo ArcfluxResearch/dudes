@@ -113,7 +113,10 @@ impl Installed {
         let bin = root.path().join("bin");
         std::fs::create_dir_all(&bin).expect("the install directory");
         let daemon = bin.join("duded");
-        std::fs::copy(built_daemon(), &daemon).expect("copy duded");
+        let built = built_daemon();
+        std::fs::hard_link(&built, &daemon)
+            .or_else(|_| std::fs::copy(&built, &daemon).map(|_| ()))
+            .expect("install duded");
         let floor = bin.join("floor");
         write_bundle(&floor, "aaaaaaaa");
         let home = root.path().join("home");
@@ -129,10 +132,7 @@ impl Installed {
                 root.path().join("state").into_os_string(),
             ),
             ("DUDES_DAEMON", daemon.into_os_string()),
-            (
-                "PATH",
-                std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
-            ),
+            ("PATH", OsString::from("/usr/bin:/bin")),
         ];
         let env = Environment::resolve(move |name| {
             variables
@@ -153,7 +153,7 @@ impl Installed {
         let (code, out, err) = installed.cli(&["start"]);
         assert_eq!(code, 0, "{out}{err}");
         assert!(
-            std::fs::read_to_string(installed.root.path().join("duded.log"))
+            std::fs::read_to_string(installed.root.path().join("run/duded.log"))
                 .is_ok_and(|note| note.contains("quickstart started duded pid ")),
             "the lifeline knows the daemon"
         );
@@ -161,36 +161,10 @@ impl Installed {
         installed
     }
 
-    /// Note each daemon of this install where the lifeline looks, because `dudes start` leaves no
-    /// such note and the lifeline stops only the pids it reads.
-    fn record_daemons(&self) {
-        use std::io::Write as _;
-        let program = self.root.path().join("bin/duded");
-        let listing = common::run_program(
-            Path::new("/bin/ps"),
-            &["-axww", "-o", "pid=,command="].map(OsString::from),
-        );
-        let mut log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.root.path().join("duded.log"))
-            .expect("the lifeline's note");
-        for line in listing.stdout.lines() {
-            let (pid, command) = line.trim_start().split_once(' ').unwrap_or_default();
-            if command
-                .trim_start()
-                .starts_with(&*program.to_string_lossy())
-            {
-                writeln!(log, "quickstart started duded pid {pid}").expect("write the note");
-            }
-        }
-    }
-
     fn cli(&self, words: &[&str]) -> (u8, String, String) {
         let argv: Vec<OsString> = words.iter().map(OsString::from).collect();
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = dudes::run(&argv, &self.env, None, &mut out, &mut err);
-        self.record_daemons();
         (
             code,
             String::from_utf8(out).expect("text"),

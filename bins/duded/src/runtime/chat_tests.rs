@@ -2982,11 +2982,11 @@ fn mcp_first_edit_waits_for_a_historical_ungranted_dispatch_held_across_restart(
 
 #[test]
 fn an_injected_direct_browser_ack_fault_stops_before_host_dispatch() {
-    let history = HistoricalReplay::new();
+    let fixture = common::Fixture::new();
     let host = BoundaryHost::new();
     let pause = crate::BrowserLaunchPause::default();
     pause.arm();
-    let settings = history.fixture.settings();
+    let settings = fixture.settings();
     let mut daemon = crate::boot::boot_with_preparation_pause(
         &settings,
         with_owned_program(
@@ -3000,7 +3000,23 @@ fn an_injected_direct_browser_ack_fault_stops_before_host_dispatch() {
     .unwrap();
     assert!(!pause.wait(Duration::ZERO));
     assert_eq!(host.calls.load(Ordering::SeqCst), 0);
-    consent_to_direct_reissue(&mut daemon, &history.fixture, history.agent, history.turn);
+    let crate::ports::Answered::Hired(hired) = daemon
+        .ask(crate::ports::Ask::Hire(Box::new(common::hire_params(
+            fixture.state.path(),
+        ))))
+        .unwrap()
+    else {
+        panic!("an admitted agent")
+    };
+    assert!(matches!(
+        daemon
+            .browser_chat(
+                &session(),
+                &request(ChatVerb::Send, hired.agent, "a prepared browser note", 0),
+            )
+            .unwrap(),
+        ChatOutcome::Queued { .. }
+    ));
     let parked = drive_preparation_pause(&mut daemon, &pause);
     assert!(pause.wait(Duration::from_secs(5)));
     pause.release();
