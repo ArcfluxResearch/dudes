@@ -294,11 +294,11 @@ fn exercise_condense_memory(work: &Path, role: &str, task: &str, socket: &Path, 
         let call = |client: &mut dudes_rpc::LocalClient, method, params| {
             client.call(method, Some(params)).unwrap()
         };
-        for index in 0..CONDENSE_ROWS {
+        for index in 0..40 {
             let response = call(
                 &mut client,
                 Method::MemoryAppend,
-                json!({"token":token,"text":condense_body(index, CONDENSE_ROW_BYTES)}),
+                json!({"token":token,"text":condense_body(index, 2_048)}),
             );
             assert!(response.error.is_none());
         }
