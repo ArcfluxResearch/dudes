@@ -256,7 +256,7 @@ function SignedInShell() {
     if (recoveryReceiptAsked === null || drawerOpen) return;
     const receipt = document.getElementById(`recovery-receipt-${recoveryReceiptAsked}`);
     receipt?.focus();
-    receipt?.scrollIntoView({ block: 'nearest' });
+    receipt?.scrollIntoView({ block: 'start' });
     setRecoveryReceiptAsked(null);
   }, [recoveryReceiptAsked, drawerOpen]);
 
