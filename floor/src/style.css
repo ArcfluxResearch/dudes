@@ -3453,6 +3453,31 @@ samp,
   }
 }
 
+/*
+ * While notices show, an open panel starts its content below them. The shell carries the stack's
+ * height and data-notices; with no notice showing none of this applies and nothing moves. The
+ * offsets are where the area starts (3.5rem under the top bar, 3.05rem on a phone sheet).
+ */
+@media (min-width: 801px) {
+  .shell[data-notices] .control-panel .control-view {
+    margin-top: var(--notice-stack-height);
+  }
+
+  .shell[data-notices] .agent-drawer {
+    padding-top: calc(3.5rem + var(--notice-stack-height));
+  }
+}
+
+@media (max-width: 800px) {
+  .shell[data-notices] .floor-stage > .control-panel:is([data-view='setup'], [data-view='settings'], [data-view='log']) .control-view {
+    margin-top: max(0px, calc(var(--notice-stack-height) - 1.2rem));
+  }
+
+  .shell[data-notices] .agent-drawer {
+    padding-top: calc(3.05rem + var(--notice-stack-height));
+  }
+}
+
 .notice-stack > * {
   flex: 0 0 auto;
   box-sizing: border-box;

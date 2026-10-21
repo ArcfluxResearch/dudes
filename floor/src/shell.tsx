@@ -124,6 +124,20 @@ export function WebFloorShell() {
   return firstLink === null ? <SignedInShell /> : <SignedOutShell />;
 }
 
+/** Tells the stylesheet how tall the notice stack is, so an open panel can start its content below it. */
+function reserveNoticeRoom(shell: HTMLElement | null, stack: HTMLElement | null) {
+  if (!shell || !stack || typeof ResizeObserver === 'undefined') return undefined;
+  const update = () => {
+    const showing = [...stack.children].some((child) => child.getBoundingClientRect().height > 0);
+    shell.toggleAttribute('data-notices', showing);
+    shell.style.setProperty('--notice-stack-height', showing ? `${Math.ceil(stack.getBoundingClientRect().height)}px` : '0px');
+  };
+  const observer = new ResizeObserver(update);
+  observer.observe(stack);
+  update();
+  return () => observer.disconnect();
+}
+
 function SignedInShell() {
   const [signOutFailed, setSignOutFailed] = useState(false);
   // End this browser's session in the daemon, then reload into the signed-out screen. A daemon that
@@ -154,6 +168,9 @@ function SignedInShell() {
   const hireDialog = useRef<HTMLDialogElement | null>(null);
   const hireOpener = useRef<HTMLElement | null>(null);
   const backdropPress = useRef<number | null>(null);
+  const shellRef = useRef<HTMLElement | null>(null);
+  const noticeStack = useRef<HTMLDivElement | null>(null);
+  useEffect(() => reserveNoticeRoom(shellRef.current, noticeStack.current), []);
   const selectedRow = selectedAgentRow(floor.agents, selectedId, floor.phase, floor.stale);
   const focusedId = focused ? focusAgentId(floor, selectedId) : null;
   const displayRow = focused ? selectedAgentRow(floor.agents, focusedId, floor.phase, floor.stale) : selectedRow;
@@ -375,7 +392,7 @@ function SignedInShell() {
     leaveFocusTo={leaveDrawerTo} />;
 
   return (
-    <main className="shell" aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
+    <main className="shell" ref={shellRef} aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
       data-theme={preferences.theme} data-scheme={effectiveTheme} style={{ '--side-width': `${preferences.sidebarWidth}px` } as CSSProperties}>
       <div className="top-region">
         <header className="top-bar">
@@ -403,7 +420,7 @@ function SignedInShell() {
           <div className="office-bar" ref={setOfficeBar} />
         </header>
         <div className="notice-area">
-          <div className="notice-stack">
+          <div className="notice-stack" ref={noticeStack}>
             <PastedLinkNotice />
             {signOutFailed ? <p className="link-refused" role="alert">Could not sign out. Try again.</p> : null}
             <JournalStoppedBanner stopped={floor.journalStopped} />
