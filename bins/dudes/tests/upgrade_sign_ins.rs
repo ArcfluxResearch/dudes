@@ -185,11 +185,17 @@ impl Installed {
             .strip_prefix("http://")
             .expect("loopback")
             .clone_into(&mut self.origin);
+        let enrolment = self.browser.enrolment(bearer, "Chrome on macOS");
+        let signature = self.browser.enrolment_lines(
+            &enrolment,
+            &format!("http://{}", self.origin),
+            Browser::now_ms(),
+        );
         let (head, body) = http(
             &self.origin,
             "POST /floor/session",
-            "Content-Type: application/json\r\n",
-            &self.browser.enrolment(bearer, "Chrome on macOS"),
+            &format!("{signature}Content-Type: application/json\r\n"),
+            &enrolment,
         );
         let signed_in: serde_json::Value = serde_json::from_str(&body).expect("a JSON body");
         assert_eq!(

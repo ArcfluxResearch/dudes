@@ -65,8 +65,27 @@ impl FloorSessions {
         name: &str,
     ) -> Result<Joined, ExchangeRefusal> {
         let body = browser.enrolment(link, name);
-        let exchange = self.exchange(host, origin, body.as_bytes())?;
+        let exchange = self.exchange_signed(host, origin, &browser, &body)?;
         Ok(Joined { exchange, browser })
+    }
+
+    /// Send the exchange `body`, signed by `browser` at the registry's time.
+    pub(crate) fn exchange_signed(
+        &self,
+        host: &str,
+        origin: &str,
+        browser: &Browser,
+        body: &str,
+    ) -> Result<Exchange, ExchangeRefusal> {
+        self.exchange(&browser.presentation(
+            host,
+            origin,
+            "",
+            "POST",
+            "/floor/session",
+            body.as_bytes(),
+            self.now_ms(),
+        ))
     }
 
     /// Sign a new browser in and admit its first action, for a test that needs only a session.

@@ -9,7 +9,7 @@
 // request that did reach such a process is good for 60 seconds, once, for this origin only. Only a
 // reload lifts the pause, with a fresh page and a fresh module.
 
-import { KeyUnavailable, UnsignableBody, floorSigner } from './signer.ts';
+import { KeyUnavailable, UnsignableBody, floorSigner, signatureHeaders } from './signer.ts';
 import type { Signer } from './signer.ts';
 
 let paused = false;
@@ -65,10 +65,7 @@ export async function signedFetch(
     if (signed === null) throw new KeyUnavailable();
     if (paused) throw new TypeError('The Floor page is waiting for a reload');
     const headers = new Headers(init.headers);
-    headers.set('X-Dudes-Origin', signed.origin);
-    headers.set('X-Dudes-Time', signed.time);
-    headers.set('X-Dudes-Request', signed.request);
-    headers.set('X-Dudes-Signature', signed.signature);
+    for (const [name, value] of Object.entries(signatureHeaders(signed))) headers.set(name, value);
     response = await send(url, { ...init, method, headers, body: init.body === undefined || init.body === null ? init.body : body });
     if (!(await refusedSignature(response))) return response;
   }

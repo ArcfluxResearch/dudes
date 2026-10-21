@@ -180,6 +180,7 @@ impl Route {
 
 /// What a page presents to show a request is its own: the origin it signed for, the time, a
 /// one-time request id and the signature. Strings as sent; their form is checked at admission.
+#[derive(Clone)]
 pub(super) struct Signed {
     pub(super) origin: String,
     pub(super) time: String,
@@ -188,6 +189,7 @@ pub(super) struct Signed {
 }
 
 /// A request head whose shape the parsers accepted.
+#[derive(Clone)]
 pub(super) struct Head {
     pub(super) host: String,
     pub(super) origin: String,
@@ -205,7 +207,7 @@ pub(super) struct Head {
 
 impl Head {
     /// The head as the registry checks it, over the body that came with it.
-    fn presentation<'a>(&'a self, cookie: &'a str, body: &'a [u8]) -> Presentation<'a> {
+    pub(super) fn presentation<'a>(&'a self, cookie: &'a str, body: &'a [u8]) -> Presentation<'a> {
         let request = Presentation::new(
             &self.host,
             &self.origin,
@@ -228,8 +230,7 @@ impl Head {
 
 /// The one-time link's request, admitted. The exchange itself follows.
 pub(super) struct SignIn {
-    pub(super) host: String,
-    pub(super) origin: String,
+    pub(super) head: Head,
 }
 
 /// What a request has earned. Handlers take these and nothing less.
@@ -301,10 +302,7 @@ impl Guard<'_> {
                 clean_body(&body)?;
                 self.peer(route, endpoints)?;
                 Ok(Admission {
-                    admitted: Admitted::SignIn(SignIn {
-                        host: head.host.clone(),
-                        origin: head.origin.clone(),
-                    }),
+                    admitted: Admitted::SignIn(SignIn { head: head.clone() }),
                     body,
                 })
             }

@@ -1,12 +1,12 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  connect, noteFirstLinkRefused, noteKeyUnavailable, noteLinkWaitsForReload, noteNoFirstLink, noteNoSignInKey, takePastedLink,
+  connect, noteFirstLinkRefused, noteKeyUnavailable, noteLinkWaitsForReload, noteNoFirstLink, noteNoSignInKey, noteReloadNeeded, takePastedLink,
 } from './connect';
 import type { StreamPorts } from './connect';
 import { noteTransport } from './renderer/floor/store';
 import { browserSocket } from './renderer/floor/stream';
-import { KeyUnavailable } from './signer';
+import { KeyUnavailable, ReloadNeeded } from './signer';
 import { LinkRefused, currentFloorSession, establishFloorSession, reauthenticateFloorSession } from './session';
 import { WebFloorShell } from './shell';
 import { floorRequestsPaused } from './transport';
@@ -34,6 +34,7 @@ void establishFloorSession()
   .catch((error: unknown) => {
     if (currentFloorSession() !== null) return;
     if (error instanceof KeyUnavailable) noteKeyUnavailable();
+    else if (error instanceof ReloadNeeded) noteReloadNeeded();
     else if (error instanceof LinkRefused) noteFirstLinkRefused();
     noteTransport('close');
   });

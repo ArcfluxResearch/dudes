@@ -404,7 +404,7 @@ fn http_recovery_authentication_refuses_foreign_expired_and_revoked_sessions() {
         )
         .0,
         200,
-        "a device the journal brings back keeps working with the secret its page holds"
+        "a device the journal brings back keeps working with the key its page holds"
     );
     assert!(
         owned

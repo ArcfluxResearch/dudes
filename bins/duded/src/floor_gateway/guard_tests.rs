@@ -1016,11 +1016,13 @@ fn an_agent_cannot_spend_the_sign_in_link_and_the_owner_still_can() {
         Arc::new(FakeClock::frozen(0)),
     );
     let bootstrap = sessions.issue().expect("a bootstrap").bootstrap;
-    let body = Browser::new().enrolment(&bootstrap, "Chrome on macOS");
+    let browser = Browser::new();
+    let body = browser.enrolment(&bootstrap, "Chrome on macOS");
+    let signed = browser.sign("POST", SIGN_IN_PATH, &Page::origin(), body.as_bytes(), 0);
     let request = post(
         SIGN_IN_PATH,
         None,
-        None,
+        Some(&signed),
         SIGN_IN_BODY_TYPE,
         body.len(),
         body.as_bytes(),

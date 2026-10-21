@@ -71,7 +71,8 @@ test('bootstrap fragment is scrubbed before the same-origin exchange, and the ex
     assert.equal(init.credentials, 'same-origin');
     assert.equal(init.cache, 'no-store');
     assert.equal(init.referrerPolicy, 'no-referrer');
-    assert.deepEqual(init.headers, { 'Content-Type': 'application/json' });
+    assert.deepEqual(Object.keys(init.headers).sort(), ['Content-Type', 'X-Dudes-Origin', 'X-Dudes-Request', 'X-Dudes-Signature', 'X-Dudes-Time']);
+    assert.equal(init.headers['Content-Type'], 'application/json');
     return daemon.plain(url, init);
   };
 
@@ -167,7 +168,7 @@ test('the entry point opens one stream or surfaces the closed phase', async () =
   );
   assert.match(
     main,
-    /\.catch\(\(error: unknown\) => \{\s*if \(currentFloorSession\(\) !== null\) return;\s*if \(error instanceof KeyUnavailable\) noteKeyUnavailable\(\);\s*else if \(error instanceof LinkRefused\) noteFirstLinkRefused\(\);\s*noteTransport\('close'\);\s*\}\)/,
+    /\.catch\(\(error: unknown\) => \{\s*if \(currentFloorSession\(\) !== null\) return;\s*if \(error instanceof KeyUnavailable\) noteKeyUnavailable\(\);\s*else if \(error instanceof ReloadNeeded\) noteReloadNeeded\(\);\s*else if \(error instanceof LinkRefused\) noteFirstLinkRefused\(\);\s*noteTransport\('close'\);\s*\}\)/,
     'a terminal startup error does not publish the closed phase, or closes a page a pasted link signed in',
   );
   // A result that settled after a newer one is stale: it neither opens, re-keys nor closes anything.

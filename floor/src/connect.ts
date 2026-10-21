@@ -9,10 +9,10 @@
 
 import { openFloorStream, reauthenticateFloorStream } from './renderer/floor/stream.ts';
 import type { LocationLike, SocketFactory, StreamTimers } from './renderer/floor/stream.ts';
-import { KeyUnavailable, floorSigner, socketOffer } from './signer.ts';
+import { KeyUnavailable, ReloadNeeded, floorSigner, socketOffer } from './signer.ts';
 import type { Signer } from './signer.ts';
 import {
-  BuildMismatch, adoptStoredFloorSession, askFloorStanding, currentFloorSession, endFloorSession,
+  BuildMismatch, adoptStoredFloorSession, askFloorStanding, currentFloorSession, dropFloorSession,
   floorSessionGeneration,
 } from './session.ts';
 import type { FloorSession } from './session.ts';
@@ -48,7 +48,8 @@ let stopStream: () => void = () => {};
 /**
  * The daemon said it does not know this page's device. When another tab of this browser has signed
  * in since, its key and cookie are the ones to use and the stream follows them. Otherwise the
- * device is gone: the page deletes its key and says it is signed out.
+ * device is gone: the page says it is signed out and keeps its key, which only a confirmed sign-out
+ * or a new key at enrolment replaces.
  */
 async function sessionUnknown(ports: StreamPorts): Promise<void> {
   const signer = ports.signer === undefined ? floorSigner() : ports.signer;
@@ -58,7 +59,7 @@ async function sessionUnknown(ports: StreamPorts): Promise<void> {
     return;
   }
   stopStream();
-  await endFloorSession(signer);
+  dropFloorSession();
   noteSignInExpired();
 }
 
@@ -116,7 +117,7 @@ export function subscribeToPastedLink(listener: () => void): () => void {
  * its address was not one, or it had none and recovery found no session.
  * `null` once a session is held.
  */
-export type FirstLinkProblem = 'refused' | 'missing' | 'expired' | 'unsupported' | 'no_key';
+export type FirstLinkProblem = 'refused' | 'missing' | 'expired' | 'unsupported' | 'no_key' | 'reload';
 let firstProblem: FirstLinkProblem | null = null;
 
 export function firstLinkProblem(): FirstLinkProblem | null {
@@ -148,6 +149,11 @@ export function noteNoFirstLink(): void {
 /** Say that this browser cannot hold a sign-in key, so the page signed nothing. */
 export function noteKeyUnavailable(): void {
   noteFirstLinkProblem('unsupported');
+}
+
+/** Say that a service worker controls this page, so it signed nothing and needs a reload. */
+export function noteReloadNeeded(): void {
+  noteFirstLinkProblem('reload');
 }
 
 /** Say that the page held no link and this browser no longer has its sign-in key. */
@@ -188,6 +194,10 @@ export async function takePastedLink(
   } catch (error) {
     if (error instanceof KeyUnavailable) {
       noteKeyUnavailable();
+      return;
+    }
+    if (error instanceof ReloadNeeded) {
+      noteReloadNeeded();
       return;
     }
     // Said only while the page still holds the session it held when this link

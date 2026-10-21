@@ -39,6 +39,7 @@ export function fakeDaemon({ links = [], now = () => NOW, origin = ORIGIN } = {}
   const seen = new Set();
   const state = {
     exchanges: 0,
+    exchangeHeaders: [],
     requests: [],
     refuseNext: 0,
     /** Answers a request before the daemon looks at it: a response, or `undefined` to let it through. */
@@ -53,11 +54,23 @@ export function fakeDaemon({ links = [], now = () => NOW, origin = ORIGIN } = {}
   async function exchange(init) {
     state.exchanges += 1;
     if (state.unreachable) throw new TypeError('offline');
+    const headers = new Headers(init.headers);
+    state.exchangeHeaders.push(headers);
     const { link, key } = JSON.parse(init.body);
-    if (!unspent.delete(link)) return reply(403, {});
     const spki = Buffer.from(key, 'base64url');
     const device = createHash('sha256').update(spki).digest('base64url');
-    live.set(device, await subtle.importKey('spki', spki, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']));
+    const verifier = await subtle.importKey('spki', spki, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    const time = headers.get('x-dudes-time') ?? '';
+    const request = headers.get('x-dudes-request') ?? '';
+    const message = wireMessage({
+      device, method: init.method, target: '/floor/session', origin, body: Buffer.from(init.body), time, request,
+    });
+    const verified = headers.get('x-dudes-origin') === origin && Math.abs(Number(time) - now()) <= 60_000
+      && await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, verifier, Buffer.from(headers.get('x-dudes-signature') ?? '', 'base64url'), message);
+    if (!verified) return reply(401, { signature: 'refused' });
+    if (!unspent.delete(link)) return reply(403, {});
+    live.set(device, verifier);
+    seen.add(request);
     return reply(200, { device });
   }
 

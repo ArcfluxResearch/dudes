@@ -119,6 +119,13 @@ impl Browser {
         serde_json::json!({ "link": link, "key": self.key, "name": name }).to_string()
     }
 
+    /// The header lines that sign the exchange `body` for this key at `time_ms`, as the page does.
+    #[must_use]
+    pub fn enrolment_lines(&self, body: &str, origin: &str, time_ms: i64) -> String {
+        self.sign("POST", "/floor/session", origin, body.as_bytes(), time_ms)
+            .header_lines()
+    }
+
     /// The time now in milliseconds, for a test that runs against the system clock.
     #[must_use]
     pub fn now_ms() -> i64 {

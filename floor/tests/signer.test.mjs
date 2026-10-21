@@ -16,8 +16,8 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test from 'node:test';
 
-import { canHoldKey, createBrowserSigner, requestTarget, signedMessage } from '../src/signer.ts';
-import { establishFloorSessionWith, resetFloorSession, signOutFloorSession } from '../src/session.ts';
+import { canHoldKey, createBrowserSigner, requestTarget, signatureHeaders, signedMessage } from '../src/signer.ts';
+import { askFloorStanding, establishFloorSessionWith, resetFloorSession, signOutFloorSession } from '../src/session.ts';
 import { signedFetch } from '../src/transport.ts';
 import { fakeDaemon, reply } from './helpers/fake-daemon.mjs';
 import { NOW, ORIGIN, b64u, enrolledSigner, memoryKeyStore, memoryLock, testSigner } from './helpers/signer.mjs';
@@ -160,6 +160,78 @@ test('service workers are unregistered before the first signed request, and only
   await signedFetch(signer, send, '/floor/session/check', { method: 'POST', body: '{}' });
   await signedFetch(signer, send, '/floor/session/check', { method: 'POST', body: '{}' });
   assert.deepEqual(order, ['list', 'unregister 1', 'unregister 2', 'send', 'send']);
+});
+
+test('a page a service worker controls unregisters it, signs nothing and leaves the link in the address', async () => {
+  let unregistered = 0;
+  const serviceWorkers = {
+    controller: {},
+    getRegistrations: async () => [{ unregister: async () => { unregistered += 1; return true; } }],
+  };
+  const { signer, store } = testSigner({ serviceWorkers });
+  const daemon = fakeDaemon({ links: [LINK] });
+  const { location, history } = WITH_LINK();
+  const hash = location.hash;
+  const replaced = [];
+  await assert.rejects(
+    () => establishFloorSessionWith(location, { replaceState: (...args) => replaced.push(args) }, portsFor(daemon, signer)),
+    { message: 'Reload this page to finish signing in.' },
+  );
+  assert.equal(unregistered, 1);
+  assert.equal(location.hash, hash, 'the link was read out of the address');
+  assert.deepEqual(replaced, []);
+  assert.equal(store.held, null);
+  assert.equal(daemon.state.exchanges, 0);
+  assert.equal(daemon.state.requests.length, 0);
+  await assert.rejects(() => signedFetch(signer, daemon.send, '/floor/session/check', { method: 'POST', body: '{}' }), /Reload this page/);
+  assert.equal(daemon.state.requests.length, 0);
+
+  const reloaded = testSigner({ serviceWorkers: { controller: null, getRegistrations: async () => [] } });
+  const session = await establishFloorSessionWith(location, history, portsFor(daemon, reloaded.signer));
+  assert.equal(daemon.state.exchanges, 1, 'the reloaded page did not sign in');
+  assert.equal(reloaded.store.held.device, session.device);
+});
+
+test('the link exchange is signed by the key it enrols, and a missing or foreign signature leaves the link unspent', async () => {
+  const daemon = fakeDaemon({ links: [LINK] });
+  const { signer } = testSigner();
+  const key = await signer.newKey();
+  const other = await signer.newKey();
+  const body = JSON.stringify({ link: LINK, key: key.spki, name: 'Test' });
+  const bytes = new TextEncoder().encode(body);
+  const send = (headers) => daemon.plain('/floor/session', { method: 'POST', body, headers });
+  assert.equal((await send({ 'Content-Type': 'application/json' })).status, 401, 'an unsigned exchange was admitted');
+  const foreign = await signer.signWith(other, 'POST', '/floor/session', bytes);
+  assert.equal((await send(signatureHeaders(foreign))).status, 401, 'a signature by another key was admitted');
+  assert.equal(daemon.state.devices.length, 0);
+  const own = await signer.signWith(key, 'POST', '/floor/session', bytes);
+  const admitted = await send(signatureHeaders(own));
+  assert.equal(admitted.status, 200, 'the link was spent by the refused attempts');
+  assert.deepEqual(daemon.state.devices, [key.device]);
+});
+
+test('the key stays on a standing answer and goes only when a new key replaces it', async () => {
+  const held = await enrolledSigner();
+  const daemon = fakeDaemon({ links: [LINK] });
+  const before = held.store.held;
+  const session = Object.freeze({ device: held.key.device });
+  assert.equal(await askFloorStanding(session, (url, init) => signedFetch(held.signer, daemon.send, url, init)), 'unknown');
+  assert.equal(held.store.held, before, 'an unknown answer deleted the key');
+  const { location, history } = WITH_LINK();
+  const next = await establishFloorSessionWith(location, history, portsFor(daemon, held.signer));
+  assert.equal(held.store.held.device, next.device);
+});
+
+test('forgetting a device leaves a newer key another tab wrote', async () => {
+  const store = memoryKeyStore();
+  const { signer } = testSigner({ store });
+  const first = await signer.newKey();
+  const second = await signer.newKey();
+  await signer.keep(first);
+  await signer.forget(second.device);
+  assert.equal(store.held.device, first.device);
+  await signer.forget(first.device);
+  assert.equal(store.held, null);
 });
 
 test('a refused signature is retried once with a new request id, and a second refusal is returned and is not a sign-out', async () => {

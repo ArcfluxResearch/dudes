@@ -1731,6 +1731,9 @@ fn exchange_request(
     if !sessions.authority_matches(host, origin) {
         return Parsed::Response(error_response(403, "Forbidden"));
     }
+    let Ok(signed) = presented_signature(headers) else {
+        return Parsed::Response(error_response(400, "Bad Request"));
+    };
     let Some(content_type) = one_header(headers, "content-type") else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
@@ -1755,7 +1758,7 @@ fn exchange_request(
             method: String::new(),
             target: String::new(),
             cookie: None,
-            signed: None,
+            signed,
             content_length,
             accept: String::new(),
         },
@@ -1763,9 +1766,16 @@ fn exchange_request(
 }
 
 fn exchange_response<'a>(sessions: &FloorSessions, sign_in: &SignIn, body: &[u8]) -> Response<'a> {
-    let exchange = match sessions.exchange(&sign_in.host, &sign_in.origin, body) {
+    let exchange = match sessions.exchange(&sign_in.head.presentation("", body)) {
         Ok(exchange) => exchange,
         Err(ExchangeRefusal::Malformed) => return error_response(400, "Bad Request"),
+        Err(ExchangeRefusal::Signature) => {
+            return action_json(
+                401,
+                "Unauthorized",
+                &serde_json::json!({ "signature": "refused" }),
+            );
+        }
         Err(ExchangeRefusal::Forbidden) => return error_response(403, "Forbidden"),
     };
     let body = serde_json::to_vec(&serde_json::json!({ "device": exchange.device }))
@@ -1815,7 +1825,7 @@ fn standing_response<'a>(
 ) -> Response<'a> {
     let Some(session) = identity else {
         // A stopping daemon has cleared every session, so "unknown" would be a lie the page
-        // acts on: it would wipe a secret the carry-over to the next run is about to honour.
+        // acts on: it would sign out a page the carry-over to the next run is about to honour.
         if !running {
             return error_response(503, "Service Unavailable");
         }
@@ -1878,6 +1888,23 @@ const SIGNATURE_HEADERS: [&str; 4] = [
     "X-Dudes-Signature",
 ];
 
+/// The four values a page presents, when it presents all of them. `Err` when one is repeated.
+fn presented_signature(headers: &[httparse::Header<'_>]) -> Result<Option<Signed>, ()> {
+    let mut presented = [None; 4];
+    for (slot, name) in presented.iter_mut().zip(SIGNATURE_HEADERS) {
+        *slot = unique_header(headers, name)?.and_then(|value| std::str::from_utf8(value).ok());
+    }
+    Ok(match presented {
+        [Some(origin), Some(time), Some(request), Some(signature)] => Some(Signed {
+            origin: origin.to_owned(),
+            time: time.to_owned(),
+            request: request.to_owned(),
+            signature: signature.to_owned(),
+        }),
+        _ => None,
+    })
+}
+
 fn browser_head(
     route: Route,
     version: Option<u8>,
@@ -1901,13 +1928,9 @@ fn browser_head(
     let Ok(cookie) = unique_header(headers, "cookie") else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
-    let mut presented = [None; 4];
-    for (slot, name) in presented.iter_mut().zip(SIGNATURE_HEADERS) {
-        match unique_header(headers, name) {
-            Ok(value) => *slot = value.and_then(|value| std::str::from_utf8(value).ok()),
-            Err(()) => return Parsed::Response(error_response(400, "Bad Request")),
-        }
-    }
+    let Ok(signed) = presented_signature(headers) else {
+        return Parsed::Response(error_response(400, "Bad Request"));
+    };
     let Some(host) = std::str::from_utf8(host).ok() else {
         return Parsed::Response(error_response(403, "Forbidden"));
     };
@@ -1920,15 +1943,6 @@ fn browser_head(
     if cookie.is_none() && cookie_required {
         return Parsed::Response(error_response(403, "Forbidden"));
     }
-    let signed = match presented {
-        [Some(origin), Some(time), Some(request), Some(signature)] => Some(Signed {
-            origin: origin.to_owned(),
-            time: time.to_owned(),
-            request: request.to_owned(),
-            signature: signature.to_owned(),
-        }),
-        _ => None,
-    };
     let Some(content_type) = one_header(headers, "content-type") else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };

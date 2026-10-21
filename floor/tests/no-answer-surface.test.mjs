@@ -1650,8 +1650,8 @@ const REQUESTS = {
       'application/json', '/floor/'],
     methods: ['POST', 'POST', 'POST', 'GET'],
     fetches: ['floorFetch', 'plainFetch', 'FetchPort', 'FetchPort', 'plainFetch', 'floorFetch', 'FetchPort', 'floorFetch',
-      "fetch('/floor/session/check')", 'FetchPort', 'floorFetch', "fetch('/floor/session/end')", 'fetch', "fetch('/floor/session')",
-      'FetchPort', "fetch('/floor/')"],
+      "fetch('/floor/session/check')", 'FetchPort', 'floorFetch', "fetch('/floor/session/end')", "fetch('/floor/session')",
+      'FetchPort', 'FetchPort', 'FetchPort', "fetch('/floor/')"],
   },
 };
 

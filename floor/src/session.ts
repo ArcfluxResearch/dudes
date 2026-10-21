@@ -1,6 +1,6 @@
 import { browserName } from './renderer/devices/browserName.ts';
-import { KeyUnavailable, floorSigner } from './signer.ts';
-import type { Signer } from './signer.ts';
+import { KeyUnavailable, floorSigner, signatureHeaders } from './signer.ts';
+import type { KeyRecord, Signer } from './signer.ts';
 import { floorFetch, plainFetch } from './transport.ts';
 
 const LINK = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
@@ -142,8 +142,13 @@ function saysDeviceGone(answer: unknown): answer is { readonly session: string }
     && (answer.session === 'unknown' || answer.session === 'gone');
 }
 
+/** The daemon says this page's device is gone: stop using the session. The key stays, so a standing answer never wipes it. */
+export function dropFloorSession(): void {
+  settle(++started, null, false);
+}
+
 /**
- * The page lost its session: forget it and delete the key kept for it, so a reload starts signed out.
+ * The daemon confirmed a sign-out: forget the session and delete the key kept for it.
  * Only the key this session used goes, so a newer key another tab made since stays.
  */
 export async function endFloorSession(
@@ -303,6 +308,7 @@ export async function establishFloorSessionWith(
   ports: SignInPorts,
 ): Promise<FloorSession | null> {
   if (ports.signer === null) throw new KeyUnavailable();
+  await ports.signer.ready();
   if (location.hash.startsWith(BOOTSTRAP_PREFIX)) {
     return exchangeBootstrap(location, history, ports);
   }
@@ -345,12 +351,13 @@ export async function exchangeBootstrap(
 ): Promise<FloorSession | null> {
   if (!location.hash.startsWith(BOOTSTRAP_PREFIX)) return null;
 
-  const { signer, plain: fetch } = ports;
+  const { signer, plain } = ports;
   if (signer === null) throw new KeyUnavailable();
+  await signer.ready();
   const link = location.hash.slice(BOOTSTRAP_PREFIX.length);
   history.replaceState(null, '', `${location.pathname}${location.search}`);
   if (!LINK.test(link)) return null;
-  if (ownRefs !== undefined) await requireSameBuild(fetch, ownRefs);
+  if (ownRefs !== undefined) await requireSameBuild(plain, ownRefs);
 
   // One tab at a time reads the key, makes one and spends the link, so two tabs opened on one link
   // end up with one device.
@@ -361,12 +368,13 @@ export async function exchangeBootstrap(
       const standing = await askFloorStanding(session, ports.signed);
       // Live, or an answer too unclear to act on: the device stays and the link is left unspent.
       if (standing !== 'unknown') return session;
-      await signer.forget(held);
     }
     const key = await signer.newKey();
+    const body = JSON.stringify({ link, key: key.spki, name: browserName() });
+    const fetch = signedBy(signer, key, plain);
     const response = await fetch('/floor/session', {
       method: 'POST',
-      body: JSON.stringify({ link, key: key.spki, name: browserName() }),
+      body,
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
@@ -377,6 +385,15 @@ export async function exchangeBootstrap(
     await signer.keep(key);
     return Object.freeze({ device: key.device });
   });
+}
+
+/** The link exchange, signed by the key it enrols because the daemon holds no other key to check it with. */
+function signedBy(signer: Signer, key: KeyRecord, send: FetchPort): FetchPort {
+  return async (url, init) => {
+    const text = typeof init.body === 'string' ? init.body : '';
+    const signature = await signer.signWith(key, init.method ?? 'GET', url, new TextEncoder().encode(text));
+    return send(url, { ...init, headers: { ...init.headers as Record<string, string>, ...signatureHeaders(signature) } });
+  };
 }
 
 async function requireSameBuild(

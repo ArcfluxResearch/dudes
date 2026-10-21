@@ -2461,10 +2461,15 @@ impl PageHttp for duded::floor_browser::Page {
     ) -> Reply {
         let host = addr.to_string();
         let body = browser.enrolment(link, name);
+        let lines = browser.enrolment_lines(
+            &body,
+            &format!("http://{host}"),
+            duded::floor_browser::Browser::now_ms(),
+        );
         send(
             addr,
             format!(
-                "POST /floor/session HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                "POST /floor/session HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\n{lines}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
                 body.len()
             )
             .as_bytes(),

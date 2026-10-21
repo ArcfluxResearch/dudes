@@ -17,7 +17,7 @@ export function memoryKeyStore(initial = null) {
     get held() { return held; },
     async read() { return held; },
     async write(record) { held = record; },
-    async clear() { held = null; },
+    async clear(device) { if (device === undefined || held?.device === device) held = null; },
   };
 }
 

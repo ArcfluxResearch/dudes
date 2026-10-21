@@ -22,6 +22,16 @@ export class KeyUnavailable extends Error {
   }
 }
 
+/**
+ * A service worker controls this page. Unregistering it does not release a page it already
+ * controls, so the page signs nothing until it is reloaded.
+ */
+export class ReloadNeeded extends Error {
+  constructor() {
+    super('Reload this page to finish signing in.');
+  }
+}
+
 /** A request body the page cannot sign exactly as it sends it. */
 export class UnsignableBody extends TypeError {
   constructor() {
@@ -43,7 +53,8 @@ export interface NewKey extends KeyRecord {
 export interface KeyStore {
   read(): Promise<KeyRecord | null>;
   write(record: KeyRecord): Promise<void>;
-  clear(): Promise<void>;
+  /** Delete the record, or only the one for `device` when given, compared and deleted in one transaction. */
+  clear(device?: string): Promise<void>;
 }
 
 export interface SignerPorts {
@@ -55,6 +66,7 @@ export interface SignerPorts {
   now(): number;
   origin(): string;
   readonly serviceWorkers: {
+    readonly controller: unknown;
     getRegistrations(): Promise<readonly { unregister(): Promise<boolean> }[]>;
   } | null;
 }
@@ -68,6 +80,8 @@ export interface Signature {
 }
 
 export interface Signer {
+  /** Unregisters service workers; rejects with `ReloadNeeded` when one controls this page. */
+  ready(): Promise<void>;
   /** The stored key's device id, or `null` when this browser holds none. */
   device(): Promise<string | null>;
   newKey(): Promise<NewKey>;
@@ -75,6 +89,8 @@ export interface Signer {
   /** Delete the key, but only the one for `device` when given, so another tab's newer key stays. */
   forget(device?: string): Promise<void>;
   lock<T>(run: () => Promise<T>): Promise<T>;
+  /** Sign a request made now with a key the page made but has not kept, as the link exchange does. */
+  signWith(key: KeyRecord, method: string, url: string, body: Uint8Array<ArrayBuffer>): Promise<Signature>;
   /** Sign a request made now. `null` when the browser holds no key. */
   sign(method: string, url: string, body: Uint8Array<ArrayBuffer>): Promise<Signature | null>;
   /** The `Sec-WebSocket-Protocol` entries after the page's own protocol, or `null` when the browser holds no key. */
@@ -82,6 +98,16 @@ export interface Signer {
 }
 
 const encoder = new TextEncoder();
+
+/** The headers a signed request carries. */
+export function signatureHeaders(found: Signature): Readonly<Record<string, string>> {
+  return {
+    'X-Dudes-Origin': found.origin,
+    'X-Dudes-Time': found.time,
+    'X-Dudes-Request': found.request,
+    'X-Dudes-Signature': found.signature,
+  };
+}
 
 export function base64url(bytes: Uint8Array<ArrayBuffer>): string {
   let text = '';
@@ -136,19 +162,24 @@ export function requestTarget(url: string, origin: string): string {
 export function createSigner(ports: SignerPorts): Signer {
   const { subtle } = ports;
 
-  let prepared: Promise<void> | null = null;
-  function prepare(): Promise<void> {
+  let prepared: Promise<boolean> | null = null;
+  function prepare(): Promise<boolean> {
     prepared ??= (async () => {
       try {
         const registrations = await ports.serviceWorkers?.getRegistrations();
         await Promise.all((registrations ?? []).map((registration) => registration.unregister()));
       } catch {}
+      return Boolean(ports.serviceWorkers?.controller);
     })();
     return prepared;
   }
 
+  async function ready(): Promise<void> {
+    if (await prepare()) throw new ReloadNeeded();
+  }
+
   async function guard<T>(run: () => Promise<T>): Promise<T> {
-    await prepare();
+    await ready();
     try {
       return await run();
     } catch {
@@ -182,6 +213,7 @@ export function createSigner(ports: SignerPorts): Signer {
   }
 
   return {
+    ready,
     device: () => guard(async () => (await ports.store.read())?.device ?? null),
     newKey: () => guard(async () => {
       const pair = await subtle.generateKey(KEY_ALGORITHM, false, ['sign', 'verify']);
@@ -190,11 +222,9 @@ export function createSigner(ports: SignerPorts): Signer {
       return { device, privateKey: pair.privateKey, spki: base64url(spkiBytes) };
     }),
     keep: (key) => guard(() => ports.store.write({ device: key.device, privateKey: key.privateKey })),
-    forget: (device) => guard(async () => {
-      if (device !== undefined && (await ports.store.read())?.device !== device) return;
-      await ports.store.clear();
-    }),
+    forget: (device) => guard(() => ports.store.clear(device)),
     lock: (run) => ports.lock(run),
+    signWith: (key, method, url, body) => guard(() => signWith(key, method, url, body)),
     sign: signed,
     socketEntries: async (url) => {
       const found = await signed('GET', url, new Uint8Array(0));
@@ -246,8 +276,20 @@ const indexedDbStore: KeyStore = {
   async write(record) {
     await inStore('readwrite', (store) => store.put({ device: record.device, privateKey: record.privateKey }, RECORD));
   },
-  async clear() {
-    await inStore('readwrite', (store) => store.delete(RECORD));
+  async clear(device) {
+    const database = await openDatabase();
+    try {
+      const transaction = database.transaction(STORE, 'readwrite');
+      const store = transaction.objectStore(STORE);
+      const done = settled(transaction, 'complete');
+      const found = store.get(RECORD);
+      await settled(found, 'success');
+      const held: unknown = found.result;
+      if (device === undefined || (isRecord(held) && held.device === device)) store.delete(RECORD);
+      await done;
+    } finally {
+      database.close();
+    }
   },
 };
 

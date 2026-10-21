@@ -58,12 +58,27 @@ fn issue(settings: &duded::Settings) -> SessionIssueResult {
     serde_json::from_value(response.result.expect("issue result")).expect("typed issue result")
 }
 
-/// The exchange body a page with a key of its own sends for `link`.
-fn enrolment(link: &str) -> String {
-    Browser::new().enrolment(link, "Chrome on macOS")
+/// The exchange a page with a key of its own sends for `link`, signed at the time `clock` reads.
+fn raw_link(
+    addr: SocketAddr,
+    host: &str,
+    origin: &str,
+    clock: &Arc<TestClock>,
+    link: &str,
+) -> Vec<u8> {
+    let browser = Browser::new();
+    let body = browser.enrolment(link, "Chrome on macOS");
+    let lines = browser.enrolment_lines(&body, origin, clock.now().unix_millis());
+    raw_exchange(addr, host, Some(origin), &lines, &body)
 }
 
-fn raw_exchange(addr: SocketAddr, host: &str, origin: Option<&str>, body: &str) -> Vec<u8> {
+fn raw_exchange(
+    addr: SocketAddr,
+    host: &str,
+    origin: Option<&str>,
+    lines: &str,
+    body: &str,
+) -> Vec<u8> {
     let mut stream = TcpStream::connect(addr).expect("connect to the Floor gateway");
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(2)))
@@ -76,6 +91,7 @@ fn raw_exchange(addr: SocketAddr, host: &str, origin: Option<&str>, body: &str) 
         use std::fmt::Write as _;
         let _ = write!(&mut request, "Origin: {origin}\r\n");
     }
+    request.push_str(lines);
     request.push_str("\r\n");
     stream.write_all(request.as_bytes()).expect("write head");
     stream.write_all(body.as_bytes()).expect("write the body");
@@ -132,7 +148,8 @@ fn exchange_named(
 ) -> Page {
     let browser = Browser::new();
     let body = browser.enrolment(bootstrap, name);
-    let response = raw_exchange(addr, host, Some(origin), &body);
+    let lines = browser.enrolment_lines(&body, origin, clock.now().unix_millis());
+    let response = raw_exchange(addr, host, Some(origin), &lines, &body);
     let (head, body) = response_parts(&response);
     assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head:?}");
     let set_cookie = head
@@ -232,12 +249,26 @@ fn bootstrap_exchange_is_single_use_origin_bound_and_expiring() {
     assert_eq!(first.base_url, origin);
     assert_eq!(first.expires_in_s, 60);
     assert_eq!(first.bootstrap.len(), SESSION_BOOTSTRAP_LEN);
-    assert_empty_refusal(&raw_exchange(
+    assert_empty_refusal(&raw_link(
         addr,
         &host,
-        Some("http://localhost.invalid"),
-        &enrolment(&first.bootstrap),
+        "http://localhost.invalid",
+        &clock,
+        &first.bootstrap,
     ));
+    let enrolling = Browser::new();
+    let body = enrolling.enrolment(&first.bootstrap, "Chrome on macOS");
+    let foreign = Browser::new().enrolment_lines(&body, &origin, clock.now().unix_millis());
+    for lines in ["", foreign.as_str()] {
+        let refused = raw_exchange(addr, &host, Some(&origin), lines, &body);
+        let (head, answer) = response_parts(&refused);
+        assert!(
+            head.starts_with("HTTP/1.1 401 Unauthorized\r\n"),
+            "{head:?}"
+        );
+        assert!(!head.contains("Set-Cookie:"), "{head:?}");
+        assert_eq!(answer, br#"{"signature":"refused"}"#);
+    }
     let page = exchange(addr, &host, &origin, &clock, &first.bootstrap);
     assert!(
         sessions
@@ -245,20 +276,16 @@ fn bootstrap_exchange_is_single_use_origin_bound_and_expiring() {
             .is_ok(),
         "the exact session grants the opaque read-only permit"
     );
-    assert_empty_refusal(&raw_exchange(
-        addr,
-        &host,
-        Some(&origin),
-        &enrolment(&first.bootstrap),
-    ));
+    assert_empty_refusal(&raw_link(addr, &host, &origin, &clock, &first.bootstrap));
 
     let stale_bootstrap = issue(&settings);
     clock.advance(61_000);
-    assert_empty_refusal(&raw_exchange(
+    assert_empty_refusal(&raw_link(
         addr,
         &host,
-        Some(&origin),
-        &enrolment(&stale_bootstrap.bootstrap),
+        &origin,
+        &clock,
+        &stale_bootstrap.bootstrap,
     ));
 
     drop(unproven);
@@ -1408,18 +1435,8 @@ fn a_link_lives_for_its_purpose() {
     assert_eq!(bad.code, ErrorCode::InvalidParams.code());
 
     clock.advance(61_000);
-    assert_empty_refusal(&raw_exchange(
-        addr,
-        &host,
-        Some(&origin),
-        &enrolment(&open.bootstrap),
-    ));
-    assert_empty_refusal(&raw_exchange(
-        addr,
-        &host,
-        Some(&origin),
-        &enrolment(&explicit.bootstrap),
-    ));
+    assert_empty_refusal(&raw_link(addr, &host, &origin, &clock, &open.bootstrap));
+    assert_empty_refusal(&raw_link(addr, &host, &origin, &clock, &explicit.bootstrap));
     let _ = exchange(addr, &host, &origin, &clock, &printed.bootstrap);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }

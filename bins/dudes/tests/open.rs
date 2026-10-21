@@ -121,12 +121,17 @@ fn dudes_open_hands_one_link_to_the_opener_and_the_link_signs_a_session_in() {
     );
 
     let browser = duded::floor_browser::Browser::new();
+    let enrolment = browser.enrolment(bootstrap, "Chrome on macOS");
     let signed_in = post(
         authority,
         "/floor/session",
         "application/json",
-        "",
-        &browser.enrolment(bootstrap, "Chrome on macOS"),
+        &browser.enrolment_lines(
+            &enrolment,
+            &format!("http://{authority}"),
+            1_787_394_600_000,
+        ),
+        &enrolment,
     );
     assert!(signed_in.starts_with("HTTP/1.1 200 OK\r\n"), "{signed_in}");
     let cookie = signed_in
@@ -163,12 +168,18 @@ fn dudes_open_hands_one_link_to_the_opener_and_the_link_signs_a_session_in() {
     );
     assert!(acts.ends_with(r#"{"session":"live"}"#), "{acts}");
 
+    let again_browser = duded::floor_browser::Browser::new();
+    let again_body = again_browser.enrolment(bootstrap, "Chrome on macOS");
     let again = post(
         authority,
         "/floor/session",
         "application/json",
-        "",
-        &duded::floor_browser::Browser::new().enrolment(bootstrap, "Chrome on macOS"),
+        &again_browser.enrolment_lines(
+            &again_body,
+            &format!("http://{authority}"),
+            1_787_394_610_000,
+        ),
+        &again_body,
     );
     assert!(
         again.starts_with("HTTP/1.1 403"),

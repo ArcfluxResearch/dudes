@@ -206,6 +206,8 @@ pub(crate) enum ExchangeRefusal {
     /// The link is not good, the origin is not this listener's, the run is over, or the journal
     /// could not take the enrolment.
     Forbidden,
+    /// The key in the body did not sign the request, so the link is left unspent.
+    Signature,
 }
 
 /// An unforgeable admission to the future read-only projection facade.
@@ -1655,13 +1657,9 @@ impl FloorSessions {
     /// spent by an attempt that gets past that, so a journal that cannot take the enrolment costs
     /// the person one more `dudes open`. A key that is already a live device is replaced: its old
     /// cookie stops working and the browser holds the new one.
-    pub(crate) fn exchange(
-        &self,
-        host: &str,
-        origin: &str,
-        body: &[u8],
-    ) -> Result<Exchange, ExchangeRefusal> {
-        use ExchangeRefusal::{Forbidden, Malformed};
+    pub(crate) fn exchange(&self, request: &Presentation<'_>) -> Result<Exchange, ExchangeRefusal> {
+        use ExchangeRefusal::{Forbidden, Malformed, Signature};
+        let (host, origin, body) = (request.host, request.origin, request.body);
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Enrolment {
@@ -1679,6 +1677,16 @@ impl FloorSessions {
             name,
         } = serde_json::from_slice(body).map_err(|_| Malformed)?;
         let (device_key, device) = DeviceKey::parse(&key_text).ok_or(Malformed)?;
+        // The key proves itself before the link is looked at, so someone who holds a live link and
+        // knows a public key cannot enrol a key whose private half they lack.
+        let presented = request.signed.as_ref().ok_or(Signature)?;
+        let now = self.0.registry.lock_at_now().now;
+        if presented.origin != request.origin
+            || now.unix_millis().abs_diff(presented.millis) > SIGNATURE_WINDOW_MS.unsigned_abs()
+            || !device_key.verifies(device, &request.subject(), presented)
+        {
+            return Err(Signature);
+        }
         let name = clean_name(&name);
         let link = digest(link.as_bytes());
         let replaced = {
@@ -1735,7 +1743,11 @@ impl FloorSessions {
                 revoked: Arc::new(AtomicBool::new(false)),
                 key: device_key,
                 origin: self.0.origin.clone(),
-                requests: Requests::default(),
+                requests: {
+                    let mut requests = Requests::default();
+                    requests.admit(now, presented.request);
+                    requests
+                },
                 created: now,
                 first_used: None,
                 last_used: now,
@@ -2722,7 +2734,7 @@ mod tests {
             .sign_out();
 
         assert!(!socket.is_valid(), "its socket closes at the next check");
-        assert!(!acts(&sessions, &leaving), "its secret acts for no one");
+        assert!(!acts(&sessions, &leaving), "its cookie acts for no one");
         assert!(
             sessions
                 .standing(LIFETIME_HOST, LIFETIME_ORIGIN, &leaving)
@@ -2944,7 +2956,9 @@ mod device_tests {
         let body =
             serde_json::json!({ "link": issued.bootstrap, "key": browser.key() }).to_string();
         assert!(
-            d.sessions.exchange(HOST, ORIGIN, body.as_bytes()).is_ok(),
+            d.sessions
+                .exchange_signed(HOST, ORIGIN, &browser, &body)
+                .is_ok(),
             "a page that sends no name still signs in"
         );
         let id = Hex32::from(browser.device());
@@ -3290,7 +3304,7 @@ mod device_tests {
         d.sessions.invalidate();
 
         let after = restart_from(&d.clock, &d.journal);
-        assert!(acts(&after, &kept), "the same cookie and secret still act");
+        assert!(acts(&after, &kept), "the same cookie and key still act");
         assert!(!acts(&after, &removed), "a removed device stays removed");
         assert_eq!(
             after.gone_reason(&removed.cookie),
@@ -3513,11 +3527,73 @@ mod device_tests {
     }
 
     #[test]
+    fn an_exchange_the_key_did_not_sign_is_refused_and_keeps_the_link() {
+        let d = daemon();
+        let issued = d.sessions.issue().expect("a link");
+        let browser = Browser::new();
+        let body = browser.enrolment(&issued.bootstrap, "Chrome on macOS");
+        let signed = |by: &Browser, at: i64| {
+            by.presentation(
+                HOST,
+                ORIGIN,
+                "",
+                "POST",
+                "/floor/session",
+                body.as_bytes(),
+                at,
+            )
+        };
+        let now = d.sessions.now_ms();
+        let unsigned =
+            Presentation::new(HOST, ORIGIN, "", "POST", "/floor/session", body.as_bytes());
+        assert_eq!(
+            d.sessions.exchange(&unsigned).err(),
+            Some(ExchangeRefusal::Signature),
+            "no signature"
+        );
+        assert_eq!(
+            d.sessions.exchange(&signed(&Browser::new(), now)).err(),
+            Some(ExchangeRefusal::Signature),
+            "another key's signature"
+        );
+        assert_eq!(
+            d.sessions
+                .exchange(&signed(&browser, now - SIGNATURE_WINDOW_MS - 1))
+                .err(),
+            Some(ExchangeRefusal::Signature),
+            "a signature outside the window"
+        );
+        let good = browser.presentation(
+            HOST,
+            ORIGIN,
+            "",
+            "POST",
+            "/floor/session",
+            body.as_bytes(),
+            now,
+        );
+        assert!(
+            d.sessions.exchange(&good).is_ok(),
+            "the link was spent by the refused attempts"
+        );
+        assert_eq!(
+            d.journal.changes().len(),
+            1,
+            "only the signed exchange enrolled"
+        );
+    }
+
+    #[test]
     fn an_exchange_without_a_valid_key_is_refused_enrols_nothing_and_keeps_the_link() {
         let d = daemon();
         let issued = d.sessions.issue().expect("a link");
         let key = Browser::new().key().to_owned();
-        let refuse = |body: String| d.sessions.exchange(HOST, ORIGIN, body.as_bytes()).err();
+        let signer = Browser::new();
+        let refuse = |body: String| {
+            d.sessions
+                .exchange_signed(HOST, ORIGIN, &signer, &body)
+                .err()
+        };
         for body in [
             serde_json::json!({ "link": issued.bootstrap }),
             serde_json::json!({ "link": issued.bootstrap, "key": "" }),

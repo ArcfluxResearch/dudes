@@ -145,14 +145,14 @@ test('a transient close keeps the session and the key, however the check goes wr
   }
 });
 
-test('a device the daemon does not know is signed out: the screen says so and the key goes', async () => {
+test('a device the daemon does not know is signed out: the screen says so and the key stays', async () => {
   const { store, factory, daemon } = await openedPage();
   daemon.state.remove(session0(daemon));
   factory.opened[0].emit('close');
   await until(() => firstLinkProblem() !== null);
   assert.equal(currentFloorSession(), null);
   assert.equal(firstLinkProblem(), 'expired');
-  assert.equal(store.held, null);
+  assert.notEqual(store.held, null, 'a standing answer deleted the key');
 });
 
 function session0(daemon) {
