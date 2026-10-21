@@ -548,8 +548,12 @@ fn control_peer(state: DeadlineState) -> (Daemon, AgentId, HookToken, PtyId) {
 fn control_handlers(agent: AgentId, fixture: &Fixture) -> dudes_proto::providers::claude::Settings {
     let binary = std::env::var_os("DUDES_TEST_HOOK_BINARY").map_or_else(
         || {
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/debug/dudes-hook")
+            std::env::current_exe()
+                .expect("this test executable")
+                .parent()
+                .and_then(std::path::Path::parent)
+                .expect("the test executable is under the build directory")
+                .join(format!("dudes-hook{}", std::env::consts::EXE_SUFFIX))
         },
         std::path::PathBuf::from,
     );

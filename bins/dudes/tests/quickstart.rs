@@ -50,8 +50,29 @@ fn daemon_binary() -> PathBuf {
     daemon
 }
 
+#[cfg(unix)]
+fn installed_cli(root: &Path) -> PathBuf {
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).expect("private installation directory");
+    for (source, name) in [
+        (PathBuf::from(env!("CARGO_BIN_EXE_dudes")), "dudes"),
+        (daemon_binary(), "duded"),
+    ] {
+        let target = bin.join(name);
+        if !target.exists() {
+            std::fs::hard_link(&source, &target)
+                .or_else(|_| std::fs::copy(&source, &target).map(|_| ()))
+                .expect("install the test binary");
+        }
+    }
+    bin.join("dudes")
+}
+
 fn base_cli(root: &Path) -> Cli {
-    let mut cli = Cli::bare()
+    let cli = Cli::bare();
+    #[cfg(unix)]
+    let cli = cli.program(installed_cli(root));
+    let mut cli = cli
         .env("DUDES_RUNTIME_DIR", root.join("run"))
         .env("DUDES_STATE_DIR", root.join("state"));
     // What a session gives the CLI, including the names the daemon needs on each platform.
@@ -72,6 +93,11 @@ fn base_cli(root: &Path) -> Cli {
 }
 
 fn cli(root: &Path, daemon: &Path) -> Cli {
+    let daemon = if cfg!(unix) && daemon == daemon_binary() {
+        root.join("bin/duded")
+    } else {
+        daemon.to_path_buf()
+    };
     base_cli(root).env("DUDES_DAEMON", daemon)
 }
 
@@ -423,6 +449,8 @@ fn assert_human_triple(run: &Run, socket: &Path, root: &Path) {
 #[test]
 fn quickstart_starts_one_daemon_and_a_second_run_reuses_it() {
     let root = tempfile::tempdir().expect("a temporary installation home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let _daemon = daemon_binary();
     let socket = dudes_rpc::local_endpoint(root.path().join("run"), dudes::env::SOCKET_NAME);
 
@@ -481,6 +509,8 @@ fn quickstart_starts_one_daemon_and_a_second_run_reuses_it() {
 #[test]
 fn quickstart_does_not_pass_the_callers_piped_stdin_to_the_daemon() {
     let root = tempfile::tempdir().expect("a piped-stdin home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let _daemon = daemon_binary();
     let socket = dudes_rpc::local_endpoint(root.path().join("run"), dudes::env::SOCKET_NAME);
     let common::PipedRun {
@@ -571,6 +601,8 @@ fn quickstart_does_not_pass_the_callers_piped_stdin_to_the_daemon() {
 #[test]
 fn a_failed_daemon_start_is_nonzero_and_prints_no_triple() {
     let control = tempfile::tempdir().expect("a control home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(control.path());
     let daemon = daemon_binary();
     let success = cli(control.path(), &daemon).args(["quickstart"]).run();
     let mut guard = DaemonGuard::from_root(control.path());
@@ -582,6 +614,8 @@ fn a_failed_daemon_start_is_nonzero_and_prints_no_triple() {
     guard.stop();
 
     let failed = tempfile::tempdir().expect("a failure home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(failed.path());
     let missing = failed.path().join("missing-duded");
     let run = cli(failed.path(), &missing).args(["quickstart"]).run();
     assert_eq!(run.code(), dudes::exit::OTHER, "{run:?}");
@@ -602,6 +636,8 @@ fn a_failed_daemon_start_is_nonzero_and_prints_no_triple() {
 #[test]
 fn a_socket_runtime_divergence_leaves_no_daemon() {
     let root = tempfile::tempdir().expect("a divergent home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let daemon = daemon_binary();
     let configured =
         dudes_rpc::local_endpoint(root.path().join("elsewhere"), dudes::env::SOCKET_NAME);
@@ -653,6 +689,8 @@ fn a_socket_runtime_divergence_leaves_no_daemon() {
 #[test]
 fn a_socket_path_too_long_to_bind_is_refused_before_a_daemon_starts() {
     let root = tempfile::tempdir().expect("a long home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let daemon = daemon_binary();
     let runtime = root.path().join("r".repeat(110));
     for command in ["quickstart", "start"] {
@@ -679,6 +717,8 @@ fn a_socket_path_too_long_to_bind_is_refused_before_a_daemon_starts() {
 #[test]
 fn a_long_home_without_a_runtime_directory_is_refused_before_a_daemon_starts() {
     let root = tempfile::tempdir().expect("a root");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let home = root.path().join("h".repeat(110));
     let daemon = daemon_binary();
     for command in ["quickstart", "start"] {
@@ -715,6 +755,8 @@ fn a_refused_dudes_config_is_reported_before_a_daemon_starts() {
         ),
     ] {
         let root = tempfile::tempdir().expect("a refused-config home");
+        #[cfg(unix)]
+        let _lifeline = common::Lifeline::start(root.path());
         let daemon = daemon_binary();
         let run = cli(root.path(), &daemon)
             .env("DUDES_CONFIG", value)
@@ -755,6 +797,8 @@ fn a_refused_dudes_config_is_reported_before_a_daemon_starts() {
 #[test]
 fn quickstart_gives_the_daemon_only_the_composed_environment() {
     let root = tempfile::tempdir().expect("an environment-control home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let token = "t".repeat(dudes_proto::rpc::hook::HOOK_TOKEN_LEN);
     let run = cli(root.path(), Path::new("/usr/bin/env"))
         .env("PATH", "/planted/bin")
@@ -837,6 +881,8 @@ fn quickstart_gives_the_daemon_only_the_composed_environment() {
 #[test]
 fn quickstart_forwards_the_declared_mcp_variables_the_shell_holds() {
     let root = tempfile::tempdir().expect("a home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let home = root.path().join("home");
     let config = if cfg!(target_os = "macos") {
         home.join("Library/Application Support/dudes")
@@ -891,6 +937,8 @@ fn quickstart_forwards_the_declared_mcp_variables_the_shell_holds() {
 #[test]
 fn a_quickstarted_daemon_reads_the_config_the_cli_wrote() {
     let root = tempfile::tempdir().expect("a config-root home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let daemon = daemon_binary();
     let config_root = root.path().join("config-root");
     let session = || {
@@ -945,6 +993,8 @@ fn a_quickstarted_daemon_reads_the_config_the_cli_wrote() {
 #[test]
 fn a_quickstarted_daemon_reads_the_file_dudes_config_names() {
     let root = tempfile::tempdir().expect("a config-override home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let daemon = daemon_binary();
     let config = root.path().join("elsewhere").join("ops.toml");
     std::fs::create_dir_all(config.parent().unwrap()).expect("the override's directory");
@@ -985,6 +1035,8 @@ fn a_quickstarted_daemon_reads_the_file_dudes_config_names() {
 #[test]
 fn stop_ends_a_quickstarted_daemon() {
     let root = tempfile::tempdir().expect("a stop home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let _daemon = daemon_binary();
     let started = captured_with_deadline(
         base_cli(root.path()).args(["quickstart"]),
@@ -1022,6 +1074,8 @@ fn stop_ends_a_quickstarted_daemon() {
 #[test]
 fn start_starts_one_daemon_and_a_second_run_says_it_is_running() {
     let root = tempfile::tempdir().expect("a temporary installation home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let _daemon = daemon_binary();
     let config = root.path().join("config.toml");
     let socket = dudes_rpc::local_endpoint(root.path().join("run"), dudes::env::SOCKET_NAME);
@@ -1091,6 +1145,8 @@ fn start_starts_one_daemon_and_a_second_run_says_it_is_running() {
 #[test]
 fn start_brings_a_stopped_daemon_back() {
     let root = tempfile::tempdir().expect("a restart home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let _daemon = daemon_binary();
     let first = captured_with_deadline(base_cli(root.path()).args(["start"]), root.path(), true);
     let mut guard = DaemonGuard::from_root(root.path());
@@ -1207,6 +1263,8 @@ fn quickstart_serves_the_floor_installed_beside_duded() {
         "/../duded/tests/fixtures/floor-release-v3"
     );
     let root = tempfile::tempdir().expect("an installed layout");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let install = root.path().join("bin");
     std::fs::create_dir_all(install.join("floor/assets")).expect("the install directory");
     let daemon = install.join(format!("duded{}", std::env::consts::EXE_SUFFIX));
@@ -1282,6 +1340,8 @@ fn quickstart_serves_the_floor_installed_beside_duded() {
 #[test]
 fn a_quickstarted_daemons_managed_child_sees_its_uids_user_name() {
     let root = tempfile::tempdir().expect("a first-run layout");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let _daemon = daemon_binary();
     let bin = root.path().join("bin");
     let home = root.path().join("home");
@@ -1384,6 +1444,8 @@ fn a_quickstarted_daemons_managed_child_sees_its_uids_user_name() {
 #[test]
 fn a_timed_out_windows_quickstart_kills_the_spawned_daemon() {
     let root = tempfile::tempdir().expect("a timeout home");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let daemon = parked_daemon(root.path());
 
     let run = cli(root.path(), &daemon).args(["quickstart"]).run();
@@ -1450,6 +1512,8 @@ impl Drop for DaemonLogsInTree {
 fn windows_quickstart_without_home_uses_profile_storage_and_reuses_the_daemon() {
     for _ in 0..5 {
         let root = tempfile::tempdir().expect("isolated profile quickstart");
+        #[cfg(unix)]
+        let _lifeline = common::Lifeline::start(root.path());
         let mut owned = DaemonLogsInTree(Some(root.path().to_path_buf()));
         let profile = root.path().join("profile with spaces");
         let runtime = profile.join(".local/state/dudes");
@@ -1560,6 +1624,8 @@ fn main() {
 #[test]
 fn capture_timeout_reaps_a_retained_handle_daemon_at_an_alternate_root() {
     let root = tempfile::tempdir().expect("alternate-root capture fixture");
+    #[cfg(unix)]
+    let _lifeline = common::Lifeline::start(root.path());
     let _owned = DaemonLogsInTree(Some(root.path().to_path_buf()));
     let actual_log = root.path().join("alternate/duded.log");
     let expected_log = root.path().join("expected/duded.log");

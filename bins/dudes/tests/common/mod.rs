@@ -599,6 +599,7 @@ impl Run {
 /// consumes it, which is what stops a half-built invocation from being reused by accident.
 #[derive(Clone)]
 pub(crate) struct Cli {
+    program: PathBuf,
     env: BTreeMap<OsString, OsString>,
     args: Vec<OsString>,
     cwd: Option<PathBuf>,
@@ -614,6 +615,7 @@ impl Cli {
             runtime_dir.as_os_str().to_owned(),
         );
         Self {
+            program: PathBuf::from(env!("CARGO_BIN_EXE_dudes")),
             env,
             args: Vec::new(),
             cwd: None,
@@ -623,10 +625,16 @@ impl Cli {
     /// A CLI with no environment at all, for the arms about a missing socket.
     pub(crate) fn bare() -> Self {
         Self {
+            program: PathBuf::from(env!("CARGO_BIN_EXE_dudes")),
             env: BTreeMap::new(),
             args: Vec::new(),
             cwd: None,
         }
+    }
+
+    pub(crate) fn program(mut self, program: PathBuf) -> Self {
+        self.program = program;
+        self
     }
 
     /// Set an environment variable for this run.
@@ -667,11 +675,7 @@ impl Cli {
 
     /// Run it through this package's one test-side process seam.
     pub(crate) fn run(self) -> Run {
-        let mut command = process(
-            OsStr::new(env!("CARGO_BIN_EXE_dudes")),
-            &self.args,
-            Some(&self.env),
-        );
+        let mut command = process(self.program.as_os_str(), &self.args, Some(&self.env));
         if let Some(dir) = &self.cwd {
             command.current_dir(dir);
         }
@@ -684,11 +688,7 @@ impl Cli {
     }
 
     pub(crate) fn spawn_captured(self) -> std::process::Child {
-        let mut command = process(
-            OsStr::new(env!("CARGO_BIN_EXE_dudes")),
-            &self.args,
-            Some(&self.env),
-        );
+        let mut command = process(self.program.as_os_str(), &self.args, Some(&self.env));
         if let Some(dir) = &self.cwd {
             command.current_dir(dir);
         }
@@ -704,11 +704,7 @@ impl Cli {
     /// follower side, as an operator at a terminal runs it.
     #[cfg(unix)]
     pub(crate) fn spawn_on_terminal(self, terminal: &std::os::fd::OwnedFd) -> std::process::Child {
-        let mut command = process(
-            OsStr::new(env!("CARGO_BIN_EXE_dudes")),
-            &self.args,
-            Some(&self.env),
-        );
+        let mut command = process(self.program.as_os_str(), &self.args, Some(&self.env));
         if let Some(dir) = &self.cwd {
             command.current_dir(dir);
         }
@@ -724,11 +720,7 @@ impl Cli {
     /// Spawn the real CLI with all three standard streams piped, retaining the caller's stdin
     /// writer while a worker drains both output streams and waits for exit.
     pub(crate) fn spawn_with_piped_stdin(self) -> PipedRun {
-        let mut command = process(
-            OsStr::new(env!("CARGO_BIN_EXE_dudes")),
-            &self.args,
-            Some(&self.env),
-        );
+        let mut command = process(self.program.as_os_str(), &self.args, Some(&self.env));
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
