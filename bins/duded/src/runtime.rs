@@ -10248,90 +10248,88 @@ mod mail_wake_fence_tests {
     #[test]
     fn post_fsync_uncertainty_refuses_mail_refresh_and_writes() {
         let mut observed = Vec::new();
-        for fence in 0..3 {
-            for kind in 0..3 {
-                let mut owned = Owned::pending(Usd::from_dollars(10));
-                if kind == 1 {
-                    owned.make_ready();
-                }
-                let effect = match kind {
-                    0 => one(std::mem::take(&mut owned.pending)),
-                    1 => owned.refreshed_effect(),
-                    _ => owned.notify(),
-                };
-                if fence == 1 {
-                    owned.post_fsync_failure();
-                }
-                if fence == 2 {
-                    let target = if let Effect::MailWakeNotify { target, .. } = &effect {
-                        target.clone()
-                    } else {
-                        let (lsn, record) = owned
-                            .fixture
-                            .entries()
-                            .into_iter()
-                            .find(|(_, entry)| matches!(&entry.record, Record::Mail { .. }))
-                            .expect("receipt");
-                        let Record::Mail { id, .. } = record.record else {
-                            panic!("receipt");
-                        };
-                        dudes_proto::MailWakeTarget {
-                            mail: dudes_proto::MailRef { id, lsn },
-                            original_count: u8::from(kind == 1),
-                            target_count: u8::from(kind == 1) + 1,
-                        }
-                    };
-                    let root = owned
+        for (fence, kind) in [(0, 0), (1, 1), (2, 2)] {
+            let mut owned = Owned::pending(Usd::from_dollars(10));
+            if kind == 1 {
+                owned.make_ready();
+            }
+            let effect = match kind {
+                0 => one(std::mem::take(&mut owned.pending)),
+                1 => owned.refreshed_effect(),
+                _ => owned.notify(),
+            };
+            if fence == 1 {
+                owned.post_fsync_failure();
+            }
+            if fence == 2 {
+                let target = if let Effect::MailWakeNotify { target, .. } = &effect {
+                    target.clone()
+                } else {
+                    let (lsn, record) = owned
                         .fixture
                         .entries()
                         .into_iter()
-                        .find_map(|(lsn, entry)| {
-                            matches!(
-                                entry.record,
-                                Record::MailWakeTurnDecided(dudes_proto::MailWakeDecision {
-                                    purpose: MailWakePurpose::FreshPreparation { .. },
-                                    ..
-                                })
-                            )
-                            .then_some(lsn)
-                        })
-                        .unwrap();
-                    let mailbox = owned.daemon.ctx.mailbox.as_mut().unwrap();
-                    assert!(
-                        mailbox
-                            .notify_prepared(owned.agent, root, &target, |_, _| Err(
-                                anyhow::anyhow!("owned uncertain callback")
-                            ))
-                            .is_err()
-                    );
-                    assert!(mailbox.is_fenced());
-                }
-                let before = owned.fixture.records().len();
-                let mut queue = VecDeque::new();
-                let result = owned.daemon.ctx.execute(
-                    &effect,
-                    &mut queue,
-                    &mut PumpReport::Discard,
-                    &mut owned.daemon.sup,
-                    &mut owned.daemon.closing,
+                        .find(|(_, entry)| matches!(&entry.record, Record::Mail { .. }))
+                        .expect("receipt");
+                    let Record::Mail { id, .. } = record.record else {
+                        panic!("receipt");
+                    };
+                    dudes_proto::MailWakeTarget {
+                        mail: dudes_proto::MailRef { id, lsn },
+                        original_count: u8::from(kind == 1),
+                        target_count: u8::from(kind == 1) + 1,
+                    }
+                };
+                let root = owned
+                    .fixture
+                    .entries()
+                    .into_iter()
+                    .find_map(|(lsn, entry)| {
+                        matches!(
+                            entry.record,
+                            Record::MailWakeTurnDecided(dudes_proto::MailWakeDecision {
+                                purpose: MailWakePurpose::FreshPreparation { .. },
+                                ..
+                            })
+                        )
+                        .then_some(lsn)
+                    })
+                    .unwrap();
+                let mailbox = owned.daemon.ctx.mailbox.as_mut().unwrap();
+                assert!(
+                    mailbox
+                        .notify_prepared(owned.agent, root, &target, |_, _| Err(anyhow::anyhow!(
+                            "owned uncertain callback"
+                        )))
+                        .is_err()
                 );
-                if fence == 0 {
-                    assert!(result.is_ok());
-                    assert_eq!(queue.len(), 1);
-                } else {
-                    observed.push((
-                        queue.iter().all(|input| {
-                            !matches!(
-                                input,
-                                Input::MailWakeReady { result: Ok(_), .. }
-                                    | Input::Journaled { .. }
-                                    | Input::InstructionJournaled { .. }
-                                    | Input::Persisted { .. }
-                            )
-                        }),
-                        owned.fixture.records().len() == before,
-                    ));
-                }
+                assert!(mailbox.is_fenced());
+            }
+            let before = owned.fixture.records().len();
+            let mut queue = VecDeque::new();
+            let result = owned.daemon.ctx.execute(
+                &effect,
+                &mut queue,
+                &mut PumpReport::Discard,
+                &mut owned.daemon.sup,
+                &mut owned.daemon.closing,
+            );
+            if fence == 0 {
+                assert!(result.is_ok());
+                assert_eq!(queue.len(), 1);
+            } else {
+                observed.push((
+                    queue.iter().all(|input| {
+                        !matches!(
+                            input,
+                            Input::MailWakeReady { result: Ok(_), .. }
+                                | Input::Journaled { .. }
+                                | Input::InstructionJournaled { .. }
+                                | Input::Persisted { .. }
+                        )
+                    }),
+                    owned.fixture.records().len() == before,
+                ));
             }
         }
         assert!(

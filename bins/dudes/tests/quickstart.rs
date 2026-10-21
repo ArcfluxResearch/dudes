@@ -1444,8 +1444,6 @@ fn a_quickstarted_daemons_managed_child_sees_its_uids_user_name() {
 #[test]
 fn a_timed_out_windows_quickstart_kills_the_spawned_daemon() {
     let root = tempfile::tempdir().expect("a timeout home");
-    #[cfg(unix)]
-    let _lifeline = common::Lifeline::start(root.path());
     let daemon = parked_daemon(root.path());
 
     let run = cli(root.path(), &daemon).args(["quickstart"]).run();
@@ -1512,8 +1510,6 @@ impl Drop for DaemonLogsInTree {
 fn windows_quickstart_without_home_uses_profile_storage_and_reuses_the_daemon() {
     for _ in 0..5 {
         let root = tempfile::tempdir().expect("isolated profile quickstart");
-        #[cfg(unix)]
-        let _lifeline = common::Lifeline::start(root.path());
         let mut owned = DaemonLogsInTree(Some(root.path().to_path_buf()));
         let profile = root.path().join("profile with spaces");
         let runtime = profile.join(".local/state/dudes");

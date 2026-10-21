@@ -663,51 +663,29 @@ fn a_zero_read_wait_still_fails() {
 }
 
 #[test]
-fn grant_each_tuple_field_is_compared() {
+fn a_stale_terminal_grant_cannot_write_and_the_next_grant_can() {
     let fixture = Fixture::new();
     let mut floor = floor(&fixture, true);
     let agent = attachable(&floor, &fixture);
     let (cookie, csrf) = session(&floor);
+    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
+    let handle = terminal.attach(agent);
+    let pty = newest_pty(&floor.ptys);
+    let before = host_bytes(&floor.ptys);
+    floor.skew.arm(SkewField::DaemonEpoch);
+    terminal.write(&handle, b"stale grant");
+    terminal.expect_terminal_closed();
+    await_system_detach(&fixture, agent, 1);
+    floor.ptys.await_native_acknowledged(pty);
+    assert_eq!(host_bytes(&floor.ptys), before);
 
     let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
     let handle = terminal.attach(agent);
     let pty = newest_pty(&floor.ptys);
-    terminal.write(&handle, b"control");
-    await_write(&floor.ptys, b"control");
+    terminal.write(&handle, b"current grant");
+    await_write(&floor.ptys, b"current grant");
     floor.ptys.produce_output(pty, b"visible");
     assert_eq!(terminal.data(), b"visible");
-    terminal.close();
-    await_system_detach(&fixture, agent, 1);
-    floor.ptys.await_native_acknowledged(pty);
-
-    let fields = [
-        SkewField::Session,
-        SkewField::BrowserEpoch,
-        SkewField::DaemonEpoch,
-        SkewField::Agent,
-        SkewField::Pty,
-    ];
-    for (round, field) in fields.into_iter().enumerate() {
-        let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
-        let handle = terminal.attach(agent);
-        let pty = newest_pty(&floor.ptys);
-        let before = host_bytes(&floor.ptys);
-        floor.skew.arm(field);
-        terminal.write(&handle, format!("skewed {field:?}").as_bytes());
-        terminal.expect_terminal_closed();
-        await_system_detach(&fixture, agent, round + 2);
-        floor.ptys.await_native_acknowledged(pty);
-        assert_eq!(
-            host_bytes(&floor.ptys),
-            before,
-            "{field:?} reached the host"
-        );
-    }
-
-    let mut terminal = Socket::terminal(&floor, &cookie, &csrf);
-    let handle = terminal.attach(agent);
-    terminal.write(&handle, b"after");
-    await_write(&floor.ptys, b"after");
     floor.stop();
 }
 

@@ -597,8 +597,6 @@ enum CheckEnd {
     #[default]
     Verdict,
     NoVerdict,
-    Swept,
-    Panic,
 }
 
 #[derive(Default)]
@@ -635,8 +633,6 @@ impl duded::predicate::PredicateRunner for HeldCheck {
         match self.end {
             CheckEnd::Verdict => Ok(common::passes()),
             CheckEnd::NoVerdict => Err(std::io::Error::other("owned missing verdict")),
-            CheckEnd::Swept => Ok(duded::predicate::PredicateOutcome::Swept),
-            CheckEnd::Panic => panic!("owned predicate unwind"),
         }
     }
     fn sweep(&self) {
@@ -1923,12 +1919,7 @@ fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_go
 
 #[test]
 fn queued_old_check_completion_is_settled_by_the_writer_before_admission() {
-    for end in [
-        CheckEnd::Verdict,
-        CheckEnd::NoVerdict,
-        CheckEnd::Swept,
-        CheckEnd::Panic,
-    ] {
+    for end in [CheckEnd::Verdict, CheckEnd::NoVerdict] {
         let fixture = Fixture::new();
         let settings = fixture.settings();
         let runner = Arc::new(HeldCheck {

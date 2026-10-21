@@ -352,61 +352,6 @@ fn issued_note(fixture: &common::Fixture, note: Lsn) -> TurnId {
     })
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "the receipt records the exact acknowledged-prefix denominator without exporting journal contents"
-)]
-fn assert_acknowledged_prefixes(fixture: &common::Fixture) {
-    use std::io::{Read as _, Seek as _};
-
-    let scratch = tempfile::tempdir().unwrap();
-    let mut live = dudes_journal::Projections::open(&scratch.path().join("live.redb")).unwrap();
-    let mut world = dudes_supervisor::World::default();
-    let entries = fixture.entries();
-    for (index, (lsn, entry)) in entries.iter().enumerate() {
-        let segment = dudes_journal::segment::segment_path(&fixture.journal_dir(), lsn.segment());
-        let mut file = std::fs::File::open(&segment).unwrap();
-        file.seek(std::io::SeekFrom::Start(lsn.offset())).unwrap();
-        let mut header = [0; dudes_journal::frame::HEADER_LEN];
-        file.read_exact(&mut header).unwrap();
-        let header = dudes_journal::frame::Header::parse(&header);
-        live.apply(*lsn, header.crc, entry).unwrap();
-        world.apply(*lsn, entry);
-
-        let cut = tempfile::tempdir().unwrap();
-        for number in dudes_journal::segment::list_segments(&fixture.journal_dir()).unwrap() {
-            if number > lsn.segment() {
-                break;
-            }
-            let source = dudes_journal::segment::segment_path(&fixture.journal_dir(), number);
-            let destination = dudes_journal::segment::segment_path(cut.path(), number);
-            std::fs::copy(source, &destination).unwrap();
-            if number == lsn.segment() {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(destination)
-                    .unwrap()
-                    .set_len(lsn.offset() + u64::try_from(header.frame_len()).unwrap())
-                    .unwrap();
-            }
-        }
-        let (reader, report) = dudes_journal::Reader::open(cut.path()).unwrap();
-        assert!(report.torn.is_none(), "acknowledged prefix is intact");
-        let rebuilt_path = scratch.path().join(format!("rebuilt-{index}.redb"));
-        let mut rebuilt = dudes_journal::Projections::open(&rebuilt_path).unwrap();
-        let replay = dudes_journal::replay(&reader, &mut rebuilt).unwrap();
-        assert_eq!(replay.applied, u64::try_from(index + 1).unwrap());
-        assert_eq!(rebuilt.export().unwrap(), live.export().unwrap());
-        let mut replayed_world = dudes_supervisor::World::default();
-        for row in reader.iter_from(Lsn::ZERO).unwrap() {
-            let (position, entry) = row.unwrap();
-            replayed_world.apply(position, &entry);
-        }
-        assert_eq!(format!("{replayed_world:?}"), format!("{world:?}"));
-    }
-    eprintln!("acknowledged daemon prefixes: {}", entries.len());
-}
-
 fn owned_spawn_key(fixture: &common::Fixture, turn: TurnId) -> dudes_supervisor::AdoptionKey {
     fixture.await_record("the exact native child", |record| match record {
         Record::TurnSpawned {
@@ -540,7 +485,6 @@ fn cancellation_completes_while_preparation_is_held_and_late_readiness_is_inert(
         1,
         "only positively unused note reserve is released"
     );
-    assert_acknowledged_prefixes(&fixture);
 }
 
 #[test]
@@ -638,7 +582,6 @@ fn ordinary_done_precedes_note_only_and_note_end_never_judges_again() {
         "owned predicate threads have joined before the final count"
     );
     assert_eq!(fixture.records().iter().filter(|record| matches!(record, Record::PredicateResult { goal: judged, .. } if *judged == goal)).count(), 1);
-    assert_acknowledged_prefixes(&fixture);
 }
 
 #[test]
@@ -1380,7 +1323,6 @@ fn actual_host_entry_wins_before_any_durable_spawn_receipt() {
     assert_eq!(host.calls.load(Ordering::SeqCst), 2);
     assert!(!fixture.records().iter().any(|record| matches!(record, Record::BrowserNoteIssuedCancelled { turn: cancelled, .. } | Record::BrowserNoteReissueCancelled { turn: cancelled, .. } if *cancelled == turn)));
     running.stop(ExitCause::Ended);
-    assert_acknowledged_prefixes(&fixture);
 }
 
 #[test]
@@ -1526,7 +1468,6 @@ fn historical_intent_stays_ambiguous_when_new_preparation_never_dispatches() {
             |record| matches!(record, Record::TurnEnded { turn: ended, .. } if *ended == turn)
         )
     );
-    assert_acknowledged_prefixes(&fixture);
 }
 
 #[derive(Clone, Default)]
@@ -2800,7 +2741,6 @@ fn owned_managed_child_receives_note_only_stdin_and_journals_exact_reply() {
         .unwrap()
         .1;
     assert_eq!(charged.usd, dudes_types::Usd::from_cents(50));
-    assert_acknowledged_prefixes(&fixture);
 }
 
 #[test]

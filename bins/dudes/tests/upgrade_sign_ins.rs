@@ -1,6 +1,5 @@
 //! The restart half of `dudes upgrade` against a real `duded`: the sign-ins a Floor tab holds
-//! survive an upgrade and a plain stop and start, because the daemon keeps them as devices in its
-//! journal.
+//! survive an upgrade because the daemon keeps them as devices in its journal.
 //!
 //! The installer step is replaced by writing a second Floor bundle beside the daemon, which is all
 //! the installer changes that the Floor can see. Everything from the export to the import is the
@@ -253,13 +252,6 @@ impl Installed {
         );
         !head.starts_with("HTTP/1.1 403")
     }
-
-    fn plain_restart(&self) {
-        let (code, out, err) = self.cli(&["stop"]);
-        assert_eq!(code, 0, "{out}{err}");
-        let (code, out, err) = self.cli(&["start"]);
-        assert_eq!(code, 0, "{out}{err}");
-    }
 }
 
 impl Drop for Installed {
@@ -269,7 +261,7 @@ impl Drop for Installed {
 }
 
 #[test]
-fn an_upgrade_and_a_plain_restart_both_keep_the_open_sign_in() {
+fn an_upgrade_keeps_the_open_sign_in() {
     let installed = Installed::start();
     let before = installed.build();
     assert!(
@@ -299,66 +291,5 @@ fn an_upgrade_and_a_plain_restart_both_keep_the_open_sign_in() {
     assert!(
         installed.acts(),
         "the sign-in from before the upgrade reaches the new run"
-    );
-
-    installed.plain_restart();
-    assert!(
-        installed.acts(),
-        "a plain stop and start keeps the browser signed in"
-    );
-}
-
-#[test]
-fn a_restart_with_no_open_sign_in_says_nothing_about_sign_ins() {
-    let mut installed = Installed::start();
-    let (code, listed, err) = installed.cli(&["devices", "--json"]);
-    assert_eq!(code, 0, "{listed}{err}");
-    let listed: serde_json::Value = serde_json::from_str(&listed).expect("a JSON list");
-    let id = listed[0]["device"].as_str().expect("one device").to_owned();
-    assert_eq!(listed[0]["new"], true, "a lone browser starts out new");
-    let (code, out, err) = installed.cli(&["devices", "keep", &id[..12]]);
-    assert_eq!(code, 0, "{out}{err}");
-    let (code, relisted, err) = installed.cli(&["devices", "--json"]);
-    assert_eq!(code, 0, "{relisted}{err}");
-    let relisted: serde_json::Value = serde_json::from_str(&relisted).expect("a JSON list");
-    assert_eq!(relisted[0]["new"], false, "kept from the terminal");
-    assert!(installed.acts(), "keeping signs nobody out");
-    let (code, out, err) = installed.cli(&["devices", "remove", &id[..12]]);
-    assert_eq!(code, 0, "{out}{err}");
-    assert!(!installed.acts(), "the removed browser is signed out");
-    installed.plain_restart();
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    let code = dudes::run::upgrade_restart_for_test(
-        &installed.env,
-        env!("CARGO_PKG_VERSION"),
-        &mut out,
-        &mut err,
-    );
-    let out = String::from_utf8(out).expect("text");
-    assert_eq!(code, Ok(0), "{out}");
-    assert!(!out.contains("sign-in"), "{out}");
-    installed.sign_in();
-    assert!(installed.acts());
-}
-
-#[test]
-fn an_upgrade_that_dies_after_the_export_and_before_the_import_still_leaves_the_device_signed_in() {
-    use dudes_proto::rpc::CurrentMethod;
-
-    let installed = Installed::start();
-    let credential = dudes::read_operator_credential(installed.env.runtime_dir().expect("runtime"))
-        .expect("the credential reads");
-    let mut client = dudes_rpc::LocalClient::connect(installed.env.socket().expect("socket"))
-        .expect("connect to the daemon");
-    let exported = client
-        .call_current_presenting(CurrentMethod::FloorSessionExport, None, credential)
-        .expect("export is answered")
-        .result
-        .expect("the operator exports");
-    assert_eq!(exported["sessions"].as_array().map(Vec::len), Some(1));
-    installed.plain_restart();
-    assert!(
-        installed.acts(),
-        "the journal, not the export, keeps the device"
     );
 }

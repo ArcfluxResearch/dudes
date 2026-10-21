@@ -104,6 +104,7 @@ impl NativeDaemon {
             .expect("install the test daemon");
         let lifeline = common::Lifeline::start(fixture.runtime.path());
         let stderr = fs::File::create(fixture.runtime.path().join("daemon.stderr")).unwrap();
+        let settings = fixture.settings();
         let child = common::process(binary.as_os_str(), &[], Some(env))
             .current_dir(fixture.runtime.path())
             .process_group(0)
@@ -112,12 +113,6 @@ impl NativeDaemon {
             .stderr(Stdio::from(stderr))
             .spawn()
             .expect("scratch standalone daemon");
-        fs::write(
-            fixture.runtime.path().join("duded.log"),
-            format!("quickstart started duded pid {}\n", child.id()),
-        )
-        .expect("register the daemon with its lifeline");
-        let settings = fixture.settings();
         let mut daemon = Self {
             child,
             _lifeline: lifeline,
@@ -125,6 +120,11 @@ impl NativeDaemon {
             runtime: settings.runtime_dir,
             ended: false,
         };
+        fs::write(
+            fixture.runtime.path().join("duded.log"),
+            format!("quickstart started duded pid {}\n", daemon.child.id()),
+        )
+        .expect("register the daemon with its lifeline");
         let deadline = Instant::now() + BOUND;
         loop {
             assert!(
