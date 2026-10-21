@@ -470,6 +470,10 @@ fn head_of(page: &Page, path: &str, body: &[u8], signed: &SignedValues) -> Head 
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of refusals walked over every route"
+)]
 fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
     let page = signed_in();
     let other = signed_in();
@@ -886,6 +890,10 @@ fn path_of(path: &str) -> &'static str {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of refusals walked over every socket"
+)]
 fn the_sockets_need_the_cookie_a_valid_signature_and_a_clean_peer() {
     let page = signed_in();
     let other = signed_in();

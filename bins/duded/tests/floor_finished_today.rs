@@ -11,17 +11,14 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use chrono_tz::Tz;
+use duded::floor_browser::Page;
 use duded::floor_stream::FloorStreamFault;
 use duded::local_day::{LocalDays, window_in};
 use duded::settings::FloorSettings;
 use duded::startup::Witness;
 use duded::{ExitCause, boot};
-use dudes_proto::rpc::Method;
-use dudes_proto::rpc::cred::OperatorCredential;
-use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_proto::{ExitStatus, Record, TurnOutcome};
-use dudes_rpc::Client;
-use dudes_supervisor::Input;
+use dudes_supervisor::{Clock as _, Input};
 use dudes_types::{AgentId, GoalId, Timestamp, TurnId};
 use serde_json::Value;
 
@@ -64,53 +61,9 @@ fn read_head(stream: &mut TcpStream) -> String {
     String::from_utf8(head).expect("ASCII head")
 }
 
-fn session(settings: &duded::Settings, addr: SocketAddr) -> (String, String) {
-    let credential = OperatorCredential::new(
-        std::fs::read_to_string(
-            settings
-                .runtime_dir
-                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
-        )
-        .expect("the daemon minted an operator credential"),
-    )
-    .expect("a well formed credential");
-    let mut client = Client::connect(settings.socket()).expect("connect to the daemon");
-    let response = client
-        .call_as_operator(Method::FloorSessionIssue, None, credential)
-        .expect("floor.session.issue is answered");
-    let issued: SessionIssueResult =
-        serde_json::from_value(response.result.expect("issue result")).expect("issue result");
-    let mut stream = TcpStream::connect(addr).expect("connect to the Floor gateway");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .expect("read timeout");
-    let bootstrap = issued.bootstrap;
-    let request = format!(
-        "POST /floor/session HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: {}\r\n\r\n{bootstrap}",
-        bootstrap.len()
-    );
-    stream.write_all(request.as_bytes()).expect("exchange");
-    let head = read_head(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    let cookie = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
-        .and_then(|value| value.split(';').next())
-        .expect("session cookie")
-        .to_owned();
-    let length: usize = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Content-Length: "))
-        .expect("body length")
-        .parse()
-        .expect("numeric length");
-    let mut body = vec![0_u8; length];
-    stream.read_exact(&mut body).expect("session body");
-    let json: Value = serde_json::from_slice(&body).expect("session JSON");
-    (
-        cookie,
-        json["csrf"].as_str().expect("CSRF nonce").to_owned(),
-    )
+fn session(settings: &duded::Settings, addr: SocketAddr, clock: &Arc<TestClock>) -> Page {
+    let clock = Arc::clone(clock);
+    common::floor_session(settings, addr).on_clock(move || clock.now().unix_millis())
 }
 
 /// A browser socket subscribed to the Floor stream.
@@ -119,14 +72,13 @@ struct Browser {
 }
 
 impl Browser {
-    fn subscribe(addr: SocketAddr, cookie: &str, csrf: &str) -> (Self, Value) {
+    fn subscribe(page: &Page) -> (Self, Value) {
+        let addr = page.addr;
         let mut stream = TcpStream::connect(addr).expect("connect to the Floor gateway");
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("read timeout");
-        let request = format!(
-            "GET /floor/stream HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: dudes-floor-v3, dudes-csrf.{csrf}\r\nCookie: dudes_floor_session={cookie}\r\n\r\n"
-        );
+        let request = page.upgrade_head("/floor/stream", "dudes-floor-v4");
         stream.write_all(request.as_bytes()).expect("upgrade");
         let head = read_head(&mut stream);
         assert!(head.starts_with("HTTP/1.1 101"), "{head}");
@@ -346,8 +298,8 @@ fn the_count_rests_on_an_observed_pass_and_survives_replacement_and_restart() {
     let runner = Arc::new(ScriptedRunner::scripted([fails(), passes()]));
     let mut boot = boot_with(&fixture, &clock, &runner, &day);
     let agent = common::hire(&boot.running.handle, fixture.state.path());
-    let (cookie, csrf) = session(&boot.settings, boot.addr);
-    let (mut browser, snapshot) = Browser::subscribe(boot.addr, &cookie, &csrf);
+    let page = session(&boot.settings, boot.addr, &clock);
+    let (mut browser, snapshot) = Browser::subscribe(&page);
     assert_eq!(
         snapshot["finished_today"],
         serde_json::json!({
@@ -404,7 +356,7 @@ fn the_count_rests_on_an_observed_pass_and_survives_replacement_and_restart() {
     );
 
     let entries_before_reads = fixture.entries().len();
-    let (mut late, late_snapshot) = Browser::subscribe(boot.addr, &cookie, &csrf);
+    let (mut late, late_snapshot) = Browser::subscribe(&page);
     assert_eq!(late_snapshot["finished_today"]["total"], "2");
     assert!(late.next(Duration::from_millis(1_500)).is_none());
     assert_eq!(
@@ -420,8 +372,8 @@ fn the_count_rests_on_an_observed_pass_and_survives_replacement_and_restart() {
     );
 
     let restarted = boot_with(&fixture, &clock, &runner, &day);
-    let (cookie, csrf) = session(&restarted.settings, restarted.addr);
-    let (_fresh, snapshot) = Browser::subscribe(restarted.addr, &cookie, &csrf);
+    let page = session(&restarted.settings, restarted.addr, &clock);
+    let (_fresh, snapshot) = Browser::subscribe(&page);
     assert_eq!(
         snapshot["finished_today"]["total"], "2",
         "a fresh browser after a restart recovers the same count"

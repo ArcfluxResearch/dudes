@@ -235,20 +235,20 @@ mod tests {
             bytes[2] = if bytes[2] == b'x' { b'y' } else { b'x' };
             String::from_utf8(bytes).expect("ASCII")
         };
-        type Change = fn(&mut Vector, String);
-        let changes: [(&str, fn(&Vector) -> String, Change); 7] = [
-            ("device", |v| v.device.clone(), |v, t| v.device = t),
-            ("method", |v| v.method.clone(), |v, t| v.method = t),
-            ("target", |v| v.target.clone(), |v, t| v.target = t),
-            ("origin", |v| v.origin.clone(), |v, t| v.origin = t),
-            ("body", |v| v.body.clone(), |v, t| v.body = t),
-            ("time", |v| v.time.clone(), |v, t| v.time = t),
-            ("request", |v| v.request.clone(), |v, t| v.request = t),
-        ];
-        for (name, read, write) in changes {
+        for name in [
+            "device", "method", "target", "origin", "body", "time", "request",
+        ] {
             let mut changed = vector();
-            let text = read(&changed);
-            write(&mut changed, flip(&text));
+            let field = match name {
+                "device" => &mut changed.device,
+                "method" => &mut changed.method,
+                "target" => &mut changed.target,
+                "origin" => &mut changed.origin,
+                "body" => &mut changed.body,
+                "time" => &mut changed.time,
+                _ => &mut changed.request,
+            };
+            *field = flip(field);
             assert!(!check(&changed), "a changed {name} verified");
         }
         let mut changed = vector();

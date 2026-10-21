@@ -194,7 +194,7 @@ impl fmt::Debug for Exchange {
         f.debug_struct("Exchange")
             .field("cookie", &"<redacted>")
             .field("device", &self.device)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -1662,9 +1662,6 @@ impl FloorSessions {
         body: &[u8],
     ) -> Result<Exchange, ExchangeRefusal> {
         use ExchangeRefusal::{Forbidden, Malformed};
-        if !self.0.authority_matches(host, origin) || !self.0.valid.load(Ordering::Acquire) {
-            return Err(Forbidden);
-        }
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Enrolment {
@@ -1672,6 +1669,9 @@ impl FloorSessions {
             key: String,
             #[serde(default)]
             name: String,
+        }
+        if !self.0.authority_matches(host, origin) || !self.0.valid.load(Ordering::Acquire) {
+            return Err(Forbidden);
         }
         let Enrolment {
             link,
@@ -1784,14 +1784,20 @@ impl FloorSessions {
             .map(|ended| ended.reason)
     }
 
-    /// Whether the cookie names a device that is live now. Asking changes nothing.
+    /// Whether the cookie names a device that is live now. A device that ran out is ended and
+    /// remembered here, so the refusal that follows can say why.
     pub(crate) fn knows(&self, cookie: &str) -> bool {
         let cookie = digest(cookie.as_bytes());
-        let registry::Locked { state, now } = self.0.registry.lock_at_now();
-        self.0.valid.load(Ordering::Acquire)
-            && state.sessions.get(&cookie).is_some_and(|session| {
-                session.live_at(now) && !session.revoked.load(Ordering::Acquire)
-            })
+        let live = {
+            let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
+            state.prune(now);
+            self.0.valid.load(Ordering::Acquire)
+                && state.sessions.get(&cookie).is_some_and(|session| {
+                    session.live_at(now) && !session.revoked.load(Ordering::Acquire)
+                })
+        };
+        self.0.settle(None);
+        live
     }
 
     /// The signed-in devices, newest sign-in first. `me` marks the asking browser.
@@ -2536,14 +2542,14 @@ mod tests {
 
     fn acts(sessions: &FloorSessions, session: &Joined) -> bool {
         sessions
-            .enter(LIFETIME_HOST, LIFETIME_ORIGIN, &session)
+            .enter(LIFETIME_HOST, LIFETIME_ORIGIN, session)
             .is_some()
     }
 
     fn watch(sessions: &FloorSessions, session: &Joined, visible: bool) -> StreamSession {
         let stream = sessions
             .authorizer()
-            .stream(LIFETIME_HOST, LIFETIME_ORIGIN, &session)
+            .stream(LIFETIME_HOST, LIFETIME_ORIGIN, session)
             .expect("an open stream");
         stream.set_visible(visible);
         stream
@@ -2676,7 +2682,7 @@ mod tests {
         );
         let identity = |s: &Joined| {
             sessions
-                .enter(LIFETIME_HOST, LIFETIME_ORIGIN, &s)
+                .enter(LIFETIME_HOST, LIFETIME_ORIGIN, s)
                 .expect("live")
         };
         clock.advance(6 * HOUR_MS);
@@ -2874,7 +2880,7 @@ mod device_tests {
     }
 
     fn acts(sessions: &FloorSessions, device: &Joined) -> bool {
-        sessions.enter(HOST, ORIGIN, &device).is_some()
+        sessions.enter(HOST, ORIGIN, device).is_some()
     }
 
     fn key(device: &Joined) -> [u8; 32] {
@@ -2886,7 +2892,7 @@ mod device_tests {
     }
 
     fn identity(sessions: &FloorSessions, device: &Joined) -> SessionIdentity {
-        sessions.standing(HOST, ORIGIN, &device).expect("live")
+        sessions.standing(HOST, ORIGIN, device).expect("live")
     }
 
     #[test]

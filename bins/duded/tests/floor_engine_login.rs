@@ -4,6 +4,7 @@
 #![cfg(unix)]
 
 mod common;
+use common::PageHttp as _;
 
 use std::collections::BTreeMap;
 use std::io::{self, Read as _, Write as _};

@@ -596,6 +596,10 @@ fn signing_out_closes_the_stream_and_only_an_unknown_session_is_told_so() {
 /// window that does contain an append: `goal.set`'s own returned `(AgentId, GoalId)` — a value the
 /// subject's journal did not supply — must appear in a non-empty suffix that preserves the prefix.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ordered scenario across a close and a control"
+)]
 fn unattached_browser_close_appends_no_domain_record() {
     let fixture = Fixture::new();
     let port = free_port();

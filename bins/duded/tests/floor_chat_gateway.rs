@@ -7,13 +7,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use duded::config::load_operator_with_options;
+use duded::floor_browser::Page;
 use duded::ports::Ask;
 use duded::settings::{FloorSettings, RunOptions};
 use dudes_proto::Record;
 use dudes_proto::rpc::Method;
 use dudes_proto::rpc::cred::OperatorCredential;
-use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_rpc::Client;
+use dudes_supervisor::Clock as _;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tracing::field::{Field, Visit};
@@ -21,6 +22,7 @@ use tracing::span::{Attributes, Id, Record as SpanRecord};
 use tracing::{Event, Level, Metadata, Subscriber};
 
 mod common;
+use common::PageHttp as _;
 
 use common::{Fixture, ScriptedRunner, SharedHost, TestClock, goal_params, seams};
 
@@ -33,8 +35,7 @@ const FLOOR_FIXTURE: &str = concat!(
 
 struct Browser {
     addr: SocketAddr,
-    cookie: String,
-    csrf: String,
+    page: Page,
     clock: Arc<TestClock>,
     failure: duded::runtime::AppendFailure,
     host: Option<SharedHost>,
@@ -109,45 +110,16 @@ where
     let failure = daemon.append_failure();
     let addr = daemon.floor_addr().expect("Floor address");
     let running = common::start(daemon);
-    let fixture_credential = std::fs::read_to_string(
-        settings
-            .runtime_dir
-            .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
-    )
-    .expect("owned fixture credential");
-    let mut client = Client::connect(settings.socket()).expect("fixture operator socket");
-    let result = client
-        .call_as_operator(
-            Method::FloorSessionIssue,
-            None,
-            OperatorCredential::new(fixture_credential).expect("fixture credential type"),
-        )
-        .expect("session issue");
-    let issue: SessionIssueResult =
-        serde_json::from_value(result.result.expect("session issue result"))
-            .expect("typed session");
-    let request = format!(
-        "POST /floor/session HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: {}\r\n\r\n{}",
-        issue.bootstrap.len(),
-        issue.bootstrap
-    );
-    let (code, head, body) = http(addr, request.as_bytes());
-    assert_eq!(code, 200);
-    let cookie = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
-        .and_then(|value| value.split(';').next())
-        .expect("fixture cookie")
-        .to_owned();
-    let body: Value = serde_json::from_slice(&body).expect("session exchange JSON");
-    let csrf = body["csrf"].as_str().expect("fixture CSRF").to_owned();
+    let page = common::floor_session(&settings, addr).on_clock({
+        let clock = Arc::clone(&clock);
+        move || clock.now().unix_millis()
+    });
     (
         settings,
         running,
         Browser {
             addr,
-            cookie,
-            csrf,
+            page,
             clock,
             failure,
             host: None,
@@ -210,24 +182,22 @@ fn response(stream: &mut TcpStream) -> (u16, String, Vec<u8>) {
 }
 
 impl Browser {
+    /// The head of a POST that claims `length` body bytes, signed over an empty body: the daemon
+    /// refuses these before it reads the body.
     fn head(&self, route: &str, length: usize) -> String {
+        let signed = self.page.signed("POST", route, &[]);
         format!(
-            "POST {route} HTTP/1.1\r\nHost: {}\r\nOrigin: http://{}\r\nCookie: dudes_floor_session={}\r\nX-Dudes-CSRF: {}\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n\r\n",
-            self.addr, self.addr, self.cookie, self.csrf
+            "POST {route} HTTP/1.1\r\nHost: {}\r\nOrigin: http://{}\r\nCookie: dudes_floor_session={}\r\n{}Content-Type: application/json\r\nContent-Length: {length}\r\n\r\n",
+            self.addr,
+            self.addr,
+            self.page.cookie,
+            signed.header_lines()
         )
     }
 
     fn post(&self, route: &str, body: &[u8]) -> (u16, Value) {
-        let request = [self.head(route, body.len()).as_bytes(), body].concat();
-        let (code, _, response) = http(self.addr, &request);
-        (
-            code,
-            if response.is_empty() {
-                Value::Null
-            } else {
-                serde_json::from_slice(&response).expect("action JSON")
-            },
-        )
+        let reply = self.page.post_bytes(route, body);
+        (reply.status(), reply.json())
     }
 
     fn snapshot(&self) -> Value {
@@ -239,11 +209,7 @@ impl Browser {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("stream read bound");
-        let addr = self.addr;
-        let request = format!(
-            "GET /floor/stream HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: dudes-floor-v3, dudes-csrf.{}\r\nCookie: dudes_floor_session={}\r\n\r\n",
-            self.csrf, self.cookie
-        );
+        let request = self.page.upgrade_head("/floor/stream", "dudes-floor-v4");
         stream.write_all(request.as_bytes()).expect("upgrade write");
         assert_eq!(response(&mut stream).0, 101);
         let payload = b"{\"type\":\"floor.subscribe\"}";
@@ -476,8 +442,7 @@ fn queued_send_cancel_and_retries_are_durable_and_attributed() {
     );
     let encoded = serde_json::to_string(&notes).unwrap();
     assert!(!encoded.contains(REQUEST_ID));
-    assert!(!encoded.contains(&browser.cookie));
-    assert!(!encoded.contains(&browser.csrf));
+    assert!(!encoded.contains(&browser.page.cookie));
     running
         .handle
         .ask(Ask::Retire(Box::new(
@@ -514,7 +479,7 @@ fn chat_routes_refuse_oversize_and_expired_sessions_without_waiting_for_body() {
         let request = browser.head(route, 16_385);
         assert_eq!(http(browser.addr, request.as_bytes()).0, 413);
         let request = browser.head(route, 16_384).replace(
-            &browser.cookie,
+            &browser.page.cookie,
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         );
         assert_eq!(http(browser.addr, request.as_bytes()).0, 403);
@@ -1821,7 +1786,8 @@ fn owned_authenticated_browser_chat_smoke() {
         retire: false,
         renew: false,
     };
-    let (_, mut running, browser) = start_configured(RunOptions::default(), None, settings, None);
+    let (settings, mut running, browser) =
+        start_configured(RunOptions::default(), None, settings, None);
     let agent = common::hire(&running.handle, fixture.state.path());
     common::set_goal(
         &running.handle,
@@ -1860,7 +1826,7 @@ fn owned_authenticated_browser_chat_smoke() {
     });
     let result = with_owned_chrome(|marker| {
         let input = serde_json::to_vec(&json!({"baseUrl": format!("http://{}", browser.addr),
-            "cookie": browser.cookie, "csrf": browser.csrf, "agentId": agent, "agentName": "Hector",
+            "link": common::floor_link(&settings), "agentId": agent, "agentName": "Hector",
             "agentPausedId": paused, "agentPausedName": "Hector", "devToolsPath": marker}))
         .unwrap();
         let spec = dudes_providers::launch::LaunchSpec {

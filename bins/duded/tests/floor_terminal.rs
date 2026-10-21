@@ -4,6 +4,7 @@
 #![cfg(unix)]
 
 mod common;
+use common::PageHttp as _;
 
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};

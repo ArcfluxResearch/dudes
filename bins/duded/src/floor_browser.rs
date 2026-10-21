@@ -2,11 +2,10 @@
 //! signs each request and socket handshake the way the page does. Only tests and the `testing`
 //! feature compile it, so the daemon carries no signing code of its own.
 
-use std::io::{Read as _, Write as _};
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -193,6 +192,10 @@ impl Browser {
 
     /// A request ready for the registry to check, signed at `time_ms`.
     #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a test helper that spells out every part of the request"
+    )]
     pub fn presentation<'a>(
         &self,
         host: &'a str,
@@ -219,84 +222,6 @@ impl Default for Browser {
     }
 }
 
-/// What a Floor listener sent back: its head, and its body.
-#[derive(Clone, Debug)]
-pub struct Reply {
-    /// The status line and headers.
-    pub head: String,
-    /// The body bytes.
-    pub body: Vec<u8>,
-}
-
-impl Reply {
-    /// The status code.
-    #[must_use]
-    pub fn status(&self) -> u16 {
-        self.head
-            .split_whitespace()
-            .nth(1)
-            .and_then(|code| code.parse().ok())
-            .expect("a status line")
-    }
-
-    /// The body as JSON, `Null` when empty.
-    #[must_use]
-    pub fn json(&self) -> serde_json::Value {
-        if self.body.is_empty() {
-            serde_json::Value::Null
-        } else {
-            serde_json::from_slice(&self.body).expect("a JSON body")
-        }
-    }
-
-    /// The cookie value a `Set-Cookie` line carries, when it carries one.
-    #[must_use]
-    pub fn cookie(&self) -> Option<String> {
-        self.head
-            .lines()
-            .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
-            .and_then(|value| value.split(';').next())
-            .map(str::to_owned)
-    }
-}
-
-/// Send one raw request to the Floor listener and read its answer to the end. The caller writes
-/// the whole request, head and body.
-///
-/// # Panics
-/// When the listener cannot be reached or answers without a head.
-#[must_use]
-pub fn send(addr: SocketAddr, request: &[u8]) -> Reply {
-    let mut stream = TcpStream::connect(addr).expect("the Floor listener");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("a read timeout");
-    stream.write_all(request).expect("the request");
-    read_reply(&mut stream)
-}
-
-/// Read one answer from a stream: the head up to its blank line, then a `Content-Length` body.
-///
-/// # Panics
-/// When the stream ends or times out before a head arrives.
-#[must_use]
-pub fn read_reply(stream: &mut TcpStream) -> Reply {
-    let mut head = Vec::new();
-    let mut byte = [0_u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        stream.read_exact(&mut byte).expect("a response head");
-        head.push(byte[0]);
-    }
-    let head = String::from_utf8(head).expect("an ASCII head");
-    let length = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Content-Length: "))
-        .map_or(0, |value| value.parse().expect("a decimal length"));
-    let mut body = vec![0; length];
-    stream.read_exact(&mut body).expect("a response body");
-    Reply { head, body }
-}
-
 /// Where a page reads the time it signs with.
 type Now = Arc<dyn Fn() -> i64 + Send + Sync>;
 
@@ -313,27 +238,6 @@ pub struct Page {
 }
 
 impl Page {
-    /// Enrol `browser` with `link` and keep the cookie.
-    ///
-    /// # Panics
-    /// When the exchange is refused.
-    #[must_use]
-    pub fn enrol(addr: SocketAddr, browser: Browser, link: &str) -> Self {
-        let reply = Self::try_enrol(addr, &browser, link, "Test browser");
-        assert_eq!(reply.status(), 200, "{}", reply.head);
-        let cookie = reply.cookie().expect("a session cookie");
-        assert_eq!(
-            reply.json()["device"].as_str(),
-            Some(browser.device().to_string().as_str())
-        );
-        Self {
-            addr,
-            cookie,
-            browser,
-            now: Arc::new(Browser::now_ms),
-        }
-    }
-
     /// A page for a cookie the Floor already gave `browser`.
     #[must_use]
     pub fn new(addr: SocketAddr, cookie: String, browser: Browser) -> Self {
@@ -343,15 +247,6 @@ impl Page {
             browser,
             now: Arc::new(Browser::now_ms),
         }
-    }
-
-    /// Enrol a browser with a key of its own.
-    ///
-    /// # Panics
-    /// When the exchange is refused.
-    #[must_use]
-    pub fn enrol_new(addr: SocketAddr, link: &str) -> Self {
-        Self::enrol(addr, Browser::new(), link)
     }
 
     /// Sign with this clock, in milliseconds, instead of the system's. A test whose daemon runs
@@ -375,53 +270,10 @@ impl Page {
             .sign(method, target, &self.origin(), body, self.now_ms())
     }
 
-    /// Send an exchange and return whatever the listener answers.
-    #[must_use]
-    pub fn try_enrol(addr: SocketAddr, browser: &Browser, link: &str, name: &str) -> Reply {
-        let host = addr.to_string();
-        let body = browser.enrolment(link, name);
-        send(
-            addr,
-            format!(
-                "POST /floor/session HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-                body.len()
-            )
-            .as_bytes(),
-        )
-    }
-
     /// The origin this page signs for.
     #[must_use]
     pub fn origin(&self) -> String {
         format!("http://{}", self.addr)
-    }
-
-    /// A signed POST of JSON, as the page sends one.
-    #[must_use]
-    pub fn post(&self, path: &str, body: &serde_json::Value) -> Reply {
-        self.post_bytes(path, &serde_json::to_vec(body).expect("JSON"))
-    }
-
-    /// A signed POST of exactly these bytes.
-    #[must_use]
-    pub fn post_bytes(&self, path: &str, body: &[u8]) -> Reply {
-        let signed = self.signed("POST", path, body);
-        self.post_signed(path, body, Some(&signed))
-    }
-
-    /// A POST with the values given, or none, so a test can send a bad one.
-    #[must_use]
-    pub fn post_signed(&self, path: &str, body: &[u8], signed: Option<&Signed>) -> Reply {
-        let host = self.addr.to_string();
-        let lines = signed.map(Signed::header_lines).unwrap_or_default();
-        let mut request = format!(
-            "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={}\r\n{lines}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-            self.cookie,
-            body.len()
-        )
-        .into_bytes();
-        request.extend_from_slice(body);
-        send(self.addr, &request)
     }
 
     /// The head of a signed socket handshake for `path`, offering `route_protocol` and the

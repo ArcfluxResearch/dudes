@@ -2332,7 +2332,7 @@ pub(crate) fn floor_session(
     settings: &Settings,
     addr: std::net::SocketAddr,
 ) -> duded::floor_browser::Page {
-    duded::floor_browser::Page::enrol_new(addr, &floor_link(settings))
+    <duded::floor_browser::Page as PageHttp>::enrol_new(addr, &floor_link(settings))
 }
 
 /// One authenticated Floor action POST: the response head and its JSON body, `Null` when empty.
@@ -2344,4 +2344,159 @@ pub(crate) fn floor_post(
     let reply = page.post(path, body);
     let json = reply.json();
     (reply.head, json)
+}
+
+/// What a Floor listener sent back: its head, and its body.
+#[derive(Clone, Debug)]
+pub(crate) struct Reply {
+    pub(crate) head: String,
+    pub(crate) body: Vec<u8>,
+}
+
+impl Reply {
+    pub(crate) fn status(&self) -> u16 {
+        self.head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .expect("a status line")
+    }
+
+    /// The body as JSON, `Null` when empty.
+    pub(crate) fn json(&self) -> serde_json::Value {
+        if self.body.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&self.body).expect("a JSON body")
+        }
+    }
+
+    /// The cookie value a `Set-Cookie` line carries, when it carries one.
+    pub(crate) fn cookie(&self) -> Option<String> {
+        self.head
+            .lines()
+            .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
+            .and_then(|value| value.split(';').next())
+            .map(str::to_owned)
+    }
+}
+
+/// Send one raw request to the Floor listener and read its answer to the end.
+pub(crate) fn send(addr: std::net::SocketAddr, request: &[u8]) -> Reply {
+    use std::io::{Read as _, Write as _};
+    let mut stream = std::net::TcpStream::connect(addr).expect("the Floor listener");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("a read timeout");
+    stream.write_all(request).expect("the request");
+    let mut head = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).expect("a response head");
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8(head).expect("an ASCII head");
+    let length = head
+        .lines()
+        .find_map(|line| line.strip_prefix("Content-Length: "))
+        .map_or(0, |value| value.parse().expect("a decimal length"));
+    let mut body = vec![0; length];
+    stream.read_exact(&mut body).expect("a response body");
+    Reply { head, body }
+}
+
+/// The requests a test sends a Floor listener as a signed-in page.
+pub(crate) trait PageHttp: Sized {
+    /// Enrol `browser` with `link` and keep the cookie.
+    fn enrol(
+        addr: std::net::SocketAddr,
+        browser: duded::floor_browser::Browser,
+        link: &str,
+    ) -> Self;
+    /// Enrol a browser with a key of its own.
+    fn enrol_new(addr: std::net::SocketAddr, link: &str) -> Self {
+        Self::enrol(addr, duded::floor_browser::Browser::new(), link)
+    }
+    /// Send an exchange and return whatever the listener answers.
+    fn try_enrol(
+        addr: std::net::SocketAddr,
+        browser: &duded::floor_browser::Browser,
+        link: &str,
+        name: &str,
+    ) -> Reply;
+    /// A signed POST of JSON, as the page sends one.
+    fn post(&self, path: &str, body: &serde_json::Value) -> Reply;
+    /// A signed POST of exactly these bytes.
+    fn post_bytes(&self, path: &str, body: &[u8]) -> Reply;
+    /// A POST with the values given, or none, so a test can send a bad one.
+    fn post_signed(
+        &self,
+        path: &str,
+        body: &[u8],
+        signed: Option<&duded::floor_browser::Signed>,
+    ) -> Reply;
+}
+
+impl PageHttp for duded::floor_browser::Page {
+    fn enrol(
+        addr: std::net::SocketAddr,
+        browser: duded::floor_browser::Browser,
+        link: &str,
+    ) -> Self {
+        let reply = Self::try_enrol(addr, &browser, link, "Test browser");
+        assert_eq!(reply.status(), 200, "{}", reply.head);
+        let cookie = reply.cookie().expect("a session cookie");
+        assert_eq!(
+            reply.json()["device"].as_str(),
+            Some(browser.device().to_string().as_str())
+        );
+        Self::new(addr, cookie, browser)
+    }
+
+    fn try_enrol(
+        addr: std::net::SocketAddr,
+        browser: &duded::floor_browser::Browser,
+        link: &str,
+        name: &str,
+    ) -> Reply {
+        let host = addr.to_string();
+        let body = browser.enrolment(link, name);
+        send(
+            addr,
+            format!(
+                "POST /floor/session HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+    }
+
+    fn post(&self, path: &str, body: &serde_json::Value) -> Reply {
+        self.post_bytes(path, &serde_json::to_vec(body).expect("JSON"))
+    }
+
+    fn post_bytes(&self, path: &str, body: &[u8]) -> Reply {
+        let signed = self.signed("POST", path, body);
+        self.post_signed(path, body, Some(&signed))
+    }
+
+    fn post_signed(
+        &self,
+        path: &str,
+        body: &[u8],
+        signed: Option<&duded::floor_browser::Signed>,
+    ) -> Reply {
+        let host = self.addr.to_string();
+        let lines = signed
+            .map(duded::floor_browser::Signed::header_lines)
+            .unwrap_or_default();
+        let mut request = format!(
+            "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={}\r\n{lines}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            self.cookie,
+            body.len()
+        )
+        .into_bytes();
+        request.extend_from_slice(body);
+        send(self.addr, &request)
+    }
 }
