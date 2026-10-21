@@ -23,7 +23,7 @@ import { ACTION_LABEL, actionsOf, agentChoiceSentence, agentRow, cardWords, noPr
 import type { TicketAction } from './model.ts';
 import { agentsFor, ticketActionsOpen, TicketNotice } from './TicketBoard.tsx';
 import { changeTicket, getTicketState, subscribeToTicket } from './ticket.ts';
-import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, reasonSentence, stateName } from './words.ts';
+import { AGENT_SAYS, NO_SUMMARY, agentWithoutProjectSentence, engineStopped, reasonSentence, stateName } from './words.ts';
 import { StuckActions } from './StuckActions.tsx';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 
@@ -166,6 +166,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
   const ticket = card.ticket;
   const words = cardWords(floor, card);
   const loaded = mine?.detail ?? null;
+  const failure = engineStopped(ticket?.last_turn_end);
   return <>
     <dl>
       <div><dt>State</dt><dd>{stateName(card.status)}</dd></div>
@@ -174,6 +175,7 @@ function Facts({ floor, card }: { readonly floor: FloorState; readonly card: Car
       {ticket === null ? null : <div><dt>Round</dt><dd>{loaded?.round ?? ticket.round}</dd></div>}
       {words.place === null ? null : <div><dt>Place</dt><dd>{words.place}</dd></div>}
     </dl>
+    {failure === null ? null : <p className="ticket-needs" role="note">{failure}</p>}
     {card.status === 'blocked' ? <p className="ticket-needs" role="note">{reasonSentence(ticket?.reason ?? null)}</p>
       : (loaded?.waiting ?? null) !== null ? <p className="ticket-wait">{loaded?.waiting?.note}</p>
         : words.note === null ? null : <p className="ticket-wait">{words.note}</p>}

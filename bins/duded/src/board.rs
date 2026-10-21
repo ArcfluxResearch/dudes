@@ -111,6 +111,13 @@ pub(crate) fn largest_ticket() -> CardTicket {
         round: u32::from(u16::MAX),
         reason: Some(TicketReason::ProjectUnavailable),
         stopping: true,
+        last_turn_end: Some(dudes_proto::TicketTurnEnd {
+            exit: dudes_proto::ExitStatus {
+                code: Some(i32::MIN),
+                signal: Some(i32::MIN),
+            },
+            at: Timestamp::from_unix_millis(i64::MIN),
+        }),
         instruction_review: Some(dudes_proto::InstructionReviewSummary {
             watermark: dudes_proto::InstructionReviewWatermark {
                 through_lsn: Lsn(u64::MAX),

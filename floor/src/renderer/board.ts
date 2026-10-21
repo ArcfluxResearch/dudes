@@ -21,8 +21,13 @@ export const TICKET_REASONS: readonly TicketReason[] = Object.freeze([
   'shared_instructions_changed', 'shared_instructions_unknown', 'recovery_required',
 ]);
 
+export interface TicketTurnEnd {
+  readonly exit: { readonly code: number | null; readonly signal: number | null };
+  readonly at: number;
+}
+
 /**
- * What a snapshot says of a ticket: codes and counts, never the note, the agent's summary, a path or
+ * What a snapshot says of a ticket: status, counts and the latest engine exit, never the note, a path or
  * the check's output. Those come from the read route when a ticket is opened.
  */
 export interface CardTicketRow {
@@ -33,6 +38,7 @@ export interface CardTicketRow {
   /** The ticket was stopped and its agent is still finishing its current step. */
   readonly stopping: boolean;
   readonly instruction_review?: InstructionReviewSummary;
+  readonly last_turn_end?: TicketTurnEnd;
 }
 
 export interface CardRow {
@@ -90,8 +96,22 @@ function ticketOf(value: unknown): CardTicketRow | null | undefined {
   const review = ticket.instruction_review === undefined || ticket.instruction_review === null
     ? null : decodeInstructionSummary(ticket.instruction_review);
   if (ticket.instruction_review != null && review === null) return undefined;
+  const ended = ticket.last_turn_end == null ? null : object(ticket.last_turn_end);
+  if (ticket.last_turn_end != null && ended === null) return undefined;
+  let lastTurnEnd: TicketTurnEnd | null = null;
+  if (ended !== null) {
+    const exit = object(ended.exit);
+    const code = exit?.code ?? null;
+    const signal = exit?.signal ?? null;
+    const signed = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value)
+      && value >= -2_147_483_648 && value <= 2_147_483_647;
+    if (exit === null || (code !== null && !signed(code)) || (signal !== null && !signed(signal))
+      || typeof ended.at !== 'number' || !Number.isSafeInteger(ended.at) || Math.abs(ended.at) > 8_640_000_000_000_000) return undefined;
+    lastTurnEnd = Object.freeze({ exit: Object.freeze({ code, signal }), at: ended.at });
+  }
   return Object.freeze({ position: place, round: rounds, reason: why as TicketReason | null, stopping: stop,
-    ...(review === null ? {} : { instruction_review: review }) });
+    ...(review === null ? {} : { instruction_review: review }),
+    ...(lastTurnEnd === null ? {} : { last_turn_end: lastTurnEnd }) });
 }
 
 function cardOf(value: unknown): CardRow | null {

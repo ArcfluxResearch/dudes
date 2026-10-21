@@ -46,6 +46,15 @@ pub struct TicketCheckResult {
     pub at: Timestamp,
 }
 
+/// How the latest completed engine turn on a ticket ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TicketTurnEnd {
+    /// The engine process's recorded exit status.
+    pub exit: crate::ExitStatus,
+    /// When the turn's end was recorded.
+    pub at: Timestamp,
+}
+
 /// What the board keeps of a ticket beyond what every card has.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TicketRow {
@@ -75,6 +84,9 @@ pub struct TicketRow {
     /// [`MAX_SUMMARY_BYTES`]. These are the agent's own words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// The newest completed turn on the ticket's goal, retained while another turn runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_end: Option<TicketTurnEnd>,
     /// The daemon's newest run of the check on the ticket's goal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check: Option<TicketCheckResult>,

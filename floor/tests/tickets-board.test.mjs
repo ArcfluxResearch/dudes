@@ -410,3 +410,17 @@ test('creating a ticket sends the title, and the check by id and revision, and n
   void CHECKS;
   void cardId;
 });
+
+test('a failed engine turn is shown on its card and detail until a successful end arrives', () => {
+  const at = new Date(2026, 9, 22, 14, 2).getTime();
+  const show = (exit) => {
+    subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'doing', { claimed_by: ADA }, {
+      last_turn_end: { exit, at },
+    })] });
+    const floor = store.getFloorState();
+    return [board(), renderToStaticMarkup(createElement(TicketPanel, { floor, card: floor.cards[0] }))];
+  };
+  for (const html of show({ code: 1 })) assert.ok(html.includes('The engine stopped (exit 1) at 14:02'), html);
+  for (const html of show({ signal: 15 })) assert.ok(html.includes('The engine stopped (SIGTERM) at 14:02'), html);
+  for (const html of [...show({ code: 0 }), ...show({})]) assert.ok(!html.includes('The engine stopped'), html);
+});

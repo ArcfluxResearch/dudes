@@ -4066,6 +4066,109 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_ticket_turn_reaches_the_floor_and_a_later_success_replaces_it() {
+        use dudes_proto::record::samples;
+        use dudes_proto::{ExitStatus, Record, RecordKind, TicketTurnEnd};
+
+        let mut projected = dudes_journal::Projections::in_memory().unwrap();
+        let mut lsn = 0_u64;
+        let mut apply = |projected: &mut dudes_journal::Projections, record| {
+            lsn += 1;
+            let at = Timestamp::from_unix_millis(i64::try_from(lsn).unwrap() * 1_000);
+            projected
+                .apply(Lsn(lsn), 0, &dudes_proto::Entry { at, record })
+                .unwrap();
+            at
+        };
+        for kind in [
+            RecordKind::AgentHired,
+            RecordKind::TicketCreated,
+            RecordKind::TicketAssigned,
+            RecordKind::TicketStarted,
+            RecordKind::TurnIssued,
+        ] {
+            apply(&mut projected, samples::record(kind));
+        }
+        let mut ended = samples::record(RecordKind::TurnEnded);
+        let failed = ExitStatus {
+            code: Some(1),
+            signal: None,
+        };
+        if let Record::TurnEnded { exit, .. } = &mut ended {
+            *exit = failed;
+        }
+        let at = apply(&mut projected, ended);
+        let before = crate::floor::snapshot(&mut projected, at).unwrap();
+        let expected = Some(TicketTurnEnd { exit: failed, at });
+        assert_eq!(
+            before.cards[0].ticket.as_ref().unwrap().last_turn_end,
+            expected
+        );
+        let frame = serialize_snapshot(&before).unwrap();
+        let wire: Value = serde_json::from_slice(text_payload(&frame).unwrap()).unwrap();
+        assert_eq!(
+            wire["projection"]["cards"][0]["ticket"]["last_turn_end"],
+            serde_json::json!({"exit": {"code": 1}, "at": 6_000})
+        );
+
+        let next = TurnId::from_parts(9, 2);
+        let mut issue = samples::record(RecordKind::TurnIssued);
+        if let Record::TurnIssued { turn, .. } = &mut issue {
+            *turn = next;
+        }
+        apply(&mut projected, issue);
+        assert_eq!(
+            crate::floor::cards(&projected).unwrap()[0]
+                .ticket
+                .as_ref()
+                .unwrap()
+                .last_turn_end,
+            expected
+        );
+        let mut ended = samples::record(RecordKind::TurnEnded);
+        if let Record::TurnEnded { turn, exit, .. } = &mut ended {
+            *turn = next;
+            *exit = ExitStatus {
+                code: Some(0),
+                signal: None,
+            };
+        }
+        let at = apply(&mut projected, ended);
+        let after = crate::floor::snapshot(&mut projected, at).unwrap();
+        let success = after.cards[0]
+            .ticket
+            .as_ref()
+            .unwrap()
+            .last_turn_end
+            .unwrap();
+        assert_eq!(success.exit.code, Some(0));
+        assert_eq!(success.at, at);
+        assert_eq!(delta(&before, &after).cards.len(), 1);
+
+        let unrelated = TurnId::from_parts(9, 3);
+        let mut issue = samples::record(RecordKind::TurnIssued);
+        if let Record::TurnIssued { turn, goal, .. } = &mut issue {
+            *turn = unrelated;
+            *goal = dudes_types::GoalId::from_parts(8, 99);
+        }
+        apply(&mut projected, issue);
+        let mut ended = samples::record(RecordKind::TurnEnded);
+        if let Record::TurnEnded { turn, exit, .. } = &mut ended {
+            *turn = unrelated;
+            *exit = failed;
+        }
+        apply(&mut projected, ended);
+        assert_eq!(
+            crate::floor::cards(&projected).unwrap()[0]
+                .ticket
+                .as_ref()
+                .unwrap()
+                .last_turn_end,
+            Some(success)
+        );
+    }
+
+    #[test]
     fn card_records_reach_the_snapshot_and_changed_card_delta() {
         let mut projected = dudes_journal::Projections::in_memory().unwrap();
         let card = dudes_types::CardId::from_parts(1, 9);
