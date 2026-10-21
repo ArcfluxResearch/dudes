@@ -16,6 +16,7 @@ import { ReadNotice, snapshotReadState } from '../ReadError.tsx';
 import { getOfficePin, setOfficePin, subscribeToOfficePin } from '../view.ts';
 import { desktopNotificationPreference } from '../desktopNotifications.ts';
 import { releaseNotesLabel, releaseNotesUrl } from '../releaseLinks.ts';
+import { DevicesSection } from '../devices/DevicesSection.tsx';
 import { AddProject, RemoveNotice, RemoveProject } from '../project/AddProject.tsx';
 
 const SWITCHES = [
@@ -129,6 +130,7 @@ export function SettingsView({ floor, onSetup }: {
         })}</ul>
     </section>
     <WorkspaceSettings report={report} floor={floor} />
+    <DevicesSection />
     <UnavailableControls floor={floor} control="hire" />
     <OfficeLayoutChoice />
     <section className="settings-about" aria-labelledby="settings-about"><h3 id="settings-about">About</h3>

@@ -72,6 +72,12 @@ function sessionUnknown(ports: StreamPorts): void {
   noteSignInExpired();
 }
 
+/** The daemon confirmed a sign-out here: stop the stream and show the signed-out page. */
+export function showSignedOut(): void {
+  stopStream();
+  noteSignInExpired();
+}
+
 /**
  * The session a refused link was pasted under, by `floorSessionGeneration()`,
  * or `null`. The line it draws stands only while the page still holds that

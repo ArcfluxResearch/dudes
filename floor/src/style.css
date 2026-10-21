@@ -3543,6 +3543,122 @@ samp,
   margin: 0;
 }
 
+.notice-stack > .device-notices {
+  pointer-events: none;
+}
+
+.device-notices ul {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.device-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.6rem;
+  width: fit-content;
+  max-width: min(36rem, calc(100vw - 2rem));
+  box-sizing: border-box;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--accent-ink);
+  border-radius: 0.4rem;
+  background: var(--question);
+  color: var(--ink);
+  box-shadow: 0 8px 28px var(--panel-shadow);
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+}
+
+.device-notice-gone {
+  border-color: var(--line);
+  background: var(--surface);
+}
+
+.device-time {
+  white-space: nowrap;
+}
+
+.device-notice p {
+  flex: 1 1 12rem;
+  margin: 0;
+}
+
+.device-notice button,
+.device-row button {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.device-notice button:focus-visible,
+.device-row button:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+
+.device-list {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.device-row {
+  display: grid;
+  gap: 0.3rem;
+  justify-items: start;
+  padding: 0.6rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.settings-view .device-row dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 1.2rem;
+}
+
+.settings-view .device-row dl > div {
+  display: block;
+  padding: 0;
+  border-top: 0;
+}
+
+.settings-view .device-row dt,
+.settings-view .device-row dd {
+  display: inline;
+  font-size: 0.8rem;
+}
+
+.settings-view .device-row dt::after {
+  content: ': ';
+}
+
+.device-row h4 {
+  margin: 0;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.device-this {
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--accent-ink);
+  border-radius: 999px;
+  color: var(--accent-ink);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
 .notice-stack .done-notice-goal {
   flex: 1 1 8rem;
   min-width: 0;

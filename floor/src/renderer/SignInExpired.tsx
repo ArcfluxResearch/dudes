@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { signedOutReason } from '../session.ts';
+import type { SignedOutReason } from '../session.ts';
 import { copyToClipboard } from './setup/SetupView.tsx';
 
 /**
@@ -14,12 +16,22 @@ export function OpenCommand() {
     <button type="button" className="open-command-copy" onClick={() => copyToClipboard(OPEN)}>Copy</button></span>;
 }
 
-/** Said when this browser has no sign-in the daemon will accept, and the way to get one. */
+const WHY: Readonly<Record<SignedOutReason, string>> = {
+  signed_out: 'You signed out of this Floor in this browser.',
+  removed: 'This browser was removed from another browser or from the terminal.',
+  expired: 'This browser was signed out after 30 days without use, or 90 days in all.',
+  replaced: 'A newer sign-in took this browser\'s place, because a Floor keeps at most eight signed-in browsers.',
+};
+
+/** Said when this browser has no sign-in the daemon will accept, why, and the way to get one. */
 export function SignInExpired() {
+  const reason = signedOutReason();
   return (
     <p className="link-refused" role="alert">
-      You are signed out of this Floor. That happens after a day without use, after 30 days, when you sign out, or
-      when Dudes restarts and cannot keep sign-ins. To sign in again, run <OpenCommand /> in a terminal.
+      {reason === null
+        ? 'You are signed out of this Floor. That happens when you sign out, when the browser is removed, or after 30 days without use or 90 days in all.'
+        : WHY[reason]}
+      {' '}To sign in again, run <OpenCommand /> in a terminal.
     </p>
   );
 }

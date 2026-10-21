@@ -407,6 +407,6 @@ test('each away state says its one thing, in words', async () => {
   for (let looks = 0; away.getAway().kind === 'watching' && looks < 400; looks += 1) await timers.step(AWAY_POLL_MS);
   assert.equal(
     text(),
-    'You are signed out of this Floor. That happens after a day without use, after 30 days, when you sign out, or when Dudes restarts and cannot keep sign-ins. To sign in again, run dudes openCopy in a terminal.',
+    'You are signed out of this Floor. That happens when you sign out, when the browser is removed, or after 30 days without use or 90 days in all. To sign in again, run dudes openCopy in a terminal.',
   );
 });

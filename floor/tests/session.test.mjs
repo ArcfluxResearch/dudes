@@ -76,7 +76,8 @@ test('bootstrap fragment is scrubbed before the same-origin exchange', async () 
     assert.equal(location.hash, '', 'the fragment was removed before fetch');
     assert.equal(url, '/floor/session');
     assert.equal(init.method, 'POST');
-    assert.equal(init.body, BOOTSTRAP);
+    assert.equal(init.body.split('\n')[0], BOOTSTRAP, 'the body is the link, then a name');
+    assert.equal(init.body.split('\n').length, 2);
     assert.equal(init.credentials, 'same-origin');
     assert.equal(init.cache, 'no-store');
     assert.equal(init.referrerPolicy, 'no-referrer');
@@ -207,7 +208,8 @@ test('a fresh bootstrap pasted into the open page is scrubbed, exchanged, and be
   const fetch = async (url, init) => {
     events.push(`fetch:${url}`);
     assert.equal(location.hash, '', 'the fragment was removed before fetch');
-    assert.equal(init.body, BOOTSTRAP);
+    assert.equal(init.body.split('\n')[0], BOOTSTRAP, 'the body is the link, then a name');
+    assert.equal(init.body.split('\n').length, 2);
     return answer(200, { csrf: OTHER_CSRF });
   };
   const session = await reauth(location, history, fetch);

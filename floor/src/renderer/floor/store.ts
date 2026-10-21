@@ -51,6 +51,7 @@ import { decodeSwitchSibling } from './sibling.ts';
 import { decodeCards } from '../board.ts';
 import { decodeWorkspace } from '../workspace.ts';
 import type { CardRow } from '../board.ts';
+import { applyDeviceFrame } from '../devices/devices.ts';
 import { decodeChat, exactObject } from '../chat/model.ts';
 import type { ChatView } from '../chat/model.ts';
 
@@ -541,8 +542,7 @@ export function applyServerFrame(
     case 'floor.device.enrolled':
     case 'floor.device.acknowledged':
     case 'floor.device.removed':
-      // The daemon announces browsers signing in and out. This page does not show them yet, so
-      // it accepts the frame, which is a message of the protocol, and keeps its view as it is.
+      applyDeviceFrame(message);
       return;
     case 'floor.output.snapshot':
     case 'floor.output.chunk':
