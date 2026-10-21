@@ -636,6 +636,8 @@ pub enum Ask {
         /// What the operator vouched for.
         vouch: Option<Box<crate::worktree::trust::Vouch>>,
     },
+    /// One change to the Floor's device table, answered once its record is durable.
+    FloorDevice(dudes_supervisor::FloorDeviceChange),
 }
 
 /// What the loop answered.

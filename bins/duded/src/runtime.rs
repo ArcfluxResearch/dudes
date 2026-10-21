@@ -5069,6 +5069,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     format!("project trust: no project is named `{workspace_id}`"),
                 )),
             },
+            Ask::FloorDevice(change) => {
+                self.pump_or_refuse(Input::Command(Command::RecordFloorDevice(change)))?;
+                Ok(Answered::Done)
+            }
             Ask::TrustSet {
                 workspace_id,
                 directory,

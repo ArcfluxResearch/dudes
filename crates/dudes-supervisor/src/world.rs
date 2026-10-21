@@ -21,14 +21,14 @@ use std::path::PathBuf;
 
 #[cfg(test)]
 mod attached_turn_end_tests;
+mod devices;
 mod mail_wakes;
 mod mcp;
 mod recovery;
-mod devices;
 mod worktrees;
 
-pub use mcp::{McpGrant, McpHistoryError, McpPolicy};
 pub use devices::DeviceRow;
+pub use mcp::{McpGrant, McpHistoryError, McpPolicy};
 pub use worktrees::{TrustGrant, WorktreeRow, WorktreeState};
 
 use dudes_policy::{

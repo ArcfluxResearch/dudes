@@ -90,6 +90,17 @@ impl Hex32 {
     pub const fn bytes(self) -> [u8; 32] {
         self.0
     }
+
+    /// The 64 lowercase hexadecimal characters the wire writes.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        let mut hex = String::with_capacity(64);
+        for byte in self.0 {
+            use std::fmt::Write as _;
+            write!(&mut hex, "{byte:02x}").expect("writing into String");
+        }
+        hex
+    }
 }
 
 impl JsonSchema for Hex32 {
@@ -103,12 +114,7 @@ impl JsonSchema for Hex32 {
 
 impl Serialize for Hex32 {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut hex = String::with_capacity(64);
-        for byte in self.0 {
-            use std::fmt::Write as _;
-            write!(&mut hex, "{byte:02x}").expect("writing into String");
-        }
-        serializer.serialize_str(&hex)
+        serializer.serialize_str(&self.to_hex())
     }
 }
 

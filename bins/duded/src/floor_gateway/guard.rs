@@ -29,14 +29,15 @@ use std::io;
 use dudes_proto::FloorPeerRefusal;
 
 use super::{
-    ANSWER_PATH, ActionRoute, CHAT_CANCEL_PATH, CHAT_SEND_PATH, Catalog, Clock, DIFF_PATH,
-    ENGINE_LOGIN_PATH, FloorSessions, GIT_PATH, GOAL_PATH, Handle, INSPECT_RECOVERY_PATH,
-    LOOK_PATH, MEMORY_ENTRY_PATH, MEMORY_PAGE_PATH, ONBOARD_PATH, PAUSE_PATH, PROJECT_ADD_PATH,
-    PROJECT_PREVIEW_PATH, PROJECT_REMOVE_PATH, RECEIPT_RECOVERY_PATH, RENAME_PATH, RENEW_PATH,
-    RESUME_PATH, RETIRE_PATH, ReceiptSession, RecoveryRoute, Response, SESSION_CHECK_PATH,
-    SESSION_END_PATH, SESSION_PROVE_PATH, SETTINGS_PATH, SIGN_IN_PATH, STREAM_PATH,
-    SUBMIT_RECOVERY_PATH, SessionIdentity, SocketAddr, SocketRoute, SocketSession, TERMINAL_PATH,
-    TicketRoute, error_response,
+    ANSWER_PATH, ActionRoute, CHAT_CANCEL_PATH, CHAT_SEND_PATH, Catalog, Clock, DEVICES_KEEP_PATH,
+    DEVICES_PATH, DEVICES_REMOVE_PATH, DIFF_PATH, DeviceVerb, ENGINE_LOGIN_PATH, FloorSessions,
+    GIT_PATH, GOAL_PATH, Handle, INSPECT_RECOVERY_PATH, LOOK_PATH, MEMORY_ENTRY_PATH,
+    MEMORY_PAGE_PATH, ONBOARD_PATH, PAUSE_PATH, PROJECT_ADD_PATH, PROJECT_PREVIEW_PATH,
+    PROJECT_REMOVE_PATH, RECEIPT_RECOVERY_PATH, RENAME_PATH, RENEW_PATH, RESUME_PATH, RETIRE_PATH,
+    ReceiptSession, RecoveryRoute, Response, SESSION_CHECK_PATH, SESSION_END_PATH,
+    SESSION_PROVE_PATH, SETTINGS_PATH, SIGN_IN_PATH, STREAM_PATH, SUBMIT_RECOVERY_PATH,
+    SessionIdentity, SocketAddr, SocketRoute, SocketSession, TERMINAL_PATH, TicketRoute,
+    action_json, error_response,
 };
 use crate::floor_peer::Verdict;
 
@@ -72,6 +73,9 @@ pub(super) const DYNAMIC_PATHS: &[&str] = &[
     MEMORY_ENTRY_PATH,
     CHAT_SEND_PATH,
     CHAT_CANCEL_PATH,
+    DEVICES_PATH,
+    DEVICES_REMOVE_PATH,
+    DEVICES_KEEP_PATH,
     "/floor/ticket",
     "/floor/ticket/edit",
     "/floor/ticket/assign",
@@ -178,6 +182,7 @@ impl Route {
                     | ActionRoute::Memory(_)
                     | ActionRoute::Recovery(RecoveryRoute::Inspect | RecoveryRoute::Receipt)
                     | ActionRoute::Ticket(TicketRoute::Read)
+                    | ActionRoute::Devices(DeviceVerb::List)
             ),
         }
     }
@@ -338,7 +343,7 @@ impl Guard<'_> {
                         .map(SocketSession::Login),
                 }
                 .map(Admitted::Socket)
-                .ok_or_else(forbidden)?;
+                .ok_or_else(|| self.refused(head))?;
                 Ok(Admission {
                     admitted,
                     body: Vec::new(),
@@ -358,12 +363,30 @@ impl Guard<'_> {
                         .authorize_onboard(host, origin, cookie, secret)
                         .map(Admitted::Session)
                 }
-                .ok_or_else(forbidden)?;
+                .ok_or_else(|| self.refused(head))?;
                 let body = read_body()?;
                 clean_body(&body)?;
                 Ok(Admission { admitted, body })
             }
         }
+    }
+
+    /// The refusal for credentials that name no live device. When they name one that was removed,
+    /// expired or replaced, the answer says which, so the page can tell the person. Only the
+    /// cookie and the secret together earn that, and nothing else about the device is said.
+    fn refused(self, head: &Head) -> Denied {
+        let gone = head.credentials.as_ref().and_then(|credentials| {
+            self.sessions
+                .gone_reason(&credentials.cookie, &credentials.secret)
+        });
+        Denied::Response(match gone {
+            Some(reason) => action_json(
+                403,
+                "Forbidden",
+                &serde_json::json!({ "session": "gone", "reason": reason.code() }),
+            ),
+            None => error_response(403, "Forbidden"),
+        })
     }
 
     /// Find the process on the other end of the connection and refuse it when it is inside an
