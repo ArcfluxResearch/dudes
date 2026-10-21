@@ -42,9 +42,13 @@ mod common;
 
 #[cfg(unix)]
 use std::ffi::OsString;
+#[cfg(unix)]
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use dudes_host::RealHost;
+#[cfg(unix)]
+use dudes_host::{ChildExit, ChildStream, ChildStreams};
 use dudes_supervisor::host::{AdoptionKey, KillOutcome, Liveness, ProcessHost};
 
 /// Not a test. See [`common::run_if_helper`].
@@ -55,12 +59,6 @@ fn the_helper_entry_point() {
 
 /// Short, because both arms wait it out and neither is about how long a child is given.
 const GRACE: Duration = Duration::from_millis(300);
-
-/// How long the owner's watcher thread has to reap after the hard signal. Reaping is not part of
-/// the kill's promise, and a starved CI runner can delay that thread past the kill grace; a child
-/// that never receives the hard signal still never goes `Gone`, so this only delays that failure.
-#[cfg(unix)]
-const REAP_DEADLINE: Duration = Duration::from_secs(5);
 
 /// What the host answers for a child it killed and reaped. Windows never claims positive absence:
 /// `src/windows.rs` documents why a pid that no longer opens answers `Unknown`, not `Gone`.
@@ -139,25 +137,23 @@ fn term_ignoring_spec(
     spec
 }
 
-/// The adopter has no child handle and therefore cannot wait. Its signal result only says the
-/// syscall accepted the group; the owner is the independent witness that the recorded child has
-/// actually become absent. A final heartbeat can race the signal delivery, while `Gone` cannot.
 #[cfg(unix)]
-fn await_observed_gone(owner: &RealHost, key: &AdoptionKey) {
-    let started = std::time::Instant::now();
-    let deadline = started + REAP_DEADLINE;
-    loop {
-        let liveness = owner.alive(key);
-        if liveness == Liveness::Gone {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the TERM-ignoring adopted child was not observed gone after the hard signal: \
-             last observed {liveness:?} after {:?}",
-            started.elapsed()
-        );
-        std::thread::sleep(Duration::from_millis(10));
+#[derive(Clone)]
+struct Exits(mpsc::Sender<ChildExit>);
+
+#[cfg(unix)]
+impl ChildStreams for Exits {
+    fn watch(&self, _key: Option<&AdoptionKey>) -> Box<dyn ChildStream> {
+        Box::new(self.clone())
+    }
+}
+
+#[cfg(unix)]
+impl ChildStream for Exits {
+    fn line(&mut self, _text: &str) {}
+
+    fn ended(self: Box<Self>, exit: ChildExit) {
+        let _ = self.0.send(exit);
     }
 }
 
@@ -168,7 +164,8 @@ fn await_observed_gone(owner: &RealHost, key: &AdoptionKey) {
 fn a_real_child_that_ignores_the_polite_signal_is_struck_by_the_hard_one() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let mark = dir.path().join("term-ignoring.pid");
-    let mut owner = ReapOnDrop(RealHost::with_grace(GRACE));
+    let (exits, exited) = mpsc::channel();
+    let mut owner = ReapOnDrop(RealHost::watching_with_grace(Arc::new(Exits(exits)), GRACE));
     let key = common::spawned(
         owner.0.spawn(
             &term_ignoring_spec(&mark, dir.path()),
@@ -186,7 +183,12 @@ fn a_real_child_that_ignores_the_polite_signal_is_struck_by_the_hard_one() {
         matches!(outcome, KillOutcome::Signalled),
         "the adopted hard-kill path did not signal: {outcome:?}"
     );
-    await_observed_gone(&owner.0, &key);
+    let exit = exited
+        .recv_timeout(Duration::from_secs(1))
+        .expect("the owner's watcher reports the hard-killed child");
+    assert_eq!(exit.signal, Some(9));
+    assert_eq!(exit.code, None);
+    assert_eq!(owner.0.alive(&key), Liveness::Gone);
 }
 
 /// Which start value the key handed to the killer carries. The **only** difference between the two

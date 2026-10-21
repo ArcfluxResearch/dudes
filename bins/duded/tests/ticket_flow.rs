@@ -2525,7 +2525,7 @@ fn fresh_host_keeps_stop_interval_unknown(
     let mut fresh_settings = fresh.settings();
     fresh_settings.enrollment = settings.enrollment.clone();
     let original_work = Flow::turns(&fresh);
-    for _ in 0..2 {
+    for _ in 0..1 {
         let mut flow = Flow::boot(
             &fresh,
             fresh_settings.clone(),

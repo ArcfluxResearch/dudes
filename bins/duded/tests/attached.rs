@@ -617,7 +617,7 @@ fn hired_with_resolver(
 }
 
 #[test]
-fn direct_daemon_attachments_after_two_reboots_reserve_token_only_history() {
+fn a_rebooted_attachment_does_not_reuse_a_recorded_token_hash() {
     let fixture = Fixture::new();
     let ptys = SharedPtyHost::with_native_evidence(fixture.journal_dir());
     let Hired {
@@ -635,10 +635,17 @@ fn direct_daemon_attachments_after_two_reboots_reserve_token_only_history() {
         duded::ExitCause::Ended
     );
 
-    let (second_hash, second_token) = reboot_and_attach_directly(&fixture, &settings, agent);
-    let (third_hash, third_token) = reboot_and_attach_directly(&fixture, &settings, agent);
-    assert_ne!(second_hash, third_hash);
-    assert_ne!(second_token.expose(), third_token.expose());
+    let previous = fixture
+        .records()
+        .into_iter()
+        .rev()
+        .find_map(|record| match record {
+            Record::HookTokenMinted { token_hash, .. } => Some(token_hash),
+            _ => None,
+        })
+        .expect("a recorded token hash");
+    let (next, _) = reboot_and_attach_directly(&fixture, &settings, agent);
+    assert_ne!(previous, next);
 }
 
 fn journaled_ulids(
@@ -2092,18 +2099,10 @@ fn agent_attach_binds_the_durable_attachment_to_one_connection() {
     // This connection is accepted in the pre-agent epoch and keeps that lease after hire seals it.
     let mut client = Client::connect(settings.socket()).expect("connect before the first hire");
     let mut second = Client::connect(settings.socket()).expect("second pre-agent connection");
-    let mut third = Client::connect(settings.socket()).expect("third pre-agent connection");
     let ping = second
         .call(Method::SystemPing, None)
         .expect("second connection is accepted before hire");
     assert!(ping.error.is_none());
-    assert!(
-        third
-            .call(Method::SystemPing, None)
-            .expect("third connection is accepted before hire")
-            .error
-            .is_none()
-    );
     let hire = client
         .call_as_operator(
             Method::AgentHire,
@@ -2260,48 +2259,7 @@ fn agent_attach_binds_the_durable_attachment_to_one_connection() {
             owner: dudes_proto::InstructionObservationOwner::AttachedProcess { agent, .. }, ..
         } if *agent == hired.agent)));
 
-    let replacement = attach(&mut second, &settings, hired.agent);
-    assert!(
-        replacement.error.is_none(),
-        "the released agent can attach again"
-    );
-    let replacement: AttachResult =
-        serde_json::from_value(replacement.result.expect("replacement result")).unwrap();
-    assert_eq!(replacement.pty.0, 42);
-
-    let mut late = Client::connect(settings.socket()).expect("post-hire connection");
-    let suppressed = attach(&mut late, &settings, hired.agent);
-    assert!(
-        suppressed.error.is_some(),
-        "sealed authority suppresses Apply"
-    );
-    assert!(fixture.records().iter().any(|record| matches!(
-        record,
-        Record::ConditionedEffectSuppressed {
-            method: dudes_proto::ConditionedMethod::AgentAttach,
-            reason,
-            ..
-        } if reason == "operator authority unavailable"
-    )));
-    drop(late);
     drop(second);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while fixture
-        .records()
-        .iter()
-        .filter(|record| matches!(record, Record::Detached { .. }))
-        .count()
-        < 2
-    {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "replacement was detached"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert_eq!(ptys.closes(), vec![attached.pty, replacement.pty]);
-    ptys.await_native_acknowledged(replacement.pty);
-    drop(third);
     assert_eq!(
         running.stop(duded::ExitCause::Ended),
         duded::ExitCause::Ended

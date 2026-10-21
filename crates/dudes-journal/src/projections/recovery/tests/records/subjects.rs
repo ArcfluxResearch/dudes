@@ -681,20 +681,20 @@ fn different_binding(binding: &RecoveryBinding, field: &str) -> RecoveryBinding 
 #[test]
 fn active_facts_cannot_replace_the_original_hire_provider_model_lease_or_ticket() {
     for issued in [false, true] {
+        let (mut fixture, authorization, _) = fresh(0);
+        if issued {
+            new_issue(&mut fixture, &authorization);
+        }
+        subject(&mut fixture, authorization.binding.work);
+        let rows = cells(&fixture);
         for field in ["hire", "provider", "model", "lease", "ticket"] {
-            let (mut fixture, authorization, _) = fresh(0);
-            if issued {
-                new_issue(&mut fixture, &authorization);
-            }
-            subject(&mut fixture, authorization.binding.work);
             let binding = different_binding(&authorization.binding, field);
-            let rows = cells(&fixture);
             let txn = fixture.projections.db.begin_write().unwrap();
             let mut replaced = 0;
             {
                 let mut table = txn.open_table(RECOVERY).unwrap();
-                for (key, raw) in rows {
-                    let mut value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+                for (key, raw) in &rows {
+                    let mut value: serde_json::Value = serde_json::from_slice(raw).unwrap();
                     if value["kind"] == "episode" || value["kind"] == "authorization" {
                         value["value"]["binding"] = serde_json::to_value(&binding).unwrap();
                         let encoded = serde_json::to_vec(&value).unwrap();

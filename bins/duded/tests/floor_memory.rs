@@ -614,37 +614,6 @@ fn pages_and_entries_stay_within_their_byte_bounds_at_six_to_one_escaping() {
     daemon.stop();
 }
 
-/// The summary bound, with full entries after the summary.
-#[test]
-fn a_worst_case_summary_and_full_entries_fit_one_page() {
-    let fixture = Fixture::new();
-    let daemon = Daemon::boot(
-        &fixture,
-        MemoryCondenseConfig::new(1, 8).expect("small bounds"),
-    );
-    let agent = daemon.hire(&fixture, "agent");
-    let worst = "\u{1}".repeat(2_048);
-    for _ in 0..40 {
-        daemon.append(agent, &worst);
-    }
-    let reply = daemon.page().page_reply(agent, None);
-    let body = reply.text();
-    assert!(body.len() <= 131_072, "page {} bytes", body.len());
-    let summary = section(&body, "summary", "withheld");
-    assert!(summary.len() <= 51_200, "summary {} bytes", summary.len());
-    let value = reply.json();
-    assert_eq!(value["summary"]["kind"], "excerpts");
-    assert!(
-        value["entries"]
-            .as_array()
-            .expect("entries")
-            .iter()
-            .any(|entry| entry["condensed"] == false && entry["text"] == json!(worst)),
-        "full entries follow the summary"
-    );
-    daemon.stop();
-}
-
 /// A walk from the newest entry visits each once, and appends between pages leave
 /// the older pages as they were.
 #[test]

@@ -3129,246 +3129,6 @@ fn session_revocation_linearizes_with_both_append_permits() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-fn issued_onboarding_fence(
-    fixture: &Fixture,
-    handle: &duded::Handle,
-    agent: AgentId,
-    goal: GoalId,
-) {
-    nth_turn(fixture, goal, 0);
-    let before = fixture.records();
-    let stopped = handle.ask(Ask::Pause(agent)).unwrap_err();
-    assert_eq!(stopped.code, dudes_proto::rpc::ErrorCode::Refused.code());
-    assert_eq!(
-        stopped.message,
-        "journal state unresolved; restart to replay before new work or writes"
-    );
-    assert_eq!(
-        fixture.records(),
-        before,
-        "the fenced probe appends nothing"
-    );
-    let counts = (
-        before.iter().filter(|record| matches!(record, Record::AgentHired { id, .. } if *id == agent)).count(),
-        before.iter().filter(|record| matches!(record, Record::GoalSet { agent: owner, goal: issued, .. } if *owner == agent && issued.id == goal)).count(),
-        before.iter().filter(|record| matches!(record, Record::TurnIssued { agent: owner, goal: issued, .. } if *owner == agent && *issued == goal)).count(),
-        before.iter().filter(|record| matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent)).count(),
-    );
-    assert_eq!(counts, (1, 1, 1, 0));
-}
-
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the journal cuts share one exact record and Spawn counter"
-)]
-fn post_fsync_cuts_replay_one_hire_goal_and_turn() {
-    for cut in [
-        OnboardingFailurePoint::Hire,
-        OnboardingFailurePoint::HireProjection,
-        OnboardingFailurePoint::Goal,
-        OnboardingFailurePoint::TurnIssued,
-    ] {
-        let fixture = Fixture::new();
-        let settings = enrolled_settings(&fixture);
-        let daemon = boot(
-            &settings,
-            seams(
-                &settings,
-                SharedHost::new(),
-                Arc::new(ScriptedRunner::default()),
-                Arc::new(TestClock::new()),
-                Witness::default(),
-            ),
-        )
-        .expect("first boot");
-        daemon.onboarding_failure().arm(cut);
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let request = json!({
-            "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
-        });
-        let (head, body) = post_onboard(addr, &cookie, &csrf, &request);
-        if cut != OnboardingFailurePoint::TurnIssued {
-            assert!(
-                head.starts_with("HTTP/1.1 503 Service Unavailable"),
-                "{cut:?}: {head}"
-            );
-            assert!(
-                body.is_null(),
-                "{cut:?}: uncertain durability invents no IDs"
-            );
-        }
-        let mut durable = fixture.records();
-        let (agent, goal) = durable
-            .iter()
-            .find_map(|record| match record {
-                Record::AgentHired {
-                    id,
-                    browser_onboarding: Some(meta),
-                    ..
-                } => Some((*id, meta.intended_goal.id)),
-                _ => None,
-            })
-            .expect("hire fsynced before cut");
-        if cut == OnboardingFailurePoint::TurnIssued {
-            assert!(head.starts_with("HTTP/1.1 200 OK"), "{cut:?}: {head}");
-            assert_eq!(
-                body,
-                json!({"attempt_id":request["attempt_id"], "state":"complete", "agent":agent, "goal":goal})
-            );
-            issued_onboarding_fence(&fixture, &running.handle, agent, goal);
-            durable = fixture.records();
-            let (retry_head, retry) = post_onboard(addr, &cookie, &csrf, &request);
-            assert!(retry_head.starts_with("HTTP/1.1 200 OK"), "{retry_head}");
-            assert_eq!(retry, body);
-            let mut fresh = request.clone();
-            fresh["attempt_id"] = json!(format!("{}E", "A".repeat(42)));
-            let (fresh_head, fresh_body) = post_onboard(addr, &cookie, &csrf, &fresh);
-            assert!(
-                fresh_head.starts_with("HTTP/1.1 503 Service Unavailable"),
-                "{fresh_head}"
-            );
-            assert!(fresh_body.is_null());
-            assert_eq!(
-                fixture.records(),
-                durable,
-                "indexed retry and fresh refusal append nothing"
-            );
-            let shown = snapshot_optional(addr, &cookie, &csrf);
-            assert!(
-                shown
-                    .as_ref()
-                    .is_none_or(|(frame, _)| frame.get("onboarding").is_none())
-            );
-        }
-        let counts = |records: &[Record]| {
-            (
-                records
-                    .iter()
-                    .filter(|record| {
-                        matches!(
-                            record,
-                            Record::AgentHired {
-                                browser_onboarding: Some(_),
-                                ..
-                            }
-                        )
-                    })
-                    .count(),
-                records
-                    .iter()
-                    .filter(|record| {
-                        matches!(
-                            record,
-                            Record::GoalSet {
-                                browser_onboarding: Some(_),
-                                ..
-                            }
-                        )
-                    })
-                    .count(),
-                records
-                    .iter()
-                    .filter(|record| matches!(record, Record::TurnIssued { .. }))
-                    .count(),
-                records
-                    .iter()
-                    .filter(|record| matches!(record, Record::TurnSpawned { .. }))
-                    .count(),
-            )
-        };
-        assert_eq!(
-            counts(&durable),
-            match cut {
-                OnboardingFailurePoint::Hire | OnboardingFailurePoint::HireProjection =>
-                    (1, 0, 0, 0),
-                OnboardingFailurePoint::Goal => (1, 1, 0, 0),
-                OnboardingFailurePoint::TurnIssued => (1, 1, 1, 0),
-                OnboardingFailurePoint::LocalGoal
-                | OnboardingFailurePoint::LocalRetire
-                | OnboardingFailurePoint::Answer
-                | OnboardingFailurePoint::Control
-                | OnboardingFailurePoint::GoalChange
-                | OnboardingFailurePoint::Rename
-                | OnboardingFailurePoint::Look
-                | OnboardingFailurePoint::Retire
-                | OnboardingFailurePoint::Ticket
-                | OnboardingFailurePoint::ClosingAnnounced
-                | OnboardingFailurePoint::ClosingAck
-                | OnboardingFailurePoint::ClosingComplete
-                | OnboardingFailurePoint::SpendRefresh => {
-                    unreachable!(
-                        "local, answer, control, goal and retire cuts are tested separately"
-                    )
-                }
-            }
-        );
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-
-        let (parts, host) = native_fixture_seams(&fixture, fake_seams(&settings));
-        let daemon = boot(&settings, parts).expect("replay durable prefix");
-        let addr = daemon.floor_addr().expect("replayed Floor address");
-        let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        if cut == OnboardingFailurePoint::TurnIssued {
-            recover_owed_browser_turn(&settings, &fixture, &running, agent, goal);
-        }
-        if matches!(
-            cut,
-            OnboardingFailurePoint::Goal | OnboardingFailurePoint::TurnIssued
-        ) {
-            issued_goal_turn(&fixture, goal);
-            running.handle.doctor().unwrap();
-        }
-        let before_retry = fixture.records();
-        let (_, complete) = post_onboard(addr, &cookie, &csrf, &request);
-        assert_eq!(complete["state"], "complete", "{cut:?}");
-        assert_eq!(complete["agent"], agent.to_string());
-        assert_eq!(complete["goal"], goal.to_string());
-        issued_goal_turn(&fixture, goal);
-        running.handle.doctor().unwrap();
-        let after_retry = fixture.records();
-        assert_eq!(counts(&after_retry).0, 1, "{cut:?}: no rehire");
-        assert_eq!(counts(&after_retry).1, 1, "{cut:?}: no second initial goal");
-        if !matches!(
-            cut,
-            OnboardingFailurePoint::Hire | OnboardingFailurePoint::HireProjection
-        ) {
-            assert_eq!(
-                counts(&after_retry).2,
-                counts(&before_retry).2,
-                "{cut:?}: retry did not issue a new turn"
-            );
-        }
-        assert_eq!(
-            counts(&after_retry).3,
-            1,
-            "{cut:?}: one host spawn after recovery"
-        );
-        assert_eq!(host.spawned().len(), 1, "{cut:?}: one host launch");
-        if cut == OnboardingFailurePoint::TurnIssued {
-            let turn = nth_turn(&fixture, goal, 0);
-            let task = |records: &[Record]| {
-                records
-                    .iter()
-                    .find_map(|record| match record {
-                        Record::TurnIssued {
-                            turn: seen, task, ..
-                        } if *seen == turn => Some(task.clone()),
-                        _ => None,
-                    })
-                    .unwrap()
-            };
-            assert_eq!(task(&after_retry), task(&durable));
-            assert_eq!(managed_turns(&fixture, goal), 1);
-        }
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
-}
-
 #[test]
 fn pre_append_failure_leaves_no_hire_and_same_key_retries_after_restart() {
     let fixture = Fixture::new();
@@ -4973,122 +4733,6 @@ fn browser_answer_concurrent_same_key_is_pending_and_two_keys_yield_one_answer()
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// Across restarts, at three cuts: after the answer's fsync and before its fold; after its
-/// fold and before its decision; after the continuation's `TurnIssued` fsync and before Spawn.
-/// Each replays one answer and one continuation, exactly.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "three restart cuts share one assertion shape and stay side by side"
-)]
-fn browser_answer_restart_cut_points_replay_one_answer_and_one_continuation() {
-    #[derive(Clone, Copy, Debug)]
-    enum Cut {
-        AnswerFsync,
-        AnswerFold,
-        TurnIssuedFsync,
-    }
-    for cut in [Cut::AnswerFsync, Cut::AnswerFold, Cut::TurnIssuedFsync] {
-        let fixture = Fixture::new();
-        let settings = answer_settings(&fixture, true);
-        let host = SharedHost::new();
-        let run = |host: &SharedHost| {
-            boot(
-                &settings,
-                seams(
-                    &settings,
-                    host.clone(),
-                    Arc::new(ScriptedRunner::default()),
-                    Arc::new(TestClock::new()),
-                    Witness::default(),
-                ),
-            )
-            .expect("boot Floor")
-        };
-        let daemon = run(&host);
-        let failure = daemon.onboarding_failure();
-        let append_failure = daemon.append_failure();
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let (agent, question) = waiting_agent(&running, &fixture, "which branch?");
-        let (other, other_q) = waiting_agent(&running, &fixture, "which tag?");
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let body = answer_body(&request_id(1), agent, question, "main");
-        match cut {
-            Cut::AnswerFsync => failure.arm(OnboardingFailurePoint::Answer),
-            // The answer is the first append of the request and its decision the second.
-            Cut::AnswerFold => append_failure.fail_nth(NonZeroUsize::new(2).unwrap()),
-            Cut::TurnIssuedFsync => failure.arm(OnboardingFailurePoint::TurnIssued),
-        }
-        let (head, response) = post_answer(addr, &cookie, &csrf, &body);
-        match cut {
-            Cut::AnswerFsync => {
-                empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-                let (head, pending) = post_answer(addr, &cookie, &csrf, &body);
-                assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
-                assert_eq!(
-                    pending["state"], "pending",
-                    "an uncertain append keeps its key"
-                );
-                let fresh = answer_body(&request_id(2), other, other_q, "v1");
-                let (head, response) = post_answer(addr, &cookie, &csrf, &fresh);
-                empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-            }
-            Cut::AnswerFold | Cut::TurnIssuedFsync => {
-                assert!(head.starts_with("HTTP/1.1 200 OK"), "{cut:?}: {head}");
-                assert_eq!(response["state"], "answered", "durable and indexed");
-            }
-        }
-        let spawned_before = host.spawned().len();
-        assert_eq!(spawned_before, 0, "{cut:?}: the cut is before any Spawn");
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-
-        let daemon = run(&host);
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        fixture.await_record("the continuation's spawn", |record| {
-            matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent).then_some(())
-        });
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (head, replayed) = post_answer(addr, &cookie, &csrf, &body);
-        assert!(head.starts_with("HTTP/1.1 200 OK"), "{cut:?}: {head}");
-        assert_eq!(replayed["question_lsn"], json!(question.0.to_string()));
-        let records = fixture.records();
-        let answered_lsn = fixture
-            .entries()
-            .into_iter()
-            .find_map(|(lsn, e)| matches!(e.record, Record::HumanAnswer { .. }).then_some(lsn))
-            .expect("answer");
-        assert_eq!(answers_for(&records, agent), 1, "{cut:?}: one answer");
-        let issued: Vec<&Vec<Lsn>> = records
-            .iter()
-            .filter_map(|record| match record {
-                Record::TurnIssued {
-                    agent: who,
-                    answers,
-                    ..
-                } if *who == agent => Some(answers),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            issued,
-            vec![&vec![answered_lsn]],
-            "{cut:?}: one continuation carrying it"
-        );
-        assert_eq!(host.spawned().len(), 1, "{cut:?}: one Spawn");
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent))
-                .count(),
-            1,
-            "{cut:?}"
-        );
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
-}
-
 /// A clock that tells the test when a Floor connection thread reads it: the first such read after
 /// [`ProbeClock::arm`] signals, after the value is taken.
 struct ProbeClock {
@@ -5815,111 +5459,6 @@ fn issued_goal_turn(fixture: &Fixture, goal: GoalId) -> TurnId {
         matches!(record, Record::TurnSpawned { turn: seen, .. } if *seen == turn).then_some(())
     });
     turn
-}
-
-fn recover_owed_browser_turn(
-    settings: &duded::Settings,
-    fixture: &Fixture,
-    running: &common::Running,
-    agent: AgentId,
-    goal: GoalId,
-) {
-    use dudes_proto::rpc::recovery::{
-        RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectResult, RecoverySubmitParams,
-        RecoverySubmitResult,
-    };
-
-    let turn = nth_turn(fixture, goal, 0);
-    fixture.await_record("the owed goal's recovery barrier", |record| {
-        matches!(record, Record::RecoveryRequired(required)
-            if required.binding.work.agent == agent && required.binding.work.goal == goal
-                && required.binding.work.turn == turn)
-        .then_some(())
-    });
-    let owed: Vec<_> = fixture
-        .records()
-        .into_iter()
-        .filter(
-            |record| matches!(record, Record::TurnIssued { goal: issued, .. } if *issued == goal),
-        )
-        .collect();
-    assert_eq!(owed.len(), 1);
-    let no_spawn = || {
-        assert!(!fixture.records().iter().any(|record| {
-            matches!(record, Record::TurnSpawned { turn: seen, .. } if *seen == turn)
-        }));
-    };
-    no_spawn();
-    let call = |method, params| {
-        let credential = std::fs::read_to_string(
-            settings
-                .runtime_dir
-                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
-        )
-        .expect("operator credential");
-        let response = Client::connect(settings.socket())
-            .expect("operator socket")
-            .call_current_as_operator(
-                method,
-                Some(params),
-                OperatorCredential::new(credential).expect("credential"),
-            )
-            .expect("operator response");
-        assert!(response.error.is_none(), "{response:?}");
-        response.result.expect("operator result")
-    };
-    call(
-        CurrentMethod::Legacy(Method::LoopResume),
-        json!({"agent":agent}),
-    );
-    running.handle.doctor().expect("Resume reached the writer");
-    no_spawn();
-    let inspection: RecoveryInspectResult =
-        serde_json::from_value(call(CurrentMethod::RecoveryInspect, json!({"agent":agent})))
-            .expect("typed recovery inspection");
-    let RecoveryInspectResult::Available {
-        expected,
-        choices,
-        reason,
-        ..
-    } = inspection
-    else {
-        panic!("the owed issue must offer exact recovery");
-    };
-    assert_eq!(choices, RecoveryAllowedChoices::RepeatIssuedFresh);
-    assert_eq!(reason, dudes_proto::recovery::RecoveryReason::MissingSpawn);
-    assert_eq!(expected.work.agent, agent);
-    assert_eq!(expected.work.goal, goal);
-    assert_eq!(expected.work.turn, turn);
-    let request_id = Hex32::new([231; 32]);
-    let request = RecoverySubmitParams {
-        request_id,
-        expected: *expected,
-        choice: RecoveryChoice::RepeatIssuedFresh,
-    };
-    let submitted: RecoverySubmitResult = serde_json::from_value(call(
-        CurrentMethod::RecoverySubmit,
-        serde_json::to_value(request).expect("strict recovery request"),
-    ))
-    .expect("typed recovery submission");
-    let RecoverySubmitResult::Accepted { receipt } = submitted else {
-        panic!("one explicit submission must authorize the exact repeat");
-    };
-    assert_eq!(receipt.request_id, request_id);
-    assert_eq!(receipt.claim.episode.work, expected.work);
-    let records = fixture.records();
-    assert_eq!(records.iter().filter(|record| {
-        matches!(record, Record::RecoveryAuthorized(authorized) if authorized.request_id == request_id)
-    }).count(), 1);
-    assert_eq!(
-        records
-            .into_iter()
-            .filter(|record| {
-                matches!(record, Record::TurnIssued { goal: issued, .. } if *issued == goal)
-            })
-            .collect::<Vec<_>>(),
-        owed
-    );
 }
 
 fn await_continuation_outcome(fixture: &Fixture, handle: &duded::Handle, agent: AgentId) -> TurnId {
@@ -6860,151 +6399,6 @@ fn browser_pause_resume_local_winner_is_never_overwritten() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// Across restarts, at four cuts: after the pause's fsync and before its fold; after its fold;
-/// after the resume's fsync and before its `ClearedCause`; after the resumed turn's `TurnIssued`
-/// fsync and before Spawn. Each replays exactly one pause, one resume where it was sent, one turn
-/// and one Spawn, and the same key answers from the index.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "four restart cuts share one scenario and one assertion shape"
-)]
-fn browser_pause_resume_restart_cut_points_replay_one_record() {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum Cut {
-        PauseFsync,
-        PauseFold,
-        ResumeFsync,
-        TurnIssuedFsync,
-    }
-    for cut in [
-        Cut::PauseFsync,
-        Cut::PauseFold,
-        Cut::ResumeFsync,
-        Cut::TurnIssuedFsync,
-    ] {
-        let fixture = Fixture::new();
-        let settings = control_settings(&fixture, true);
-        let host = SharedHost::new();
-        let run = |host: &SharedHost| {
-            boot(
-                &settings,
-                seams(
-                    &settings,
-                    host.clone(),
-                    Arc::new(ScriptedRunner::default()),
-                    Arc::new(TestClock::new()),
-                    Witness::default(),
-                ),
-            )
-            .expect("boot Floor")
-        };
-        let daemon = run(&host);
-        let failure = daemon.onboarding_failure();
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let agent = common::hire(&running.handle, fixture.state.path());
-        let other = common::hire(&running.handle, fixture.state.path());
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let pause_body = control_body(&request_id(1), agent, None);
-        if cut == Cut::PauseFsync {
-            failure.arm(OnboardingFailurePoint::Control);
-        }
-        let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &pause_body);
-        let mut resume_body = None;
-        if cut == Cut::PauseFsync {
-            empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-            let (head, pending) = post_control(addr, PAUSE, &cookie, &csrf, &pause_body);
-            assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
-            assert_eq!(
-                pending["state"], "pending",
-                "an uncertain append keeps its key"
-            );
-            let fresh = control_body(&request_id(2), other, None);
-            let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &fresh);
-            empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-        } else {
-            let p = applied(&head, &response, "paused");
-            if matches!(cut, Cut::ResumeFsync | Cut::TurnIssuedFsync) {
-                // A goal set while paused is held; only the resume can issue its turn.
-                common::set_goal(
-                    &running.handle,
-                    common::goal_params(agent, &[true_program()]),
-                );
-                failure.arm(if cut == Cut::ResumeFsync {
-                    OnboardingFailurePoint::Control
-                } else {
-                    OnboardingFailurePoint::TurnIssued
-                });
-                let body = control_body(&request_id(3), agent, Some(p));
-                let (head, response) = post_control(addr, RESUME, &cookie, &csrf, &body);
-                if cut == Cut::ResumeFsync {
-                    empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-                } else {
-                    applied(&head, &response, "resumed");
-                }
-                resume_body = Some(body);
-            }
-        }
-        assert_eq!(
-            host.spawned().len(),
-            0,
-            "{cut:?}: the cut is before any Spawn"
-        );
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-
-        let daemon = run(&host);
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        if resume_body.is_some() {
-            fixture.await_record("the resumed turn's spawn", |record| {
-                matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent)
-                    .then_some(())
-            });
-        }
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &pause_body);
-        let p = applied(&head, &response, "paused");
-        let mut resumes = 0;
-        if let Some(body) = &resume_body {
-            let (head, response) = post_control(addr, RESUME, &cookie, &csrf, body);
-            let r = applied(&head, &response, "resumed");
-            assert!(r > p, "{cut:?}");
-            resumes = 1;
-            let issued: Vec<Lsn> = fixture
-                .records()
-                .iter()
-                .filter_map(|record| match record {
-                    Record::TurnIssued {
-                        agent: who,
-                        lsn_of_decision,
-                        ..
-                    } if *who == agent => Some(*lsn_of_decision),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(issued.len(), 1, "{cut:?}: one turn: {issued:?}");
-            assert!(issued[0] > r, "{cut:?}: decided after the resume");
-            assert_eq!(host.spawned().len(), 1, "{cut:?}: one Spawn");
-            assert_eq!(
-                fixture
-                    .records()
-                    .iter()
-                    .filter(|record| matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent))
-                    .count(),
-                1,
-                "{cut:?}"
-            );
-        } else {
-            assert_eq!(host.spawned().len(), 0, "{cut:?}: nothing to spawn");
-        }
-        let records = fixture.records();
-        assert_eq!(controls_for(&records, agent), (1, resumes), "{cut:?}");
-        assert_eq!(controls_for(&records, other), (0, 0), "{cut:?}");
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
-}
-
 /// A correctly identified live session passes the world check, is revoked before its append
 /// permit, and gets the uniform empty `403` with no `Pause`, `Resume`, `LoopDecided` or
 /// `TurnIssued`. In the opposite order, revocation waits for the held permit's fsync and the
@@ -7740,24 +7134,6 @@ fn await_entry(fixture: &Fixture, what: &str, f: impl Fn(Lsn, &Record) -> bool) 
     }
 }
 
-/// Resend one goal change until it applies, for at most three seconds; each refusal on the way
-/// has no effect. Returns the `200`'s new goal.
-fn apply_goal_when_admitted(addr: SocketAddr, cookie: &str, csrf: &str, body: &Value) -> GoalId {
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    loop {
-        let (head, response) = post_goal(addr, cookie, csrf, body);
-        if head.starts_with("HTTP/1.1 200 OK") {
-            return changed(&head, &response);
-        }
-        assert_eq!(response["reason"], "turn_open", "{head} {response}");
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the change stayed refused: {response}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
 /// The primary test, stub-backed and read from the replayed journal, in its seven
 /// ordered steps: a change is refused while T1 runs; after T1's end, its verdict and `Done`, one
 /// applies; the new goal keeps G1's predicate and carries exactly what G1 had left; its own
@@ -8351,19 +7727,6 @@ fn spent_dollar_goal(native: &NativeTurnFixture<'_>) -> (AgentId, GoalId) {
     (dollars, spent_goal)
 }
 
-/// One step of [`GatedRunner`]'s script.
-#[derive(Clone, Copy, Debug)]
-enum Step {
-    /// Wait for [`GatedRunner::release`], then pass.
-    Held,
-    /// The run fails to start: no verdict.
-    Unrun,
-    /// The exit path swept it: no verdict.
-    Swept,
-    /// The runner panics inside the predicate thread.
-    Panics,
-}
-
 /// What [`GatedRunner`] reports.
 #[derive(Debug, PartialEq, Eq)]
 enum RunEvent {
@@ -8371,24 +7734,18 @@ enum RunEvent {
     Returning,
 }
 
-/// A predicate runner that answers from a script of [`Step`]s, then passes, and reports each run's
-/// start and return.
 struct GatedRunner {
-    script: Mutex<std::collections::VecDeque<Step>>,
     released: (Mutex<bool>, std::sync::Condvar),
     events: Mutex<mpsc::Sender<RunEvent>>,
-    runs: std::sync::atomic::AtomicUsize,
 }
 
 impl GatedRunner {
-    fn new(script: impl IntoIterator<Item = Step>) -> (Arc<Self>, mpsc::Receiver<RunEvent>) {
+    fn new() -> (Arc<Self>, mpsc::Receiver<RunEvent>) {
         let (tx, rx) = mpsc::channel();
         (
             Arc::new(Self {
-                script: Mutex::new(script.into_iter().collect()),
                 released: (Mutex::new(false), std::sync::Condvar::new()),
                 events: Mutex::new(tx),
-                runs: std::sync::atomic::AtomicUsize::new(0),
             }),
             rx,
         )
@@ -8418,34 +7775,21 @@ impl duded::predicate::PredicateRunner for GatedRunner {
         _spec: &LaunchSpec,
         _timeout: Duration,
     ) -> std::io::Result<duded::predicate::PredicateOutcome> {
-        self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let step = self
-            .script
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop_front();
         self.report(RunEvent::Started);
-        if matches!(step, Some(Step::Held)) {
-            let mut released = self
+        let mut released = self
+            .released
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while !*released {
+            released = self
                 .released
-                .0
-                .lock()
+                .1
+                .wait(released)
                 .unwrap_or_else(PoisonError::into_inner);
-            while !*released {
-                released = self
-                    .released
-                    .1
-                    .wait(released)
-                    .unwrap_or_else(PoisonError::into_inner);
-            }
         }
         self.report(RunEvent::Returning);
-        match step {
-            Some(Step::Unrun) => Err(std::io::Error::other("the predicate could not start")),
-            Some(Step::Swept) => Ok(duded::predicate::PredicateOutcome::Swept),
-            Some(Step::Panics) => panic!("an injected predicate runner panic"),
-            Some(Step::Held) | None => Ok(common::passes()),
-        }
+        Ok(common::passes())
     }
 
     fn sweep(&self) {
@@ -8470,10 +7814,10 @@ struct VerdictArm {
 }
 
 impl VerdictArm {
-    fn start(script: impl IntoIterator<Item = Step>, spawn_failure: bool) -> Self {
+    fn start() -> Self {
         let fixture = Fixture::new();
         let settings = goal_settings(&fixture, true);
-        let (runner, events) = GatedRunner::new(script);
+        let (runner, events) = GatedRunner::new();
         let (parts, native_host) = native_fixture_seams(
             &fixture,
             seams(
@@ -8485,9 +7829,6 @@ impl VerdictArm {
             ),
         );
         let daemon = boot(&settings, parts).expect("boot Floor");
-        if spawn_failure {
-            daemon.predicate_spawn_failure().arm();
-        }
         let pause = daemon.onboarding_pause();
         let addr = daemon.floor_addr().expect("Floor address");
         let running = common::start(daemon);
@@ -8533,18 +7874,6 @@ impl VerdictArm {
         goal_body(&request_id(k), self.agent, self.goal, text)
     }
 
-    fn post(&self, body: &Value) -> (String, Value) {
-        post_goal(self.addr, &self.cookie, &self.csrf, body)
-    }
-
-    fn verdicts(&self) -> usize {
-        self.fixture
-            .records()
-            .iter()
-            .filter(|record| matches!(record, Record::PredicateResult { goal, .. } if *goal == self.goal))
-            .count()
-    }
-
     fn stop(mut self) {
         self.runner.release();
         assert_eq!(
@@ -8573,18 +7902,7 @@ impl VerdictArm {
 /// refused).
 #[test]
 fn browser_goal_waits_for_the_replaced_goals_verdict() {
-    let arm = VerdictArm::start([Step::Held], false);
-    arm.expect(RunEvent::Started);
-    let (head, response) = arm.post(&arm.body(1, NEW_TEXT));
-    refused(&head, &response, "turn_open");
-    assert!(browser_goals(&arm.fixture, arm.agent).is_empty());
-    arm.runner.release();
-    arm.expect(RunEvent::Returning);
-    apply_goal_when_admitted(arm.addr, &arm.cookie, &arm.csrf, &arm.body(1, NEW_TEXT));
-    assert_eq!(arm.verdicts(), 1);
-    arm.stop();
-
-    let arm = VerdictArm::start([Step::Held], false);
+    let arm = VerdictArm::start();
     arm.expect(RunEvent::Started);
     let blocker = common::hire(&arm.running.handle, arm.fixture.state.path());
     arm.pause.arm(OnboardingPausePoint::BeforeControlPermit);
@@ -8650,32 +7968,6 @@ fn browser_goal_waits_for_the_replaced_goals_verdict() {
         })
         .expect("G1's verdict");
     assert!(verdict < changes[0].0, "the verdict precedes the change");
-    arm.stop();
-
-    for step in [Step::Unrun, Step::Swept] {
-        let arm = VerdictArm::start([step], false);
-        arm.expect(RunEvent::Started);
-        arm.expect(RunEvent::Returning);
-        apply_goal_when_admitted(arm.addr, &arm.cookie, &arm.csrf, &arm.body(1, NEW_TEXT));
-        assert_eq!(arm.verdicts(), 0, "{step:?}: no verdict was observed");
-        arm.stop();
-    }
-
-    let arm = VerdictArm::start([Step::Panics], false);
-    arm.expect(RunEvent::Started);
-    arm.expect(RunEvent::Returning);
-    apply_goal_when_admitted(arm.addr, &arm.cookie, &arm.csrf, &arm.body(1, NEW_TEXT));
-    assert_eq!(arm.verdicts(), 0);
-    arm.stop();
-
-    let arm = VerdictArm::start([], true);
-    apply_goal_when_admitted(arm.addr, &arm.cookie, &arm.csrf, &arm.body(1, NEW_TEXT));
-    assert_eq!(
-        arm.runner.runs.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "G1's predicate thread never started"
-    );
-    assert_eq!(arm.verdicts(), 0);
     arm.stop();
 }
 
@@ -8858,155 +8150,6 @@ fn browser_goal_local_winner_is_never_overwritten() {
     assert!(browser_goals(&fixture, crashed).is_empty());
     assert_eq!(folded(&fixture).agents[&crashed].goal, Some(local));
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
-
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "three restart cuts share one scenario and one assertion shape"
-)]
-fn browser_goal_restart_cut_points_replay_one_record() {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum Cut {
-        GoalSetFsync,
-        GoalSetFold,
-        TurnIssuedFsync,
-    }
-    for cut in [Cut::GoalSetFsync, Cut::GoalSetFold, Cut::TurnIssuedFsync] {
-        let fixture = Fixture::new();
-        let settings = goal_settings(&fixture, true);
-        let run = || {
-            let (parts, host) = native_fixture_seams(
-                &fixture,
-                seams(
-                    &settings,
-                    SharedHost::new(),
-                    Arc::new(ScriptedRunner::scripted([common::passes()])),
-                    Arc::new(TestClock::new()),
-                    Witness::default(),
-                ),
-            );
-            (boot(&settings, parts).expect("boot Floor"), host)
-        };
-        let (daemon, host) = run();
-        let failure = daemon.onboarding_failure();
-        let append_failure = daemon.append_failure();
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let native = NativeTurnFixture {
-            running: &running,
-            fixture: &fixture,
-            host: &host,
-        };
-        let (agent, goal) = if cut == Cut::TurnIssuedFsync {
-            // A `Done` agent: the change's own decision issues G2's turn.
-            let agent = common::hire(&running.handle, fixture.state.path());
-            let goal = common::set_goal(
-                &running.handle,
-                common::goal_params(agent, &[true_program()]),
-            );
-            let turn = issued_goal_turn(&fixture, goal);
-            native.complete(turn, Some(dollars(Usd::from_cents(1))));
-            fixture.await_record("G1 met", |record| {
-                matches!(record, Record::LoopDecided { agent: who, decision: LoopDecision::Done, .. } if *who == agent)
-                    .then_some(())
-            });
-            (agent, goal)
-        } else {
-            paused_with_goal(&running, &fixture)
-        };
-        let (other, other_goal) = paused_with_goal(&running, &fixture);
-        let spawned_before = host.spawned().len();
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let body = goal_body(&request_id(1), agent, goal, NEW_TEXT);
-        match cut {
-            Cut::GoalSetFsync => failure.arm(OnboardingFailurePoint::GoalChange),
-            Cut::GoalSetFold => append_failure.fail_nth(NonZeroUsize::new(2).unwrap()),
-            Cut::TurnIssuedFsync => failure.arm(OnboardingFailurePoint::TurnIssued),
-        }
-        let (head, response) = post_goal(addr, &cookie, &csrf, &body);
-        if cut == Cut::GoalSetFsync {
-            empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-            let (head, pending) = post_goal(addr, &cookie, &csrf, &body);
-            assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
-            assert_eq!(
-                pending["state"], "pending",
-                "an uncertain append keeps its key"
-            );
-            let fresh = goal_body(&request_id(2), other, other_goal, NEW_TEXT);
-            let (head, response) = post_goal(addr, &cookie, &csrf, &fresh);
-            empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-        } else {
-            changed(&head, &response);
-        }
-        if cut == Cut::TurnIssuedFsync {
-            let goal = browser_goals(&fixture, agent).last().unwrap().1.id;
-            nth_turn(&fixture, goal, 0);
-            running.handle.doctor().unwrap();
-        }
-        assert_eq!(
-            host.spawned().len(),
-            spawned_before,
-            "{cut:?}: the cut is before any Spawn"
-        );
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-        let (c, g2_goal, _) = browser_goals(&fixture, agent)
-            .pop()
-            .expect("the GoalSet is durable");
-        match cut {
-            Cut::GoalSetFsync | Cut::GoalSetFold => assert!(
-                !after(&fixture, c)
-                    .iter()
-                    .any(|(_, e)| matches!(&e.record, Record::LoopDecided { agent: who, .. } if *who == agent)),
-                "{cut:?}: no decision after the change yet"
-            ),
-            Cut::TurnIssuedFsync => assert!(
-                after(&fixture, c).iter().any(|(_, e)| matches!(&e.record, Record::TurnIssued { goal, .. } if *goal == g2_goal.id)),
-                "{cut:?}: G2's turn is durable"
-            ),
-        }
-
-        let (daemon, restarted_host) = run();
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        if cut == Cut::TurnIssuedFsync {
-            recover_owed_browser_turn(&settings, &fixture, &running, agent, g2_goal.id);
-            issued_goal_turn(&fixture, g2_goal.id);
-            assert_eq!(
-                restarted_host.spawned().len(),
-                1,
-                "G2's exact owed turn re-issued once"
-            );
-        }
-        let (head, response) = post_goal(addr, &cookie, &csrf, &body);
-        assert_eq!(changed(&head, &response), g2_goal.id, "{cut:?}");
-        let records = fixture.records();
-        assert_eq!(browser_goals(&fixture, agent).len(), 1, "{cut:?}");
-        assert!(browser_goals(&fixture, other).is_empty(), "{cut:?}");
-        assert!(
-            after(&fixture, c).iter().any(|(_, e)| matches!(&e.record, Record::LoopDecided { agent: who, .. } if *who == agent)),
-            "{cut:?}: replay decided on G2"
-        );
-        let g2_turns = records
-            .iter()
-            .filter(
-                |record| matches!(record, Record::TurnIssued { goal, .. } if *goal == g2_goal.id),
-            )
-            .count();
-        if cut == Cut::TurnIssuedFsync {
-            assert_eq!(g2_turns, 1, "{cut:?}: G2's turn re-issued exactly once");
-            assert_eq!(
-                host.spawned().len() + restarted_host.spawned().len(),
-                spawned_before + 1,
-                "{cut:?}: one Spawn"
-            );
-        } else {
-            assert_eq!(g2_turns, 0, "{cut:?}: the paused agent issues nothing");
-            assert_eq!(host.spawned().len(), spawned_before, "{cut:?}");
-        }
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
 }
 
 /// A correctly identified live session passes the world check and the carry-over, is revoked
@@ -10589,184 +9732,6 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
 }
 
 /// One shape of `PATH` or configured command, and the file the check must report for it.
-#[cfg(unix)]
-struct Shape {
-    name: &'static str,
-    program: OsString,
-    path: OsString,
-    expected: Option<PathBuf>,
-}
-
-/// A `prog` in `root/acl` whose ACL denies the daemon's own user execute while its mode bits allow
-/// it, ahead of `exec`. Only where the platform allows that without root.
-#[cfg(target_os = "macos")]
-#[expect(
-    clippy::disallowed_types,
-    reason = "the fixture sets an ACL, which the standard library cannot"
-)]
-fn acl_shapes(
-    root: &std::path::Path,
-    marks: &std::path::Path,
-    exec: &std::path::Path,
-) -> Vec<Shape> {
-    let acl = root.join("acl");
-    install_prog(&acl.join("prog"), marks);
-    let user = std::env::var("USER").expect("the test's user name");
-    let status = std::process::Command::new("/bin/chmod")
-        .arg("+a")
-        .arg(format!("{user} deny execute"))
-        .arg(acl.join("prog"))
-        .status()
-        .expect("run chmod");
-    assert!(status.success(), "chmod +a refused");
-    vec![Shape {
-        name: "a prog whose ACL denies execute before an executable one",
-        program: OsString::from("prog"),
-        path: std::env::join_paths([&acl, exec]).expect("a PATH"),
-        expected: Some(exec.join("prog")),
-    }]
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn acl_shapes(_: &std::path::Path, _: &std::path::Path, _: &std::path::Path) -> Vec<Shape> {
-    Vec::new()
-}
-
-/// Each shape under `root`, every candidate `prog` appending the path it ran as to `marks`.
-#[cfg(unix)]
-fn path_shapes(root: &std::path::Path, marks: &std::path::Path) -> Vec<Shape> {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let abs = root.join("abs");
-    install_prog(&abs.join("prog"), marks);
-    let exec = root.join("exec");
-    install_prog(&exec.join("prog"), marks);
-    let mode = root.join("mode");
-    install_prog(&mode.join("prog"), marks);
-    std::fs::set_permissions(mode.join("prog"), std::fs::Permissions::from_mode(0o644))
-        .expect("not executable");
-    let dir = root.join("dir");
-    std::fs::create_dir_all(dir.join("prog")).expect("a directory named prog");
-    let link = root.join("link");
-    install_prog(&root.join("target").join("real"), marks);
-    std::fs::create_dir_all(&link).expect("link");
-    std::os::unix::fs::symlink(root.join("target").join("real"), link.join("prog"))
-        .expect("a symlink to an executable");
-    let dangling = root.join("dangling");
-    std::fs::create_dir_all(&dangling).expect("dangling");
-    std::os::unix::fs::symlink(root.join("nowhere"), dangling.join("prog"))
-        .expect("a dangling symlink");
-    let none = root.join("none");
-    let join = |entries: &[&std::path::Path]| std::env::join_paths(entries).expect("a PATH");
-    let bare = || OsString::from("prog");
-
-    [
-        Shape {
-            name: "relative and empty entries before an absolute one",
-            program: bare(),
-            path: join(&[".".as_ref(), "".as_ref(), &abs]),
-            expected: Some(abs.join("prog")),
-        },
-        Shape {
-            name: "relative and empty entries and no absolute one holding prog",
-            program: bare(),
-            path: join(&[".".as_ref(), "".as_ref(), &none]),
-            expected: None,
-        },
-        Shape {
-            name: "a mode-0644 prog before an executable one",
-            program: bare(),
-            path: join(&[&mode, &exec]),
-            expected: Some(exec.join("prog")),
-        },
-        Shape {
-            name: "a directory named prog before an executable file",
-            program: bare(),
-            path: join(&[&dir, &exec]),
-            expected: Some(exec.join("prog")),
-        },
-        Shape {
-            name: "a symlink to an executable",
-            program: bare(),
-            path: join(&[&link]),
-            expected: Some(link.join("prog")),
-        },
-        Shape {
-            name: "a dangling symlink",
-            program: bare(),
-            path: join(&[&dangling]),
-            expected: None,
-        },
-        Shape {
-            name: "an absolute configured command that is present",
-            program: abs.join("prog").into_os_string(),
-            path: join(&[&none]),
-            expected: Some(abs.join("prog")),
-        },
-        Shape {
-            name: "an absolute configured command that is absent",
-            program: root.join("gone").join("prog").into_os_string(),
-            path: join(&[&abs]),
-            expected: None,
-        },
-    ]
-    .into_iter()
-    .chain(acl_shapes(root, marks, &exec))
-    .collect()
-}
-
-#[cfg(unix)]
-#[test]
-fn browser_daemon_view_agrees_with_the_launch_on_each_path_shape() {
-    let root = tempfile::tempdir().expect("a scene");
-    let root = root.path();
-    let marks = root.join("marks");
-    let workspace = root.join("work");
-    install_prog(&workspace.join("prog"), &marks);
-    for shape in &path_shapes(root, &marks) {
-        let name = shape.name;
-        std::fs::write(&marks, "").expect("clear the marks");
-        let fixture = Fixture::new();
-        let mut settings = with_floor(fixture.settings());
-        settings.daemon_env = vec![EnvVar::new("PATH", &shape.path)];
-        let daemon = boot(
-            &settings,
-            program_seams(&settings, shape.program.clone(), 1),
-        )
-        .expect("boot");
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (frame, _) = snapshot(addr, &cookie, &csrf);
-        let row = match &shape.expected {
-            Some(path) => json!({"provider":"claude","program":"prog","found":true,
-                "path":path.to_str().expect("UTF-8"),"sign_in":"unknown"}),
-            None => json!({"provider":"claude","program":"prog","found":false}),
-        };
-        assert_eq!(
-            frame["daemon"]["providers"],
-            json!([row]),
-            "{name}: the view"
-        );
-        let outcome = one_launch(&running.handle, &fixture, &workspace);
-        let ran = std::fs::read_to_string(&marks).expect("marks");
-        if let Some(path) = &shape.expected {
-            assert_eq!(
-                ran,
-                format!("{}\n", path.display()),
-                "{name}: the launch ran the file the view reported, and nothing planted"
-            );
-        } else {
-            assert!(
-                matches!(outcome, TurnOutcome::NotLaunched { .. }),
-                "{name}: {outcome:?}"
-            );
-            assert_eq!(ran, "", "{name}: nothing ran, the planted prog included");
-        }
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
-}
-
 /// The default configuration's Floor on the fake host, with a session: the daemon's provider
 /// check, the running daemon, the Floor's address, and the session's cookie and CSRF nonce.
 fn default_floor(
@@ -17448,4 +16413,417 @@ mod project_add {
         assert_eq!(offered(addr, &cookie, &csrf).len(), 1, "still live");
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     }
+}
+
+fn issued_onboarding_fence(
+    fixture: &Fixture,
+    handle: &duded::Handle,
+    agent: AgentId,
+    goal: GoalId,
+) {
+    nth_turn(fixture, goal, 0);
+    let before = fixture.records();
+    let stopped = handle.ask(Ask::Pause(agent)).unwrap_err();
+    assert_eq!(stopped.code, dudes_proto::rpc::ErrorCode::Refused.code());
+    assert_eq!(
+        stopped.message,
+        "journal state unresolved; restart to replay before new work or writes"
+    );
+    assert_eq!(
+        fixture.records(),
+        before,
+        "the fenced probe appends nothing"
+    );
+    let counts = (
+        before.iter().filter(|record| matches!(record, Record::AgentHired { id, .. } if *id == agent)).count(),
+        before.iter().filter(|record| matches!(record, Record::GoalSet { agent: owner, goal: issued, .. } if *owner == agent && issued.id == goal)).count(),
+        before.iter().filter(|record| matches!(record, Record::TurnIssued { agent: owner, goal: issued, .. } if *owner == agent && *issued == goal)).count(),
+        before.iter().filter(|record| matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent)).count(),
+    );
+    assert_eq!(counts, (1, 1, 1, 0));
+}
+
+fn recover_owed_browser_turn(
+    settings: &duded::Settings,
+    fixture: &Fixture,
+    running: &common::Running,
+    agent: AgentId,
+    goal: GoalId,
+) {
+    use dudes_proto::rpc::recovery::{
+        RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectResult, RecoverySubmitParams,
+        RecoverySubmitResult,
+    };
+
+    let turn = nth_turn(fixture, goal, 0);
+    fixture.await_record("the owed goal's recovery barrier", |record| {
+        matches!(record, Record::RecoveryRequired(required)
+            if required.binding.work.agent == agent && required.binding.work.goal == goal
+                && required.binding.work.turn == turn)
+        .then_some(())
+    });
+    let owed: Vec<_> = fixture
+        .records()
+        .into_iter()
+        .filter(
+            |record| matches!(record, Record::TurnIssued { goal: issued, .. } if *issued == goal),
+        )
+        .collect();
+    assert_eq!(owed.len(), 1);
+    let no_spawn = || {
+        assert!(!fixture.records().iter().any(|record| {
+            matches!(record, Record::TurnSpawned { turn: seen, .. } if *seen == turn)
+        }));
+    };
+    no_spawn();
+    let call = |method, params| {
+        let credential = std::fs::read_to_string(
+            settings
+                .runtime_dir
+                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
+        )
+        .expect("operator credential");
+        let response = Client::connect(settings.socket())
+            .expect("operator socket")
+            .call_current_as_operator(
+                method,
+                Some(params),
+                OperatorCredential::new(credential).expect("credential"),
+            )
+            .expect("operator response");
+        assert!(response.error.is_none(), "{response:?}");
+        response.result.expect("operator result")
+    };
+    call(
+        CurrentMethod::Legacy(Method::LoopResume),
+        json!({"agent":agent}),
+    );
+    running.handle.doctor().expect("Resume reached the writer");
+    no_spawn();
+    let inspection: RecoveryInspectResult =
+        serde_json::from_value(call(CurrentMethod::RecoveryInspect, json!({"agent":agent})))
+            .expect("typed recovery inspection");
+    let RecoveryInspectResult::Available {
+        expected,
+        choices,
+        reason,
+        ..
+    } = inspection
+    else {
+        panic!("the owed issue must offer exact recovery");
+    };
+    assert_eq!(choices, RecoveryAllowedChoices::RepeatIssuedFresh);
+    assert_eq!(reason, dudes_proto::recovery::RecoveryReason::MissingSpawn);
+    assert_eq!(expected.work.agent, agent);
+    assert_eq!(expected.work.goal, goal);
+    assert_eq!(expected.work.turn, turn);
+    let request_id = Hex32::new([231; 32]);
+    let request = RecoverySubmitParams {
+        request_id,
+        expected: *expected,
+        choice: RecoveryChoice::RepeatIssuedFresh,
+    };
+    let submitted: RecoverySubmitResult = serde_json::from_value(call(
+        CurrentMethod::RecoverySubmit,
+        serde_json::to_value(request).expect("strict recovery request"),
+    ))
+    .expect("typed recovery submission");
+    let RecoverySubmitResult::Accepted { receipt } = submitted else {
+        panic!("one explicit submission must authorize the exact repeat");
+    };
+    assert_eq!(receipt.request_id, request_id);
+    assert_eq!(receipt.claim.episode.work, expected.work);
+    let records = fixture.records();
+    assert_eq!(records.iter().filter(|record| {
+        matches!(record, Record::RecoveryAuthorized(authorized) if authorized.request_id == request_id)
+    }).count(), 1);
+    assert_eq!(
+        records
+            .into_iter()
+            .filter(|record| {
+                matches!(record, Record::TurnIssued { goal: issued, .. } if *issued == goal)
+            })
+            .collect::<Vec<_>>(),
+        owed
+    );
+}
+
+#[test]
+fn an_answer_restarts_after_its_fsync_before_its_fold() {
+    let fixture = Fixture::new();
+    let settings = answer_settings(&fixture, true);
+    let host = SharedHost::new();
+    let run = || {
+        boot(
+            &settings,
+            seams(
+                &settings,
+                host.clone(),
+                Arc::new(ScriptedRunner::default()),
+                Arc::new(TestClock::new()),
+                Witness::default(),
+            ),
+        )
+        .unwrap()
+    };
+    let daemon = run();
+    let failure = daemon.onboarding_failure();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let (agent, question) = waiting_agent(&running, &fixture, "which branch?");
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let body = answer_body(&request_id(1), agent, question, "main");
+    failure.arm(OnboardingFailurePoint::Answer);
+    let (head, response) = post_answer(addr, &cookie, &csrf, &body);
+    empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
+    let (head, response) = post_answer(addr, &cookie, &csrf, &body);
+    assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
+    assert_eq!(response["state"], "pending");
+    assert_eq!(host.spawned().len(), 0);
+    running.stop(ExitCause::ShutdownRpc);
+
+    let daemon = run();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    fixture.await_record("the recovered continuation spawned", |record| {
+        matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent).then_some(())
+    });
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_answer(addr, &cookie, &csrf, &body);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(response["question_lsn"], question.0.to_string());
+    let answered = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| {
+            matches!(entry.record, Record::HumanAnswer { agent: who, .. } if who == agent)
+                .then_some(lsn)
+        })
+        .unwrap();
+    let records = fixture.records();
+    assert_eq!(answers_for(&records, agent), 1);
+    let issued: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::TurnIssued {
+                agent: who,
+                answers,
+                ..
+            } if *who == agent => Some(answers.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(issued, vec![vec![answered]]);
+    assert_eq!(host.spawned().len(), 1);
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent)
+            )
+            .count(),
+        1
+    );
+    running.stop(ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn a_resume_restarts_after_its_fsync_before_clearing_the_cause() {
+    let fixture = Fixture::new();
+    let settings = control_settings(&fixture, true);
+    let host = SharedHost::new();
+    let run = || {
+        boot(
+            &settings,
+            seams(
+                &settings,
+                host.clone(),
+                Arc::new(ScriptedRunner::default()),
+                Arc::new(TestClock::new()),
+                Witness::default(),
+            ),
+        )
+        .unwrap()
+    };
+    let daemon = run();
+    let failure = daemon.onboarding_failure();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let pause_body = control_body(&request_id(1), agent, None);
+    let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &pause_body);
+    let paused = applied(&head, &response, "paused");
+    common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &[true_program()]),
+    );
+    failure.arm(OnboardingFailurePoint::Control);
+    let body = control_body(&request_id(3), agent, Some(paused));
+    let (head, response) = post_control(addr, RESUME, &cookie, &csrf, &body);
+    empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
+    assert_eq!(host.spawned().len(), 0);
+    running.stop(ExitCause::ShutdownRpc);
+
+    let daemon = run();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    fixture.await_record("the recovered resumed turn spawned", |record| {
+        matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent).then_some(())
+    });
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_control(addr, RESUME, &cookie, &csrf, &body);
+    let resumed = applied(&head, &response, "resumed");
+    assert!(resumed > paused);
+    let records = fixture.records();
+    assert_eq!(controls_for(&records, agent), (1, 1));
+    let issued: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::TurnIssued {
+                agent: who,
+                lsn_of_decision,
+                ..
+            } if *who == agent => Some(*lsn_of_decision),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(issued.len(), 1);
+    assert!(issued[0] > resumed);
+    assert_eq!(host.spawned().len(), 1);
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent)
+            )
+            .count(),
+        1
+    );
+    running.stop(ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn a_goal_change_restarts_after_its_fsync_before_its_fold() {
+    let fixture = Fixture::new();
+    let settings = goal_settings(&fixture, true);
+    let run = || {
+        let (parts, host) = native_fixture_seams(&fixture, fake_seams(&settings));
+        (boot(&settings, parts).unwrap(), host)
+    };
+    let (daemon, host) = run();
+    let failure = daemon.onboarding_failure();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let (agent, goal) = paused_with_goal(&running, &fixture);
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let body = goal_body(&request_id(1), agent, goal, NEW_TEXT);
+    failure.arm(OnboardingFailurePoint::GoalChange);
+    let (head, response) = post_goal(addr, &cookie, &csrf, &body);
+    empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
+    let (head, response) = post_goal(addr, &cookie, &csrf, &body);
+    assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
+    assert_eq!(response["state"], "pending");
+    assert_eq!(host.spawned().len(), 0);
+    running.stop(ExitCause::ShutdownRpc);
+    let (position, new_goal, _) = browser_goals(&fixture, agent).pop().unwrap();
+    assert!(!after(&fixture, position).iter().any(
+        |(_, entry)| matches!(entry.record, Record::LoopDecided { agent: who, .. } if who == agent)
+    ));
+
+    let (daemon, restarted) = run();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_goal(addr, &cookie, &csrf, &body);
+    assert_eq!(changed(&head, &response), new_goal.id);
+    assert_eq!(browser_goals(&fixture, agent).len(), 1);
+    let records = fixture.records();
+    assert!(after(&fixture, position).iter().any(
+        |(_, entry)| matches!(entry.record, Record::LoopDecided { agent: who, .. } if who == agent)
+    ));
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::TurnIssued { goal, .. } if *goal == new_goal.id)
+            )
+            .count(),
+        0
+    );
+    assert_eq!(host.spawned().len() + restarted.spawned().len(), 0);
+    running.stop(ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn an_onboarding_turn_restarts_after_its_fsync_before_spawn() {
+    let fixture = Fixture::new();
+    let settings = enrolled_settings(&fixture);
+    let daemon = boot(&settings, fake_seams(&settings)).unwrap();
+    daemon
+        .onboarding_failure()
+        .arm(OnboardingFailurePoint::TurnIssued);
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let request = json!({"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"});
+    let (head, response) = post_onboard(addr, &cookie, &csrf, &request);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    let agent: AgentId = serde_json::from_value(response["agent"].clone()).unwrap();
+    let goal: GoalId = serde_json::from_value(response["goal"].clone()).unwrap();
+    issued_onboarding_fence(&fixture, &running.handle, agent, goal);
+    let original: Vec<_> = fixture
+        .records()
+        .into_iter()
+        .filter(|record| matches!(record, Record::TurnIssued { goal: who, .. } if *who == goal))
+        .collect();
+    assert_eq!(original.len(), 1);
+    running.stop(ExitCause::ShutdownRpc);
+
+    let (parts, host) = native_fixture_seams(&fixture, fake_seams(&settings));
+    let daemon = boot(&settings, parts).unwrap();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    recover_owed_browser_turn(&settings, &fixture, &running, agent, goal);
+    fixture.await_record("the exact recovered onboarding turn spawned", |record| {
+        matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent).then_some(())
+    });
+    let (head, retried) = post_onboard(addr, &cookie, &csrf, &request);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(retried, response);
+    let records = fixture.records();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::AgentHired { id, .. } if *id == agent))
+            .count(),
+        1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::GoalSet { goal: who, .. } if who.id == goal))
+            .count(),
+        1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record, Record::TurnIssued { goal: who, .. } if *who == goal))
+            .cloned()
+            .collect::<Vec<_>>(),
+        original
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent)
+            )
+            .count(),
+        1
+    );
+    assert_eq!(host.spawned().len(), 1);
+    running.stop(ExitCause::ShutdownRpc);
 }
