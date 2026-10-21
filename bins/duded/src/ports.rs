@@ -636,6 +636,8 @@ pub enum Ask {
         /// What the operator vouched for.
         vouch: Option<Box<crate::worktree::trust::Vouch>>,
     },
+    /// One change to the Floor's device table, answered once its record is durable.
+    FloorDevice(dudes_supervisor::FloorDeviceChange),
 }
 
 /// What the loop answered.
@@ -1174,6 +1176,11 @@ impl Handle {
                 .expect("the test releases Floor admission");
         }
         self.jobs.send(job).map_err(|_| Unavailable)
+    }
+
+    /// Whether the exit path has started, so work that waits on the loop should stop waiting.
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::Acquire)
     }
 
     /// Queue one strictly typed Chat operation on the daemon writer.

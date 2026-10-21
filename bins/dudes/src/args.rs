@@ -132,8 +132,10 @@ pub enum Command {
         /// Keep reading after the backfill instead of exiting when the response arrives.
         follow: bool,
     },
-    /// `floor.session.issue`, printed as the one URL to paste into a browser.
+    /// `floor.session.issue` for a link to print, shown as the one URL to paste into a browser.
     FloorOpen,
+    /// `devices`, `devices remove` and `devices keep`: the browsers signed in to the Floor.
+    Devices(DevicesCommand),
     /// Run an engine's own sign-in from the path the daemon found.
     Login(Provider),
     /// `workspace add|remove|reload|list`: edit `[floor.onboarding]` and have the daemon adopt
@@ -416,6 +418,23 @@ pub enum EditorSelection {
     Configured,
     /// Use this absolute operator-selected executable without environment arguments.
     Explicit(PathBuf),
+}
+
+/// One `devices` subcommand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DevicesCommand {
+    /// `floor.devices.list`.
+    List,
+    /// Sign one browser out: `floor.devices.remove` with the one device the prefix names.
+    Remove {
+        /// The whole id or the start of it, in lowercase hexadecimal.
+        id: String,
+    },
+    /// Keep a browser nobody has kept yet: `floor.devices.keep` with the one device the prefix names.
+    Keep {
+        /// The whole id or the start of it, in lowercase hexadecimal.
+        id: String,
+    },
 }
 
 /// One `worktree` subcommand.
@@ -738,6 +757,21 @@ COMMANDS
         can be replaced for later launches with dudes mcp. Codex and Pi take http servers only; a program
         server needs Claude and --trusted. Pi agents with servers need a tested release,
         currently 1.0.4; plain Pi agents need no version probe. A name or role holding a control character is refused. A role over 512 UTF-8 bytes is refused.
+
+    devices
+        The browsers signed in to the Floor: id, name, when each signed in, when it first
+        and last made a request, and a new mark on one nobody has kept yet. A browser
+        stays signed in for 30 days without use and 90 days in all, and the daemon keeps at
+        most eight.
+
+    devices remove <id>
+        Sign one browser out. The id is the whole id or the start of it, as long as it
+        names one browser. A start that names more than one is refused with the matches.
+
+    devices keep <id>
+        Mark a new browser as kept, which clears its new mark and puts it behind the browsers
+        still unkept when the daemon has to drop one. The Floor's Keep does the same from another
+        browser; this is for when you have no second one. The id works as for remove.
 
     worktree list
         Every worktree the daemon created that is not removed: id, state, agent, branch
@@ -1116,6 +1150,7 @@ fn parse_global(argv: &[OsString]) -> Result<Invocation, ArgError> {
         "login" => login(tail)?,
         "project" => Command::Workspace(workspace(tail, payload)?),
         "worktree" => Command::Worktree(worktree(tail)?),
+        "devices" => Command::Devices(devices(tail)?),
         "board" => Command::Board(board(tail)?),
         "ticket" => Command::Ticket(ticket(tail, json)?),
         "config" if json => return Err(ArgError::TextOnly("config")),
@@ -2502,6 +2537,55 @@ fn look(tail: &[OsString]) -> Result<LookParams, ArgError> {
         character: required(character, "--character")?,
         accent: required(accent, "--accent")?,
     })
+}
+
+/// `devices`, `devices list`, `devices remove <id>` and `devices keep <id>`.
+fn devices(tail: &[OsString]) -> Result<DevicesCommand, ArgError> {
+    let Some((subcommand, rest)) = tail.split_first() else {
+        return Ok(DevicesCommand::List);
+    };
+    if asks_for_help(subcommand) {
+        return Err(ArgError::HelpRequested);
+    }
+    match subcommand.to_string_lossy().as_ref() {
+        "list" => {
+            reject_leftovers(rest)?;
+            Ok(DevicesCommand::List)
+        }
+        verb @ ("remove" | "keep") => {
+            let mut id = None;
+            for arg in rest {
+                match arg.to_string_lossy().as_ref() {
+                    "--help" | "-h" => return Err(ArgError::HelpRequested),
+                    flag if flag.starts_with('-') => {
+                        return Err(ArgError::UnknownFlag(flag.to_owned()));
+                    }
+                    text if id.is_none() => {
+                        let valid = (4..=64).contains(&text.len())
+                            && text
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+                        if !valid {
+                            return Err(ArgError::BadValue {
+                                flag: "<id>",
+                                value: text.to_owned(),
+                                what: "a device id or its first 4 to 64 lowercase hexadecimal characters",
+                            });
+                        }
+                        id = Some(text.to_owned());
+                    }
+                    other => return Err(ArgError::UnknownFlag(other.to_owned())),
+                }
+            }
+            let id = id.ok_or(ArgError::Missing("<id>"))?;
+            Ok(if verb == "keep" {
+                DevicesCommand::Keep { id }
+            } else {
+                DevicesCommand::Remove { id }
+            })
+        }
+        other => Err(ArgError::UnknownCommand(format!("devices {other}"))),
+    }
 }
 
 fn worktree(tail: &[OsString]) -> Result<WorktreeCommand, ArgError> {
@@ -4362,5 +4446,50 @@ mod mcp_tests {
             Err(ArgError::Conflicting("--clear", "--mcp"))
         );
         assert_eq!(parsed(&["mcp", "--help"]), Err(ArgError::HelpRequested));
+    }
+}
+
+#[cfg(test)]
+mod devices_tests {
+    use super::*;
+
+    fn command(parts: &[&str]) -> Result<Command, ArgError> {
+        parse(&parts.iter().map(OsString::from).collect::<Vec<_>>()).map(|parsed| parsed.command)
+    }
+
+    #[test]
+    fn devices_lists_and_remove_takes_one_lowercase_hexadecimal_start() {
+        assert_eq!(
+            command(&["devices"]).unwrap(),
+            Command::Devices(DevicesCommand::List)
+        );
+        assert_eq!(
+            command(&["devices", "list"]).unwrap(),
+            Command::Devices(DevicesCommand::List)
+        );
+        assert_eq!(
+            command(&["devices", "remove", "ab12cd"]).unwrap(),
+            Command::Devices(DevicesCommand::Remove {
+                id: "ab12cd".to_owned()
+            })
+        );
+        assert_eq!(
+            command(&["devices", "keep", "ab12cd"]).unwrap(),
+            Command::Devices(DevicesCommand::Keep {
+                id: "ab12cd".to_owned()
+            })
+        );
+        for bad in [
+            &["devices", "keep"][..],
+            &["devices", "keep", "AB12CD"],
+            &["devices", "remove"][..],
+            &["devices", "remove", "ab1"],
+            &["devices", "remove", "AB12CD"],
+            &["devices", "remove", "zz12zz"],
+            &["devices", "remove", "ab12cd", "ab12cd"],
+            &["devices", "prune"],
+        ] {
+            assert!(command(bad).is_err(), "{bad:?}");
+        }
     }
 }

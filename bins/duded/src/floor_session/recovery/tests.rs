@@ -1,5 +1,5 @@
 use super::*;
-use crate::floor_session::{FloorCarry, SessionIdentity};
+use crate::floor_session::SessionIdentity;
 use dudes_supervisor::testing::FakeClock;
 use std::sync::atomic::AtomicBool;
 
@@ -122,34 +122,53 @@ fn recovery_requires_both_effective_grants_and_the_actual_original_identity() {
 }
 
 #[test]
-fn an_imported_original_is_live_with_its_carried_secret_and_unavailable_without_one() {
+fn a_device_restored_from_the_journal_keeps_its_recovery_original_live_until_it_is_removed() {
+    use dudes_proto::record::{FloorDeviceRemoval, Hex32};
+    use dudes_supervisor::DeviceRow;
+
     let clock = Arc::new(FakeClock::frozen(0));
     let old = new_sessions(&clock);
     let (identity, _) = sign_in(&old);
     let origin = attribution(&identity);
-    let old_carry = FloorCarry::new(old.clone(), None, crate::baseline::CheckRuns::default());
-    let exported = old_carry.export(Some("old"));
+    let (device, row) = {
+        let state = old.0.registry.lock();
+        let session = &state.sessions[&identity.cookie];
+        (
+            session.id,
+            DeviceRow {
+                origin: ORIGIN.to_owned(),
+                name: "Chrome".to_owned(),
+                cookie: Hex32::new(identity.cookie),
+                secret: Hex32::new(session.csrf.unwrap()),
+                enrolled: session.created,
+                first_used: session.first_used,
+                last_used: Some(session.last_used),
+                acknowledged: None,
+                removed: None,
+            },
+        )
+    };
     old.invalidate();
 
     let current = new_sessions(&clock);
-    let carry = FloorCarry::new(current.clone(), None, crate::baseline::CheckRuns::default());
-    assert_eq!(carry.import(Some("new"), &exported), 1);
-    let authority = current.recovery_authority();
-    assert_eq!(
-        authority.observe_original(&origin, GRANTS),
-        RecoveryAvailability::Live
-    );
-
-    let mut older = exported;
-    older.sessions[0].secret = None;
-    let current = new_sessions(&clock);
-    let carry = FloorCarry::new(current.clone(), None, crate::baseline::CheckRuns::default());
-    assert_eq!(carry.import(Some("newer"), &older), 1);
+    current.seed(&std::collections::BTreeMap::from([(device, row.clone())]));
     assert_eq!(
         current
             .recovery_authority()
             .observe_original(&origin, GRANTS),
+        RecoveryAvailability::Live
+    );
+
+    let mut removed = row;
+    removed.removed = Some((
+        FloorDeviceRemoval::Removed,
+        dudes_types::Timestamp::UNIX_EPOCH,
+    ));
+    let after = new_sessions(&clock);
+    after.seed(&std::collections::BTreeMap::from([(device, removed)]));
+    assert_eq!(
+        after.recovery_authority().observe_original(&origin, GRANTS),
         RecoveryAvailability::EstablishedUnavailable,
-        "an export that carried no secret cannot confirm the session"
+        "a removed device no longer vouches for what it started"
     );
 }

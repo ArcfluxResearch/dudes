@@ -5069,6 +5069,10 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                     format!("project trust: no project is named `{workspace_id}`"),
                 )),
             },
+            Ask::FloorDevice(change) => {
+                self.pump_or_refuse(Input::Command(Command::RecordFloorDevice(change)))?;
+                Ok(Answered::Done)
+            }
             Ask::TrustSet {
                 workspace_id,
                 directory,
@@ -8788,6 +8792,24 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
             .transpose()
     }
 
+    /// Arm the writer's injected short write, unless this append is a device record, which is not
+    /// the one a test aims it at.
+    #[cfg(debug_assertions)]
+    fn inject_short_write(&mut self, incidental: bool) {
+        let armed = (!incidental)
+            .then(|| {
+                self.append_failure
+                    .short_write
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+            })
+            .flatten();
+        if let Some((frames_to_skip, bytes)) = armed {
+            self.writer.fail_write_after(frames_to_skip, bytes);
+        }
+    }
+
     fn append_checked(
         &mut self,
         entry: &Entry,
@@ -8795,20 +8817,15 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock> Ctx<H, P, C> {
     ) -> Result<CheckedAppend> {
         self.ensure_memory_ready()?;
         self.ensure_journal_ready()?;
-        if self.append_failure.take() {
+        // A browser signing in or making its first request writes a device record of its own,
+        // and an injected failure is aimed at the append a test is about.
+        let incidental = entry.record.is_floor_device();
+        if !incidental && self.append_failure.take() {
             return Err(anyhow::Error::new(KnownNoEffect));
         }
         let identity = self.append_browser_identity(entry, recovery)?;
         #[cfg(debug_assertions)]
-        if let Some((frames_to_skip, bytes)) = self
-            .append_failure
-            .short_write
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        {
-            self.writer.fail_write_after(frames_to_skip, bytes);
-        }
+        self.inject_short_write(incidental);
         let pause = &self.onboarding_pause;
         let failure = &self.onboarding_failure;
         let grants = self.recovery_grants();

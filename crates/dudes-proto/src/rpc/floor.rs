@@ -26,12 +26,94 @@ pub const SESSION_BASE_URL_MAX_BYTES: usize = 2048;
 pub const SESSION_BOOTSTRAP_LEN: usize = 43;
 /// Canonical unpadded base64url encoding of exactly 32 bytes.
 pub const SESSION_BOOTSTRAP_PATTERN: &str = "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$";
-/// Lifetime of a bootstrap bearer, in seconds.
+/// Lifetime of a bootstrap bearer made for `dudes open`, in seconds.
 pub const SESSION_EXPIRES_IN_S: u64 = 60;
+/// Lifetime of a bootstrap bearer made to be printed and pasted, in seconds.
+pub const SESSION_PRINTED_EXPIRES_IN_S: u64 = 600;
 
 const INVALID_BASE_URL: &str = "invalid floor session base_url: expected at most 2048 UTF-8 bytes";
 const INVALID_BOOTSTRAP: &str = "invalid floor session bootstrap: expected canonical 43-character unpadded base64url encoding of 32 bytes";
-const INVALID_EXPIRY: &str = "invalid floor session expiry: expected 60 seconds";
+const INVALID_EXPIRY: &str = "invalid floor session expiry: expected 60 or 600 seconds";
+
+/// What a sign-in link is for. It sets how long the link lives and which of the daemon's link
+/// slots it takes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkPurpose {
+    /// The command line opens the browser itself: the link lives 60 seconds.
+    #[default]
+    Open,
+    /// The command line prints the link to be pasted elsewhere: it lives 10 minutes.
+    Print,
+}
+
+/// `floor.session.issue` params. A call with no purpose is a call to open.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionIssueParams {
+    /// What the link is for.
+    #[serde(default)]
+    pub purpose: LinkPurpose,
+}
+
+/// One signed-in browser, as `floor.devices.list` reports it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DeviceEntry {
+    /// The device's id.
+    #[schemars(with = "String")]
+    pub device: Hex32,
+    /// The label its browser chose. A label, not proof of what the browser is.
+    pub name: String,
+    /// When it signed in.
+    pub signed_in: Timestamp,
+    /// When it first made a request; absent while it has made none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_used: Option<Timestamp>,
+    /// When it last made a request; absent while it has made none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used: Option<Timestamp>,
+    /// Whether nobody has answered its "new browser" notice yet.
+    pub new: bool,
+}
+
+/// `floor.devices.list` result: the signed-in browsers, newest sign-in first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DevicesListResult {
+    /// The devices.
+    pub devices: Vec<DeviceEntry>,
+}
+
+/// `floor.devices.remove` params.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceRemoveParams {
+    /// The whole id of the device to sign out.
+    #[schemars(with = "String")]
+    pub device: Hex32,
+}
+
+/// `floor.devices.remove` result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DeviceRemoveResult {
+    /// Whether a device was signed out. False when it was already gone.
+    pub removed: bool,
+}
+
+/// `floor.devices.keep` params.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceKeepParams {
+    /// The whole id of the device to keep.
+    #[schemars(with = "String")]
+    pub device: Hex32,
+}
+
+/// `floor.devices.keep` result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DeviceKeepResult {
+    /// Whether the device is kept now. False when it is already gone.
+    pub kept: bool,
+}
 
 /// `floor.session.issue` result.
 ///
@@ -47,9 +129,9 @@ pub struct SessionIssueResult {
     #[serde(deserialize_with = "deserialize_bootstrap")]
     #[schemars(length(equal = SESSION_BOOTSTRAP_LEN), regex(pattern = SESSION_BOOTSTRAP_PATTERN))]
     pub bootstrap: String,
-    /// The bearer lifetime. Exactly 60 seconds.
+    /// The bearer lifetime: 60 seconds for a link made to open, 600 for one made to print.
     #[serde(deserialize_with = "deserialize_expiry")]
-    #[schemars(range(min = SESSION_EXPIRES_IN_S, max = SESSION_EXPIRES_IN_S))]
+    #[schemars(range(min = SESSION_EXPIRES_IN_S, max = SESSION_PRINTED_EXPIRES_IN_S))]
     pub expires_in_s: u64,
 }
 
@@ -259,7 +341,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let value = u64::deserialize(deserializer)?;
-    if value == SESSION_EXPIRES_IN_S {
+    if value == SESSION_EXPIRES_IN_S || value == SESSION_PRINTED_EXPIRES_IN_S {
         Ok(value)
     } else {
         Err(serde::de::Error::custom(INVALID_EXPIRY))
@@ -320,7 +402,10 @@ mod tests {
             SESSION_BOOTSTRAP_PATTERN
         );
         assert_eq!(properties["expires_in_s"]["minimum"], SESSION_EXPIRES_IN_S);
-        assert_eq!(properties["expires_in_s"]["maximum"], SESSION_EXPIRES_IN_S);
+        assert_eq!(
+            properties["expires_in_s"]["maximum"],
+            SESSION_PRINTED_EXPIRES_IN_S
+        );
     }
 
     /// The session-issue result has three finite fields, and the bearer stays out of
@@ -408,7 +493,13 @@ mod tests {
             );
         }
 
-        for expires_in_s in [0, SESSION_EXPIRES_IN_S - 1, SESSION_EXPIRES_IN_S + 1] {
+        for expires_in_s in [
+            0,
+            SESSION_EXPIRES_IN_S - 1,
+            SESSION_EXPIRES_IN_S + 1,
+            SESSION_PRINTED_EXPIRES_IN_S - 1,
+            SESSION_PRINTED_EXPIRES_IN_S + 1,
+        ] {
             let error = serde_json::from_value::<SessionIssueResult>(wire(
                 "http://127.0.0.1",
                 &sentinel,

@@ -375,7 +375,7 @@ fn launch_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// What the command prints besides the link.
-const PASTE: &str = "Paste this link into any browser within 60 seconds. It works once; run dudes \
+const PASTE: &str = "Paste this link into any browser within 10 minutes. It works once; run dudes \
                      open for a new one.";
 
 /// **The command prints the link on its own line, then where to paste it, and launches nothing.**
@@ -440,5 +440,8 @@ fn json_prints_the_contract_type() {
     let run = open(&settings, true);
     assert_eq!(run.code(), exit::SUCCESS, "{}", run.output());
     let issued: SessionIssueResult = run.json();
-    assert_eq!(issued.expires_in_s, 60);
+    assert_eq!(
+        issued.expires_in_s, 600,
+        "a link made to be printed lives ten minutes"
+    );
 }

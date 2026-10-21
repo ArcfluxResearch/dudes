@@ -533,6 +533,11 @@ mod tests {
             | Record::MemoryCondenseModelAdmitted { .. }
             | Record::FloorPeerRefused { .. }
             | Record::WorkspaceTrustSet { .. }
+            | Record::FloorDeviceEnrolled { .. }
+            | Record::FloorDeviceFirstUsed { .. }
+            | Record::FloorDeviceAcknowledged { .. }
+            | Record::FloorDeviceRemoved { .. }
+            | Record::FloorDeviceUsed { .. }
             | Record::BreakerBeat { .. }
             | Record::CardCreated { .. }
             | Record::CardTransition { .. }

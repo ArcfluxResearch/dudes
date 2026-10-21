@@ -894,6 +894,8 @@ pub enum Command {
         /// The settings vouched for. Absent when `trusted` is false.
         pin: Option<dudes_proto::record::TrustPin>,
     },
+    /// Record a change to the Floor's device table.
+    RecordFloorDevice(FloorDeviceChange),
     /// End a lease whose tree is gone. Ignored unless the lease's state allows it:
     /// `NeverAssigned` only while pending, `Operator` only once released.
     RemoveWorktree {
@@ -1333,4 +1335,35 @@ mod recorded_append_tests {
         let zero = RecordedAppend::try_new(Lsn::ZERO, (Lsn::ZERO, main), None).unwrap();
         assert_eq!((zero.lsn(), zero.through()), (Lsn::ZERO, Lsn::ZERO));
     }
+}
+
+/// One change to the Floor's device table, appended as the matching journal record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FloorDeviceChange {
+    /// A browser signed in.
+    Enroll {
+        /// The new device's id.
+        device: Hex32,
+        /// The Floor origin it signed in on.
+        origin: String,
+        /// Its cleaned, capped name.
+        name: String,
+        /// SHA-256 of its cookie.
+        cookie: Hex32,
+        /// SHA-256 of its secret.
+        secret: Hex32,
+    },
+    /// A device made its first request.
+    FirstUse(Hex32),
+    /// A device made a request, at most once a day.
+    Use(Hex32),
+    /// Someone kept a new device.
+    Acknowledge(Hex32),
+    /// A device ended.
+    Remove {
+        /// The device.
+        device: Hex32,
+        /// Why.
+        reason: dudes_proto::record::FloorDeviceRemoval,
+    },
 }

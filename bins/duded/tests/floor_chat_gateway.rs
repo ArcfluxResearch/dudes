@@ -519,7 +519,7 @@ fn chat_routes_refuse_oversize_and_expired_sessions_without_waiting_for_body() {
         );
         assert_eq!(http(browser.addr, request.as_bytes()).0, 403);
     }
-    browser.clock.advance(24 * 60 * 60_000);
+    browser.clock.advance(30 * 24 * 60 * 60_000);
     assert_eq!(
         http(
             browser.addr,
@@ -1470,7 +1470,7 @@ fn conversation_daily_budget_refresh_reconsiders_a_pending_message() {
         200
     );
     assert_eq!(browser.snapshot()["chat"]["pending"][0]["reason"], "budget");
-    browser.clock.advance(86_400_000);
+    browser.clock.advance(30 * 86_400_000);
     running.handle.input(dudes_supervisor::Input::Tick);
     conversation_issued(&fixture, "next day reply");
     assert_eq!(

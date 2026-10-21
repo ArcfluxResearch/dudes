@@ -501,6 +501,143 @@ pub fn worktrees(
     Ok(())
 }
 
+/// How long a link stays good, in the words a person reads.
+fn link_window(seconds: u64) -> String {
+    if seconds >= 120 && seconds.is_multiple_of(60) {
+        format!("{} minutes", seconds / 60)
+    } else {
+        format!("{seconds} seconds")
+    }
+}
+
+/// `floor.devices.list`: one browser per line, newest sign-in first, in `zone`.
+///
+/// # Errors
+///
+/// Whatever writing returns.
+pub fn devices<Tz: TimeZone>(
+    out: &mut dyn Write,
+    machine: bool,
+    entries: &[dudes_proto::rpc::floor::DeviceEntry],
+    zone: &Tz,
+) -> io::Result<()>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    if machine {
+        return json(out, &entries);
+    }
+    if entries.is_empty() {
+        return writeln!(out, "no browsers are signed in; run `dudes open`");
+    }
+    let when = |at: Option<dudes_types::Timestamp>| {
+        at.map_or_else(|| "never".to_owned(), |at| zoned(at, zone))
+    };
+    writeln!(
+        out,
+        "{:<14}{:<24}{:<27}{:<27}{:<27}",
+        "ID", "NAME", "SIGNED IN", "FIRST USED", "LAST USED"
+    )?;
+    for entry in entries {
+        let id = entry.device.to_hex();
+        writeln!(
+            out,
+            "{:<14}{:<24}{:<27}{:<27}{:<27}{}",
+            &id[..12],
+            Escaped(&entry.name),
+            zoned(entry.signed_in, zone),
+            when(entry.first_used),
+            when(entry.last_used),
+            if entry.new { "new" } else { "" },
+        )?;
+    }
+    Ok(())
+}
+
+/// What `devices remove` prints when the id names no browser, or more than one.
+///
+/// # Errors
+///
+/// Whatever writing returns.
+pub fn devices_unmatched<Tz: TimeZone>(
+    err: &mut dyn Write,
+    id: &str,
+    matches: &[&dudes_proto::rpc::floor::DeviceEntry],
+    zone: &Tz,
+) -> io::Result<()>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    if matches.is_empty() {
+        return writeln!(
+            err,
+            "no signed-in browser has an id starting {id}; run `dudes devices`"
+        );
+    }
+    writeln!(
+        err,
+        "{id} starts more than one browser's id; use more of it:"
+    )?;
+    for entry in matches {
+        writeln!(
+            err,
+            "  {}  {}  signed in {}",
+            entry.device.to_hex(),
+            Escaped(&entry.name),
+            zoned(entry.signed_in, zone)
+        )?;
+    }
+    Ok(())
+}
+
+/// What `devices remove` prints once the daemon answers.
+///
+/// # Errors
+///
+/// Whatever writing returns.
+pub fn device_removed(
+    out: &mut dyn Write,
+    machine: bool,
+    entry: &dudes_proto::rpc::floor::DeviceEntry,
+    removed: bool,
+) -> io::Result<()> {
+    if machine {
+        return json(
+            out,
+            &serde_json::json!({"device": entry.device, "removed": removed}),
+        );
+    }
+    if removed {
+        writeln!(out, "signed out {}", Escaped(&entry.name))
+    } else {
+        writeln!(out, "{} was already signed out", Escaped(&entry.name))
+    }
+}
+
+/// What `devices keep` prints once the daemon answers.
+///
+/// # Errors
+///
+/// Whatever writing returns.
+pub fn device_kept(
+    out: &mut dyn Write,
+    machine: bool,
+    entry: &dudes_proto::rpc::floor::DeviceEntry,
+    kept: bool,
+) -> io::Result<()> {
+    if machine {
+        return json(
+            out,
+            &serde_json::json!({"device": entry.device, "kept": kept}),
+        );
+    }
+    if kept {
+        writeln!(out, "kept {}", Escaped(&entry.name))
+    } else {
+        writeln!(out, "{} was already signed out", Escaped(&entry.name))
+    }
+}
+
 /// What `worktree remove` prints while the tree still exists: the command to run, with every
 /// argument single-quoted so a path with a space or a quote reads back exactly.
 ///
@@ -1059,9 +1196,9 @@ pub fn floor_url(
     writeln!(out, "{}", urls.printed_once)?;
     writeln!(
         out,
-        "Paste this link into any browser within {} seconds. It works once; run dudes open for a \
+        "Paste this link into any browser within {}. It works once; run dudes open for a \
          new one.",
-        result.expires_in_s
+        link_window(result.expires_in_s)
     )
 }
 
@@ -1421,6 +1558,28 @@ mod tests {
         let mut buffer = Vec::new();
         f(&mut buffer).expect("writing to a vector");
         String::from_utf8(buffer).expect("the renderer writes UTF-8")
+    }
+
+    #[test]
+    fn an_ambiguous_start_lists_the_matches_and_a_missing_one_says_so() {
+        let entry = |byte: u8, name: &str| dudes_proto::rpc::floor::DeviceEntry {
+            device: dudes_proto::record::Hex32::new([byte; 32]),
+            name: name.to_owned(),
+            signed_in: dudes_types::Timestamp::from_unix_millis(0),
+            first_used: None,
+            last_used: None,
+            new: false,
+        };
+        let (one, two) = (
+            entry(0xab, "Chrome on macOS"),
+            entry(0xac, "Firefox on Linux"),
+        );
+        let shown = text(|err| devices_unmatched(err, "a", &[&one, &two], &chrono::Utc));
+        assert!(shown.contains("starts more than one"), "{shown}");
+        assert!(shown.contains(&"ab".repeat(32)) && shown.contains(&"ac".repeat(32)));
+        assert!(shown.contains("Chrome on macOS") && shown.contains("Firefox on Linux"));
+        let none = text(|err| devices_unmatched(err, "ffff", &[], &chrono::Utc));
+        assert!(none.contains("no signed-in browser"), "{none}");
     }
 
     fn an_agent() -> AgentId {

@@ -80,6 +80,9 @@ export const SERVER_MESSAGES = Object.freeze([
   'floor.output.unavailable',
   'floor.output.ended',
   'floor.output.reply',
+  'floor.device.enrolled',
+  'floor.device.acknowledged',
+  'floor.device.removed',
 ] as const);
 
 const TURN_ID = AGENT_ID;
@@ -534,6 +537,12 @@ export function applyServerFrame(
       // lsn or a phase moving here. Returning before `commit` is what keeps
       // this file's boundary — `applyServerFrame` is the one way a row reaches
       // the floor — true word for word rather than merely nearly true.
+      return;
+    case 'floor.device.enrolled':
+    case 'floor.device.acknowledged':
+    case 'floor.device.removed':
+      // The daemon announces browsers signing in and out. This page does not show them yet, so
+      // it accepts the frame, which is a message of the protocol, and keeps its view as it is.
       return;
     case 'floor.output.snapshot':
     case 'floor.output.chunk':

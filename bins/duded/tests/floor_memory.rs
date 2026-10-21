@@ -522,10 +522,14 @@ fn authentication_fails_closed_before_any_read_and_near_misses_are_not_routes() 
         page.page(agent, None).to_string().contains(SENTINEL),
         "positive control: the signed-in page reads the entry"
     );
-    daemon.clock.advance(25 * 60 * 60_000);
+    daemon.clock.advance(31 * 24 * 60 * 60_000);
     let expired = page.page_reply(agent, None);
     assert_eq!(expired.status, 403, "an expired session: {}", expired.head);
-    assert!(expired.body.is_empty());
+    assert_eq!(
+        expired.text(),
+        r#"{"reason":"expired","session":"gone"}"#,
+        "a device that ran out says so and nothing else"
+    );
     daemon.stop();
 }
 
@@ -925,6 +929,15 @@ fn a_session_that_expires_while_the_loop_answers_gets_no_page() {
     let agent = daemon.hire(&fixture, "agent");
     daemon.append(agent, &format!("{SENTINEL}{}", "a".repeat(2_048)));
     let page = daemon.page();
+    // A device's first request is journaled, which waits for the loop, so it makes that request
+    // before the loop is held.
+    let first = send(
+        daemon.addr,
+        "POST /floor/devices HTTP/1.1",
+        &page.headers(),
+        "{}",
+    );
+    assert_eq!(first.status, 200, "{}", first.head);
     daemon.pause.arm();
     let handle = daemon.running.handle.clone();
     let appending = std::thread::spawn(move || {
@@ -960,7 +973,7 @@ fn a_session_that_expires_while_the_loop_answers_gets_no_page() {
         .expect("one read answers while the loop is held");
     assert_eq!(busy.json()["state"], "busy");
 
-    daemon.clock.advance(25 * 60 * 60_000);
+    daemon.clock.advance(31 * 24 * 60 * 60_000);
     daemon.pause.release();
     assert!(appending.join().expect("the append").is_ok());
     let held = answered.recv_timeout(WAIT).expect("the held read answers");
@@ -976,6 +989,8 @@ fn a_stopped_journal_still_answers_the_page() {
     let daemon = Daemon::boot(&fixture, raw_only());
     let agent = daemon.hire(&fixture, "agent");
     daemon.append(agent, SENTINEL);
+    // A browser can only sign in while the journal can take it, so it signs in first.
+    let mut browser = daemon.page();
     daemon.failure.short_write_next(5);
     assert!(
         daemon
@@ -989,7 +1004,7 @@ fn a_stopped_journal_still_answers_the_page() {
             .is_err(),
         "the journal stopped"
     );
-    let page = daemon.page().page(agent, None);
+    let page = browser.page(agent, None);
     assert_eq!(page["state"], "ok");
     assert_eq!(page["entries"][0]["text"], SENTINEL);
     daemon.stop();

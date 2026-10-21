@@ -180,7 +180,7 @@ impl dudes_supervisor::Clock for PermitClock {
     fn now(&self) -> dudes_types::Timestamp {
         let now = dudes_supervisor::Clock::now(&self.inner);
         if self.expire_after_read.swap(false, Ordering::SeqCst) {
-            self.inner.advance(48 * 60 * 60 * 1_000);
+            self.inner.advance(31 * 24 * 60 * 60 * 1_000);
         }
         now
     }
@@ -1181,7 +1181,7 @@ fn expired_writer_session_cannot_read_a_durable_chat_receipt() {
         ChatOutcome::Queued { .. }
     ));
     let before = fixture.entries().len();
-    clock.advance(48 * 60 * 60 * 1_000);
+    clock.advance(31 * 24 * 60 * 60 * 1_000);
     assert_eq!(
         running.handle.chat(identity, original),
         Err(crate::floor_chat::ChatRefusal::Forbidden)

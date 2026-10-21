@@ -46,7 +46,7 @@ const CLIENT_TYPES: [&str; 5] = [
     "floor.output.select",
     "floor.output.clear",
 ];
-const SERVER_TYPES: [&str; 11] = [
+const SERVER_TYPES: [&str; 14] = [
     "floor.snapshot",
     "floor.delta",
     "floor.resync",
@@ -58,6 +58,9 @@ const SERVER_TYPES: [&str; 11] = [
     "floor.output.unavailable",
     "floor.output.ended",
     "floor.output.reply",
+    "floor.device.enrolled",
+    "floor.device.acknowledged",
+    "floor.device.removed",
 ];
 
 #[derive(Serialize)]
@@ -1235,6 +1238,32 @@ impl FloorStreams {
         }
     }
 
+    /// Tell every open stream that a device signed in, was kept, or ended. The change is already
+    /// durable; a page that is not subscribed learns it from the device list.
+    pub(crate) fn publish_device_event(&self, event: &crate::floor_session::DeviceEvent) {
+        use crate::floor_session::DeviceEvent;
+        let frame = match event {
+            DeviceEvent::Enrolled { device, name, at } => serde_json::json!({
+                "type": "floor.device.enrolled",
+                "device": device,
+                "name": name,
+                "at": at,
+            }),
+            DeviceEvent::Acknowledged { device } => serde_json::json!({
+                "type": "floor.device.acknowledged",
+                "device": device,
+            }),
+            DeviceEvent::Removed { device, reason } => serde_json::json!({
+                "type": "floor.device.removed",
+                "device": device,
+                "reason": reason,
+            }),
+        };
+        if let Ok(bytes) = serialize_frame(&frame) {
+            broadcast_frame(&self.0, &Arc::from(bytes));
+        }
+    }
+
     /// Tell every open stream to drop its view and subscribe again. The stream stays
     /// open; the page closes it and takes a fresh snapshot within the same session.
     pub(crate) fn resync(&self) -> usize {
@@ -1678,11 +1707,23 @@ fn broadcast(inner: &Inner, kind: &'static str) -> usize {
         end_locked(&mut state, &inner.ended);
         return 0;
     };
-    let frame = Arc::<[u8]>::from(frame);
+    deliver(&mut state, &Arc::<[u8]>::from(frame))
+}
+
+/// Enqueue one prebuilt frame to every live subscriber, and count who got it.
+fn broadcast_frame(inner: &Inner, frame: &Arc<[u8]>) -> usize {
+    let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+    if state.ended {
+        return 0;
+    }
+    deliver(&mut state, frame)
+}
+
+fn deliver(state: &mut State, frame: &Arc<[u8]>) -> usize {
     let mut reached = 0;
     state.subscriptions.retain(|subscriber| {
         subscriber.upgrade().is_some_and(|queue| {
-            let sent = queue.enqueue(Arc::clone(&frame));
+            let sent = queue.enqueue(Arc::clone(frame));
             reached += usize::from(sent);
             sent
         })

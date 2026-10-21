@@ -41,9 +41,9 @@ To upgrade, run `dudes upgrade`. It asks GitHub for the latest release, installs
 starts the new one. It refuses while an agent is running a turn, waiting for an answer or attached to your session, unless you add `--now`, which restarts with closing time (up to 6 minutes for agents to save), and it never installs an older
 release. `dudes upgrade --check` prints the current and latest versions and changes nothing. It only works for a
 copy that `install.sh` installed. Running the install command again, then `dudes stop` and `dudes start`, does the
-same by hand, except that it signs every open Floor tab out. `dudes upgrade` keeps those sign-ins: an open Floor tab
+same by hand. Browsers that are signed in to the Floor stay signed in: an open Floor tab
 needs one reload afterwards, and it shows the same agents.
-The first upgrade from a version that predates this still signs open tabs out.
+The first upgrade from a version that kept sign-ins only in memory still signs open tabs out once.
 Dudes connects to GitHub only when you run `dudes upgrade`, and never checks for updates on its own.
 
 To build from source, or on Windows, see [Build Dudes from source](docs/building-from-source.md).

@@ -499,6 +499,9 @@ fn dispatch(
         Command::Worktree(command) => {
             return worktree_command(command, env, invocation.json, out, err);
         }
+        Command::Devices(command) => {
+            return devices_command(command, env, invocation.json, out, err);
+        }
         Command::GoalReplace(path) => return replace_goal(path, env, invocation.json, out),
         Command::Recovery(command) => {
             return recovery::command(command, env, invocation.json, out, err);
@@ -809,6 +812,73 @@ fn warn_if_sharing(env: &Environment, agent: dudes_types::AgentId, err: &mut dyn
              with this agent's; hire with --worktree for a tree of its own",
         );
     }
+}
+
+/// `dudes devices`, `dudes devices remove` and `dudes devices keep`.
+///
+/// A prefix is resolved here against the daemon's list, and the removal names the whole id, so the
+/// browser signed out is the one that was shown.
+fn devices_command(
+    command: &crate::args::DevicesCommand,
+    env: &Environment,
+    machine: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<u8, Failure> {
+    use dudes_proto::rpc::floor::{
+        DeviceKeepParams, DeviceKeepResult, DeviceRemoveParams, DeviceRemoveResult,
+        DevicesListResult,
+    };
+    let listed: DevicesListResult = typed(operator_call(env, Method::FloorDevicesList, None)?)?;
+    match command {
+        crate::args::DevicesCommand::List => {
+            render::devices(out, machine, &listed.devices, &chrono::Local).map_err(local)?;
+            Ok(exit::SUCCESS)
+        }
+        crate::args::DevicesCommand::Remove { id } => {
+            let matches = devices_starting(&listed.devices, id);
+            let [entry] = matches.as_slice() else {
+                render::devices_unmatched(err, id, &matches, &chrono::Local).map_err(local)?;
+                return Ok(exit::REFUSED);
+            };
+            let result: DeviceRemoveResult = typed(operator_call(
+                env,
+                Method::FloorDevicesRemove,
+                Some(encode(&DeviceRemoveParams {
+                    device: entry.device,
+                })?),
+            )?)?;
+            render::device_removed(out, machine, entry, result.removed).map_err(local)?;
+            Ok(exit::SUCCESS)
+        }
+        crate::args::DevicesCommand::Keep { id } => {
+            let matches = devices_starting(&listed.devices, id);
+            let [entry] = matches.as_slice() else {
+                render::devices_unmatched(err, id, &matches, &chrono::Local).map_err(local)?;
+                return Ok(exit::REFUSED);
+            };
+            let result: DeviceKeepResult = typed(operator_call(
+                env,
+                Method::FloorDevicesKeep,
+                Some(encode(&DeviceKeepParams {
+                    device: entry.device,
+                })?),
+            )?)?;
+            render::device_kept(out, machine, entry, result.kept).map_err(local)?;
+            Ok(exit::SUCCESS)
+        }
+    }
+}
+
+/// The devices whose id starts with `id`.
+fn devices_starting<'a>(
+    devices: &'a [dudes_proto::rpc::floor::DeviceEntry],
+    id: &str,
+) -> Vec<&'a dudes_proto::rpc::floor::DeviceEntry> {
+    devices
+        .iter()
+        .filter(|entry| entry.device.to_hex().starts_with(id))
+        .collect()
 }
 
 /// `dudes worktree list` and `remove`.
@@ -2095,7 +2165,12 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         // operator door as every row above: the credential is read once in [`dispatch`] and
         // presented once in [`call_presenting`]. The method's `Requirement` is the daemon's registration to
         // enforce, not this enum's to restate.
-        Command::FloorOpen => (Method::FloorSessionIssue, None),
+        Command::FloorOpen => (
+            Method::FloorSessionIssue,
+            Some(encode(&dudes_proto::rpc::floor::SessionIssueParams {
+                purpose: dudes_proto::rpc::floor::LinkPurpose::Print,
+            })?),
+        ),
         Command::Board(BoardCommand::Create(params)) => {
             (Method::BoardCreate, Some(encode(params)?))
         }
@@ -2144,6 +2219,7 @@ fn wire(command: &Command) -> Result<(Method, Option<Value>), Failure> {
         | Command::Tail { .. }
         | Command::Workspace(_)
         | Command::Worktree(_)
+        | Command::Devices(_)
         | Command::Config(_)
         | Command::Uninstall(_)
         | Command::Upgrade(_)
@@ -3314,5 +3390,37 @@ mod replacement_tests {
                 timeout_s: 600
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod devices_tests {
+    use dudes_proto::record::Hex32;
+    use dudes_proto::rpc::floor::DeviceEntry;
+    use dudes_types::Timestamp;
+
+    use super::devices_starting;
+
+    fn entry(first: u8, second: u8) -> DeviceEntry {
+        let mut id = [0_u8; 32];
+        id[0] = first;
+        id[1] = second;
+        DeviceEntry {
+            device: Hex32::new(id),
+            name: "Chrome".to_owned(),
+            signed_in: Timestamp::from_unix_millis(1),
+            first_used: None,
+            last_used: None,
+            new: true,
+        }
+    }
+
+    #[test]
+    fn a_unique_start_names_one_device_and_a_shared_start_names_several() {
+        let devices = [entry(0xab, 0x01), entry(0xab, 0x02), entry(0xcd, 0x03)];
+        assert_eq!(devices_starting(&devices, "cd03").len(), 1);
+        assert_eq!(devices_starting(&devices, "ab").len(), 2, "ambiguous");
+        assert_eq!(devices_starting(&devices, "ab01").len(), 1);
+        assert!(devices_starting(&devices, "ffff").is_empty());
     }
 }

@@ -1,5 +1,6 @@
 //! The restart half of `dudes upgrade` against a real `duded`: the sign-ins a Floor tab holds
-//! survive an upgrade and do not survive a plain stop and start.
+//! survive an upgrade and a plain stop and start, because the daemon keeps them as devices in its
+//! journal.
 //!
 //! The installer step is replaced by writing a second Floor bundle beside the daemon, which is all
 //! the installer changes that the Floor can see. Everything from the export to the import is the
@@ -14,6 +15,9 @@ use std::time::Duration;
 
 use dudes::Environment;
 use sha2::{Digest as _, Sha256};
+
+mod common;
+use common::Lifeline;
 
 fn built_daemon() -> PathBuf {
     let mut daemon = PathBuf::from(env!("CARGO_BIN_EXE_dudes"));
@@ -95,7 +99,8 @@ fn http(origin: &str, request_line: &str, extra: &str, body: &str) -> (String, S
 }
 
 struct Installed {
-    _root: tempfile::TempDir,
+    _lifeline: Lifeline,
+    root: tempfile::TempDir,
     env: Environment,
     floor: PathBuf,
     origin: String,
@@ -136,8 +141,10 @@ impl Installed {
                 .find(|(candidate, _)| *candidate == name)
                 .map(|(_, value)| value.clone())
         });
+        let lifeline = Lifeline::start(root.path());
         let mut installed = Self {
-            _root: root,
+            _lifeline: lifeline,
+            root,
             env,
             floor,
             origin: String::new(),
@@ -146,14 +153,45 @@ impl Installed {
         };
         let (code, out, err) = installed.cli(&["start"]);
         assert_eq!(code, 0, "{out}{err}");
+        assert!(
+            std::fs::read_to_string(installed.root.path().join("duded.log"))
+                .is_ok_and(|note| note.contains("quickstart started duded pid ")),
+            "the lifeline knows the daemon"
+        );
         installed.sign_in();
         installed
+    }
+
+    /// Note each daemon of this install where the lifeline looks, because `dudes start` leaves no
+    /// such note and the lifeline stops only the pids it reads.
+    fn record_daemons(&self) {
+        use std::io::Write as _;
+        let program = self.root.path().join("bin/duded");
+        let listing = common::run_program(
+            Path::new("/bin/ps"),
+            &["-axww", "-o", "pid=,command="].map(OsString::from),
+        );
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.path().join("duded.log"))
+            .expect("the lifeline's note");
+        for line in listing.stdout.lines() {
+            let (pid, command) = line.trim_start().split_once(' ').unwrap_or_default();
+            if command
+                .trim_start()
+                .starts_with(&*program.to_string_lossy())
+            {
+                writeln!(log, "quickstart started duded pid {pid}").expect("write the note");
+            }
+        }
     }
 
     fn cli(&self, words: &[&str]) -> (u8, String, String) {
         let argv: Vec<OsString> = words.iter().map(OsString::from).collect();
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = dudes::run(&argv, &self.env, None, &mut out, &mut err);
+        self.record_daemons();
         (
             code,
             String::from_utf8(out).expect("text"),
@@ -231,7 +269,7 @@ impl Drop for Installed {
 }
 
 #[test]
-fn an_upgrade_keeps_the_open_sign_in_and_a_plain_restart_does_not() {
+fn an_upgrade_and_a_plain_restart_both_keep_the_open_sign_in() {
     let installed = Installed::start();
     let before = installed.build();
     assert!(
@@ -265,14 +303,29 @@ fn an_upgrade_keeps_the_open_sign_in_and_a_plain_restart_does_not() {
 
     installed.plain_restart();
     assert!(
-        !installed.acts(),
-        "a plain stop and start signs the browser out"
+        installed.acts(),
+        "a plain stop and start keeps the browser signed in"
     );
 }
 
 #[test]
 fn a_restart_with_no_open_sign_in_says_nothing_about_sign_ins() {
     let mut installed = Installed::start();
+    let (code, listed, err) = installed.cli(&["devices", "--json"]);
+    assert_eq!(code, 0, "{listed}{err}");
+    let listed: serde_json::Value = serde_json::from_str(&listed).expect("a JSON list");
+    let id = listed[0]["device"].as_str().expect("one device").to_owned();
+    assert_eq!(listed[0]["new"], true, "a lone browser starts out new");
+    let (code, out, err) = installed.cli(&["devices", "keep", &id[..12]]);
+    assert_eq!(code, 0, "{out}{err}");
+    let (code, relisted, err) = installed.cli(&["devices", "--json"]);
+    assert_eq!(code, 0, "{relisted}{err}");
+    let relisted: serde_json::Value = serde_json::from_str(&relisted).expect("a JSON list");
+    assert_eq!(relisted[0]["new"], false, "kept from the terminal");
+    assert!(installed.acts(), "keeping signs nobody out");
+    let (code, out, err) = installed.cli(&["devices", "remove", &id[..12]]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(!installed.acts(), "the removed browser is signed out");
     installed.plain_restart();
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = dudes::run::upgrade_restart_for_test(
@@ -289,7 +342,7 @@ fn a_restart_with_no_open_sign_in_says_nothing_about_sign_ins() {
 }
 
 #[test]
-fn an_upgrade_that_dies_after_the_export_and_before_the_import_restores_nothing() {
+fn an_upgrade_that_dies_after_the_export_and_before_the_import_still_leaves_the_device_signed_in() {
     use dudes_proto::rpc::CurrentMethod;
 
     let installed = Installed::start();
@@ -305,7 +358,7 @@ fn an_upgrade_that_dies_after_the_export_and_before_the_import_restores_nothing(
     assert_eq!(exported["sessions"].as_array().map(Vec::len), Some(1));
     installed.plain_restart();
     assert!(
-        !installed.acts(),
-        "an export that never reached an import signs nobody back in"
+        installed.acts(),
+        "the journal, not the export, keeps the device"
     );
 }

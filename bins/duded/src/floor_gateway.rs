@@ -45,8 +45,8 @@ use crate::floor_project::{
 use crate::floor_rename::{MAX_RENAME_BODY_BYTES, RenameOutcome, RenameRefusal, RenameRequest};
 use crate::floor_retire::{MAX_RETIRE_BODY_BYTES, RetireOutcome, RetireRefusal, RetireRequest};
 use crate::floor_session::{
-    ActionKind, FloorSessionAuthorizer, FloorSessions, LoginSession, ReceiptSession, ReserveResult,
-    SESSION_COOKIE_NAME, SessionIdentity, StreamSession, TerminalSession,
+    ActionKind, FloorSessionAuthorizer, FloorSessions, GoneReason, LoginSession, ReceiptSession,
+    Removal, ReserveResult, SESSION_COOKIE_NAME, SessionIdentity, StreamSession, TerminalSession,
 };
 use crate::floor_settings_edit::{MAX_SETTINGS_BODY_BYTES, SettingsRefusal, SettingsRequest};
 use crate::floor_stream::{ClientMessage, FloorStreams, QueueRead, decode_client};
@@ -58,10 +58,12 @@ use crate::floor_websocket::{Decoder, Message, accept_key, close_frame, pong_fra
 use crate::settings::FloorSettings;
 use crate::{ExitCause, Handle};
 
+mod devices;
 mod guard;
 #[cfg(test)]
 mod guard_tests;
 mod recovery;
+use devices::{DeviceVerb, MAX_DEVICES_BODY_BYTES};
 use guard::{
     Admission, Admitted, Credentials, Denied, Endpoints, Guard, Head, ProofAsk, Route, SignIn,
     StandingRoute,
@@ -133,6 +135,10 @@ const DIFF_PATH: &str = "/floor/diff";
 /// Always routed: an agent's memory, read on demand.
 const MEMORY_PAGE_PATH: &str = "/floor/memory/page";
 const MEMORY_ENTRY_PATH: &str = "/floor/memory/entry";
+/// Always routed: the signed-in browsers, listed, signed out, and kept.
+const DEVICES_PATH: &str = "/floor/devices";
+const DEVICES_REMOVE_PATH: &str = "/floor/devices/remove";
+const DEVICES_KEEP_PATH: &str = "/floor/devices/keep";
 const CHAT_SEND_PATH: &str = "/floor/chat/send";
 const CHAT_CANCEL_PATH: &str = "/floor/chat/cancel";
 /// The onboarding body cap.
@@ -265,6 +271,9 @@ pub struct PreparedAssets {
     board: Arc<TicketLimits>,
     /// Who may use the Floor, decided from the process on the other end of each connection.
     peer: Arc<PeerGate>,
+    /// The devices the journal holds. Present only for a daemon whose Floor keeps its devices in
+    /// the journal; without it the listener keeps none.
+    devices: Option<BTreeMap<dudes_proto::record::Hex32, dudes_supervisor::DeviceRow>>,
 }
 
 impl PreparedAssets {
@@ -558,6 +567,16 @@ impl PreparedAssets {
         self
     }
 
+    /// Keep the Floor's devices in the journal, starting from the ones it already holds.
+    #[must_use]
+    pub(crate) fn with_devices(
+        mut self,
+        devices: BTreeMap<dudes_proto::record::Hex32, dudes_supervisor::DeviceRow>,
+    ) -> Self {
+        self.devices = Some(devices);
+        self
+    }
+
     #[must_use]
     pub(crate) const fn with_remembered_port(mut self, port: Option<u16>) -> Self {
         self.remembered = port;
@@ -693,12 +712,20 @@ impl PreparedAssets {
         let board = self.board;
         let tickets = Some(Arc::clone(&board));
         let peer = self.peer;
+        let devices = self.devices;
         let memory = fault
             .0
             .memory_interval
             .map_or_else(MemoryReads::new, MemoryReads::with_interval);
         let thread_clock = Arc::clone(&clock);
         let sessions = FloorSessions::new(addr, clock);
+        if let Some(devices) = &devices {
+            sessions.install_sink(Arc::new(LoopDevices {
+                handle: handle.clone(),
+                streams: streams.clone(),
+            }));
+            sessions.seed(devices);
+        }
         let thread_sessions = sessions.clone();
         let thread_streams = streams.clone();
         let connection_failure = handle.clone();
@@ -1172,6 +1199,7 @@ enum ActionRoute {
     Chat(ChatVerb),
     Ticket(TicketRoute),
     Recovery(RecoveryRoute),
+    Devices(DeviceVerb),
 }
 
 impl ActionRoute {
@@ -1181,6 +1209,9 @@ impl ActionRoute {
         }
         let live = catalog.live();
         match path {
+            DEVICES_PATH => Some(Self::Devices(DeviceVerb::List)),
+            DEVICES_REMOVE_PATH => Some(Self::Devices(DeviceVerb::Remove)),
+            DEVICES_KEEP_PATH => Some(Self::Devices(DeviceVerb::Keep)),
             CHAT_SEND_PATH => Some(Self::Chat(ChatVerb::Send)),
             CHAT_CANCEL_PATH => Some(Self::Chat(ChatVerb::Cancel)),
             ONBOARD_PATH => Some(Self::Onboard),
@@ -1229,6 +1260,7 @@ impl ActionRoute {
             Self::Memory(_) => MAX_MEMORY_BODY_BYTES,
             Self::Chat(_) => MAX_CHAT_BODY_BYTES,
             Self::Ticket(_) => MAX_TICKET_BODY_BYTES,
+            Self::Devices(_) => MAX_DEVICES_BODY_BYTES,
         }
     }
 }
@@ -1445,15 +1477,9 @@ fn dispatch<'a>(
     let response = match (admitted, route.action()) {
         (Admitted::SignIn(sign_in), _) => exchange_response(sessions, &sign_in, body),
         (Admitted::Proof(ask), _) => proof_response(sessions, &ask, body),
-        (Admitted::Standing(identity), _) => match route.standing() {
-            Some(StandingRoute::Check) => {
-                standing_response(identity.as_ref(), sessions.is_running(), &head, false)
-            }
-            Some(StandingRoute::End) => {
-                standing_response(identity.as_ref(), sessions.is_running(), &head, true)
-            }
-            None => error_response(403, "Forbidden"),
-        },
+        (Admitted::Standing(identity), _) => {
+            standing_dispatch(route, identity.as_ref(), sessions, &head)
+        }
         (Admitted::Socket(session), _) => {
             return Some(ConnectionAction::Upgrade(Upgrade {
                 accept: head.accept,
@@ -1528,6 +1554,9 @@ fn dispatch<'a>(
                 (ActionRoute::Ticket(route), Admitted::Session(session)) => {
                     ticket_response(route, session, handle, catalog, body)
                 }
+                (ActionRoute::Devices(verb), Admitted::Session(session)) => {
+                    devices::response(verb, &session, sessions, body)
+                }
                 _ => error_response(403, "Forbidden"),
             };
             response.set_cookie = renewed;
@@ -1536,6 +1565,33 @@ fn dispatch<'a>(
         _ => error_response(403, "Forbidden"),
     };
     Some(ConnectionAction::Response(response))
+}
+
+/// The answer to a check or a sign-out. A browser whose device is gone is told why when it holds
+/// the device's cookie and secret.
+fn standing_dispatch<'a>(
+    route: Route,
+    identity: Option<&SessionIdentity>,
+    sessions: &FloorSessions,
+    head: &Head,
+) -> Response<'a> {
+    let gone = identity
+        .is_none()
+        .then(|| {
+            head.credentials.as_ref().and_then(|credentials| {
+                sessions.gone_reason(&credentials.cookie, &credentials.secret)
+            })
+        })
+        .flatten();
+    match route.standing() {
+        Some(StandingRoute::Check) => {
+            standing_response(identity, sessions.is_running(), head, false, gone)
+        }
+        Some(StandingRoute::End) => {
+            standing_response(identity, sessions.is_running(), head, true, gone)
+        }
+        None => error_response(403, "Forbidden"),
+    }
 }
 
 fn read_body(
@@ -1731,15 +1787,26 @@ fn session_cookie_header(value: &str, max_age_s: i64) -> String {
     )
 }
 
+/// A session answer that names the session's state and, for a device that ended for a reason the
+/// person should hear, why.
+fn gone_body(session: &str, gone: Option<GoneReason>) -> serde_json::Value {
+    match gone {
+        Some(reason) => serde_json::json!({ "session": session, "reason": reason.code() }),
+        None => serde_json::json!({ "session": session }),
+    }
+}
+
 /// The answer to a check or a sign-out. A session the daemon does not know is answered `401` with
 /// `{"session":"unknown"}`, which only these two routes say: any other refusal (a wrong origin, a
 /// refused peer) is a `403` and says nothing about the session, so a page never signs itself out
-/// over a refusal that is not about its session.
+/// over a refusal that is not about its session. When the browser's cookie and secret name a
+/// device that was removed, expired or replaced, the answer carries that as `reason`.
 fn standing_response<'a>(
     identity: Option<&SessionIdentity>,
     running: bool,
     head: &Head,
     end: bool,
+    gone: Option<GoneReason>,
 ) -> Response<'a> {
     let Some(session) = identity else {
         // A stopping daemon has cleared every session, so "unknown" would be a lie the page
@@ -1747,14 +1814,12 @@ fn standing_response<'a>(
         if !running {
             return error_response(503, "Service Unavailable");
         }
-        return action_json(
-            401,
-            "Unauthorized",
-            &serde_json::json!({ "session": "unknown" }),
-        );
+        return action_json(401, "Unauthorized", &gone_body("unknown", gone));
     };
     if end {
-        session.end();
+        if session.sign_out() == Removal::Unavailable {
+            return error_response(503, "Service Unavailable");
+        }
         return Response {
             set_cookie: head
                 .credentials
@@ -3358,7 +3423,45 @@ pub fn prepare(settings: &FloorSettings) -> Result<PreparedAssets> {
             Arc::new(crate::floor_peer::NoAgents),
             None,
         )),
+        devices: None,
     })
+}
+
+/// Where the Floor's devices become durable: each change goes to the daemon's writer and is
+/// answered once it is fsynced, and each durable change is told to the open pages.
+struct LoopDevices {
+    handle: Handle,
+    streams: FloorStreams,
+}
+
+impl crate::floor_session::DeviceSink for LoopDevices {
+    /// Wait for the writer's answer, but not past the daemon's exit or a few seconds: a request
+    /// that arrives while the writer is stopping must not hold the exit path up.
+    fn record(&self, change: dudes_supervisor::FloorDeviceChange) -> bool {
+        const BOUND: Duration = Duration::from_secs(5);
+        let Ok(answer) = self
+            .handle
+            .ask_queued(crate::ports::Ask::FloorDevice(change))
+        else {
+            return false;
+        };
+        let started = Instant::now();
+        loop {
+            match answer.recv_timeout(Duration::from_millis(50)) {
+                Ok(done) => return done.is_ok(),
+                Err(RecvTimeoutError::Timeout) => {
+                    if self.handle.is_stopping() || started.elapsed() >= BOUND {
+                        return false;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => return false,
+            }
+        }
+    }
+
+    fn announce(&self, event: &crate::floor_session::DeviceEvent) {
+        self.streams.publish_device_event(event);
+    }
 }
 
 fn validate_policy(row: &ManifestFile) -> Result<()> {
