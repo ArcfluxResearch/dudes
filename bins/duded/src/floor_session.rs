@@ -910,6 +910,18 @@ impl Inner {
             };
             if !self.record(change) {
                 tracing::warn!("a Floor device's use could not be recorded");
+                if let Some(session) = self
+                    .registry
+                    .lock()
+                    .sessions
+                    .values_mut()
+                    .find(|session| session.id == used.device)
+                {
+                    if used.kind == UseKind::First {
+                        session.first_used = None;
+                    }
+                    session.journaled_use = used.journaled_before;
+                }
             }
         }
         let ended = std::mem::take(&mut self.registry.lock().ended);
@@ -935,14 +947,16 @@ impl Inner {
         if !self.record(FloorDeviceChange::Remove { device, reason }) {
             return Removal::Unavailable;
         }
-        let ended = self.registry.lock().end(&key, reason);
-        match ended {
-            Some(device) => {
-                self.announce(&DeviceEvent::Removed { device, reason });
-                Removal::Removed
-            }
-            None => Removal::Unknown,
+        if self.registry.lock().end(&key, reason).is_none() {
+            // Expiry ended it between the record and here. Its removal is journaled, so the
+            // expiry's own record would only repeat it.
+            self.registry
+                .lock()
+                .ended
+                .retain(|(ended, _)| *ended != device);
         }
+        self.announce(&DeviceEvent::Removed { device, reason });
+        Removal::Removed
     }
 }
 
@@ -1057,6 +1071,9 @@ enum UseKind {
 struct Used {
     device: Hex32,
     kind: UseKind,
+    /// The journaled-use time before this request, restored if the journal refuses the record so
+    /// the next request records it again.
+    journaled_before: Timestamp,
 }
 
 impl Session {
@@ -1092,6 +1109,7 @@ impl Session {
     /// heard of this device, must be journaled.
     fn note_use(&mut self, now: Timestamp) -> Option<Used> {
         self.last_used = now;
+        let journaled_before = self.journaled_use;
         let kind = if self.first_used.is_none() {
             self.first_used = Some(now);
             UseKind::First
@@ -1104,6 +1122,7 @@ impl Session {
         Some(Used {
             device: self.id,
             kind,
+            journaled_before,
         })
     }
 
@@ -1175,12 +1194,12 @@ impl State {
     /// never made a request goes first, then one nobody has answered the notice for, then the one
     /// used longest ago. Equal uses go to the older sign-in, then to the smaller key, so the
     /// choice never depends on map order.
-    fn surplus(&self, keep: &[u8; 32]) -> Vec<[u8; 32]> {
+    fn surplus(&self, keep: Option<&[u8; 32]>) -> Vec<[u8; 32]> {
         let excess = self.sessions.len().saturating_sub(MAX_DEVICES);
         let mut candidates: Vec<_> = self
             .sessions
             .iter()
-            .filter(|(key, _)| *key != keep)
+            .filter(|(key, _)| Some(*key) != keep)
             .map(|(key, session)| {
                 let tier = if session.first_used.is_none() {
                     0_u8
@@ -1208,7 +1227,10 @@ impl State {
 
 /// Strip control characters, trim, cap at 64 characters, and name an empty result "Browser".
 fn clean_name(raw: &str) -> String {
-    let cleaned: String = raw.chars().filter(|c| !c.is_control()).collect();
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_control() && !is_format_char(*c))
+        .collect();
     let capped: String = cleaned.trim().chars().take(MAX_NAME_CHARS).collect();
     let capped = capped.trim_end().to_owned();
     if capped.is_empty() {
@@ -1216,6 +1238,28 @@ fn clean_name(raw: &str) -> String {
     } else {
         capped
     }
+}
+
+/// Unicode format characters (category Cf) draw nothing but can reorder or hide the text around
+/// them, so a name never keeps them.
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{AD}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61C}'
+            | '\u{6DD}'
+            | '\u{70F}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
 }
 
 fn mint_device_id() -> Hex32 {
@@ -1381,9 +1425,10 @@ impl FloorSessions {
         *self.0.sink.write().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
-    /// Seed the table with the devices the journal holds. A device signed in on another origin
-    /// cannot be used here, and neither can one that has run out: both end, and their removals
-    /// are journaled by the first request or listing that follows.
+    /// Seed the table with the devices the journal holds. A device that has run out ends, and so
+    /// does any beyond the limit, and their removals are journaled by the first request or listing
+    /// that follows. A device signed in on another origin cannot be used here, so it stays out of
+    /// the table and out of the count, and is journaled as nothing: it returns if the daemon does.
     pub(crate) fn seed(&self, rows: &BTreeMap<Hex32, DeviceRow>) {
         let registry::Locked { mut state, now } = self.0.registry.lock_at_now();
         let mut ended: Vec<_> = rows
@@ -1422,12 +1467,16 @@ impl FloorSessions {
                 login: false,
             };
             if row.origin != self.0.origin {
-                state.ended.push((*device, FloorDeviceRemoval::Expired));
                 continue;
             }
             state.sessions.insert(row.cookie.bytes(), session);
         }
         state.prune(now);
+        for victim in state.surplus(None) {
+            if let Some(device) = state.end(&victim, FloorDeviceRemoval::Replaced) {
+                state.ended.push((device, FloorDeviceRemoval::Replaced));
+            }
+        }
     }
 
     /// A narrower clone that can authenticate reads but cannot mint or exchange credentials.
@@ -1576,7 +1625,7 @@ impl FloorSessions {
             };
             let max_age = session.cookie_max_age_s(now);
             state.sessions.insert(key, session);
-            (max_age, state.surplus(&key), now)
+            (max_age, state.surplus(Some(&key)), now)
         };
         self.0.announce(&DeviceEvent::Enrolled { device, name, at });
         for victim in surplus {
@@ -1648,6 +1697,15 @@ impl FloorSessions {
     /// Keep a new device: someone looked at it and answered the notice. A device cannot keep
     /// itself, because whoever holds it already could.
     pub(crate) fn keep_device(&self, device: Hex32, by: &SessionIdentity) -> Keep {
+        self.keep(device, Some(by.cookie))
+    }
+
+    /// Keep a new device on the operator's word, which no browser has to give.
+    pub(crate) fn keep_device_as_operator(&self, device: Hex32) -> Keep {
+        self.keep(device, None)
+    }
+
+    fn keep(&self, device: Hex32, by: Option<[u8; 32]>) -> Keep {
         let found = {
             let state = self.0.registry.lock();
             state
@@ -1659,7 +1717,7 @@ impl FloorSessions {
         let Some((key, acknowledged)) = found else {
             return Keep::Unknown;
         };
-        if key == by.cookie {
+        if by == Some(key) {
             return Keep::Own;
         }
         if acknowledged {
@@ -2900,6 +2958,7 @@ mod device_tests {
         let capped = "é".repeat(MAX_NAME_CHARS);
         for (sent, expected) in [
             ("Chrome\u{7}\non\u{1b}[0m macOS", "Chromeon[0m macOS"),
+            ("Chro\u{202e}me\u{200b} on\u{feff} Mac", "Chrome on Mac"),
             ("   ", "Browser"),
             ("", "Browser"),
             (long.as_str(), capped.as_str()),
@@ -3314,7 +3373,80 @@ mod device_tests {
         moved.install_sink(Arc::clone(&d.journal) as Arc<dyn DeviceSink>);
         moved.seed(&d.journal.devices());
         assert_eq!(moved.devices(None).len(), 0, "another origin cannot use it");
-        assert!(d.journal.removals().contains(&FloorDeviceRemoval::Expired));
+        assert_eq!(
+            d.journal.removals(),
+            [FloorDeviceRemoval::NeverUsed],
+            "and nothing is journaled for it"
+        );
+
+        let home = restart_from(&d.clock, &d.journal);
+        assert!(acts(&home, &fresh), "it works again on its own origin");
+    }
+
+    #[test]
+    fn a_restart_over_the_limit_removes_the_surplus_as_replaced() {
+        let d = daemon();
+        for n in 1..=9_u8 {
+            d.clock.advance(1_000);
+            assert!(d.journal.record(FloorDeviceChange::Enroll {
+                device: Hex32::new([n; 32]),
+                origin: ORIGIN.to_owned(),
+                name: "Browser".to_owned(),
+                cookie: Hex32::new([n; 32]),
+                secret: Hex32::new([n; 32]),
+            }));
+        }
+        let after = restart_from(&d.clock, &d.journal);
+        let listed = after.devices(None);
+        assert_eq!(listed.len(), MAX_DEVICES);
+        assert!(
+            listed.iter().all(|view| view.device != Hex32::new([1; 32])),
+            "the oldest unused one goes"
+        );
+        assert_eq!(d.journal.removals(), [FloorDeviceRemoval::Replaced]);
+    }
+
+    #[test]
+    fn a_first_use_the_journal_refused_is_recorded_by_the_next_request() {
+        let d = daemon();
+        let device = sign_in(&d.sessions);
+        d.journal.refuse.store(true, Ordering::Release);
+        assert!(acts(&d.sessions, &device), "the request is still admitted");
+        d.journal.refuse.store(false, Ordering::Release);
+        assert!(acts(&d.sessions, &device));
+        let uses = d
+            .journal
+            .changes()
+            .iter()
+            .filter(|change| matches!(change, FloorDeviceChange::FirstUse(_)))
+            .count();
+        assert_eq!(uses, 1, "the second request recorded it");
+        let id = id_of(&d.sessions, &device);
+        assert!(d.journal.devices()[&id].first_used.is_some());
+    }
+
+    #[test]
+    fn a_removal_that_raced_an_expiry_still_counts_as_removed() {
+        let d = daemon();
+        let device = sign_in(&d.sessions);
+        assert!(acts(&d.sessions, &device));
+        let id = id_of(&d.sessions, &device);
+        let sessions = d.sessions.clone();
+        let clock = Arc::clone(&d.clock);
+        *d.journal.during_removal.lock().expect("hook") = Some(Box::new(move || {
+            clock.advance(IDLE_EXPIRES_MS + 1);
+            let registry::Locked { mut state, now } = sessions.0.registry.lock_at_now();
+            state.prune(now);
+        }));
+        assert_eq!(
+            d.sessions.remove_device(id, FloorDeviceRemoval::Removed),
+            Removal::Removed
+        );
+        assert_eq!(
+            d.journal.removals(),
+            [FloorDeviceRemoval::Removed],
+            "journaled once, under the reason asked for"
+        );
     }
 
     #[test]

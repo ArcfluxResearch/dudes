@@ -16,6 +16,9 @@ use std::time::Duration;
 use dudes::Environment;
 use sha2::{Digest as _, Sha256};
 
+mod common;
+use common::Lifeline;
+
 fn built_daemon() -> PathBuf {
     let mut daemon = PathBuf::from(env!("CARGO_BIN_EXE_dudes"));
     daemon.set_file_name("duded");
@@ -96,6 +99,7 @@ fn http(origin: &str, request_line: &str, extra: &str, body: &str) -> (String, S
 }
 
 struct Installed {
+    _lifeline: Lifeline,
     _root: tempfile::TempDir,
     env: Environment,
     floor: PathBuf,
@@ -137,7 +141,9 @@ impl Installed {
                 .find(|(candidate, _)| *candidate == name)
                 .map(|(_, value)| value.clone())
         });
+        let lifeline = Lifeline::start(root.path());
         let mut installed = Self {
+            _lifeline: lifeline,
             _root: root,
             env,
             floor,
@@ -278,6 +284,14 @@ fn a_restart_with_no_open_sign_in_says_nothing_about_sign_ins() {
     assert_eq!(code, 0, "{listed}{err}");
     let listed: serde_json::Value = serde_json::from_str(&listed).expect("a JSON list");
     let id = listed[0]["device"].as_str().expect("one device").to_owned();
+    assert_eq!(listed[0]["new"], true, "a lone browser starts out new");
+    let (code, out, err) = installed.cli(&["devices", "keep", &id[..12]]);
+    assert_eq!(code, 0, "{out}{err}");
+    let (code, relisted, err) = installed.cli(&["devices", "--json"]);
+    assert_eq!(code, 0, "{relisted}{err}");
+    let relisted: serde_json::Value = serde_json::from_str(&relisted).expect("a JSON list");
+    assert_eq!(relisted[0]["new"], false, "kept from the terminal");
+    assert!(installed.acts(), "keeping signs nobody out");
     let (code, out, err) = installed.cli(&["devices", "remove", &id[..12]]);
     assert_eq!(code, 0, "{out}{err}");
     assert!(!installed.acts(), "the removed browser is signed out");

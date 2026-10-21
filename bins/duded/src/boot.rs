@@ -1742,7 +1742,32 @@ where
     dispatcher
 }
 
-/// `floor.session.issue`, `floor.devices.list` and `floor.devices.remove`: the operator's doors to
+fn floor_sessions(
+    held: Option<crate::floor_session::FloorSessions>,
+) -> Result<crate::floor_session::FloorSessions, dudes_proto::rpc::RpcError> {
+    held.ok_or_else(|| dudes_proto::rpc::RpcError {
+        code: dudes_proto::rpc::ErrorCode::InternalError.code(),
+        message: "the Floor is not configured: install the built Floor as a \
+                      `floor` directory beside duded (`cargo xtask dist` lays one out) \
+                      or as `share/dudes/floor` beside duded's `bin` directory \
+                      (install.sh puts one there) and restart the daemon; \
+                      DUDES_FLOOR_ASSETS names another directory, \
+                      but only for a duded started directly, because `dudes quickstart` \
+                      does not pass it on"
+            .to_owned(),
+        data: None,
+    })
+}
+
+fn unrecorded(message: &str) -> dudes_proto::rpc::RpcError {
+    dudes_proto::rpc::RpcError {
+        code: dudes_proto::rpc::ErrorCode::InternalError.code(),
+        message: message.to_owned(),
+        data: None,
+    }
+}
+
+/// `floor.session.issue` and the three `floor.devices.*` methods: the operator's doors to
 /// the Floor's sign-in links and signed-in browsers. A daemon that serves no Floor says how to
 /// get one.
 fn register_floor_sessions(
@@ -1750,20 +1775,6 @@ fn register_floor_sessions(
     carry: Option<crate::floor_session::FloorCarry>,
 ) {
     let held = carry.map(|carry| carry.sessions().clone());
-    let floor_sessions = |held: Option<crate::floor_session::FloorSessions>| {
-        held.ok_or_else(|| dudes_proto::rpc::RpcError {
-            code: dudes_proto::rpc::ErrorCode::InternalError.code(),
-            message: "the Floor is not configured: install the built Floor as a \
-                          `floor` directory beside duded (`cargo xtask dist` lays one out) \
-                          or as `share/dudes/floor` beside duded's `bin` directory \
-                          (install.sh puts one there) and restart the daemon; \
-                          DUDES_FLOOR_ASSETS names another directory, \
-                          but only for a duded started directly, because `dudes quickstart` \
-                          does not pass it on"
-                .to_owned(),
-            data: None,
-        })
-    };
     let issuing = held.clone();
     dispatcher.register(
         Method::FloorSessionIssue,
@@ -1810,6 +1821,29 @@ fn register_floor_sessions(
             )
         },
     );
+    let keeping = held.clone();
+    dispatcher.register(
+        Method::FloorDevicesKeep,
+        Requirement::Operator,
+        move |call| {
+            let params: dudes_proto::rpc::floor::DeviceKeepParams =
+                dudes_rpc::methods::params(&call)?;
+            let sessions = floor_sessions(keeping.clone())?;
+            let kept = match sessions.keep_device_as_operator(params.device) {
+                crate::floor_session::Keep::Kept => true,
+                crate::floor_session::Keep::Unknown | crate::floor_session::Keep::Own => false,
+                crate::floor_session::Keep::Unavailable => {
+                    return Err(unrecorded(
+                        "the daemon could not record that; the browser is still marked new",
+                    ));
+                }
+            };
+            dudes_rpc::methods::encode(
+                Method::FloorDevicesKeep,
+                &dudes_proto::rpc::floor::DeviceKeepResult { kept },
+            )
+        },
+    );
     let removing = held;
     dispatcher.register(
         Method::FloorDevicesRemove,
@@ -1825,13 +1859,9 @@ fn register_floor_sessions(
                 crate::floor_session::Removal::Removed => true,
                 crate::floor_session::Removal::Unknown => false,
                 crate::floor_session::Removal::Unavailable => {
-                    return Err(dudes_proto::rpc::RpcError {
-                        code: dudes_proto::rpc::ErrorCode::InternalError.code(),
-                        message: "the daemon could not record that; the browser is still \
-                                  signed in"
-                            .to_owned(),
-                        data: None,
-                    });
+                    return Err(unrecorded(
+                        "the daemon could not record that; the browser is still signed in",
+                    ));
                 }
             };
             dudes_rpc::methods::encode(

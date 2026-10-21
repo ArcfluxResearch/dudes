@@ -99,6 +99,22 @@ pub struct DeviceRemoveResult {
     pub removed: bool,
 }
 
+/// `floor.devices.keep` params.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceKeepParams {
+    /// The whole id of the device to keep.
+    #[schemars(with = "String")]
+    pub device: Hex32,
+}
+
+/// `floor.devices.keep` result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DeviceKeepResult {
+    /// Whether the device is kept now. False when it is already gone.
+    pub kept: bool,
+}
+
 /// `floor.session.issue` result.
 ///
 /// The bootstrap bearer remains a string on the wire, but [`Debug`](fmt::Debug) redacts it so a

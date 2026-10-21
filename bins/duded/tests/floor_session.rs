@@ -1108,7 +1108,7 @@ fn a_device_survives_a_restart_and_a_removed_one_stays_removed() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// Listing and removing browsers are operator calls: an unproven peer and an agent are refused.
+/// Listing, removing and keeping browsers are operator calls: an unproven peer and an agent are refused.
 #[test]
 fn the_device_rpcs_refuse_an_unproven_peer_and_an_agent() {
     use dudes_rpc::auth::PeerProvenance;
@@ -1120,10 +1120,11 @@ fn the_device_rpcs_refuse_an_unproven_peer_and_an_agent() {
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     let unauthorized = ErrorCode::Unauthorized.code();
-    let remove = serde_json::json!({ "device": "ab".repeat(32) });
+    let named = serde_json::json!({ "device": "ab".repeat(32) });
     for (method, params) in [
         (Method::FloorDevicesList, None),
-        (Method::FloorDevicesRemove, Some(remove)),
+        (Method::FloorDevicesRemove, Some(named.clone())),
+        (Method::FloorDevicesKeep, Some(named)),
     ] {
         let unproven = rpc(&settings, method, params.clone(), None).expect_err("unproven");
         assert_eq!(unproven.code, unauthorized, "{method:?}");

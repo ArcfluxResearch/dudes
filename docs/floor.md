@@ -60,10 +60,15 @@ what it is. `dudes devices` lists every signed-in browser, with when it signed i
 last made a request, and a `new` mark on one nobody has kept yet. `dudes devices remove <id>` signs
 one out and closes its open connections at once; the start of the id is enough when it names one
 browser, and when it names more than one the command lists them and removes nothing.
+A new browser stays marked `new`, and stays early in the removal order below, until someone keeps
+it. The Floor's **Keep**, pressed in another browser, does that. `dudes devices keep <id>` does the
+same from the terminal, for when you have no second browser.
 
 A device stays signed in for 30 days without use and 90 days in all. It stays signed in through
 `dudes stop` and `dudes start`, because the journal holds it, as long as the Floor comes back on the
-same port. A device that signs in and makes no request within 24 hours is removed. You can also end a
+same port. If the Floor starts on another port, for example because its usual port is busy, the
+browsers signed in on the old port are signed out until the daemon is back on that port; they are not
+removed, and they work again when it returns. A device that signs in and makes no request within 24 hours is removed. You can also end a
 device with **Sign out**, which closes its open connections, or with `dudes devices remove`.
 
 The daemon keeps at most eight devices. A ninth sign-in removes the first of these that exists: a

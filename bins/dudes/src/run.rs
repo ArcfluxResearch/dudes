@@ -814,7 +814,7 @@ fn warn_if_sharing(env: &Environment, agent: dudes_types::AgentId, err: &mut dyn
     }
 }
 
-/// `dudes devices` and `dudes devices remove`.
+/// `dudes devices`, `dudes devices remove` and `dudes devices keep`.
 ///
 /// A prefix is resolved here against the daemon's list, and the removal names the whole id, so the
 /// browser signed out is the one that was shown.
@@ -825,7 +825,10 @@ fn devices_command(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<u8, Failure> {
-    use dudes_proto::rpc::floor::{DeviceRemoveParams, DeviceRemoveResult, DevicesListResult};
+    use dudes_proto::rpc::floor::{
+        DeviceKeepParams, DeviceKeepResult, DeviceRemoveParams, DeviceRemoveResult,
+        DevicesListResult,
+    };
     let listed: DevicesListResult = typed(operator_call(env, Method::FloorDevicesList, None)?)?;
     match command {
         crate::args::DevicesCommand::List => {
@@ -846,6 +849,22 @@ fn devices_command(
                 })?),
             )?)?;
             render::device_removed(out, machine, entry, result.removed).map_err(local)?;
+            Ok(exit::SUCCESS)
+        }
+        crate::args::DevicesCommand::Keep { id } => {
+            let matches = devices_starting(&listed.devices, id);
+            let [entry] = matches.as_slice() else {
+                render::devices_unmatched(err, id, &matches, &chrono::Local).map_err(local)?;
+                return Ok(exit::REFUSED);
+            };
+            let result: DeviceKeepResult = typed(operator_call(
+                env,
+                Method::FloorDevicesKeep,
+                Some(encode(&DeviceKeepParams {
+                    device: entry.device,
+                })?),
+            )?)?;
+            render::device_kept(out, machine, entry, result.kept).map_err(local)?;
             Ok(exit::SUCCESS)
         }
     }

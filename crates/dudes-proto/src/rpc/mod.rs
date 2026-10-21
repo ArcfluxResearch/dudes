@@ -695,6 +695,8 @@ names! {
     "floor.devices.list" => FloorDevicesList / floor_devices_list : Empty => floor::DevicesListResult;
     /// Sign one browser out of the Floor. Operator-only.
     "floor.devices.remove" => FloorDevicesRemove / floor_devices_remove : floor::DeviceRemoveParams => floor::DeviceRemoveResult;
+    /// Answer a browser's "new browser" notice from the terminal: keep it. Operator-only.
+    "floor.devices.keep" => FloorDevicesKeep / floor_devices_keep : floor::DeviceKeepParams => floor::DeviceKeepResult;
 }
 
 impl From<crate::record::ConditionedMethod> for Method {
@@ -886,12 +888,13 @@ mod tests {
     fn the_method_table_keeps_old_rows_and_appends_tickets() {
         assert_eq!(
             Method::ALL.len(),
-            54,
-            "agent.mcp stays at row 44; the ticket methods append rows 45 to 51, workspace.trust row 52, the device methods rows 53 and 54"
+            55,
+            "agent.mcp stays at row 44; the ticket methods append rows 45 to 51, workspace.trust row 52, the device methods rows 53 to 55"
         );
         assert_eq!(Method::ALL[51], Method::WorkspaceTrust);
         assert_eq!(Method::ALL[52], Method::FloorDevicesList);
         assert_eq!(Method::ALL[53], Method::FloorDevicesRemove);
+        assert_eq!(Method::ALL[54], Method::FloorDevicesKeep);
         assert_eq!(Method::ALL[44], Method::TicketCreate);
         assert_eq!(Method::ALL[48], Method::TicketRead);
         assert_eq!(Method::ALL[49], Method::TicketAccept);

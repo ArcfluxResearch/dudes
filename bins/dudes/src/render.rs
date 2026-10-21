@@ -614,6 +614,30 @@ pub fn device_removed(
     }
 }
 
+/// What `devices keep` prints once the daemon answers.
+///
+/// # Errors
+///
+/// Whatever writing returns.
+pub fn device_kept(
+    out: &mut dyn Write,
+    machine: bool,
+    entry: &dudes_proto::rpc::floor::DeviceEntry,
+    kept: bool,
+) -> io::Result<()> {
+    if machine {
+        return json(
+            out,
+            &serde_json::json!({"device": entry.device, "kept": kept}),
+        );
+    }
+    if kept {
+        writeln!(out, "kept {}", Escaped(&entry.name))
+    } else {
+        writeln!(out, "{} was already signed out", Escaped(&entry.name))
+    }
+}
+
 /// What `worktree remove` prints while the tree still exists: the command to run, with every
 /// argument single-quoted so a path with a space or a quote reads back exactly.
 ///

@@ -134,7 +134,7 @@ pub enum Command {
     },
     /// `floor.session.issue` for a link to print, shown as the one URL to paste into a browser.
     FloorOpen,
-    /// `devices` and `devices remove`: the browsers signed in to the Floor.
+    /// `devices`, `devices remove` and `devices keep`: the browsers signed in to the Floor.
     Devices(DevicesCommand),
     /// Run an engine's own sign-in from the path the daemon found.
     Login(Provider),
@@ -427,6 +427,11 @@ pub enum DevicesCommand {
     List,
     /// Sign one browser out: `floor.devices.remove` with the one device the prefix names.
     Remove {
+        /// The whole id or the start of it, in lowercase hexadecimal.
+        id: String,
+    },
+    /// Keep a browser nobody has kept yet: `floor.devices.keep` with the one device the prefix names.
+    Keep {
         /// The whole id or the start of it, in lowercase hexadecimal.
         id: String,
     },
@@ -762,6 +767,11 @@ COMMANDS
     devices remove <id>
         Sign one browser out. The id is the whole id or the start of it, as long as it
         names one browser. A start that names more than one is refused with the matches.
+
+    devices keep <id>
+        Mark a new browser as kept, which clears its new mark and puts it behind the browsers
+        still unkept when the daemon has to drop one. The Floor's Keep does the same from another
+        browser; this is for when you have no second one. The id works as for remove.
 
     worktree list
         Every worktree the daemon created that is not removed: id, state, agent, branch
@@ -2529,7 +2539,7 @@ fn look(tail: &[OsString]) -> Result<LookParams, ArgError> {
     })
 }
 
-/// `devices`, `devices list` and `devices remove <id>`.
+/// `devices`, `devices list`, `devices remove <id>` and `devices keep <id>`.
 fn devices(tail: &[OsString]) -> Result<DevicesCommand, ArgError> {
     let Some((subcommand, rest)) = tail.split_first() else {
         return Ok(DevicesCommand::List);
@@ -2542,7 +2552,7 @@ fn devices(tail: &[OsString]) -> Result<DevicesCommand, ArgError> {
             reject_leftovers(rest)?;
             Ok(DevicesCommand::List)
         }
-        "remove" => {
+        verb @ ("remove" | "keep") => {
             let mut id = None;
             for arg in rest {
                 match arg.to_string_lossy().as_ref() {
@@ -2567,8 +2577,11 @@ fn devices(tail: &[OsString]) -> Result<DevicesCommand, ArgError> {
                     other => return Err(ArgError::UnknownFlag(other.to_owned())),
                 }
             }
-            Ok(DevicesCommand::Remove {
-                id: id.ok_or(ArgError::Missing("<id>"))?,
+            let id = id.ok_or(ArgError::Missing("<id>"))?;
+            Ok(if verb == "keep" {
+                DevicesCommand::Keep { id }
+            } else {
+                DevicesCommand::Remove { id }
             })
         }
         other => Err(ArgError::UnknownCommand(format!("devices {other}"))),
@@ -4460,7 +4473,15 @@ mod devices_tests {
                 id: "ab12cd".to_owned()
             })
         );
+        assert_eq!(
+            command(&["devices", "keep", "ab12cd"]).unwrap(),
+            Command::Devices(DevicesCommand::Keep {
+                id: "ab12cd".to_owned()
+            })
+        );
         for bad in [
+            &["devices", "keep"][..],
+            &["devices", "keep", "AB12CD"],
             &["devices", "remove"][..],
             &["devices", "remove", "ab1"],
             &["devices", "remove", "AB12CD"],

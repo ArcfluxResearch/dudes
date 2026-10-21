@@ -3027,6 +3027,24 @@
           ],
           "type": "object"
         },
+        "floor.devices.keep": {
+          "description": "Answer a browser's \"new browser\" notice from the terminal: keep it. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/DeviceKeepParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/DeviceKeepResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "floor.devices.list": {
           "description": "The browsers signed in to the Floor, newest sign-in first. Operator-only.",
           "properties": {
@@ -3863,6 +3881,7 @@
         "workspace.trust",
         "floor.devices.list",
         "floor.devices.remove",
+        "floor.devices.keep",
         "ticket.checkout",
         "floor.session.export",
         "floor.session.import",
@@ -3920,6 +3939,33 @@
         "name",
         "signed_in",
         "new"
+      ],
+      "type": "object"
+    },
+    "DeviceKeepParams": {
+      "additionalProperties": false,
+      "description": "`floor.devices.keep` params.",
+      "properties": {
+        "device": {
+          "description": "The whole id of the device to keep.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device"
+      ],
+      "type": "object"
+    },
+    "DeviceKeepResult": {
+      "description": "`floor.devices.keep` result.",
+      "properties": {
+        "kept": {
+          "description": "Whether the device is kept now. False when it is already gone.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kept"
       ],
       "type": "object"
     },
@@ -14112,6 +14158,24 @@
           ],
           "type": "object"
         },
+        "floor.devices.keep": {
+          "description": "Answer a browser's \"new browser\" notice from the terminal: keep it. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/DeviceKeepParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/DeviceKeepResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "floor.devices.list": {
           "description": "The browsers signed in to the Floor, newest sign-in first. Operator-only.",
           "properties": {
@@ -14839,7 +14903,8 @@
         "ticket.stop",
         "workspace.trust",
         "floor.devices.list",
-        "floor.devices.remove"
+        "floor.devices.remove",
+        "floor.devices.keep"
       ],
       "type": "object"
     },
