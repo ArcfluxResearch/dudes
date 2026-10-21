@@ -1438,6 +1438,7 @@ fn every_ask_variant_preserves_publication_before_reply() {
             duded::ports::Ask::WorktreeRemoved(_) => "WorktreeRemoved",
             duded::ports::Ask::TrustTarget(_) => "TrustTarget",
             duded::ports::Ask::TrustSet { .. } => "TrustSet",
+            duded::ports::Ask::FloorDevice(_) => "FloorDevice",
         };
         let before = fixture.entries();
         let answer = running.handle.ask(ask);
