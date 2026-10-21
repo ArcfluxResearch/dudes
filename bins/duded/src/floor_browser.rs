@@ -4,6 +4,7 @@
 
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -296,7 +297,11 @@ pub fn read_reply(stream: &mut TcpStream) -> Reply {
     Reply { head, body }
 }
 
-/// A signed-in page: its browser, and the cookie the Floor gave it.
+/// Where a page reads the time it signs with.
+type Now = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+/// A signed-in page: its browser, and the cookie the Floor gave it. It signs with the system
+/// clock unless a test gives it the clock its daemon runs on.
 pub struct Page {
     /// The address of the Floor listener.
     pub addr: SocketAddr,
@@ -304,6 +309,7 @@ pub struct Page {
     pub cookie: String,
     /// The browser's key.
     pub browser: Browser,
+    now: Now,
 }
 
 impl Page {
@@ -324,7 +330,49 @@ impl Page {
             addr,
             cookie,
             browser,
+            now: Arc::new(Browser::now_ms),
         }
+    }
+
+    /// A page for a cookie the Floor already gave `browser`.
+    #[must_use]
+    pub fn new(addr: SocketAddr, cookie: String, browser: Browser) -> Self {
+        Self {
+            addr,
+            cookie,
+            browser,
+            now: Arc::new(Browser::now_ms),
+        }
+    }
+
+    /// Enrol a browser with a key of its own.
+    ///
+    /// # Panics
+    /// When the exchange is refused.
+    #[must_use]
+    pub fn enrol_new(addr: SocketAddr, link: &str) -> Self {
+        Self::enrol(addr, Browser::new(), link)
+    }
+
+    /// Sign with this clock, in milliseconds, instead of the system's. A test whose daemon runs
+    /// on a fake clock gives its page the same one.
+    #[must_use]
+    pub fn on_clock(mut self, now: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
+        self.now = Arc::new(now);
+        self
+    }
+
+    /// The time this page signs with now.
+    #[must_use]
+    pub fn now_ms(&self) -> i64 {
+        (self.now)()
+    }
+
+    /// The values this page signs `method target` with, over `body`, at its time.
+    #[must_use]
+    pub fn signed(&self, method: &str, target: &str, body: &[u8]) -> Signed {
+        self.browser
+            .sign(method, target, &self.origin(), body, self.now_ms())
     }
 
     /// Send an exchange and return whatever the listener answers.
@@ -357,9 +405,7 @@ impl Page {
     /// A signed POST of exactly these bytes.
     #[must_use]
     pub fn post_bytes(&self, path: &str, body: &[u8]) -> Reply {
-        let signed = self
-            .browser
-            .sign("POST", path, &self.origin(), body, Browser::now_ms());
+        let signed = self.signed("POST", path, body);
         self.post_signed(path, body, Some(&signed))
     }
 
@@ -382,9 +428,7 @@ impl Page {
     /// signature entries. The caller writes it to a connection and reads the answer.
     #[must_use]
     pub fn upgrade_head(&self, path: &str, route_protocol: &str) -> String {
-        let signed = self
-            .browser
-            .sign("GET", path, &self.origin(), &[], Browser::now_ms());
+        let signed = self.signed("GET", path, &[]);
         self.upgrade_head_with(path, route_protocol, Some(&signed))
     }
 

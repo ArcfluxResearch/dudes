@@ -2305,10 +2305,8 @@ fn read_http_body(stream: &mut std::net::TcpStream, head: &str) -> Vec<u8> {
     body
 }
 
-/// A signed-in Floor page's cookie and CSRF nonce: a bootstrap issued over the operator socket,
-/// then exchanged on the Floor listener.
-pub(crate) fn floor_session(settings: &Settings, addr: std::net::SocketAddr) -> (String, String) {
-    use std::io::Write as _;
+/// A sign-in link issued over the operator socket.
+pub(crate) fn floor_link(settings: &Settings) -> String {
     let credential = std::fs::read_to_string(
         settings
             .runtime_dir
@@ -2325,59 +2323,25 @@ pub(crate) fn floor_session(settings: &Settings, addr: std::net::SocketAddr) -> 
         .expect("issue response");
     let issued: dudes_proto::rpc::floor::SessionIssueResult =
         serde_json::from_value(reply.result.expect("issue succeeded")).expect("typed issue");
-    let host = addr.to_string();
-    let mut stream = std::net::TcpStream::connect(addr).expect("Floor listener");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("timeout");
-    let request = format!(
-        "POST /floor/session HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: {}\r\n\r\n{}",
-        issued.bootstrap.len(),
-        issued.bootstrap
-    );
-    stream.write_all(request.as_bytes()).expect("exchange");
-    let head = read_http_head(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    let cookie = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
-        .and_then(|value| value.split(';').next())
-        .expect("cookie")
-        .to_owned();
-    let body = read_http_body(&mut stream, &head);
-    let csrf = serde_json::from_slice::<serde_json::Value>(&body).expect("JSON")["csrf"]
-        .as_str()
-        .expect("csrf")
-        .to_owned();
-    (cookie, csrf)
+    issued.bootstrap.clone()
+}
+
+/// A signed-in Floor page: a browser with a key of its own, enrolled with a link issued over the
+/// operator socket. It signs with the system clock.
+pub(crate) fn floor_session(
+    settings: &Settings,
+    addr: std::net::SocketAddr,
+) -> duded::floor_browser::Page {
+    duded::floor_browser::Page::enrol_new(addr, &floor_link(settings))
 }
 
 /// One authenticated Floor action POST: the response head and its JSON body, `Null` when empty.
 pub(crate) fn floor_post(
-    addr: std::net::SocketAddr,
+    page: &duded::floor_browser::Page,
     path: &str,
-    (cookie, csrf): (&str, &str),
     body: &serde_json::Value,
 ) -> (String, serde_json::Value) {
-    use std::io::Write as _;
-    let body = serde_json::to_vec(body).expect("request JSON");
-    let host = addr.to_string();
-    let mut stream = std::net::TcpStream::connect(addr).expect("Floor listener");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("timeout");
-    let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        body.len()
-    );
-    stream.write_all(head.as_bytes()).expect("request head");
-    stream.write_all(&body).expect("request body");
-    let head = read_http_head(&mut stream);
-    let body = read_http_body(&mut stream, &head);
-    let value = if body.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::from_slice(&body).expect("response JSON")
-    };
-    (head, value)
+    let reply = page.post(path, body);
+    let json = reply.json();
+    (reply.head, json)
 }

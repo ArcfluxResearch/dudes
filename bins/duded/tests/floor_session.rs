@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use duded::floor_browser::{Browser, Page};
 use duded::floor_gateway::FloorGatewayProbe;
 use duded::settings::FloorSettings;
 use duded::startup::Witness;
@@ -15,10 +16,14 @@ use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::floor::{SESSION_BOOTSTRAP_LEN, SessionIssueResult};
 use dudes_proto::rpc::{CurrentMethod, ErrorCode, Method, RpcError};
 use dudes_rpc::Client;
+use dudes_supervisor::Clock as _;
 
 mod common;
 
 use common::{Fixture, ScriptedColumn, ScriptedRunner, SharedHost, TestClock, goal_params, seams};
+
+/// The moment every daemon in this file starts at, and so the moment its pages sign for.
+const START_MS: i64 = 1_800_000_000_000;
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -53,14 +58,19 @@ fn issue(settings: &duded::Settings) -> SessionIssueResult {
     serde_json::from_value(response.result.expect("issue result")).expect("typed issue result")
 }
 
-fn raw_exchange(addr: SocketAddr, host: &str, origin: Option<&str>, bootstrap: &str) -> Vec<u8> {
+/// The exchange body a page with a key of its own sends for `link`.
+fn enrolment(link: &str) -> String {
+    Browser::new().enrolment(link, "Chrome on macOS")
+}
+
+fn raw_exchange(addr: SocketAddr, host: &str, origin: Option<&str>, body: &str) -> Vec<u8> {
     let mut stream = TcpStream::connect(addr).expect("connect to the Floor gateway");
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(2)))
         .expect("read timeout");
     let mut request = format!(
-        "POST /floor/session HTTP/1.1\r\nHost: {host}\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: {}\r\n",
-        bootstrap.len()
+        "POST /floor/session HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+        body.len()
     );
     if let Some(origin) = origin {
         use std::fmt::Write as _;
@@ -68,9 +78,7 @@ fn raw_exchange(addr: SocketAddr, host: &str, origin: Option<&str>, bootstrap: &
     }
     request.push_str("\r\n");
     stream.write_all(request.as_bytes()).expect("write head");
-    stream
-        .write_all(bootstrap.as_bytes())
-        .expect("write bootstrap");
+    stream.write_all(body.as_bytes()).expect("write the body");
     stream.shutdown(Shutdown::Write).expect("finish request");
     let mut response = Vec::new();
     if let Err(error) = stream.read_to_end(&mut response) {
@@ -102,8 +110,29 @@ fn assert_empty_refusal(response: &[u8]) {
     assert!(!head.to_ascii_lowercase().contains("access-control-allow"));
 }
 
-fn exchange(addr: SocketAddr, host: &str, origin: &str, bootstrap: &str) -> (String, String) {
-    let response = raw_exchange(addr, host, Some(origin), bootstrap);
+/// Sign a browser in with `bootstrap` and check the cookie the exchange sets. The page signs for
+/// the time `clock` reads.
+fn exchange(
+    addr: SocketAddr,
+    host: &str,
+    origin: &str,
+    clock: &Arc<TestClock>,
+    bootstrap: &str,
+) -> Page {
+    exchange_named(addr, host, origin, clock, bootstrap, "Chrome on macOS")
+}
+
+fn exchange_named(
+    addr: SocketAddr,
+    host: &str,
+    origin: &str,
+    clock: &Arc<TestClock>,
+    bootstrap: &str,
+    name: &str,
+) -> Page {
+    let browser = Browser::new();
+    let body = browser.enrolment(bootstrap, name);
+    let response = raw_exchange(addr, host, Some(origin), &body);
     let (head, body) = response_parts(&response);
     assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head:?}");
     let set_cookie = head
@@ -131,10 +160,31 @@ fn exchange(addr: SocketAddr, host: &str, origin: &str, bootstrap: &str) -> (Str
         .to_owned();
     let json: serde_json::Value = serde_json::from_slice(body).expect("JSON exchange result");
     assert_eq!(json.as_object().map(serde_json::Map::len), Some(1));
-    let csrf = json["csrf"].as_str().expect("CSRF nonce").to_owned();
+    assert_eq!(
+        json["device"],
+        browser.device().to_string(),
+        "the answer names the device and carries no secret"
+    );
     assert_eq!(cookie.len(), SESSION_BOOTSTRAP_LEN);
-    assert_eq!(csrf.len(), SESSION_BOOTSTRAP_LEN);
-    (cookie, csrf)
+    let clock = Arc::clone(clock);
+    Page::new(addr, cookie, browser).on_clock(move || clock.now().unix_millis())
+}
+
+/// The presentation of `page`'s next signed action, for the registry directly.
+fn presentation<'a>(
+    page: &'a Page,
+    host: &'a str,
+    origin: &'a str,
+) -> duded::floor_session::Presentation<'a> {
+    page.browser.presentation(
+        host,
+        origin,
+        &page.cookie,
+        "POST",
+        "/floor/test",
+        &[],
+        page.now_ms(),
+    )
 }
 
 fn settings(fixture: &Fixture, port: Option<u16>) -> duded::Settings {
@@ -154,7 +204,7 @@ fn bootstrap_exchange_is_single_use_origin_bound_and_expiring() {
     let settings = settings(&fixture, Some(port));
     let host = format!("127.0.0.1:{port}");
     let origin = format!("http://{host}");
-    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
+    let clock = Arc::new(TestClock::ticking(START_MS, 0));
     let daemon = boot(
         &settings,
         seams(
@@ -186,16 +236,21 @@ fn bootstrap_exchange_is_single_use_origin_bound_and_expiring() {
         addr,
         &host,
         Some("http://localhost.invalid"),
-        &first.bootstrap,
+        &enrolment(&first.bootstrap),
     ));
-    let (cookie, csrf) = exchange(addr, &host, &origin, &first.bootstrap);
+    let page = exchange(addr, &host, &origin, &clock, &first.bootstrap);
     assert!(
         sessions
-            .authorize_read(&host, &origin, &cookie, &csrf)
-            .is_some(),
+            .authorize_read(&presentation(&page, &host, &origin))
+            .is_ok(),
         "the exact session grants the opaque read-only permit"
     );
-    assert_empty_refusal(&raw_exchange(addr, &host, Some(&origin), &first.bootstrap));
+    assert_empty_refusal(&raw_exchange(
+        addr,
+        &host,
+        Some(&origin),
+        &enrolment(&first.bootstrap),
+    ));
 
     let stale_bootstrap = issue(&settings);
     clock.advance(61_000);
@@ -203,15 +258,15 @@ fn bootstrap_exchange_is_single_use_origin_bound_and_expiring() {
         addr,
         &host,
         Some(&origin),
-        &stale_bootstrap.bootstrap,
+        &enrolment(&stale_bootstrap.bootstrap),
     ));
 
     drop(unproven);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     assert!(
         sessions
-            .authorize_read(&host, &origin, &cookie, &csrf)
-            .is_none()
+            .authorize_read(&presentation(&page, &host, &origin))
+            .is_err()
     );
 }
 
@@ -320,19 +375,20 @@ fn wait_for_live(probe: &FloorGatewayProbe, expected: usize) {
 }
 
 #[test]
-fn the_page_secret_reaches_the_snapshot_and_a_cookie_alone_does_not() {
+fn a_signed_handshake_reaches_the_snapshot_and_a_cookie_alone_does_not() {
     let fixture = Fixture::new();
     let port = free_port();
     let settings = settings(&fixture, Some(port));
     let host = format!("127.0.0.1:{port}");
     let origin = format!("http://{host}");
+    let clock = Arc::new(TestClock::ticking(START_MS, 0));
     let daemon = boot(
         &settings,
         seams(
             &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
+            Arc::clone(&clock),
             Witness::default(),
         ),
     )
@@ -342,24 +398,35 @@ fn the_page_secret_reaches_the_snapshot_and_a_cookie_alone_does_not() {
 
     let agent = common::hire(&running.handle, fixture.state.path());
     let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &host, &origin, &issued.bootstrap);
+    let page = exchange(addr, &host, &origin, &clock, &issued.bootstrap);
+    let cookie = page.cookie.clone();
 
-    for refused in [
-        format!(
-            "dudes-floor-v3, dudes-csrf.{}",
-            "A".repeat(SESSION_BOOTSTRAP_LEN)
+    for (refused, expected) in [
+        ("dudes-floor-v4".to_owned(), "HTTP/1.1 401 Unauthorized"),
+        (
+            format!(
+                "dudes-floor-v3, dudes-csrf.{}",
+                "A".repeat(SESSION_BOOTSTRAP_LEN)
+            ),
+            "HTTP/1.1 403 Forbidden",
         ),
-        "dudes-floor-v3, dudes-csrf.".to_owned(),
+        (
+            "dudes-floor-v3, dudes-csrf.".to_owned(),
+            "HTTP/1.1 403 Forbidden",
+        ),
     ] {
         let (socket, head) = raw_upgrade(addr, &host, &origin, Some(&cookie), &refused);
         assert!(
-            head.starts_with("HTTP/1.1 403 Forbidden"),
-            "the cookie without the page's secret gets no stream: {head:?}"
+            head.starts_with(expected),
+            "the cookie without a signature gets no stream: {head:?}"
         );
         drop(socket);
     }
 
-    let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
+    let protocols = format!(
+        "dudes-floor-v4, {}",
+        page.signed("GET", "/floor/stream", &[]).protocol_entries()
+    );
     let (mut browser, upgrade) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
     assert!(
         upgrade.starts_with("HTTP/1.1 101 Switching Protocols\r\n"),
@@ -381,23 +448,27 @@ fn the_page_secret_reaches_the_snapshot_and_a_cookie_alone_does_not() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// A check or a sign-out of the session, as the page sends it.
+/// A check or a sign-out of the session, as the page sends it: the cookie and the signature, or
+/// either of them left out.
 fn post_standing(
     addr: SocketAddr,
     path: &str,
     host: &str,
     origin: &str,
-    credentials: Option<(&str, &str)>,
+    credentials: (Option<&str>, Option<&duded::floor_browser::Signed>),
 ) -> (String, String) {
     let mut request = format!(
         "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n"
     );
-    if let Some((cookie, csrf)) = credentials {
+    let (cookie, signed) = credentials;
+    {
         use std::fmt::Write as _;
-        let _ = write!(
-            &mut request,
-            "Cookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\n"
-        );
+        if let Some(cookie) = cookie {
+            let _ = write!(&mut request, "Cookie: dudes_floor_session={cookie}\r\n");
+        }
+        if let Some(signed) = signed {
+            request.push_str(&signed.header_lines());
+        }
     }
     request.push_str("\r\n{}");
     let mut stream = TcpStream::connect(addr).expect("connect to the Floor gateway");
@@ -418,13 +489,14 @@ fn signing_out_closes_the_stream_and_only_an_unknown_session_is_told_so() {
     let settings = settings(&fixture, Some(port));
     let host = format!("127.0.0.1:{port}");
     let origin = format!("http://{host}");
+    let clock = Arc::new(TestClock::ticking(START_MS, 0));
     let daemon = boot(
         &settings,
         seams(
             &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
+            Arc::clone(&clock),
             Witness::default(),
         ),
     )
@@ -432,12 +504,19 @@ fn signing_out_closes_the_stream_and_only_an_unknown_session_is_told_so() {
     let addr = daemon.floor_addr().expect("Floor address");
     let probe = daemon.floor_gateway_probe().expect("Floor gateway probe");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &host, &origin, &issue(&settings).bootstrap);
-    let check = |origin: &str, credentials: Option<(&str, &str)>| {
-        post_standing(addr, "/floor/session/check", &host, origin, credentials)
+    let page = exchange(addr, &host, &origin, &clock, &issue(&settings).bootstrap);
+    let check = |origin: &str, cookie: Option<&str>, signed: bool| {
+        let signed = signed.then(|| page.signed("POST", "/floor/session/check", b"{}"));
+        post_standing(
+            addr,
+            "/floor/session/check",
+            &host,
+            origin,
+            (cookie, signed.as_ref()),
+        )
     };
 
-    let (head, body) = check(&origin, Some((&cookie, &csrf)));
+    let (head, body) = check(&origin, Some(&page.cookie), true);
     assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head}");
     assert!(
         head.contains("; Max-Age=86400"),
@@ -445,30 +524,44 @@ fn signing_out_closes_the_stream_and_only_an_unknown_session_is_told_so() {
     );
     assert_eq!(body, r#"{"session":"live"}"#);
 
-    let wrong_secret = "A".repeat(SESSION_BOOTSTRAP_LEN);
-    for credentials in [Some((cookie.as_str(), wrong_secret.as_str())), None] {
-        let (head, body) = check(&origin, credentials);
+    let nobody = "A".repeat(SESSION_BOOTSTRAP_LEN);
+    for cookie in [Some(nobody.as_str()), None] {
+        let (head, body) = check(&origin, cookie, true);
         assert!(head.starts_with("HTTP/1.1 401 Unauthorized\r\n"), "{head}");
         assert_eq!(body, r#"{"session":"unknown"}"#);
     }
-    let (head, body) = check("http://localhost.invalid", Some((&cookie, &csrf)));
+    let (head, body) = check(&origin, Some(&page.cookie), false);
+    assert!(head.starts_with("HTTP/1.1 401 Unauthorized\r\n"), "{head}");
+    assert_eq!(
+        body, r#"{"signature":"refused"}"#,
+        "a live device that did not sign is told so, not that it is signed out"
+    );
+    let (head, body) = check("http://localhost.invalid", Some(&page.cookie), true);
     assert!(head.starts_with("HTTP/1.1 403 Forbidden\r\n"), "{head}");
     assert_eq!(
         body, "",
         "a refusal that is not about the session says nothing of it"
     );
 
-    let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
-    let (mut stream, upgrade) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
+    let protocols = format!(
+        "dudes-floor-v4, {}",
+        page.signed("GET", "/floor/stream", &[]).protocol_entries()
+    );
+    let (mut stream, upgrade) = raw_upgrade(addr, &host, &origin, Some(&page.cookie), &protocols);
     assert!(upgrade.starts_with("HTTP/1.1 101"), "{upgrade:?}");
+    assert!(
+        upgrade.contains("Sec-WebSocket-Protocol: dudes-floor-v4\r\n"),
+        "{upgrade:?}"
+    );
     wait_for_live(&probe, 1);
 
+    let end = page.signed("POST", "/floor/session/end", b"{}");
     let (head, body) = post_standing(
         addr,
         "/floor/session/end",
         &host,
         &origin,
-        Some((&cookie, &csrf)),
+        (Some(&page.cookie), Some(&end)),
     );
     assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head}");
     assert!(
@@ -483,7 +576,7 @@ fn signing_out_closes_the_stream_and_only_an_unknown_session_is_told_so() {
     let mut rest = Vec::new();
     let _ = stream.read_to_end(&mut rest);
 
-    let (head, body) = check(&origin, Some((&cookie, &csrf)));
+    let (head, body) = check(&origin, Some(&page.cookie), true);
     assert!(head.starts_with("HTTP/1.1 401 Unauthorized\r\n"), "{head}");
     assert_eq!(body, r#"{"session":"unknown"}"#);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -492,7 +585,7 @@ fn signing_out_closes_the_stream_and_only_an_unknown_session_is_told_so() {
 /// Losing an unattached browser appends no domain record.
 ///
 /// The connection this test loses is one the **daemon** authenticated. A `101` on `/floor/stream` is
-/// granted only against the session cookie and the CSRF subprotocol, and the cookie-less arm below
+/// granted only against the session cookie and a signature, and the cookie-less arm below
 /// establishes that by observation rather than by this comment: the same request without the cookie
 /// is refused. Losing it is a `drop` — the way a browser goes — with no close frame, no unsubscribe
 /// and no endpoint. Dropping the socket does not revoke the server session and nothing here claims
@@ -509,13 +602,14 @@ fn unattached_browser_close_appends_no_domain_record() {
     let settings = settings(&fixture, Some(port));
     let host = format!("127.0.0.1:{port}");
     let origin = format!("http://{host}");
+    let clock = Arc::new(TestClock::ticking(START_MS, 0));
     let daemon = boot(
         &settings,
         seams(
             &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::ticking(1_800_000_000_000, 0)),
+            Arc::clone(&clock),
             Witness::default(),
         ),
     )
@@ -527,10 +621,16 @@ fn unattached_browser_close_appends_no_domain_record() {
     // No goal: a goal-less agent issues no turn, so nothing but the browser can reach the journal.
     let agent = common::hire(&running.handle, fixture.state.path());
     let issued = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &host, &origin, &issued.bootstrap);
-    let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
+    let page = exchange(addr, &host, &origin, &clock, &issued.bootstrap);
+    let cookie = page.cookie.clone();
+    let protocols = || {
+        format!(
+            "dudes-floor-v4, {}",
+            page.signed("GET", "/floor/stream", &[]).protocol_entries()
+        )
+    };
 
-    let (refused, refused_head) = raw_upgrade(addr, &host, &origin, None, &protocols);
+    let (refused, refused_head) = raw_upgrade(addr, &host, &origin, None, &protocols());
     assert!(
         refused_head.starts_with("HTTP/1.1 403 Forbidden"),
         "an upgrade without the session cookie reached the stream: {refused_head:?}"
@@ -538,13 +638,13 @@ fn unattached_browser_close_appends_no_domain_record() {
     drop(refused);
     wait_for_live(&probe, 0);
 
-    let (mut browser, head) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
+    let (mut browser, head) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols());
     assert!(
         head.starts_with("HTTP/1.1 101 Switching Protocols\r\n"),
         "the authenticated carrier did not reach the stream: {head:?}"
     );
     assert!(
-        head.contains("Sec-WebSocket-Protocol: dudes-floor-v3\r\n"),
+        head.contains("Sec-WebSocket-Protocol: dudes-floor-v4\r\n"),
         "{head:?}"
     );
     browser
@@ -773,7 +873,7 @@ fn an_upgrade_carries_counts_through_the_operator_door_and_the_devices_come_from
     let settings = settings(&fixture, Some(port));
     let host = format!("127.0.0.1:{port}");
     let origin = format!("http://{host}");
-    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
+    let clock = Arc::new(TestClock::ticking(START_MS, 0));
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
 
     let daemon = carry_daemon(&settings, &clock, &column);
@@ -781,9 +881,9 @@ fn an_upgrade_carries_counts_through_the_operator_door_and_the_devices_come_from
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     let first = issue(&settings);
-    let (cookie, csrf) = exchange(addr, &host, &origin, &first.bootstrap);
+    let page = exchange(addr, &host, &origin, &clock, &first.bootstrap);
     let second = issue(&settings);
-    let (other_cookie, other_csrf) = exchange(addr, &host, &origin, &second.bootstrap);
+    let other = exchange(addr, &host, &origin, &clock, &second.bootstrap);
 
     let operator = || Some(credential_of(&settings));
     let exported = carry_call(
@@ -794,7 +894,10 @@ fn an_upgrade_carries_counts_through_the_operator_door_and_the_devices_come_from
     )
     .expect("the operator exports");
     let text = exported.to_string();
-    assert!(!text.contains(&cookie) && !text.contains(&csrf), "{text}");
+    assert!(
+        !text.contains(&page.cookie) && !text.contains(page.browser.key()),
+        "{text}"
+    );
     assert_eq!(
         exported
             .as_object()
@@ -847,19 +950,22 @@ fn an_upgrade_carries_counts_through_the_operator_door_and_the_devices_come_from
     assert_eq!(daemon.floor_addr(), Some(addr));
     let authorizer = daemon.floor_session_authorizer().expect("authorizer");
     let mut running = common::start(daemon);
-    for (carried, secret) in [(&cookie, &csrf), (&other_cookie, &other_csrf)] {
+    for carried in [&page, &other] {
         assert!(
             authorizer
-                .authorize_read(&host, &origin, carried, secret)
-                .is_some(),
+                .authorize_read(&presentation(carried, &host, &origin))
+                .is_ok(),
             "a restart keeps a device signed in, with no import"
         );
     }
+    let stranger_clock = Arc::clone(&clock);
+    let stranger = Page::new(addr, page.cookie.clone(), Browser::new())
+        .on_clock(move || stranger_clock.now().unix_millis());
     assert!(
         authorizer
-            .authorize_read(&host, &origin, &cookie, &"A".repeat(SESSION_BOOTSTRAP_LEN))
-            .is_none(),
-        "and no other secret works"
+            .authorize_read(&presentation(&stranger, &host, &origin))
+            .is_err(),
+        "and no other key works"
     );
 
     let imported = carry_call(
@@ -931,26 +1037,35 @@ fn device_boot(
     (settings, daemon, host, origin)
 }
 
-/// A device lives in the journal: a restart keeps it signed in, with its cookie and secret
+/// A device lives in the journal: a restart keeps it signed in, with its cookie and key
 /// unchanged, and one that was removed stays removed.
 #[test]
 fn a_device_survives_a_restart_and_a_removed_one_stays_removed() {
     use dudes_rpc::auth::PeerProvenance;
 
     let fixture = Fixture::new();
-    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
+    let clock = Arc::new(TestClock::ticking(START_MS, 0));
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
     let (settings, daemon, host, origin) = device_boot(&fixture, &clock, &column);
     let addr = daemon.floor_addr().expect("Floor address");
     let authorizer = daemon.floor_session_authorizer().expect("authorizer");
     let mut running = common::start(daemon);
-    let named = |name: &str| format!("{}\n{name}", issue(&settings).bootstrap);
-    let (kept, kept_secret) = exchange(addr, &host, &origin, &named("Chrome on macOS"));
-    let (gone, gone_secret) = exchange(addr, &host, &origin, &named("Firefox on Linux"));
+    let named = |name: &str| {
+        exchange_named(
+            addr,
+            &host,
+            &origin,
+            &clock,
+            &issue(&settings).bootstrap,
+            name,
+        )
+    };
+    let kept = named("Chrome on macOS");
+    let gone = named("Firefox on Linux");
     assert!(
         authorizer
-            .authorize_read(&host, &origin, &kept, &kept_secret)
-            .is_some()
+            .authorize_read(&presentation(&kept, &host, &origin))
+            .is_ok()
     );
 
     let listed = rpc(
@@ -971,6 +1086,11 @@ fn a_device_survives_a_restart_and_a_removed_one_stays_removed() {
             .expect("an id")
             .to_owned()
     };
+    assert_eq!(
+        id_of("Chrome on macOS"),
+        kept.browser.device().to_string(),
+        "the list shows the id the browser computed from its own key"
+    );
     assert!(
         devices
             .iter()
@@ -995,14 +1115,14 @@ fn a_device_survives_a_restart_and_a_removed_one_stays_removed() {
     let mut running = common::start(daemon);
     assert!(
         authorizer
-            .authorize_read(&host, &origin, &kept, &kept_secret)
-            .is_some(),
+            .authorize_read(&presentation(&kept, &host, &origin))
+            .is_ok(),
         "the device is still signed in after a restart"
     );
     assert!(
         authorizer
-            .authorize_read(&host, &origin, &gone, &gone_secret)
-            .is_none(),
+            .authorize_read(&presentation(&gone, &host, &origin))
+            .is_err(),
         "a removed device stays removed"
     );
     let kinds: Vec<_> = fixture
@@ -1014,8 +1134,8 @@ fn a_device_survives_a_restart_and_a_removed_one_stays_removed() {
     assert_eq!(
         kinds,
         [
-            "FloorDeviceEnrolled",
-            "FloorDeviceEnrolled",
+            "FloorDeviceKeyEnrolled",
+            "FloorDeviceKeyEnrolled",
             "FloorDeviceFirstUsed",
             "FloorDeviceRemoved"
         ],
@@ -1036,7 +1156,7 @@ fn the_device_rpcs_refuse_an_unproven_peer_and_an_agent() {
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     let unauthorized = ErrorCode::Unauthorized.code();
-    let named = serde_json::json!({ "device": "ab".repeat(32) });
+    let named = serde_json::json!({ "device": "A".repeat(43) });
     for (method, params) in [
         (Method::FloorDevicesList, None),
         (Method::FloorDevicesRemove, Some(named.clone())),
@@ -1068,16 +1188,21 @@ fn a_new_sign_in_reaches_an_open_stream_and_leaves_it_open() {
     use dudes_rpc::auth::PeerProvenance;
 
     let fixture = Fixture::new();
-    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
+    let clock = Arc::new(TestClock::ticking(START_MS, 0));
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
     let (settings, daemon, host, origin) = device_boot(&fixture, &clock, &column);
     let addr = daemon.floor_addr().expect("Floor address");
     let probe = daemon.floor_gateway_probe().expect("probe");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &host, &origin, &issue(&settings).bootstrap);
+    let page = exchange(addr, &host, &origin, &clock, &issue(&settings).bootstrap);
 
-    let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
-    let (mut stream, upgrade) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
+    let (mut stream, upgrade) = raw_upgrade(
+        addr,
+        &host,
+        &origin,
+        Some(&page.cookie),
+        &stream_protocols(&page),
+    );
     assert!(upgrade.starts_with("HTTP/1.1 101"), "{upgrade:?}");
     stream
         .write_all(&masked_text(br#"{"type":"floor.subscribe"}"#))
@@ -1086,7 +1211,7 @@ fn a_new_sign_in_reaches_an_open_stream_and_leaves_it_open() {
         serde_json::from_slice(&server_text(&mut stream)).expect("snapshot JSON");
     assert_eq!(snapshot["type"], "floor.snapshot", "{snapshot}");
 
-    let _ = exchange(addr, &host, &origin, &issue(&settings).bootstrap);
+    let _ = exchange(addr, &host, &origin, &clock, &issue(&settings).bootstrap);
 
     let mut seen = Vec::new();
     for _ in 0..4 {
@@ -1113,29 +1238,26 @@ fn a_removed_device_is_refused_with_its_reason_and_its_stream_closes() {
     use dudes_rpc::auth::PeerProvenance;
 
     let fixture = Fixture::new();
-    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
+    let clock = Arc::new(TestClock::ticking(START_MS, 0));
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
     let (settings, daemon, host, origin) = device_boot(&fixture, &clock, &column);
     let addr = daemon.floor_addr().expect("Floor address");
     let probe = daemon.floor_gateway_probe().expect("probe");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &host, &origin, &issue(&settings).bootstrap);
-    let (other, other_secret) = exchange(addr, &host, &origin, &issue(&settings).bootstrap);
+    let page = exchange(addr, &host, &origin, &clock, &issue(&settings).bootstrap);
+    let other = exchange(addr, &host, &origin, &clock, &issue(&settings).bootstrap);
 
-    let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
-    let (mut stream, upgrade) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
+    let (mut stream, upgrade) = raw_upgrade(
+        addr,
+        &host,
+        &origin,
+        Some(&page.cookie),
+        &stream_protocols(&page),
+    );
     assert!(upgrade.starts_with("HTTP/1.1 101"), "{upgrade:?}");
     wait_for_live(&probe, 1);
 
-    let listed = post_json(
-        addr,
-        "/floor/devices",
-        &host,
-        &origin,
-        &other,
-        &other_secret,
-        "{}",
-    );
+    let listed = post_json(addr, "/floor/devices", &host, &origin, &other, "{}");
     assert!(listed.0.starts_with("HTTP/1.1 200 OK\r\n"), "{}", listed.0);
     let value: serde_json::Value = serde_json::from_str(&listed.1).expect("JSON");
     let devices = value["devices"].as_array().expect("devices");
@@ -1148,13 +1270,17 @@ fn a_removed_device_is_refused_with_its_reason_and_its_stream_closes() {
         .as_str()
         .expect("id")
         .to_owned();
+    assert_eq!(
+        target,
+        page.browser.device().to_string(),
+        "the page can compute its own id from its key"
+    );
     let removed = post_json(
         addr,
         "/floor/devices/remove",
         &host,
         &origin,
         &other,
-        &other_secret,
         &format!(r#"{{"device":"{target}"}}"#),
     );
     assert!(
@@ -1170,33 +1296,43 @@ fn a_removed_device_is_refused_with_its_reason_and_its_stream_closes() {
     let mut rest = Vec::new();
     let _ = stream.read_to_end(&mut rest);
 
-    let refused = post_json(addr, "/floor/devices", &host, &origin, &cookie, &csrf, "{}");
+    let refused = post_json(addr, "/floor/devices", &host, &origin, &page, "{}");
     assert!(
         refused.0.starts_with("HTTP/1.1 403 Forbidden\r\n"),
         "{}",
         refused.0
     );
     assert_eq!(refused.1, r#"{"reason":"removed","session":"gone"}"#);
+    let check = page.signed("POST", "/floor/session/check", b"{}");
     let (head, body) = post_standing(
         addr,
         "/floor/session/check",
         &host,
         &origin,
-        Some((&cookie, &csrf)),
+        (Some(&page.cookie), Some(&check)),
     );
     assert!(head.starts_with("HTTP/1.1 401 Unauthorized\r\n"), "{head}");
     assert_eq!(body, r#"{"reason":"removed","session":"unknown"}"#);
-    let wrong = post_json(
+    let (_, unsigned) = post_standing(
         addr,
-        "/floor/devices",
+        "/floor/session/check",
         &host,
         &origin,
-        &cookie,
-        &"A".repeat(SESSION_BOOTSTRAP_LEN),
-        "{}",
+        (Some(&page.cookie), None),
     );
-    assert_eq!(wrong.1, "", "a cookie without its secret learns nothing");
+    assert_eq!(
+        unsigned, body,
+        "the reason grants nothing, so a page that cannot sign still hears it"
+    );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// The stream handshake entries a page offers: the stream's protocol and a fresh signature.
+fn stream_protocols(page: &Page) -> String {
+    format!(
+        "dudes-floor-v4, {}",
+        page.signed("GET", "/floor/stream", &[]).protocol_entries()
+    )
 }
 
 fn post_json(
@@ -1204,13 +1340,15 @@ fn post_json(
     path: &str,
     host: &str,
     origin: &str,
-    cookie: &str,
-    csrf: &str,
+    page: &Page,
     body: &str,
 ) -> (String, String) {
+    let signed = page.signed("POST", path, body.as_bytes());
     let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\n\r\n{body}",
-        body.len()
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCookie: dudes_floor_session={}\r\n{}\r\n{body}",
+        body.len(),
+        page.cookie,
+        signed.header_lines()
     );
     let mut stream = TcpStream::connect(addr).expect("connect to the Floor gateway");
     stream
@@ -1230,7 +1368,7 @@ fn a_link_lives_for_its_purpose() {
     use dudes_rpc::auth::PeerProvenance;
 
     let fixture = Fixture::new();
-    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
+    let clock = Arc::new(TestClock::ticking(START_MS, 0));
     let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
     let (settings, daemon, host, origin) = device_boot(&fixture, &clock, &column);
     let addr = daemon.floor_addr().expect("Floor address");
@@ -1266,13 +1404,18 @@ fn a_link_lives_for_its_purpose() {
     assert_eq!(bad.code, ErrorCode::InvalidParams.code());
 
     clock.advance(61_000);
-    assert_empty_refusal(&raw_exchange(addr, &host, Some(&origin), &open.bootstrap));
     assert_empty_refusal(&raw_exchange(
         addr,
         &host,
         Some(&origin),
-        &explicit.bootstrap,
+        &enrolment(&open.bootstrap),
     ));
-    let _ = exchange(addr, &host, &origin, &printed.bootstrap);
+    assert_empty_refusal(&raw_exchange(
+        addr,
+        &host,
+        Some(&origin),
+        &enrolment(&explicit.bootstrap),
+    ));
+    let _ = exchange(addr, &host, &origin, &clock, &printed.bootstrap);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
