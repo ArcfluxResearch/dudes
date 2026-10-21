@@ -344,6 +344,9 @@ pub struct CardTicket {
     /// The ticket was stopped and its agent is still finishing its current step.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stopping: bool,
+    /// The newest completed engine turn on this ticket's goal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_end: Option<crate::ticket::TicketTurnEnd>,
     /// Bounded action/evidence summary. Paths and interval details come from `ticket.read`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction_review: Option<crate::instruction::InstructionReviewSummary>,
@@ -570,6 +573,7 @@ mod tests {
                 round: 1,
                 reason: None,
                 stopping: false,
+                last_turn_end: None,
                 instruction_review: None,
             }),
         };

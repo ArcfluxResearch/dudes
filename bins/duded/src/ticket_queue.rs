@@ -457,6 +457,7 @@ mod tests {
                 round: 0,
                 reason: None,
                 summary: None,
+                last_turn_end: None,
                 check: None,
             },
         )

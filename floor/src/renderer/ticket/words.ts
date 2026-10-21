@@ -4,7 +4,7 @@
 // keeps a table of them. A test in the daemon's suite reads this file and fails when a sentence
 // here differs from the one the daemon owns.
 
-import type { CardRow, TicketReason } from '../board.ts';
+import type { CardRow, TicketReason, TicketTurnEnd } from '../board.ts';
 
 export type RefusalCode = 'stale_card' | 'not_a_ticket' | 'ticket_card' | 'wrong_state' | 'project_unavailable'
   | 'done_when_changed' | 'agent_unavailable' | 'agent_no_project' | 'queue_full' | 'limit_reached' | 'busy'
@@ -136,3 +136,18 @@ export const COULD_NOT_CONFIRM = "We could not confirm that saved. Look at the b
 /** Shown under the summary: whose words they are. */
 export const AGENT_SAYS = "The agent says";
 export const NO_SUMMARY = "The agent left no summary";
+
+const SIGNAL_NAMES: Readonly<Record<number, string>> = Object.freeze({
+  1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 4: 'SIGILL', 5: 'SIGTRAP', 6: 'SIGABRT',
+  8: 'SIGFPE', 9: 'SIGKILL', 11: 'SIGSEGV', 13: 'SIGPIPE', 14: 'SIGALRM', 15: 'SIGTERM',
+});
+
+export function engineStopped(ended: TicketTurnEnd | undefined): string | null {
+  if (ended === undefined) return null;
+  const { code, signal } = ended.exit;
+  const cause = signal !== null ? SIGNAL_NAMES[signal] ?? `signal ${signal}`
+    : code !== null && code !== 0 ? `exit ${code}` : null;
+  if (cause === null) return null;
+  const time = new Date(ended.at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `The engine stopped (${cause}) at ${time}`;
+}

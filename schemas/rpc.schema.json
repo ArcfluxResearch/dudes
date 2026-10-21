@@ -1671,6 +1671,17 @@
           ],
           "description": "Bounded action/evidence summary. Paths and interval details come from `ticket.read`."
         },
+        "last_turn_end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketTurnEnd"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The newest completed engine turn on this ticket's goal."
+        },
         "position": {
           "description": "Its place in its holder's queue, counting from 1, while it waits there.",
           "format": "uint32",
@@ -19463,6 +19474,17 @@
           ],
           "description": "Bounded instruction evidence and the exact pending review set."
         },
+        "last_turn_end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketTurnEnd"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The newest completed turn on the ticket's goal, retained while another turn runs."
+        },
         "message": {
           "description": "What the operator said when sending the work back, until the next start uses it.",
           "type": [
@@ -19534,6 +19556,24 @@
       "required": [
         "card",
         "expected_seq"
+      ],
+      "type": "object"
+    },
+    "TicketTurnEnd": {
+      "description": "How the latest completed engine turn on a ticket ended.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the turn's end was recorded."
+        },
+        "exit": {
+          "$ref": "#/$defs/ExitStatus",
+          "description": "The engine process's recorded exit status."
+        }
+      },
+      "required": [
+        "exit",
+        "at"
       ],
       "type": "object"
     },

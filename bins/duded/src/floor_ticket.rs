@@ -1007,6 +1007,7 @@ mod tests {
                 round: 1,
                 reason: None,
                 summary: Some("s".repeat(4_096)),
+                last_turn_end: None,
                 check: None,
                 instruction_review: Some(review),
                 coverage: None,

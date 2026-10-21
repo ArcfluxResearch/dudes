@@ -19,7 +19,7 @@ import type { Notice } from './ticket.ts';
 import { createTicket, dismissNotice, getTicketState, subscribeToTicket } from './ticket.ts';
 import { titleOf } from '../setup/nextStep.ts';
 import type { FirstTaskAgent } from '../setup/nextStep.ts';
-import { agentWithoutProjectSentence, otherStateName, stateName } from './words.ts';
+import { agentWithoutProjectSentence, engineStopped, otherStateName, stateName } from './words.ts';
 import { NoTicketProjectHint, TicketOffHint } from './TicketGuidance.tsx';
 import { NotConnected } from '../StreamNotice.tsx';
 
@@ -232,6 +232,7 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
 }) {
   const words = cardWords(floor, card);
   const row = agentRow(floor, card.claimed_by);
+  const failure = engineStopped(card.ticket?.last_turn_end);
   return <li>
     <button type="button" className="task-card ticket-card" data-card-id={card.id} data-ticket-status={card.ticket === null && plainColumnOf(card) === null ? undefined : card.status}
       aria-pressed={selected} aria-controls="selected-card-detail" aria-haspopup="dialog" disabled={!selectable}
@@ -241,6 +242,7 @@ function TicketCard({ floor, card, selected, selectable, onSelect }: {
         {(card.ticket?.round ?? 0) > 1 ? <span className="ticket-round">Round {card.ticket?.round}</span> : null}
       </span>
       <strong>{card.title}</strong>
+      {failure === null ? null : <span className="ticket-note">{failure}</span>}
       {words.note === null ? null : <span className="ticket-note">{words.note}</span>}
       <span className="ticket-card-footer">
         {words.agent === null ? <span className="ticket-unassigned">Unassigned</span> : <span className="ticket-agent">
