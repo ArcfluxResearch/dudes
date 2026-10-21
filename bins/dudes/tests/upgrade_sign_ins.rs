@@ -100,7 +100,7 @@ fn http(origin: &str, request_line: &str, extra: &str, body: &str) -> (String, S
 
 struct Installed {
     _lifeline: Lifeline,
-    _root: tempfile::TempDir,
+    root: tempfile::TempDir,
     env: Environment,
     floor: PathBuf,
     origin: String,
@@ -144,7 +144,7 @@ impl Installed {
         let lifeline = Lifeline::start(root.path());
         let mut installed = Self {
             _lifeline: lifeline,
-            _root: root,
+            root,
             env,
             floor,
             origin: String::new(),
@@ -153,14 +153,45 @@ impl Installed {
         };
         let (code, out, err) = installed.cli(&["start"]);
         assert_eq!(code, 0, "{out}{err}");
+        assert!(
+            std::fs::read_to_string(installed.root.path().join("duded.log"))
+                .is_ok_and(|note| note.contains("quickstart started duded pid ")),
+            "the lifeline knows the daemon"
+        );
         installed.sign_in();
         installed
+    }
+
+    /// Note each daemon of this install where the lifeline looks, because `dudes start` leaves no
+    /// such note and the lifeline stops only the pids it reads.
+    fn record_daemons(&self) {
+        use std::io::Write as _;
+        let program = self.root.path().join("bin/duded");
+        let listing = common::run_program(
+            Path::new("/bin/ps"),
+            &["-axww", "-o", "pid=,command="].map(OsString::from),
+        );
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.path().join("duded.log"))
+            .expect("the lifeline's note");
+        for line in listing.stdout.lines() {
+            let (pid, command) = line.trim_start().split_once(' ').unwrap_or_default();
+            if command
+                .trim_start()
+                .starts_with(&*program.to_string_lossy())
+            {
+                writeln!(log, "quickstart started duded pid {pid}").expect("write the note");
+            }
+        }
     }
 
     fn cli(&self, words: &[&str]) -> (u8, String, String) {
         let argv: Vec<OsString> = words.iter().map(OsString::from).collect();
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = dudes::run(&argv, &self.env, None, &mut out, &mut err);
+        self.record_daemons();
         (
             code,
             String::from_utf8(out).expect("text"),

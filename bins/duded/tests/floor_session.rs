@@ -367,7 +367,11 @@ fn masked_text(payload: &[u8]) -> Vec<u8> {
 fn server_text(stream: &mut TcpStream) -> Vec<u8> {
     let mut head = [0_u8; 2];
     stream.read_exact(&mut head).expect("server frame head");
-    assert_eq!(head[0] & 0x0f, 1, "the read-only stream emits text");
+    assert_eq!(
+        head[0] & 0x0f,
+        1,
+        "the read-only stream emits text, got {head:02x?}"
+    );
     assert_eq!(head[1] & 0x80, 0, "server frames are not masked");
     let len = match head[1] & 0x7f {
         value @ 0..=125 => usize::from(value),
@@ -1143,6 +1147,51 @@ fn the_device_rpcs_refuse_an_unproven_peer_and_an_agent() {
             "control: the operator is answered"
         );
     }
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// A second browser signing in tells an open page, and leaves its stream open.
+#[test]
+fn a_new_sign_in_reaches_an_open_stream_and_leaves_it_open() {
+    use dudes_rpc::auth::PeerProvenance;
+
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
+    let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
+    let (settings, daemon, host, origin) = device_boot(&fixture, &clock, &column);
+    let addr = daemon.floor_addr().expect("Floor address");
+    let probe = daemon.floor_gateway_probe().expect("probe");
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &host, &origin, &issue(&settings).bootstrap);
+
+    let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
+    let (mut stream, upgrade) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
+    assert!(upgrade.starts_with("HTTP/1.1 101"), "{upgrade:?}");
+    stream
+        .write_all(&masked_text(br#"{"type":"floor.subscribe"}"#))
+        .expect("subscribe");
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&server_text(&mut stream)).expect("snapshot JSON");
+    assert_eq!(snapshot["type"], "floor.snapshot", "{snapshot}");
+
+    let _ = exchange(addr, &host, &origin, &issue(&settings).bootstrap);
+
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        let frame: serde_json::Value =
+            serde_json::from_slice(&server_text(&mut stream)).expect("frame JSON");
+        let kind = frame["type"].as_str().unwrap_or_default().to_owned();
+        seen.push(kind.clone());
+        if kind == "floor.device.enrolled" {
+            break;
+        }
+    }
+    assert_eq!(
+        seen.last().map(String::as_str),
+        Some("floor.device.enrolled"),
+        "{seen:?}"
+    );
+    assert_eq!(probe.live_connections(), 1, "the stream is still open");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 

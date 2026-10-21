@@ -1259,7 +1259,7 @@ impl FloorStreams {
                 "reason": reason,
             }),
         };
-        if let Ok(bytes) = serde_json::to_vec(&frame) {
+        if let Ok(bytes) = serialize_frame(&frame) {
             broadcast_frame(&self.0, &Arc::from(bytes));
         }
     }

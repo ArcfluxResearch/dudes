@@ -1748,7 +1748,16 @@ impl FloorSessions {
             if !self.0.valid.load(Ordering::Acquire) {
                 return None;
             }
-            let session = state.sessions.get(&cookie)?;
+            let Some(session) = state.sessions.get(&cookie) else {
+                // An ended device proves the daemon too, so its page can send the secret and hear
+                // why it was signed out. The proof shows only that the daemon knows the digest.
+                return state
+                    .remembered
+                    .iter()
+                    .rev()
+                    .find(|ended| ended.cookie == cookie)
+                    .and_then(|ended| ended.secret);
+            };
             if !session.live_at(now) || session.revoked.load(Ordering::Acquire) {
                 return None;
             }
@@ -2696,7 +2705,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_session_named_by_the_cookie_proves_and_only_while_it_lives() {
+    fn only_the_session_named_by_the_cookie_proves() {
         let (_clock, sessions) = probe_registry();
         let first = probe_session(&sessions);
         let second = probe_session(&sessions);
@@ -2748,10 +2757,10 @@ mod tests {
                 )
                 .is_some()
         );
-        assert_ne!(
+        assert_eq!(
             sessions.prove(Some(&first.cookie), &nonce),
             expected(&first.csrf),
-            "a session that ended no longer proves"
+            "a session that ended still proves, so its page can hear why"
         );
     }
 }
@@ -3381,6 +3390,18 @@ mod device_tests {
 
         let home = restart_from(&d.clock, &d.journal);
         assert!(acts(&home, &fresh), "it works again on its own origin");
+    }
+
+    #[test]
+    fn a_removed_device_can_still_prove_the_daemon_so_its_page_hears_why() {
+        let d = daemon();
+        let device = sign_in(&d.sessions);
+        let before = d.sessions.prove(Some(&device.cookie), "nonce");
+        let id = id_of(&d.sessions, &device);
+        d.sessions.remove_device(id, FloorDeviceRemoval::Removed);
+        assert_eq!(d.sessions.prove(Some(&device.cookie), "nonce"), before);
+        let stranger = sign_in(&d.sessions);
+        assert_ne!(d.sessions.prove(Some(&stranger.cookie), "nonce"), before);
     }
 
     #[test]
