@@ -98,7 +98,7 @@ function field(value: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
 
 export interface MessageParts {
   readonly device: string;
-  readonly method: string;
+  readonly verb: string;
   readonly target: string;
   readonly origin: string;
   readonly bodyHash: Uint8Array<ArrayBuffer>;
@@ -111,7 +111,7 @@ export function signedMessage(parts: MessageParts): Uint8Array<ArrayBuffer> {
   const fields = [
     encoder.encode(LABEL),
     encoder.encode(parts.device),
-    encoder.encode(parts.method),
+    encoder.encode(parts.verb),
     encoder.encode(parts.target),
     encoder.encode(parts.origin),
     parts.bodyHash,
@@ -162,17 +162,23 @@ export function createSigner(ports: SignerPorts): Signer {
     const time = String(ports.now());
     const request = base64url(idBytes);
     const bodyHash = new Uint8Array(await subtle.digest('SHA-256', body));
+    const origin = ports.origin();
     const message = signedMessage({
       device: record.device,
-      method,
-      target: requestTarget(url, ports.origin()),
-      origin: ports.origin(),
+      verb: method,
+      target: requestTarget(url, origin),
+      origin,
       bodyHash,
       time,
       request,
     });
     const signature = new Uint8Array(await subtle.sign(SIGNATURE_ALGORITHM, record.privateKey, message));
-    return { origin: ports.origin(), time, request, signature: base64url(signature) };
+    return { origin, time, request, signature: base64url(signature) };
+  }
+
+  async function signed(method: string, url: string, body: Uint8Array<ArrayBuffer>): Promise<Signature | null> {
+    const record = await guard(() => ports.store.read());
+    return record === null ? null : guard(() => signWith(record, method, url, body));
   }
 
   return {
@@ -189,51 +195,38 @@ export function createSigner(ports: SignerPorts): Signer {
       await ports.store.clear();
     }),
     lock: (run) => ports.lock(run),
-    sign: async (method, url, body) => {
-      const record = await guard(() => ports.store.read());
-      if (record === null) return null;
-      return guard(() => signWith(record, method, url, body));
-    },
+    sign: signed,
     socketEntries: async (url) => {
-      const record = await guard(() => ports.store.read());
-      if (record === null) return null;
-      const signed = await guard(() => signWith(record, 'GET', url, new Uint8Array(0)));
-      return Object.freeze([`dudes-sig.${signed.signature}`, `dudes-time.${signed.time}`, `dudes-id.${signed.request}`]);
+      const found = await signed('GET', url, new Uint8Array(0));
+      return found === null ? null : Object.freeze([`dudes-sig.${found.signature}`, `dudes-time.${found.time}`, `dudes-id.${found.request}`]);
     },
   };
 }
 
-function request<T>(request: IDBRequest<T>): Promise<T> {
+/** Resolves when `target` fires `success`, and rejects when it fires `error`. */
+function settled(target: EventTarget, success: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    target.addEventListener(success, () => resolve(), { once: true });
+    target.addEventListener('error', () => reject(new Error('storage failed')), { once: true });
   });
 }
 
-function openDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const opening = indexedDB.open(DATABASE, 1);
-    opening.onupgradeneeded = () => {
-      opening.result.createObjectStore(STORE);
-    };
-    opening.onsuccess = () => resolve(opening.result);
-    opening.onerror = () => reject(opening.error);
-    opening.onblocked = () => reject(new Error('blocked'));
+async function openDatabase(): Promise<IDBDatabase> {
+  const opening = indexedDB.open(DATABASE, 1);
+  opening.addEventListener('upgradeneeded', () => {
+    opening.result.createObjectStore(STORE);
   });
+  await settled(opening, 'success');
+  return opening.result;
 }
 
 async function inStore<T>(mode: IDBTransactionMode, run: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   const database = await openDatabase();
   try {
     const transaction = database.transaction(STORE, mode);
-    const done = new Promise<void>((resolve, reject) => {
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error);
-    });
-    const result = await request(run(transaction.objectStore(STORE)));
-    await done;
-    return result;
+    const request = run(transaction.objectStore(STORE));
+    await settled(transaction, 'complete');
+    return request.result;
   } finally {
     database.close();
   }

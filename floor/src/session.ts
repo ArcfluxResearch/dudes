@@ -1,7 +1,7 @@
 import { browserName } from './renderer/devices/browserName.ts';
 import { KeyUnavailable, floorSigner } from './signer.ts';
 import type { Signer } from './signer.ts';
-import { floorFetch } from './transport.ts';
+import { floorFetch, plainFetch } from './transport.ts';
 
 const LINK = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 const BOOTSTRAP_PREFIX = '#bootstrap=';
@@ -57,7 +57,7 @@ export interface SignInPorts {
 }
 
 function browserPorts(): SignInPorts {
-  return { signer: floorSigner(), plain: (url, init) => window.fetch(url, init), signed: floorFetch };
+  return { signer: floorSigner(), plain: plainFetch, signed: floorFetch };
 }
 
 let current: FloorSession | null = null;
@@ -112,10 +112,9 @@ function settle(ticket: number, session: FloorSession | null, keep: boolean): vo
 export type Standing = 'live' | 'unknown' | 'unclear';
 
 export async function askFloorStanding(
-  session: FloorSession,
+  _session: FloorSession,
   fetch: FetchPort = floorFetch,
 ): Promise<Standing> {
-  void session;
   try {
     const response = await fetch('/floor/session/check', {
       method: 'POST',
@@ -147,8 +146,10 @@ function saysDeviceGone(answer: unknown): answer is { readonly session: string }
  * The page lost its session: forget it and delete the key kept for it, so a reload starts signed out.
  * Only the key this session used goes, so a newer key another tab made since stays.
  */
-export async function endFloorSession(signer: Signer | null = floorSigner()): Promise<void> {
-  const device = current?.device;
+export async function endFloorSession(
+  signer: Signer | null = floorSigner(),
+  device: string | undefined = current?.device,
+): Promise<void> {
   settle(++started, null, false);
   if (signer === null || device === undefined) return;
   try {
@@ -186,7 +187,6 @@ export async function signOutFloorSession(
   fetch: FetchPort = floorFetch,
   signer: Signer | null = floorSigner(),
 ): Promise<boolean> {
-  void session;
   try {
     const response = await fetch('/floor/session/end', {
       method: 'POST',
@@ -203,7 +203,7 @@ export async function signOutFloorSession(
   } catch {
     return false;
   }
-  await endFloorSession(signer);
+  await endFloorSession(signer, session.device);
   goneReason = 'signed_out';
   return true;
 }
@@ -345,12 +345,12 @@ export async function exchangeBootstrap(
 ): Promise<FloorSession | null> {
   if (!location.hash.startsWith(BOOTSTRAP_PREFIX)) return null;
 
-  const { signer } = ports;
+  const { signer, plain: fetch } = ports;
   if (signer === null) throw new KeyUnavailable();
   const link = location.hash.slice(BOOTSTRAP_PREFIX.length);
   history.replaceState(null, '', `${location.pathname}${location.search}`);
   if (!LINK.test(link)) return null;
-  if (ownRefs !== undefined) await requireSameBuild(ports.plain, ownRefs);
+  if (ownRefs !== undefined) await requireSameBuild(fetch, ownRefs);
 
   // One tab at a time reads the key, makes one and spends the link, so two tabs opened on one link
   // end up with one device.
@@ -364,7 +364,7 @@ export async function exchangeBootstrap(
       await signer.forget(held);
     }
     const key = await signer.newKey();
-    const response = await ports.plain('/floor/session', {
+    const response = await fetch('/floor/session', {
       method: 'POST',
       body: JSON.stringify({ link, key: key.spki, name: browserName() }),
       credentials: 'same-origin',

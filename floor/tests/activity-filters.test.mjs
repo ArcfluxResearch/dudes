@@ -41,7 +41,7 @@ test('FILTER_RELOAD and STORAGE_DENIED mutants keep only bounded filter preferen
   assert.deepEqual(readActivityFilters(storage), filters);
   const [key] = values.keys();
   assert.deepEqual(Object.keys(JSON.parse(values.get(key))).sort(), ['agentId', 'kind', 'query']);
-  values.set(key, JSON.stringify({ ...filters, csrf: 'do not read' }));
+  values.set(key, JSON.stringify({ ...filters, secret: 'do not read' }));
   assert.deepEqual(readActivityFilters(storage), { agentId: '', kind: '', query: '' });
   const denied = () => { throw new Error('storage denied'); };
   assert.deepEqual(readActivityFilters(denied), { agentId: '', kind: '', query: '' });

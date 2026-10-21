@@ -29,12 +29,11 @@ test('the daemon answer to a switch edit is read exactly, and anything else is a
 
     const sent = [];
     const fetch = (url, init) => { sent.push([url, init]); return Promise.resolve({ status: 409, text: () => Promise.resolve(JSON.stringify({ state: 'refused', reason: 'key_not_editable', detail: null })) }); };
-    const result = await saveSetting('providers.pi.command', 'on', fetch, 'csrf-value');
+    const result = await saveSetting('providers.pi.command', 'on', fetch, () => true);
     assert.deepEqual(result, { kind: 'refused', reason: 'key_not_editable', detail: null });
     assert.equal(sent[0][0], '/floor/settings');
-    assert.equal(sent[0][1].headers['X-Dudes-CSRF'], 'csrf-value');
     assert.equal(sent[0][1].body, '{"key":"providers.pi.command","value":"on"}');
-    assert.deepEqual(await saveSetting('floor.answer', 'on', fetch, null), { kind: 'failed' });
+    assert.deepEqual(await saveSetting('floor.answer', 'on', fetch, () => false), { kind: 'failed' });
   } finally {
     await server.close();
   }

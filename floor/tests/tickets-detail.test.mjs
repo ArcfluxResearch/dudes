@@ -270,7 +270,7 @@ test('the changed files come from the Git read, or one plain line says how to tu
     ...extra,
   });
   const git = daemon(() => json(200, view()));
-  git.deps.csrf = deps.csrf;
+  git.deps.signedIn = deps.signedIn;
   await loadChangedFiles(store.getFloorState().cards[0], git.deps);
   const on = panel();
   assert.match(on, /<ul class="ticket-files"><li><span class="git-kind">Added<\/span> <span class="git-path data">src\/new\.rs<\/span><\/li><li><span class="git-kind">Modified<\/span> <span class="git-path data">src\/main\.rs<\/span><\/li><\/ul>/);

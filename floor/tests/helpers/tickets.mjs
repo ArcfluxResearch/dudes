@@ -5,7 +5,6 @@
 
 export const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
 export const GRACE = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
-export const CSRF = 'A'.repeat(43);
 export const REVISION = 'a'.repeat(64);
 export const SECOND_REVISION = 'b'.repeat(64);
 
@@ -78,7 +77,7 @@ export function daemon(reply) {
       const { status, text } = await reply(url, body, seen.length);
       return { status, text: async () => text };
     },
-    csrf: () => CSRF,
+    signedIn: () => true,
     random: () => {},
     refresh: () => { deps.refreshed += 1; },
     epoch: () => 1,

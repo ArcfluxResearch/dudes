@@ -95,7 +95,7 @@ test('the stream notice reports the actual retry schedule and then says the daem
   awayModule.resetAway();
   const sockets = [];
   let scheduled;
-  const dispose = streamModule.openFloorStream({ csrf: 'test-nonce' },
+  const dispose = streamModule.openFloorStream({ device: 'fixture' },
     { protocol: 'http:', host: '127.0.0.1:7777' }, () => {
       const listeners = new Map();
       const socket = { addEventListener(kind, callback) { listeners.set(kind, callback); },
@@ -127,7 +127,7 @@ test('a socket that never opens cannot claim an open connection after silence', 
   streamStore.resetFloorStore();
   let now = 0;
   let tick;
-  const dispose = streamModule.openFloorStream({ csrf: 'test-nonce' },
+  const dispose = streamModule.openFloorStream({ device: 'fixture' },
     { protocol: 'http:', host: '127.0.0.1:7777' },
     () => ({ addEventListener() {}, send() {}, close() {} }),
     { now: () => now, repeat: (_interval, poll) => { tick = poll; return () => {}; }, after: () => () => {} });

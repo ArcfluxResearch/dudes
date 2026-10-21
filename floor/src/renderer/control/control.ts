@@ -179,7 +179,7 @@ export interface ControlResponse {
 
 export interface ControlDeps {
   fetch(url: string, init: RequestInit): Promise<ControlResponse>;
-  /** The session's CSRF nonce, or `null` when the page has no session. */
+  /** Whether the page holds a sign-in. */
   signedIn(): boolean;
   /** Fill `bytes` with cryptographically random values. */
   random(bytes: Uint8Array<ArrayBuffer>): void;

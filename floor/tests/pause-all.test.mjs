@@ -52,7 +52,7 @@ function deps(reply) {
       calls.push({ url, init, payload });
       return reply(payload, calls.length);
     },
-    csrf: () => 'A'.repeat(43),
+    signedIn: () => true,
     random: (bytes) => bytes.fill(++sequence),
     refresh() {},
     epoch: () => getFloorState().epoch,
@@ -225,14 +225,14 @@ test('a confirmation from an older session sends no fresh request', async () => 
   assert.match(getPauseAllState().problem, /changed before confirmation/i);
 });
 
-test('a missing CSRF token sends nothing and cannot turn into a pause after renewal', async () => {
+test('a missing sign-in sends nothing and cannot turn into a pause after renewal', async () => {
   const state = snapshot([row(0), row(1)]);
   const fake = deps((payload, at) => applied(payload, 17 + at));
-  fake.csrf = () => null;
+  fake.signedIn = () => false;
   await beginPauseAll(state, fake);
   assert.deepEqual(fake.calls, []);
   assert.equal(getPauseAllState().phase, 'complete');
-  fake.csrf = () => 'A'.repeat(43);
+  fake.signedIn = () => true;
   await checkPauseAllStatus(fake);
   assert.deepEqual(fake.calls, []);
 });

@@ -1631,9 +1631,9 @@ const REQUESTS = {
     fetches: ["window.fetch('/floor/')", 'ports.fetchIndex()', 'ports.fetchIndex()'],
   },
   'src/transport.ts': {
-    paths: ['/floor/session/prove', 'application/json'],
-    methods: ['POST'],
-    fetches: ['window.fetch(PROVE_PATH)', 'window.fetch(url)'],
+    paths: [],
+    methods: ['not a literal: method'],
+    fetches: ['window.fetch(url)', 'signedFetch(floorSigner())', 'window.fetch(target)'],
   },
   'src/renderer/onboarding/hire.ts': {
     paths: ['/floor/onboard', 'application/json'],
@@ -1647,11 +1647,11 @@ const REQUESTS = {
   },
   'src/session.ts': {
     paths: ['/floor/assets/', '/floor/session/check', 'application/json', '/floor/session/end', 'application/json', '/floor/session',
-      'text/plain;charset=UTF-8', '/floor/'],
+      'application/json', '/floor/'],
     methods: ['POST', 'POST', 'POST', 'GET'],
-    fetches: ['floorFetch', 'FetchPort', 'floorFetch', "fetch('/floor/session/check')", 'FetchPort', 'floorFetch',
-      "fetch('/floor/session/end')", 'floorFetch', 'FetchPort', 'fetch', 'floorFetch', 'FetchPort', 'fetch', 'FetchPort', 'fetch',
-      'FetchPort', 'fetch', "fetch('/floor/session')", 'FetchPort', "fetch('/floor/')"],
+    fetches: ['floorFetch', 'plainFetch', 'FetchPort', 'FetchPort', 'plainFetch', 'floorFetch', 'FetchPort', 'floorFetch',
+      "fetch('/floor/session/check')", 'FetchPort', 'floorFetch', "fetch('/floor/session/end')", 'fetch', "fetch('/floor/session')",
+      'FetchPort', "fetch('/floor/')"],
   },
 };
 
@@ -2008,7 +2008,10 @@ function domUrlSinksIn(text) {
 }
 
 const ADMITTED_VIEW_STORAGE = Object.freeze({ path: 'src/renderer/view.ts', line: 'return window.localStorage;' });
-const ADMITTED_SESSION_STORAGE = Object.freeze({ path: 'src/session.ts', line: 'return window.localStorage;' });
+const ADMITTED_SESSION_STORAGE = Object.freeze({ path: 'src/session.ts', line: 'window.localStorage.removeItem(LEGACY_SECRET);' });
+/** The one file that keeps the browser's sign-in key: in IndexedDB, as a key the page cannot export. */
+const KEY_STORE = 'src/signer.ts';
+const KEY_STORE_SINKS = ['IndexedDB', 'a service-worker cache'];
 const ADMITTED_FONT_STORAGE = Object.freeze({ path: TERMINAL_CONTROLS,
   line: "return typeof window === 'undefined' ? null : window.localStorage;" });
 const TERMINAL_CONTROL_FUNCTIONS = [
@@ -2201,20 +2204,31 @@ test('font preference storage admits one exact getter in its own module and stil
   }
 });
 
-test('the session secret is kept in one localStorage key, written only from the exchange and removed only when the session ends', async () => {
+test('the old readable secret is only ever removed, and nothing else is kept in localStorage', async () => {
   const text = await readFile(resolve(source, 'session.ts'), 'utf8');
   const clean = unadmittedSinksIn(text, ADMITTED_SESSION_STORAGE.path);
   assert.deepEqual(clean.found, []);
   assert.equal(clean.sessionStorageHits, 1);
   assert.deepEqual([...text.matchAll(/\b(?:getItem|setItem|removeItem|clear|key)\(([^)]*)\)/g)].map((match) => match[0]),
-    ['getItem(SECRET_KEY)', 'setItem(SECRET_KEY, secret)', 'removeItem(SECRET_KEY)']);
-  assert.deepEqual([...text.matchAll(/\bstore\.write\(([^)]*)\)/g)].map((match) => match[1]), ['session.csrf']);
+    ['removeItem(LEGACY_SECRET)']);
   assert.deepEqual(unadmittedSinksIn(text, 'src/other.ts').found, ['localStorage']);
-  for (const extra of ["localStorage.setItem('csrf', secret);", 'sessionStorage.csrf = secret;', 'console.log(secret);']) {
+  for (const extra of ["localStorage.setItem('secret', secret);", 'sessionStorage.secret = secret;', 'console.log(secret);']) {
     assert.ok(unadmittedSinksIn(text + '\n' + extra, ADMITTED_SESSION_STORAGE.path).found.length > 0, extra);
   }
   assert.equal(unadmittedSinksIn(text + '\n' + ADMITTED_SESSION_STORAGE.line, ADMITTED_SESSION_STORAGE.path)
     .sessionStorageHits, 2);
+});
+
+test('the browser key is made once, cannot be exported, and is stored whole in one IndexedDB record', async () => {
+  const text = await readFile(resolve(source, 'signer.ts'), 'utf8');
+  assert.deepEqual([...text.matchAll(/\.generateKey\(([^)]*)\)/g)].map((match) => match[1]),
+    ["KEY_ALGORITHM, false, ['sign', 'verify']"], 'the key must be made not exportable');
+  assert.deepEqual([...text.matchAll(/\.exportKey\(([^)]*)\)/g)].map((match) => match[1]), ["'spki', pair.publicKey"],
+    'only the public key is ever exported');
+  assert.deepEqual([...text.matchAll(/\bstore\.put\(([^;]*)\)\);/g)].map((match) => match[1]),
+    ['{ device: record.device, privateKey: record.privateKey }, RECORD']);
+  assert.match(text, /KEY_ALGORITHM = \{ name: 'ECDSA', namedCurve: 'P-256' \} as const/);
+  assert.doesNotMatch(text, /localStorage|sessionStorage|document\.cookie/);
 });
 
 function unadmittedSinksIn(text, relative) {
@@ -2253,7 +2267,8 @@ function unadmittedSinksIn(text, relative) {
       return line;
     });
   }
-  return { found: [...sessionMaterialSinksIn(scanned), ...domUrlSinksIn(scanned)],
+  const sinks = sessionMaterialSinksIn(scanned).filter((name) => relative !== KEY_STORE || !KEY_STORE_SINKS.includes(name));
+  return { found: [...sinks, ...domUrlSinksIn(scanned)],
     viewStorageHits, fontStorageHits, sessionStorageHits };
 }
 
@@ -2300,7 +2315,10 @@ test('session material has no browser persistence, URL, argv or log sink', async
     ['a dynamic DOM src, href or srcset assignment']);
   assert.deepEqual(domUrlSinksIn('image.src = tilesUrl;'), [DOM_URL_WRITE]);
   assert.deepEqual(sessionMaterialSinksIn('data-agent-id={row.id}'), []);
-  assert.deepEqual(sessionMaterialSinksIn("connect(streamUrl(location), streamProtocols(session.csrf));"), []);
+  assert.deepEqual(sessionMaterialSinksIn("connect(streamUrl(location), streamProtocols(signed));"), []);
+  assert.deepEqual(unadmittedSinksIn('const db = indexedDB.open("x");', KEY_STORE).found, [], 'the key store is admitted');
+  assert.deepEqual(unadmittedSinksIn('const db = indexedDB.open("x");', 'src/other.ts').found, ['IndexedDB'],
+    'IndexedDB is admitted outside the key store');
 
   assert.deepEqual(
     unadmittedSinksIn(
@@ -2341,7 +2359,7 @@ test('session material has no browser persistence, URL, argv or log sink', async
   assert.deepEqual(carrying, [], 'session material gained a browser, URL, argv or log sink');
   assert.equal(viewStorageHits, 1, 'the view-only storage getter moved, disappeared, or was duplicated');
   assert.equal(fontStorageHits, 1, 'the font-only storage getter moved, disappeared, or was duplicated');
-  assert.equal(sessionStorageHits, 1, 'the session secret storage getter moved, disappeared, or was duplicated');
+  assert.equal(sessionStorageHits, 1, 'the removal of the old secret moved, disappeared, or was duplicated');
   const viewText = await readFile(resolve(floor, ADMITTED_VIEW_STORAGE.path), 'utf8');
   const viewSyntax = parsedByExtension(viewText, ADMITTED_VIEW_STORAGE.path);
   const imports = viewSyntax.statements.filter(ts.isImportDeclaration);
@@ -2606,6 +2624,9 @@ const ADMITTED_LISTENERS = Object.freeze([
   { path: 'src/renderer/floor/stream.ts', line: "document.addEventListener('visibilitychange', listener);" },
   { path: 'src/shell.tsx', line: "preference.addEventListener('change', onThemePreference);" },
   { path: 'src/shell.tsx', line: "document.addEventListener('keydown', onShortcut);" },
+  { path: 'src/signer.ts', line: "target.addEventListener(success, () => resolve(), { once: true });" },
+  { path: 'src/signer.ts', line: "target.addEventListener('error', () => reject(new Error('storage failed')), { once: true });" },
+  { path: 'src/signer.ts', line: "opening.addEventListener('upgradeneeded', () => {" },
 ]);
 const SOCKET_LISTENER = /(socket|live)\.addEventListener\('(open|message|close)'|addEventListener\(type: '(open|close|message)'/;
 

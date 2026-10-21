@@ -20,7 +20,7 @@ import {
 
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
 const GRACE = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';
-const CSRF = 'p8Zt3Qd1Kx9Lm2Nv5Rb7Yc0Ae4Gh6Jk8Sw1Uz3Xq0';
+const REQUEST_ID = 'p8Zt3Qd1Kx9Lm2Nv5Rb7Yc0Ae4Gh6Jk8Sw1Uz3Xq0';
 const HANDLE = 'NVXX_l8kLbkVqyiQYpmOw9dabOgXjcb6SaghVuoDpNw';
 const HERE = { protocol: 'http:', host: '127.0.0.1:7717' };
 const SESSION = '5f0c1d2e-0000-4000-8000-000000000608';
@@ -46,7 +46,7 @@ function fakeSocket() {
   return socket;
 }
 
-function portsFor(socket, csrf = CSRF) {
+function portsFor(socket, held = REQUEST_ID) {
   const calls = [];
   return {
     calls,
@@ -55,7 +55,7 @@ function portsFor(socket, csrf = CSRF) {
       calls.push({ url, protocols: [...protocols] });
       return socket;
     },
-    csrf: () => csrf,
+    signedIn: () => held !== null,
   };
 }
 
@@ -95,12 +95,12 @@ beforeEach(() => {
 
 // --- the wire ---------------------------------------------------------------------------
 
-test('the channel opens at the terminal route with the two offers this session authenticated with', () => {
+test('the channel opens at the terminal route with the protocol alone when nothing signs it', () => {
   const socket = fakeSocket();
   const ports = portsFor(socket);
   attachTerminal(ADA, ports);
   assert.deepEqual(ports.calls, [{
-    url: 'ws://127.0.0.1:7717/floor/terminal', protocols: ['dudes-terminal-v1', `dudes-csrf.${CSRF}`],
+    url: 'ws://127.0.0.1:7717/floor/terminal', protocols: ['dudes-terminal-v1'],
   }]);
   assert.equal(terminalUrl({ protocol: 'https:', host: 'floor.test:9' }), 'wss://floor.test:9/floor/terminal');
   assert.deepEqual({ ...getTerminalState(), id: 0 }, { phase: 'opening', id: 0, agent: ADA });
@@ -485,19 +485,19 @@ test('pressing a waiting Attach neither opens the confirmation nor attaches, and
   }
 });
 
-test('the terminal asks for the daemon’s proof before it opens a socket, and says so when the daemon cannot give it', async () => {
+test('the terminal signs its handshake before it opens a socket, and says so when it cannot', async () => {
   const settled = () => new Promise((done) => setImmediate(done));
   for (const [proved, opens] of [[true, 1], [false, 0]]) {
     resetTerminal();
     const socket = fakeSocket();
-    const ports = { ...portsFor(socket), prove: async () => proved };
+    const ports = { ...portsFor(socket), offer: async () => (proved ? ['dudes-sig.s', 'dudes-time.1', 'dudes-id.i'] : null) };
     attachTerminal(ADA, ports);
-    assert.equal(ports.calls.length, 0, 'a socket opened before the proof answered');
+    assert.equal(ports.calls.length, 0, 'a socket opened before the signature was made');
     await settled();
     assert.equal(ports.calls.length, opens);
     assert.equal(getTerminalState().phase, proved ? 'opening' : 'ended');
   }
   resetTerminal();
-  attachTerminal(ADA, { ...portsFor(fakeSocket()), socket: () => { throw new TypeError('not proven'); } });
+  attachTerminal(ADA, { ...portsFor(fakeSocket()), socket: () => { throw new TypeError('paused'); } });
   assert.deepEqual([getTerminalState().phase, getTerminalState().ending], ['ended', 'unopened'], 'a socket that cannot open threw out of the click');
 });

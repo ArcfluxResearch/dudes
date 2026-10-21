@@ -231,7 +231,7 @@ export type MemoryRequest =
 /** The reply to one request, as far as the page can tell. */
 export type MemoryOutcome<T> =
   | { readonly kind: 'reply'; readonly reply: T }
-  /** An empty 403: no session, or a bad CSRF. Authentication is lost. */
+  /** An empty 403: no sign-in, or a signature the daemon did not accept. Authentication is lost. */
   | { readonly kind: 'forbidden' }
   /** 503: the daemon is stopping. */
   | { readonly kind: 'stopping' }

@@ -27,7 +27,7 @@ before(async () => {
   ({ Control } = await server.ssrLoadModule('/src/renderer/Control.tsx'));
   ({ browserControlDeps } = await server.ssrLoadModule('/src/renderer/control/control.ts'));
   Object.assign(browserControlDeps, {
-    csrf: () => 'A'.repeat(43), epoch: () => 1, session: () => 1, refresh() {}, random() {},
+    signedIn: () => true, epoch: () => 1, session: () => 1, refresh() {}, random() {},
     fetch: async (url, init) => {
       const body = JSON.parse(init.body);
       seen.push([url, body]);

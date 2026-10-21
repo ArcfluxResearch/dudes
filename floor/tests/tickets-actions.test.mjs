@@ -69,7 +69,6 @@ test('each action sends exactly the route\'s members, to its own path', async ()
     assert.equal(await ticket.changeTicket(card, change, deps), true, change.verb);
     assert.deepEqual(seen.map((s) => [s.url, s.body]), [[path, body]], change.verb);
     assert.equal(seen[0].init.method, 'POST');
-    assert.equal(seen[0].init.headers['X-Dudes-CSRF'], 'A'.repeat(43));
     assert.equal(seen[0].init.headers['Content-Type'], 'application/json');
     assert.equal(seen[0].init.credentials, 'same-origin');
     assert.deepEqual(Object.keys(seen[0].body).filter((key) => ['by', 'author', 'argv', 'program', 'actor'].includes(key)), []);
@@ -251,7 +250,7 @@ test('the page never overlaps its own requests, so a read and an action take tur
 test('with no Floor session nothing is sent', async () => {
   subscribe(store, { agents: [agent()] });
   const { deps, seen } = daemon(() => done('created', NEW));
-  deps.csrf = () => null;
+  deps.signedIn = () => false;
   assert.deepEqual(await ticket.createTicket(FORM, deps), { card: null, saved: false });
   assert.equal(seen.length, 0);
   assert.equal(ticket.getTicketState().notice.text, 'This page has no Floor session, so nothing was sent.');

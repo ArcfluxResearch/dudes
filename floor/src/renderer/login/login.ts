@@ -194,7 +194,7 @@ function openChannel(id: number, engine: LoginEngine, signed: readonly string[],
 export function bindLoginScreen(screen: LoginScreen): () => void {
   const channel = live;
   if (channel === null) {
-    // The terminal's code is cached after the first sign-in, so a view can be ready before the daemon is proved.
+    // The terminal's code is cached after the first sign-in, so a view can be ready before the handshake is signed.
     waiting = screen;
     return () => {
       if (waiting === screen) waiting = null;

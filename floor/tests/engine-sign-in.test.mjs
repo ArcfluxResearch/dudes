@@ -22,7 +22,7 @@ import { hyperlinkTarget, offerableLink, printedLink } from '../src/renderer/log
 import { decodeDaemonReport } from '../src/renderer/setup/daemon.ts';
 
 const root = resolve(import.meta.dirname, '..');
-const CSRF = 'p8Zt3Qd1Kx9Lm2Nv5Rb7Yc0Ae4Gh6Jk8Sw1Uz3Xq0';
+const REQUEST_ID = 'p8Zt3Qd1Kx9Lm2Nv5Rb7Yc0Ae4Gh6Jk8Sw1Uz3Xq0';
 const HERE = { protocol: 'http:', host: '127.0.0.1:7717' };
 
 const CATALOG = Object.freeze({
@@ -80,7 +80,7 @@ function fakeSocket() {
   return socket;
 }
 
-function portsFor(socket, csrf = CSRF) {
+function portsFor(socket, held = REQUEST_ID) {
   const calls = [];
   return {
     calls,
@@ -89,7 +89,7 @@ function portsFor(socket, csrf = CSRF) {
       calls.push({ url, protocols: [...protocols] });
       return socket;
     },
-    csrf: () => csrf,
+    signedIn: () => held !== null,
   };
 }
 
@@ -140,12 +140,12 @@ test('an engine row carries the daemon\'s sign-in word, and nothing else is read
 
 // --- the wire ------------------------------------------------------------------------------
 
-test('the channel opens at the sign-in route with the two offers this session authenticated with', () => {
+test('the channel opens at the sign-in route with the protocol alone when nothing signs it', () => {
   const socket = fakeSocket();
   const ports = portsFor(socket);
   startLogin('codex', ports);
   assert.deepEqual(ports.calls, [{
-    url: 'ws://127.0.0.1:7717/floor/engine-login', protocols: ['dudes-engine-login-v1', `dudes-csrf.${CSRF}`],
+    url: 'ws://127.0.0.1:7717/floor/engine-login', protocols: ['dudes-engine-login-v1'],
   }]);
   assert.equal(loginUrl({ protocol: 'https:', host: 'floor.test:9' }), 'wss://floor.test:9/floor/engine-login');
   startLogin('pi', ports);
@@ -423,20 +423,20 @@ test('Pi is offered its own terminal only with the Floor terminal on, and never 
   assert.doesNotMatch(html, HIRE_DISABLED);
 });
 
-test('the engine sign-in asks for the daemon’s proof before it opens a socket, and says so when the daemon cannot give it', async () => {
+test('the engine sign-in signs its handshake before it opens a socket, and says so when it cannot', async () => {
   const settled = () => new Promise((done) => setImmediate(done));
   for (const [proved, opens] of [[true, 1], [false, 0]]) {
     resetLogin();
     const socket = fakeSocket();
-    const ports = { ...portsFor(socket), prove: async () => proved };
+    const ports = { ...portsFor(socket), offer: async () => (proved ? ['dudes-sig.s', 'dudes-time.1', 'dudes-id.i'] : null) };
     startLogin('codex', ports);
-    assert.equal(ports.calls.length, 0, 'a socket opened before the proof answered');
+    assert.equal(ports.calls.length, 0, 'a socket opened before the signature was made');
     await settled();
     assert.equal(ports.calls.length, opens);
     assert.equal(getLoginState().phase, proved ? 'opening' : 'ended');
   }
   resetLogin();
-  startLogin('codex', { ...portsFor(fakeSocket()), socket: () => { throw new TypeError('not proven'); } });
+  startLogin('codex', { ...portsFor(fakeSocket()), socket: () => { throw new TypeError('paused'); } });
   assert.deepEqual([getLoginState().phase, getLoginState().ending], ['ended', 'unopened'], 'a socket that cannot open threw out of the click');
 });
 
@@ -471,14 +471,14 @@ test('the sign-in link offered is exactly the one the engine printed, joined onl
   }
 });
 
-test('a screen drawn before the daemon is proved still gets the sign-in started', async () => {
-  // The terminal's code is cached after the first sign-in, so on the next one the screen is ready before the proof returns.
+test('a screen drawn before the handshake is signed still gets the sign-in started', async () => {
+  // The terminal's code is cached after the first sign-in, so on the next one the screen is ready before the signature is made.
   const socket = fakeSocket();
   let proved;
-  startLogin('claude', { ...portsFor(socket), prove: () => new Promise((settle) => { proved = settle; }) });
+  startLogin('claude', { ...portsFor(socket), offer: () => new Promise((settle) => { proved = settle; }) });
   const screen = fakeScreen(90, 20);
   const release = bindLoginScreen(screen);
-  proved(true);
+  proved(['dudes-sig.s']);
   await new Promise((settle) => setImmediate(settle));
   socket.emit('open');
   assert.deepEqual(frames(socket), [{ type: 'login.start', engine: 'claude', cols: 90, rows: 20 }]);

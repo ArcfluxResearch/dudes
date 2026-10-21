@@ -75,6 +75,12 @@ export async function signedFetch(
   return response as Response;
 }
 
+/** A request that carries no signature, for the link exchange and the served index. A paused page sends none. */
+export async function plainFetch(url: string, init: RequestInit): Promise<Response> {
+  if (paused) throw new TypeError('The Floor page is waiting for a reload');
+  return window.fetch(url, init);
+}
+
 export function floorFetch(url: string, init: RequestInit): Promise<Response> {
   return signedFetch(floorSigner(), (target, options) => window.fetch(target, options), url, init);
 }
