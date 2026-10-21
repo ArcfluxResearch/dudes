@@ -150,6 +150,8 @@ enum Outcome {
 struct Driven {
     outcome: Outcome,
     body: Vec<u8>,
+    /// The `Cache-Control` the answer carried, when it was an answer and not an upgrade.
+    cache: Option<&'static str>,
     reached_a_handler: usize,
     audit: Vec<(&'static str, Option<AgentId>, FloorPeerRefusal)>,
 }
@@ -205,11 +207,13 @@ fn drive(request: &[u8], sessions: &FloorSessions, peer: &PeerGate) -> Driven {
     let action = read_request(&mut input, guard, &AtomicU8::new(READY))
         .expect("the request is read")
         .expect("the request gets an answer");
-    let (outcome, body) = match action {
-        ConnectionAction::Response(response) => {
-            (Outcome::Status(response.code), response.body.into_owned())
-        }
-        ConnectionAction::Upgrade(_) => (Outcome::Upgraded, Vec::new()),
+    let (outcome, body, cache) = match action {
+        ConnectionAction::Response(response) => (
+            Outcome::Status(response.code),
+            response.body.into_owned(),
+            Some(response.cache),
+        ),
+        ConnectionAction::Upgrade(_) => (Outcome::Upgraded, Vec::new(), None),
     };
     let mut reached_a_handler = 0;
     let mut audit = Vec::new();
@@ -226,6 +230,7 @@ fn drive(request: &[u8], sessions: &FloorSessions, peer: &PeerGate) -> Driven {
     Driven {
         outcome,
         body,
+        cache,
         reached_a_handler,
         audit,
     }
@@ -595,6 +600,11 @@ fn no_post_route_acts_without_a_valid_signature_a_clean_body_and_peer() {
                 "{path} with {what}"
             );
             assert_eq!(driven.reached_a_handler, 0, "{path} with {what}");
+            assert_eq!(
+                driven.cache,
+                Some("no-store"),
+                "{path} with {what}: every dynamic answer is uncacheable"
+            );
         }
         let unsigned = drive(
             &json_post(path, Some(cookie), None, body),
@@ -788,6 +798,83 @@ fn the_session_routes_say_unknown_only_to_a_clean_peer_and_end_only_for_the_sess
         Outcome::Status(200)
     );
     assert_eq!(check(&page.sessions), Outcome::Status(401));
+}
+
+fn asset(bytes: &[u8], content_type: &'static str) -> Asset {
+    Asset {
+        bytes: bytes.to_vec(),
+        content_type,
+        cache: "no-store",
+    }
+}
+
+#[test]
+fn a_script_path_the_daemon_does_not_serve_is_a_404_and_never_the_page() {
+    let page = signed_in();
+    let assets = BTreeMap::from([
+        (
+            "/floor/".to_owned(),
+            asset(b"<!doctype html>", "text/html; charset=utf-8"),
+        ),
+        (
+            "/floor/assets/app-1.js".to_owned(),
+            asset(b"console.log(1)", "text/javascript"),
+        ),
+    ]);
+    let get = |path: &str| {
+        let request =
+            format!("GET {path} HTTP/1.1\r\nHost: {HOST}\r\nOrigin: http://{HOST}\r\n\r\n");
+        let memory = MemoryReads::new();
+        let board = TicketLimits::new();
+        let switches = SharedSwitches::new(all_on());
+        let peer = outside();
+        let catalog = Catalog {
+            assets: &assets,
+            manifest: &[],
+            switches: &switches,
+            git: None,
+            diff: None,
+            logins: None,
+            board: &board,
+            memory: &memory,
+            peer: &peer,
+        };
+        let handle = Handle::new(mpsc::channel().0);
+        let clock = FakeClock::frozen(0);
+        let guard = Guard {
+            catalog,
+            sessions: &page.sessions,
+            handle: &handle,
+            clock: &clock,
+        };
+        let mut input = Input {
+            bytes: Cursor::new(request.into_bytes()),
+        };
+        match read_request(&mut input, guard, &AtomicU8::new(READY))
+            .expect("the request is read")
+            .expect("the request gets an answer")
+        {
+            ConnectionAction::Response(response) => (response.code, response.body.into_owned()),
+            ConnectionAction::Upgrade(_) => panic!("a GET without an upgrade offer upgraded"),
+        }
+    };
+    assert_eq!(
+        get("/floor/assets/app-1.js"),
+        (200, b"console.log(1)".to_vec())
+    );
+    for path in [
+        "/floor/sw.js",
+        "/floor/service-worker.js",
+        "/floor/assets/worker.js",
+        "/floor/assets/app-2.js",
+        "/floor/assets/chunk.mjs",
+        "/floor/x/../sw.js",
+        "/floor/sw.js?v=1",
+    ] {
+        let (code, body) = get(path);
+        assert_eq!(code, 404, "{path}");
+        assert!(body.is_empty(), "{path} did not fall back to the page");
+    }
 }
 
 fn path_of(path: &str) -> &'static str {

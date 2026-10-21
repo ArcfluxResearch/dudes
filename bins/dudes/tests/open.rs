@@ -120,12 +120,13 @@ fn dudes_open_hands_one_link_to_the_opener_and_the_link_signs_a_session_in() {
         run.stdout
     );
 
+    let browser = duded::floor_browser::Browser::new();
     let signed_in = post(
         authority,
         "/floor/session",
-        "text/plain;charset=UTF-8",
+        "application/json",
         "",
-        bootstrap,
+        &browser.enrolment(bootstrap, "Chrome on macOS"),
     );
     assert!(signed_in.starts_with("HTTP/1.1 200 OK\r\n"), "{signed_in}");
     let cookie = signed_in
@@ -133,16 +134,27 @@ fn dudes_open_hands_one_link_to_the_opener_and_the_link_signs_a_session_in() {
         .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
         .and_then(|rest| rest.split(';').next())
         .expect("a session cookie");
-    let secret = signed_in
-        .split("\"csrf\":\"")
-        .nth(1)
-        .and_then(|rest| rest.split('"').next())
-        .expect("the page secret");
+    assert!(
+        signed_in.contains(&format!("\"device\":\"{}\"", browser.device())),
+        "the answer names the device: {signed_in}"
+    );
+    // The daemon's test clock starts here and moves one millisecond per read, so a request signed
+    // ten seconds in is inside its minute however many reads came first.
+    let signed = browser.sign(
+        "POST",
+        "/floor/session/check",
+        &format!("http://{authority}"),
+        b"{}",
+        1_787_394_610_000,
+    );
     let acts = post(
         authority,
         "/floor/session/check",
         "application/json",
-        &format!("Cookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {secret}\r\n"),
+        &format!(
+            "Cookie: dudes_floor_session={cookie}\r\n{}",
+            signed.header_lines()
+        ),
         "{}",
     );
     assert!(
@@ -154,9 +166,9 @@ fn dudes_open_hands_one_link_to_the_opener_and_the_link_signs_a_session_in() {
     let again = post(
         authority,
         "/floor/session",
-        "text/plain;charset=UTF-8",
+        "application/json",
         "",
-        bootstrap,
+        &duded::floor_browser::Browser::new().enrolment(bootstrap, "Chrome on macOS"),
     );
     assert!(
         again.starts_with("HTTP/1.1 403"),

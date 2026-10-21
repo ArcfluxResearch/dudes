@@ -59,7 +59,10 @@ browser gives itself, such as "Chrome on macOS". The name is a label the browser
 what it is. `dudes devices` lists every signed-in browser, with when it signed in, when it first and
 last made a request, and a `new` mark on one nobody has kept yet. `dudes devices remove <id>` signs
 one out and closes its open connections at once; the start of the id is enough when it names one
-browser, and when it names more than one the command lists them and removes nothing.
+browser, and when it names more than one the command lists them and removes nothing. An id is 43
+characters of upper and lower case letters, digits, `-` and `_`, and the start you give must match
+exactly, including case. An id that starts with `-` needs `--` before it:
+`dudes devices remove -- -Ab3...`.
 A new browser stays marked `new`, and stays early in the removal order below, until someone keeps
 it. The Floor's **Keep**, pressed in another browser, does that. `dudes devices keep <id>` does the
 same from the terminal, for when you have no second browser.
@@ -75,6 +78,35 @@ same port. If the Floor starts on another port, for example because its usual po
 browsers signed in on the old port are signed out until the daemon is back on that port; they are not
 removed, and they work again when it returns. A device that signs in and makes no request within 24 hours is removed. You can also end a
 device with **Sign out**, which closes its open connections, or with `dudes devices remove`.
+
+### How the Floor knows a request is yours
+
+The browser makes a key for itself when it signs in, and the page cannot read that key: the page can
+only ask the browser to sign with it, and it cannot copy it out. The sign-in sends the daemon the
+public half. The browser's id is a hash of that public key, so it is the same everywhere the daemon
+shows it. The browser's cookie only names the device. It opens nothing on its own: every request
+the page makes, including each read, each action and each connection the page opens, carries a signature
+made with the key. The signature covers the request, the page's address, the time and a one-time
+number, and the daemon refuses a request whose signature is missing, is for another address, is more
+than a minute off the daemon's clock, or has been used before. A page served by another program on the
+same port, even one the browser sent your cookie to, has no key, so it can open nothing and cannot
+sign for you.
+
+A browser needs WebCrypto and IndexedDB for this, and a page never falls back to anything weaker. Some
+private windows do not allow IndexedDB, and a page there cannot sign in; it says why. A
+browser that clears the site's data loses its key. Its cookie then names a device it can no longer sign
+for, and the page asks for a new link with `dudes open`; the old device ages out.
+
+Signing in again after an upgrade from a version that kept a readable secret is needed once: those
+sign-ins hold no key, so the first daemon with signed requests ends each of them as expired, and every
+browser shows the signed-out screen and the `dudes open` line.
+
+One limit stays. If another program held the Floor's address, served its own page there and
+registered a service worker, that worker stays in the browser after the program leaves and can
+keep acting inside that browser when Dudes returns to the address. The daemon answers `404` for every script it does not
+serve, which makes a browser drop such a worker over time, and the page removes any worker it finds. If
+you think another program held the address, clear that site's data in the browser: cookies,
+storage and service workers for `127.0.0.1` and the port.
 
 The daemon keeps at most eight devices. A ninth sign-in removes the first of these that exists: a
 device that never made a request, a device nobody has kept yet, then the device used longest ago. The

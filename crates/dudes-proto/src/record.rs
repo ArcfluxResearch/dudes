@@ -174,12 +174,12 @@ impl DeviceId {
         let mut bits = 0_u32;
         let mut at = 0;
         for byte in text.bytes() {
-            let value = Self::ALPHABET.iter().position(|c| *c == byte)? as u32;
+            let value = u32::try_from(Self::ALPHABET.iter().position(|c| *c == byte)?).ok()?;
             buffer = (buffer << 6) | value;
             bits += 6;
             if bits >= 8 {
                 bits -= 8;
-                bytes[at] = (buffer >> bits) as u8;
+                bytes[at] = u8::try_from(buffer >> bits).ok()?;
                 at += 1;
                 buffer &= (1 << bits) - 1;
             }

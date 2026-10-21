@@ -12,6 +12,7 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use duded::floor_browser::Browser;
 use dudes::Environment;
 use sha2::{Digest as _, Sha256};
 
@@ -104,7 +105,7 @@ struct Installed {
     floor: PathBuf,
     origin: String,
     cookie: String,
-    secret: String,
+    browser: Browser,
 }
 
 impl Installed {
@@ -148,7 +149,7 @@ impl Installed {
             floor,
             origin: String::new(),
             cookie: String::new(),
-            secret: String::new(),
+            browser: Browser::new(),
         };
         let (code, out, err) = installed.cli(&["start"]);
         assert_eq!(code, 0, "{out}{err}");
@@ -187,14 +188,15 @@ impl Installed {
         let (head, body) = http(
             &self.origin,
             "POST /floor/session",
-            "Content-Type: text/plain;charset=UTF-8\r\n",
-            bearer,
+            "Content-Type: application/json\r\n",
+            &self.browser.enrolment(bearer, "Chrome on macOS"),
         );
         let signed_in: serde_json::Value = serde_json::from_str(&body).expect("a JSON body");
-        signed_in["csrf"]
-            .as_str()
-            .expect("the session secret")
-            .clone_into(&mut self.secret);
+        assert_eq!(
+            signed_in["device"],
+            self.browser.device().to_string(),
+            "the answer names the device the browser's key makes"
+        );
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
         head.lines()
             .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
@@ -212,19 +214,27 @@ impl Installed {
             .to_owned()
     }
 
-    /// Whether the cookie and the secret the page holds still name a session. An empty JSON body is
+    /// Whether the cookie and the key the page holds still name a session. An empty JSON body is
     /// a bad request for any route that got past authentication, and a refusal for one that did not.
     fn acts(&self) -> bool {
+        let signed = self.browser.sign(
+            "POST",
+            "/floor/memory/page",
+            &format!("http://{}", self.origin),
+            b"{}",
+            Browser::now_ms(),
+        );
         let (head, _) = http(
             &self.origin,
             "POST /floor/memory/page",
             &format!(
-                "Content-Type: application/json\r\nCookie: dudes_floor_session={}\r\nX-Dudes-CSRF: {}\r\n",
-                self.cookie, self.secret
+                "Content-Type: application/json\r\nCookie: dudes_floor_session={}\r\n{}",
+                self.cookie,
+                signed.header_lines()
             ),
             "{}",
         );
-        !head.starts_with("HTTP/1.1 403")
+        !head.starts_with("HTTP/1.1 403") && !head.starts_with("HTTP/1.1 401")
     }
 }
 

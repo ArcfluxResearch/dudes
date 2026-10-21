@@ -3355,6 +3355,215 @@ mod device_tests {
         assert_eq!(d.journal.removals(), [FloorDeviceRemoval::Replaced]);
     }
 
+    /// Append a record the way an older daemon wrote it, straight into the journal's fold.
+    fn append_old(journal: &Journal, record: Record) {
+        let mut world = journal.world.lock().expect("world");
+        world.0 += 1;
+        let lsn = Lsn::from_parts(1, world.0).expect("lsn");
+        world.1.apply(
+            lsn,
+            &Entry {
+                at: journal.clock.now(),
+                record,
+            },
+        );
+    }
+
+    #[test]
+    fn a_browser_from_before_signed_requests_ends_once_as_expired() {
+        let d = daemon();
+        let old_cookie = "C".repeat(43);
+        append_old(
+            &d.journal,
+            Record::FloorDeviceEnrolled {
+                device: Hex32::new([4; 32]),
+                origin: ORIGIN.to_owned(),
+                name: "Chrome on macOS".to_owned(),
+                cookie: Hex32::new(digest(old_cookie.as_bytes())),
+                secret: Hex32::new([6; 32]),
+            },
+        );
+        let keyed = sign_in(&d.sessions);
+
+        let after = restart_from(&d.clock, &d.journal);
+        assert_eq!(
+            after.devices(None).len(),
+            1,
+            "only the browser with a key is signed in"
+        );
+        assert_eq!(
+            d.journal.removals(),
+            [FloorDeviceRemoval::Expired],
+            "the old sign-in ends once, as expired"
+        );
+        assert_eq!(
+            after.gone_reason(&old_cookie),
+            Some(GoneReason::Expired),
+            "its page hears that its sign-in expired"
+        );
+        assert!(acts(&after, &keyed), "the browser with a key is untouched");
+
+        let again = restart_from(&d.clock, &d.journal);
+        assert_eq!(again.devices(None).len(), 1);
+        assert_eq!(
+            d.journal.removals(),
+            [FloorDeviceRemoval::Expired],
+            "a later start finds nothing left to end"
+        );
+        assert_eq!(again.gone_reason(&old_cookie), Some(GoneReason::Expired));
+    }
+
+    /// A request from `who` carrying the request id `n`, signed for the registry's time plus `skew`.
+    fn attempt(d: &Daemon, who: &Joined, n: u64, skew: i64) -> Result<SessionIdentity, Refusal> {
+        let mut id = [0_u8; 16];
+        id[8..].copy_from_slice(&n.to_be_bytes());
+        let signed = who.browser.sign_with_id(
+            "POST",
+            "/floor/test",
+            ORIGIN,
+            &[],
+            d.sessions.now_ms() + skew,
+            id,
+        );
+        d.sessions.authorize_onboard(
+            &Presentation::new(HOST, ORIGIN, &who.cookie, "POST", "/floor/test", &[]).signed(
+                &signed.origin,
+                &signed.time,
+                &signed.request,
+                &signed.signature,
+            ),
+        )
+    }
+
+    #[test]
+    fn a_device_remembers_at_most_1024_request_ids_and_each_for_two_minutes() {
+        let d = daemon();
+        let device = sign_in(&d.sessions);
+        let start = Timestamp::from_unix_millis(d.sessions.now_ms());
+        {
+            // Signing a thousand requests in a debug build is slow, so the memory starts one
+            // short of full, as a thousand and twenty-three earlier requests leave it.
+            let mut state = d.sessions.0.registry.lock();
+            let session = state
+                .sessions
+                .get_mut(&digest(device.cookie.as_bytes()))
+                .expect("signed in");
+            for n in 1..MAX_REQUEST_IDS {
+                let mut id = [0_u8; 16];
+                id[8..].copy_from_slice(&(n as u64).to_be_bytes());
+                session.requests.seen.push((start, id));
+            }
+        }
+        assert!(attempt(&d, &device, 0, 0).is_ok(), "the last free place");
+        assert_eq!(
+            attempt(&d, &device, 5000, 0).err(),
+            Some(Refusal::Signature),
+            "a full memory refuses a new id until old ones age out"
+        );
+        assert_eq!(
+            attempt(&d, &device, 1, 0).err(),
+            Some(Refusal::Signature),
+            "and an id it holds"
+        );
+        d.clock.advance(REQUEST_MEMORY_MS - 1);
+        assert!(
+            attempt(&d, &device, 5000, 0).is_err(),
+            "still within two minutes"
+        );
+        d.clock.advance(1);
+        assert!(
+            attempt(&d, &device, 5000, 0).is_ok(),
+            "two minutes on, there is room again"
+        );
+        assert!(
+            attempt(&d, &device, 1, 0).is_ok(),
+            "and an id that aged out may be used again"
+        );
+    }
+
+    #[test]
+    fn a_request_must_be_within_a_minute_of_the_daemons_clock_either_way() {
+        let d = daemon();
+        let device = sign_in(&d.sessions);
+        assert!(attempt(&d, &device, 1, SIGNATURE_WINDOW_MS).is_ok());
+        assert!(attempt(&d, &device, 2, -SIGNATURE_WINDOW_MS).is_ok());
+        assert_eq!(
+            attempt(&d, &device, 3, SIGNATURE_WINDOW_MS + 1).err(),
+            Some(Refusal::Signature)
+        );
+        assert_eq!(
+            attempt(&d, &device, 4, -SIGNATURE_WINDOW_MS - 1).err(),
+            Some(Refusal::Signature)
+        );
+        assert!(
+            attempt(&d, &device, 3, 0).is_ok(),
+            "a refused request does not use up its id"
+        );
+    }
+
+    #[test]
+    fn an_exchange_without_a_valid_key_is_refused_enrols_nothing_and_keeps_the_link() {
+        let d = daemon();
+        let issued = d.sessions.issue().expect("a link");
+        let key = Browser::new().key().to_owned();
+        let refuse = |body: String| d.sessions.exchange(HOST, ORIGIN, body.as_bytes()).err();
+        for body in [
+            serde_json::json!({ "link": issued.bootstrap }),
+            serde_json::json!({ "link": issued.bootstrap, "key": "" }),
+            serde_json::json!({ "link": issued.bootstrap, "key": "AAAA" }),
+            serde_json::json!({ "link": issued.bootstrap, "key": &key[1..] }),
+            serde_json::json!({ "link": issued.bootstrap, "key": format!("{key}AA") }),
+            serde_json::json!({ "link": issued.bootstrap, "key": key, "secret": "x" }),
+        ] {
+            assert_eq!(
+                refuse(body.to_string()),
+                Some(ExchangeRefusal::Malformed),
+                "{body}"
+            );
+        }
+        assert_eq!(
+            refuse("not json".to_owned()),
+            Some(ExchangeRefusal::Malformed)
+        );
+        assert_eq!(d.journal.changes().len(), 0, "nothing was enrolled");
+        assert_eq!(d.sessions.registry_counts_for_test(), (1, 0));
+        assert!(
+            d.sessions.join(HOST, ORIGIN, &issued.bootstrap).is_some(),
+            "the link was not spent by the refusals"
+        );
+    }
+
+    #[test]
+    fn a_key_that_signs_in_again_replaces_its_own_device() {
+        let d = daemon();
+        let browser = Browser::seeded(77);
+        let issue = || d.sessions.issue().expect("a link").bootstrap;
+        let first = d
+            .sessions
+            .join_as(HOST, ORIGIN, &issue(), Browser::seeded(77), "Chrome")
+            .expect("the first sign-in");
+        let second = d
+            .sessions
+            .join_as(HOST, ORIGIN, &issue(), browser, "Chrome")
+            .expect("the second sign-in");
+        assert_ne!(first.cookie, second.cookie);
+        assert_eq!(d.sessions.devices(None).len(), 1, "one browser, one device");
+        assert!(!acts(&d.sessions, &first), "the old cookie opens nothing");
+        assert!(acts(&d.sessions, &second));
+        assert_eq!(d.journal.removals(), [FloorDeviceRemoval::Replaced]);
+        assert_eq!(
+            d.sessions.gone_reason(&first.cookie),
+            Some(GoneReason::Replaced)
+        );
+        let again = restart_from(&d.clock, &d.journal);
+        assert_eq!(
+            again.devices(None).len(),
+            1,
+            "a restart folds the later sign-in over the removed one"
+        );
+        assert!(acts(&again, &second) && !acts(&again, &first));
+    }
+
     #[test]
     fn a_first_use_the_journal_refused_is_recorded_by_the_next_request() {
         let d = daemon();
