@@ -14,6 +14,7 @@
 //! [`Input::Work`](crate::Input::Work). The supervisor could not read any of them either way, so
 //! there is nothing to duplicate — one rule, one implementation.
 
+use dudes_proto::record::Hex32;
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
@@ -23,9 +24,11 @@ mod attached_turn_end_tests;
 mod mail_wakes;
 mod mcp;
 mod recovery;
+mod devices;
 mod worktrees;
 
 pub use mcp::{McpGrant, McpHistoryError, McpPolicy};
+pub use devices::DeviceRow;
 pub use worktrees::{TrustGrant, WorktreeRow, WorktreeState};
 
 use dudes_policy::{
@@ -532,6 +535,8 @@ pub struct World {
     /// The projects the operator trusts, by project id: the latest `WorkspaceTrustSet` per id,
     /// dropped once that record says `trusted: false`.
     pub workspace_trust: BTreeMap<String, TrustGrant>,
+    /// Every browser that signed in to the Floor, by device id, removed ones included.
+    pub floor_devices: BTreeMap<Hex32, DeviceRow>,
 }
 
 /// Durable browser-note lifecycle, separate from legacy local steering.
@@ -1944,6 +1949,11 @@ impl World {
             Record::MemoryCondenseModelAdmitted { .. } => {} // history, read from the journal
             Record::FloorPeerRefused { .. } => {} // audit only
             Record::WorkspaceTrustSet { .. } => self.fold_workspace_trust(&entry.record, lsn),
+            Record::FloorDeviceEnrolled { .. }
+            | Record::FloorDeviceFirstUsed { .. }
+            | Record::FloorDeviceAcknowledged { .. }
+            | Record::FloorDeviceRemoved { .. }
+            | Record::FloorDeviceUsed { .. } => self.fold_floor_device(entry.at, &entry.record),
             // The goal was installed above, through the one accessor every goal carrier shares.
             Record::GoalSet { .. } => {}
             // An edit changes words, not a card's status, so no board result it could hold moves.

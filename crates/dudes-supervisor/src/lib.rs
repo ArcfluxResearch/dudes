@@ -80,7 +80,7 @@ pub use host::{
     closing_input_digest, input_digest, key_is_interpretable, liveness, session_id_from_ulid,
 };
 pub use input::{
-    BrowserAnswerCommand, ClientId, Command, HookId, Input, PersistToken, RuntimeSignal, SpendView,
+    BrowserAnswerCommand, ClientId, Command, FloorDeviceChange, HookId, Input, PersistToken, RuntimeSignal, SpendView,
 };
 pub use launch_admission::SharedFolderRefusal;
 pub use machine::{Config, InstructionSource, Supervisor};
@@ -89,4 +89,4 @@ pub use recovery_operation::{
     RecoveryAvailability, RecoveryOperation, RecoverySubjectKey, RecoverySubjectUse,
     with_recovery_operation,
 };
-pub use world::{MintedFor, WorktreeRow, WorktreeState, World};
+pub use world::{DeviceRow, MintedFor, WorktreeRow, WorktreeState, World};

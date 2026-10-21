@@ -551,3 +551,46 @@ fn the_latest_trust_record_wins_and_a_restart_keeps_it() {
         "a revocation survives a restart"
     );
 }
+
+fn device_change(harness: &mut Harness, change: dudes_supervisor::FloorDeviceChange) {
+    harness.drive(Input::Command(Command::RecordFloorDevice(change)));
+}
+
+#[test]
+fn a_restart_keeps_the_devices_and_the_removed_stay_removed() {
+    use dudes_proto::record::FloorDeviceRemoval;
+    use dudes_supervisor::FloorDeviceChange as Change;
+    let mut harness = Harness::new();
+    let (kept, gone) = (Hex32::new([1; 32]), Hex32::new([2; 32]));
+    for (device, cookie) in [(kept, 11), (gone, 12)] {
+        device_change(
+            &mut harness,
+            Change::Enroll {
+                device,
+                origin: "http://127.0.0.1:7700".into(),
+                name: "Chrome on macOS".into(),
+                cookie: Hex32::new([cookie; 32]),
+                secret: Hex32::new([cookie + 10; 32]),
+            },
+        );
+    }
+    device_change(&mut harness, Change::FirstUse(kept));
+    device_change(&mut harness, Change::Acknowledge(kept));
+    device_change(
+        &mut harness,
+        Change::Remove {
+            device: gone,
+            reason: FloorDeviceRemoval::Removed,
+        },
+    );
+    device_change(&mut harness, Change::Use(gone));
+    harness.restart();
+    let devices = &harness.supervisor.world().floor_devices;
+    let kept = &devices[&kept];
+    assert!(kept.removed.is_none());
+    assert!(kept.first_used.is_some() && kept.last_used.is_some());
+    assert!(kept.acknowledged.is_some());
+    let gone = &devices[&gone];
+    assert_eq!(gone.removed.map(|(why, _)| why), Some(FloorDeviceRemoval::Removed));
+    assert_eq!(gone.last_used, None, "a removed device is not used again");
+}

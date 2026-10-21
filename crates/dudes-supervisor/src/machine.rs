@@ -4364,6 +4364,31 @@ impl<C: Clock, R: Rng> Supervisor<C, R> {
                 },
                 Then::Fold,
             ),
+            Command::RecordFloorDevice(change) => {
+                use crate::input::FloorDeviceChange as Change;
+                let record = match change {
+                    Change::Enroll {
+                        device,
+                        origin,
+                        name,
+                        cookie,
+                        secret,
+                    } => Record::FloorDeviceEnrolled {
+                        device,
+                        origin,
+                        name,
+                        cookie,
+                        secret,
+                    },
+                    Change::FirstUse(device) => Record::FloorDeviceFirstUsed { device },
+                    Change::Use(device) => Record::FloorDeviceUsed { device },
+                    Change::Acknowledge(device) => Record::FloorDeviceAcknowledged { device },
+                    Change::Remove { device, reason } => {
+                        Record::FloorDeviceRemoved { device, reason }
+                    }
+                };
+                self.persist(record, Then::Fold);
+            }
             Command::LeaseWorktree { origin, base, from } => {
                 // A ULID leads with its millisecond timestamp, and the branch name takes the first
                 // 12 hexadecimal characters of the identity, so two leases made in one millisecond
