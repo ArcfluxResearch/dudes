@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
+import { createPortal } from 'react-dom';
 
 import { DeviceNotices } from './renderer/devices/DeviceNotices';
 import { getDevicesState, loadDevices, subscribeToDevices } from './renderer/devices/devices';
@@ -126,18 +127,26 @@ export function WebFloorShell() {
   return firstLink === null ? <SignedInShell /> : <SignedOutShell />;
 }
 
-/** Tells the stylesheet how tall the notice stack is, so an open panel can start its content below it. */
-function reserveNoticeRoom(shell: HTMLElement | null, stack: HTMLElement | null) {
+function reserveNoticeRoom(shell: HTMLElement | null, stack: HTMLElement | null, office: HTMLElement | null,
+  setHost: (host: HTMLElement | null) => void) {
   if (!shell || !stack || typeof ResizeObserver === 'undefined') return undefined;
   const update = () => {
     const showing = [...stack.children].some((child) => child.getBoundingClientRect().height > 0);
     shell.toggleAttribute('data-notices', showing);
     shell.style.setProperty('--notice-stack-height', showing ? `${Math.ceil(stack.getBoundingClientRect().height)}px` : '0px');
   };
-  const observer = new ResizeObserver(update);
+  const findHost = () => {
+    const dialog = shell.querySelector<HTMLDialogElement>('.hire-dialog:modal, .retire-dialog:modal');
+    setHost(dialog ?? (office !== null && office.getClientRects().length > 0 ? office : null));
+  };
+  const observer = new ResizeObserver(() => { update(); findHost(); });
   observer.observe(stack);
+  if (office !== null) observer.observe(office);
+  const dialogs = new MutationObserver(findHost);
+  dialogs.observe(shell, { childList: true, subtree: true, attributes: true, attributeFilter: ['open'] });
   update();
-  return () => observer.disconnect();
+  findHost();
+  return () => { observer.disconnect(); dialogs.disconnect(); };
 }
 
 function SignedInShell() {
@@ -167,7 +176,10 @@ function SignedInShell() {
   const backdropPress = useRef<number | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const noticeStack = useRef<HTMLDivElement | null>(null);
-  useEffect(() => reserveNoticeRoom(shellRef.current, noticeStack.current), []);
+  const [officeNotices, setOfficeNotices] = useState<HTMLDivElement | null>(null);
+  const [noticeHost, setNoticeHost] = useState<HTMLElement | null>(null);
+  const modalNotices = noticeHost?.tagName === 'DIALOG';
+  useEffect(() => reserveNoticeRoom(shellRef.current, noticeStack.current, officeNotices, setNoticeHost), [noticeHost, officeNotices]);
   const selectedRow = selectedAgentRow(floor.agents, selectedId, floor.phase, floor.stale);
   const focusedId = focused ? focusAgentId(floor, selectedId) : null;
   const displayRow = focused ? selectedAgentRow(floor.agents, focusedId, floor.phase, floor.stale) : selectedRow;
@@ -388,6 +400,22 @@ function SignedInShell() {
   const drawer = <AgentDrawer floor={floor} row={displayRow} selectedId={currentSelectedId} onClose={clearSelection}
     leaveFocusTo={leaveDrawerTo} />;
 
+  const notices = (
+    <div className="notice-area">
+      <div className="notice-stack" ref={noticeStack} id={modalNotices ? 'modal-floor-notices' : undefined}
+        tabIndex={modalNotices ? -1 : undefined}>
+        <PastedLinkNotice />
+        {signOutFailed ? <p className="link-refused" role="alert">Could not sign out, so this browser is still signed in. Try again.</p> : null}
+        <JournalStoppedBanner stopped={floor.journalStopped} />
+        <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
+        {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
+        <StreamNotice floor={floor} />
+        <DeviceNotices />
+        <DoneNotices notices={floor.doneNotices} leaveFocusTo={modalNotices ? 'modal-floor-notices' : home} />
+      </div>
+    </div>
+  );
+
   return (
     <main className="shell" ref={shellRef} aria-labelledby="floor-title" data-focus={focused ? 'true' : 'false'}
       data-theme={preferences.theme} data-scheme={effectiveTheme} style={{ '--side-width': `${preferences.sidebarWidth}px` } as CSSProperties}>
@@ -416,18 +444,7 @@ function SignedInShell() {
           </div>
           <div className="office-bar" ref={setOfficeBar} />
         </header>
-        <div className="notice-area">
-          <div className="notice-stack" ref={noticeStack}>
-            <PastedLinkNotice />
-            {signOutFailed ? <p className="link-refused" role="alert">Could not sign out, so this browser is still signed in. Try again.</p> : null}
-            <JournalStoppedBanner stopped={floor.journalStopped} />
-            <ClosingTimeBanner closing={floor.closingDisplay?.phase ?? null} progress={floor.closingDisplay?.progress ?? null} stale={floor.stale || floor.closingTime === null} />
-            {focused || floor.agents.length === 0 ? <TicketBanner floor={floor} onOpen={() => openView('board')} /> : null}
-            <StreamNotice floor={floor} />
-            <DeviceNotices />
-            <DoneNotices notices={floor.doneNotices} leaveFocusTo={home} />
-          </div>
-        </div>
+        {noticeHost === null ? notices : createPortal(notices, noticeHost)}
       </div>
       <div className="floor-stage"
         onKeyDown={(event) => { if (closesDrawer(event, drawerOpen)) { event.stopPropagation(); clearSelection(); } }}>
@@ -444,6 +461,7 @@ function SignedInShell() {
           <div className="office-area">
             <OfficeCanvas floor={floor} selectedId={currentSelectedId} onSelectAgent={selectAgent} onOpenQuestion={openQuestion}
               onOpenTasks={() => openView('board')} onAddAgent={openHire} bar={officeBar} />
+            <div className="office-notices" ref={setOfficeNotices} />
             <FirstTask floor={floor} onHire={openHire} />
           </div>
           {focused ? null : <NeedsStrip agents={floor.agents} cards={floor.cards} selectedId={currentSelectedId}

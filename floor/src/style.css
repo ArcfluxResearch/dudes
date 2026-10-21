@@ -3403,13 +3403,8 @@ samp,
   cursor: default;
 }
 
-/*
- * Notices. One area under the top bar holds every notice the page can raise, out of the page's
- * flow, so a notice arriving never moves the office or a panel. The area takes no clicks; the
- * stack inside it, which scrolls once it passes its height cap, and each notice do. The area lies
- * above the phone sheets, which would otherwise cover a failure and the button that answers it.
- * While a panel, sheet or drawer is open its notices start below that panel's close button.
- */
+.shell { --notice-offset: 0.6rem; }
+
 .top-region {
   position: relative;
 }
@@ -3422,7 +3417,7 @@ samp,
   z-index: var(--layer-notices);
   display: flex;
   justify-content: center;
-  padding: 0.6rem 1rem 0;
+  padding: var(--notice-offset) 1rem 0;
   pointer-events: none;
 }
 
@@ -3440,13 +3435,13 @@ samp,
   pointer-events: auto;
 }
 
-.shell:has(.control-panel, .agent-drawer) .notice-area {
-  padding-top: 3.5rem;
+.shell:has(.control-panel, .agent-drawer) {
+  --notice-offset: 3.5rem;
 }
 
 /* A phone sheet fills the screen and its close button sits in the top 2.75rem, so the area hangs from just below that row. */
 @media (max-width: 800px) {
-  .shell:has(.agent-drawer, .floor-stage > .control-panel:is([data-view='setup'], [data-view='settings'], [data-view='log'])) .notice-area {
+  .shell:has(.agent-drawer, .floor-stage > .control-panel:is([data-view='setup'], [data-view='settings'], [data-view='log'])) .top-region > .notice-area {
     position: fixed;
     top: 2.75rem;
     padding-top: 0.3rem;
@@ -3476,6 +3471,45 @@ samp,
   .shell[data-notices] .agent-drawer {
     padding-top: calc(3.05rem + var(--notice-stack-height));
   }
+}
+
+@media (min-width: 801px) {
+  .shell[data-notices] .office-area > .first-task {
+    top: calc(0.75rem + var(--notice-offset) + var(--notice-stack-height));
+    max-height: calc(100% - 2rem - var(--notice-offset) - var(--notice-stack-height));
+  }
+}
+
+.office-notices { display: none; }
+
+@media (max-width: 800px) {
+  .office-area { flex: none; }
+  .shell:not(:has(.control-panel, .agent-drawer)) .office-notices { display: block; }
+  .office-notices > .notice-area {
+    position: static;
+    padding: 0.6rem 1rem;
+  }
+  .shell:not([data-notices]) .office-notices {
+    height: 0;
+    overflow: hidden;
+  }
+}
+
+.hire-dialog > .notice-area,
+.retire-dialog > .notice-area {
+  position: fixed;
+  top: 0.5rem;
+  padding: 0;
+}
+
+.shell[data-notices] .hire-dialog {
+  padding-top: calc(1rem + var(--notice-stack-height));
+}
+
+.shell[data-notices] .retire-dialog {
+  max-height: calc(100dvh - 2rem - var(--notice-stack-height));
+  margin-top: calc(1rem + var(--notice-stack-height));
+  overflow: auto;
 }
 
 .notice-stack > * {
