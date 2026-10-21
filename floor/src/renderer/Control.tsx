@@ -20,7 +20,7 @@ import { SetupView } from './setup/SetupView.tsx';
 import { SettingsView } from './settings/SettingsView.tsx';
 import { CardDetail } from './BoardPanel.tsx';
 import { NewTicketForm, TicketBoard, TicketNotice } from './ticket/TicketBoard.tsx';
-import { viewConfirmed } from './ticket/model.ts';
+import { ticketWord, viewConfirmed } from './ticket/model.ts';
 import { TicketOffHint } from './ticket/TicketGuidance.tsx';
 import { TicketPanel } from './ticket/TicketPanel.tsx';
 import { workspaceGroups, workspaceLabel } from './workspace.ts';
@@ -123,7 +123,7 @@ export function AgentsRoster({ floor, selectedId, onSelectAgent, onHireAgain, on
                     <strong>{value(row.name)}</strong>
                     <span>{value(row.role)} · {value(row.provider)}</span>
                     <span className="agents-roster-workspace">{workspaceLabel(row)}</span>
-                    <span>{value(fields.status)}</span>
+                    <span>{value(ticketWord(floor.cards, row, fields.status) ?? fields.status)}</span>
                     <span>{fields.goal === '' ? 'No goal' : fields.goal}</span>
                     <span>{fields.cost}</span>
                   </button>

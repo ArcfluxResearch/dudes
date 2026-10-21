@@ -133,12 +133,16 @@ export function viewConfirmed(floor: FloorState): boolean {
 }
 
 /**
- * What an agent that finished its turn says of itself while its ticket waits on you: the agent
- * reads "done" or "idle", but the work is not accepted. `null` when its status stands.
+ * The ticket's wait label for a finished or interrupted agent. `null` when its own status stands.
  */
-export function ticketWord(cards: readonly CardRow[] | undefined, agent: string, status: string): string | null {
+export function ticketWord(cards: readonly CardRow[] | undefined, row: AgentRow, status: string): string | null {
+  const held = tickets(cards).filter((card) => card.claimed_by === row.id);
+  const goal = row.goal;
+  if (status === 'running' && row.mode === 'managed' && row.paused !== true && row.halted !== true
+    && typeof goal === 'object' && goal !== null && 'status' in goal
+    && (goal.status === 'set' || goal.status === 'in_progress')
+    && held.some((card) => card.status === 'blocked' && card.ticket?.reason === 'recovery_required')) return 'needs you';
   if (status !== 'done' && status !== 'idle') return null;
-  const held = tickets(cards).filter((card) => card.claimed_by === agent);
   if (held.some((card) => card.status === 'blocked')) return 'needs you';
   return held.some((card) => card.status === 'review') ? 'ready for you' : null;
 }

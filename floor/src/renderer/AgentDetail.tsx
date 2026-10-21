@@ -9,6 +9,8 @@ import { baselineOf, completionCheckOf } from './goal/completionCheck.ts';
 import type { Baseline } from './goal/completionCheck.ts';
 import { detailTabSelection, detailTabTarget, revealedTabScroll } from './detailTabs.ts';
 import type { DetailTab } from './detailTabs.ts';
+import type { CardRow } from './board.ts';
+import { ticketWord } from './ticket/model.ts';
 import { useLiveActivityExpiry } from './useLiveActivityExpiry.ts';
 import { HIRE_ENGINES } from './onboarding/catalog.ts';
 import { NameEditor } from './rename/NameEditor.tsx';
@@ -39,10 +41,11 @@ const BASELINE_LINES: Readonly<Record<Baseline | 'absent', string>> = Object.fre
 });
 
 export function AgentDetail({
-  row, selection = null, streamState = null, control = null, recovery = null, retire = null, terminal = null, enable = null, answer = null, goal: goalForm = null,
+  row, cards = [], selection = null, streamState = null, control = null, recovery = null, retire = null, terminal = null, enable = null, answer = null, goal: goalForm = null,
   messages = null, chat = null, liveOutput = null, git = null, memory = null, tab = 'overview', onTabChange = () => {}, live = false,
 }: {
   readonly row: AgentRow;
+  readonly cards?: readonly CardRow[];
   readonly selection?: ReactNode;
   /** The output stream's state, drawn as the last part of the header's status line. */
   readonly streamState?: string | null;
@@ -70,6 +73,7 @@ export function AgentDetail({
   const rows = useMemo(() => [row], [row]);
   useLiveActivityExpiry(rows, live);
   const fields = fieldsOf(row, { live, now: performance.now(), wallNow: Date.now() });
+  const status = ticketWord(cards, row, fields.status) ?? fields.status;
   const automaticHold = automaticHoldOf(row);
   const worktree = decodeWorktree(row.worktree);
   const pursuing = typeof row.goal === 'object' && row.goal !== null;
@@ -88,7 +92,7 @@ export function AgentDetail({
         {worktree === null ? null : <div><dt>Works in</dt><dd>{worktreeText(worktree)}</dd></div>}
         {!sharesCheckout(row) ? null : <div><dt>Shared directory</dt><dd>Another live agent works in this agent's directory, so their edits and checkouts can collide.</dd></div>}
         <div><dt>Role</dt><dd>{value(row.role)}</dd></div>
-        <div><dt>Status</dt><dd>{value(fields.status)}</dd></div>
+        <div><dt>Status</dt><dd>{value(status)}</dd></div>
         <div><dt>Mode</dt><dd>{value(row.mode)}</dd></div>
         <div><dt>Paused</dt><dd>{row.paused === true ? 'yes' : 'no'}</dd></div>
         <div><dt>Halted</dt><dd>{row.halted === true ? 'yes' : 'no'}</dd></div>
@@ -161,7 +165,7 @@ export function AgentDetail({
           <p className="agent-detail-status">
             {value(row.role)}
             {typeof row.provider === 'string' && row.provider !== '' ? ` · ${providerLabel(row.provider)}` : ''}
-            {' · '}<span data-status={fields.status}>{value(fields.status)}</span>
+            {' · '}<span data-status={status}>{value(status)}</span>
             {fields.liveActivity === null ? null : <>{' · '}<span data-live-activity={fields.liveActivity}>{fields.liveActivity}</span></>}
             {streamState === null ? null : <>{' · '}<span className="stream-state" role="status">{streamState}</span></>}
           </p>

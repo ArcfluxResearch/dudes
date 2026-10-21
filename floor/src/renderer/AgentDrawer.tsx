@@ -48,16 +48,27 @@ export function Receipts({ floor, leaveFocusTo }: { readonly floor: FloorState; 
   );
 }
 
-export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
+export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo, recoveryRequested, onRecoveryShown, onReadRecoveryReceipt }: {
   readonly floor: FloorState;
   readonly row: AgentRow | null;
   readonly selectedId: string | null;
   readonly onClose: () => void;
   readonly leaveFocusTo: string;
+  readonly recoveryRequested?: { readonly id: string } | null;
+  readonly onRecoveryShown?: () => void;
+  readonly onReadRecoveryReceipt?: (request: string) => void;
 }) {
   const chatAvailable = chatGate(floor, row).open;
   const [detailTab, setDetailTab] = useState<DetailTab>(chatAvailable ? 'chat' : 'overview');
   useEffect(() => { setDetailTab(readDetailTab(undefined, chatAvailable ? 'chat' : 'overview')); }, [chatAvailable]);
+  useEffect(() => {
+    if (recoveryRequested?.id === row?.id && row !== null) setDetailTab('overview');
+  }, [recoveryRequested, row?.id]);
+  useEffect(() => {
+    if (recoveryRequested?.id !== row?.id || row === null || detailTab !== 'overview') return;
+    document.getElementById('recovery-title')?.focus();
+    onRecoveryShown?.();
+  }, [recoveryRequested, row?.id, detailTab, onRecoveryShown]);
   const [fullOutput, setFullOutput] = useState(false);
   useEffect(() => { setFullOutput(false); }, [selectedId]);
   useEffect(() => {
@@ -84,7 +95,7 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
           {selection}
         </header>
       ) : (
-        <AgentDetail row={row} selection={selection} streamState={streamStatus(floor)} tab={detailTab} onTabChange={chooseDetailTab}
+        <AgentDetail row={row} cards={floor.cards} selection={selection} streamState={streamStatus(floor)} tab={detailTab} onTabChange={chooseDetailTab}
           chat={chatGate(floor, row).open
             ? <ChatPanel floor={floor} row={row} fullOutput={fullOutput} onFullOutput={setFullOutput} /> : null}
           liveOutput={floor.output.targetId === row.id && (floor.output.chunks.length > 0
@@ -100,7 +111,7 @@ export function AgentDrawer({ floor, row, selectedId, onClose, leaveFocusTo }: {
           control={floor.settings && !floor.control && automaticHoldOf(row) !== null
             ? <p className="settings-guidance">Resume is off. Turn on {RESUME_SWITCH} under Floor switches in Settings.</p>
             : <ControlStrip floor={floor} row={row} />}
-          recovery={<RecoveryPanel floor={floor} row={row} />}
+          recovery={<RecoveryPanel floor={floor} row={row} onReadReceipt={onReadRecoveryReceipt} />}
           retire={switchedOff.includes('retire') ? null : <RetireStrip floor={floor} row={row} />}
           terminal={switchedOff.includes('terminal') ? null : <TerminalAttach floor={floor} row={row} />}
           enable={switchedOff.length === 0 ? null : <details className="enable-controls">

@@ -106,3 +106,20 @@ test('an automatic hold replaces idle activity with its actionable reason', () =
   assert.equal(crewRowOf({ ...row, paused: true }).hold, 'paused');
   assert.equal(crewRowOf({ ...row, mode: 'attached' }).hold, null);
 });
+
+
+test('a running Managed agent with a recovery-required ticket needs you instead of appearing to work', () => {
+  const running = { ...ada, mode: 'managed', status: 'running' };
+  const card = { id: '01ARZ3NDEKTSV4RRFFQ69G5FAW', claimed_by: ADA, status: 'blocked',
+    ticket: { reason: 'recovery_required', round: 1 } };
+  const crew = crewRowOf(running, [card]);
+  assert.equal(crew.status, 'needs you');
+  assert.match(crew.description, /claude, needs you,/);
+  for (const [row, cards, status] of [
+    [running, [], 'running'], [running, [{ ...card, claimed_by: GRACE }], 'running'],
+    [running, [{ ...card, ticket: { ...card.ticket, reason: 'held_launch' } }], 'running'],
+    [{ ...running, status: 'waiting' }, [card], 'waiting'], [{ ...running, mode: 'attached' }, [card], 'running'],
+    [{ ...running, paused: true }, [card], 'running'], [{ ...running, halted: true }, [card], 'running'],
+    [{ ...running, goal: { ...running.goal, status: 'achieved' } }, [card], 'running'],
+  ]) assert.equal(crewRowOf(row, cards).status, status);
+});

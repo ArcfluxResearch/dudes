@@ -38,3 +38,28 @@ dl.recovery-facts dd {
 .recovery-actions [aria-pressed="true"] { outline: 2px solid currentColor; outline-offset: 2px; }
 .recovery-panel [aria-disabled="true"], .recovery-receipt [aria-disabled="true"] { opacity: .6; }
 .recovery-warning { border-inline-start: 3px solid currentColor; padding-inline-start: .75rem; }
+
+.recovery-panel button, .recovery-receipt button {
+  min-height: 2.75rem;
+  padding: .55rem .8rem;
+  border: 1px solid var(--line);
+  border-radius: .35rem;
+  background: var(--button-background);
+  color: var(--ink);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.recovery-panel button:focus-visible, .recovery-receipt button:focus-visible,
+.recovery-details summary:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+.recovery-actions [aria-pressed="true"] { background: var(--selected); }
+.recovery-goal strong { display: block; font-size: .8rem; color: var(--muted-ink); }
+.recovery-status { font-weight: 600; }
+.recovery-waits { padding: .6rem .75rem; background: var(--surface-muted); border-radius: .35rem; }
+.recovery-waits p { margin-top: 0; }
+.recovery-waits ul { margin-bottom: 0; padding-inline-start: 1.25rem; }
+.recovery-details { margin-top: .75rem; }
+.recovery-details summary { min-height: 2.75rem; align-content: center; cursor: pointer; color: var(--muted-ink); }
