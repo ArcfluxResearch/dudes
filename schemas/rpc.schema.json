@@ -3027,6 +3027,42 @@
           ],
           "type": "object"
         },
+        "floor.devices.list": {
+          "description": "The browsers signed in to the Floor, newest sign-in first. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/DevicesListResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "floor.devices.remove": {
+          "description": "Sign one browser out of the Floor. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/DeviceRemoveParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/DeviceRemoveResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "floor.enrollment.reload": {
           "description": "Make the daemon adopt the `[floor.onboarding]` workspaces now in its own operator file,\nonly when the file and the change are the caller's.",
           "properties": {
@@ -3085,7 +3121,7 @@
           "description": "Issue a bounded, single-use bootstrap bearer for the read-only Floor.",
           "properties": {
             "params": {
-              "$ref": "#/$defs/Empty",
+              "$ref": "#/$defs/SessionIssueParams",
               "description": "The params object."
             },
             "result": {
@@ -3825,6 +3861,8 @@
         "ticket.accept",
         "ticket.stop",
         "workspace.trust",
+        "floor.devices.list",
+        "floor.devices.remove",
         "ticket.checkout",
         "floor.session.export",
         "floor.session.import",
@@ -3833,6 +3871,99 @@
         "recovery.receipt"
       ],
       "title": "CurrentMethods",
+      "type": "object"
+    },
+    "DeviceEntry": {
+      "description": "One signed-in browser, as `floor.devices.list` reports it.",
+      "properties": {
+        "device": {
+          "description": "The device's id.",
+          "type": "string"
+        },
+        "first_used": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When it first made a request; absent while it has made none."
+        },
+        "last_used": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When it last made a request; absent while it has made none."
+        },
+        "name": {
+          "description": "The label its browser chose. A label, not proof of what the browser is.",
+          "type": "string"
+        },
+        "new": {
+          "description": "Whether nobody has answered its \"new browser\" notice yet.",
+          "type": "boolean"
+        },
+        "signed_in": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it signed in."
+        }
+      },
+      "required": [
+        "device",
+        "name",
+        "signed_in",
+        "new"
+      ],
+      "type": "object"
+    },
+    "DeviceRemoveParams": {
+      "additionalProperties": false,
+      "description": "`floor.devices.remove` params.",
+      "properties": {
+        "device": {
+          "description": "The whole id of the device to sign out.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device"
+      ],
+      "type": "object"
+    },
+    "DeviceRemoveResult": {
+      "description": "`floor.devices.remove` result.",
+      "properties": {
+        "removed": {
+          "description": "Whether a device was signed out. False when it was already gone.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "removed"
+      ],
+      "type": "object"
+    },
+    "DevicesListResult": {
+      "description": "`floor.devices.list` result: the signed-in browsers, newest sign-in first.",
+      "properties": {
+        "devices": {
+          "description": "The devices.",
+          "items": {
+            "$ref": "#/$defs/DeviceEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "devices"
+      ],
       "type": "object"
     },
     "DiffRefusal": {
@@ -12269,6 +12400,21 @@
         }
       ]
     },
+    "LinkPurpose": {
+      "description": "What a sign-in link is for. It sets how long the link lives and which of the daemon's link\nslots it takes.",
+      "oneOf": [
+        {
+          "const": "open",
+          "description": "The command line opens the browser itself: the link lives 60 seconds.",
+          "type": "string"
+        },
+        {
+          "const": "print",
+          "description": "The command line prints the link to be pasted elsewhere: it lives 10 minutes.",
+          "type": "string"
+        }
+      ]
+    },
     "LiveActivityKind": {
       "description": "One fixed kind observed by the daemon, without vendor text or tool detail.",
       "oneOf": [
@@ -13966,6 +14112,42 @@
           ],
           "type": "object"
         },
+        "floor.devices.list": {
+          "description": "The browsers signed in to the Floor, newest sign-in first. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/DevicesListResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "floor.devices.remove": {
+          "description": "Sign one browser out of the Floor. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/DeviceRemoveParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/DeviceRemoveResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "floor.enrollment.reload": {
           "description": "Make the daemon adopt the `[floor.onboarding]` workspaces now in its own operator file,\nonly when the file and the change are the caller's.",
           "properties": {
@@ -13988,7 +14170,7 @@
           "description": "Issue a bounded, single-use bootstrap bearer for the read-only Floor.",
           "properties": {
             "params": {
-              "$ref": "#/$defs/Empty",
+              "$ref": "#/$defs/SessionIssueParams",
               "description": "The params object."
             },
             "result": {
@@ -14655,7 +14837,9 @@
         "ticket.read",
         "ticket.accept",
         "ticket.stop",
-        "workspace.trust"
+        "workspace.trust",
+        "floor.devices.list",
+        "floor.devices.remove"
       ],
       "type": "object"
     },
@@ -17795,6 +17979,18 @@
       ],
       "type": "object"
     },
+    "SessionIssueParams": {
+      "additionalProperties": false,
+      "description": "`floor.session.issue` params. A call with no purpose is a call to open.",
+      "properties": {
+        "purpose": {
+          "$ref": "#/$defs/LinkPurpose",
+          "default": "open",
+          "description": "What the link is for."
+        }
+      },
+      "type": "object"
+    },
     "SessionIssueResult": {
       "description": "`floor.session.issue` result.\n\nThe bootstrap bearer remains a string on the wire, but [`Debug`](fmt::Debug) redacts it so a\ndiagnostic cannot disclose the capability. Deserialization enforces every finite field and\nreturns value-free errors; result objects remain open to additive fields.",
       "properties": {
@@ -17810,9 +18006,9 @@
           "type": "string"
         },
         "expires_in_s": {
-          "description": "The bearer lifetime. Exactly 60 seconds.",
+          "description": "The bearer lifetime: 60 seconds for a link made to open, 600 for one made to print.",
           "format": "uint64",
-          "maximum": 60,
+          "maximum": 600,
           "minimum": 60,
           "type": "integer"
         }
