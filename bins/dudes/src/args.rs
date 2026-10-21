@@ -4435,3 +4435,40 @@ mod mcp_tests {
         assert_eq!(parsed(&["mcp", "--help"]), Err(ArgError::HelpRequested));
     }
 }
+
+#[cfg(test)]
+mod devices_tests {
+    use super::*;
+
+    fn command(parts: &[&str]) -> Result<Command, ArgError> {
+        parse(&parts.iter().map(OsString::from).collect::<Vec<_>>()).map(|parsed| parsed.command)
+    }
+
+    #[test]
+    fn devices_lists_and_remove_takes_one_lowercase_hexadecimal_start() {
+        assert_eq!(
+            command(&["devices"]).unwrap(),
+            Command::Devices(DevicesCommand::List)
+        );
+        assert_eq!(
+            command(&["devices", "list"]).unwrap(),
+            Command::Devices(DevicesCommand::List)
+        );
+        assert_eq!(
+            command(&["devices", "remove", "ab12cd"]).unwrap(),
+            Command::Devices(DevicesCommand::Remove {
+                id: "ab12cd".to_owned()
+            })
+        );
+        for bad in [
+            &["devices", "remove"][..],
+            &["devices", "remove", "ab1"],
+            &["devices", "remove", "AB12CD"],
+            &["devices", "remove", "zz12zz"],
+            &["devices", "remove", "ab12cd", "ab12cd"],
+            &["devices", "prune"],
+        ] {
+            assert!(command(bad).is_err(), "{bad:?}");
+        }
+    }
+}

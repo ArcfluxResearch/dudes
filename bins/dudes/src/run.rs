@@ -833,11 +833,7 @@ fn devices_command(
             Ok(exit::SUCCESS)
         }
         crate::args::DevicesCommand::Remove { id } => {
-            let matches: Vec<_> = listed
-                .devices
-                .iter()
-                .filter(|entry| entry.device.to_hex().starts_with(id.as_str()))
-                .collect();
+            let matches = devices_starting(&listed.devices, id);
             let [entry] = matches.as_slice() else {
                 render::devices_unmatched(err, id, &matches, &chrono::Local).map_err(local)?;
                 return Ok(exit::REFUSED);
@@ -853,6 +849,17 @@ fn devices_command(
             Ok(exit::SUCCESS)
         }
     }
+}
+
+/// The devices whose id starts with `id`.
+fn devices_starting<'a>(
+    devices: &'a [dudes_proto::rpc::floor::DeviceEntry],
+    id: &str,
+) -> Vec<&'a dudes_proto::rpc::floor::DeviceEntry> {
+    devices
+        .iter()
+        .filter(|entry| entry.device.to_hex().starts_with(id))
+        .collect()
 }
 
 /// `dudes worktree list` and `remove`.
@@ -3364,5 +3371,37 @@ mod replacement_tests {
                 timeout_s: 600
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod devices_tests {
+    use dudes_proto::record::Hex32;
+    use dudes_proto::rpc::floor::DeviceEntry;
+    use dudes_types::Timestamp;
+
+    use super::devices_starting;
+
+    fn entry(first: u8, second: u8) -> DeviceEntry {
+        let mut id = [0_u8; 32];
+        id[0] = first;
+        id[1] = second;
+        DeviceEntry {
+            device: Hex32::new(id),
+            name: "Chrome".to_owned(),
+            signed_in: Timestamp::from_unix_millis(1),
+            first_used: None,
+            last_used: None,
+            new: true,
+        }
+    }
+
+    #[test]
+    fn a_unique_start_names_one_device_and_a_shared_start_names_several() {
+        let devices = [entry(0xab, 0x01), entry(0xab, 0x02), entry(0xcd, 0x03)];
+        assert_eq!(devices_starting(&devices, "cd03").len(), 1);
+        assert_eq!(devices_starting(&devices, "ab").len(), 2, "ambiguous");
+        assert_eq!(devices_starting(&devices, "ab01").len(), 1);
+        assert!(devices_starting(&devices, "ffff").is_empty());
     }
 }

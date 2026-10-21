@@ -1536,6 +1536,28 @@ mod tests {
         String::from_utf8(buffer).expect("the renderer writes UTF-8")
     }
 
+    #[test]
+    fn an_ambiguous_start_lists_the_matches_and_a_missing_one_says_so() {
+        let entry = |byte: u8, name: &str| dudes_proto::rpc::floor::DeviceEntry {
+            device: dudes_proto::record::Hex32::new([byte; 32]),
+            name: name.to_owned(),
+            signed_in: dudes_types::Timestamp::from_unix_millis(0),
+            first_used: None,
+            last_used: None,
+            new: false,
+        };
+        let (one, two) = (
+            entry(0xab, "Chrome on macOS"),
+            entry(0xac, "Firefox on Linux"),
+        );
+        let shown = text(|err| devices_unmatched(err, "a", &[&one, &two], &chrono::Utc));
+        assert!(shown.contains("starts more than one"), "{shown}");
+        assert!(shown.contains(&"ab".repeat(32)) && shown.contains(&"ac".repeat(32)));
+        assert!(shown.contains("Chrome on macOS") && shown.contains("Firefox on Linux"));
+        let none = text(|err| devices_unmatched(err, "ffff", &[], &chrono::Utc));
+        assert!(none.contains("no signed-in browser"), "{none}");
+    }
+
     fn an_agent() -> AgentId {
         "01ARZ3NDEKTSV4RRFFQ69G5FAV".parse().expect("an agent id")
     }
