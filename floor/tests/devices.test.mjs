@@ -2,7 +2,7 @@
 //
 // What a person sees of the browsers signed in to the Floor: a new one is announced on the other
 // browsers and answered with Keep or Remove, the signed-out page says why, and signing out drops
-// the stored secret only after the daemon confirms. The modules load through one Vite server so the
+// the stored key only after the daemon confirms. The modules load through one Vite server so the
 // page, the session and the device list share the state they share in the browser.
 
 import assert from 'node:assert/strict';
@@ -13,10 +13,9 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
-import { ORIGIN, PROVE_PATH, proofFrom } from './helpers/daemon-proof.mjs';
+import { ORIGIN, memoryKeyStore, testSigner } from './helpers/signer.mjs';
 
 const root = resolve(import.meta.dirname, '..');
-const SECRET = `C${'d'.repeat(41)}I`;
 const HERE = `${'a'.repeat(64)}`;
 const OTHER = `${'b'.repeat(64)}`;
 
@@ -25,6 +24,8 @@ let devices;
 let session;
 let connect;
 let signOut;
+let signerModule;
+let transport;
 let browserName;
 let DeviceNotices;
 let SignInExpired;
@@ -41,6 +42,8 @@ before(async () => {
   session = await server.ssrLoadModule('/src/session.ts');
   connect = await server.ssrLoadModule('/src/connect.ts');
   signOut = await server.ssrLoadModule('/src/renderer/devices/signOut.ts');
+  signerModule = await server.ssrLoadModule('/src/signer.ts');
+  transport = await server.ssrLoadModule('/src/transport.ts');
   browserName = (await server.ssrLoadModule('/src/renderer/devices/browserName.ts')).browserName;
   ({ DeviceNotices } = await server.ssrLoadModule('/src/renderer/devices/DeviceNotices.tsx'));
   ({ SignInExpired } = await server.ssrLoadModule('/src/renderer/SignInExpired.tsx'));
@@ -55,31 +58,27 @@ const row = (id, name, extra = {}) => ({
   id, name, signed_in: 1_760_000_000_000, first_used: null, last_used: null, new: false, this: false, ...extra,
 });
 
-function daemon({ list = [], end = () => reply(200, { session: 'ended' }), check = () => reply(200, { session: 'live' }) } = {}) {
+function daemon({ list = [], end = () => reply(200, { session: 'ended' }), check = () => reply(200, { session: 'live' }), store = memoryKeyStore() } = {}) {
   const asked = [];
-  const storage = new Map([['dudes.floor.secret', SECRET]]);
+  const { signer } = testSigner({ store });
+  signerModule.installSigner(signer);
   globalThis.window = {
     location: { origin: ORIGIN, reload() {} },
-    localStorage: {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-      removeItem: (key) => storage.delete(key),
-    },
     fetch: async (url, init) => {
-      if (url === PROVE_PATH) return proofFrom(SECRET, init);
-      asked.push({ url, body: init.body });
+      asked.push({ url, body: new TextDecoder().decode(init.body) });
       if (url === '/floor/devices') return reply(200, { devices: list });
       if (url === '/floor/session/end') return end();
       if (url === '/floor/session/check') return check();
       return reply(200, {});
     },
   };
-  return { asked, storage };
+  return { asked, store, signer };
 }
 
-async function signedIn() {
-  await session.openFloorSessionWith({ hash: '', pathname: '/floor/', search: '' }, { replaceState() {} }, window.fetch,
-    session.browserSecretStore);
+async function signedIn(held) {
+  if (held.store.held === null) await held.signer.keep(await held.signer.newKey());
+  await session.openFloorSessionWith({ hash: '', pathname: '/floor/', search: '' }, { replaceState() {} },
+    { signer: held.signer, plain: window.fetch, signed: transport.floorFetch });
 }
 
 beforeEach(() => {
@@ -92,11 +91,12 @@ beforeEach(() => {
 const notice = () => renderToStaticMarkup(createElement(DeviceNotices));
 
 test('a new browser is announced for another browser and not for this one, until it is answered', async () => {
-  const { asked } = daemon({ list: [
+  const held = daemon({ list: [
     row(HERE, 'Safari on macOS', { this: true, new: true }),
     row(OTHER, 'Chrome on Linux', { new: true }),
   ] });
-  await signedIn();
+  await signedIn(held);
+  const { asked } = held;
   await devices.loadDevices();
   const html = notice();
   assert.match(html, /A new browser signed in: <strong>Chrome on Linux<\/strong>, at /);
@@ -115,8 +115,8 @@ test('a new browser is announced for another browser and not for this one, until
 });
 
 test('a browser that went is named for a moment, and a removed one is not asked about', async () => {
-  daemon({ list: [row(HERE, 'Safari on macOS', { this: true }), row(OTHER, 'Chrome on Linux')] });
-  await signedIn();
+  const held = daemon({ list: [row(HERE, 'Safari on macOS', { this: true }), row(OTHER, 'Chrome on Linux')] });
+  await signedIn(held);
   await devices.loadDevices();
   devices.applyDeviceFrame({ type: 'floor.device.removed', device: OTHER, reason: 'replaced' });
   assert.match(notice(), /<strong>Chrome on Linux<\/strong> was replaced by a newer sign-in\./);
@@ -126,8 +126,8 @@ test('a browser that went is named for a moment, and a removed one is not asked 
 
 test('a browser missing from a fresh list is still named when no frame said why', async () => {
   const list = [row(HERE, 'Safari on macOS', { this: true }), row(OTHER, 'Chrome on Linux')];
-  daemon({ list });
-  await signedIn();
+  const held = daemon({ list });
+  await signedIn(held);
   await devices.loadDevices();
   list.pop();
   await devices.loadDevices();
@@ -143,35 +143,35 @@ test('the signed-out page says why, for each reason the daemon gives and for a s
   };
   for (const [reason, pattern] of Object.entries(wanted)) {
     session.resetFloorSession();
-    daemon({ check: () => reply(401, { session: 'unknown', reason }) });
-    assert.equal(await session.askFloorStanding(Object.freeze({ csrf: SECRET })), 'unknown');
+    const held = daemon({ check: () => reply(401, { session: 'unknown', reason }) });
+    await held.signer.keep(await held.signer.newKey());
+    assert.equal(await session.askFloorStanding(Object.freeze({ device: 'x' })), 'unknown');
     assert.match(says(), pattern, reason);
     assert.match(says(), /dudes open/, 'the way back in stays');
   }
   session.resetFloorSession();
-  daemon();
-  await signedIn();
+  await signedIn(daemon());
   await signOut.signOutHere();
   assert.match(says(), /You signed out of this Floor in this browser/);
   assert.equal(connect.firstLinkProblem(), 'expired');
 });
 
-test('signing out drops the secret only after the daemon confirms, and a daemon that cannot says the browser is still in', async () => {
+test('signing out drops the key only after the daemon confirms, and a daemon that cannot says the browser is still in', async () => {
   const down = daemon({ end: () => reply(503, null) });
-  await signedIn();
+  await signedIn(down);
   await signOut.signOutHere();
-  assert.equal(down.storage.get('dudes.floor.secret'), SECRET, 'the secret went before the daemon confirmed');
+  assert.notEqual(down.store.held, null, 'the key went before the daemon confirmed');
   assert.equal(devices.getDevicesState().signOutFailed, true);
   assert.equal(connect.firstLinkProblem(), null);
 
-  const up = daemon();
+  const up = daemon({ store: down.store });
   await signOut.signOutHere();
-  assert.equal(up.storage.has('dudes.floor.secret'), false);
+  assert.equal(up.store.held, null);
   assert.equal(devices.getDevicesState().signOutFailed, false);
   assert.equal(connect.firstLinkProblem(), 'expired');
 });
 
-test('the page names its browser from what the browser reports, and never from a secret', () => {
+test('the page names its browser from what the browser reports, and carries no secret', () => {
   const chrome = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
   const safariPhone = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
   const firefox = 'Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0';

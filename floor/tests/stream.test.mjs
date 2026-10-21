@@ -2,14 +2,14 @@
 //
 // Firing controls for this file:
 //
-//  1. append a third offer in `streamProtocols` — "the handshake offers exactly
-//     the two subprotocols the gateway admits" goes red. The gateway refuses an
-//     upgrade that offers anything other than two.
-//  2. drop the nonce at the call site — `connect(streamUrl(location),
+//  1. append a fifth offer in `streamProtocols` — "the handshake offers exactly
+//     the four subprotocols the gateway admits" goes red. The gateway refuses an
+//     upgrade that offers anything other than four.
+//  2. drop the signed entries at the call site — `connect(streamUrl(location),
 //     [FLOOR_PROTOCOL])` inside `openFloorStream` — and "the socket is built
-//     with the url and the offers this session authenticated with" goes red.
-//     Until that test existed the whole file stayed green through that edit,
-//     because every fake `connect` here discarded its arguments.
+//     with the url and the signed offers" goes red. Until that test existed
+//     the whole file stayed green through that edit, because every fake
+//     `connect` here discarded its arguments.
 //  3. make the silence tick a no-op, or move the `lastFrameAt` stamp outside
 //     the `try` in the message handler: "a stream that goes quiet marks the
 //     view unconfirmed" and "a frame the page could not read confirms nothing"
@@ -21,12 +21,12 @@ import test, { beforeEach } from 'node:test';
 import { AWAY_POLL_MS, getAway, resetAway } from '../src/renderer/floor/away.ts';
 import { getFloorState, resetFloorStore } from '../src/renderer/floor/store.ts';
 import {
-  CSRF_PROTOCOL_PREFIX,
   FLOOR_PROTOCOL,
   RECONNECT_ATTEMPTS,
   RECONNECT_BASE_MS,
   SILENCE_POLL_MS,
   STALE_AFTER_MS,
+  getStreamRetry,
   openFloorStream,
   reauthenticateFloorStream,
   streamProtocols,
@@ -35,7 +35,9 @@ import {
 
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
 const GRACE = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';
-const CSRF = 'p8Zt3Qd1Kx9Lm2Nv5Rb7Yc0Ae4Gh6Jk8Sw1Uz3Xq0';
+const DEVICE = 'p8Zt3Qd1Kx9Lm2Nv5Rb7Yc0Ae4Gh6Jk8Sw1Uz3Xq0';
+const SIGNED = ['dudes-sig.s', 'dudes-time.1', 'dudes-id.i'];
+const settled = () => new Promise((done) => setImmediate(done));
 const HERE = { protocol: 'http:', host: '127.0.0.1:7717' };
 
 const SNAPSHOT = JSON.stringify({
@@ -82,7 +84,7 @@ function fakeSocket() {
  * A `connect` that hands back `socket` and remembers what it was asked for.
  *
  * The recording is the point: a factory fake that ignores its arguments cannot
- * fail when the call site stops passing the session's nonce.
+ * fail when the call site stops passing the signed entries.
  */
 function recordingConnect(socket) {
   const calls = [];
@@ -156,12 +158,10 @@ beforeEach(() => {
   resetAway();
 });
 
-test('the handshake offers exactly the two subprotocols the gateway admits', () => {
-  const offers = streamProtocols(CSRF);
-  assert.equal(offers.length, 2);
-  assert.equal(offers[0], FLOOR_PROTOCOL);
-  assert.equal(offers[1], `${CSRF_PROTOCOL_PREFIX}${CSRF}`);
-  assert.equal(offers.filter((offer) => offer === FLOOR_PROTOCOL).length, 1);
+test('the handshake offers exactly the four subprotocols the gateway admits', () => {
+  const offers = streamProtocols(SIGNED);
+  assert.deepEqual(offers, [FLOOR_PROTOCOL, ...SIGNED]);
+  assert.equal(FLOOR_PROTOCOL, 'dudes-floor-v4');
 });
 
 test('the stream is opened beside the page that authenticated', () => {
@@ -171,7 +171,7 @@ test('the stream is opened beside the page that authenticated', () => {
 
 test('opening subscribes, and the frames reach the store', () => {
   const socket = fakeSocket();
-  const close = openFloorStream({ csrf: CSRF }, HERE, () => socket, manualTimers());
+  const close = openFloorStream({ device: DEVICE }, HERE, () => socket, manualTimers());
 
   socket.emit('open');
   assert.deepEqual(socket.sent, ['{"type":"floor.subscribe"}']);
@@ -185,19 +185,33 @@ test('opening subscribes, and the frames reach the store', () => {
   assert.equal(socket.closed, 1);
 });
 
-test('the socket is built with the url and the offers this session authenticated with', () => {
+test('the socket is built with the url and the signed offers, made for that url', async () => {
   const connect = recordingConnect(fakeSocket());
-  openFloorStream({ csrf: CSRF }, HERE, connect, manualTimers());
+  const asked = [];
+  openFloorStream({ device: DEVICE }, HERE, connect, manualTimers(), undefined, undefined,
+    { offer: async (url) => { asked.push(url); return SIGNED; } });
+  assert.equal(connect.calls.length, 0, 'a socket opened before the signature was made');
+  await settled();
 
   assert.equal(connect.calls.length, 1, 'one session, one socket');
   assert.equal(connect.calls[0].url, streamUrl(HERE));
-  assert.deepEqual(connect.calls[0].protocols, streamProtocols(CSRF));
+  assert.deepEqual(asked, [streamUrl(HERE)]);
+  assert.deepEqual(connect.calls[0].protocols, streamProtocols(SIGNED));
+});
+
+test('a browser with no key opens no socket and climbs the same ladder as a daemon that is down', async () => {
+  const connect = recordingConnect(fakeSocket());
+  openFloorStream({ device: DEVICE }, HERE, connect, manualTimers(), undefined, undefined, { offer: async () => null });
+  await settled();
+  assert.equal(connect.calls.length, 0);
+  assert.equal(getFloorState().phase, 'resyncing');
+  assert.equal(getStreamRetry().attempt, 1, 'a missing key was not treated as a failed attempt');
 });
 
 test('a stream that goes quiet marks the view unconfirmed, and a frame confirms it again', () => {
   const socket = fakeSocket();
   const timers = manualTimers();
-  openFloorStream({ csrf: CSRF }, HERE, () => socket, timers);
+  openFloorStream({ device: DEVICE }, HERE, () => socket, timers);
 
   socket.emit('open');
   socket.emit('message', { data: SNAPSHOT });
@@ -227,7 +241,7 @@ test('a stream that goes quiet marks the view unconfirmed, and a frame confirms 
 test('a heartbeat keeps an idle floor confident', () => {
   const socket = fakeSocket();
   const timers = manualTimers();
-  openFloorStream({ csrf: CSRF }, HERE, () => socket, timers);
+  openFloorStream({ device: DEVICE }, HERE, () => socket, timers);
 
   socket.emit('open');
   socket.emit('message', { data: SNAPSHOT });
@@ -253,7 +267,7 @@ test('one lost heartbeat is tolerated and two consecutive misses are not', () =>
   // one missing beat.
   const socket = fakeSocket();
   const timers = manualTimers();
-  openFloorStream({ csrf: CSRF }, HERE, () => socket, timers);
+  openFloorStream({ device: DEVICE }, HERE, () => socket, timers);
 
   socket.emit('open');
   socket.emit('message', { data: SNAPSHOT });
@@ -284,7 +298,7 @@ test('one lost heartbeat is tolerated and two consecutive misses are not', () =>
 test('a frame the page could not read confirms nothing', () => {
   const socket = fakeSocket();
   const timers = manualTimers();
-  openFloorStream({ csrf: CSRF }, HERE, () => socket, timers);
+  openFloorStream({ device: DEVICE }, HERE, () => socket, timers);
 
   socket.emit('open');
   socket.emit('message', { data: SNAPSHOT });
@@ -300,7 +314,7 @@ test('a frame the page could not read confirms nothing', () => {
 test('the disposer stops the silence watch', () => {
   const socket = fakeSocket();
   const timers = manualTimers();
-  const close = openFloorStream({ csrf: CSRF }, HERE, () => socket, timers);
+  const close = openFloorStream({ device: DEVICE }, HERE, () => socket, timers);
 
   socket.emit('open');
   assert.equal(timers.running, 1);
@@ -313,7 +327,7 @@ test('the disposer stops the silence watch', () => {
 
 test('a peer that is not speaking this protocol is closed, not applied', () => {
   const socket = fakeSocket();
-  openFloorStream({ csrf: CSRF }, HERE, () => socket, manualTimers());
+  openFloorStream({ device: DEVICE }, HERE, () => socket, manualTimers());
 
   socket.emit('open');
   socket.emit('message', { data: '{"type":"floor.roster","agents":[{"id":"agent-1"}]}' });
@@ -330,7 +344,7 @@ test('a close the page did not ask for clears the view and subscribes again', ()
   const sockets = [fakeSocket(), fakeSocket()];
   const timers = manualTimers();
   let opened = 0;
-  openFloorStream({ csrf: CSRF }, HERE, () => sockets[opened++], timers);
+  openFloorStream({ device: DEVICE }, HERE, () => sockets[opened++], timers);
 
   sockets[0].emit('open');
   sockets[0].emit('message', { data: SNAPSHOT });
@@ -366,7 +380,7 @@ test('a frame still in flight on the replaced socket cannot mutate the new view'
   const sockets = [fakeSocket(), fakeSocket()];
   const timers = manualTimers();
   let opened = 0;
-  openFloorStream({ csrf: CSRF }, HERE, () => sockets[opened++], timers);
+  openFloorStream({ device: DEVICE }, HERE, () => sockets[opened++], timers);
 
   sockets[0].emit('open');
   sockets[0].emit('message', { data: SNAPSHOT });
@@ -392,7 +406,7 @@ test('the reconnect gives up rather than spinning against a daemon that is gone'
   const timers = manualTimers();
   const opened = [];
   // A daemon that never answers the away watch, so the watch schedules nothing more.
-  openFloorStream({ csrf: CSRF }, HERE, () => {
+  openFloorStream({ device: DEVICE }, HERE, () => {
     const socket = fakeSocket();
     opened.push(socket);
     return socket;
@@ -423,7 +437,7 @@ test('the reconnect gives up rather than spinning against a daemon that is gone'
 test('an open resets the budget, so a later close gets the full set of attempts', () => {
   const timers = manualTimers();
   const opened = [];
-  openFloorStream({ csrf: CSRF }, HERE, () => {
+  openFloorStream({ device: DEVICE }, HERE, () => {
     const socket = fakeSocket();
     opened.push(socket);
     return socket;
@@ -443,7 +457,7 @@ test('an open resets the budget, so a later close gets the full set of attempts'
 test('the disposer stops the reconnect, and a close after it starts nothing', () => {
   const timers = manualTimers();
   const opened = [];
-  const close = openFloorStream({ csrf: CSRF }, HERE, () => {
+  const close = openFloorStream({ device: DEVICE }, HERE, () => {
     const socket = fakeSocket();
     opened.push(socket);
     return socket;
@@ -462,7 +476,7 @@ test('a floor.resync throws the view away and goes back for a snapshot', () => {
   const sockets = [fakeSocket(), fakeSocket()];
   const timers = manualTimers();
   let opened = 0;
-  openFloorStream({ csrf: CSRF }, HERE, () => sockets[opened++], timers);
+  openFloorStream({ device: DEVICE }, HERE, () => sockets[opened++], timers);
 
   sockets[0].emit('open');
   sockets[0].emit('message', { data: SNAPSHOT });
@@ -478,41 +492,45 @@ test('a floor.resync throws the view away and goes back for a snapshot', () => {
   assert.equal(opened, 2);
 });
 
-test('re-authentication resubscribes with the new session’s CSRF from a live stream, and a stream that gave up takes none', async () => {
+test('re-authentication resubscribes with a fresh signature from a live stream, and a stream that gave up takes none', async () => {
   const FRESH = 'Fr3shNonce0Fr3shNonce0Fr3shNonce0Fr3shNonc8';
   const LATER = 'L4terNonce0L4terNonce0L4terNonce0L4terNonc0';
   const timers = manualTimers();
   const opened = [];
-  const dispose = openFloorStream({ csrf: CSRF }, HERE, (url, protocols) => {
+  let signatures = 0;
+  const dispose = openFloorStream({ device: DEVICE }, HERE, (url, protocols) => {
     const socket = fakeSocket();
     socket.protocols = protocols;
     opened.push(socket);
     return socket;
-  }, timers);
+  }, timers, undefined, undefined, { offer: async () => [`dudes-sig.${++signatures}`] });
+  await settled();
   opened[0].emit('open');
   opened[0].emit('message', { data: SNAPSHOT });
 
-  assert.equal(reauthenticateFloorStream({ csrf: FRESH }), true);
+  assert.equal(reauthenticateFloorStream({ device: FRESH }), true);
   assert.equal(opened[0].closed, 1, 'the socket of the old session was left open');
   assert.equal(getFloorState().phase, 'resyncing', 'the old session’s rows outlived it');
   opened[0].emit('close');
   timers.runPending();
+  await settled();
   assert.equal(opened.length, 2);
-  assert.deepEqual(opened[1].protocols, streamProtocols(FRESH), 'the next socket offered the old session');
+  assert.deepEqual(opened[1].protocols, streamProtocols(['dudes-sig.2']), 'the next socket reused the old signature');
 
   // A stream that gave up waits for a reload and takes no session in place: whatever answers on
   // the address may not be the daemon the session came from.
   for (let attempt = 0; attempt <= RECONNECT_ATTEMPTS; attempt += 1) {
     opened[opened.length - 1].emit('close');
     timers.runPending();
+    await settled();
   }
   await new Promise((settle) => setImmediate(settle));
   assert.equal(getFloorState().phase, 'closed');
   const before = opened.length;
-  assert.equal(reauthenticateFloorStream({ csrf: LATER }), false);
+  assert.equal(reauthenticateFloorStream({ device: LATER }), false);
   timers.runPending();
   assert.equal(opened.length, before, 'a stream that gave up opened a socket');
 
   dispose();
-  assert.equal(reauthenticateFloorStream({ csrf: CSRF }), false, 'a disposed stream took a session');
+  assert.equal(reauthenticateFloorStream({ device: DEVICE }), false, 'a disposed stream took a session');
 });

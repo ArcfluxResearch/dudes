@@ -39,8 +39,8 @@ test('the page previews a folder, then adds exactly what it showed under one att
     let refreshed = 0;
     const script = [reply(200, PREVIEW), reply(202, { attempt_id: 'x', state: 'pending' }), reply(200, ADDED)];
     const deps = {
-      fetch: (url, init) => { sent.push([url, JSON.parse(init.body), init.headers['X-Dudes-CSRF']]); return Promise.resolve(script.shift()); },
-      csrf: () => 'csrf-value',
+      fetch: (url, init) => { sent.push([url, JSON.parse(init.body)]); return Promise.resolve(script.shift()); },
+      signedIn: () => true,
       random: (bytes) => { bytes.fill(7); },
       refresh: () => { refreshed += 1; },
       wait: () => Promise.resolve(),
@@ -50,7 +50,7 @@ test('the page previews a folder, then adds exactly what it showed under one att
 
     add.resetAdd();
     await add.lookAtFolder("  '/work/app/'  ", deps);
-    assert.deepEqual(sent[0], ['/floor/project/preview', { path: '/work/app' }, 'csrf-value']);
+    assert.deepEqual(sent[0], ['/floor/project/preview', { path: '/work/app' }]);
     const shown = add.getAddState();
     assert.equal(shown.kind, 'preview');
     assert.match(shown.attempt, ATTEMPT);
@@ -95,7 +95,7 @@ test('each refusal and each uncertain answer gets a plain sentence and no termin
     const state = [];
     const deps = {
       fetch: () => Promise.reject(new Error('down')),
-      csrf: () => 'csrf', random: (bytes) => { bytes.fill(1); }, refresh() {}, wait: () => Promise.resolve(),
+      signedIn: () => true, random: (bytes) => { bytes.fill(1); }, refresh() {}, wait: () => Promise.resolve(),
     };
     add.resetAdd();
     await add.lookAtFolder('/work/app', deps);
@@ -103,7 +103,7 @@ test('each refusal and each uncertain answer gets a plain sentence and no termin
     assert.deepEqual(state, ['failed']);
     assert.equal(add.getAddState().step, 'look');
     add.resetAdd();
-    await add.lookAtFolder('/work/app', { ...deps, csrf: () => null });
+    await add.lookAtFolder('/work/app', { ...deps, signedIn: () => false });
     assert.equal(add.getAddState().kind, 'failed', 'no session secret, no request');
   } finally {
     await server.close();
@@ -133,7 +133,7 @@ test('the box shows where a newcomer meets no project, and falls back to the old
 
     const { lookAtFolder, addPreviewed, getAddState } = await server.ssrLoadModule('/src/renderer/project/add.ts');
     const answers = [reply(200, PREVIEW), reply(409, { state: 'refused', reason: 'not_git' })];
-    const deps = { fetch: () => Promise.resolve(answers.shift()), csrf: () => 'csrf', random: (bytes) => { bytes.fill(7); },
+    const deps = { fetch: () => Promise.resolve(answers.shift()), signedIn: () => true, random: (bytes) => { bytes.fill(7); },
       refresh() {}, wait: () => Promise.resolve() };
     await lookAtFolder('/work/app', deps);
     const shown = renderToStaticMarkup(createElement(AddProject, { floor: floor(true) }));
@@ -162,7 +162,7 @@ test('removing a project asks once on the page, sends nothing until confirmed, a
       reply(200, { project_id: 'app', label: 'App' })];
     const deps = {
       fetch: (url, init) => { sent.push([url, JSON.parse(init.body)]); return Promise.resolve(script.shift()); },
-      csrf: () => 'csrf', random: (bytes) => { bytes.fill(7); }, refresh: () => { refreshed += 1; }, wait: () => Promise.resolve(),
+      signedIn: () => true, random: (bytes) => { bytes.fill(7); }, refresh: () => { refreshed += 1; }, wait: () => Promise.resolve(),
     };
     const html = () => renderToStaticMarkup(createElement(RemoveProject, { floor: floor(true), projectId: 'app', label: 'App' }));
 

@@ -9,12 +9,13 @@
 
 import { openFloorStream, reauthenticateFloorStream } from './renderer/floor/stream.ts';
 import type { LocationLike, SocketFactory, StreamTimers } from './renderer/floor/stream.ts';
+import { KeyUnavailable, floorSigner, socketOffer } from './signer.ts';
+import type { Signer } from './signer.ts';
 import {
   BuildMismatch, adoptStoredFloorSession, askFloorStanding, currentFloorSession, endFloorSession,
   floorSessionGeneration,
 } from './session.ts';
 import type { FloorSession } from './session.ts';
-import { proveFloorDaemon } from './transport.ts';
 
 /** What the stream is opened with: where the page is, how a socket is made, and its clock. */
 export interface StreamPorts {
@@ -22,8 +23,8 @@ export interface StreamPorts {
   readonly socket: SocketFactory;
   /** The stream's own clock; the browser's when left out. */
   readonly timers?: StreamTimers;
-  /** How the daemon is proved before the secret is sent; the browser's own request when left out. */
-  readonly prove?: (secret: string) => Promise<boolean>;
+  /** The browser's key; the page's own when left out. */
+  readonly signer?: Signer | null;
 }
 
 /**
@@ -35,40 +36,29 @@ export function connect(session: FloorSession, ports: StreamPorts): void {
   if (session !== currentFloorSession()) return;
   clearFirstLinkProblem();
   if (reauthenticateFloorStream(session)) return;
+  const signer = ports.signer === undefined ? floorSigner() : ports.signer;
   stopStream = openFloorStream(session, ports.location, ports.socket, ports.timers, undefined, {
     ask: askFloorStanding,
-    onUnknown: () => sessionUnknown(ports),
-  }, { prove: (next) => proveOrAdopt(next, ports) });
+    onUnknown: () => { void sessionUnknown(ports); },
+  }, { offer: socketOffer(signer) });
 }
 
 let stopStream: () => void = () => {};
 
 /**
- * Before the stream sends the secret, make sure the daemon holds this session. A daemon that does
- * not leaves the page signed in with what it has, and says so. Another tab of this browser may have
- * signed in since, which replaces the cookie this page sends along with it: its secret is the one
- * that goes with that cookie, so the stream follows it and proves the daemon again.
+ * The daemon said it does not know this page's device. When another tab of this browser has signed
+ * in since, its key and cookie are the ones to use and the stream follows them. Otherwise the
+ * device is gone: the page deletes its key and says it is signed out.
  */
-async function proveOrAdopt(session: FloorSession, ports: StreamPorts): Promise<boolean> {
-  if (await (ports.prove ?? proveFloorDaemon)(session.csrf)) return true;
-  const next = adoptStoredFloorSession();
-  if (next !== null) setTimeout(() => connect(next, ports), 0);
-  return false;
-}
-
-/**
- * The daemon said it does not know this page's session. When another tab of this browser has signed
- * in since, its secret and cookie are the ones to use and the stream follows them. Otherwise the
- * session is gone, and the page says it is signed out.
- */
-function sessionUnknown(ports: StreamPorts): void {
-  const next = adoptStoredFloorSession();
+async function sessionUnknown(ports: StreamPorts): Promise<void> {
+  const signer = ports.signer === undefined ? floorSigner() : ports.signer;
+  const next = await adoptStoredFloorSession(signer);
   if (next !== null) {
     connect(next, ports);
     return;
   }
   stopStream();
-  endFloorSession();
+  await endFloorSession(signer);
   noteSignInExpired();
 }
 
@@ -126,7 +116,7 @@ export function subscribeToPastedLink(listener: () => void): () => void {
  * its address was not one, or it had none and recovery found no session.
  * `null` once a session is held.
  */
-export type FirstLinkProblem = 'refused' | 'missing' | 'expired';
+export type FirstLinkProblem = 'refused' | 'missing' | 'expired' | 'unsupported' | 'no_key';
 let firstProblem: FirstLinkProblem | null = null;
 
 export function firstLinkProblem(): FirstLinkProblem | null {
@@ -153,6 +143,16 @@ export function noteFirstLinkRefused(): void {
 /** Say that the page was opened with an address that held no usable link. */
 export function noteNoFirstLink(): void {
   noteFirstLinkProblem('missing');
+}
+
+/** Say that this browser cannot hold a sign-in key, so the page signed nothing. */
+export function noteKeyUnavailable(): void {
+  noteFirstLinkProblem('unsupported');
+}
+
+/** Say that the page held no link and this browser no longer has its sign-in key. */
+export function noteNoSignInKey(): void {
+  noteFirstLinkProblem('no_key');
 }
 
 /** Say that the page held no link and the daemon found no session to recover for this browser. */
@@ -186,6 +186,10 @@ export async function takePastedLink(
   try {
     session = await exchange();
   } catch (error) {
+    if (error instanceof KeyUnavailable) {
+      noteKeyUnavailable();
+      return;
+    }
     // Said only while the page still holds the session it held when this link
     // was pasted; a newer one taken meanwhile has already signed it in.
     if (floorSessionGeneration() === held) {

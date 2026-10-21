@@ -75,16 +75,16 @@ export function decodeSettingsResponse(status: number, text: string): SettingsEd
 }
 
 export async function saveSetting(
-  key: string, value: string, fetch: typeof floorFetch = floorFetch, csrf = currentFloorSession()?.csrf ?? null,
+  key: string, value: string, fetch: typeof floorFetch = floorFetch, signedIn: () => boolean = () => currentFloorSession() !== null,
 ): Promise<SettingsEditResult> {
-  if (csrf === null) return { kind: 'failed' };
+  if (!signedIn()) return { kind: 'failed' };
   try {
     const response = await fetch('/floor/settings', {
       method: 'POST',
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key, value }),
     });
     return decodeSettingsResponse(response.status, await response.text());

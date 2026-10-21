@@ -28,7 +28,7 @@ const root = resolve(import.meta.dirname, '..');
 const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
 const GRACE = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const STRANGER = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
-const CSRF = 'A'.repeat(43);
+const REQUEST_ID = 'A'.repeat(43);
 const AT = 1_787_394_600_000;
 
 /** The page the daemon's own test pins byte for byte. */
@@ -103,14 +103,14 @@ const crew = { agents: [ada], retiredAgents: [grace] };
 /** A daemon that answers each request from `reply(url, request)`, and the requests it saw. */
 function daemon(reply) {
   const seen = [];
-  const auth = { epoch: 1, session: 1, csrf: CSRF, refreshed: 0 };
+  const auth = { epoch: 1, session: 1, held: REQUEST_ID, refreshed: 0 };
   const deps = {
     fetch: async (url, init) => {
       seen.push({ url, init });
       const { status, text } = await reply(url, JSON.parse(init.body));
       return { status, text: async () => text };
     },
-    csrf: () => auth.csrf,
+    signedIn: () => auth.held !== null,
     refresh: () => { auth.refreshed += 1; },
     epoch: () => auth.epoch,
     session: () => auth.session,
@@ -389,7 +389,7 @@ test('the first activation sends one page request with before null, and an inact
   assert.equal(seen[0].url, '/floor/memory/page');
   assert.deepEqual(seen[0].init, {
     method: 'POST', credentials: 'same-origin', cache: 'no-store', referrerPolicy: 'no-referrer',
-    headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': CSRF },
+    headers: { 'Content-Type': 'application/json' },
     body: `{"agent_id":"${ADA}","before":null}`,
   });
   assert.deepEqual(lsns(panel.host), ['10', '7']);
@@ -583,13 +583,13 @@ test('losing authentication clears the panel: a 403, no session, or a new sessio
   status = 200;
   await panel.click('memory-refresh');
   assert.deepEqual(lsns(panel.host), ['10', '7']);
-  auth.csrf = null;
+  auth.held = null;
   await panel.click('memory-refresh');
   assert.deepEqual(lsns(panel.host), []);
   assert.equal(textOf(one(panel.host, 'memory-status')), 'This page has no Floor session, so nothing was sent.');
   assert.equal(seen.length, 3, 'nothing is sent without a session');
 
-  auth.csrf = CSRF;
+  auth.held = REQUEST_ID;
   await panel.click('memory-refresh');
   assert.deepEqual(lsns(panel.host), ['10', '7']);
   auth.session = 2;

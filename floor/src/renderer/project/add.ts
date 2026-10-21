@@ -45,7 +45,7 @@ export type AddState =
 
 export interface AddDeps {
   fetch: typeof floorFetch;
-  csrf(): string | null;
+  signedIn(): boolean;
   random(bytes: Uint8Array<ArrayBuffer>): void;
   refresh(): void;
   wait(milliseconds: number): Promise<void>;
@@ -53,7 +53,7 @@ export interface AddDeps {
 
 export const browserAddDeps: AddDeps = {
   fetch: floorFetch,
-  csrf: () => currentFloorSession()?.csrf ?? null,
+  signedIn: () => currentFloorSession() !== null,
   random: (bytes) => { crypto.getRandomValues(bytes); },
   refresh: refreshFloorSnapshot,
   wait: (milliseconds) => new Promise((done) => { setTimeout(done, milliseconds); }),
@@ -151,15 +151,14 @@ const ADD_PATH = '/floor/project/add';
 const REMOVE_PATH = '/floor/project/remove';
 
 async function post(path: typeof PREVIEW_PATH | typeof ADD_PATH | typeof REMOVE_PATH, body: unknown, deps: AddDeps): Promise<{ status: number; text: string } | null> {
-  const csrf = deps.csrf();
-  if (csrf === null) return null;
+  if (!deps.signedIn()) return null;
   try {
     const response = await deps.fetch(path, {
       method: 'POST',
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     return { status: response.status, text: await response.text() };

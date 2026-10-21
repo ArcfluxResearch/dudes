@@ -24,7 +24,7 @@ const working = [{ id: '01ARZ3NDEKTSV4RRFFQ69G5FAV', name: 'Ada',
   workspace: { id: 'parser', label: 'Parser' } }];
 const floor = (extra = {}) => ({ ...getFloorState(), phase: 'live', stale: false, epoch: 1, snapshotEpoch: 1,
   onboarding: catalog({ trusted: true }), checks, agents: [], ...extra });
-const deps = (sent) => ({ csrf: () => 'A'.repeat(43), random: (bytes) => bytes.fill(0), epoch: () => 1, refresh() {},
+const deps = (sent) => ({ signedIn: () => true, random: (bytes) => bytes.fill(0), epoch: () => 1, refresh() {},
   fetch: async (_url, request) => { sent.push(JSON.parse(request.body)); return { status: 503, text: async () => '' }; } });
 const choose = (engine = 'claude') => hire.editDraft({ name: 'Kim', workspaceId: 'parser', engine, goalText: 'ship' });
 const offer = (state, engine = 'claude') => {

@@ -2,15 +2,15 @@
 //
 // The one way the page reaches the daemon with its cookie.
 //
-// Every request that carries the Floor session goes through `floorFetch`, and every lazy chunk
-// through `lazyChunk`. Once the daemon has gone
-// away and the stream has given up, the page pauses it: from then on a request is refused here,
-// before the browser can attach the cookie, because whatever answers on that address may not be
-// the daemon the cookie was issued by. Only a reload lifts it, with a fresh page and a fresh
-// module.
+// Every dynamic request goes through `floorFetch`, which signs it with the browser's key, and every
+// lazy chunk through `lazyChunk`. Once the daemon has gone away and the stream has given up, the
+// page pauses: from then on a request is refused here, before the browser can attach the cookie,
+// because whatever answers on that address may not be the daemon the cookie was issued by. Even a
+// request that did reach such a process is good for 60 seconds, once, for this origin only. Only a
+// reload lifts the pause, with a fresh page and a fresh module.
 
-import { forgetProof, proveDaemon } from './proof.ts';
-import type { ProofPorts } from './proof.ts';
+import { KeyUnavailable, UnsignableBody, floorSigner } from './signer.ts';
+import type { Signer } from './signer.ts';
 
 let paused = false;
 
@@ -29,73 +29,60 @@ export function resetFloorTransport(): void {
   paused = false;
 }
 
-const CSRF_HEADER = 'x-dudes-csrf';
-const PROVE_PATH = '/floor/session/prove';
-const PROVE_CUTOFF_MS = 3_000;
+const encoder = new TextEncoder();
 
-/** The daemon at this address did not prove it holds the session, so the secret was not sent. */
-export class DaemonNotProven extends TypeError {
-  constructor() {
-    super('Dudes is not answering as itself');
-  }
+/** The exact bytes a request body sends. Only text can be signed as it is sent. */
+function bodyBytes(body: RequestInit['body']): Uint8Array<ArrayBuffer> {
+  if (body === undefined || body === null) return new Uint8Array(0);
+  if (typeof body === 'string') return encoder.encode(body);
+  throw new UnsignableBody();
 }
 
-/** The browser's side of a proof: the one request that carries the cookie and no secret. */
-const BROWSER_PROOF: ProofPorts = {
-  post: (body) => window.fetch(PROVE_PATH, {
-    method: 'POST',
-    body,
-    credentials: 'same-origin',
-    cache: 'no-store',
-    referrerPolicy: 'no-referrer',
-    headers: { 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(PROVE_CUTOFF_MS),
-  }),
-  origin: () => window.location.origin,
-  get subtle() {
-    return globalThis.crypto.subtle;
-  },
-  random: (bytes) => {
-    globalThis.crypto.getRandomValues(bytes);
-  },
-};
-
-/**
- * Whether the daemon at this address has proved it holds the session this secret belongs to. A
- * page that is waiting for a reload asks nothing, since the cookie must not go out.
- */
-export function proveFloorDaemon(secret: string): Promise<boolean> {
-  return paused ? Promise.resolve(false) : proveDaemon(secret, BROWSER_PROOF);
-}
-
-function secretOf(init: RequestInit): string | null {
-  const headers = init.headers;
-  if (headers === undefined) return null;
-  if (headers instanceof Headers) return headers.get(CSRF_HEADER);
-  const entries = Array.isArray(headers) ? headers : Object.entries(headers);
-  for (const [name, value] of entries) {
-    if (name.toLowerCase() === CSRF_HEADER) return value;
-  }
-  return null;
-}
-
-/**
- * A request that carries the session secret goes only to a daemon that has just proved it holds the
- * session. One that cannot is not sent the secret, and the request fails without leaving the page.
- */
-export async function floorFetch(url: string, init: RequestInit): Promise<Response> {
-  if (paused) throw new TypeError('The Floor page is waiting for a reload');
-  const secret = secretOf(init);
-  if (secret !== null) {
-    if (!(await proveFloorDaemon(secret))) throw new DaemonNotProven();
-    if (paused) throw new TypeError('The Floor page is waiting for a reload');
-  }
+async function refusedSignature(response: Response): Promise<boolean> {
+  if (response.status !== 401) return false;
   try {
-    return await window.fetch(url, init);
-  } catch (error) {
-    forgetProof();
-    throw error;
+    const answer: unknown = await response.clone().json();
+    return typeof answer === 'object' && answer !== null && 'signature' in answer && answer.signature === 'refused';
+  } catch {
+    return false;
   }
+}
+
+/** The page's request, signed. A signature the daemon refuses is made again once, with a new time and id. */
+export async function signedFetch(
+  signer: Signer | null,
+  send: (url: string, init: RequestInit) => Promise<Response>,
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  if (paused) throw new TypeError('The Floor page is waiting for a reload');
+  if (signer === null) throw new KeyUnavailable();
+  const body = bodyBytes(init.body);
+  const method = (init.method ?? 'GET').toUpperCase();
+  let response: Response | null = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const signed = await signer.sign(method, url, body);
+    if (signed === null) throw new KeyUnavailable();
+    if (paused) throw new TypeError('The Floor page is waiting for a reload');
+    const headers = new Headers(init.headers);
+    headers.set('X-Dudes-Origin', signed.origin);
+    headers.set('X-Dudes-Time', signed.time);
+    headers.set('X-Dudes-Request', signed.request);
+    headers.set('X-Dudes-Signature', signed.signature);
+    response = await send(url, { ...init, method, headers, body: init.body === undefined || init.body === null ? init.body : body });
+    if (!(await refusedSignature(response))) return response;
+  }
+  return response as Response;
+}
+
+/** A request that carries no signature, for the link exchange and the served index. A paused page sends none. */
+export async function plainFetch(url: string, init: RequestInit): Promise<Response> {
+  if (paused) throw new TypeError('The Floor page is waiting for a reload');
+  return window.fetch(url, init);
+}
+
+export function floorFetch(url: string, init: RequestInit): Promise<Response> {
+  return signedFetch(floorSigner(), (target, options) => window.fetch(target, options), url, init);
 }
 
 /**

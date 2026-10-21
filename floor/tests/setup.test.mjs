@@ -33,7 +33,7 @@ import * as hire from '../src/renderer/onboarding/hire.ts';
 import { decodeDaemonReport } from '../src/renderer/setup/daemon.ts';
 
 const root = resolve(import.meta.dirname, '..');
-const CSRF = 'A'.repeat(43);
+const REQUEST_ID = 'A'.repeat(43);
 const HERE = { protocol: 'http:', host: '127.0.0.1:7717' };
 
 const CATALOG = Object.freeze({
@@ -208,7 +208,7 @@ test('opening Setup and pressing Recheck each end the stream with floor.unsubscr
     repeat: () => () => {},
     after(afterMs, run) { pending.push(run); return () => {}; },
   };
-  const stop = openFloorStream({ csrf: CSRF }, HERE, () => {
+  const stop = openFloorStream({ device: REQUEST_ID }, HERE, () => {
     const socket = fakeSocket();
     sockets.push(socket);
     return socket;

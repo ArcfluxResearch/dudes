@@ -49,8 +49,8 @@ function floor({ row = ROW, enabled = true } = {}) {
 }
 function network(answers = []) {
   const calls = [];
-  let generation = 1, nonce = 0, csrf = 'C'.repeat(43);
-  const deps = { floor: store.getFloorState, session: () => generation, csrf: () => csrf,
+  let generation = 1, nonce = 0, held = 'C'.repeat(43);
+  const deps = { floor: store.getFloorState, session: () => generation, signedIn: () => held !== null,
     random(bytes) { bytes.fill(++nonce); },
     async fetch(url, init) {
       calls.push({ url, init, body: JSON.parse(init.body) });
@@ -59,7 +59,7 @@ function network(answers = []) {
       if (answer instanceof Error) throw answer;
       return answer;
     } };
-  return { calls, deps, reauth() { generation++; }, noSession() { csrf = null; } };
+  return { calls, deps, reauth() { generation++; }, noSession() { held = null; } };
 }
 function draft() {
   const current = model.getRecoveryState().inspections.get(AGENT);
@@ -164,7 +164,6 @@ test('one explicit press freezes the full selector and request before await and 
   const stored = [...model.getRecoveryState().requests.values()][0];
   assert.equal(stored.submitting, true);
   assert.deepEqual(net.calls.map(call => [call.url, call.body]), [['/floor/recovery/submit', { request_id: ID, expected: EXPECTED, choice: 'try_recorded' }]]);
-  assert.equal(net.calls[0].init.headers['X-Dudes-CSRF'], 'C'.repeat(43));
   assert.equal(net.calls[0].init.credentials, 'same-origin');
   assert.equal(net.calls[0].init.cache, 'no-store');
   assert.equal(net.calls[0].init.referrerPolicy, 'no-referrer');

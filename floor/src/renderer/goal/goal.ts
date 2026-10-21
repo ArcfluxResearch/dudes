@@ -351,8 +351,8 @@ export interface GoalResponse {
 
 export interface GoalDeps {
   fetch(url: string, init: RequestInit): Promise<GoalResponse>;
-  /** The session's CSRF nonce, or `null` when the page has no session. */
-  csrf(): string | null;
+  /** Whether the page holds a sign-in. */
+  signedIn(): boolean;
   /** Fill `bytes` with cryptographically random values. */
   random(bytes: Uint8Array<ArrayBuffer>): void;
   /** Ask the stream for a fresh snapshot of this session. */
@@ -365,7 +365,7 @@ export interface GoalDeps {
 
 export const browserGoalDeps: GoalDeps = {
   fetch: floorFetch,
-  csrf: () => currentFloorSession()?.csrf ?? null,
+  signedIn: () => currentFloorSession() !== null,
   random: (bytes) => {
     crypto.getRandomValues(bytes);
   },
@@ -516,8 +516,7 @@ export async function submitGoal(gate: GoalGate, deps: GoalDeps): Promise<void> 
   const text = draftFor(state, gate.agent, gate.goal, offer?.text);
   const check = chosenGoalCheck(state, gate);
   if (problemWith(text, gate.maxTextBytes) !== null || check === null) return;
-  const csrf = deps.csrf();
-  if (csrf === null) {
+  if (!deps.signedIn()) {
     commit({ ...state, problem: 'This page has no Floor session, so nothing was sent.' });
     return;
   }
@@ -534,20 +533,19 @@ export async function submitGoal(gate: GoalGate, deps: GoalDeps): Promise<void> 
     checkLabel: check === 'keep' ? gate.currentCheck : check.label, enrolled: gate.enrolled.length > 0 });
   commit({ ...state, attempt, sending: true, outcome: null, uncertain: false, askedAtEpoch: 0, refusedUnder: null,
     problem: null });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
 
 /** Check status: the same request, the same bytes, sent again by the operator. */
 export async function checkGoalStatus(deps: GoalDeps): Promise<void> {
   const attempt = state.attempt;
   if (attempt === null || !checkable(state)) return;
-  const csrf = deps.csrf();
-  if (csrf === null) {
+  if (!deps.signedIn()) {
     commit({ ...state, problem: 'This page has no Floor session, so nothing was sent.' });
     return;
   }
   commit({ ...state, sending: true, problem: null });
-  await send(attempt, csrf, deps);
+  await send(attempt, deps);
 }
 
 function without<V>(map: ReadonlyMap<string, V>, key: string): ReadonlyMap<string, V> {
@@ -558,8 +556,8 @@ function without<V>(map: ReadonlyMap<string, V>, key: string): ReadonlyMap<strin
 
 const UNSETTLED: ReadonlySet<GoalOutcome['kind']> = new Set(['pending', 'unavailable', 'unknown']);
 
-async function send(attempt: GoalAttempt, csrf: string, deps: GoalDeps): Promise<void> {
-  const outcome = await postGoal(attempt, csrf, deps.fetch);
+async function send(attempt: GoalAttempt, deps: GoalDeps): Promise<void> {
+  const outcome = await postGoal(attempt, deps.fetch);
   // The staleness guard: a reply to a request this page no longer holds is
   // not this page's to show.
   if (state.attempt !== attempt) return;
@@ -585,7 +583,7 @@ async function send(attempt: GoalAttempt, csrf: string, deps: GoalDeps): Promise
 }
 
 /** Send one request's body and read what the answer proves. */
-export async function postGoal(attempt: GoalAttempt, csrf: string, fetch: GoalDeps['fetch']): Promise<GoalOutcome> {
+export async function postGoal(attempt: GoalAttempt, fetch: GoalDeps['fetch']): Promise<GoalOutcome> {
   let status: number;
   let text: string;
   try {
@@ -594,7 +592,7 @@ export async function postGoal(attempt: GoalAttempt, csrf: string, fetch: GoalDe
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      headers: { 'Content-Type': 'application/json' },
       body: attempt.body,
     });
     status = response.status;

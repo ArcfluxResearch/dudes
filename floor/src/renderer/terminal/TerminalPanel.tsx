@@ -30,12 +30,13 @@ import {
   getTerminalState, leavesTerminal, subscribeToTerminal, terminalOffer, writeTerminal,
 } from './terminal.ts';
 import type { TerminalChannel, TerminalEnding, TerminalOffer, TerminalPorts } from './terminal.ts';
-import { lazyChunk, proveFloorDaemon } from '../../transport.ts';
+import { floorSigner, socketOffer } from '../../signer.ts';
+import { lazyChunk } from '../../transport.ts';
 
 type OpenChannel = Exclude<TerminalChannel, { readonly phase: 'idle' }>;
 
 function browserTerminalPorts(): TerminalPorts {
-  return { location: window.location, socket: browserSocket, csrf: () => currentFloorSession()?.csrf ?? null, prove: proveFloorDaemon };
+  return { location: window.location, socket: browserSocket, signedIn: () => currentFloorSession() !== null, offer: socketOffer(floorSigner()) };
 }
 
 function nameOf(floor: FloorState, agent: string): string {

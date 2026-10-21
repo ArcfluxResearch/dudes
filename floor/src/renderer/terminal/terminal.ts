@@ -18,7 +18,6 @@
 // from the operator's own typing and paste.
 
 import type { FloorState } from '../floor/store.ts';
-import { CSRF_PROTOCOL_PREFIX } from '../floor/stream.ts';
 import type { CloseLike, LocationLike, MessageLike, SocketFactory, SocketLike } from '../floor/stream.ts';
 import { floorRequestsPaused } from '../../transport.ts';
 import { ATTEMPT_ID } from '../onboarding/hire.ts';
@@ -107,10 +106,13 @@ type ServerMessage =
 export interface TerminalPorts {
   readonly location: LocationLike;
   readonly socket: SocketFactory;
-  /** The session's CSRF nonce, or `null` when the page has no session. */
-  csrf(): string | null;
-  /** Whether the daemon has proved it holds the session; the socket opens only once it has. Left out, it opens at once. */
-  prove?(secret: string): Promise<boolean>;
+  /** Whether the page holds a sign-in. */
+  signedIn(): boolean;
+  /**
+   * The signed handshake entries for a socket opened now, or `null` when the browser holds no key.
+   * The socket opens only once they are made. Left out, it opens at once.
+   */
+  offer?(url: string): Promise<readonly string[] | null>;
 }
 
 /** The live channel's private half: its socket, the daemon's handle and the view it draws into. */
@@ -159,9 +161,9 @@ export function terminalUrl(location: LocationLike): string {
   return `${scheme}//${location.host}/floor/terminal`;
 }
 
-/** Exactly two offers, in this order, as the gateway admits. */
-function terminalProtocols(csrf: string): readonly string[] {
-  return Object.freeze([TERMINAL_PROTOCOL, `${CSRF_PROTOCOL_PREFIX}${csrf}`]);
+/** Exactly four offers, in this order, as the gateway admits. */
+function protocols(signed: readonly string[]): readonly string[] {
+  return Object.freeze([TERMINAL_PROTOCOL, ...signed]);
 }
 
 /**
@@ -202,30 +204,29 @@ export function terminalOffer(floor: FloorState, row: AgentRow | null, channel: 
 export function attachTerminal(agent: string, ports: TerminalPorts): void {
   if (state.phase !== 'idle' && state.phase !== 'ended') return;
   const id = nextId++;
-  const csrf = floorRequestsPaused() ? null : ports.csrf();
-  if (csrf === null) {
+  if (floorRequestsPaused() || !ports.signedIn()) {
     commit({ phase: 'ended', id, agent, ending: 'unopened' });
     return;
   }
-  if (ports.prove === undefined) {
-    openChannel(id, agent, csrf, ports);
+  if (ports.offer === undefined) {
+    openChannel(id, agent, [], ports);
     return;
   }
   commit({ phase: 'opening', id, agent });
   const unopened = () => {
     if (state.phase === 'opening' && state.id === id) commit({ phase: 'ended', id, agent, ending: 'unopened' });
   };
-  ports.prove(csrf).then((proved) => {
+  ports.offer(terminalUrl(ports.location)).then((signed) => {
     if (state.phase !== 'opening' || state.id !== id) return;
-    if (proved) openChannel(id, agent, csrf, ports);
+    if (signed !== null) openChannel(id, agent, signed, ports);
     else unopened();
   }, unopened);
 }
 
-function openChannel(id: number, agent: string, csrf: string, ports: TerminalPorts): void {
+function openChannel(id: number, agent: string, signed: readonly string[], ports: TerminalPorts): void {
   let socket: SocketLike;
   try {
-    socket = ports.socket(terminalUrl(ports.location), terminalProtocols(csrf));
+    socket = ports.socket(terminalUrl(ports.location), protocols(signed));
   } catch {
     commit({ phase: 'ended', id, agent, ending: 'unopened' });
     return;
