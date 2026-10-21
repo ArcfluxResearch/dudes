@@ -12,7 +12,7 @@ fn settings(fixture: &common::Fixture) -> crate::Settings {
     settings.floor = Some(FloorSettings {
         assets_dir: PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/floor-release-v3"
+            "/tests/fixtures/floor-release-v4"
         )),
         port: Some(port),
     });

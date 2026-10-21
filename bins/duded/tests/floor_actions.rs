@@ -269,7 +269,7 @@ fn real_stub_seams_with(
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v3"
+    "/tests/fixtures/floor-release-v4"
 );
 
 fn enrolled_settings(fixture: &Fixture) -> duded::Settings {
@@ -12015,7 +12015,7 @@ fn browser_settings_view_is_an_exact_read_only_allowlist() {
             "workspaces": [{ "workspace_id": "repo_1", "label": "Service workspace",
                 "agent_usd_per_day_micros": "10000000", "agent_tokens_per_day": "123",
                 "goal_usd_micros": "5000000", "goal_tokens": "456" }],
-            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 3 }
+            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 4 }
         })
     );
     let bytes = frame["settings"].to_string();

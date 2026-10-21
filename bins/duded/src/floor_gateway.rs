@@ -4,9 +4,10 @@
 //! and retained in memory before one TCP port can become ready. Runtime requests therefore cross
 //! no filesystem seam and can reach only the finite routes this catalog contains.
 //!
-//! The browser stream upgrades only `GET /floor/stream`. It requires the exact two offered
-//! subprotocols `dudes-floor-v3` and `dudes-csrf.<43-character nonce>`, and echoes only the former.
-//! Exact Host and Origin are checked before the host-only session cookie and CSRF carrier.
+//! The browser stream upgrades only `GET /floor/stream`. It requires the offered subprotocols
+//! `dudes-floor-v4`, `dudes-sig.<signature>`, `dudes-time.<time>` and `dudes-id.<request id>`, and
+//! echoes only the first. Exact Host and Origin are checked before the host-only session cookie, and
+//! then the device's signature over the handshake request.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -73,7 +74,7 @@ use recovery::RecoveryRoute;
 /// The configured public root for the first static shell.
 pub const BASE_PATH: &str = "/floor/";
 /// The browser-wire generation required by the daemon and its matching Floor bundle.
-pub const BROWSER_WIRE_VERSION: u32 = 3;
+pub const BROWSER_WIRE_VERSION: u32 = 4;
 
 const MANIFEST_NAME: &str = "release-manifest.json";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;

@@ -707,7 +707,7 @@ test('an unset ceiling reads No limit, and the hop cap and the engine bound the 
 const SETTINGS = Object.freeze({
   switches: { answer: false, control: false, recovery: false, goal: false, retire: false, terminal: false, hire: true, git: false, renew: false, board: false, diff: false, project: false },
   budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: '250000', per_turn_tokens: '20000' },
-  providers: ['claude', 'pi'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 3 },
+  providers: ['claude', 'pi'], workspaces: [], about: { daemon_version: '0.12.3', browser_wire_version: 4 },
 });
 
 test('with no project the Workspace step gives one setup command and no jargon', () => {

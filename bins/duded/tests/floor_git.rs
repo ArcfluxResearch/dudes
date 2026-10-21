@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v3"
+    "/tests/fixtures/floor-release-v4"
 );
 const WAIT: Duration = Duration::from_secs(20);
 

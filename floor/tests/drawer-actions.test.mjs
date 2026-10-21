@@ -51,7 +51,7 @@ function drawer({ off = [], fields = {} } = {}) {
   const settings = {
     switches: { answer: false, control: true, goal: false, retire: true, terminal: !off.includes('terminal'), hire: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
-    providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 3 },
+    providers: ['claude'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 4 },
   };
   return stage({ floor: { ...store.getFloorState(), settings } });
 }
