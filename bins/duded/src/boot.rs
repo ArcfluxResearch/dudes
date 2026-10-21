@@ -1690,99 +1690,7 @@ where
         .map(|receipt| receipt.run.clone());
     let issue_carry = floor_carry.clone();
     register_floor_carry(&mut dispatcher, floor_carry, run);
-    let floor_sessions = move |carry: &Option<crate::floor_session::FloorCarry>| {
-        carry
-            .as_ref()
-            .map(crate::floor_session::FloorCarry::sessions)
-            .cloned()
-            .ok_or_else(|| dudes_proto::rpc::RpcError {
-                code: dudes_proto::rpc::ErrorCode::InternalError.code(),
-                message: "the Floor is not configured: install the built Floor as a \
-                          `floor` directory beside duded (`cargo xtask dist` lays one out) \
-                          or as `share/dudes/floor` beside duded's `bin` directory \
-                          (install.sh puts one there) and restart the daemon; \
-                          DUDES_FLOOR_ASSETS names another directory, \
-                          but only for a duded started directly, because `dudes quickstart` \
-                          does not pass it on"
-                    .to_owned(),
-                data: None,
-            })
-    };
-    let issuing = issue_carry.clone();
-    dispatcher.register(
-        Method::FloorSessionIssue,
-        // The local operator mints only a read-only web bootstrap.
-        Requirement::Operator,
-        move |call| {
-            let params: dudes_proto::rpc::floor::SessionIssueParams =
-                dudes_rpc::methods::params(&call)?;
-            let sessions = floor_sessions(&issuing)?;
-            let result =
-                sessions
-                    .issue_for(params.purpose)
-                    .map_err(|_| dudes_proto::rpc::RpcError {
-                        code: dudes_proto::rpc::ErrorCode::InternalError.code(),
-                        message: "the Floor session is unavailable".to_owned(),
-                        data: None,
-                    })?;
-            dudes_rpc::methods::encode(Method::FloorSessionIssue, &result)
-        },
-    );
-    let listing = issue_carry.clone();
-    dispatcher.register(
-        Method::FloorDevicesList,
-        // Who is signed in is the operator's to see; an agent never learns it.
-        Requirement::Operator,
-        move |call| {
-            let _: dudes_proto::rpc::Empty = dudes_rpc::methods::params(&call)?;
-            let sessions = floor_sessions(&listing)?;
-            let devices = sessions
-                .devices(None)
-                .into_iter()
-                .map(|device| dudes_proto::rpc::floor::DeviceEntry {
-                    device: device.device,
-                    name: device.name,
-                    signed_in: device.signed_in,
-                    first_used: device.first_used,
-                    last_used: device.last_used,
-                    new: device.new,
-                })
-                .collect();
-            dudes_rpc::methods::encode(
-                Method::FloorDevicesList,
-                &dudes_proto::rpc::floor::DevicesListResult { devices },
-            )
-        },
-    );
-    dispatcher.register(
-        Method::FloorDevicesRemove,
-        Requirement::Operator,
-        move |call| {
-            let params: dudes_proto::rpc::floor::DeviceRemoveParams =
-                dudes_rpc::methods::params(&call)?;
-            let sessions = floor_sessions(&issue_carry)?;
-            let removed = match sessions.remove_device(
-                params.device,
-                dudes_proto::record::FloorDeviceRemoval::Removed,
-            ) {
-                crate::floor_session::Removal::Removed => true,
-                crate::floor_session::Removal::Unknown => false,
-                crate::floor_session::Removal::Unavailable => {
-                    return Err(dudes_proto::rpc::RpcError {
-                        code: dudes_proto::rpc::ErrorCode::InternalError.code(),
-                        message: "the daemon could not record that; the browser is still \
-                                  signed in"
-                            .to_owned(),
-                        data: None,
-                    });
-                }
-            };
-            dudes_rpc::methods::encode(
-                Method::FloorDevicesRemove,
-                &dudes_proto::rpc::floor::DeviceRemoveResult { removed },
-            )
-        },
-    );
+    register_floor_sessions(&mut dispatcher, issue_carry);
     let reloader = crate::enrollment_reload::Reloader::new(
         settings.operator_config.clone(),
         handle.clone(),
@@ -1832,6 +1740,106 @@ where
         },
     );
     dispatcher
+}
+
+/// `floor.session.issue`, `floor.devices.list` and `floor.devices.remove`: the operator's doors to
+/// the Floor's sign-in links and signed-in browsers. A daemon that serves no Floor says how to
+/// get one.
+fn register_floor_sessions(
+    dispatcher: &mut Dispatcher,
+    carry: Option<crate::floor_session::FloorCarry>,
+) {
+    let held = carry.map(|carry| carry.sessions().clone());
+    let floor_sessions = |held: Option<crate::floor_session::FloorSessions>| {
+        held.ok_or_else(|| dudes_proto::rpc::RpcError {
+            code: dudes_proto::rpc::ErrorCode::InternalError.code(),
+            message: "the Floor is not configured: install the built Floor as a \
+                          `floor` directory beside duded (`cargo xtask dist` lays one out) \
+                          or as `share/dudes/floor` beside duded's `bin` directory \
+                          (install.sh puts one there) and restart the daemon; \
+                          DUDES_FLOOR_ASSETS names another directory, \
+                          but only for a duded started directly, because `dudes quickstart` \
+                          does not pass it on"
+                .to_owned(),
+            data: None,
+        })
+    };
+    let issuing = held.clone();
+    dispatcher.register(
+        Method::FloorSessionIssue,
+        // The local operator mints only a read-only web bootstrap.
+        Requirement::Operator,
+        move |call| {
+            let params: dudes_proto::rpc::floor::SessionIssueParams =
+                dudes_rpc::methods::params(&call)?;
+            let sessions = floor_sessions(issuing.clone())?;
+            let result =
+                sessions
+                    .issue_for(params.purpose)
+                    .map_err(|_| dudes_proto::rpc::RpcError {
+                        code: dudes_proto::rpc::ErrorCode::InternalError.code(),
+                        message: "the Floor session is unavailable".to_owned(),
+                        data: None,
+                    })?;
+            dudes_rpc::methods::encode(Method::FloorSessionIssue, &result)
+        },
+    );
+    let listing = held.clone();
+    dispatcher.register(
+        Method::FloorDevicesList,
+        // Who is signed in is the operator's to see; an agent never learns it.
+        Requirement::Operator,
+        move |call| {
+            let _: dudes_proto::rpc::Empty = dudes_rpc::methods::params(&call)?;
+            let sessions = floor_sessions(listing.clone())?;
+            let devices = sessions
+                .devices(None)
+                .into_iter()
+                .map(|device| dudes_proto::rpc::floor::DeviceEntry {
+                    device: device.device,
+                    name: device.name,
+                    signed_in: device.signed_in,
+                    first_used: device.first_used,
+                    last_used: device.last_used,
+                    new: device.new,
+                })
+                .collect();
+            dudes_rpc::methods::encode(
+                Method::FloorDevicesList,
+                &dudes_proto::rpc::floor::DevicesListResult { devices },
+            )
+        },
+    );
+    let removing = held;
+    dispatcher.register(
+        Method::FloorDevicesRemove,
+        Requirement::Operator,
+        move |call| {
+            let params: dudes_proto::rpc::floor::DeviceRemoveParams =
+                dudes_rpc::methods::params(&call)?;
+            let sessions = floor_sessions(removing.clone())?;
+            let removed = match sessions.remove_device(
+                params.device,
+                dudes_proto::record::FloorDeviceRemoval::Removed,
+            ) {
+                crate::floor_session::Removal::Removed => true,
+                crate::floor_session::Removal::Unknown => false,
+                crate::floor_session::Removal::Unavailable => {
+                    return Err(dudes_proto::rpc::RpcError {
+                        code: dudes_proto::rpc::ErrorCode::InternalError.code(),
+                        message: "the daemon could not record that; the browser is still \
+                                  signed in"
+                            .to_owned(),
+                        data: None,
+                    });
+                }
+            };
+            dudes_rpc::methods::encode(
+                Method::FloorDevicesRemove,
+                &dudes_proto::rpc::floor::DeviceRemoveResult { removed },
+            )
+        },
+    );
 }
 
 fn register_closing(dispatcher: &mut Dispatcher, handle: Handle) {

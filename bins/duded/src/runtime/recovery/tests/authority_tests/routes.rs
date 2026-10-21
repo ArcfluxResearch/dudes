@@ -391,19 +391,9 @@ fn http_recovery_authentication_refuses_foreign_expired_and_revoked_sessions() {
             403
         );
     }
-    let old = crate::floor_session::FloorCarry::new(
-        foreign.clone(),
-        None,
-        crate::baseline::CheckRuns::default(),
-    );
-    let exported = old.export(Some("before"));
+    let rows = foreign.rows_for_test();
     foreign.invalidate();
-    let current = crate::floor_session::FloorCarry::new(
-        owned.sessions.clone(),
-        None,
-        crate::baseline::CheckRuns::default(),
-    );
-    assert_eq!(current.import(Some("after"), &exported), 1);
+    owned.sessions.seed(&rows);
     assert_eq!(
         post(
             owned.addr,
@@ -414,7 +404,7 @@ fn http_recovery_authentication_refuses_foreign_expired_and_revoked_sessions() {
         )
         .0,
         200,
-        "a carried session keeps working with the secret its page holds"
+        "a device the journal brings back keeps working with the secret its page holds"
     );
     assert!(
         owned

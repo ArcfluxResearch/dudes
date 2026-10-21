@@ -1178,6 +1178,11 @@ impl Handle {
         self.jobs.send(job).map_err(|_| Unavailable)
     }
 
+    /// Whether the exit path has started, so work that waits on the loop should stop waiting.
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::Acquire)
+    }
+
     /// Queue one strictly typed Chat operation on the daemon writer.
     ///
     /// # Errors

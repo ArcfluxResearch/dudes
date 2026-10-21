@@ -2754,7 +2754,11 @@ fn expired_follower_after_registry_lock_wait_gets_empty_forbidden() {
         head.starts_with("HTTP/1.1 403 Forbidden"),
         "expired follower must not get 202: {head}"
     );
-    assert!(body.is_null(), "no typed attempt ID after expiry");
+    assert_eq!(
+        body,
+        json!({"session": "gone", "reason": "expired"}),
+        "no typed attempt ID after expiry, only that the device ran out"
+    );
     assert_eq!(
         fixture
             .records()
@@ -2810,8 +2814,14 @@ fn expired_same_key_follower_blocked_in_reservation_gets_empty_forbidden() {
     let origin = format!("http://{host}");
     let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
     // Idle-fresh up to one minute short of the absolute bound, so only that bound can pass.
-    for _ in 0..31 {
-        clock.advance(23 * 60 * 60 * 1000);
+    assert!(
+        authorizer
+            .authorize_read(&host, &origin, &cookie, &csrf)
+            .is_some(),
+        "its first request, inside the day"
+    );
+    for _ in 0..3 {
+        clock.advance(29 * 24 * 60 * 60 * 1000);
         assert!(
             authorizer
                 .authorize_read(&host, &origin, &cookie, &csrf)
@@ -2819,7 +2829,7 @@ fn expired_same_key_follower_blocked_in_reservation_gets_empty_forbidden() {
             "activity keeps the session idle-fresh"
         );
     }
-    clock.advance((7 * 60 - 1) * 60 * 1000);
+    clock.advance((3 * 24 * 60 - 1) * 60 * 1000);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
@@ -4129,8 +4139,10 @@ fn answers_for(records: &[Record], agent: AgentId) -> usize {
 
 fn empty_refusal(head: &str, body: &Value, status: &str) {
     assert!(head.starts_with(status), "{head}");
+    // A device that ran out says so, and says nothing else. Every other refusal is empty.
+    let ran_out = serde_json::json!({"session": "gone", "reason": "expired"});
     assert!(
-        body.is_null(),
+        body.is_null() || (status == "HTTP/1.1 403 Forbidden" && *body == ran_out),
         "an empty refusal carries no envelope: {body}"
     );
 }
@@ -4514,7 +4526,7 @@ fn browser_answer_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(24 * 60 * 60 * 1000);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
     let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
     let (head, response) = post_answer(
         addr,
@@ -6371,7 +6383,7 @@ fn browser_pause_resume_refuses_wrong_session_host_origin_and_csrf_without_effec
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(24 * 60 * 60 * 1000);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
     let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
     for path in [PAUSE, RESUME] {
         let (head, response) = post_control(
@@ -8074,7 +8086,7 @@ fn browser_goal_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(24 * 60 * 60 * 1000);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
     let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
     let (head, response) = post_goal(
         addr,
@@ -11413,7 +11425,7 @@ fn browser_retire_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(24 * 60 * 60 * 1000);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
     let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
     let (head, response) = post_retire(
         addr,
@@ -14095,7 +14107,7 @@ fn renewal_waits_for_the_next_day(
     );
     assert_eq!(managed_turns(fixture, g2), 0, "no turn on the first day");
 
-    clock.advance(86_400_000);
+    clock.advance(30 * 86_400_000);
     running.handle.input(Input::Tick);
     nth_turn(fixture, g2, 0);
     assert_eq!(managed_turns(fixture, g2), 1, "one turn on the next day");
@@ -14530,7 +14542,7 @@ fn browser_renew_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(24 * 60 * 60 * 1000);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
     let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
     let renewal = renew_body(&request_id(1), agent, goal, SHOWN);
     let (head, response) = post_renew(addr, &expired_cookie, &expired_csrf, &renewal);

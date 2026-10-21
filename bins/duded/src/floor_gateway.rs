@@ -1478,23 +1478,7 @@ fn dispatch<'a>(
         (Admitted::SignIn(sign_in), _) => exchange_response(sessions, &sign_in, body),
         (Admitted::Proof(ask), _) => proof_response(sessions, &ask, body),
         (Admitted::Standing(identity), _) => {
-            let gone = identity
-                .is_none()
-                .then(|| {
-                    head.credentials.as_ref().and_then(|credentials| {
-                        sessions.gone_reason(&credentials.cookie, &credentials.secret)
-                    })
-                })
-                .flatten();
-            match route.standing() {
-                Some(StandingRoute::Check) => {
-                    standing_response(identity.as_ref(), sessions.is_running(), &head, false, gone)
-                }
-                Some(StandingRoute::End) => {
-                    standing_response(identity.as_ref(), sessions.is_running(), &head, true, gone)
-                }
-                None => error_response(403, "Forbidden"),
-            }
+            standing_dispatch(route, identity.as_ref(), sessions, &head)
         }
         (Admitted::Socket(session), _) => {
             return Some(ConnectionAction::Upgrade(Upgrade {
@@ -1581,6 +1565,33 @@ fn dispatch<'a>(
         _ => error_response(403, "Forbidden"),
     };
     Some(ConnectionAction::Response(response))
+}
+
+/// The answer to a check or a sign-out. A browser whose device is gone is told why when it holds
+/// the device's cookie and secret.
+fn standing_dispatch<'a>(
+    route: Route,
+    identity: Option<&SessionIdentity>,
+    sessions: &FloorSessions,
+    head: &Head,
+) -> Response<'a> {
+    let gone = identity
+        .is_none()
+        .then(|| {
+            head.credentials.as_ref().and_then(|credentials| {
+                sessions.gone_reason(&credentials.cookie, &credentials.secret)
+            })
+        })
+        .flatten();
+    match route.standing() {
+        Some(StandingRoute::Check) => {
+            standing_response(identity, sessions.is_running(), head, false, gone)
+        }
+        Some(StandingRoute::End) => {
+            standing_response(identity, sessions.is_running(), head, true, gone)
+        }
+        None => error_response(403, "Forbidden"),
+    }
 }
 
 fn read_body(
@@ -3424,10 +3435,28 @@ struct LoopDevices {
 }
 
 impl crate::floor_session::DeviceSink for LoopDevices {
+    /// Wait for the writer's answer, but not past the daemon's exit or a few seconds: a request
+    /// that arrives while the writer is stopping must not hold the exit path up.
     fn record(&self, change: dudes_supervisor::FloorDeviceChange) -> bool {
-        self.handle
-            .ask(crate::ports::Ask::FloorDevice(change))
-            .is_ok()
+        const BOUND: Duration = Duration::from_secs(5);
+        let Ok(answer) = self
+            .handle
+            .ask_queued(crate::ports::Ask::FloorDevice(change))
+        else {
+            return false;
+        };
+        let started = Instant::now();
+        loop {
+            match answer.recv_timeout(Duration::from_millis(50)) {
+                Ok(done) => return done.is_ok(),
+                Err(RecvTimeoutError::Timeout) => {
+                    if self.handle.is_stopping() || started.elapsed() >= BOUND {
+                        return false;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => return false,
+            }
+        }
     }
 
     fn announce(&self, event: &crate::floor_session::DeviceEvent) {

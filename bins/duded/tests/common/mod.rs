@@ -1635,7 +1635,27 @@ impl Fixture {
     /// both come through here, so a daemon that journaled an admitted turn would turn red on
     /// whichever test caught it rather than only on the one that went looking. The machine's own
     /// half of the same rule is in `dudes_supervisor::testing::Harness::step`.
+    ///
+    /// Floor device records are left out: a browser signing in and making its first request writes
+    /// them, and a test that counts what one request appended should not see the browser arrive.
+    /// [`Self::device_records`] returns them.
     pub(crate) fn entries(&self) -> Vec<(Lsn, Entry)> {
+        self.all_entries()
+            .into_iter()
+            .filter(|(_, entry)| !entry.record.is_floor_device())
+            .collect()
+    }
+
+    /// Every Floor device record on the disk right now, in order.
+    pub(crate) fn device_records(&self) -> Vec<Record> {
+        self.all_entries()
+            .into_iter()
+            .map(|(_, entry)| entry.record)
+            .filter(Record::is_floor_device)
+            .collect()
+    }
+
+    fn all_entries(&self) -> Vec<(Lsn, Entry)> {
         let dir = self.journal_dir();
         if !dir.exists() {
             return Vec::new();

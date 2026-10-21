@@ -353,6 +353,20 @@ test('a frame that is not browser-wire-v3 is refused', () => {
   assert.doesNotThrow(() => apply(HEARTBEAT), 'the fifth listed message is admitted too');
 });
 
+test('a frame about a browser signing in or out is a listed message and moves nothing', () => {
+  apply(snapshot([{ id: ADA, role: 'backend engineer', goal: { text: 'ship it' } }]));
+  const before = getFloorState();
+  let notified = 0;
+  subscribeToFloor(() => {
+    notified += 1;
+  });
+  for (const type of ['floor.device.enrolled', 'floor.device.acknowledged', 'floor.device.removed']) {
+    assert.doesNotThrow(() => apply(JSON.stringify({ type, device: 'a'.repeat(64) })), type);
+  }
+  assert.equal(getFloorState(), before, 'the view is the same object');
+  assert.equal(notified, 0, 'nothing was published');
+});
+
 test('a heartbeat moves nothing in the store', () => {
   apply(snapshot([{ id: ADA, role: 'backend engineer', goal: { text: 'ship it' } }, { id: GRACE }]));
   const before = getFloorState();

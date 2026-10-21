@@ -503,7 +503,7 @@ pub fn worktrees(
 
 /// How long a link stays good, in the words a person reads.
 fn link_window(seconds: u64) -> String {
-    if seconds >= 120 && seconds % 60 == 0 {
+    if seconds >= 120 && seconds.is_multiple_of(60) {
         format!("{} minutes", seconds / 60)
     } else {
         format!("{seconds} seconds")

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use dudes_proto::record::{FloorDeviceRemoval, Hex32};
 use dudes_proto::rpc::floor::{
@@ -812,7 +812,10 @@ impl StreamSession {
                 }
             }
         };
-        self.inner.settle(used);
+        // The socket loop asks every few milliseconds, so it settles only when a use is due.
+        if used.is_some() {
+            self.inner.settle(used);
+        }
         live
     }
 
@@ -867,8 +870,8 @@ struct Inner {
     last_browser_epoch: AtomicU64,
     registry: registry::Registry,
     reserve_hook: Mutex<Option<ReserveHook>>,
-    /// Where device changes become durable and reach the open pages. Set once by the daemon.
-    sink: OnceLock<Arc<dyn DeviceSink>>,
+    /// Where device changes become durable and reach the open pages. Set by the daemon.
+    sink: RwLock<Option<Arc<dyn DeviceSink>>>,
     /// Random for this run. It stands in for the key of a session that does not exist, so a proof
     /// asked for twice under such a cookie is the same both times, as it is under a live one.
     absent_key: [u8; 32],
@@ -879,13 +882,20 @@ impl Inner {
         host == self.host && origin == self.origin
     }
 
+    fn sink(&self) -> Option<Arc<dyn DeviceSink>> {
+        self.sink
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     /// Make one change durable. Without a sink there is nothing to make durable.
     fn record(&self, change: FloorDeviceChange) -> bool {
-        self.sink.get().is_none_or(|sink| sink.record(change))
+        self.sink().is_none_or(|sink| sink.record(change))
     }
 
     fn announce(&self, event: &DeviceEvent) {
-        if let Some(sink) = self.sink.get() {
+        if let Some(sink) = self.sink() {
             sink.announce(event);
         }
     }
@@ -1123,7 +1133,6 @@ impl State {
             .collect();
         for key in dead {
             if let Some(session) = self.sessions.remove(&key) {
-                session.revoked.store(true, Ordering::Release);
                 let reason = session.expiry(now);
                 self.remember(&key, &session, reason);
                 self.ended.push((session.id, reason));
@@ -1220,6 +1229,35 @@ impl FloorSessions {
     pub(crate) fn registry_counts_for_test(&self) -> (usize, usize) {
         let state = self.0.registry.lock();
         (state.pending.len(), state.sessions.len())
+    }
+
+    /// The rows the journal would hold for the devices signed in now, so a test can start a run
+    /// that finds them.
+    #[cfg(test)]
+    pub(crate) fn rows_for_test(&self) -> BTreeMap<Hex32, DeviceRow> {
+        let origin = self.0.origin.clone();
+        self.0
+            .registry
+            .lock()
+            .sessions
+            .iter()
+            .map(|(cookie, session)| {
+                (
+                    session.id,
+                    DeviceRow {
+                        origin: origin.clone(),
+                        name: session.name.clone(),
+                        cookie: Hex32::new(*cookie),
+                        secret: Hex32::new(session.csrf.expect("a secret")),
+                        enrolled: session.created,
+                        first_used: session.first_used,
+                        last_used: Some(session.last_used),
+                        acknowledged: None,
+                        removed: None,
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Admit one exact-origin browser action — onboarding, an answer, a pause or a resume — and
@@ -1322,7 +1360,7 @@ impl FloorSessions {
             last_browser_epoch: AtomicU64::new(0),
             registry: registry::Registry::new(clock),
             reserve_hook: Mutex::new(None),
-            sink: OnceLock::new(),
+            sink: RwLock::new(None),
             absent_key: {
                 let mut bytes = [0_u8; 32];
                 getrandom::fill(&mut bytes).expect("the operating system's entropy source");
@@ -1331,9 +1369,16 @@ impl FloorSessions {
         }))
     }
 
-    /// Give the device table somewhere to be made durable. The first sink stays.
+    /// Give the device table somewhere to be made durable.
     pub(crate) fn install_sink(&self, sink: Arc<dyn DeviceSink>) {
-        let _ = self.0.sink.set(sink);
+        *self.0.sink.write().unwrap_or_else(PoisonError::into_inner) = Some(sink);
+    }
+
+    /// Let a test that drives the daemon's loop by hand sign browsers in without a running loop to
+    /// make them durable.
+    #[cfg(test)]
+    pub(crate) fn detach_devices_for_test(&self) {
+        *self.0.sink.write().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     /// Seed the table with the devices the journal holds. A device signed in on another origin
@@ -3047,12 +3092,12 @@ mod device_tests {
             Some(GoneReason::Replaced),
             "the device nobody used goes before one still flagged new or the oldest"
         );
-        assert!(
+        assert_eq!(
             survivors(&d, &devices)
                 .iter()
                 .filter(|alive| **alive)
-                .count()
-                == 7
+                .count(),
+            7
         );
         assert!(acts(&d.sessions, &ninth));
         assert_eq!(d.journal.removals(), [FloorDeviceRemoval::Replaced]);
@@ -3303,7 +3348,7 @@ mod device_tests {
         let me = listed.iter().find(|view| view.this).expect("this device");
         assert_eq!(me.device, second_id);
         assert!(!me.new);
-        assert!(listed.iter().filter(|view| view.new).count() == 1);
+        assert_eq!(listed.iter().filter(|view| view.new).count(), 1);
         assert_eq!(
             d.sessions.keep_device(Hex32::new([7; 32]), &other),
             Keep::Unknown
@@ -3388,30 +3433,7 @@ mod carry_tests {
 
     /// The rows the journal would hold for the devices a run has signed in.
     fn rows_of(from: &Run) -> BTreeMap<Hex32, DeviceRow> {
-        from.carry
-            .sessions()
-            .0
-            .registry
-            .lock()
-            .sessions
-            .iter()
-            .map(|(cookie, session)| {
-                (
-                    session.id,
-                    DeviceRow {
-                        origin: ORIGIN.to_owned(),
-                        name: session.name.clone(),
-                        cookie: Hex32::new(*cookie),
-                        secret: Hex32::new(session.csrf.expect("a secret")),
-                        enrolled: session.created,
-                        first_used: session.first_used,
-                        last_used: Some(session.last_used),
-                        acknowledged: None,
-                        removed: None,
-                    },
-                )
-            })
-            .collect()
+        from.carry.sessions().rows_for_test()
     }
 
     /// A run over the same devices: the journal brings them back with the same cookies, so the

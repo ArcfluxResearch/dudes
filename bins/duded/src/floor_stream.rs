@@ -1260,7 +1260,7 @@ impl FloorStreams {
             }),
         };
         if let Ok(bytes) = serde_json::to_vec(&frame) {
-            broadcast_frame(&self.0, Arc::from(bytes));
+            broadcast_frame(&self.0, &Arc::from(bytes));
         }
     }
 
@@ -1711,12 +1711,12 @@ fn broadcast(inner: &Inner, kind: &'static str) -> usize {
 }
 
 /// Enqueue one prebuilt frame to every live subscriber, and count who got it.
-fn broadcast_frame(inner: &Inner, frame: Arc<[u8]>) -> usize {
+fn broadcast_frame(inner: &Inner, frame: &Arc<[u8]>) -> usize {
     let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
     if state.ended {
         return 0;
     }
-    deliver(&mut state, &frame)
+    deliver(&mut state, frame)
 }
 
 fn deliver(state: &mut State, frame: &Arc<[u8]>) -> usize {

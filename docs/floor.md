@@ -43,18 +43,33 @@ twelve and HQ with sixteen:
 default browser (`open` on macOS, `xdg-open` on Linux). `dudes quickstart` ends by doing the same.
 Over SSH, or where no opener is found, `dudes open` prints
 the link instead, to paste into a browser on this computer within 60 seconds.
-`dudes floor open` always prints the link and opens nothing.
+`dudes floor open` always prints the link and opens nothing. Because you carry that link to another
+browser yourself, it works for 10 minutes. It has its own slots, and the daemon keeps the last four it
+printed, so printing a new one drops the oldest unused one and never stops `dudes open` from making its own.
 
-A link works once, in one browser, and only for 60 seconds. The page signs in with it as it loads and
-removes it from the address bar and the browser's history. A browser that has signed in keeps its own
-session, and the same link used in a second browser, or after it expired, is refused. The page then
-tells you to open Dudes again. A session renews each time it is used, and ends after 24 hours without
-use, after 30 days in all, or when you choose **Sign out**, which also closes its open connections.
-The daemon allows four Floor sessions at a time; a fifth sign-in ends the one used longest ago, and
-that browser shows the signed-out screen. A page whose session the daemon no longer knows shows the
-same screen, and a page whose connection merely dropped keeps its session and reconnects. Copying the address from
-the browser's address bar does not help, because the link is gone from it. `dudes stop` and `dudes start` end every Floor session; [after you
-upgrade](#after-you-upgrade) explains what `dudes upgrade` does instead. The link is a loopback address, so on a remote machine forward the port first, for example `ssh -L <port>:127.0.0.1:<port> <host>`, and paste the link into a browser on your own computer.
+A link works once, in one browser. The page signs in with it as it loads and
+removes it from the address bar and the browser's history. The same link used in a second browser, or
+after it expired, is refused. The page then tells you to open Dudes again. Copying the address from
+the browser's address bar does not help, because the link is gone from it. The link is a loopback address, so on a remote machine forward the port first, for example `ssh -L <port>:127.0.0.1:<port> <host>`, and paste the link into a browser on your own computer.
+
+### Signed-in browsers
+
+Each browser that signs in becomes a *device*: the daemon writes it to its journal with a name the
+browser gives itself, such as "Chrome on macOS". The name is a label the browser chose, not proof of
+what it is. `dudes devices` lists every signed-in browser, with when it signed in, when it first and
+last made a request, and a `new` mark on one nobody has kept yet. `dudes devices remove <id>` signs
+one out and closes its open connections at once; the start of the id is enough when it names one
+browser, and when it names more than one the command lists them and removes nothing.
+
+A device stays signed in for 30 days without use and 90 days in all. It stays signed in through
+`dudes stop` and `dudes start`, because the journal holds it, as long as the Floor comes back on the
+same port. A device that signs in and makes no request within 24 hours is removed. You can also end a
+device with **Sign out**, which closes its open connections, or with `dudes devices remove`.
+
+The daemon keeps at most eight devices. A ninth sign-in removes the first of these that exists: a
+device that never made a request, a device nobody has kept yet, then the device used longest ago. The
+browser it removes shows the signed-out screen. A page whose device the daemon no longer knows shows
+the same screen, and a page whose connection merely dropped keeps its device and reconnects.
 
 **Setup** shows each engine the daemon turned on and whether it found that engine's program on its
 `PATH`. When you hire and the engine you chose is installed but signed out, the hire flow says so and
@@ -155,24 +170,20 @@ After upgrading Dudes, copy any unsent drafts before reloading an open Floor tab
 Floor bundle must have matching release and browser protocol versions. An older open tab cannot
 connect to an incompatible daemon. Reload the tab explicitly to load the installed bundle.
 
-`dudes upgrade` keeps the Floor sign-ins that are open when it starts, so a reload is all it
-takes. When the daemon stops, an open tab reconnects for about eight seconds, then stops sending
-anything that carries your sign-in and checks every two seconds, without it, whether Dudes is
-back. After an upgrade it says "Dudes was updated. Reload this tab to continue." After the reload
-the tab is signed in again and shows the same agents, with no new link.
-The sign-in keeps its original time limits: the idle limit of 24 hours, and the 30-day limit
-that counts from the first sign-in. Ticket and check allowances carry over too, so an upgrade does
-not refill them.
+Signed-in browsers stay signed in across `dudes upgrade`, `dudes stop` and `dudes start`, so a reload
+is all it takes. When the daemon stops, an open tab reconnects for about eight seconds, then stops
+sending anything that carries your sign-in and checks every two seconds, without it, whether Dudes
+is back. After an upgrade it says "Dudes was updated. Reload this tab to continue." After the reload
+the tab is signed in again and shows the same agents, with no new link. Each device keeps its own
+time limits. Ticket and check allowances carry over through `dudes upgrade`, so an upgrade does not
+refill them. A plain `dudes stop` and `dudes start` starts them again.
 
-Only `dudes upgrade` carries sign-ins. A plain `dudes stop` and `dudes start` signs every browser
-out. The tab says "Dudes restarted. Reload this tab to continue.", and the reload then asks you to
-open Dudes again. A tab that finds
-no daemon for ten minutes stops checking and shows that same sign-in message. An upgrade that
-cannot keep a sign-in, for example because the Floor comes back on a different port or the upgrade
-is interrupted, ends the same way.
+A tab that finds no daemon for ten minutes stops checking and shows the sign-in message. A browser
+signs in again if the Floor comes back on a different port, because the sign-in belongs to the
+address it was made on.
 
-The first upgrade from a version that predates this feature still signs open tabs out, because
-the older daemon cannot hand its sign-ins over.
+The first upgrade from a version that kept sign-ins only in memory still signs open tabs out once,
+because that daemon has no devices to hand over. Open Dudes again with `dudes open`.
 
 Do not paste a new sign-in link into a tab that says Dudes stopped answering. Reload the tab first.
 
@@ -197,8 +208,8 @@ unsigned ASCII decimal that fits `u16`; `0` asks the operating system for a free
 port stops startup. Without it, the daemon first asks for the port its last run bound, which it
 keeps in a `floor-port` file in the state directory, and takes a free port when that one is taken.
 The Floor's address then stays the same across restarts, so the roster order a
-browser keeps for it survives `dudes stop` and `dudes start`, and it is what lets `dudes upgrade` keep
-your sign-ins. The startup line and
+browser keeps for it survives `dudes stop` and `dudes start`, and it is what keeps your devices
+signed in. The startup line and
 `dudes open` both show the port chosen. `dudes quickstart` and `dudes start` pass
 neither variable to the daemon. Dudes always binds `127.0.0.1`; neither variable can change the host.
 

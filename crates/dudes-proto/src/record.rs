@@ -2130,6 +2130,19 @@ pub struct PayloadRef {
 }
 
 impl Record {
+    /// Whether this is one of the records that keep the Floor's device table.
+    #[must_use]
+    pub const fn is_floor_device(&self) -> bool {
+        matches!(
+            self,
+            Self::FloorDeviceEnrolled { .. }
+                | Self::FloorDeviceFirstUsed { .. }
+                | Self::FloorDeviceAcknowledged { .. }
+                | Self::FloorDeviceRemoved { .. }
+                | Self::FloorDeviceUsed { .. }
+        )
+    }
+
     /// Whether this record must be written in the required-record frame format.
     #[must_use]
     pub const fn requires_required_frame(&self) -> bool {

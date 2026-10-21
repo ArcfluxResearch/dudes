@@ -241,13 +241,19 @@ fn bootstrap_exchange_is_single_use_origin_bound_and_expiring() {
         sessions
             .authorize_read(&host, &origin, &idle_cookie, &idle_csrf)
             .is_none(),
-        "24 hours idle expires the session"
+        "a browser that made no request in a day is removed"
     );
 
     let active = issue(&settings);
     let (active_cookie, active_csrf) = exchange(addr, &host, &origin, &active.bootstrap);
-    for _ in 0..31 {
-        clock.advance(23 * HOUR_MS);
+    assert!(
+        sessions
+            .authorize_read(&host, &origin, &active_cookie, &active_csrf)
+            .is_some(),
+        "its first request, inside the day"
+    );
+    for _ in 0..3 {
+        clock.advance(29 * 24 * HOUR_MS);
         assert!(
             sessions
                 .authorize_read(&host, &origin, &active_cookie, &active_csrf)
@@ -255,12 +261,12 @@ fn bootstrap_exchange_is_single_use_origin_bound_and_expiring() {
             "activity within the idle window keeps the session live"
         );
     }
-    clock.advance(8 * HOUR_MS);
+    clock.advance(4 * 24 * HOUR_MS);
     assert!(
         sessions
             .authorize_read(&host, &origin, &active_cookie, &active_csrf)
             .is_none(),
-        "thirty days absolute expires even an active session"
+        "ninety days absolute expires even an active session"
     );
 
     let before_restart = issue(&settings);
@@ -291,8 +297,8 @@ fn bootstrap_exchange_is_single_use_origin_bound_and_expiring() {
     assert!(
         restarted_sessions
             .authorize_read(&host, &origin, &old_cookie, &old_csrf)
-            .is_none(),
-        "a new daemon run does not accept the old session"
+            .is_some(),
+        "a new daemon run finds the device in the journal and accepts it"
     );
     common::start(second).stop(ExitCause::ShutdownRpc);
 }
@@ -836,14 +842,14 @@ fn carry_daemon(
     .expect("daemon boot")
 }
 
-/// What `dudes upgrade` does: export from the old run, stop it, start the next, import. A plain
-/// restart between two other runs restores nothing.
+/// What `dudes upgrade` does: export from the old run, stop it, start the next, import. The
+/// devices come back from the journal on their own; the export carries only the counts.
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one ordered scenario across three daemon runs"
+    reason = "one ordered scenario across two daemon runs"
 )]
-fn an_upgrade_carries_open_sign_ins_through_the_operator_door_and_a_plain_restart_does_not() {
+fn an_upgrade_carries_counts_through_the_operator_door_and_the_devices_come_from_the_journal() {
     use dudes_rpc::auth::PeerProvenance;
 
     let fixture = Fixture::new();
@@ -897,10 +903,10 @@ fn an_upgrade_carries_open_sign_ins_through_the_operator_door_and_a_plain_restar
                 "created",
                 "digest",
                 "last_used",
-                "secret",
                 "ticket_assigns",
                 "ticket_creates"
-            ]
+            ],
+            "no secret digest leaves"
         );
     }
     let import = serde_json::json!({ "exported": exported });
@@ -925,11 +931,19 @@ fn an_upgrade_carries_open_sign_ins_through_the_operator_door_and_a_plain_restar
     assert_eq!(daemon.floor_addr(), Some(addr));
     let authorizer = daemon.floor_session_authorizer().expect("authorizer");
     let mut running = common::start(daemon);
+    for (carried, secret) in [(&cookie, &csrf), (&other_cookie, &other_csrf)] {
+        assert!(
+            authorizer
+                .authorize_read(&host, &origin, carried, secret)
+                .is_some(),
+            "a restart keeps a device signed in, with no import"
+        );
+    }
     assert!(
         authorizer
-            .authorize_read(&host, &origin, &cookie, &csrf)
+            .authorize_read(&host, &origin, &cookie, &"A".repeat(SESSION_BOOTSTRAP_LEN))
             .is_none(),
-        "a plain restart before the import has signed everyone out"
+        "and no other secret works"
     );
 
     let imported = carry_call(
@@ -940,32 +954,6 @@ fn an_upgrade_carries_open_sign_ins_through_the_operator_door_and_a_plain_restar
     )
     .expect("the operator imports");
     assert_eq!(imported, serde_json::json!({ "restored": 2 }));
-    assert!(
-        authorizer
-            .authorize_read(&host, &origin, &cookie, &csrf)
-            .is_some(),
-        "the secret the page holds still works"
-    );
-    assert!(
-        authorizer
-            .authorize_read(&host, &origin, &cookie, &"A".repeat(SESSION_BOOTSTRAP_LEN))
-            .is_none(),
-        "and no other does"
-    );
-    let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
-    let (mut browser, upgrade) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
-    assert!(upgrade.starts_with("HTTP/1.1 101 "), "{upgrade:?}");
-    browser
-        .write_all(&masked_text(br#"{"type":"floor.subscribe"}"#))
-        .expect("subscribe");
-    let snapshot: serde_json::Value =
-        serde_json::from_slice(&server_text(&mut browser)).expect("snapshot JSON");
-    assert_eq!(
-        snapshot["projection"]["agents"][0]["id"],
-        serde_json::Value::String(agent.to_string()),
-        "the carried sign-in sees the agent hired in the earlier run"
-    );
-    drop(browser);
     let again = carry_call(
         &settings,
         CurrentMethod::FloorSessionImport,
@@ -974,18 +962,355 @@ fn an_upgrade_carries_open_sign_ins_through_the_operator_door_and_a_plain_restar
     )
     .expect("a second import is answered");
     assert_eq!(again, serde_json::json!({ "restored": 0 }));
+
+    let previous_release = serde_json::json!({ "exported": {
+        "run": "an-earlier-run",
+        "origin": origin,
+        "sessions": [{
+            "digest": "ab".repeat(32),
+            "secret": "cd".repeat(32),
+            "created": 1_799_999_000_000_i64,
+            "last_used": 1_799_999_500_000_i64,
+            "ticket_creates": 1,
+            "ticket_assigns": 0,
+            "check_runs": 0
+        }]
+    }});
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    let daemon = carry_daemon(&settings, &clock, &column);
+    let mut running = common::start(daemon);
+    assert_eq!(
+        carry_call(
+            &settings,
+            CurrentMethod::FloorSessionImport,
+            Some(previous_release),
+            operator(),
+        )
+        .expect("an export from the previous release imports"),
+        serde_json::json!({ "restored": 0 }),
+        "its sessions are ignored"
+    );
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+fn rpc(
+    settings: &duded::Settings,
+    method: Method,
+    params: Option<serde_json::Value>,
+    credential: Option<OperatorCredential>,
+) -> Result<serde_json::Value, RpcError> {
+    carry_call(settings, CurrentMethod::from(method), params, credential)
+}
+
+fn device_boot(
+    fixture: &Fixture,
+    clock: &Arc<TestClock>,
+    column: &Arc<ScriptedColumn>,
+) -> (duded::Settings, TestDaemon, String, String) {
+    let port = free_port();
+    let settings = settings(fixture, Some(port));
+    let host = format!("127.0.0.1:{port}");
+    let origin = format!("http://{host}");
+    let daemon = carry_daemon(&settings, clock, column);
+    (settings, daemon, host, origin)
+}
+
+/// A device lives in the journal: a restart keeps it signed in, with its cookie and secret
+/// unchanged, and one that was removed stays removed.
+#[test]
+fn a_device_survives_a_restart_and_a_removed_one_stays_removed() {
+    use dudes_rpc::auth::PeerProvenance;
+
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
+    let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
+    let (settings, daemon, host, origin) = device_boot(&fixture, &clock, &column);
+    let addr = daemon.floor_addr().expect("Floor address");
+    let authorizer = daemon.floor_session_authorizer().expect("authorizer");
+    let mut running = common::start(daemon);
+    let named = |name: &str| format!("{}\n{name}", issue(&settings).bootstrap);
+    let (kept, kept_secret) = exchange(addr, &host, &origin, &named("Chrome on macOS"));
+    let (gone, gone_secret) = exchange(addr, &host, &origin, &named("Firefox on Linux"));
+    assert!(
+        authorizer
+            .authorize_read(&host, &origin, &kept, &kept_secret)
+            .is_some()
+    );
+
+    let listed = rpc(
+        &settings,
+        Method::FloorDevicesList,
+        None,
+        Some(credential_of(&settings)),
+    )
+    .expect("the operator lists");
+    let devices = listed["devices"].as_array().expect("devices");
+    assert_eq!(devices.len(), 2);
+    let id_of = |name: &str| {
+        devices
+            .iter()
+            .find(|device| device["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is listed"))["device"]
+            .as_str()
+            .expect("an id")
+            .to_owned()
+    };
+    assert!(
+        devices
+            .iter()
+            .find(|device| device["name"] == "Chrome on macOS")
+            .expect("listed")
+            .get("first_used")
+            .is_some(),
+        "the used one shows its first use"
+    );
+    let removed = rpc(
+        &settings,
+        Method::FloorDevicesRemove,
+        Some(serde_json::json!({ "device": id_of("Firefox on Linux") })),
+        Some(credential_of(&settings)),
+    )
+    .expect("the operator removes");
+    assert_eq!(removed, serde_json::json!({ "removed": true }));
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
     let daemon = carry_daemon(&settings, &clock, &column);
     let authorizer = daemon.floor_session_authorizer().expect("authorizer");
     let mut running = common::start(daemon);
-    for (carried, secret) in [(&cookie, &csrf), (&other_cookie, &other_csrf)] {
+    assert!(
+        authorizer
+            .authorize_read(&host, &origin, &kept, &kept_secret)
+            .is_some(),
+        "the device is still signed in after a restart"
+    );
+    assert!(
+        authorizer
+            .authorize_read(&host, &origin, &gone, &gone_secret)
+            .is_none(),
+        "a removed device stays removed"
+    );
+    let kinds: Vec<_> = fixture
+        .device_records()
+        .iter()
+        .map(Record::kind)
+        .map(|kind| format!("{kind:?}"))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "FloorDeviceEnrolled",
+            "FloorDeviceEnrolled",
+            "FloorDeviceFirstUsed",
+            "FloorDeviceRemoved"
+        ],
+        "two enrolled, one first used, one removed, and nothing else"
+    );
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// Listing and removing browsers are operator calls: an unproven peer and an agent are refused.
+#[test]
+fn the_device_rpcs_refuse_an_unproven_peer_and_an_agent() {
+    use dudes_rpc::auth::PeerProvenance;
+
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
+    let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
+    let (settings, daemon, _, _) = device_boot(&fixture, &clock, &column);
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    let unauthorized = ErrorCode::Unauthorized.code();
+    let remove = serde_json::json!({ "device": "ab".repeat(32) });
+    for (method, params) in [
+        (Method::FloorDevicesList, None),
+        (Method::FloorDevicesRemove, Some(remove)),
+    ] {
+        let unproven = rpc(&settings, method, params.clone(), None).expect_err("unproven");
+        assert_eq!(unproven.code, unauthorized, "{method:?}");
+        column.set(PeerProvenance::Agent(agent));
+        let as_agent = rpc(
+            &settings,
+            method,
+            params.clone(),
+            Some(credential_of(&settings)),
+        )
+        .expect_err("an agent");
+        assert_eq!(as_agent.code, unauthorized, "{method:?}");
+        column.set(PeerProvenance::Unresolvable);
         assert!(
-            authorizer
-                .authorize_read(&host, &origin, carried, secret)
-                .is_none(),
-            "a plain restart signs everyone out"
+            rpc(&settings, method, params, Some(credential_of(&settings))).is_ok(),
+            "control: the operator is answered"
         );
     }
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+/// A removed device's next request says why, and its open stream closes.
+#[test]
+fn a_removed_device_is_refused_with_its_reason_and_its_stream_closes() {
+    use dudes_rpc::auth::PeerProvenance;
+
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
+    let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
+    let (settings, daemon, host, origin) = device_boot(&fixture, &clock, &column);
+    let addr = daemon.floor_addr().expect("Floor address");
+    let probe = daemon.floor_gateway_probe().expect("probe");
+    let mut running = common::start(daemon);
+    let (cookie, csrf) = exchange(addr, &host, &origin, &issue(&settings).bootstrap);
+    let (other, other_secret) = exchange(addr, &host, &origin, &issue(&settings).bootstrap);
+
+    let protocols = format!("dudes-floor-v3, dudes-csrf.{csrf}");
+    let (mut stream, upgrade) = raw_upgrade(addr, &host, &origin, Some(&cookie), &protocols);
+    assert!(upgrade.starts_with("HTTP/1.1 101"), "{upgrade:?}");
+    wait_for_live(&probe, 1);
+
+    let listed = post_json(
+        addr,
+        "/floor/devices",
+        &host,
+        &origin,
+        &other,
+        &other_secret,
+        "{}",
+    );
+    assert!(listed.0.starts_with("HTTP/1.1 200 OK\r\n"), "{}", listed.0);
+    let value: serde_json::Value = serde_json::from_str(&listed.1).expect("JSON");
+    let devices = value["devices"].as_array().expect("devices");
+    assert_eq!(devices.len(), 2);
+    assert_eq!(devices.iter().filter(|d| d["this"] == true).count(), 1);
+    let target = devices
+        .iter()
+        .find(|device| device["this"] == false)
+        .expect("the other browser")["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let removed = post_json(
+        addr,
+        "/floor/devices/remove",
+        &host,
+        &origin,
+        &other,
+        &other_secret,
+        &format!(r#"{{"device":"{target}"}}"#),
+    );
+    assert!(
+        removed.0.starts_with("HTTP/1.1 200 OK\r\n"),
+        "{}",
+        removed.0
+    );
+
+    wait_for_live(&probe, 0);
+    stream
+        .set_read_timeout(Some(CLOSE_BOUND))
+        .expect("read timeout");
+    let mut rest = Vec::new();
+    let _ = stream.read_to_end(&mut rest);
+
+    let refused = post_json(addr, "/floor/devices", &host, &origin, &cookie, &csrf, "{}");
+    assert!(
+        refused.0.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "{}",
+        refused.0
+    );
+    assert_eq!(refused.1, r#"{"reason":"removed","session":"gone"}"#);
+    let (head, body) = post_standing(
+        addr,
+        "/floor/session/check",
+        &host,
+        &origin,
+        Some((&cookie, &csrf)),
+    );
+    assert!(head.starts_with("HTTP/1.1 401 Unauthorized\r\n"), "{head}");
+    assert_eq!(body, r#"{"reason":"removed","session":"unknown"}"#);
+    let wrong = post_json(
+        addr,
+        "/floor/devices",
+        &host,
+        &origin,
+        &cookie,
+        &"A".repeat(SESSION_BOOTSTRAP_LEN),
+        "{}",
+    );
+    assert_eq!(wrong.1, "", "a cookie without its secret learns nothing");
+    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+}
+
+fn post_json(
+    addr: SocketAddr,
+    path: &str,
+    host: &str,
+    origin: &str,
+    cookie: &str,
+    csrf: &str,
+    body: &str,
+) -> (String, String) {
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut stream = TcpStream::connect(addr).expect("connect to the Floor gateway");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("read timeout");
+    stream.write_all(request.as_bytes()).expect("write request");
+    let mut response = Vec::new();
+    let _ = stream.read_to_end(&mut response);
+    let (head, body) = response_parts(&response);
+    (head.to_owned(), String::from_utf8_lossy(body).into_owned())
+}
+
+/// `dudes open` asks for a link that lives a minute and `dudes floor open` for one that lives ten
+/// minutes, and a call with no purpose is a call to open.
+#[test]
+fn a_link_lives_for_its_purpose() {
+    use dudes_rpc::auth::PeerProvenance;
+
+    let fixture = Fixture::new();
+    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
+    let column = ScriptedColumn::new(PeerProvenance::Unresolvable);
+    let (settings, daemon, host, origin) = device_boot(&fixture, &clock, &column);
+    let addr = daemon.floor_addr().expect("Floor address");
+    let mut running = common::start(daemon);
+    let call = |params: Option<serde_json::Value>| {
+        let issued = rpc(
+            &settings,
+            Method::FloorSessionIssue,
+            params,
+            Some(credential_of(&settings)),
+        )
+        .expect("a link");
+        serde_json::from_value::<SessionIssueResult>(issued).expect("typed")
+    };
+    let open = call(None);
+    let explicit = call(Some(serde_json::json!({ "purpose": "open" })));
+    let printed = call(Some(serde_json::json!({ "purpose": "print" })));
+    assert_eq!(
+        (
+            open.expires_in_s,
+            explicit.expires_in_s,
+            printed.expires_in_s
+        ),
+        (60, 60, 600)
+    );
+    let bad = rpc(
+        &settings,
+        Method::FloorSessionIssue,
+        Some(serde_json::json!({ "purpose": "email" })),
+        Some(credential_of(&settings)),
+    )
+    .expect_err("an unknown purpose");
+    assert_eq!(bad.code, ErrorCode::InvalidParams.code());
+
+    clock.advance(61_000);
+    assert_empty_refusal(&raw_exchange(addr, &host, Some(&origin), &open.bootstrap));
+    assert_empty_refusal(&raw_exchange(
+        addr,
+        &host,
+        Some(&origin),
+        &explicit.bootstrap,
+    ));
+    let _ = exchange(addr, &host, &origin, &printed.bootstrap);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
