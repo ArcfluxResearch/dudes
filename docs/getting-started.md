@@ -146,6 +146,48 @@ Dudes reads no engine's credentials or files.
 
 `dudes --help` lists every command and option.
 
+## Install a release
+
+The [install command](../README.md#install) downloads the latest release for your machine and
+checks it against the release's `SHA256SUMS` before it installs anything. It never uses `sudo`
+or edits your shell profile. If the programs are not on your `PATH`, it prints the line to add
+to your shell profile. See [Where Dudes keeps its data](data-and-uninstall.md#where-dudes-keeps-its-data)
+for the installed files and their locations.
+
+To install a specific version, pass its version to the script:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ArcfluxResearch/dudes/main/install.sh | sh -s -- --version <version>
+```
+
+For a source build or Windows, see [Build Dudes from source](building-from-source.md).
+To remove Dudes, see [Where Dudes keeps its data, and how to uninstall](data-and-uninstall.md).
+
+## Upgrade Dudes
+
+To check for a new release without changing anything, run:
+
+```sh
+dudes upgrade --check
+```
+
+To install the latest release and restart the daemon, run:
+
+```sh
+dudes upgrade
+```
+
+The command uses the release's installer, which checks the download against `SHA256SUMS`.
+It works only for a copy that `install.sh` installed and never installs an older release.
+It refuses while an agent is running a turn, waiting for an answer, or attached to your session.
+Add `--now` to restart with closing time, which gives agents up to 6 minutes to save their work.
+Dudes checks for updates only when you run the command.
+
+You can also run the [install command](../README.md#install) again, then run `dudes stop` and
+`dudes start`. See [After you upgrade](floor.md#after-you-upgrade) for browser sign-ins and reloads.
+
+The first upgrade from a version that gave the page a readable secret signs open tabs out once; run `dudes open` to sign in again.
+
 ## Troubleshooting
 
 ### The daemon refuses to start because a Floor directory is group-writable
@@ -158,6 +200,11 @@ directory and says to run `chmod go-w` on it. That is the fix:
 ```sh
 chmod go-w <the directory the error names>
 ```
+
+### The shell runs a different command named dudes
+
+If `dudes` runs something else, check `type dudes` for an alias or shell function and use
+`command dudes`. After removing an old definition from your shell profile, open a new terminal.
 
 ### Hiring with Codex or Pi is refused
 
