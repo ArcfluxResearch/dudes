@@ -308,6 +308,10 @@ function HireForm({ hire, floor, onClose }: {
                 </fieldset>
               )}
               {catalog === null ? null : <p className="hire-note">Choose the project where this agent will work.</p>}
+              {catalog === null || !projectAddOn(floor) ? null : <details className="hire-more" data-hire-add-project="true">
+                <summary>Work in another folder</summary>
+                <AddProject floor={floor} />
+              </details>}
               {workspace === null ? null : <SharedProjectNote names={sharing} copy={copy} />}
             </>
           )}

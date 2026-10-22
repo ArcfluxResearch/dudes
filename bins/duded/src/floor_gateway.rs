@@ -121,6 +121,7 @@ const SETTINGS_PATH: &str = "/floor/settings";
 const PROJECT_PREVIEW_PATH: &str = "/floor/project/preview";
 const PROJECT_ADD_PATH: &str = "/floor/project/add";
 const PROJECT_REMOVE_PATH: &str = "/floor/project/remove";
+const PROJECT_CHOOSE_PATH: &str = "/floor/project/choose";
 const TERMINAL_PATH: &str = "/floor/terminal";
 /// Routed only while `[floor.hire]` is on: the socket that signs in to an engine.
 const ENGINE_LOGIN_PATH: &str = "/floor/engine-login";
@@ -1195,6 +1196,7 @@ enum ActionRoute {
     Retire,
     Settings,
     Project(ProjectVerb),
+    ChooseFolder,
     Git,
     Diff,
     Memory(MemoryRoute),
@@ -1236,6 +1238,7 @@ impl ActionRoute {
             PROJECT_PREVIEW_PATH if live.project => Some(Self::Project(ProjectVerb::Preview)),
             PROJECT_ADD_PATH if live.project => Some(Self::Project(ProjectVerb::Add)),
             PROJECT_REMOVE_PATH if live.project => Some(Self::Project(ProjectVerb::Remove)),
+            PROJECT_CHOOSE_PATH if live.project => Some(Self::ChooseFolder),
             GIT_PATH if catalog.git().is_some() => Some(Self::Git),
             DIFF_PATH if catalog.diff().is_some() => Some(Self::Diff),
             MEMORY_PAGE_PATH => Some(Self::Memory(MemoryRoute::Page)),
@@ -1256,7 +1259,7 @@ impl ActionRoute {
             Self::Look => MAX_LOOK_BODY_BYTES,
             Self::Retire => MAX_RETIRE_BODY_BYTES,
             Self::Settings => MAX_SETTINGS_BODY_BYTES,
-            Self::Project(_) => MAX_PROJECT_BODY_BYTES,
+            Self::Project(_) | Self::ChooseFolder => MAX_PROJECT_BODY_BYTES,
             Self::Git => MAX_GIT_BODY_BYTES,
             Self::Diff => MAX_DIFF_BODY_BYTES,
             Self::Memory(_) => MAX_MEMORY_BODY_BYTES,
@@ -1526,6 +1529,9 @@ fn dispatch<'a>(
                 }
                 (ActionRoute::Settings, Admitted::Session(session)) => {
                     settings_response(session, handle, body)
+                }
+                (ActionRoute::ChooseFolder, Admitted::Session(_)) => {
+                    choose_folder_response(handle, body)
                 }
                 (ActionRoute::Project(verb), Admitted::Session(session)) => {
                     project_response(verb, session, handle, body)
@@ -2371,6 +2377,26 @@ enum ProjectVerb {
     Preview,
     Add,
     Remove,
+}
+
+/// The system folder dialog: the daemon opens it and answers with the chosen path, or why there is
+/// none. The body is `{}` and nothing else. The path only fills the page's folder box, so choosing
+/// grants nothing that typing does not.
+fn choose_folder_response<'a>(handle: &Handle, body: &[u8]) -> Response<'a> {
+    use crate::folder_picker::Choice;
+    let is_empty_object =
+        serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(body)
+            .is_ok_and(|object| object.is_empty());
+    if !is_empty_object {
+        return error_response(400, "Bad Request");
+    }
+    let answer = match handle.choose_folder() {
+        Choice::Path(path) => serde_json::json!({ "path": path }),
+        Choice::Cancelled => serde_json::json!({ "cancelled": true }),
+        Choice::Busy => serde_json::json!({ "busy": true }),
+        Choice::Unavailable => serde_json::json!({ "unavailable": true }),
+    };
+    action_json(200, "OK", &answer)
 }
 
 /// The project preview, add and remove. A preview changes nothing. An add or remove keeps its

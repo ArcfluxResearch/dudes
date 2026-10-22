@@ -634,6 +634,8 @@ where
 pub struct SettingsView {
     /// Effective switches for this daemon run.
     pub switches: SettingsSwitches,
+    /// Whether the daemon can open the system's folder dialog for Add project and Hire.
+    pub folder_picker: bool,
     /// Admission ceilings and reserves for this daemon run.
     pub budget: SettingsBudget,
     /// Registered adapters, independent of executable availability.

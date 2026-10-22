@@ -648,6 +648,11 @@ where
             browser_grants: settings.floor_terminal_enabled.then(BTreeMap::new),
             #[cfg(feature = "testing")]
             terminal_skew: crate::floor_terminal::TerminalSkew::default(),
+            folder_picker: Arc::new(crate::folder_picker::FolderPicker::new(
+                Arc::clone(&predicates) as Arc<dyn PredicateRunner>,
+                &settings.daemon_env,
+                settings.predicate_path.clone(),
+            )),
             closing_failed_after: None,
             ticket_reacted: None,
             floor_closing,
@@ -1089,6 +1094,9 @@ where
         git,
     ));
     daemon.handle().wire_worktrees(&worktrees);
+    daemon
+        .handle()
+        .wire_folder_picker(&daemon.ctx.folder_picker);
     let cleanup = Arc::clone(&worktrees);
     let _ = std::thread::Builder::new()
         .name("worktree-cleanup".to_owned())

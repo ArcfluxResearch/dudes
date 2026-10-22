@@ -56,7 +56,8 @@ Dudes reads no engine's credentials or files.
    Quickstart enrolls no project and hires no agent for you, and the Floor does both.
 
    Tickets and Floor hiring need a project before they can work. On the
-   Floor, type the project's folder into the "Folder on this computer" box, look at what Dudes
+   Floor, press Choose folder… to pick it in your system's folder window (the button shows when Dudes
+   can open one), or type it into the "Folder on this computer" box. Look at what Dudes
    found, and press Add project. The folder must be a git repository, and it cannot be your home
    folder, a hidden folder or one of Dudes' own. Or add it from a terminal, in its git repository:
 

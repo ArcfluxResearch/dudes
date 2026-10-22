@@ -94,6 +94,7 @@ pub mod floor_switches;
 pub mod floor_terminal;
 pub mod floor_ticket;
 mod floor_websocket;
+pub mod folder_picker;
 pub mod git_read;
 pub mod hooks;
 mod instruction_sample;

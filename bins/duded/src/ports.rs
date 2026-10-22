@@ -1113,6 +1113,8 @@ pub struct Handle {
         reason = "one channel pair, read in one place"
     )]
     copy_hold: Arc<Mutex<Option<(Sender<()>, Receiver<()>)>>>,
+    /// The folder dialog the Floor's project routes open, wired once the daemon has built it.
+    folder_picker: Arc<std::sync::OnceLock<Arc<crate::folder_picker::FolderPicker>>>,
 }
 
 /// How long a hook waits for the loop's answer in production.
@@ -1273,6 +1275,20 @@ impl Handle {
     /// The worktree path the daemon wired in, once it has.
     fn worktrees(&self) -> Option<Arc<crate::worktree::hire::WorktreeHires>> {
         self.worktrees.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    /// Wire in the folder dialog, so the Floor's project routes can open it.
+    pub fn wire_folder_picker(&self, picker: &Arc<crate::folder_picker::FolderPicker>) {
+        let _ = self.folder_picker.set(Arc::clone(picker));
+    }
+
+    /// Open the folder dialog and wait for the person's choice.
+    pub(crate) fn choose_folder(&self) -> crate::folder_picker::Choice {
+        self.folder_picker
+            .get()
+            .map_or(crate::folder_picker::Choice::Unavailable, |picker| {
+                picker.choose()
+            })
     }
 
     /// Wire in the worktree path, so a browser hire into its own copy can make one.
@@ -1613,6 +1629,7 @@ impl Handle {
             stopping: Arc::new(AtomicBool::new(false)),
             worktrees: Arc::new(std::sync::OnceLock::new()),
             copy_hold: Arc::new(Mutex::new(None)),
+            folder_picker: Arc::default(),
         }
     }
 

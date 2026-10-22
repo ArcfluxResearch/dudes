@@ -327,7 +327,7 @@ test('the header names the turn an output state is about, so a waiting agent nev
 test('with the terminal switch off, the header says how to turn it on', async () => {
   const { center } = await drawer();
   const settings = {
-    switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false },
+    folder_picker: false, switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
     providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 5 },
   };
@@ -341,7 +341,7 @@ test('with the terminal switch off, the header says how to turn it on', async ()
 test('the switches that are off fold into one Enable more controls disclosure, with each hint\'s words', async () => {
   const { center } = await drawer();
   const settings = {
-    switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false },
+    folder_picker: false, switches: { answer: false, control: false, goal: false, retire: false, terminal: false, hire: false },
     budget: { floor_usd_per_day_micros: null, per_turn_usd_micros: null, per_turn_tokens: null },
     providers: ['pi'], workspaces: [], about: { daemon_version: '0.48.0', browser_wire_version: 5 },
   };
