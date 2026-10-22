@@ -303,7 +303,7 @@ test('Board steps the mounted office, crew, terminal and drawer aside at every w
   }
 });
 
-test('Crew reveals its roster after Board enters focus mode', async () => {
+test('Crew reveals its roster from Board, a page or focus mode', async () => {
   const source = await readFile(resolve(root, 'src/shell.tsx'), 'utf8');
   const syntax = ts.createSourceFile('shell.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let callback;
@@ -314,11 +314,11 @@ test('Crew reveals its roster after Board enters focus mode', async () => {
   visit(syntax);
   assert.ok(callback);
   const code = ts.transpileModule(callback, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  for (const focused of [false, true]) {
-    const state = { view: 'board', focused, crewOpen: true };
-    const press = new Function('view', 'focused', 'crewOpen', 'setView', 'setFocused', 'setCrewOpen', `${code}\nreturn toggleCrew;`)(
-      state.view, state.focused, state.crewOpen,
-      (value) => { state.view = value; }, (value) => { state.focused = value; },
+  for (const [view, page, focused] of [['board', null, false], ['board', null, true], ['settings', 'settings', false]]) {
+    const state = { view, focused, crewOpen: true };
+    const press = new Function('view', 'page', 'focused', 'crewOpen', 'closeView', 'setFocused', 'setCrewOpen', `${code}\nreturn toggleCrew;`)(
+      state.view, page, state.focused, state.crewOpen,
+      () => { state.view = null; }, (value) => { state.focused = value; },
       (value) => { state.crewOpen = typeof value === 'function' ? value(state.crewOpen) : value; });
     press();
     assert.deepEqual(state, { view: null, focused: false, crewOpen: true });
@@ -440,16 +440,17 @@ test('closing the drawer hands focus to the Crew row only while Crew is open and
   assert.equal(handBack({ focused: true, viewOpen: true, crewOpen: false }), 'focus-toggle');
 });
 
-test('each Control view opens under its own heading, with a close button, and hands focus back to its button', () => {
+test('each Control view opens under its own heading and only office panels have a close button', () => {
   const floor = store.getFloorState();
   for (const [view, label] of [['overview', 'Overview'], ['board', 'Board'], ['log', 'Log'],
     ['setup', 'Setup'], ['settings', 'Settings']]) {
     const html = renderToStaticMarkup(createElement(Control, { floor, view, selectedId: null, onClose() {}, onView() {}, onOpenQuestion() {} }));
+    const page = ['log', 'setup', 'settings'].includes(view);
     assert.match(html, new RegExp(`^<section class="control-panel" id="control-panel" data-view="${view}" `
-      + `aria-labelledby="control-title" data-focus-on-leave="view-${view}"><header class="control-panel-head"><div class="control-heading-copy">`
+      + `aria-labelledby="control-title" ${page ? 'data-page="true" ' : ''}data-focus-on-leave="view-${view}"><header class="control-panel-head"><div class="control-heading-copy">`
       + `<h2 id="control-title" tabindex="-1">${label}</h2>`),
     view);
-    assert.match(html, new RegExp(`<button type="button" class="panel-close" aria-label="Close ${label}"`));
+    assert.equal(html.includes(`aria-label="Close ${label}"`), !page);
     assert.equal(html.includes('Give work a clear next step.'), view === 'board');
     assert.equal(html.includes('id="selected-card-detail"'), view === 'board', `${view} card detail`);
   }

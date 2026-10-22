@@ -196,12 +196,24 @@ export class Journey {
   }
 
   async otherScreens() {
-    for (const [view, name] of [['#view-setup', 'setup'], ['#view-settings', 'settings']]) {
-      await this.click(view);
-      await pause(500);
+    for (const name of ['log', 'setup', 'settings']) {
+      await this.click(`#view-${name}`);
+      await this.until(`location.hash === '#/${name}' && document.querySelector('.control-panel[data-page]')?.dataset.view === '${name}'
+        && !document.querySelector('.office-canvas')`, `${name} did not open as a page`);
       await this.screen(name);
     }
-    await this.until(`Boolean(document.querySelector('.device-row .device-this'))`, 'Settings does not list this browser');
+    const loaded = await this.evaluate('performance.timeOrigin');
+    await this.run.cdp.send('Page.reload', {}, this.run.cdp.session);
+    await this.until(`performance.timeOrigin !== ${loaded} && Boolean(document.querySelector('.device-row .device-this'))`, 'Settings does not list this browser');
+    check(await this.evaluate(`location.hash === '#/settings'`), 'reload did not keep the Settings address');
+    await this.click('#office-open');
+    await this.until(`location.hash === '' && Boolean(document.querySelector('.office-canvas'))`, 'Office did not return to the office');
+    await this.click('#view-log');
+    await this.until(`location.hash === '#/log'`, 'Log did not set its address');
+    await this.evaluate('history.back()');
+    await this.until(`location.hash === '' && Boolean(document.querySelector('.office-canvas'))`, 'Back did not return to the office');
+    await this.click('#view-settings');
+    await this.until(`Boolean(document.querySelector('.device-row .device-this'))`, 'Settings did not reopen');
     await this.screen('settings');
   }
 

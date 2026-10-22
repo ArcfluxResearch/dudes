@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 
 import { signedFetch } from '../src/transport.ts';
+import { pageFromHash } from '../src/navigation.ts';
 import {
   currentFloorSession,
   establishFloorSessionWith,
@@ -84,6 +85,7 @@ test('bootstrap fragment is scrubbed before the same-origin exchange, and the ex
   assert.equal(store.held.privateKey.extractable, false, 'the kept key can be read out');
   assert.equal(Object.isFrozen(session), true);
   assert.equal(JSON.stringify(session).includes(BOOTSTRAP), false);
+  assert.equal(pageFromHash(location.hash), null, 'a sign-in link lands on the office');
 });
 
 test('a malformed named fragment is scrubbed and never fetched', async () => {
@@ -138,6 +140,23 @@ test('a page that holds no key gets no session, and a cookie alone cannot make o
     },
   );
   assert.equal(session, null);
+});
+
+test('a page address reload keeps the stored key and address without granting a keyless session', async () => {
+  const { signer, store, key } = await enrolledSigner();
+  const before = store.held;
+  const noRequests = async () => { throw new Error('page navigation sent a sign-in request'); };
+  for (const view of ['log', 'setup', 'settings']) {
+    const location = { hash: `#/${view}`, pathname: '/floor/', search: '' };
+    const session = await establishFloorSessionWith(location, KEEP, { signer, plain: noRequests, signed: noRequests });
+    assert.deepEqual(session, { device: key.device });
+    assert.equal(location.hash, `#/${view}`);
+    assert.equal(pageFromHash(location.hash), view);
+    assert.equal(store.held, before);
+    const missing = await establishFloorSessionWith(location, KEEP,
+      { signer: testSigner().signer, plain: noRequests, signed: noRequests });
+    assert.equal(missing, null);
+  }
 });
 
 test('a link that is not a bootstrap does not read the stored key', async () => {
