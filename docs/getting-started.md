@@ -76,7 +76,7 @@ Dudes reads no engine's credentials or files.
    [Configuration](configuration.md#the-operator-file).
 
 3. Use the Floor in the browser that opened. The link works once, in one browser;
-   `dudes open` opens a new one. On a remote machine, `dudes open` prints the link; forward its port over SSH
+   `dudes open` (or the Dudes launcher that the installer adds) opens a new one. On a remote machine, `dudes open` prints the link; forward its port over SSH
    first, because the link is a loopback address. [The Floor](floor.md) explains how it signs in, what each tab shows and what an agent's position
    in the office means.
 
