@@ -181,7 +181,8 @@ export class Journey {
   }
 
   async ticket() {
-    await this.click('#view-board');
+    // The first task's review already opened the board, and the button toggles it.
+    if (!await this.evaluate(`Boolean(document.querySelector('.ticket-new-toggle'))`)) await this.click('#view-board');
     await this.until(`Boolean(document.querySelector('.ticket-new-toggle'))`, 'the board offers no new ticket');
     await this.screen('board');
     await this.click('.ticket-new-toggle');
