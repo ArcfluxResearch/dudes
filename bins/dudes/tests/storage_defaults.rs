@@ -84,15 +84,36 @@ impl Scenario {
             "build the sibling daemon at {}",
             binary.display()
         );
-        OwnedDaemon(
-            common::process(binary.as_os_str(), &[], Some(&self.env))
-                .current_dir(&self.cwd)
-                .stdin(Stdio::null())
-                .stdout(log.try_clone().expect("stdout log"))
-                .stderr(log)
-                .spawn()
-                .expect("start standalone daemon"),
+        // A test the runner kills runs no destructors, so on Unix the daemon is a copy under the
+        // scenario's own `bin` and a lifeline ends it when the test is gone.
+        #[cfg(unix)]
+        let (binary, lifeline) = {
+            let bin = self.root.path().join("bin");
+            fs::create_dir_all(&bin).expect("private daemon directory");
+            let installed = bin.join("duded");
+            fs::hard_link(&binary, &installed)
+                .or_else(|_| fs::copy(&binary, &installed).map(|_| ()))
+                .expect("install the test daemon");
+            (installed, common::Lifeline::start(self.root.path()))
+        };
+        let child = common::process(binary.as_os_str(), &[], Some(&self.env))
+            .current_dir(&self.cwd)
+            .stdin(Stdio::null())
+            .stdout(log.try_clone().expect("stdout log"))
+            .stderr(log)
+            .spawn()
+            .expect("start standalone daemon");
+        #[cfg(unix)]
+        fs::write(
+            self.root.path().join("duded.log"),
+            format!("quickstart started duded pid {}\n", child.id()),
         )
+        .expect("register the daemon with its lifeline");
+        OwnedDaemon {
+            child,
+            #[cfg(unix)]
+            _lifeline: lifeline,
+        }
     }
 
     fn assert_ready(&self, daemon: &mut OwnedDaemon) {
@@ -108,7 +129,11 @@ impl Scenario {
                 break;
             }
             assert!(
-                daemon.0.try_wait().expect("daemon exit status").is_none(),
+                daemon
+                    .child
+                    .try_wait()
+                    .expect("daemon exit status")
+                    .is_none(),
                 "standalone daemon exited before ping: {}",
                 self.log()
             );
@@ -138,7 +163,11 @@ impl Scenario {
     }
 }
 
-struct OwnedDaemon(Child);
+struct OwnedDaemon {
+    child: Child,
+    #[cfg(unix)]
+    _lifeline: common::Lifeline,
+}
 
 impl OwnedDaemon {
     fn stop(&mut self, scenario: &Scenario) {
@@ -151,7 +180,7 @@ impl OwnedDaemon {
         );
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if let Some(status) = self.0.try_wait().expect("reap standalone daemon") {
+            if let Some(status) = self.child.try_wait().expect("reap standalone daemon") {
                 assert!(status.success(), "standalone daemon exited with {status}");
                 break;
             }
@@ -169,8 +198,8 @@ impl OwnedDaemon {
 
 impl Drop for OwnedDaemon {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -259,7 +288,7 @@ fn both_binaries_refuse_invalid_default_roots_without_creating_cwd_state() {
         let mut daemon = scenario.spawn();
         let deadline = Instant::now() + Duration::from_secs(5);
         while daemon
-            .0
+            .child
             .try_wait()
             .expect("refusing daemon status")
             .is_none()
