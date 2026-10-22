@@ -3580,7 +3580,7 @@ mod device_tests {
         );
         assert!(
             d.sessions.exchange(&good).is_ok(),
-            "the link was spent by the refused attempts"
+            "the refused attempts left the link unspent"
         );
         assert_eq!(
             d.journal.changes().len(),
