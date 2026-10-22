@@ -189,6 +189,16 @@ pub(crate) struct Exchange {
     pub(crate) cookie_max_age_s: i64,
 }
 
+/// The body of a link exchange.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Enrolment {
+    link: String,
+    key: String,
+    #[serde(default)]
+    name: String,
+}
+
 impl fmt::Debug for Exchange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Exchange")
@@ -1008,6 +1018,17 @@ impl Inner {
             .clone()
     }
 
+    /// A fresh cookie that no live session holds.
+    fn unused_cookie(&self) -> String {
+        let state = self.registry.lock();
+        loop {
+            let candidate = mint_secret();
+            if !state.sessions.contains_key(&digest(candidate.as_bytes())) {
+                return candidate;
+            }
+        }
+    }
+
     /// Make one change durable. Without a sink there is nothing to make durable.
     fn record(&self, change: FloorDeviceChange) -> bool {
         self.sink().is_none_or(|sink| sink.record(change))
@@ -1660,14 +1681,6 @@ impl FloorSessions {
     pub(crate) fn exchange(&self, request: &Presentation<'_>) -> Result<Exchange, ExchangeRefusal> {
         use ExchangeRefusal::{Forbidden, Malformed, Signature};
         let (host, origin, body) = (request.host, request.origin, request.body);
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Enrolment {
-            link: String,
-            key: String,
-            #[serde(default)]
-            name: String,
-        }
         if !self.0.authority_matches(host, origin) || !self.0.valid.load(Ordering::Acquire) {
             return Err(Forbidden);
         }
@@ -1713,15 +1726,7 @@ impl FloorSessions {
         {
             return Err(Forbidden);
         }
-        let cookie = {
-            let state = self.0.registry.lock();
-            loop {
-                let candidate = mint_secret();
-                if !state.sessions.contains_key(&digest(candidate.as_bytes())) {
-                    break candidate;
-                }
-            }
-        };
+        let cookie = self.0.unused_cookie();
         let key = digest(cookie.as_bytes());
         if !self.0.record(FloorDeviceChange::Enroll {
             device,
