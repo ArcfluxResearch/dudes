@@ -363,14 +363,18 @@ pub(crate) struct Attempt {
 }
 
 impl Attempt {
-    /// What a finished hire reports: `Some(None)` for a hire that carries no goal, `Some(Some(id))`
-    /// once its recorded goal is appended, and `None` while that goal is still to be appended.
-    pub(crate) fn finished(&self) -> Option<Option<GoalId>> {
-        match &self.metadata.intended_goal {
-            None => Some(None),
-            Some(goal) if self.goal_set => Some(Some(goal.id)),
-            Some(_) => None,
-        }
+    /// Whether the hire is complete: it carries no goal, or its recorded goal is appended.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.metadata.intended_goal.is_none() || self.goal_set
+    }
+
+    /// The recorded goal, once it is appended.
+    pub(crate) fn appended_goal(&self) -> Option<GoalId> {
+        self.metadata
+            .intended_goal
+            .as_ref()
+            .filter(|_| self.goal_set)
+            .map(|goal| goal.id)
     }
 }
 
@@ -730,6 +734,15 @@ fn request_framing<'a>(
     }
 }
 
+/// The bounded goal text of a request written before a hire started with a ticket.
+fn legacy_goal(text: &str) -> Result<String> {
+    let text = text.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'));
+    if !(1..=2048).contains(&text.len()) {
+        bail!("browser onboarding text is outside its byte limit");
+    }
+    Ok(text.to_owned())
+}
+
 impl OnboardRequest {
     pub(crate) fn parse(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > 4096 || crate::floor_stream::json_nesting(bytes)? > 16 {
@@ -759,16 +772,7 @@ impl OnboardRequest {
         let role = dudes_types::DisplayRole::parse(&raw.role)
             .context("invalid browser hire role")?
             .into_string();
-        let legacy_goal_text = match raw.goal_text.as_deref() {
-            None => None,
-            Some(text) => {
-                let text = text.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'));
-                if !(1..=2048).contains(&text.len()) {
-                    bail!("browser onboarding text is outside its byte limit");
-                }
-                Some(text.to_owned())
-            }
-        };
+        let legacy_goal_text = raw.goal_text.as_deref().map(legacy_goal).transpose()?;
         // A Claude request names no engine; naming one explicitly would give one hire two digests.
         let provider = match raw.provider {
             None => Provider::Claude,
@@ -805,7 +809,11 @@ impl OnboardRequest {
         );
         let domain = format!(
             "dudes.onboard.{}{domain}\0",
-            if legacy_goal_text.is_some() { "" } else { "nogoal." }
+            if legacy_goal_text.is_some() {
+                ""
+            } else {
+                "nogoal."
+            }
         );
         let request_digest = crate::goal_replacement::digest(
             domain.as_bytes(),

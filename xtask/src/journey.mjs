@@ -160,15 +160,24 @@ export class Journey {
     await this.screen('hire: app');
     await this.click('input[name="engine"][value="codex"]');
     await this.clickButton('Next', '.hire-actions button');
-    await this.until(`Boolean(document.querySelector('#hire-goal'))`, 'the first task was not asked for');
+    await this.until(`Boolean(document.querySelector('#hire-task'))`, 'the first task was not asked for');
     await this.screen('hire: first task');
-    await this.fill('#hire-goal', 'Write a note file');
+    await this.fill('#hire-task', 'Write a note file');
     await this.click('.hire-submit');
     await this.until(`document.querySelector('[data-hire-outcome]')?.dataset.hireOutcome === 'complete'`, 'the hire did not complete');
+    await this.until(`document.querySelector('[data-hire-task]')?.dataset.hireTask === 'given'`, 'the first task was not given to the new agent');
     await this.screen('hire: done');
     await this.until(`!document.querySelector('.hire-dialog')`, 'the hire dialog did not close');
-    await this.until(`/Checks passed today\\s+1\\b/.test(document.body.innerText)`, 'the first task did not finish', 60_000);
-    await this.screen('one agent');
+    await this.click('#view-board');
+    await this.until(`Boolean(document.querySelector('[data-ticket-column="ready"] .ticket-card'))`,
+      'the first task did not reach Ready for you', 60_000);
+    await this.screen('first task ready for review');
+    await this.click('[data-ticket-column="ready"] .ticket-card');
+    await this.until(`Boolean([...document.querySelectorAll('.ticket-action')].find((el) => el.textContent.trim() === 'Accept'))`,
+      'the first task offers no Accept');
+    await this.clickButton('Accept', '.ticket-action');
+    await this.until(`Boolean(document.querySelector('[data-ticket-column="done"] .ticket-card'))`, 'the first task is not in Done');
+    await this.screen('first task accepted');
   }
 
   async ticket() {

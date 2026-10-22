@@ -5277,7 +5277,7 @@ mod tests {
                 request_digest: Hex32::new([0xef; 32]),
                 profile_id: "repo_1".into(),
                 session_digest,
-                intended_goal: intended,
+                intended_goal: Some(intended),
                 trust_lsn: None,
             }));
         }

@@ -402,8 +402,8 @@ exec /bin/sleep 120
     await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('input[name="engine"][value="codex"]'))`), 'stand-in engine was not offered');
     await click('input[name="engine"][value="codex"]');
     await next();
-    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-goal'))`), 'Hire briefing missing');
-    await fill('#hire-goal', 'Keep the smoke stand-in alive');
+    await waitFor(() => this.cdp.evaluate(`Boolean(document.querySelector('#hire-task'))`), 'Hire briefing missing');
+    await fill('#hire-task', 'Keep the smoke stand-in alive');
     await click('.hire-submit');
     this.agent = await waitFor(async () => {
       const result = await this.cdp.evaluate(`(() => {

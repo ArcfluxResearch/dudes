@@ -224,11 +224,11 @@ test('a refused pasted link is said, names no secret, and keeps what the page ho
     answer: { max_text_bytes: 4096 }, control: {} }), epoch);
   const deps = { fetch: never, signedIn: () => true, random: (bytes) => bytes.fill(7), refresh() {},
     epoch: () => store.getFloorState().epoch, session: () => session.floorSessionGeneration() };
-  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', goalText: 'ship' });
+  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', taskText: 'ship' });
   void hire.submitHire({ onboarding: { floorUsdPerDayMicros: '1', workspaces: [{ workspaceId: 'repo_1', label: 'Repo',
     engines: ['claude'], goalUsdMicros: '1', agentUsdPerDayMicros: '1', agentTokensPerDay: null, goalTokens: null,
     hopCap: 1, trusted: false }] }, checks: { workspaces: [{ workspaceId: 'repo_1', checks: [{ id: 'default',
-    label: 'tests', revision: 'a'.repeat(64), mayAlreadyPass: false }] }] }, agents: [] }, deps);
+    label: 'tests', revision: 'a'.repeat(64), mayAlreadyPass: false }] }] }, agents: [], ticket: true }, deps);
   const gate = answer.answerGate(store.getFloorState(), store.getFloorState().agents[0]);
   answer.editAnswerDraft(gate.agent, gate.questionLsn, 'use main');
   void answer.submitAnswer(gate, deps);

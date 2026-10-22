@@ -2469,11 +2469,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             if attempt.metadata.request_digest != request.request_digest {
                 return answer(Err(OnboardRefusal::Conflict));
             }
-            if let Some(goal) = attempt.finished() {
+            if attempt.is_finished() {
                 return answer(Ok(OnboardOutcome::Complete {
                     attempt_id: request.attempt_wire.clone(),
                     agent: attempt.agent,
-                    goal,
+                    goal: attempt.appended_goal(),
                 }));
             }
         }
@@ -2635,11 +2635,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
 
     /// The copy a new hire asks for, as the params the shared worktree path takes, with the
     /// grant it rests on. The browser sends no trust: the operator's grant is read from the journal.
-    fn copy_step(
-        &self,
-        request: &OnboardRequest,
-        profile: &Profile,
-    ) -> OnboardNext {
+    fn copy_step(&self, request: &OnboardRequest, profile: &Profile) -> OnboardNext {
         use crate::floor_actions::CopyRefusal;
         let refuse =
             |why| OnboardNext::Reply(OnboardStep::Answer(Err(OnboardRefusal::OwnCopy(why))));
@@ -2837,12 +2833,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         ) {
             return answer(Err(OnboardRefusal::SharedFolder(refusal)));
         }
-        self.hire_onboarded(
-            session,
-            request,
-            &profile,
-            Some((lease, trust.lsn)),
-        )
+        self.hire_onboarded(session, request, &profile, Some((lease, trust.lsn)))
     }
 
     /// The initial goal's append for a hire the index holds.
@@ -2860,11 +2851,11 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         if attempt.metadata.request_digest != request.request_digest {
             return Err(OnboardRefusal::Conflict);
         }
-        if let Some(goal) = attempt.finished() {
+        if attempt.is_finished() {
             return Ok(OnboardOutcome::Complete {
                 attempt_id: request.attempt_wire.clone(),
                 agent: attempt.agent,
-                goal,
+                goal: attempt.appended_goal(),
             });
         }
         if self.ctx.journal_writes_stopped() {

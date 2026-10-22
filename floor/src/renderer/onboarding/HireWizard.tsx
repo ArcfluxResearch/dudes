@@ -20,11 +20,13 @@ import type { ProviderRow } from '../setup/daemon.ts';
 import { HIRE_ENGINES, formatUsdMicros, isHireEngine } from './catalog.ts';
 import type { HireEngine } from './catalog.ts';
 import { checkRefusalText, checksFor, choiceLabel } from './checks.ts';
+import { changeSetting } from '../settings/edit.ts';
+import { checkHireStatusWithFirstTask, hireWithFirstTask, makeFirstTask } from './firstTask.ts';
 import {
-  LIMITS, NO_CHECK, NO_PROJECT_LIST, agentsIn, lengthNote, ownCopyOffer, PARTIAL_REASONS, SECTIONS, browserHireDeps, checkHireStatus, chosenCheck, chosenWorkspace,
-  chosenEngine, editDraft, freshSince, getHireState, mayCheckRecorded, moveSection, presenceOf, releasable,
+  LIMITS, NO_CHECK, NO_PROJECT_LIST, TICKETS_OFF, agentsIn, lengthNote, ownCopyOffer, SECTIONS, browserHireDeps, chosenCheck, chosenWorkspace,
+  chosenEngine, editDraft, freshSince, getHireState, moveSection, presenceOf, releasable,
   releaseAttempt,
-  sessionAfterRefusal, showSection, startAnotherHire, submitHire, subscribeToHire,
+  sessionAfterRefusal, showSection, startAnotherHire, subscribeToHire,
 } from './hire.ts';
 import type { FieldName, HireAttempt, HireDraft, HireOutcome, HireState, OwnCopy } from './hire.ts';
 import type { EnrolledWorkspace } from './catalog.ts';
@@ -202,7 +204,8 @@ function HireForm({ hire, floor, onClose }: {
   const missing = engineMissing(row, engine);
   const withdrawn = workspace !== null && (floor.settings?.providers
     .some((name) => isHireEngine(name) && !workspace.engines.includes(name)) ?? false);
-  const blocked = unavailable(floor) ?? missing;
+  const ticketsOff = viewConfirmed(floor) && !floor.ticket;
+  const blocked = unavailable(floor) ?? missing ?? (ticketsOff ? TICKETS_OFF : null);
   // A missing or signed-out engine holds the wizard on Engine, where its reason, Sign in and Check again are.
   const stuck = hire.section === 'engine' && missing !== null;
   const frozen = hire.attempt !== null;
@@ -212,7 +215,7 @@ function HireForm({ hire, floor, onClose }: {
   return (
     <>
       {hire.prefill === null ? null : <p className="hire-note">
-        This prepares a new agent from archived details. Review each section and enter a new goal.
+        This prepares a new agent from archived details. Review each section and enter a new first task.
       </p>}
       <div className="hire-body">
         <nav className="hire-index" aria-label="Hire sections">
@@ -348,13 +351,14 @@ function HireForm({ hire, floor, onClose }: {
           {hire.section !== 'briefing' ? null : (
             <>
               <div className="hire-field">
-                <label htmlFor="hire-goal">What should they do first?</label>
-                <textarea id="hire-goal" name="goal_text" rows={4} autoComplete="off"
-                  value={hire.draft.goalText} disabled={frozen}
-                  aria-invalid={invalid('goal_text')} aria-describedby={described('goal_text')}
-                  onChange={(event) => editDraft({ goalText: event.target.value })} />
-                <LengthNote value={hire.draft.goalText} limit={LIMITS.goal_text} />
+                <label htmlFor="hire-task">What should they do first?</label>
+                <textarea id="hire-task" name="first_task" rows={4} autoComplete="off"
+                  value={hire.draft.taskText} disabled={frozen}
+                  aria-invalid={invalid('first_task')} aria-describedby={described('first_task')}
+                  onChange={(event) => editDraft({ taskText: event.target.value })} />
+                <LengthNote value={hire.draft.taskText} limit={LIMITS.task} />
               </div>
+              {ticketsOff ? <TicketsOffNote floor={floor} /> : null}
               {workspace === null || catalog === null ? (
                 <p className="hire-note">Choose a project to see how this task is checked.</p>
               ) : (
@@ -419,7 +423,7 @@ function HireForm({ hire, floor, onClose }: {
         {at === SECTIONS.length - 1
           ? <button type="button" className="hire-submit" aria-disabled={blocked !== null || frozen || hire.sending}
             ref={handFocusOnLeave} data-focus-on-leave="hire-title" aria-busy={hire.sending}
-            onClick={() => { if (blocked === null && !frozen && !hire.sending) void submitHire(floor, browserHireDeps); }}>
+            onClick={() => { if (blocked === null && !frozen && !hire.sending) void hireWithFirstTask(floor, browserHireDeps); }}>
             {hire.sending ? 'Hiring…' : 'Hire'}
           </button>
           : <button type="button" className="hire-next" aria-disabled={frozen || stuck}
@@ -432,6 +436,19 @@ function HireForm({ hire, floor, onClose }: {
         : blocked === null || stuck ? null : <p className="hire-note" role="status">{blocked}</p>}
     </>
   );
+}
+
+/** Tickets carry the first task, so with them off nobody is hired: say so and offer the switch. */
+function TicketsOffNote({ floor }: { readonly floor: FloorState }) {
+  const switches = floor.settings?.switches;
+  const needed = (['control', 'goal'] as const).filter((key) => switches?.[key] === false);
+  return <div className="hire-problem" role="alert" data-hire-tickets="off">
+    <p>{TICKETS_OFF}</p>
+    {switches?.board === false
+      ? <button type="button" onClick={() => { void changeSetting('floor.board', 'on'); }}>Turn on tickets</button>
+      : null}
+    {needed.length === 0 ? null : <p>{`Tickets also need ${needed.map((key) => `floor.${key}`).join(' and ')} on, under Floor switches in Settings.`}</p>}
+  </div>;
 }
 
 function NoHireProjectHint({ floor }: { readonly floor: FloorState }) {
@@ -483,41 +500,36 @@ function HireAnswer({ hire, floor, onClose }: {
   readonly onClose: () => void;
 }) {
   const outcome = hire.outcome as HireOutcome;
-  const settled = outcome.kind === 'complete' || outcome.kind === 'partial';
+  const settled = outcome.kind === 'complete';
   const noEffect = releasable(hire);
-  // A goal lost only because the session ended can still be set from a fresh
-  // one: the same attempt appends the goal the Hire recorded, and nothing else.
-  const retryable = outcome.kind === 'partial'
-    && (outcome.reason === 'session_expired' || outcome.reason === 'session_revoked');
   const fresh = freshSince(floor, hire.askedAtEpoch);
-  // An attempt that hired an agent checks only on a fresh session that offers hiring.
-  const waiting = hire.recordedAgent !== null && !mayCheckRecorded(hire, floor);
-  const hired = outcome.kind === 'complete' || outcome.kind === 'partial' ? outcome.agent : null;
+  const hired = outcome.kind === 'complete' ? outcome.agent : null;
   const shown = hired !== null && presenceOf(hired, floor, hire.askedAtEpoch) === 'present';
   const hiredName = hired === null ? '' : agentName(hire, floor, hired);
   return (
     <div className="hire-answer" data-hire-outcome={outcome.kind} aria-live="polite">
       <AnswerBody outcome={outcome} hire={hire} floor={floor} />
-      {!waiting || (settled && !retryable) ? null : (
-        <p className="hire-note">Check status waits for a fresh Floor session that offers hiring.</p>
-      )}
       {!settled ? null : !fresh ? <p className="hire-note">You can hire another once the Floor has refreshed.</p>
         : floor.onboarding === null ? <p className="hire-note">This session offers no further hires.</p> : null}
       <footer className="hire-actions">
-        {settled && !retryable ? null : (
-          <button type="button" aria-disabled={hire.sending || waiting} aria-busy={hire.sending}
+        {settled ? null : (
+          <button type="button" aria-disabled={hire.sending} aria-busy={hire.sending}
             ref={handFocusOnLeave} data-focus-on-leave="hire-title"
-            onClick={() => { if (!hire.sending && !waiting) void checkHireStatus(browserHireDeps); }}>
+            onClick={() => { if (!hire.sending) void checkHireStatusWithFirstTask(browserHireDeps); }}>
             {hire.sending ? 'Checking…' : 'Check status'}
           </button>
         )}
         {noEffect ? <button type="button" aria-disabled={hire.sending}
           ref={handFocusOnLeave} data-focus-on-leave="hire-title"
           onClick={() => { if (!hire.sending) releaseAttempt(); }}>Edit the form</button> : null}
+        {hire.task.phase === 'not_made' ? (
+          <button type="button" className="hire-next" data-hire-task-retry="true"
+            onClick={() => { void makeFirstTask(browserHireDeps); }}>Try again</button>
+        ) : null}
         {settled ? (
-          <button type="button" aria-disabled={!fresh || floor.onboarding === null}
+          <button type="button" aria-disabled={!fresh || floor.onboarding === null || hire.task.phase === 'making'}
             ref={handFocusOnLeave} data-focus-on-leave="hire-title"
-            onClick={() => { if (fresh && floor.onboarding !== null) startAnotherHire(); }}>Hire another</button>
+            onClick={() => { if (fresh && floor.onboarding !== null) startAnotherHire(); }}>{hire.task.phase === 'not_made' ? 'Discard the task' : 'Hire another'}</button>
         ) : null}
         {shown ? <button type="button" className="hire-next" ref={handFocusOnLeave} data-focus-on-leave="hire-open"
           onClick={onClose}>Open {hiredName}</button> : null}
@@ -535,67 +547,30 @@ function agentName(hire: HireState, floor: FloorState, agent: string): string {
 }
 
 /** The record ids, for the rare reader who needs them; the names above are what to read. */
-function RecordIds({ agent, goal }: { readonly agent: string; readonly goal?: string }) {
+function RecordIds({ agent }: { readonly agent: string }) {
   return <details className="hire-more"><summary>Technical details</summary>
     <dl className="hire-facts">
       <div><dt>AgentId</dt><dd data-hire-agent-id={agent}>{agent}</dd></div>
-      {goal === undefined ? null : <div><dt>GoalId</dt><dd data-hire-goal-id={goal}>{goal}</dd></div>}
     </dl>
   </details>;
 }
 
-/** Every reply a Check can get on an attempt that has already hired its agent, but the two that settle it. */
-type RecordedReply = Exclude<HireOutcome, { readonly kind: 'complete' } | { readonly kind: 'partial' }>;
-
-/**
- * A Check on an attempt that has already hired an agent. Whatever it got back,
- * that agent is in the journal from this Hire, so it stays on screen: nothing
- * here says no agent was hired, or that the page cannot tell. Once a fresh
- * session offers hiring, the next step named is Check status, not another link.
- */
-function RecordedCheck({ outcome, agent, hire, floor }: {
-  readonly outcome: RecordedReply;
-  readonly agent: string;
-  readonly hire: HireState;
-  readonly floor: FloorState;
-}) {
-  const session = sessionAfterRefusal(floor, hire.askedAtEpoch);
-  const noEffect = outcome.kind === 'refused' || outcome.kind === 'conflict' || outcome.kind === 'rejected'
-    || outcome.kind === 'stale' || outcome.kind === 'check';
-  const said = outcome.kind === 'pending'
-    ? 'Not confirmed yet: the daemon has this check in progress, or cannot confirm it yet.'
-    : outcome.kind === 'unavailable'
-      ? 'The daemon could not confirm this check, and this page does not ask again by itself.'
-      : outcome.kind === 'unknown'
-        ? 'The page lost the daemon’s answer to this check.'
-        : outcome.kind === 'conflict'
-          ? 'The daemon holds a different request under this attempt, so it refused this check before any effect. '
-            + 'This is a page error.'
-          : outcome.kind === 'rejected'
-            ? `The daemon refused this check itself (HTTP ${outcome.status}) before any effect.`
-            : session === 'checking'
-              ? 'The daemon refused this check before any effect. Checking whether this Floor session is still live…'
-              : `${session === 'ended' ? 'Your Floor session has ended or was revoked. ' : ''}`
-                + 'The daemon refused this check before any effect.';
-  const next = mayCheckRecorded(hire, floor)
-    ? ' Check status asks again with the same attempt, which never hires twice and sets only the goal this Hire '
-      + 'recorded.'
-    : floor.phase === 'closed'
-      ? ' Open Dudes to sign in again in this browser: this page keeps the Hire, '
-        + 'and Check status then sets only the goal this Hire recorded.'
-      : '';
-  return (
-    <>
-      <p className={noEffect ? 'hire-warning' : 'hire-pending'} role={noEffect ? 'alert' : 'status'}
-        data-hire-session={outcome.kind === 'refused' ? session : undefined}
-        data-check-refusal={outcome.kind === 'check' ? outcome.reason : undefined}>
-        {`${said} The agent below is in the journal from this Hire.${next}`}
-      </p>
-      <dl className="hire-facts">
-        <div><dt>AgentId</dt><dd data-hire-agent-id={agent}>{agent}</dd></div>
-      </dl>
-    </>
-  );
+/** Where the first task is: being made, not saved yet, or a ticket on the board. */
+function FirstTaskStatus({ hire, name }: { readonly hire: HireState; readonly name: string }) {
+  const task = hire.task;
+  if (task.phase === 'none' || task.phase === 'making') {
+    return <p className="hire-pending" role="status" data-hire-task="making">{`Making ${name}'s first task…`}</p>;
+  }
+  if (task.phase === 'not_made') {
+    return <div className="hire-warning" role="alert" data-hire-task="not_made">
+      <p>{`${name} is hired, but the first task was not saved. ${task.text}`}</p>
+      <p className="hire-note">Your text is kept below.</p>
+      <blockquote data-hire-task-text="true">{hire.draft.taskText}</blockquote>
+    </div>;
+  }
+  return <p className={task.given ? 'hire-success' : 'hire-warning'} role="status" data-hire-task={task.given ? 'given' : 'todo'}>
+    {task.given ? `The first task is on the board. ${task.text}` : task.text}
+  </p>;
 }
 
 function AnswerBody({ outcome, hire, floor }: {
@@ -603,68 +578,29 @@ function AnswerBody({ outcome, hire, floor }: {
   readonly hire: HireState;
   readonly floor: FloorState;
 }) {
-  // An attempt that hired an agent keeps it on screen, whatever a later Check got back.
-  if (hire.recordedAgent !== null && outcome.kind !== 'complete' && outcome.kind !== 'partial') {
-    return <RecordedCheck outcome={outcome} agent={hire.recordedAgent} hire={hire} floor={floor} />;
-  }
   switch (outcome.kind) {
     case 'complete': {
       const presence = presenceOf(outcome.agent, floor, hire.askedAtEpoch);
-      const row = floor.agents.find((agent) => agent.id === outcome.agent) ?? null;
-      const currentGoal = row === null ? null : goalOf(row)?.id ?? null;
       return (
         <>
           {presence === 'absent' ? (
             <p className="hire-warning" role="status">
-              Hired, then retired: this agent is no longer on the floor, so its initial goal is not being worked.
+              Hired, then retired: this agent is no longer on the floor.
             </p>
           ) : (
             <p className="hire-success" role="status">
-              {`Hired ${agentName(hire, floor, outcome.agent)}, who now has a first task.`}
+              {`Hired ${agentName(hire, floor, outcome.agent)}.`}
             </p>
           )}
+          <FirstTaskStatus hire={hire} name={agentName(hire, floor, outcome.agent)} />
           <dl className="hire-facts">
             {hire.attempt?.payload.own_copy === true ? (
               <div><dt>Works in</dt><dd data-hire-own-copy="true">Its own copy of the project, on its own branch</dd></div>
             ) : null}
             <div><dt>On the floor</dt><dd>{presence === 'present' ? 'Yes, on the Floor'
               : presence === 'absent' ? 'No, retired since the Hire' : 'Waiting for the Floor to refresh'}</dd></div>
-            {row === null ? null : <div><dt>Current task</dt><dd>{goalLine(row)}</dd></div>}
-          </dl>
-          <RecordIds agent={outcome.agent} goal={outcome.goal} />
-          {row === null || currentGoal === outcome.goal ? null : (
-            <p className="hire-note">Its goal has changed since the Hire; the current goal is shown above.</p>
-          )}
-        </>
-      );
-    }
-    case 'partial': {
-      const presence = presenceOf(outcome.agent, floor, hire.askedAtEpoch);
-      const row = floor.agents.find((agent) => agent.id === outcome.agent) ?? null;
-      return (
-        <>
-          <p className="hire-warning" role="status">
-            {`Hired ${agentName(hire, floor, outcome.agent)}, but the first task was not set.`}
-          </p>
-          <dl className="hire-facts">
-            <div><dt>Reason</dt><dd data-hire-reason={outcome.reason}>{PARTIAL_REASONS[outcome.reason]}</dd></div>
-            {hire.attempt?.payload.own_copy === true ? (
-              <div><dt>Works in</dt><dd data-hire-own-copy="true">Its own copy of the project, on its own branch</dd></div>
-            ) : null}
-            <div><dt>Goal when answered</dt><dd>{outcome.currentGoal === null ? 'None'
-              : 'Another goal is set'}</dd></div>
-            <div><dt>Retired when answered</dt><dd>{outcome.retired ? 'Yes' : 'No'}</dd></div>
-            <div><dt>On the floor</dt><dd>{presence === 'present' ? 'Yes'
-              : presence === 'absent' ? 'No, retired' : 'Waiting for a fresh snapshot'}</dd></div>
-            {row === null ? null : <div><dt>Current goal</dt><dd>{goalLine(row)}</dd></div>}
           </dl>
           <RecordIds agent={outcome.agent} />
-          <p className="hire-note">
-            {outcome.reason === 'session_expired' || outcome.reason === 'session_revoked'
-              ? 'Open Dudes to sign in again in this browser: this page keeps the '
-                + 'Hire, and Check status then sets only the goal this Hire recorded.'
-              : 'The Floor sets no other goal for it; an operator can give it one locally.'}
-          </p>
         </>
       );
     }

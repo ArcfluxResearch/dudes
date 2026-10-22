@@ -25,11 +25,11 @@ use dudes_proto::record::{
     BrowserGoal, BrowserGoalKind, BrowserOnboardingGoal, BrowserOnboardingHire, BrowserRetire,
     Hex32, RecordKind,
 };
+use dudes_proto::rpc::Method;
 use dudes_proto::rpc::agent::RetireParams;
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_proto::rpc::goal::GoalSetParams;
-use dudes_proto::rpc::Method;
 use dudes_proto::{
     AgentBudget, BudgetScope, Goal, GoalBudget, LoopDecision, Predicate, Record, Spend, TurnOutcome,
 };
@@ -2428,7 +2428,10 @@ fn session_expiry_before_each_append_has_distinct_truthful_outcomes() {
     pause.release();
     let (head, body) = owner.join().expect("complete response");
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    assert_eq!(body["state"], "complete", "a durable hire is not undone by expiry");
+    assert_eq!(
+        body["state"], "complete",
+        "a durable hire is not undone by expiry"
+    );
     assert!(body["agent"].is_string());
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -2668,7 +2671,10 @@ fn session_revocation_linearizes_with_both_append_permits() {
     pause.release();
     let (head, body) = owner.join().expect("complete response");
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    assert_eq!(body["state"], "complete", "a durable hire is not undone by revocation");
+    assert_eq!(
+        body["state"], "complete",
+        "a durable hire is not undone by revocation"
+    );
 
     let page = exchange(addr, &issue(&settings).bootstrap);
     let mut next = request.clone();
@@ -15660,4 +15666,3 @@ fn a_goal_change_restarts_after_its_fsync_before_its_fold() {
     assert_eq!(host.spawned().len() + restarted.spawned().len(), 0);
     running.stop(ExitCause::ShutdownRpc);
 }
-
