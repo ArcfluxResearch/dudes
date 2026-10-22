@@ -18,7 +18,6 @@ import { getFloorState, resetFloorStore } from '../src/renderer/floor/store.ts';
 
 const OLD = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const NEW = '01ARZ3NDEKTSV4RRFFQ69G5FAZ';
-const GOAL = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
 const archived = (extra = {}) => decodeRetiredAgents([{ id: OLD, name: 'Ada', role: 'Parser engineer',
   provider: 'claude', workspace_label: 'Parser', hired_at: 1, retired_at: 2, turns: 1,
   spend: { usd: 0, tokens: 0, work_tokens: 0 }, ...extra }]).rows[0];
@@ -29,23 +28,21 @@ const catalog = (spaces = [workspace()]) => decodeOnboardingCatalog({ floor_usd_
 const checks = decodeCheckCatalog({ workspaces: [{ workspace_id: 'parser', checks: [
   { id: 'default', label: 'Observed false', revision: 'f'.repeat(64), may_already_pass: false }] }] });
 const floor = (extra = {}) => ({ ...getFloorState(), phase: 'live', stale: false, epoch: 1, snapshotEpoch: 1,
-  onboarding: catalog(), checks, ...extra });
+  onboarding: catalog(), checks, ticket: true, ...extra });
 const live = () => ({ id: NEW, name: 'Ada', role: 'Parser engineer', provider: 'claude', mode: 'managed', status: 'idle', session: 'proof-session' });
-const dependencies = (kind = 'complete') => ({ csrf: () => 'A'.repeat(43), random: (bytes) => bytes.fill(0),
-  epoch: () => 1, refresh: () => {}, fetch: async (_url, request) => ({ status: kind === 'complete' ? 200 : 409,
-    text: async () => JSON.stringify({ attempt_id: JSON.parse(request.body).attempt_id,
-      state: kind === 'complete' ? 'complete' : 'hired_without_goal', agent: NEW,
-      goal: kind === 'complete' ? GOAL : null,
-      ...(kind === 'complete' ? {} : { reason: 'session_expired', current_goal: null, retired: false }) }) }) });
+const dependencies = (status = 200) => ({ signedIn: () => true, random: (bytes) => bytes.fill(0),
+  epoch: () => 1, refresh: () => {}, fetch: async (_url, request) => ({ status,
+    text: async () => (status === 202 ? JSON.stringify({ attempt_id: JSON.parse(request.body).attempt_id, state: 'pending' })
+      : JSON.stringify({ attempt_id: JSON.parse(request.body).attempt_id, state: 'complete', agent: NEW })) }) });
 
 beforeEach(() => { hire.resetHire(); resetFloorStore(); });
 
 test('archive preparation copies recorded appearance and a unique current Claude label match', () => {
-  hire.editDraft({ goalText: 'Previous goal', character: 'c', accent: 'mint' });
+  hire.editDraft({ taskText: 'Previous goal', character: 'c', accent: 'mint' });
   assert.equal(hire.prepareArchiveHire(archived({ character: 'l', accent: 'rose', goal: 'Private old goal',
     workspace_id: 'private-old-id' }), floor()), true);
   assert.deepEqual(hire.getHireState().draft,
-    { name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', engine: 'claude', goalText: '',
+    { name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', engine: 'claude', taskText: '',
       character: 'l', accent: 'rose' });
   assert.equal(hire.getHireState().section, 'identity');
   assert.equal(hire.getHireState().attempt, null);
@@ -74,14 +71,14 @@ test('an archived Codex or Pi engine is preselected only where the matched works
     hire.resetHire();
     assert.equal(hire.prepareArchiveHire(archived({ provider }), both), true);
     assert.deepEqual(hire.getHireState().draft,
-      { name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', engine: provider, goalText: '' });
+      { name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', engine: provider, taskText: '' });
     assert.equal(hire.getHireState().prefill.notes.engine,
       `${name}, the archived engine, is preselected. Review the engine and the current limits.`);
   }
 
   hire.resetHire();
   assert.equal(hire.prepareArchiveHire(archived({ provider: 'codex' }), floor()), true);
-  assert.deepEqual(hire.getHireState().draft, { name: 'Ada', role: 'Parser engineer', workspaceId: '', goalText: '' },
+  assert.deepEqual(hire.getHireState().draft, { name: 'Ada', role: 'Parser engineer', workspaceId: '', taskText: '' },
     'another engine was substituted for the archived one');
   assert.equal(hire.getHireState().prefill.notes.engine,
     'This project does not offer the archived Codex engine. No engine was preselected.');
@@ -113,10 +110,8 @@ test('a missing Claude program leaves the engine unselected while an absent repo
 });
 
 test('archive preparation preserves an unresolved attempt and a recorded hire until the existing fresh-snapshot check permits another', async () => {
-  hire.editDraft({ name: 'Current', role: 'Current role', workspaceId: 'parser', goalText: 'Current goal' });
-  const pending = dependencies();
-  pending.fetch = async () => ({ status: 202, text: async () => '' });
-  await hire.submitHire(floor(), pending);
+  hire.editDraft({ name: 'Current', role: 'Current role', workspaceId: 'parser', taskText: 'Current goal' });
+  await hire.submitHire(floor(), dependencies(202));
   const waiting = hire.getHireState();
   assert.equal(hire.prepareArchiveHire(archived(), floor({ epoch: 2, snapshotEpoch: 2 })), false);
   assert.equal(hire.getHireState(), waiting);
@@ -126,7 +121,7 @@ test('archive preparation preserves an unresolved attempt and a recorded hire un
   assert.equal(hire.getHireState(), complete);
   assert.equal(hire.prepareArchiveHire(archived(), floor({ epoch: 2, snapshotEpoch: 2 })), true);
   assert.equal(hire.getHireState().attempt, null);
-  assert.equal(hire.getHireState().draft.goalText, '');
+  assert.equal(hire.getHireState().draft.taskText, '');
 });
 
 test('hidden archive preferences round-trip only bounded AgentIds and Show hidden restores rows', () => {
@@ -145,7 +140,7 @@ test('hidden archive preferences round-trip only bounded AgentIds and Show hidde
 });
 
 test('successful hire waits for a confirmed new live AgentId, then drives camera selection and existing Attach eligibility', async () => {
-  hire.editDraft({ name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', goalText: 'New goal' });
+  hire.editDraft({ name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', taskText: 'New goal' });
   await hire.submitHire(floor(), dependencies());
   assert.equal(hire.agentToReveal(hire.getHireState(), floor()), null);
   assert.equal(hire.agentToReveal(hire.getHireState(), floor({ agents: [live()], snapshotEpoch: 0 })), null);
@@ -159,11 +154,10 @@ test('successful hire waits for a confirmed new live AgentId, then drives camera
   assert.equal(hire.agentToReveal(hire.getHireState(), floor({ agents: [live()] })), null);
 });
 
-test('a partial hire becoming complete presents the same durable AgentId once more', async () => {
-  hire.editDraft({ name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', goalText: 'New goal' });
-  await hire.submitHire(floor(), dependencies('partial'));
-  assert.equal(hire.agentToReveal(hire.getHireState(), floor({ agents: [live()] })), NEW);
-  hire.markRevealed(NEW);
+test('a pending hire becoming complete presents its AgentId once', async () => {
+  hire.editDraft({ name: 'Ada', role: 'Parser engineer', workspaceId: 'parser', taskText: 'New goal' });
+  await hire.submitHire(floor(), dependencies(202));
+  assert.equal(hire.agentToReveal(hire.getHireState(), floor({ agents: [live()] })), null);
   await hire.checkHireStatus(dependencies());
   assert.equal(hire.agentToReveal(hire.getHireState(), floor({ agents: [live()] })), NEW);
   hire.markRevealed(NEW);

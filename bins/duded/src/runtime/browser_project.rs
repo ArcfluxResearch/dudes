@@ -1,6 +1,7 @@
-//! A Floor session's look at a folder and its add of that folder as a project, on the loop
-//! thread. The add runs the edit `dudes project add` runs, then the reload the CLI asks for, with
-//! the reload lock held for the whole of it. A reload the daemon declines puts the file back.
+//! A Floor session's look at a folder and its add or remove of a project, on the loop thread. Each
+//! runs the edit `dudes project add` or `dudes project remove` runs, then the reload the CLI asks
+//! for, with the reload lock held for the whole of it. A reload the daemon declines puts the file
+//! back.
 
 use std::path::Path;
 use std::sync::TryLockError;
@@ -14,7 +15,7 @@ use sha2::Digest as _;
 use super::{Clock, Daemon, PredicateRunner, ProcessHost, Rng, predicate};
 use crate::floor_actions::Profile;
 use crate::floor_project::{
-    Added, Check, Preview, ProjectAnswer, ProjectRef, ProjectRequest, Reason, Refusal,
+    Added, Check, Preview, ProjectAnswer, ProjectRef, ProjectRequest, Reason, Refusal, Removed,
 };
 
 /// Most projects the daemon runs.
@@ -37,6 +38,9 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             ProjectRequest::Add(request) => {
                 self.project_add(session, request).map(ProjectAnswer::Added)
             }
+            ProjectRequest::Remove(request) => self
+                .project_remove(session, &request.project_id)
+                .map(ProjectAnswer::Removed),
         }
         .map_err(Refusal::Reason)
     }
@@ -136,15 +140,14 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
                 _ => Reason::ConfigChanged,
             },
         )?;
-        dudes_config::workspace::replace(&path, &written).map_err(|_| Reason::ConfigChanged)?;
-        if !self.adopt(&path, &written, *sequence, &id) {
-            let holds_ours = dudes_config::workspace::read_bytes(&path)
-                .is_ok_and(|now| now.as_deref() == Some(written.as_slice()));
-            if holds_ours {
-                let _ = dudes_config::workspace::restore(&path, previous.as_deref());
-            }
-            return Err(Reason::ConfigChanged);
-        }
+        self.write_and_adopt(
+            &path,
+            previous.as_deref(),
+            &written,
+            *sequence,
+            std::slice::from_ref(&id),
+            &[],
+        )?;
         self.resync_floor();
         tracing::info!(
             session = %&crate::enrollment_reload::hex(&session.digest().bytes())[..16],
@@ -159,8 +162,124 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         Ok(self.added(profile))
     }
 
-    /// The reload the CLI asks for after an edit: adopt exactly `written`, adding `id`.
-    fn adopt(&mut self, path: &Path, written: &[u8], seq: u64, id: &str) -> bool {
+    fn project_remove(
+        &mut self,
+        session: &crate::floor_session::SessionIdentity,
+        id: &str,
+    ) -> Result<Removed, Reason> {
+        let profile = self.ctx.enrollment.profile(id).ok_or(Reason::Unknown)?;
+        let (project_id, label, cwd) = (
+            profile.id.clone(),
+            profile.label.clone(),
+            profile.cwd.clone(),
+        );
+        if let Some(reason) = self.removal_blocker(&project_id, &cwd) {
+            return Err(reason);
+        }
+        let path = self
+            .ctx
+            .operator_config
+            .clone()
+            .ok_or(Reason::ConfigChanged)?;
+        let lock = self.handle.reload_lock();
+        let mut sequence = match lock.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return Err(Reason::Busy),
+        };
+        *sequence += 1;
+
+        let previous =
+            dudes_config::workspace::read_bytes(&path).map_err(|_| Reason::ConfigChanged)?;
+        let written = dudes_config::workspace::removed(&path, previous.as_deref(), &project_id)
+            .map_err(|_| Reason::ConfigChanged)?;
+        self.write_and_adopt(
+            &path,
+            previous.as_deref(),
+            &written,
+            *sequence,
+            &[],
+            std::slice::from_ref(&project_id),
+        )?;
+        self.resync_floor();
+        tracing::info!(
+            session = %&crate::enrollment_reload::hex(&session.digest().bytes())[..16],
+            project = %project_id,
+            "floor project remove"
+        );
+        Ok(Removed { project_id, label })
+    }
+
+    /// Why a project cannot be removed yet: an agent that is not retired works in it, or a ticket
+    /// that is not done names it. An agent counts when the projection recorded it under the
+    /// project, or when its folder, resolved, is the project's folder or below it. A folder or
+    /// projection that cannot be read counts as working, so the project stays.
+    fn removal_blocker(&self, id: &str, project: &Path) -> Option<Reason> {
+        let world = self.sup.world();
+        let works =
+            world
+                .agents
+                .iter()
+                .filter(|(_, agent)| !agent.retired)
+                .any(|(agent_id, agent)| {
+                    let recorded = self.ctx.projections.agent(*agent_id).map_or(true, |row| {
+                        row.is_some_and(|row| {
+                            row.workspace.is_some_and(|workspace| workspace.id == id)
+                        })
+                    });
+                    let directory = match agent.worktree {
+                        None => Some(&agent.cwd),
+                        Some(lease) => world.worktrees.get(&lease).map(|lease| &lease.origin),
+                    };
+                    recorded
+                        || directory
+                            .and_then(|directory| directory.canonicalize().ok())
+                            .is_none_or(|directory| directory.starts_with(project))
+                });
+        if works {
+            return Some(Reason::Working);
+        }
+        let open = self.ctx.projections.tickets().map_or(true, |tickets| {
+            tickets.iter().any(|(card, ticket)| {
+                ticket.project == id && card.status != dudes_types::CardStatus::Done
+            })
+        });
+        open.then_some(Reason::OpenTickets)
+    }
+
+    /// Write `written`, then have the daemon adopt it. A reload the daemon declines puts the file
+    /// back as `previous`, unless something else has written it since.
+    fn write_and_adopt(
+        &mut self,
+        path: &Path,
+        previous: Option<&[u8]>,
+        written: &[u8],
+        seq: u64,
+        added: &[String],
+        removed: &[String],
+    ) -> Result<(), Reason> {
+        dudes_config::workspace::replace(path, written).map_err(|_| Reason::ConfigChanged)?;
+        if self.adopt(path, written, seq, added, removed) {
+            return Ok(());
+        }
+        let holds_ours = dudes_config::workspace::read_bytes(path)
+            .is_ok_and(|now| now.as_deref() == Some(written));
+        if holds_ours {
+            let _ = dudes_config::workspace::restore(path, previous);
+        }
+        Err(Reason::ConfigChanged)
+    }
+
+    /// The reload the CLI asks for after an edit: adopt exactly `written`, adding and removing the
+    /// ids named.
+    fn adopt(
+        &mut self,
+        path: &Path,
+        written: &[u8],
+        seq: u64,
+        added: &[String],
+        removed: &[String],
+    ) -> bool {
         let sha256 = crate::enrollment_reload::hex(&sha2::Sha256::digest(written));
         let Ok((startup, memory_config)) =
             crate::config::parse_operator_and_memory_with_options(path, Some(written))
@@ -171,8 +290,8 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
             seq,
             apply: Some(EnrollmentApply {
                 sha256: sha256.clone(),
-                added: vec![id.to_owned()],
-                removed: Vec::new(),
+                added: added.to_vec(),
+                removed: removed.to_vec(),
                 changed: Vec::new(),
             }),
             sha256,

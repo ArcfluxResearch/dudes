@@ -31,7 +31,7 @@ const ADA = '01JBQ8XK2M3N4P5Q6R7S8T9VWX';
 const GRACE = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const G1 = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';
 const G2 = '01JBQ8XK2M3N4P5Q6R7S8T9VWZ';
-const CSRF = 'A'.repeat(43);
+const REQUEST_ID = 'A'.repeat(43);
 const WORKSPACE = Object.freeze({ id: 'repo_1', label: 'Service' });
 const ENTRY = Object.freeze({ workspace_id: 'repo_1', hop_cap: '3', goal_usd_micros: '1000000', goal_tokens: null });
 const OTHER = Object.freeze({ workspace_id: 'repo_2', hop_cap: '4294967295', goal_usd_micros: null, goal_tokens: '0' });
@@ -77,7 +77,7 @@ function daemon(...replies) {
       if (response instanceof Error) throw response;
       return { status: response.status, text: async () => response.body ?? '' };
     },
-    csrf: () => CSRF,
+    signedIn: () => true,
     random(bytes) { minted += 1; bytes.fill(minted); },
     refresh() { refreshes += 1; },
     epoch: () => getFloorState().epoch,
@@ -336,7 +336,7 @@ test('one press posts exactly seven members to /floor/renew, copied from the sna
   assert.equal(init.credentials, 'same-origin');
   assert.equal(init.cache, 'no-store');
   assert.equal(init.referrerPolicy, 'no-referrer');
-  assert.deepEqual(init.headers, { 'Content-Type': 'application/json', 'X-Dudes-CSRF': CSRF });
+  assert.deepEqual(init.headers, { 'Content-Type': 'application/json' });
   const sent = JSON.parse(init.body);
   assert.match(sent.request_id, ATTEMPT_ID);
   assert.equal(init.body, `{"request_id":"${sent.request_id}","agent":"${ADA}","goal":"${G1}","text":"ship the lexer",`
@@ -372,10 +372,10 @@ test('one press posts exactly seven members to /floor/renew, copied from the sna
 });
 
 test('the response map reads renewed on the renewal and changed on the change, and each route its own reasons', () => {
-  const change = Object.freeze({ request_id: CSRF, agent: ADA, goal: G1, text: 'ship' });
+  const change = Object.freeze({ request_id: REQUEST_ID, agent: ADA, goal: G1, text: 'ship' });
   const renew = Object.freeze({ ...change, hop_cap: '3', goal_usd_micros: null, goal_tokens: null });
-  const body = (state, fields = {}) => JSON.stringify({ request_id: CSRF, state, agent: ADA, goal: G2, ...fields });
-  const refused = (reason) => JSON.stringify({ request_id: CSRF, state: 'refused', reason });
+  const body = (state, fields = {}) => JSON.stringify({ request_id: REQUEST_ID, state, agent: ADA, goal: G2, ...fields });
+  const refused = (reason) => JSON.stringify({ request_id: REQUEST_ID, state: 'refused', reason });
   const rows = [
     [renew, 200, body('renewed'), { kind: 'changed' }],
     [renew, 200, body('changed'), { kind: 'unknown' }],
@@ -383,7 +383,7 @@ test('the response map reads renewed on the renewal and changed on the change, a
     [renew, 200, body('renewed', { agent: GRACE }), { kind: 'unknown' }],
     [change, 200, body('renewed'), { kind: 'unknown' }],
     [change, 200, body('changed'), { kind: 'changed' }],
-    [renew, 202, JSON.stringify({ request_id: CSRF, state: 'pending' }), { kind: 'pending' }],
+    [renew, 202, JSON.stringify({ request_id: REQUEST_ID, state: 'pending' }), { kind: 'pending' }],
     [renew, 409, '', { kind: 'conflict' }],
     [renew, 403, '', { kind: 'forbidden' }],
     [renew, 503, '', { kind: 'unavailable' }],
@@ -409,7 +409,7 @@ test('the response map reads renewed on the renewal and changed on the change, a
 test('the renewal outcomes read the specified words, and a 200 says only that the goal is recorded until the projection moves', async () => {
   const said = {
     goal_not_exhausted: 'This goal still has turns or dollars left, so nothing was recorded. Change its text instead.',
-    workspace_unavailable: 'This agent’s project is not enrolled at its directory now, or sets no ceiling that the '
+    workspace_unavailable: 'This agent’s project is not set up at its folder now, or sets no ceiling that the '
       + 'daemon’s billing key requires, so nothing was recorded. Give it a new goal from a terminal (dudes goal), '
       + 'or retire it and hire a new one.',
     profile_changed: 'The project’s allowance or checks changed since this page read it, so nothing was '

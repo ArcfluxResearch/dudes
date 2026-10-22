@@ -36,7 +36,7 @@ function live(pending = []) {
 }
 
 function dependencies(fetch) {
-  return { fetch, random(bytes) { assert.equal(bytes.length, 32); bytes.fill(0); }, csrf: () => 'csrf',
+  return { fetch, random(bytes) { assert.equal(bytes.length, 32); bytes.fill(0); }, signedIn: () => true,
     floor: getFloorState, session: () => 1, refresh() {} };
 }
 
@@ -58,7 +58,7 @@ test('Chat preserves a new draft while retrying exactly the original normalized 
   assert.equal(calls[0].url, '/floor/chat/send');
   assert.equal(calls[1].init.body, calls[0].init.body);
   assert.deepEqual(JSON.parse(calls[0].init.body), { request_id: 'A'.repeat(43), agent: ADA, text: 'Check 🙂' });
-  assert.deepEqual(Object.keys(calls[0].init.headers).sort(), ['Content-Type', 'X-Dudes-CSRF']);
+  assert.deepEqual(Object.keys(calls[0].init.headers).sort(), ['Content-Type']);
   assert.equal(chatDraft(getChatState(), ADA), 'Changed while unresolved');
   assert.equal(getChatState().attempt, null);
   assert.deepEqual(getChatState().acknowledged, [{ agent_id: ADA, note_lsn: '9007199254740993', text: 'Check 🙂' }]);

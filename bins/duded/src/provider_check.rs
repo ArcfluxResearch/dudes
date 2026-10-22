@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use dudes_proto::rpc::system::{ProviderLoginHome, ProviderProbe};
+use dudes_proto::rpc::system::{ProviderLoginHome, ProviderProbe, SignIn};
 use dudes_providers::launch::EnvVar;
 use dudes_types::Provider;
 use serde::Serialize;
@@ -127,10 +127,21 @@ impl ProviderCheck {
     }
 
     /// The `daemon` sibling's JSON, or `None` when the check did not answer in time.
-    pub(crate) fn sibling(&self) -> Option<Vec<u8>> {
+    ///
+    /// With `sign_in`, each found engine's row also says whether the engine is signed in, waiting for
+    /// its status command as `system.doctor` does.
+    pub(crate) fn sibling(
+        &self,
+        sign_in: Option<&crate::sign_in::SignInCheck>,
+        busy: &std::collections::BTreeSet<Provider>,
+    ) -> Option<Vec<u8>> {
         let shared = &self.0.0;
         let found = shared.found()?;
-        serde_json::to_vec(&shared.view(&found)).ok()
+        let mut rows: Vec<ProviderProbe> = found.iter().map(probe).collect();
+        if let Some(sign_in) = sign_in {
+            sign_in.annotate_for_page(&mut rows, busy);
+        }
+        serde_json::to_vec(&shared.view(&found, &rows)).ok()
     }
 
     /// `system.doctor`'s provider rows.
@@ -302,12 +313,14 @@ impl Shared {
         }
     }
 
-    fn view(&self, found: &[Found]) -> DaemonView {
+    fn view(&self, found: &[Found], rows: &[ProviderProbe]) -> DaemonView {
         DaemonView {
             state_dir: self.home.show(&self.state_dir),
             providers: found
                 .iter()
-                .map(|found| ProviderView {
+                .zip(rows)
+                .map(|(found, row)| ProviderView {
+                    sign_in: row.sign_in.filter(|_| found.resolved.is_ok()),
                     provider: found.provider,
                     program: Path::new(&found.program)
                         .file_name()
@@ -348,6 +361,8 @@ struct ProviderView {
     path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sign_in: Option<SignIn>,
 }
 
 /// A doctor row: the full path when it is UTF-8. A path that is not is left out with a detail,
@@ -729,7 +744,8 @@ mod tests {
             state: Mutex::default(),
             changed: Condvar::new(),
         };
-        serde_json::to_value(shared.view(rows)).expect("the view serializes")
+        let probes: Vec<ProviderProbe> = rows.iter().map(probe).collect();
+        serde_json::to_value(shared.view(rows, &probes)).expect("the view serializes")
     }
 
     #[test]

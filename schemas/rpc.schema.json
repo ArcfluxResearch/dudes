@@ -1402,8 +1402,15 @@
           "type": "string"
         },
         "intended_goal": {
-          "$ref": "#/$defs/Goal",
-          "description": "Complete goal minted before the hire append."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Goal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Complete goal minted before the hire append. A hire written since the first task became a\nticket carries none."
         },
         "profile_id": {
           "description": "Operator enrollment selected by the request.",
@@ -1416,14 +1423,24 @@
         "session_digest": {
           "description": "Digest of the Floor session that admitted the hire.",
           "type": "string"
+        },
+        "trust_lsn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lsn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The operator's project trust grant this hire used, when it worked in its own copy."
         }
       },
       "required": [
         "attempt_id",
         "request_digest",
         "profile_id",
-        "session_digest",
-        "intended_goal"
+        "session_digest"
       ],
       "type": "object"
     },
@@ -1649,6 +1666,17 @@
     "CardTicket": {
       "description": "What the floor snapshot says of a ticket. It carries no note, message, summary, path, argv,\ncheck name or check output: those come only from `ticket.read`. It is small on purpose, because\nthe snapshot's card budget has to hold the most tickets the board allows.",
       "properties": {
+        "goal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoalId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The goal installed by this ticket's latest start, retained after that work stops."
+        },
         "instruction_review": {
           "anyOf": [
             {
@@ -1659,6 +1687,17 @@
             }
           ],
           "description": "Bounded action/evidence summary. Paths and interval details come from `ticket.read`."
+        },
+        "last_turn_end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketTurnEnd"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The newest completed engine turn on this ticket's goal."
         },
         "position": {
           "description": "Its place in its holder's queue, counting from 1, while it waits there.",
@@ -3016,6 +3055,60 @@
           ],
           "type": "object"
         },
+        "floor.devices.keep": {
+          "description": "Answer a browser's \"new browser\" notice from the terminal: keep it. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/DeviceKeepParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/DeviceKeepResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "floor.devices.list": {
+          "description": "The browsers signed in to the Floor, newest sign-in first. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/DevicesListResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "floor.devices.remove": {
+          "description": "Sign one browser out of the Floor. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/DeviceRemoveParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/DeviceRemoveResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "floor.enrollment.reload": {
           "description": "Make the daemon adopt the `[floor.onboarding]` workspaces now in its own operator file,\nonly when the file and the change are the caller's.",
           "properties": {
@@ -3074,7 +3167,7 @@
           "description": "Issue a bounded, single-use bootstrap bearer for the read-only Floor.",
           "properties": {
             "params": {
-              "$ref": "#/$defs/Empty",
+              "$ref": "#/$defs/SessionIssueParams",
               "description": "The params object."
             },
             "result": {
@@ -3703,6 +3796,24 @@
           ],
           "type": "object"
         },
+        "workspace.trust": {
+          "description": "Trust or stop trusting an enrolled project, so the Floor may hire into its own copy there.\nOperator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TrustParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/TrustResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "worktree.list": {
           "description": "Every worktree lease that is not removed, with its path. Operator-only.",
           "properties": {
@@ -3795,6 +3906,10 @@
         "ticket.read",
         "ticket.accept",
         "ticket.stop",
+        "workspace.trust",
+        "floor.devices.list",
+        "floor.devices.remove",
+        "floor.devices.keep",
         "ticket.checkout",
         "floor.session.export",
         "floor.session.import",
@@ -3803,6 +3918,126 @@
         "recovery.receipt"
       ],
       "title": "CurrentMethods",
+      "type": "object"
+    },
+    "DeviceEntry": {
+      "description": "One signed-in browser, as `floor.devices.list` reports it.",
+      "properties": {
+        "device": {
+          "description": "The device's id: 43 characters of unpadded base64url.",
+          "type": "string"
+        },
+        "first_used": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When it first made a request; absent while it has made none."
+        },
+        "last_used": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When it last made a request; absent while it has made none."
+        },
+        "name": {
+          "description": "The label its browser chose. A label, not proof of what the browser is.",
+          "type": "string"
+        },
+        "new": {
+          "description": "Whether nobody has answered its \"new browser\" notice yet.",
+          "type": "boolean"
+        },
+        "signed_in": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it signed in."
+        }
+      },
+      "required": [
+        "device",
+        "name",
+        "signed_in",
+        "new"
+      ],
+      "type": "object"
+    },
+    "DeviceKeepParams": {
+      "additionalProperties": false,
+      "description": "`floor.devices.keep` params.",
+      "properties": {
+        "device": {
+          "description": "The whole id of the device to keep.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device"
+      ],
+      "type": "object"
+    },
+    "DeviceKeepResult": {
+      "description": "`floor.devices.keep` result.",
+      "properties": {
+        "kept": {
+          "description": "Whether the device is kept now. False when it is already gone.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kept"
+      ],
+      "type": "object"
+    },
+    "DeviceRemoveParams": {
+      "additionalProperties": false,
+      "description": "`floor.devices.remove` params.",
+      "properties": {
+        "device": {
+          "description": "The whole id of the device to sign out.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device"
+      ],
+      "type": "object"
+    },
+    "DeviceRemoveResult": {
+      "description": "`floor.devices.remove` result.",
+      "properties": {
+        "removed": {
+          "description": "Whether a device was signed out. False when it was already gone.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "removed"
+      ],
+      "type": "object"
+    },
+    "DevicesListResult": {
+      "description": "`floor.devices.list` result: the signed-in browsers, newest sign-in first.",
+      "properties": {
+        "devices": {
+          "description": "The devices.",
+          "items": {
+            "$ref": "#/$defs/DeviceEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "devices"
+      ],
       "type": "object"
     },
     "DiffRefusal": {
@@ -7649,6 +7884,204 @@
           "type": "object"
         },
         {
+          "description": "The operator trusted, or stopped trusting, one enrolled project. A trusted project lets the\nFloor hire an agent into its own copy there while the repository still matches what the\noperator vouched for. The latest record per project wins.\n\nAn older reader must not skip it: a revocation it missed would leave a grant standing.",
+          "properties": {
+            "pin": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TrustPin"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the operator saw of the repository's settings. Absent when `trusted` is false."
+            },
+            "repository": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TrustedRepository"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where the repository was and what identified it. Absent when `trusted` is false."
+            },
+            "t": {
+              "const": "workspace_trust_set",
+              "type": "string"
+            },
+            "trusted": {
+              "description": "Whether the project is trusted from this record on.",
+              "type": "boolean"
+            },
+            "workspace_id": {
+              "description": "The enrolled project.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "workspace_id",
+            "trusted"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A browser signed in and became a device. Only digests of its cookie and its secret are\nkept. The entry's own time is the sign-in time.",
+          "properties": {
+            "cookie": {
+              "description": "SHA-256 of the device's cookie.",
+              "type": "string"
+            },
+            "device": {
+              "description": "The device's id.",
+              "type": "string"
+            },
+            "name": {
+              "description": "The label the browser chose, cleaned and capped by the daemon.",
+              "type": "string"
+            },
+            "origin": {
+              "description": "The Floor origin the browser signed in on.",
+              "type": "string"
+            },
+            "secret": {
+              "description": "SHA-256 of the secret the page sends with every request.",
+              "type": "string"
+            },
+            "t": {
+              "const": "floor_device_enrolled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "device",
+            "origin",
+            "name",
+            "cookie",
+            "secret"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A device made its first request. The entry's own time is that moment.",
+          "properties": {
+            "device": {
+              "description": "The device.",
+              "type": "string"
+            },
+            "t": {
+              "const": "floor_device_first_used",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "device"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Someone answered the \"new browser\" notice for a device with Keep.",
+          "properties": {
+            "device": {
+              "description": "The device.",
+              "type": "string"
+            },
+            "t": {
+              "const": "floor_device_acknowledged",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "device"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A device was removed and no longer signs in.",
+          "properties": {
+            "device": {
+              "description": "The device.",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/FloorDeviceRemoval",
+              "description": "Why it was removed."
+            },
+            "t": {
+              "const": "floor_device_removed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "device",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A device made a request. Written at most once a day per device; the entry's own time is the\ndevice's last use as a restart sees it.",
+          "properties": {
+            "device": {
+              "description": "The device.",
+              "type": "string"
+            },
+            "t": {
+              "const": "floor_device_used",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "device"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A browser signed in with a key its page cannot read and became a device. Only a digest of\nits cookie is kept, with the public key that checks its requests. The entry's own time is\nthe sign-in time. Later first-use, acknowledgement, removal and use records name the\ndevice as they do for [`Record::FloorDeviceEnrolled`].\n\nAn older reader skips this record, and with it the device: it holds no row for the\ndevice, so the records that follow find nothing to change.",
+          "properties": {
+            "cookie": {
+              "description": "SHA-256 of the device's cookie.",
+              "type": "string"
+            },
+            "device": {
+              "description": "The device's id: the SHA-256 of `key`'s decoded bytes.",
+              "type": "string"
+            },
+            "key": {
+              "description": "The device's public key as SPKI DER, in unpadded base64url.",
+              "type": "string"
+            },
+            "name": {
+              "description": "The label the browser chose, cleaned and capped by the daemon.",
+              "type": "string"
+            },
+            "origin": {
+              "description": "The Floor origin the browser signed in on.",
+              "type": "string"
+            },
+            "t": {
+              "const": "floor_device_key_enrolled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "device",
+            "key",
+            "origin",
+            "name",
+            "cookie"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The Floor refused one request because the process on the other end of its connection\ncould not be shown to be outside every agent. Audit only: it changes no projection.\n\nThe daemon writes at most one per agent per minute, and one more for refusals that name no\nagent, so a looping agent cannot fill the journal.",
           "properties": {
             "agent": {
@@ -8156,13 +8589,6 @@
           "$ref": "#/$defs/Timestamp",
           "description": "When the session was last used, not refreshed by the export."
         },
-        "secret": {
-          "description": "SHA-256 of the session secret the page sends on every request that changes state. Absent\nfrom an export an older daemon made, and a session without it cannot act.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "ticket_assigns": {
           "description": "Tickets the session assigned in the run.",
           "format": "uint32",
@@ -8183,6 +8609,28 @@
         "ticket_creates",
         "ticket_assigns",
         "check_runs"
+      ],
+      "type": "object"
+    },
+    "FileIdentity": {
+      "description": "A directory by device and inode, so a path swapped for another directory does not match.",
+      "properties": {
+        "device": {
+          "description": "The device the directory is on.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inode": {
+          "description": "The directory's inode.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "device",
+        "inode"
       ],
       "type": "object"
     },
@@ -8359,6 +8807,36 @@
       },
       "title": "FloorDeltaView",
       "type": "object"
+    },
+    "FloorDeviceRemoval": {
+      "description": "Why a signed-in browser stopped being one.",
+      "oneOf": [
+        {
+          "const": "signed_out",
+          "description": "The person signed out in that browser.",
+          "type": "string"
+        },
+        {
+          "const": "removed",
+          "description": "Someone removed it from another browser or the command line.",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "It went unused for 30 days, or reached 90 days in all.",
+          "type": "string"
+        },
+        {
+          "const": "never_used",
+          "description": "It signed in and made no request within a day.",
+          "type": "string"
+        },
+        {
+          "const": "replaced",
+          "description": "A newer sign-in took its place while all eight devices were in use.",
+          "type": "string"
+        }
+      ]
     },
     "FloorFinishedToday": {
       "description": "The daemon's count of goals first finished, with an observed pass, on its own local calendar day.\nA sibling of `floor.snapshot` and `floor.delta`; a present delta replaces the whole\nvalue, and an absent sibling means the daemon does not support it, never a count of zero.\n\n`local_date` and `utc_offset_minutes` are the daemon host's at the instant it answered, so a\nbrowser in another timezone can say whose day it is showing and never converts it.",
@@ -12027,6 +12505,21 @@
         }
       ]
     },
+    "LinkPurpose": {
+      "description": "What a sign-in link is for. It sets how long the link lives and which of the daemon's link\nslots it takes.",
+      "oneOf": [
+        {
+          "const": "open",
+          "description": "The command line opens the browser itself: the link lives 60 seconds.",
+          "type": "string"
+        },
+        {
+          "const": "print",
+          "description": "The command line prints the link to be pasted elsewhere: it lives 10 minutes.",
+          "type": "string"
+        }
+      ]
+    },
     "LiveActivityKind": {
       "description": "One fixed kind observed by the daemon, without vendor text or tool detail.",
       "oneOf": [
@@ -13724,6 +14217,60 @@
           ],
           "type": "object"
         },
+        "floor.devices.keep": {
+          "description": "Answer a browser's \"new browser\" notice from the terminal: keep it. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/DeviceKeepParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/DeviceKeepResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "floor.devices.list": {
+          "description": "The browsers signed in to the Floor, newest sign-in first. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/Empty",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/DevicesListResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
+        "floor.devices.remove": {
+          "description": "Sign one browser out of the Floor. Operator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/DeviceRemoveParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/DeviceRemoveResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "floor.enrollment.reload": {
           "description": "Make the daemon adopt the `[floor.onboarding]` workspaces now in its own operator file,\nonly when the file and the change are the caller's.",
           "properties": {
@@ -13746,7 +14293,7 @@
           "description": "Issue a bounded, single-use bootstrap bearer for the read-only Floor.",
           "properties": {
             "params": {
-              "$ref": "#/$defs/Empty",
+              "$ref": "#/$defs/SessionIssueParams",
               "description": "The params object."
             },
             "result": {
@@ -14303,6 +14850,24 @@
           ],
           "type": "object"
         },
+        "workspace.trust": {
+          "description": "Trust or stop trusting an enrolled project, so the Floor may hire into its own copy there.\nOperator-only.",
+          "properties": {
+            "params": {
+              "$ref": "#/$defs/TrustParams",
+              "description": "The params object."
+            },
+            "result": {
+              "$ref": "#/$defs/TrustResult",
+              "description": "The result."
+            }
+          },
+          "required": [
+            "params",
+            "result"
+          ],
+          "type": "object"
+        },
         "worktree.list": {
           "description": "Every worktree lease that is not removed, with its path. Operator-only.",
           "properties": {
@@ -14394,7 +14959,11 @@
         "ticket.remove",
         "ticket.read",
         "ticket.accept",
-        "ticket.stop"
+        "ticket.stop",
+        "workspace.trust",
+        "floor.devices.list",
+        "floor.devices.remove",
+        "floor.devices.keep"
       ],
       "type": "object"
     },
@@ -17534,6 +18103,18 @@
       ],
       "type": "object"
     },
+    "SessionIssueParams": {
+      "additionalProperties": false,
+      "description": "`floor.session.issue` params. A call with no purpose is a call to open.",
+      "properties": {
+        "purpose": {
+          "$ref": "#/$defs/LinkPurpose",
+          "default": "open",
+          "description": "What the link is for."
+        }
+      },
+      "type": "object"
+    },
     "SessionIssueResult": {
       "description": "`floor.session.issue` result.\n\nThe bootstrap bearer remains a string on the wire, but [`Debug`](fmt::Debug) redacts it so a\ndiagnostic cannot disclose the capability. Deserialization enforces every finite field and\nreturns value-free errors; result objects remain open to additive fields.",
       "properties": {
@@ -17549,9 +18130,9 @@
           "type": "string"
         },
         "expires_in_s": {
-          "description": "The bearer lifetime. Exactly 60 seconds.",
+          "description": "The bearer lifetime: 60 seconds for a link made to open, 600 for one made to print.",
           "format": "uint64",
-          "maximum": 60,
+          "maximum": 600,
           "minimum": 60,
           "type": "integer"
         }
@@ -18941,6 +19522,17 @@
           ],
           "description": "Bounded instruction evidence and the exact pending review set."
         },
+        "last_turn_end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TicketTurnEnd"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The newest completed turn on the ticket's goal, retained while another turn runs."
+        },
         "message": {
           "description": "What the operator said when sending the work back, until the next start uses it.",
           "type": [
@@ -19012,6 +19604,24 @@
       "required": [
         "card",
         "expected_seq"
+      ],
+      "type": "object"
+    },
+    "TicketTurnEnd": {
+      "description": "How the latest completed engine turn on a ticket ended.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the turn's end was recorded."
+        },
+        "exit": {
+          "$ref": "#/$defs/ExitStatus",
+          "description": "The engine process's recorded exit status."
+        }
+      },
+      "required": [
+        "exit",
+        "at"
       ],
       "type": "object"
     },
@@ -19183,6 +19793,103 @@
       "format": "uint64",
       "minimum": 0,
       "type": "integer"
+    },
+    "TrustParams": {
+      "additionalProperties": false,
+      "description": "`workspace.trust` params: trust or stop trusting one enrolled project.",
+      "properties": {
+        "trusted": {
+          "description": "Whether the project is trusted from now on.",
+          "type": "boolean"
+        },
+        "workspace_id": {
+          "description": "The enrolled project's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "trusted"
+      ],
+      "type": "object"
+    },
+    "TrustPin": {
+      "description": "The repository settings an operator vouched for.",
+      "properties": {
+        "attributes": {
+          "description": "SHA-256 of the common directory's `info/attributes`, or of nothing when it is absent.",
+          "type": "string"
+        },
+        "claude_tree": {
+          "description": "The git object id of `.claude/` at the origin's `HEAD`; absent when there is none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "config": {
+          "description": "SHA-256 of the common directory's configuration entries, less `branch.` and `remote.`.",
+          "type": "string"
+        },
+        "mcp_json": {
+          "description": "The git object id of `.mcp.json` at the origin's `HEAD`; absent when there is none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "attributes",
+        "config"
+      ],
+      "type": "object"
+    },
+    "TrustResult": {
+      "description": "`workspace.trust` result.",
+      "properties": {
+        "changed": {
+          "description": "Whether this call changed anything. An untrust of a project that was not trusted changes\nnothing and appends nothing.",
+          "type": "boolean"
+        },
+        "trusted": {
+          "description": "Whether the project is trusted now.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "trusted",
+        "changed"
+      ],
+      "type": "object"
+    },
+    "TrustedRepository": {
+      "description": "The repository an operator trusted, by name and by identity.",
+      "properties": {
+        "common_dir": {
+          "description": "The repository's git common directory.",
+          "type": "string"
+        },
+        "common_identity": {
+          "$ref": "#/$defs/FileIdentity",
+          "description": "That directory's identity."
+        },
+        "directory": {
+          "description": "The project's canonical directory when it was trusted.",
+          "type": "string"
+        },
+        "directory_identity": {
+          "$ref": "#/$defs/FileIdentity",
+          "description": "That directory's identity."
+        }
+      },
+      "required": [
+        "directory",
+        "directory_identity",
+        "common_dir",
+        "common_identity"
+      ],
+      "type": "object"
     },
     "TurnId": {
       "description": "TurnId: a ULID (26 characters of Crockford base32).",

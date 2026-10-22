@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import './ticket.css';
+import { useAutoDismiss } from '../useAutoDismiss.ts';
 
 import type { FloorState } from '../floor/store.ts';
 import { announcement, arrivals, bannerCounts, bannerText, viewConfirmed } from './model.ts';
@@ -26,6 +27,8 @@ export function TicketBanner({ floor, onOpen }: { readonly floor: FloorState; re
   const seen = useRef<ReadonlySet<string> | null>(null);
   const confirmed = viewConfirmed(floor);
   const base = useRef<string | null>(null);
+  const banner = useRef<HTMLDivElement>(null);
+  useAutoDismiss(banner, text === null || dismissed === text ? null : text, () => setDismissed(text));
 
   useEffect(() => {
     if (!confirmed) return;
@@ -41,7 +44,7 @@ export function TicketBanner({ floor, onOpen }: { readonly floor: FloorState; re
 
   return <>
     <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true" data-ticket-announcement="true">{said}</div>
-    {text === null || dismissed === text ? null : <div className="ticket-banner" role="group" aria-label="Tickets waiting on you">
+    {text === null || dismissed === text ? null : <div className="ticket-banner" ref={banner} role="group" aria-label="Tickets waiting on you">
       <span className="ticket-banner-text">{text}</span>
       <button type="button" className="ticket-banner-open" onClick={onOpen}>Open Board</button>
       <button type="button" className="ticket-banner-dismiss" aria-label="Dismiss ticket banner" onClick={() => setDismissed(text)}>Dismiss</button>

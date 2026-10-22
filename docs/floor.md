@@ -21,8 +21,8 @@ without a goal authorizes one turn; messages to an agent with a goal join its ne
 ![Animation in the Workshop office. A new hire appears at the door, walks across the floor and sits down at a free desk, while the rest of the crew types at desks and checks at the goal board.](../.github/readme/hire-walks-in.webp)
 
 The office is a view of the daemon's state, never a source of truth. The daemon's journal, an append-only log of everything it records, is the
-only record, and the Floor changes that state only through the Floor actions you turn on. `dudes quickstart` asks once whether to turn on hire,
-pause, answer, change goals, retire, recover, add projects and read changes together. The terminal
+only record, and the Floor changes that state only through the Floor actions you turn on. `dudes quickstart` turns on hire, pause, answer, change
+goals, retire, recover, tickets and add projects without asking. The changed-file views stay off until you turn them on in **Settings**. The terminal
 stays off until you turn it on with `dudes config set floor.terminal on` and restart.
 
 The Floor draws the smallest office that seats the whole crew. The Studio has 8 desks, the Workshop
@@ -45,29 +45,112 @@ and the installer adds a Dudes launcher that runs it: an app in `~/Applications`
 your applications menu on Linux. The launcher registers no web address and no file type, so no web page
 can start it. `dudes uninstall` removes it. Over SSH, or where no opener is found, `dudes open` prints
 the link instead, to paste into a browser on this computer within 60 seconds.
-`dudes floor open` always prints the link and opens nothing.
+`dudes floor open` always prints the link and opens nothing. Because you carry that link to another
+browser yourself, it works for 10 minutes. It has its own slots, and the daemon keeps the last four it
+printed, so printing a new one drops the oldest unused one and never stops `dudes open` from making its own.
 
-A link works once, in one browser, and only for 60 seconds. The page signs in with it as it loads and
-removes it from the address bar and the browser's history. A browser that has signed in keeps its own
-session, and the same link used in a second browser, or after it expired, is refused. The page then
-tells you to open Dudes again. A session renews each time it is used, and ends after 24 hours without
-use, after 30 days in all, or when you choose **Sign out**, which also closes its open connections.
-The daemon allows four Floor sessions at a time; a fifth sign-in ends the one used longest ago, and
-that browser shows the signed-out screen. A page whose session the daemon no longer knows shows the
-same screen, and a page whose connection merely dropped keeps its session and reconnects. Copying the address from
-the browser's address bar does not help, because the link is gone from it. `dudes stop` and `dudes start` end every Floor session; [after you
-upgrade](#after-you-upgrade) explains what `dudes upgrade` does instead. The link is a loopback address, so on a remote machine forward the port first, for example `ssh -L <port>:127.0.0.1:<port> <host>`, and paste the link into a browser on your own computer.
+A link works once, in one browser. The page signs in with it as it loads and
+removes it from the address bar and the browser's history. The same link used in a second browser, or
+after it expired, is refused. The page then tells you to open Dudes again. Copying the address from
+the browser's address bar does not help, because the link is gone from it. The link is a loopback address, so on a remote machine forward the port first, for example `ssh -L <port>:127.0.0.1:<port> <host>`, and paste the link into a browser on your own computer.
+
+### Signed-in browsers
+
+Each browser that signs in becomes a *device*: the daemon writes it to its journal with a name the
+browser gives itself, such as "Chrome on macOS". The name is a label the browser chose, not proof of
+what it is. `dudes devices` lists every signed-in browser, with when it signed in, when it first and
+last made a request, and a `new` mark on one nobody has kept yet. `dudes devices remove <id>` signs
+one out and closes its open connections at once; the start of the id is enough when it names one
+browser, and when it names more than one the command lists them and removes nothing. An id is 43
+characters of upper and lower case letters, digits, `-` and `_`, and the start you give must match
+exactly, including case. An id that starts with `-` needs `--` before it:
+`dudes devices remove -- -Ab3...`.
+A new browser stays marked `new`, and stays early in the removal order below, until someone keeps
+it. The Floor's **Keep**, pressed in another browser, does that. `dudes devices keep <id>` does the
+same from the terminal, for when you have no second browser.
+
+The Floor shows the same list under **Settings**, marks the browser you are using, and has a **Sign
+out** button on each row. A new sign-in is announced on every other open Floor, with **Keep** and
+**Remove**, and the notice stays until someone answers it. The signed-out screen says why a browser was
+signed out when the daemon can tell it.
+
+A device stays signed in for 30 days without use and 90 days in all. It stays signed in through
+`dudes stop` and `dudes start`, because the journal holds it, as long as the Floor comes back on the
+same port. If the Floor starts on another port, for example because its usual port is busy, the
+browsers signed in on the old port are signed out until the daemon is back on that port; they are not
+removed, and they work again when it returns. A device that signs in and makes no request within 24 hours is removed. You can also end a
+device with **Sign out**, which closes its open connections, or with `dudes devices remove`.
+
+### How the Floor knows a request is yours
+
+The browser makes a key for itself when it signs in, and the page cannot read that key: the page can
+only ask the browser to sign with it, and it cannot copy it out. The sign-in sends the daemon the
+public half. The browser's id is a hash of that public key, so it is the same everywhere the daemon
+shows it. The browser's cookie only names the device. It opens nothing on its own: every request
+the page makes, including each read, each action and each connection the page opens, carries a signature
+made with the key. The signature covers the request, the page's address, the time and a one-time
+number, and the daemon refuses a request whose signature is missing, is for another address, is more
+than a minute off the daemon's clock, or has been used before. A page served by another program on the
+same port, even one the browser sent your cookie to, has no key, so it can open nothing and cannot
+sign for you.
+
+A browser needs WebCrypto and IndexedDB for this, and a page never falls back to anything weaker. Some
+private windows do not allow IndexedDB, and a page there cannot sign in; it says why. A
+browser that clears the site's data loses its key. Its cookie then names a device it can no longer sign
+for, and the page asks for a new link with `dudes open`; the old device ages out.
+
+Signing in again after an upgrade from a version that kept a readable secret is needed once: those
+sign-ins hold no key, so the first daemon with signed requests ends each of them as expired, and every
+browser shows the signed-out screen and the `dudes open` line.
+
+One limit stays. If another program held the Floor's address, served its own page there and
+registered a service worker, that worker stays in the browser after the program leaves and can
+keep acting inside that browser when Dudes returns to the address. The daemon answers `404` for every script it does not
+serve, which makes a browser drop such a worker over time, and the page removes any worker it finds. If
+you think another program held the address, clear that site's data in the browser: cookies,
+storage and service workers for `127.0.0.1` and the port.
+
+The daemon keeps at most eight devices. A ninth sign-in removes the first of these that exists: a
+device that never made a request, a device nobody has kept yet, then the device used longest ago. The
+browser it removes shows the signed-out screen. A page whose device the daemon no longer knows shows
+the same screen, and a page whose connection merely dropped keeps its device and reconnects.
 
 **Setup** shows each engine the daemon turned on and whether it found that engine's program on its
-`PATH`. **Settings** shows the running Floor switches, budget ceilings, per-turn reserves,
-registered providers and enrolled workspace labels. The Floor reads configuration without editing
+`PATH`. When you hire and the engine you chose is installed but signed out, the hire flow says so and
+offers **Sign in**. It runs that engine's own login in a terminal on the page: for Claude Code,
+open the link in your browser and paste the code it shows into the terminal. Codex finishes by itself
+once you sign in at its link. Pi signs in inside its own terminal, where you type `/login`. The page
+checks the engine again when the login exits cleanly and the hire carries on. This follows
+`floor.hire` and needs no terminal switch. Closing the terminal, waiting ten minutes or stopping the
+daemon ends the login. Dudes does not keep or log what the terminal shows or what you type, and the
+engine writes its own credentials. **Settings** shows the running Floor switches, budget ceilings, per-turn reserves,
+registered providers and your projects. The Floor reads configuration without editing
 it. **About**, within Settings, shows the daemon, Floor build and browser wire versions.
+
+## Hire an agent into its own copy of the project
+
+Two agents in one folder can overwrite each other. The Hire dialog's **App** step offers **Work in
+its own copy of the project** for a Claude Code agent. A copy is a separate checkout of the project
+on a new branch named `dudes/<id>`, kept in Dudes' own data folder and not inside your project. When
+the agent is retired the copy and its branch stay, so nothing it wrote is lost. Dudes never merges,
+pushes or deletes them.
+
+The box starts unticked. It starts ticked, and says why, when another agent already works in the
+project's folder. Your own choice wins after that.
+
+The box appears only for a project you have trusted. In a terminal, run `dudes project trust <id>`
+(`dudes project untrust <id>` takes it back). Trusting records the project's folder, its `.claude`
+directory and `.mcp.json` at the current commit, and its git configuration. An agent in a copy runs the
+repository's own Claude settings, so their environment values and helper commands apply without
+asking. If any of those change, or the folder is replaced, copies stop until you trust the project
+again. Trust is refused for a repository whose git configuration includes other files or defines a
+filter, or whose `.claude` or `.mcp.json` is a symbolic link. Codex and Pi agents cannot work in a copy,
+and neither can any agent on Windows. Agents already in a copy keep working after an untrust.
 
 ## Recover an interrupted goal
 
 **Recover interrupted goal** appears in an eligible agent's drawer when both `floor.recovery` and
-`floor.control` are on. Recovery is a separate opt-in that `quickstart` does not enable with its
-bundled Floor actions. Press **Inspect recovery**, read the warning, choose one offered context,
+`floor.control` are on. Press **Inspect recovery**, read the warning, choose one offered context,
 and press **Authorize one recovery**. Ordinary Resume does not release a recovery barrier.
 Authorization does not guarantee a launch or restored conversation history, and earlier effects may repeat.
 
@@ -88,7 +171,7 @@ an earlier check is history. Unknown applicability is not a pass.
 With `floor.board` on, the Board view makes tickets and moves them. It needs `floor.control` and
 `floor.goal` on too, and the daemon refuses to start without them. Turn it on with
 `dudes config set floor.board on`, which applies at once. `dudes quickstart` turns it on with the
-other Floor actions when you say yes to its one question.
+other Floor actions in a new file.
 
 **Giving a ticket to an agent starts that agent, which then runs and spends under your account.**
 Anyone holding your Floor session can do that until the session ends, so keep the link to yourself.
@@ -130,24 +213,20 @@ After upgrading Dudes, copy any unsent drafts before reloading an open Floor tab
 Floor bundle must have matching release and browser protocol versions. An older open tab cannot
 connect to an incompatible daemon. Reload the tab explicitly to load the installed bundle.
 
-`dudes upgrade` keeps the Floor sign-ins that are open when it starts, so a reload is all it
-takes. When the daemon stops, an open tab reconnects for about eight seconds, then stops sending
-anything that carries your sign-in and checks every two seconds, without it, whether Dudes is
-back. After an upgrade it says "Dudes was updated. Reload this tab to continue." After the reload
-the tab is signed in again and shows the same agents, with no new link.
-The sign-in keeps its original time limits: the idle limit of 24 hours, and the 30-day limit
-that counts from the first sign-in. Ticket and check allowances carry over too, so an upgrade does
-not refill them.
+Signed-in browsers stay signed in across `dudes upgrade`, `dudes stop` and `dudes start`, so a reload
+is all it takes. When the daemon stops, an open tab reconnects for about eight seconds, then stops
+sending anything that carries your sign-in and checks every two seconds, without it, whether Dudes
+is back. After an upgrade it says "Dudes was updated. Reload this tab to continue." After the reload
+the tab is signed in again and shows the same agents, with no new link. Each device keeps its own
+time limits. Ticket and check allowances carry over through `dudes upgrade`, so an upgrade does not
+refill them. A plain `dudes stop` and `dudes start` starts them again.
 
-Only `dudes upgrade` carries sign-ins. A plain `dudes stop` and `dudes start` signs every browser
-out. The tab says "Dudes restarted. Reload this tab to continue.", and the reload then asks you to
-open Dudes again. A tab that finds
-no daemon for ten minutes stops checking and shows that same sign-in message. An upgrade that
-cannot keep a sign-in, for example because the Floor comes back on a different port or the upgrade
-is interrupted, ends the same way.
+A tab that finds no daemon for ten minutes stops checking and shows the sign-in message. A browser
+signs in again if the Floor comes back on a different port, because the sign-in belongs to the
+address it was made on.
 
-The first upgrade from a version that predates this feature still signs open tabs out, because
-the older daemon cannot hand its sign-ins over.
+The first upgrade from a version that kept sign-ins only in memory still signs open tabs out once,
+because that daemon has no devices to hand over. Open Dudes again with `dudes open`.
 
 Do not paste a new sign-in link into a tab that says Dudes stopped answering. Reload the tab first.
 
@@ -172,8 +251,8 @@ unsigned ASCII decimal that fits `u16`; `0` asks the operating system for a free
 port stops startup. Without it, the daemon first asks for the port its last run bound, which it
 keeps in a `floor-port` file in the state directory, and takes a free port when that one is taken.
 The Floor's address then stays the same across restarts, so the roster order a
-browser keeps for it survives `dudes stop` and `dudes start`, and it is what lets `dudes upgrade` keep
-your sign-ins. The startup line and
+browser keeps for it survives `dudes stop` and `dudes start`, and it is what keeps your devices
+signed in. The startup line and
 `dudes open` both show the port chosen. `dudes quickstart` and `dudes start` pass
 neither variable to the daemon. Dudes always binds `127.0.0.1`; neither variable can change the host.
 

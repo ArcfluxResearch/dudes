@@ -124,3 +124,17 @@ test('instruction reasons and exact decimal watermarks survive the snapshot boun
   }) })]);
   assert.deepEqual([bad.rows.length, bad.rejected], [0, 1]);
 });
+
+
+test('the optional ticket goal binds its round, remains absent for older frames and refuses malformed identities', () => {
+  const goal = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
+  const bound = ticketCard(1, 'blocked', { claimed_by: ADA }, { round: 1, reason: 'recovery_required', goal });
+  assert.equal(board.decodeCards([bound]).rows[0].ticket.goal, goal);
+  const older = structuredClone(bound);
+  delete older.ticket.goal;
+  assert.equal(board.decodeCards([older]).rows[0].ticket.goal, undefined);
+  for (const invalid of ['', 'not-a-goal', 4, goal.toLowerCase()]) {
+    const bad = { ...bound, ticket: { ...bound.ticket, goal: invalid } };
+    assert.deepEqual(board.decodeCards([bad]), { rows: [], rejected: 1 });
+  }
+});

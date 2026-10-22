@@ -77,7 +77,7 @@ test('banner shows fixed CLI guidance without actions or raw errors, separately 
   assert.equal(renderToStaticMarkup(createElement(Notice, { floor })), '');
   noteTransport('close');
   const disconnected = renderToStaticMarkup(createElement(Notice, { floor: getFloorState() }));
-  assert.match(disconnected, /Disconnected/);
+  assert.match(disconnected, /Dudes stopped\./);
   assert.doesNotMatch(disconnected, /journal stopped/);
   assert.equal(renderToStaticMarkup(createElement(Banner, { stopped: getFloorState().journalStopped })), '');
 });

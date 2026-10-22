@@ -265,10 +265,10 @@ test('closing coexists with journal-stopped and remains last-observed after disc
   assert.equal(renderToStaticMarkup(createElement(Notice, { floor })), '');
   noteStale(true);
   assert.match(render(), /Last observed/);
-  assert.match(renderToStaticMarkup(createElement(Notice, { floor: getFloorState() })), /View unconfirmed/);
+  assert.match(renderToStaticMarkup(createElement(Notice, { floor: getFloorState() })), /Nothing has come from Dudes/);
   apply({ type: 'disconnected' });
   assert.match(render(), /Last observed: Closing time announced/);
   const disconnected = renderToStaticMarkup(createElement(Notice, { floor: getFloorState() }));
-  assert.match(disconnected, /Disconnected/);
+  assert.match(disconnected, /Dudes stopped\./);
   assert.doesNotMatch(disconnected, /participants acknowledged|saved|exited|Closing phase complete/);
 });

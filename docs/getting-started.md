@@ -1,8 +1,8 @@
 # Get started
 
 This walk-through takes you from a fresh install to an agent working on a goal. It uses
-`dudes quickstart`, which sets everything up for you: the engines, the Floor's actions, the
-repository the Floor hires into and a first agent.
+`dudes quickstart`, which sets up the engines and the Floor's actions, starts the daemon and opens
+the Floor, where you add a project and hire.
 
 You need Dudes [installed](../README.md#install) and at least one of the `claude`, `codex` and `pi`
 CLIs. `quickstart` tells you whether each is signed in and prints the command to sign in.
@@ -11,46 +11,36 @@ Dudes reads no engine's credentials or files.
 1. Check that `dudes --version` runs. If the installer said that `~/.local/bin` is not on your `PATH`,
    add the line it printed to your shell profile and open a new shell.
 
-2. From the repository you want agents to work in, run the guided quickstart:
+2. Run quickstart:
 
    ```sh
-   cd /absolute/path/to/repo
    dudes quickstart
    ```
 
-   On a terminal, `quickstart` works out what it can and asks the rest one step at a time. Enter
-   takes the answer shown in capitals or in brackets. Pressing Enter at every question gives a
-   setup. The guide asks at most five questions, including the final confirmation:
+   Quickstart asks no questions. It does this, in order:
 
-   - **Engines (no question).** Claude Code is always on. Codex and Pi are turned on when their
-     program is on your `PATH`, and left as your file has them when it is not. Codex streaming is
-     never asked about; see [Chat](chat.md) to opt in.
-   - **Floor actions (one question).** Let the Floor hire, pause and resume, answer, change goals,
-     give tickets to agents, retire, recover, add projects and read changes. Yes turns all eleven
-     on and No turns them off, and the terminal stays off. A ticket given to an agent starts it, and agents then run and spend under your account.
-     Anyone holding your one-time Floor link could start agents that act with your account's full
-     reach. When your
-     file already turns on only some of them, quickstart keeps that choice and does not ask.
-     Starting a new goal when an agent's goal has nothing left stays as your file has it, and
-     is off in a new file.
-   - **Spending cap (only with an API key).** Asked only when your shell holds an API key for an
-     engine that is on. Subscription plans have their own limits. See
-     [Budgets](configuration.md#budgets).
-   - **Project.** When the current directory is a git repository that is not enrolled, one
-     question for its completion check, the command the daemon runs itself to decide that a goal
-     is done. Quickstart suggests `cargo test`, `npm test`, `go test ./...`, `pytest` or
-     `make test` from the files it finds, and when it finds none it offers a check that passes once the
-     agent has edited or added a file; `-` skips enrolling. Quickstart marks the check as one that
-     may already pass, so the Floor's Hire does not refuse a project whose tests already pass. Outside a repository with no
-     project enrolled, the guide asks for a project folder instead. Enter skips it.
-   - **First hire.** With a project, the guide offers an idle agent named Kim. Confirm the only
-     installed engine, or choose an engine when several are installed. Enter skips the engine
-     choice. The agent has no goal and starts no work. Use quickstart's explicit hire, goal and
-     budget options for a different name, a goal or agent limits.
+   - **Engines.** Claude Code is always on. Codex and Pi are turned on when their program is on
+     your `PATH`, and left as your file has them when it is not. Codex streaming stays as it is;
+     see [Chat](chat.md) to opt in.
+   - **Floor actions.** On a file that turns no Floor action on yet, it turns on answer, hire,
+     control, goal, retire, board, renew, recovery and project, so you can hire, pause and resume,
+     answer, change goals, give tickets to agents, retire, recover and add projects from the
+     Floor. A ticket given to an agent starts it, and agents then run and spend under your
+     account. Anyone holding your one-time Floor link could start agents that act with your
+     account's full reach. The terminal and the changed-file views (`floor.git` and `floor.diff`)
+     stay off; turn the views on in the Floor's **Settings**, under **Show changed files** and
+     **Read ticket changes**. When your file already turns any Floor action on, quickstart keeps
+     every Floor setting as it is.
+   - **No cap, project or agent.** It sets no spending cap (subscription plans have their own
+     limits; see [Budgets](configuration.md#budgets)), enrolls no project and hires no agent. You
+     add a project and hire from the Floor.
 
-   After a summary you confirm, `quickstart` writes the daemon's operator file once and starts the
-   daemon. When one is already running with other settings, the guide says so before you confirm,
-   because the restart ends any turn it is running. The running daemon first reads the new file, and
+   Then `quickstart` writes the daemon's operator file once, with no confirmation, and lists each
+   change it made. It starts the daemon. When one is already running, it adopts the Floor
+   switches and project changes at once. A setting the daemon reads only when it starts needs a
+   restart, and quickstart restarts the daemon only when no agent is running a turn, waiting for
+   an answer or attached to a person. Otherwise it stops nothing, names the busy agents and the
+   commands that restart the daemon, and exits 4. The running daemon first reads the new file, and
    a file it would refuse is put back as it was, with nothing stopped. Then `quickstart`:
 
    - prints the daemon's version and control socket;
@@ -58,14 +48,16 @@ Dudes reads no engine's credentials or files.
      and whether it is signed in. The daemon asks the engine's own status command (`claude auth
      status` or `codex login status`) and reads only its exit status. Pi has no such command:
      run `pi`, then type `/login` inside it;
-   - opens the Floor in your default browser with a one-time link, as `dudes open` does (over SSH,
-     or where no opener is found, it prints the link for you to paste into a browser);
-   - prints the hired agent's id, when you hired one;
    - prints `dudes login claude` or `dudes login codex` for each engine that is signed out.
-     Run the command to sign in.
+     Run the command to sign in;
+   - opens the Floor in your default browser with a one-time link, as `dudes open` does (over SSH,
+     or where no opener is found, it prints the link for you to paste into a browser).
 
-   If you skipped the project, tickets and Floor hiring need one before they can work. On the
-   Floor, type the project's folder into the "Folder on this computer" box, look at what Dudes
+   Quickstart enrolls no project and hires no agent for you, and the Floor does both.
+
+   Tickets and Floor hiring need a project before they can work. On the
+   Floor, press Choose folder… to pick it in your system's folder window (the button shows when Dudes
+   can open one), or type it into the "Folder on this computer" box. Look at what Dudes
    found, and press Add project. The folder must be a git repository, and it cannot be your home
    folder, a hidden folder or one of Dudes' own. Or add it from a terminal, in its git repository:
 
@@ -84,18 +76,18 @@ Dudes reads no engine's credentials or files.
    [Configuration](configuration.md#the-operator-file).
 
 3. Use the Floor in the browser that opened. The link works once, in one browser;
-   `dudes open` opens a new one. On a remote machine, `dudes open` prints the link; forward its port over SSH
+   `dudes open` (or the Dudes launcher that the installer adds) opens a new one. On a remote machine, `dudes open` prints the link; forward its port over SSH
    first, because the link is a loopback address. [The Floor](floor.md) explains how it signs in, what each tab shows and what an agent's position
    in the office means.
 
-4. Give an agent a ticket from the Floor. Open **Board**, press **New ticket**, type a title and
+4. Hire an agent on the Floor once your project is added: click **Hire an agent**, choose the
+   project and an engine, and write the briefing. Then give it a ticket. Open **Board**, press **New ticket**, type a title and
    choose **Create ticket**. Open the card and choose **Give to agent**. When the agent's check
    passes the ticket moves to **Ready for you**, and the top bar says so. Read what the agent
    says it did and the files it changed, then choose **Accept**, or **Ask for changes** with a
    message. See [Tickets](tickets.md).
 
-5. Hire more agents. On the Floor, click **Hire an agent**, choose the workspace and an engine it
-   offers, and write the briefing. The Floor offers Claude Code, and Codex or Pi once they are
+5. Hire more agents. The Floor offers Claude Code, and Codex or Pi once they are
    turned on. From the command line, hire an agent, then give it a goal with the id that `hire`
    prints. This one gets a folder of its own. Dudes cannot check another agent's engine settings
    for a ticket, so in a repository two agents share it holds tickets in **Needs you** for review:
@@ -146,6 +138,48 @@ Dudes reads no engine's credentials or files.
 
 `dudes --help` lists every command and option.
 
+## Install a release
+
+The [install command](../README.md#install) downloads the latest release for your machine and
+checks it against the release's `SHA256SUMS` before it installs anything. It never uses `sudo`
+or edits your shell profile. If the programs are not on your `PATH`, it prints the line to add
+to your shell profile. See [Where Dudes keeps its data](data-and-uninstall.md#where-dudes-keeps-its-data)
+for the installed files and their locations.
+
+To install a specific version, pass its version to the script:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ArcfluxResearch/dudes/main/install.sh | sh -s -- --version <version>
+```
+
+For a source build or Windows, see [Build Dudes from source](building-from-source.md).
+To remove Dudes, see [Where Dudes keeps its data, and how to uninstall](data-and-uninstall.md).
+
+## Upgrade Dudes
+
+To check for a new release without changing anything, run:
+
+```sh
+dudes upgrade --check
+```
+
+To install the latest release and restart the daemon, run:
+
+```sh
+dudes upgrade
+```
+
+The command uses the release's installer, which checks the download against `SHA256SUMS`.
+It works only for a copy that `install.sh` installed and never installs an older release.
+It refuses while an agent is running a turn, waiting for an answer, or attached to your session.
+Add `--now` to restart with closing time, which gives agents up to 6 minutes to save their work.
+Dudes checks for updates only when you run the command.
+
+You can also run the [install command](../README.md#install) again, then run `dudes stop` and
+`dudes start`. See [After you upgrade](floor.md#after-you-upgrade) for browser sign-ins and reloads.
+
+The first upgrade from a version that gave the page a readable secret signs open tabs out once; run `dudes open` to sign in again.
+
 ## Troubleshooting
 
 ### The daemon refuses to start because a Floor directory is group-writable
@@ -159,24 +193,29 @@ directory and says to run `chmod go-w` on it. That is the fix:
 chmod go-w <the directory the error names>
 ```
 
+### The shell runs a different command named dudes
+
+If `dudes` runs something else, check `type dudes` for an alias or shell function and use
+`command dudes`. After removing an old definition from your shell profile, open a new terminal.
+
 ### Hiring with Codex or Pi is refused
 
 Claude Code is always on. Quickstart turns Codex and Pi on when it finds their programs on your
 `PATH`. Otherwise turn one on with `dudes config set providers.codex on` (or `providers.pi`),
 followed by `dudes quickstart --restart`.
 
-## Run quickstart without the guide
+## Run quickstart from a script
 
 Without a terminal and without options, `dudes quickstart` only starts the daemon and prints its
-version and control socket, plus a missing-project hint unless `--json` is set. With options it asks nothing,
-opens no browser: it prints `dudes open`, and `dudes login
-<engine>` for each engine that is signed out. `--yes` takes every default, including turning on the same eleven Floor actions as a Yes when the file turns none on (the terminal stays off), `--set <key> <value>`
-sets what `dudes config set` sets, `--enroll` enrolls the current repository and `--hire <name>`
-hires a first agent there, with the completion check after `--`; a setting that breaks one of the
-file's start rules is refused by name, and nothing is written. A script restarts a running daemon
-with other settings only with `--restart`; without it, `quickstart` writes the file, names what
-differs, stops nothing and exits 4. To set things one at a time instead, use `dudes config set` (for
-example `dudes config set providers.codex on floor.hire on`), `dudes project add` and `dudes
-hire`, and restart the daemon with `dudes quickstart --restart` so it reads the file. `dudes config`
+version and control socket, plus a missing-project hint unless `--json` is set. With options it
+sets up as it does on a terminal, and opens the Floor the same way. `--yes` is accepted and
+changes nothing. `--set <key> <value>` sets what `dudes config set` sets, after the defaults;
+`--enroll` enrolls the current repository and `--hire <name>` hires a first agent there, with the
+completion check after `--`. A setting that breaks one of the file's start rules is refused by
+name, and nothing is written. `quickstart` restarts a daemon that is running a turn only with
+`--restart`; without it, `quickstart` writes the file, names the busy agents, stops nothing and
+exits 4. To set things one at a time instead, use `dudes config set` (for example `dudes config set
+providers.codex on floor.hire on`), `dudes project add` and `dudes hire`, and restart the daemon
+with `dudes quickstart --restart` so it reads the file. `dudes config`
 prints the file's path and each setting it manages, and refuses an edit that breaks one of the
 file's start rules, naming the missing key.

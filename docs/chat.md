@@ -25,4 +25,33 @@ after completion. Windows currently supports that execution mode only.
 Chat retains each agent's draft and shows queued messages, live replies, failures and any
 history or reply limits. If the provider cannot resume a conversation, Chat asks you to confirm
 a fresh conversation before sending again. An agent's structured question has its own **Answer**
-action, which you turn on in quickstart.
+action, which quickstart turns on in a new file.
+
+## Sending files
+
+You can send an agent a screenshot, a log or a short spec three ways: paste an image or file from the
+clipboard into the message box, drop files on the message box, or press **+** and pick files. Each file
+shows as a chip with its name and a **Remove** button. A file uploads as soon as you attach it, so a
+file that is too big or a full folder shows its error on the chip at once. Press Send and the message
+carries a short list after your text:
+
+```
+Please look at this screenshot.
+
+Attached files:
+- /path/to/the/copy.png (shot.png)
+```
+
+The agent opens the file by that path. A message may be only files.
+
+- **Where the copy lives.** The Floor sends the file's bytes, never its path on your machine. The
+  daemon keeps a copy in the agent's own `files` folder under the state directory, named by 16 random
+  hex digits and a cleaned version of the file name (letters, digits, `.`, `_` and `-` only). The daemon
+  never opens or runs the file, and your original is not touched.
+- **Limits.** A file can be up to 10 MiB. An agent's `files` folder holds up to 200 MiB. When it is full
+  the chip shows the folder's path so you can delete files from it. The message text, with the list of
+  paths, still has the usual 4096-byte limit; Send is blocked, with a message, if it would pass it.
+- **Cleanup.** The agent's `files` folder is deleted when the agent retires.
+- **Which agents.** Files work with agents Dudes launches. For an Attached agent, whose engine Dudes
+  does not launch, the **+** button is hidden and pasted or dropped files are ignored. Claude is given
+  read access to the folder when it starts a turn; Codex already reads it.

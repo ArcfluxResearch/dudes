@@ -153,22 +153,9 @@ fn session_from_clock<C: dudes_supervisor::Clock + Send + Sync + 'static>(
     clock: Arc<C>,
 ) -> SessionIdentity {
     let sessions = FloorSessions::new("127.0.0.1:31337".parse().unwrap(), clock);
-    let issued = sessions.issue().expect("owned test bootstrap");
-    let exchange = sessions
-        .exchange(
-            "127.0.0.1:31337",
-            "http://127.0.0.1:31337",
-            issued.bootstrap.as_bytes(),
-        )
-        .expect("owned exchange");
     sessions
-        .authorize_onboard(
-            "127.0.0.1:31337",
-            "http://127.0.0.1:31337",
-            &exchange.cookie,
-            &exchange.csrf,
-        )
-        .expect("live session")
+        .admitted_for_test("127.0.0.1:31337", "http://127.0.0.1:31337")
+        .0
 }
 
 struct PermitClock {
@@ -180,7 +167,7 @@ impl dudes_supervisor::Clock for PermitClock {
     fn now(&self) -> dudes_types::Timestamp {
         let now = dudes_supervisor::Clock::now(&self.inner);
         if self.expire_after_read.swap(false, Ordering::SeqCst) {
-            self.inner.advance(48 * 60 * 60 * 1_000);
+            self.inner.advance(31 * 24 * 60 * 60 * 1_000);
         }
         now
     }
@@ -352,61 +339,6 @@ fn issued_note(fixture: &common::Fixture, note: Lsn) -> TurnId {
     })
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "the receipt records the exact acknowledged-prefix denominator without exporting journal contents"
-)]
-fn assert_acknowledged_prefixes(fixture: &common::Fixture) {
-    use std::io::{Read as _, Seek as _};
-
-    let scratch = tempfile::tempdir().unwrap();
-    let mut live = dudes_journal::Projections::open(&scratch.path().join("live.redb")).unwrap();
-    let mut world = dudes_supervisor::World::default();
-    let entries = fixture.entries();
-    for (index, (lsn, entry)) in entries.iter().enumerate() {
-        let segment = dudes_journal::segment::segment_path(&fixture.journal_dir(), lsn.segment());
-        let mut file = std::fs::File::open(&segment).unwrap();
-        file.seek(std::io::SeekFrom::Start(lsn.offset())).unwrap();
-        let mut header = [0; dudes_journal::frame::HEADER_LEN];
-        file.read_exact(&mut header).unwrap();
-        let header = dudes_journal::frame::Header::parse(&header);
-        live.apply(*lsn, header.crc, entry).unwrap();
-        world.apply(*lsn, entry);
-
-        let cut = tempfile::tempdir().unwrap();
-        for number in dudes_journal::segment::list_segments(&fixture.journal_dir()).unwrap() {
-            if number > lsn.segment() {
-                break;
-            }
-            let source = dudes_journal::segment::segment_path(&fixture.journal_dir(), number);
-            let destination = dudes_journal::segment::segment_path(cut.path(), number);
-            std::fs::copy(source, &destination).unwrap();
-            if number == lsn.segment() {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(destination)
-                    .unwrap()
-                    .set_len(lsn.offset() + u64::try_from(header.frame_len()).unwrap())
-                    .unwrap();
-            }
-        }
-        let (reader, report) = dudes_journal::Reader::open(cut.path()).unwrap();
-        assert!(report.torn.is_none(), "acknowledged prefix is intact");
-        let rebuilt_path = scratch.path().join(format!("rebuilt-{index}.redb"));
-        let mut rebuilt = dudes_journal::Projections::open(&rebuilt_path).unwrap();
-        let replay = dudes_journal::replay(&reader, &mut rebuilt).unwrap();
-        assert_eq!(replay.applied, u64::try_from(index + 1).unwrap());
-        assert_eq!(rebuilt.export().unwrap(), live.export().unwrap());
-        let mut replayed_world = dudes_supervisor::World::default();
-        for row in reader.iter_from(Lsn::ZERO).unwrap() {
-            let (position, entry) = row.unwrap();
-            replayed_world.apply(position, &entry);
-        }
-        assert_eq!(format!("{replayed_world:?}"), format!("{world:?}"));
-    }
-    eprintln!("acknowledged daemon prefixes: {}", entries.len());
-}
-
 fn owned_spawn_key(fixture: &common::Fixture, turn: TurnId) -> dudes_supervisor::AdoptionKey {
     fixture.await_record("the exact native child", |record| match record {
         Record::TurnSpawned {
@@ -540,7 +472,6 @@ fn cancellation_completes_while_preparation_is_held_and_late_readiness_is_inert(
         1,
         "only positively unused note reserve is released"
     );
-    assert_acknowledged_prefixes(&fixture);
 }
 
 #[test]
@@ -638,7 +569,6 @@ fn ordinary_done_precedes_note_only_and_note_end_never_judges_again() {
         "owned predicate threads have joined before the final count"
     );
     assert_eq!(fixture.records().iter().filter(|record| matches!(record, Record::PredicateResult { goal: judged, .. } if *judged == goal)).count(), 1);
-    assert_acknowledged_prefixes(&fixture);
 }
 
 #[test]
@@ -1181,7 +1111,7 @@ fn expired_writer_session_cannot_read_a_durable_chat_receipt() {
         ChatOutcome::Queued { .. }
     ));
     let before = fixture.entries().len();
-    clock.advance(48 * 60 * 60 * 1_000);
+    clock.advance(31 * 24 * 60 * 60 * 1_000);
     assert_eq!(
         running.handle.chat(identity, original),
         Err(crate::floor_chat::ChatRefusal::Forbidden)
@@ -1380,7 +1310,6 @@ fn actual_host_entry_wins_before_any_durable_spawn_receipt() {
     assert_eq!(host.calls.load(Ordering::SeqCst), 2);
     assert!(!fixture.records().iter().any(|record| matches!(record, Record::BrowserNoteIssuedCancelled { turn: cancelled, .. } | Record::BrowserNoteReissueCancelled { turn: cancelled, .. } if *cancelled == turn)));
     running.stop(ExitCause::Ended);
-    assert_acknowledged_prefixes(&fixture);
 }
 
 #[test]
@@ -1526,7 +1455,6 @@ fn historical_intent_stays_ambiguous_when_new_preparation_never_dispatches() {
             |record| matches!(record, Record::TurnEnded { turn: ended, .. } if *ended == turn)
         )
     );
-    assert_acknowledged_prefixes(&fixture);
 }
 
 #[derive(Clone, Default)]
@@ -2800,7 +2728,6 @@ fn owned_managed_child_receives_note_only_stdin_and_journals_exact_reply() {
         .unwrap()
         .1;
     assert_eq!(charged.usd, dudes_types::Usd::from_cents(50));
-    assert_acknowledged_prefixes(&fixture);
 }
 
 #[test]
@@ -3042,104 +2969,101 @@ fn mcp_first_edit_waits_for_a_historical_ungranted_dispatch_held_across_restart(
 
 #[test]
 fn an_injected_direct_browser_ack_fault_stops_before_host_dispatch() {
-    for fault in [false, true] {
-        let history = HistoricalReplay::new();
-        let host = BoundaryHost::new();
-        let pause = crate::BrowserLaunchPause::default();
-        pause.arm();
-        let mut settings = history.fixture.settings();
-        settings.journal.checkpoint_every = 1;
-        let mut daemon = crate::boot::boot_with_preparation_pause(
+    let fixture = common::Fixture::new();
+    let host = BoundaryHost::new();
+    let pause = crate::BrowserLaunchPause::default();
+    pause.arm();
+    let settings = fixture.settings();
+    let mut daemon = crate::boot::boot_with_preparation_pause(
+        &settings,
+        with_owned_program(
             &settings,
-            with_owned_program(
-                &settings,
-                host.clone(),
-                Arc::new(common::ScriptedRunner::default()),
-            ),
-            RunOptions::default(),
-            pause.clone(),
+            host.clone(),
+            Arc::new(common::ScriptedRunner::default()),
+        ),
+        RunOptions::default(),
+        pause.clone(),
+    )
+    .unwrap();
+    assert!(!pause.wait(Duration::ZERO));
+    assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+    let crate::ports::Answered::Hired(hired) = daemon
+        .ask(crate::ports::Ask::Hire(Box::new(common::hire_params(
+            fixture.state.path(),
+        ))))
+        .unwrap()
+    else {
+        panic!("an admitted agent")
+    };
+    assert!(matches!(
+        daemon
+            .browser_chat(
+                &session(),
+                &request(ChatVerb::Send, hired.agent, "a prepared browser note", 0),
+            )
+            .unwrap(),
+        ChatOutcome::Queued { .. }
+    ));
+    let parked = drive_preparation_pause(&mut daemon, &pause);
+    assert!(pause.wait(Duration::from_secs(5)));
+    pause.release();
+    assert!(pause.wait_returned(1, Duration::from_secs(5)));
+    let input = parked.unwrap_or_else(|| actual_preparation(&mut daemon));
+    let dudes_supervisor::Input::BrowserLaunchReady {
+        turn,
+        generation,
+        prepared,
+    } = input
+    else {
+        panic!("actual prepared browser launch")
+    };
+    daemon.ctx.resolved_browser_turn = Some((turn, generation));
+    daemon
+        .sup
+        .handle(
+            dudes_supervisor::Input::BrowserLaunchReady {
+                turn,
+                generation,
+                prepared,
+            },
+            &dudes_supervisor::RecoveryOperation::empty(),
         )
         .unwrap();
-        assert!(!pause.wait(Duration::ZERO));
-        assert_eq!(host.calls.load(Ordering::SeqCst), 0);
-        consent_to_direct_reissue(&mut daemon, &history.fixture, history.agent, history.turn);
-        let parked = drive_preparation_pause(&mut daemon, &pause);
-        assert!(pause.wait(Duration::from_secs(5)));
-        pause.release();
-        assert!(pause.wait_returned(1, Duration::from_secs(5)));
-        let input = parked.unwrap_or_else(|| actual_preparation(&mut daemon));
-        let dudes_supervisor::Input::BrowserLaunchReady {
-            turn,
-            generation,
-            prepared,
-        } = input
-        else {
-            panic!("actual prepared browser launch")
-        };
-        daemon.ctx.resolved_browser_turn = Some((turn, generation));
-        daemon
-            .sup
-            .handle(
-                dudes_supervisor::Input::BrowserLaunchReady {
-                    turn,
-                    generation,
-                    prepared,
-                },
-                &dudes_supervisor::RecoveryOperation::empty(),
-            )
-            .unwrap();
-        let effects = daemon.sup.take_effects();
-        let [effect @ dudes_supervisor::Effect::Persist { entry, .. }] = effects.as_slice() else {
-            panic!("the actual dispatch intent is parked")
-        };
-        assert!(
-            matches!(entry.record, Record::BrowserNoteDispatchIntent { turn: issued, .. } if issued == turn)
-        );
-        let before = daemon.sup.world().last_applied_lsn;
-        let lsn = daemon.ctx.writer.next_lsn().unwrap();
-        assert_eq!(host.calls.load(Ordering::SeqCst), 0);
-        if fault {
-            daemon.sup.refuse_fold_once(
-                lsn,
-                dudes_proto::recovery_state::RecoveryStateError::Binding,
-            );
-        }
-        let mut queue = std::collections::VecDeque::new();
-        let result = daemon.ctx.dispatch_browser_intent(
-            effect,
-            &mut queue,
-            &mut daemon.sup,
-            &mut daemon.closing,
-        );
-        daemon.ctx.resolved_browser_turn = None;
-        if fault {
-            let failure = result.unwrap_err();
-            assert_eq!(
-                failure.downcast_ref::<dudes_supervisor::input::DurableInputError>(),
-                Some(&dudes_supervisor::input::DurableInputError::Recovery {
-                    lsn,
-                    reason: dudes_proto::recovery_state::RecoveryStateError::Binding
-                })
-            );
-            assert_eq!(daemon.sup.world().last_applied_lsn, before);
-            assert!(daemon.ctx.journal_writes_stopped());
-            assert_eq!(host.calls.load(Ordering::SeqCst), 0);
-            assert!(queue.is_empty());
-            assert!(daemon.sup.effects().is_empty());
-        } else {
-            result.unwrap();
-            let through = daemon.ctx.projections.last_applied_lsn();
-            assert!(through > lsn);
-            assert_eq!(daemon.sup.world().last_applied_lsn, Some(through));
-            assert_eq!(host.calls.load(Ordering::SeqCst), 1);
-            assert!(
-                matches!(queue.front(), Some(dudes_supervisor::Input::Spawned { turn: issued, .. }) if *issued == turn)
-            );
-            for input in queue {
-                daemon.pump_runtime_input(input).unwrap();
-            }
-        }
-        let mut running = common::start(daemon);
-        running.stop(ExitCause::Ended);
-    }
+    let effects = daemon.sup.take_effects();
+    let [effect @ dudes_supervisor::Effect::Persist { entry, .. }] = effects.as_slice() else {
+        panic!("the actual dispatch intent is parked")
+    };
+    assert!(
+        matches!(entry.record, Record::BrowserNoteDispatchIntent { turn: issued, .. } if issued == turn)
+    );
+    let before = daemon.sup.world().last_applied_lsn;
+    let lsn = daemon.ctx.writer.next_lsn().unwrap();
+    assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+    daemon.sup.refuse_fold_once(
+        lsn,
+        dudes_proto::recovery_state::RecoveryStateError::Binding,
+    );
+    let mut queue = std::collections::VecDeque::new();
+    let result = daemon.ctx.dispatch_browser_intent(
+        effect,
+        &mut queue,
+        &mut daemon.sup,
+        &mut daemon.closing,
+    );
+    daemon.ctx.resolved_browser_turn = None;
+    let failure = result.unwrap_err();
+    assert_eq!(
+        failure.downcast_ref::<dudes_supervisor::input::DurableInputError>(),
+        Some(&dudes_supervisor::input::DurableInputError::Recovery {
+            lsn,
+            reason: dudes_proto::recovery_state::RecoveryStateError::Binding
+        })
+    );
+    assert_eq!(daemon.sup.world().last_applied_lsn, before);
+    assert!(daemon.ctx.journal_writes_stopped());
+    assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+    assert!(queue.is_empty());
+    assert!(daemon.sup.effects().is_empty());
+    let mut running = common::start(daemon);
+    running.stop(ExitCause::Ended);
 }

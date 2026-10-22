@@ -49,6 +49,11 @@ export interface EnrolledWorkspace {
   readonly agentTokensPerDay: string | null;
   readonly goalTokens: string | null;
   readonly hopCap: number;
+  /**
+   * The operator trusts this project, so a Claude hire may work in its own copy of it. Nothing
+   * else of the grant reaches the page. A daemon that does not say is read as not trusting.
+   */
+  readonly trusted: boolean;
   /** Present only for a workspace a reload added or changed. */
   readonly reloadMark?: ReloadMark;
 }
@@ -77,7 +82,7 @@ const WORKSPACE_KEYS = Object.freeze([
   'workspace_id', 'label', 'engines', 'goal_usd_micros', 'agent_usd_per_day_micros', 'agent_tokens_per_day',
   'goal_tokens', 'hop_cap',
 ]);
-const MARKED_WORKSPACE_KEYS = Object.freeze([...WORKSPACE_KEYS, 'reload_mark']);
+const OPTIONAL_WORKSPACE_KEYS = Object.freeze(['trusted', 'reload_mark']);
 
 function exactly(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
@@ -148,22 +153,29 @@ export function decodeOnboardingCatalog(value: unknown): OnboardingCatalog | nul
   }
   const workspaces: EnrolledWorkspace[] = [];
   for (const entry of list) {
-    const marked = exactly(entry, MARKED_WORKSPACE_KEYS);
-    if (!marked && !exactly(entry, WORKSPACE_KEYS)) return null;
-    const mark = marked ? reloadMark(entry.reload_mark) : null;
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return null;
+    const own = Object.keys(entry);
+    if (!WORKSPACE_KEYS.every((key) => own.includes(key))
+      || !own.every((key) => WORKSPACE_KEYS.includes(key) || OPTIONAL_WORKSPACE_KEYS.includes(key))) {
+      return null;
+    }
+    const fields = entry as Record<string, unknown>;
+    const marked = own.includes('reload_mark');
+    const mark = marked ? reloadMark(fields.reload_mark) : null;
     if (marked && mark === null) return null;
-    const id = entry.workspace_id;
+    if (own.includes('trusted') && typeof fields.trusted !== 'boolean') return null;
+    const id = fields.workspace_id;
     const previous = workspaces.at(-1)?.workspaceId;
     if (typeof id !== 'string' || !WORKSPACE_ID.test(id) || (previous !== undefined && !(id > previous))) {
       return null;
     }
-    const label = display(entry.label);
-    const offered = engines(entry.engines);
-    const goal = ceiling(entry.goal_usd_micros, false);
-    const agent = ceiling(entry.agent_usd_per_day_micros, false);
-    const agentTokens = ceiling(entry.agent_tokens_per_day, true);
-    const goalTokens = ceiling(entry.goal_tokens, true);
-    const hops = entry.hop_cap;
+    const label = display(fields.label);
+    const offered = engines(fields.engines);
+    const goal = ceiling(fields.goal_usd_micros, false);
+    const agent = ceiling(fields.agent_usd_per_day_micros, false);
+    const agentTokens = ceiling(fields.agent_tokens_per_day, true);
+    const goalTokens = ceiling(fields.goal_tokens, true);
+    const hops = fields.hop_cap;
     if (label === null || offered === null || goal === undefined || agent === undefined
       || agentTokens === undefined || goalTokens === undefined
       || typeof hops !== 'number' || !Number.isInteger(hops) || hops < 1 || hops > U32_MAX) {
@@ -172,6 +184,7 @@ export function decodeOnboardingCatalog(value: unknown): OnboardingCatalog | nul
     workspaces.push(Object.freeze({
       workspaceId: id, label, engines: offered,
       goalUsdMicros: goal, agentUsdPerDayMicros: agent, agentTokensPerDay: agentTokens, goalTokens, hopCap: hops,
+      trusted: fields.trusted === true,
       ...(mark === null ? {} : { reloadMark: mark }),
     }));
   }

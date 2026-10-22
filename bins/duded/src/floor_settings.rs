@@ -7,6 +7,7 @@ use crate::floor_actions::{Enrollment, valid_workspace_id};
 
 pub(crate) fn view(
     switches: SettingsSwitches,
+    folder_picker: bool,
     floor_usd_per_day: Option<Usd>,
     reserve: Spend,
     enrollment: &Enrollment,
@@ -55,6 +56,7 @@ pub(crate) fn view(
     }
     let mut report = SettingsView::default();
     report.switches = switches;
+    report.folder_picker = folder_picker;
     report.budget.floor_usd_per_day_micros =
         floor_usd_per_day.map(|value| value.micros().to_string());
     report.budget.per_turn_usd_micros = reserve.usd.micros().to_string();
@@ -79,6 +81,24 @@ pub(crate) fn serialize(view: &SettingsView) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_report_says_whether_the_folder_dialog_is_available() {
+        for available in [true, false] {
+            let view = view(
+                SettingsSwitches::default(),
+                available,
+                None,
+                Spend::DEFAULT_PER_TURN_FLOOR,
+                &Enrollment::default(),
+                &Adapters::default(),
+            )
+            .expect("a view");
+            let wire: serde_json::Value =
+                serde_json::from_slice(&serialize(&view).unwrap()).unwrap();
+            assert_eq!(wire["folder_picker"], available);
+        }
+    }
 
     #[test]
     fn a_settings_view_serializes_up_to_32_kib_and_no_further() {

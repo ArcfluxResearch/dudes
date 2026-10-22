@@ -680,8 +680,15 @@
           "type": "string"
         },
         "intended_goal": {
-          "$ref": "#/$defs/Goal",
-          "description": "Complete goal minted before the hire append."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Goal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Complete goal minted before the hire append. A hire written since the first task became a\nticket carries none."
         },
         "profile_id": {
           "description": "Operator enrollment selected by the request.",
@@ -694,14 +701,24 @@
         "session_digest": {
           "description": "Digest of the Floor session that admitted the hire.",
           "type": "string"
+        },
+        "trust_lsn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lsn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The operator's project trust grant this hire used, when it worked in its own copy."
         }
       },
       "required": [
         "attempt_id",
         "request_digest",
         "profile_id",
-        "session_digest",
-        "intended_goal"
+        "session_digest"
       ],
       "type": "object"
     },
@@ -1612,6 +1629,58 @@
         },
         {
           "type": "null"
+        }
+      ]
+    },
+    "FileIdentity": {
+      "description": "A directory by device and inode, so a path swapped for another directory does not match.",
+      "properties": {
+        "device": {
+          "description": "The device the directory is on.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inode": {
+          "description": "The directory's inode.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "device",
+        "inode"
+      ],
+      "type": "object"
+    },
+    "FloorDeviceRemoval": {
+      "description": "Why a signed-in browser stopped being one.",
+      "oneOf": [
+        {
+          "const": "signed_out",
+          "description": "The person signed out in that browser.",
+          "type": "string"
+        },
+        {
+          "const": "removed",
+          "description": "Someone removed it from another browser or the command line.",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "It went unused for 30 days, or reached 90 days in all.",
+          "type": "string"
+        },
+        {
+          "const": "never_used",
+          "description": "It signed in and made no request within a day.",
+          "type": "string"
+        },
+        {
+          "const": "replaced",
+          "description": "A newer sign-in took its place while all eight devices were in use.",
+          "type": "string"
         }
       ]
     },
@@ -6515,6 +6584,66 @@
       "minimum": 0,
       "type": "integer"
     },
+    "TrustPin": {
+      "description": "The repository settings an operator vouched for.",
+      "properties": {
+        "attributes": {
+          "description": "SHA-256 of the common directory's `info/attributes`, or of nothing when it is absent.",
+          "type": "string"
+        },
+        "claude_tree": {
+          "description": "The git object id of `.claude/` at the origin's `HEAD`; absent when there is none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "config": {
+          "description": "SHA-256 of the common directory's configuration entries, less `branch.` and `remote.`.",
+          "type": "string"
+        },
+        "mcp_json": {
+          "description": "The git object id of `.mcp.json` at the origin's `HEAD`; absent when there is none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "attributes",
+        "config"
+      ],
+      "type": "object"
+    },
+    "TrustedRepository": {
+      "description": "The repository an operator trusted, by name and by identity.",
+      "properties": {
+        "common_dir": {
+          "description": "The repository's git common directory.",
+          "type": "string"
+        },
+        "common_identity": {
+          "$ref": "#/$defs/FileIdentity",
+          "description": "That directory's identity."
+        },
+        "directory": {
+          "description": "The project's canonical directory when it was trusted.",
+          "type": "string"
+        },
+        "directory_identity": {
+          "$ref": "#/$defs/FileIdentity",
+          "description": "That directory's identity."
+        }
+      },
+      "required": [
+        "directory",
+        "directory_identity",
+        "common_dir",
+        "common_identity"
+      ],
+      "type": "object"
+    },
     "TurnId": {
       "description": "TurnId: a ULID (26 characters of Crockford base32).",
       "maxLength": 26,
@@ -10248,6 +10377,204 @@
         "t",
         "claim",
         "evidence"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The operator trusted, or stopped trusting, one enrolled project. A trusted project lets the\nFloor hire an agent into its own copy there while the repository still matches what the\noperator vouched for. The latest record per project wins.\n\nAn older reader must not skip it: a revocation it missed would leave a grant standing.",
+      "properties": {
+        "pin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrustPin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the operator saw of the repository's settings. Absent when `trusted` is false."
+        },
+        "repository": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrustedRepository"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where the repository was and what identified it. Absent when `trusted` is false."
+        },
+        "t": {
+          "const": "workspace_trust_set",
+          "type": "string"
+        },
+        "trusted": {
+          "description": "Whether the project is trusted from this record on.",
+          "type": "boolean"
+        },
+        "workspace_id": {
+          "description": "The enrolled project.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "workspace_id",
+        "trusted"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A browser signed in and became a device. Only digests of its cookie and its secret are\nkept. The entry's own time is the sign-in time.",
+      "properties": {
+        "cookie": {
+          "description": "SHA-256 of the device's cookie.",
+          "type": "string"
+        },
+        "device": {
+          "description": "The device's id.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The label the browser chose, cleaned and capped by the daemon.",
+          "type": "string"
+        },
+        "origin": {
+          "description": "The Floor origin the browser signed in on.",
+          "type": "string"
+        },
+        "secret": {
+          "description": "SHA-256 of the secret the page sends with every request.",
+          "type": "string"
+        },
+        "t": {
+          "const": "floor_device_enrolled",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "device",
+        "origin",
+        "name",
+        "cookie",
+        "secret"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A device made its first request. The entry's own time is that moment.",
+      "properties": {
+        "device": {
+          "description": "The device.",
+          "type": "string"
+        },
+        "t": {
+          "const": "floor_device_first_used",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "device"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Someone answered the \"new browser\" notice for a device with Keep.",
+      "properties": {
+        "device": {
+          "description": "The device.",
+          "type": "string"
+        },
+        "t": {
+          "const": "floor_device_acknowledged",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "device"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A device was removed and no longer signs in.",
+      "properties": {
+        "device": {
+          "description": "The device.",
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/$defs/FloorDeviceRemoval",
+          "description": "Why it was removed."
+        },
+        "t": {
+          "const": "floor_device_removed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "device",
+        "reason"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A device made a request. Written at most once a day per device; the entry's own time is the\ndevice's last use as a restart sees it.",
+      "properties": {
+        "device": {
+          "description": "The device.",
+          "type": "string"
+        },
+        "t": {
+          "const": "floor_device_used",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "device"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A browser signed in with a key its page cannot read and became a device. Only a digest of\nits cookie is kept, with the public key that checks its requests. The entry's own time is\nthe sign-in time. Later first-use, acknowledgement, removal and use records name the\ndevice as they do for [`Record::FloorDeviceEnrolled`].\n\nAn older reader skips this record, and with it the device: it holds no row for the\ndevice, so the records that follow find nothing to change.",
+      "properties": {
+        "cookie": {
+          "description": "SHA-256 of the device's cookie.",
+          "type": "string"
+        },
+        "device": {
+          "description": "The device's id: the SHA-256 of `key`'s decoded bytes.",
+          "type": "string"
+        },
+        "key": {
+          "description": "The device's public key as SPKI DER, in unpadded base64url.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The label the browser chose, cleaned and capped by the daemon.",
+          "type": "string"
+        },
+        "origin": {
+          "description": "The Floor origin the browser signed in on.",
+          "type": "string"
+        },
+        "t": {
+          "const": "floor_device_key_enrolled",
+          "type": "string"
+        }
+      },
+      "required": [
+        "t",
+        "device",
+        "key",
+        "origin",
+        "name",
+        "cookie"
       ],
       "type": "object"
     },

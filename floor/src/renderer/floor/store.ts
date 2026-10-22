@@ -51,6 +51,7 @@ import { decodeSwitchSibling } from './sibling.ts';
 import { decodeCards } from '../board.ts';
 import { decodeWorkspace } from '../workspace.ts';
 import type { CardRow } from '../board.ts';
+import { applyDeviceFrame } from '../devices/devices.ts';
 import { decodeChat, exactObject } from '../chat/model.ts';
 import type { ChatView } from '../chat/model.ts';
 
@@ -62,7 +63,7 @@ import type { ChatView } from '../chat/model.ts';
 export const AGENT_ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
 /**
- * The server messages browser-wire-v3 may carry, including selected output.
+ * The server messages browser-wire-v5 may carry, including selected output.
  *
  * An admission list, not an emission list: the page accepts these and refuses
  * everything else. The daemon states the same set in its own enumeration, and a
@@ -80,6 +81,9 @@ export const SERVER_MESSAGES = Object.freeze([
   'floor.output.unavailable',
   'floor.output.ended',
   'floor.output.reply',
+  'floor.device.enrolled',
+  'floor.device.acknowledged',
+  'floor.device.removed',
 ] as const);
 
 const TURN_ID = AGENT_ID;
@@ -486,7 +490,7 @@ export function invalidateFloorEpoch(): void {
 }
 
 /**
- * Apply one decoded browser-wire-v3 message from the subscription `epoch`.
+ * Apply one decoded browser-wire-v5 message from the subscription `epoch`.
  *
  * A frame from any other epoch is discarded whole, **before it is read**: it is
  * not parsed, it cannot move the view, it cannot confirm anything, and it
@@ -534,6 +538,11 @@ export function applyServerFrame(
       // lsn or a phase moving here. Returning before `commit` is what keeps
       // this file's boundary — `applyServerFrame` is the one way a row reaches
       // the floor — true word for word rather than merely nearly true.
+      return;
+    case 'floor.device.enrolled':
+    case 'floor.device.acknowledged':
+    case 'floor.device.removed':
+      applyDeviceFrame(message);
       return;
     case 'floor.output.snapshot':
     case 'floor.output.chunk':

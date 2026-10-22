@@ -210,6 +210,6 @@ fn print_usage() {
          print a draft CHANGELOG.md section from the pull requests since <tag>\n  \
          release-notes --version <v> [--from <tag>] --repo <o/r> --run-url <url> --sums <file> --maintainer <login>\n                     \
          [--authors <file>] [--preview]  print the GitHub Release body\n  \
-         smoke              verify release install, quickstart, browser hire and cleanup"
+         smoke              verify release install, quickstart, browser hire, the newcomer journey and cleanup"
     );
 }

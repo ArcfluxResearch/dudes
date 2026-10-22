@@ -988,7 +988,7 @@ fn check_add_refuses_before_writing() {
     for (args, why) in [
         (
             check_add_args("repo_2", "contributing", "Exists"),
-            "not enroll `repo_2`",
+            "no project is named `repo_2`",
         ),
         (
             check_add_args("repo_1", "Contributing", "Exists"),

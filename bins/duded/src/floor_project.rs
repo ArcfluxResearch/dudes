@@ -1,8 +1,9 @@
-//! The Floor's add-a-project: the shapes of its two requests and answers, and the rule for which
-//! folders it will take.
+//! The Floor's add and remove of a project: the shapes of its requests and answers, and the rule
+//! for which folders it will take.
 //!
 //! A newcomer types a folder, the page previews it, and one click adds it to the operator's file
-//! through the same edit `dudes project add` runs. The daemon then adopts the file at once. The
+//! through the same edit `dudes project add` runs. Removing one runs the edit `dudes project
+//! remove` runs. The daemon then adopts the file at once. The
 //! folder is canonicalized here, the repository's suggested check is computed again on every
 //! add, and no git command, hook, build or check runs while a folder is validated.
 
@@ -19,6 +20,9 @@ pub const MAX_PROJECT_BODY_BYTES: usize = 4096;
 
 /// Most bytes in a typed folder.
 const MAX_FOLDER_BYTES: usize = 1024;
+
+/// Most bytes in a project id a remove names.
+const MAX_PROJECT_ID_BYTES: usize = 128;
 
 /// Most words, and most bytes in each, of a check a request sends back.
 const MAX_CHECK_WORDS: usize = 16;
@@ -47,6 +51,12 @@ pub enum Reason {
     ConfigChanged,
     /// The daemon already runs as many projects as it allows.
     Full,
+    /// The project to remove is not one the daemon runs.
+    Unknown,
+    /// An agent that is not retired works in the project.
+    Working,
+    /// A ticket that is not done names the project.
+    OpenTickets,
 }
 
 impl Reason {
@@ -62,6 +72,9 @@ impl Reason {
             Self::Busy => "busy",
             Self::ConfigChanged => "config_changed",
             Self::Full => "full",
+            Self::Unknown => "unknown",
+            Self::Working => "working",
+            Self::OpenTickets => "open_tickets",
         }
     }
 }
@@ -166,6 +179,22 @@ struct AddBody {
     attempt_id: String,
 }
 
+/// `POST /floor/project/remove` as the page sends it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoveBody {
+    project_id: String,
+    attempt_id: String,
+}
+
+/// One bounded remove request.
+#[derive(Clone, Debug)]
+pub struct RemoveRequest {
+    pub(crate) attempt_id: Hex32,
+    pub(crate) digest: Hex32,
+    pub(crate) project_id: String,
+}
+
 /// One bounded add request.
 #[derive(Clone, Debug)]
 pub struct AddRequest {
@@ -184,6 +213,8 @@ pub enum ProjectRequest {
     Preview(PreviewRequest),
     /// Add the folder.
     Add(AddRequest),
+    /// Take a project out of the file and the running daemon.
+    Remove(RemoveRequest),
 }
 
 /// A project that is, or would be, in the list.
@@ -227,6 +258,15 @@ pub struct Added {
     pub reason: Option<&'static str>,
 }
 
+/// What a remove did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Removed {
+    /// The id the project had.
+    pub project_id: String,
+    /// The label the project had.
+    pub label: String,
+}
+
 /// The answer to a project job.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectAnswer {
@@ -234,6 +274,8 @@ pub enum ProjectAnswer {
     Preview(Preview),
     /// An add, new or repeated.
     Added(Added),
+    /// A remove.
+    Removed(Removed),
 }
 
 /// The preview request a body holds, or `None` when it is the wrong shape or too large.
@@ -262,6 +304,27 @@ pub(crate) fn parse_add(bytes: &[u8]) -> Option<AddRequest> {
         folder: body.folder,
         check: body.check,
         label: body.label,
+    })
+}
+
+/// The remove request a body holds, or `None` when it is the wrong shape, too large or names an
+/// attempt that is not 32 bytes of base64url.
+pub(crate) fn parse_remove(bytes: &[u8]) -> Option<RemoveRequest> {
+    let body: RemoveBody = parse(bytes)?;
+    if body.project_id.is_empty()
+        || body.project_id.len() > MAX_PROJECT_ID_BYTES
+        || body.project_id.chars().any(char::is_control)
+    {
+        return None;
+    }
+    let attempt_id = crate::floor_actions::decode_attempt(&body.attempt_id).ok()?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"dudes.project.remove.v1\0");
+    hasher.update(body.project_id.as_bytes());
+    Some(RemoveRequest {
+        attempt_id,
+        digest: Hex32::new(hasher.finalize().into()),
+        project_id: body.project_id,
     })
 }
 
@@ -523,6 +586,15 @@ mod tests {
             serde_json::json!({"folder": "/x", "check": ["a"], "attempt_id": attempt, "label": ""}),
         ] {
             assert!(add(bad.clone()).is_none(), "{bad}");
+        }
+        let remove = |body: serde_json::Value| parse_remove(body.to_string().as_bytes());
+        assert!(remove(serde_json::json!({"project_id": "app", "attempt_id": attempt})).is_some());
+        for bad in [
+            serde_json::json!({"project_id": "", "attempt_id": attempt}),
+            serde_json::json!({"project_id": "app", "attempt_id": "short"}),
+            serde_json::json!({"project_id": "app", "attempt_id": attempt, "folder": "/x"}),
+        ] {
+            assert!(remove(bad.clone()).is_none(), "{bad}");
         }
         assert!(parse_preview(br#"{"path":"~/code"}"#).is_some());
         assert!(parse_preview(br#"["~/code"]"#).is_none());

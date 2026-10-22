@@ -90,6 +90,17 @@ impl Hex32 {
     pub const fn bytes(self) -> [u8; 32] {
         self.0
     }
+
+    /// The 64 lowercase hexadecimal characters the wire writes.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        let mut hex = String::with_capacity(64);
+        for byte in self.0 {
+            use std::fmt::Write as _;
+            write!(&mut hex, "{byte:02x}").expect("writing into String");
+        }
+        hex
+    }
 }
 
 impl JsonSchema for Hex32 {
@@ -103,12 +114,7 @@ impl JsonSchema for Hex32 {
 
 impl Serialize for Hex32 {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut hex = String::with_capacity(64);
-        for byte in self.0 {
-            use std::fmt::Write as _;
-            write!(&mut hex, "{byte:02x}").expect("writing into String");
-        }
-        serializer.serialize_str(&hex)
+        serializer.serialize_str(&self.to_hex())
     }
 }
 
@@ -130,6 +136,109 @@ impl<'de> Deserialize<'de> for Hex32 {
             bytes[index] = (digit(pair[0]) << 4) | digit(pair[1]);
         }
         Ok(Self(bytes))
+    }
+}
+
+/// A Floor device's id as people and pages write it: the SHA-256 of its public key's SPKI DER
+/// bytes, as 43 characters of unpadded base64url. Inside the daemon and the journal it is the
+/// same 32 bytes, held as a [`Hex32`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeviceId([u8; 32]);
+
+impl DeviceId {
+    /// The characters in a device id.
+    pub const LEN: usize = 43;
+    const ALPHABET: &'static [u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+    /// Wrap the exact digest bytes.
+    #[must_use]
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// The exact digest bytes.
+    #[must_use]
+    pub const fn bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Read exactly 43 base64url characters whose last character carries no stray bits.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        if text.len() != Self::LEN {
+            return None;
+        }
+        let mut bytes = [0_u8; 32];
+        let mut buffer = 0_u32;
+        let mut bits = 0_u32;
+        let mut at = 0;
+        for byte in text.bytes() {
+            let value = u32::try_from(Self::ALPHABET.iter().position(|c| *c == byte)?).ok()?;
+            buffer = (buffer << 6) | value;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                bytes[at] = u8::try_from(buffer >> bits).ok()?;
+                at += 1;
+                buffer &= (1 << bits) - 1;
+            }
+        }
+        (at == 32 && buffer == 0).then_some(Self(bytes))
+    }
+}
+
+impl From<Hex32> for DeviceId {
+    fn from(id: Hex32) -> Self {
+        Self(id.bytes())
+    }
+}
+
+impl From<DeviceId> for Hex32 {
+    fn from(id: DeviceId) -> Self {
+        Self::new(id.0)
+    }
+}
+
+impl std::fmt::Display for DeviceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut text = String::with_capacity(Self::LEN);
+        for chunk in self.0.chunks(3) {
+            let mut buffer = [0_u8; 3];
+            buffer[..chunk.len()].copy_from_slice(chunk);
+            let packed =
+                (u32::from(buffer[0]) << 16) | (u32::from(buffer[1]) << 8) | u32::from(buffer[2]);
+            for index in 0..=chunk.len() {
+                let shift = 18 - 6 * index;
+                text.push(char::from(
+                    Self::ALPHABET[((packed >> shift) & 0x3f) as usize],
+                ));
+            }
+        }
+        f.write_str(&text)
+    }
+}
+
+impl JsonSchema for DeviceId {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "DeviceId".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"})
+    }
+}
+
+impl Serialize for DeviceId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for DeviceId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value)
+            .ok_or_else(|| serde::de::Error::custom("expected a 43-character base64url device id"))
     }
 }
 
@@ -175,8 +284,13 @@ pub struct BrowserOnboardingHire {
     /// Digest of the Floor session that admitted the hire.
     #[schemars(with = "String")]
     pub session_digest: Hex32,
-    /// Complete goal minted before the hire append.
-    pub intended_goal: Goal,
+    /// Complete goal minted before the hire append. A hire written since the first task became a
+    /// ticket carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intended_goal: Option<Goal>,
+    /// The operator's project trust grant this hire used, when it worked in its own copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_lsn: Option<dudes_types::Lsn>,
 }
 
 /// Attribution of the later initial-goal append, which may use a new Floor session.
@@ -1807,6 +1921,88 @@ pub enum Record {
     RecoveryAuthorized(Box<crate::recovery::RecoveryAuthorized>),
     /// Durable closure of unused recovery consent on exact evidence.
     RecoveryInvalidated(crate::recovery::RecoveryInvalidated),
+    /// The operator trusted, or stopped trusting, one enrolled project. A trusted project lets the
+    /// Floor hire an agent into its own copy there while the repository still matches what the
+    /// operator vouched for. The latest record per project wins.
+    ///
+    /// An older reader must not skip it: a revocation it missed would leave a grant standing.
+    WorkspaceTrustSet {
+        /// The enrolled project.
+        workspace_id: String,
+        /// Whether the project is trusted from this record on.
+        trusted: bool,
+        /// Where the repository was and what identified it. Absent when `trusted` is false.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repository: Option<TrustedRepository>,
+        /// What the operator saw of the repository's settings. Absent when `trusted` is false.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pin: Option<TrustPin>,
+    },
+    /// A browser signed in and became a device. Only digests of its cookie and its secret are
+    /// kept. The entry's own time is the sign-in time.
+    FloorDeviceEnrolled {
+        /// The device's id.
+        #[schemars(with = "String")]
+        device: Hex32,
+        /// The Floor origin the browser signed in on.
+        origin: String,
+        /// The label the browser chose, cleaned and capped by the daemon.
+        name: String,
+        /// SHA-256 of the device's cookie.
+        #[schemars(with = "String")]
+        cookie: Hex32,
+        /// SHA-256 of the secret the page sends with every request.
+        #[schemars(with = "String")]
+        secret: Hex32,
+    },
+    /// A device made its first request. The entry's own time is that moment.
+    FloorDeviceFirstUsed {
+        /// The device.
+        #[schemars(with = "String")]
+        device: Hex32,
+    },
+    /// Someone answered the "new browser" notice for a device with Keep.
+    FloorDeviceAcknowledged {
+        /// The device.
+        #[schemars(with = "String")]
+        device: Hex32,
+    },
+    /// A device was removed and no longer signs in.
+    FloorDeviceRemoved {
+        /// The device.
+        #[schemars(with = "String")]
+        device: Hex32,
+        /// Why it was removed.
+        reason: FloorDeviceRemoval,
+    },
+    /// A device made a request. Written at most once a day per device; the entry's own time is the
+    /// device's last use as a restart sees it.
+    FloorDeviceUsed {
+        /// The device.
+        #[schemars(with = "String")]
+        device: Hex32,
+    },
+    /// A browser signed in with a key its page cannot read and became a device. Only a digest of
+    /// its cookie is kept, with the public key that checks its requests. The entry's own time is
+    /// the sign-in time. Later first-use, acknowledgement, removal and use records name the
+    /// device as they do for [`Record::FloorDeviceEnrolled`].
+    ///
+    /// An older reader skips this record, and with it the device: it holds no row for the
+    /// device, so the records that follow find nothing to change.
+    FloorDeviceKeyEnrolled {
+        /// The device's id: the SHA-256 of `key`'s decoded bytes.
+        #[schemars(with = "String")]
+        device: Hex32,
+        /// The device's public key as SPKI DER, in unpadded base64url.
+        key: String,
+        /// The Floor origin the browser signed in on.
+        origin: String,
+        /// The label the browser chose, cleaned and capped by the daemon.
+        name: String,
+        /// SHA-256 of the device's cookie.
+        #[schemars(with = "String")]
+        cookie: Hex32,
+    },
     /// The Floor refused one request because the process on the other end of its connection
     /// could not be shown to be outside every agent. Audit only: it changes no projection.
     ///
@@ -1891,6 +2087,61 @@ pub enum FloorPeerRefusal {
     OtherUser,
     /// This platform cannot find the owner, so the Floor only shows.
     Unsupported,
+}
+
+/// Why a signed-in browser stopped being one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FloorDeviceRemoval {
+    /// The person signed out in that browser.
+    SignedOut,
+    /// Someone removed it from another browser or the command line.
+    Removed,
+    /// It went unused for 30 days, or reached 90 days in all.
+    Expired,
+    /// It signed in and made no request within a day.
+    NeverUsed,
+    /// A newer sign-in took its place while all eight devices were in use.
+    Replaced,
+}
+
+/// A directory by device and inode, so a path swapped for another directory does not match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FileIdentity {
+    /// The device the directory is on.
+    pub device: u64,
+    /// The directory's inode.
+    pub inode: u64,
+}
+
+/// The repository an operator trusted, by name and by identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TrustedRepository {
+    /// The project's canonical directory when it was trusted.
+    pub directory: PathBuf,
+    /// That directory's identity.
+    pub directory_identity: FileIdentity,
+    /// The repository's git common directory.
+    pub common_dir: PathBuf,
+    /// That directory's identity.
+    pub common_identity: FileIdentity,
+}
+
+/// The repository settings an operator vouched for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TrustPin {
+    /// The git object id of `.claude/` at the origin's `HEAD`; absent when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_tree: Option<String>,
+    /// The git object id of `.mcp.json` at the origin's `HEAD`; absent when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_json: Option<String>,
+    /// SHA-256 of the common directory's `info/attributes`, or of nothing when it is absent.
+    #[schemars(with = "String")]
+    pub attributes: Hex32,
+    /// SHA-256 of the common directory's configuration entries, less `branch.` and `remote.`.
+    #[schemars(with = "String")]
+    pub config: Hex32,
 }
 
 /// Which agent tree, if any, the daemon independently resolved for a socket peer.
@@ -2005,6 +2256,20 @@ pub struct PayloadRef {
 }
 
 impl Record {
+    /// Whether this is one of the records that keep the Floor's device table.
+    #[must_use]
+    pub const fn is_floor_device(&self) -> bool {
+        matches!(
+            self,
+            Self::FloorDeviceEnrolled { .. }
+                | Self::FloorDeviceKeyEnrolled { .. }
+                | Self::FloorDeviceFirstUsed { .. }
+                | Self::FloorDeviceAcknowledged { .. }
+                | Self::FloorDeviceRemoved { .. }
+                | Self::FloorDeviceUsed { .. }
+        )
+    }
+
     /// Whether this record must be written in the required-record frame format.
     #[must_use]
     pub const fn requires_required_frame(&self) -> bool {
@@ -2106,6 +2371,13 @@ impl Record {
             Self::RecoveryAuthorized(_) => RecordKind::RecoveryAuthorized,
             Self::RecoveryInvalidated(_) => RecordKind::RecoveryInvalidated,
             Self::FloorPeerRefused { .. } => RecordKind::FloorPeerRefused,
+            Self::WorkspaceTrustSet { .. } => RecordKind::WorkspaceTrustSet,
+            Self::FloorDeviceEnrolled { .. } => RecordKind::FloorDeviceEnrolled,
+            Self::FloorDeviceKeyEnrolled { .. } => RecordKind::FloorDeviceKeyEnrolled,
+            Self::FloorDeviceFirstUsed { .. } => RecordKind::FloorDeviceFirstUsed,
+            Self::FloorDeviceAcknowledged { .. } => RecordKind::FloorDeviceAcknowledged,
+            Self::FloorDeviceRemoved { .. } => RecordKind::FloorDeviceRemoved,
+            Self::FloorDeviceUsed { .. } => RecordKind::FloorDeviceUsed,
         }
     }
 
@@ -2303,6 +2575,20 @@ pub enum RecordKind {
     RecoveryInvalidated = 84,
     /// [`Record::FloorPeerRefused`].
     FloorPeerRefused = 85,
+    /// [`Record::WorkspaceTrustSet`].
+    WorkspaceTrustSet = 86,
+    /// [`Record::FloorDeviceEnrolled`].
+    FloorDeviceEnrolled = 87,
+    /// [`Record::FloorDeviceFirstUsed`].
+    FloorDeviceFirstUsed = 88,
+    /// [`Record::FloorDeviceAcknowledged`].
+    FloorDeviceAcknowledged = 89,
+    /// [`Record::FloorDeviceRemoved`].
+    FloorDeviceRemoved = 90,
+    /// [`Record::FloorDeviceUsed`].
+    FloorDeviceUsed = 91,
+    /// [`Record::FloorDeviceKeyEnrolled`].
+    FloorDeviceKeyEnrolled = 92,
 }
 
 impl RecordKind {
@@ -2359,8 +2645,8 @@ impl RecordKind {
     /// Every understood kind, including required records, in tag order.
     pub const KNOWN: &'static [Self] = &Self::known_kinds();
 
-    const fn known_kinds() -> [Self; 85] {
-        let mut kinds = [Self::AgentHired; 85];
+    const fn known_kinds() -> [Self; 92] {
+        let mut kinds = [Self::AgentHired; 92];
         let mut index = 0;
         while index < Self::ALL.len() {
             kinds[index] = Self::ALL[index];
@@ -2405,6 +2691,13 @@ impl RecordKind {
         kinds[82] = Self::RecoveryAuthorized;
         kinds[83] = Self::RecoveryInvalidated;
         kinds[84] = Self::FloorPeerRefused;
+        kinds[85] = Self::WorkspaceTrustSet;
+        kinds[86] = Self::FloorDeviceEnrolled;
+        kinds[87] = Self::FloorDeviceFirstUsed;
+        kinds[88] = Self::FloorDeviceAcknowledged;
+        kinds[89] = Self::FloorDeviceRemoved;
+        kinds[90] = Self::FloorDeviceUsed;
+        kinds[91] = Self::FloorDeviceKeyEnrolled;
         kinds
     }
 
@@ -2434,6 +2727,7 @@ impl RecordKind {
                 | Self::MailWakeTurnDecided
                 | Self::MailWakeOnlyTurnIssued
                 | Self::AgentMcpServersChanged
+                | Self::WorkspaceTrustSet
                 | Self::McpLaunchGranted
                 | Self::TicketCreated
                 | Self::TicketEdited
@@ -3285,6 +3579,55 @@ pub mod samples {
                     },
                 })
             }
+            RecordKind::WorkspaceTrustSet => Record::WorkspaceTrustSet {
+                workspace_id: "project".to_owned(),
+                trusted: true,
+                repository: Some(TrustedRepository {
+                    directory: PathBuf::from("/repo"),
+                    directory_identity: FileIdentity {
+                        device: 1,
+                        inode: 2,
+                    },
+                    common_dir: PathBuf::from("/repo/.git"),
+                    common_identity: FileIdentity {
+                        device: 1,
+                        inode: 3,
+                    },
+                }),
+                pin: Some(TrustPin {
+                    claude_tree: None,
+                    mcp_json: None,
+                    attributes: Hex32::new([7; 32]),
+                    config: Hex32::new([8; 32]),
+                }),
+            },
+            RecordKind::FloorDeviceEnrolled => Record::FloorDeviceEnrolled {
+                device: Hex32::new([1; 32]),
+                origin: "http://127.0.0.1:7700".to_owned(),
+                name: "Chrome on macOS".to_owned(),
+                cookie: Hex32::new([2; 32]),
+                secret: Hex32::new([3; 32]),
+            },
+            RecordKind::FloorDeviceKeyEnrolled => Record::FloorDeviceKeyEnrolled {
+                device: Hex32::new([1; 32]),
+                key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMqeMA7CvYqmm3VlWQvtK0wS0KjZS1IgpgezxoWCtn1TIfdmP2PsYn7Q64c793NcH_g2MT5eEZqO5Abl4Z15TRA".to_owned(),
+                origin: "http://127.0.0.1:7700".to_owned(),
+                name: "Chrome on macOS".to_owned(),
+                cookie: Hex32::new([2; 32]),
+            },
+            RecordKind::FloorDeviceFirstUsed => Record::FloorDeviceFirstUsed {
+                device: Hex32::new([1; 32]),
+            },
+            RecordKind::FloorDeviceAcknowledged => Record::FloorDeviceAcknowledged {
+                device: Hex32::new([1; 32]),
+            },
+            RecordKind::FloorDeviceRemoved => Record::FloorDeviceRemoved {
+                device: Hex32::new([1; 32]),
+                reason: FloorDeviceRemoval::Removed,
+            },
+            RecordKind::FloorDeviceUsed => Record::FloorDeviceUsed {
+                device: Hex32::new([1; 32]),
+            },
             RecordKind::FloorPeerRefused => Record::FloorPeerRefused {
                 route: "/floor/answer".to_owned(),
                 agent: Some(agent()),
@@ -3701,7 +4044,7 @@ mod tests {
             legacy.last(),
             Some(&RecordKind::MemoryCondenseModelAdmitted)
         );
-        assert_eq!(RecordKind::KNOWN.len(), 85);
+        assert_eq!(RecordKind::KNOWN.len(), 92);
         for &kind in &RecordKind::KNOWN[46..66] {
             let value = serde_json::to_value(samples::record(kind)).unwrap();
             for key in value.as_object().unwrap().keys() {
@@ -4204,7 +4547,7 @@ mod tests {
         assert_eq!(RecordKind::from_tag(u16::MAX), None);
         assert_eq!(
             RecordKind::KNOWN.len(),
-            85,
+            92,
             "a kind was added or removed without updating the count"
         );
         assert_eq!(
@@ -4934,7 +5277,8 @@ mod tests {
                 request_digest: Hex32::new([0xef; 32]),
                 profile_id: "repo_1".into(),
                 session_digest,
-                intended_goal: intended,
+                intended_goal: Some(intended),
+                trust_lsn: None,
             }));
         }
         if let Record::GoalSet {
@@ -5202,8 +5546,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Record>(encoded).unwrap(), record);
         }
         assert_eq!(RecordKind::ALL.len(), 46);
-        assert_eq!(RecordKind::KNOWN.len(), 85);
-        assert_eq!(RecordKind::from_tag(86), None);
+        assert_eq!(RecordKind::KNOWN.len(), 92);
+        assert_eq!(RecordKind::from_tag(93), None);
     }
 
     const TICKET_KINDS: [(RecordKind, u16); 5] = [
@@ -5536,6 +5880,6 @@ mod recovery_record_tests {
                 "{kind:?}"
             );
         }
-        assert_eq!(RecordKind::from_tag(86), None);
+        assert_eq!(RecordKind::from_tag(93), None);
     }
 }

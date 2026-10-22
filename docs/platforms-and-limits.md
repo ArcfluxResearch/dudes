@@ -40,5 +40,6 @@ connect, and a paused agent's steps are not blocked then.
 
 ## Separate worktrees
 
-A separate git worktree for each agent (`dudes hire --worktree`) needs Claude Code and a repository
+A separate git worktree for each agent (`dudes hire --worktree`, or the Hire dialog's own-copy box
+for a project you trust with `dudes project trust`) needs Claude Code and a repository
 you mark as trusted with `--trusted`.

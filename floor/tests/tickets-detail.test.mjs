@@ -139,7 +139,8 @@ test('a ticket in Needs you shows its sentence, and a queued one the daemon\'s o
     floor: { ...floor, cards: floor.cards.map((c) => ({ ...c, ticket: { ...c.ticket, reason: 'held_launch' } })) },
     card: { ...floor.cards[0], ticket: { ...floor.cards[0].ticket, reason: 'held_launch' } },
   }));
-  assert.match(html, /The agent&#x27;s engine would not start\. Fix the cause, then resume the agent in the Floor or with `dudes resume`\./);
+  assert.match(html, /The agent&#x27;s engine would not start\. Fix the cause, then resume the agent\./);
+  assert.doesNotMatch(html, /dudes resume/);
   detail.resetDetail();
   store.resetFloorStore();
   await open({ waiting: { wait: { kind: 'agent_busy' }, note: 'Waiting for Ada to finish its current work.' }, summary: null },
@@ -147,18 +148,42 @@ test('a ticket in Needs you shows its sentence, and a queued one the daemon\'s o
   assert.match(panel(), /Waiting for Ada to finish its current work\./);
 });
 
-test('recovery Needs you offers the local inspection command with either Floor grant off', async () => {
-  await open({ reason: 'recovery_required', summary: null }, { status: 'blocked' });
+const GOAL = '01JBQ8XK2M3N4P5Q6R7S8T9VWY';
+
+/** The panel for a blocked ticket whose agent is held or interrupted, with the grants and the agent as given. */
+async function stuck(reason, { control = true, recovery = true, settings = {}, row = {} } = {}) {
+  subscribe(store, { agents: [agent(ADA, 'Ada', { paused: true, goal: { id: GOAL, text: 'Ship it', status: 'active' }, ...row })],
+    cards: [ticketCard(1, 'blocked', { claimed_by: ADA }, { reason })] });
   const state = store.getFloorState();
-  const card = { ...state.cards[0], ticket: { ...state.cards[0].ticket, reason: 'recovery_required' } };
-  for (const [recovery, control] of [[false, true], [true, false], [true, true]]) {
-    const floor = { ...state, cards: [card], recovery, control };
-    const html = renderToStaticMarkup(createElement(TicketPanel, { floor, card }));
-    assert.match(html, /Recovery keeps the same goal and ticket round\./);
-    assert.match(html, /Review recovery in the agent drawer when available, or run `dudes recovery inspect &lt;agent-id&gt;` in a terminal\./);
-    assert.match(html, /Earlier effects may repeat\./);
-    assert.doesNotMatch(html, /Open the agent and choose how to recover it/);
+  const floor = { ...state, control, recovery, settings };
+  return renderToStaticMarkup(createElement(TicketPanel, { floor, card: floor.cards[0] }));
+}
+
+test('a held agent\'s ticket has a Resume button and no command to type', async () => {
+  for (const reason of ['held_launch', 'held_failing', 'held_unsure', 'worktree_missing']) {
+    store.resetFloorStore();
+    const html = await stuck(reason);
+    assert.match(html, /<button type="button" class="ticket-action" data-action="resume">Resume agent<\/button>/, reason);
+    assert.doesNotMatch(html, /`dudes|dudes resume/, reason);
+    assert.doesNotMatch(html, /data-action="review_recovery"/, reason);
   }
+});
+
+test('with the control switch off the held ticket names the switch and offers no Resume', async () => {
+  const html = await stuck('held_launch', { control: false });
+  assert.doesNotMatch(html, /data-action="resume"/);
+  assert.match(html, /Turn on Pause, resume and rename under Floor switches in Settings to do this here\./);
+});
+
+test('an interrupted ticket opens the recovery view, or names the switches that are off', async () => {
+  const html = await stuck('recovery_required', { row: { paused: false } });
+  assert.match(html, /data-action="review_recovery">Review recovery<\/button>/);
+  assert.match(html, /Recovery keeps the same goal and ticket round\./);
+  assert.doesNotMatch(html, /`dudes|recovery inspect/);
+  store.resetFloorStore();
+  const off = await stuck('recovery_required', { control: false, recovery: false });
+  assert.doesNotMatch(off, /data-action="review_recovery"/);
+  assert.match(off, /Turn on Pause, resume and rename and Recover interrupted goals under Floor switches in Settings/);
 });
 
 test('the decoder keeps exactly the daemon\'s members and refuses the rest', async () => {
@@ -229,7 +254,7 @@ test('the decoder refuses a coverage note it does not know', () => {
 test('the changed files come from the Git read, or one plain line says how to turn it on', async () => {
   await open({}, { git: false });
   const off = panel();
-  assert.match(off, /<h4>Changed files<\/h4><p class="ticket-hint">Changed files are turned off, so this list is empty\. To see them, run <code>dudes config set floor\.git on<\/code> in a terminal, then <code>dudes stop<\/code> and <code>dudes start<\/code>\.<\/p>/);
+  assert.match(off, /<h4>Changed files<\/h4><p class="ticket-hint">Changed files are turned off, so this list is empty\. To see them, turn on Show changed files in Settings\.<\/p>/);
   assert.ok(!/ticket-files/.test(off));
   assert.ok(!/Look again/.test(off));
 
@@ -245,7 +270,7 @@ test('the changed files come from the Git read, or one plain line says how to tu
     ...extra,
   });
   const git = daemon(() => json(200, view()));
-  git.deps.csrf = deps.csrf;
+  git.deps.signedIn = deps.signedIn;
   await loadChangedFiles(store.getFloorState().cards[0], git.deps);
   const on = panel();
   assert.match(on, /<ul class="ticket-files"><li><span class="git-kind">Added<\/span> <span class="git-path data">src\/new\.rs<\/span><\/li><li><span class="git-kind">Modified<\/span> <span class="git-path data">src\/main\.rs<\/span><\/li><\/ul>/);
@@ -310,6 +335,23 @@ test('instruction review renders known paths, independent uncertainty and physic
   assert.match(html, /do not identify an exclusive writer/);
   assert.ok(!/data-action="remove"|data-action="try_again"/.test(html));
   assert.ok(!/data-action="accept" disabled/.test(html));
+});
+
+test('a ticket still being worked on offers no Accept or Ask for changes, and keeps the technical review under its disclosure', async () => {
+  subscribe(store, { agents: [agent()], cards: [ticketCard(1, 'doing', { claimed_by: ADA }, {
+    instruction_review: instructionSummary(),
+  })] });
+  const card = store.getFloorState().cards[0];
+  const { deps } = daemon(() => json(200, reply({ instruction_review: instructionReview() })));
+  await detail.loadDetail(card, deps);
+  const html = panel();
+  assert.doesNotMatch(html, /data-action="accept"|data-action="changes"/);
+  assert.match(html, /data-action="stop"/);
+  assert.doesNotMatch(html, />Accept<|>Ask for changes</);
+  const start = html.indexOf('<section aria-label="Instruction review">');
+  const visible = html.slice(start, html.indexOf('<details', start));
+  assert.doesNotMatch(visible, /exclusive writer|sampled endpoints/);
+  assert.match(html, /<details><summary>Observation details<\/summary><p>These observations compare sampled endpoints/);
 });
 
 test('instruction actions require a completed read at the current sequence and exact watermark', async () => {
@@ -416,7 +458,8 @@ test('gap evidence names only agents that were not working on the ticket and kee
   assert.ok(trace.includes(`<code>${ADA}</code>`), trace);
   assert.ok(trace.includes(`<code>${GRACE}</code>`), trace);
   assert.match(trace, /Coverage gap 3\. configuration unknown\. Unresolved context\.[\s\S]*?Found during this ticket\./);
-  assert.match(visible, /do not identify an exclusive writer/);
+  assert.doesNotMatch(visible, /exclusive writer/, 'the technical caveat is not in the first view');
+  assert.match(trace, /do not identify an exclusive writer/);
 });
 
 test('every gap kind reads as a plain sentence and the review says what to do next', async () => {

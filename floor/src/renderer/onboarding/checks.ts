@@ -89,7 +89,7 @@ export function checksFor(catalog: CheckCatalog | null, workspaceId: string): re
 
 /** A check's label as a choice shows it. */
 export function choiceLabel(check: EnrolledCheck): string {
-  return check.mayAlreadyPass ? `${check.label} (may already pass)` : check.label;
+  return check.mayAlreadyPass ? `${check.label} (may already be true)` : check.label;
 }
 
 /** Why the daemon ran no check, or what the one run it made found, refused before any effect. */

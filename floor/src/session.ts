@@ -1,49 +1,34 @@
-import { floorFetch } from './transport.ts';
+import { browserName } from './renderer/devices/browserName.ts';
+import { pageFromHash } from './navigation.ts';
+import { KeyUnavailable, floorSigner, signatureHeaders } from './signer.ts';
+import type { KeyRecord, Signer } from './signer.ts';
+import { floorFetch, plainFetch } from './transport.ts';
 
-const SECRET = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
+const LINK = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 const BOOTSTRAP_PREFIX = '#bootstrap=';
 const ASSET_PREFIX = '/floor/assets/';
+const LEGACY_SECRET = 'dudes.floor.secret';
 
-const SECRET_KEY = 'dudes.floor.secret';
-
-/**
- * Where the page keeps the session secret between loads. The browser keeps
- * this storage apart for each port, so a page another program serves on a
- * different port of this machine cannot read it, though the browser sends it
- * the cookie.
- */
-export interface SecretStore {
-  read(): string | null;
-  write(secret: string): void;
-  forget(): void;
+/** Drop the readable secret an earlier version of this page kept in the browser's storage. */
+export function forgetLegacySecret(): void {
+  try {
+    window.localStorage.removeItem(LEGACY_SECRET);
+  } catch {}
 }
 
-function browserStorage(): Storage {
-  return window.localStorage;
+/** Why this page holds no session, when the daemon or the person said. */
+export type SignedOutReason = 'signed_out' | 'removed' | 'expired' | 'replaced';
+const REASONS: readonly string[] = ['removed', 'expired', 'replaced'];
+/** In memory only: a reload starts without a reason, and the page then says only that it is signed out. */
+let goneReason: SignedOutReason | null = null;
+
+export function signedOutReason(): SignedOutReason | null {
+  return goneReason;
 }
 
-export const browserSecretStore: SecretStore = Object.freeze({
-  read(): string | null {
-    try {
-      return browserStorage().getItem(SECRET_KEY);
-    } catch {
-      return null;
-    }
-  },
-  write(secret: string): void {
-    try {
-      browserStorage().setItem(SECRET_KEY, secret);
-    } catch {}
-  },
-  forget(): void {
-    try {
-      browserStorage().removeItem(SECRET_KEY);
-    } catch {}
-  },
-});
-
+/** The browser's sign-in: the id of the device the daemon knows it by. The key itself stays in the signer. */
 export interface FloorSession {
-  readonly csrf: string;
+  readonly device: string;
 }
 
 interface LocationPort {
@@ -64,6 +49,17 @@ interface ExchangeResponse {
 }
 
 type FetchPort = (url: string, init: RequestInit) => Promise<ExchangeResponse>;
+
+/** What signing in needs: the key, the plain request for the link exchange, and the signed one for everything else. */
+export interface SignInPorts {
+  readonly signer: Signer | null;
+  readonly plain: FetchPort;
+  readonly signed: FetchPort;
+}
+
+function browserPorts(): SignInPorts {
+  return { signer: floorSigner(), plain: plainFetch, signed: floorFetch };
+}
 
 let current: FloorSession | null = null;
 
@@ -97,6 +93,7 @@ export function resetFloorSession(): void {
   current = null;
   started = 0;
   holding = 0;
+  goneReason = null;
 }
 
 /** Take a settled result, unless a newer call's result is already held. `null` leaves `current` alone when `keep`. */
@@ -104,6 +101,7 @@ function settle(ticket: number, session: FloorSession | null, keep: boolean): vo
   if (ticket <= holding || (session === null && keep)) return;
   current = session;
   holding = ticket;
+  if (session !== null) goneReason = null;
 }
 
 /**
@@ -115,7 +113,7 @@ function settle(ticket: number, session: FloorSession | null, keep: boolean): vo
 export type Standing = 'live' | 'unknown' | 'unclear';
 
 export async function askFloorStanding(
-  session: FloorSession,
+  _session: FloorSession,
   fetch: FetchPort = floorFetch,
 ): Promise<Standing> {
   try {
@@ -125,48 +123,75 @@ export async function askFloorStanding(
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': session.csrf },
+      headers: { 'Content-Type': 'application/json' },
     });
     if (response.ok) return 'live';
-    if (response.status !== 401) return 'unclear';
+    if (response.status !== 401 && response.status !== 403) return 'unclear';
     const answer: unknown = await response.json();
-    return typeof answer === 'object' && answer !== null && 'session' in answer && answer.session === 'unknown'
-      ? 'unknown'
-      : 'unclear';
+    if (!saysDeviceGone(answer)) return 'unclear';
+    const reason = 'reason' in answer && typeof answer.reason === 'string' ? answer.reason : null;
+    goneReason = reason !== null && REASONS.includes(reason) ? (reason as SignedOutReason) : null;
+    return 'unknown';
   } catch {
     return 'unclear';
   }
 }
 
-/** The page lost its session: forget it and the secret kept for it, so a reload starts signed out. */
-export function endFloorSession(store: SecretStore = browserSecretStore): void {
-  store.forget();
+/** The daemon's plain answer that it knows no such device. A refused signature is not one. */
+function saysDeviceGone(answer: unknown): answer is { readonly session: string } {
+  return typeof answer === 'object' && answer !== null && 'session' in answer
+    && (answer.session === 'unknown' || answer.session === 'gone');
+}
+
+/** The daemon says this page's device is gone: stop using the session. The key stays, so a standing answer never wipes it. */
+export function dropFloorSession(): void {
   settle(++started, null, false);
 }
 
 /**
- * Another tab of this browser signed in since this page did, and left its secret in the storage the
- * tabs share, along with the cookie that goes with it. Take that secret as this page's own. `null`
+ * The daemon confirmed a sign-out: forget the session and delete the key kept for it.
+ * Only the key this session used goes, so a newer key another tab made since stays.
+ */
+export async function endFloorSession(
+  signer: Signer | null = floorSigner(),
+  device: string | undefined = current?.device,
+): Promise<void> {
+  settle(++started, null, false);
+  if (signer === null || device === undefined) return;
+  try {
+    await signer.forget(device);
+  } catch {}
+}
+
+/**
+ * Another tab of this browser signed in since this page did, and left its key in the storage the
+ * tabs share, along with the cookie that goes with it. Take that device as this page's own. `null`
  * when the store holds nothing new, which is the page's cue that its session really is gone.
  */
-export function adoptStoredFloorSession(store: SecretStore = browserSecretStore): FloorSession | null {
-  const secret = store.read();
-  if (secret === null || !SECRET.test(secret) || secret === current?.csrf) return null;
-  const session: FloorSession = Object.freeze({ csrf: secret });
+export async function adoptStoredFloorSession(signer: Signer | null = floorSigner()): Promise<FloorSession | null> {
+  if (signer === null) return null;
+  let device: string | null;
+  try {
+    device = await signer.device();
+  } catch {
+    return null;
+  }
+  if (device === null || device === current?.device) return null;
+  const session: FloorSession = Object.freeze({ device });
   settle(++started, session, false);
   return session;
 }
 
 /**
- * Sign out. The daemon ends the session and closes its sockets, and only then does the page forget
- * the secret. An answer that the session is already unknown counts too. Anything else, including a
- * daemon that cannot be reached, leaves the session and the secret as they were and returns
- * `false`, so the page can say so instead of looking signed out while the session lives on.
+ * Sign out. The daemon ends the device and closes its sockets, and only then does the page delete
+ * its key. An answer that the device is already unknown counts too. Anything else, including a
+ * daemon that cannot be reached, leaves the session and the key as they were and returns `false`,
+ * so the page can say so instead of looking signed out while the sign-in lives on.
  */
 export async function signOutFloorSession(
   session: FloorSession,
   fetch: FetchPort = floorFetch,
-  store: SecretStore = browserSecretStore,
+  signer: Signer | null = floorSigner(),
 ): Promise<boolean> {
   try {
     const response = await fetch('/floor/session/end', {
@@ -175,23 +200,23 @@ export async function signOutFloorSession(
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': session.csrf },
+      headers: { 'Content-Type': 'application/json' },
     });
-    if (!response.ok && response.status !== 401) return false;
+    if (!response.ok) {
+      if (response.status !== 401 && response.status !== 403) return false;
+      if (!saysDeviceGone(await response.json())) return false;
+    }
   } catch {
     return false;
   }
-  endFloorSession(store);
+  await endFloorSession(signer, session.device);
+  goneReason = 'signed_out';
   return true;
 }
 
 export async function establishFloorSession(): Promise<FloorSession | null> {
-  return openFloorSessionWith(
-    window.location,
-    window.history,
-    floorFetch,
-    browserSecretStore,
-  );
+  forgetLegacySecret();
+  return openFloorSessionWith(window.location, window.history, browserPorts());
 }
 
 /**
@@ -203,11 +228,10 @@ export async function establishFloorSession(): Promise<FloorSession | null> {
 export async function openFloorSessionWith(
   location: LocationPort,
   history: HistoryPort,
-  fetch: FetchPort,
-  store: SecretStore,
+  ports: SignInPorts,
 ): Promise<FloorSession | null> {
   const ticket = ++started;
-  const session = await establishFloorSessionWith(location, history, fetch, store);
+  const session = await establishFloorSessionWith(location, history, ports);
   settle(ticket, session, false);
   return session;
 }
@@ -219,15 +243,10 @@ export async function openFloorSessionWith(
  * reload: whatever this page holds in memory — a Hire or an answer waiting on
  * Check status — survives into the new session. The exchange is the on-load
  * one, byte for byte: the fragment is removed before anything is sent, and the
- * secret goes nowhere but the request body.
+ * link goes nowhere but the request body.
  */
 export async function reauthenticateFloorSession(): Promise<FloorSession | null> {
-  return reauthenticateFloorSessionWith(
-    window.location,
-    window.history,
-    floorFetch,
-    LOADED_WITH,
-  );
+  return reauthenticateFloorSessionWith(window.location, window.history, LOADED_WITH, browserPorts());
 }
 
 /** The built files a document names: every script and stylesheet under the Floor assets. */
@@ -274,12 +293,11 @@ export function sameBuild(own: readonly string[], served: readonly string[]): bo
 export async function reauthenticateFloorSessionWith(
   location: LocationPort,
   history: HistoryPort,
-  fetch: FetchPort,
   ownRefs: readonly string[],
-  store: SecretStore = browserSecretStore,
+  ports: SignInPorts,
 ): Promise<FloorSession | null> {
   const ticket = ++started;
-  const session = await exchangeBootstrap(location, history, fetch, ownRefs, store);
+  const session = await exchangeBootstrap(location, history, ports, ownRefs);
   // A link that was not a bootstrap changes nothing; a stale one is discarded.
   settle(ticket, session, true);
   return session;
@@ -288,17 +306,18 @@ export async function reauthenticateFloorSessionWith(
 export async function establishFloorSessionWith(
   location: LocationPort,
   history: HistoryPort,
-  fetch: FetchPort,
-  store: SecretStore,
+  ports: SignInPorts,
 ): Promise<FloorSession | null> {
+  if (ports.signer === null) throw new KeyUnavailable();
+  await ports.signer.ready();
   if (location.hash.startsWith(BOOTSTRAP_PREFIX)) {
-    return exchangeBootstrap(location, history, fetch, undefined, store);
+    return exchangeBootstrap(location, history, ports);
   }
-  if (location.hash !== '') return null;
-  // A reload keeps the secret and the cookie. A cookie with no secret gets no session, so a page
-  // that holds no secret is signed out and says so.
-  const secret = store.read();
-  return secret !== null && SECRET.test(secret) ? Object.freeze({ csrf: secret }) : null;
+  if (location.hash !== '' && pageFromHash(location.hash) === null) return null;
+  // A reload keeps the key and the cookie. A cookie with no key gets no session, so a page that
+  // holds no key is signed out and says so.
+  const device = await ports.signer.device();
+  return device === null ? null : Object.freeze({ device });
 }
 
 /** The daemon answered the exchange and refused the link. */
@@ -328,29 +347,54 @@ export class BuildMismatch extends Error {
 export async function exchangeBootstrap(
   location: LocationPort,
   history: HistoryPort,
-  fetch: FetchPort,
+  ports: SignInPorts,
   ownRefs?: readonly string[],
-  store: SecretStore = browserSecretStore,
 ): Promise<FloorSession | null> {
   if (!location.hash.startsWith(BOOTSTRAP_PREFIX)) return null;
 
-  const bootstrap = location.hash.slice(BOOTSTRAP_PREFIX.length);
+  const { signer, plain } = ports;
+  if (signer === null) throw new KeyUnavailable();
+  await signer.ready();
+  const link = location.hash.slice(BOOTSTRAP_PREFIX.length);
   history.replaceState(null, '', `${location.pathname}${location.search}`);
-  if (!SECRET.test(bootstrap)) return null;
-  if (ownRefs !== undefined) await requireSameBuild(fetch, ownRefs);
+  if (!LINK.test(link)) return null;
+  if (ownRefs !== undefined) await requireSameBuild(plain, ownRefs);
 
-  const response = await fetch('/floor/session', {
-    method: 'POST',
-    body: bootstrap,
-    credentials: 'same-origin',
-    cache: 'no-store',
-    referrerPolicy: 'no-referrer',
-    headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+  // One tab at a time reads the key, makes one and spends the link, so two tabs opened on one link
+  // end up with one device.
+  return signer.lock(async () => {
+    const held = await signer.device();
+    if (held !== null) {
+      const session: FloorSession = Object.freeze({ device: held });
+      const standing = await askFloorStanding(session, ports.signed);
+      // Live, or an answer too unclear to act on: the device stays and the link is left unspent.
+      if (standing !== 'unknown') return session;
+    }
+    const key = await signer.newKey();
+    const body = JSON.stringify({ link, key: key.spki, name: browserName() });
+    const fetch = signedBy(signer, key, plain);
+    const response = await fetch('/floor/session', {
+      method: 'POST',
+      body,
+      credentials: 'same-origin',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!response.ok) throw new LinkRefused();
+    if (deviceOf(await response.json()) !== key.device) throw new LinkRefused();
+    await signer.keep(key);
+    return Object.freeze({ device: key.device });
   });
-  if (!response.ok) throw new LinkRefused();
-  const session = floorSession(await response.json());
-  store.write(session.csrf);
-  return session;
+}
+
+/** The link exchange, signed by the key it enrols because the daemon holds no other key to check it with. */
+function signedBy(signer: Signer, key: KeyRecord, send: FetchPort): FetchPort {
+  return async (url, init) => {
+    const text = typeof init.body === 'string' ? init.body : '';
+    const signature = await signer.signWith(key, init.method ?? 'GET', url, new TextEncoder().encode(text));
+    return send(url, { ...init, headers: { ...init.headers as Record<string, string>, ...signatureHeaders(signature) } });
+  };
 }
 
 async function requireSameBuild(
@@ -370,15 +414,7 @@ async function requireSameBuild(
   if (!sameBuild(ownRefs, served)) throw new BuildMismatch();
 }
 
-function floorSession(payload: unknown): FloorSession {
-  if (
-    typeof payload !== 'object'
-    || payload === null
-    || !("csrf" in payload)
-    || typeof payload.csrf !== 'string'
-    || !SECRET.test(payload.csrf)
-  ) {
-    throw new Error('Floor session exchange returned an invalid session secret');
-  }
-  return Object.freeze({ csrf: payload.csrf });
+function deviceOf(payload: unknown): string | null {
+  return typeof payload === 'object' && payload !== null && 'device' in payload && typeof payload.device === 'string'
+    ? payload.device : null;
 }

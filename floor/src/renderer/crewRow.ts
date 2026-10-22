@@ -67,9 +67,10 @@ export function crewRowOf(row: AgentRow, cards: readonly CardRow[] = [], context
   const task = activeCard(cards, row.id);
   const engine = shown(row.provider);
   const workspace = workspaceLabel(row);
+  const status = ticketWord(cards, row, fields.status) ?? fields.status;
   const liveActivity = fields.liveActivity;
   const checkout = checkoutOf(row);
-  const facts = [fields.role, engine === '—' ? '' : engine, fields.status, `${fields.usd} spent today`, hold ?? '']
+  const facts = [fields.role, engine === '—' ? '' : engine, status, `${fields.usd} spent today`, hold ?? '']
     .filter((fact) => fact !== '');
   return {
     name: shown(row.name),
@@ -77,7 +78,7 @@ export function crewRowOf(row: AgentRow, cards: readonly CardRow[] = [], context
     role: shown(fields.role),
     engine,
     workspace,
-    status: shown(ticketWord(cards, row.id, fields.status) ?? fields.status),
+    status: shown(status),
     activity,
     liveActivity,
     activeCard: task,

@@ -13,7 +13,7 @@ import type { Draft, RecoveryRequest, RecoveryState } from './recovery.ts';
 import './recovery.css';
 
 const CHOICES: Readonly<Record<RecoveryChoice, string>> = {
-  try_recorded: 'Try recorded conversation', fresh_with_recap: 'Start fresh with recorded recap', repeat_issued_fresh: 'Repeat issued task in fresh context',
+  try_recorded: 'Try recorded conversation', fresh_with_recap: 'Start fresh with recorded recap', repeat_issued_fresh: 'Repeat the same task in fresh context',
 };
 const UNAVAILABLE: Readonly<Record<InspectReason, string>> = {
   agent_unavailable: 'This agent is unavailable or is not Managed.', goal_unavailable: 'There is no unfinished current goal to recover.',
@@ -36,24 +36,31 @@ const INVALIDATIONS: Readonly<Record<InvalidationReason, string>> = {
   agent_unavailable: 'The agent became unavailable.', authority_unavailable: 'The original browser authority became unavailable.',
 };
 const WAIT_LABELS: Readonly<Record<keyof Waits, string>> = { open_question: 'An open question needs an answer.', budget: 'The admission budget is waiting.',
-  hops: 'The goal has no remaining hops.', instruction_review: 'Ticket instructions need review.', instruction_comparison: 'A ticket instruction comparison is outstanding.' };
+  hops: 'The goal has no remaining hops.', instruction_review: 'Open this ticket on the Board and review its instructions before work can continue.', instruction_comparison: "Dudes is still comparing this ticket's instructions." };
 
-export function RecoveryPanel({ floor, row }: { readonly floor: FloorState; readonly row: AgentRow }) {
+export function RecoveryPanel({ floor, row, onReadReceipt }: {
+  readonly floor: FloorState; readonly row: AgentRow; readonly onReadReceipt?: (request: string) => void;
+}) {
   const memory = useSyncExternalStore(subscribeToRecovery, getRecoveryState, getRecoveryState);
-  return <RecoveryPanelView floor={floor} row={row} memory={memory} session={floorSessionGeneration()} />;
+  return <RecoveryPanelView floor={floor} row={row} memory={memory} session={floorSessionGeneration()} onReadReceipt={onReadReceipt} />;
 }
-export function RecoveryPanelView({ floor, row, memory, session }: {
+export function RecoveryPanelView({ floor, row, memory, session, onReadReceipt }: {
   readonly floor: FloorState; readonly row: AgentRow; readonly memory: RecoveryState; readonly session: number;
+  readonly onReadReceipt?: (request: string) => void;
 }) {
   const inspection = memory.inspections.get(row.id);
   const draft = inspection?.kind === 'draft' ? memory.drafts.get(inspection.key) : undefined;
   const enabled = recoveryEnabled(floor, row);
   if (!enabled && inspection === undefined) return null;
   const busy = inspection?.kind === 'loading';
+  const retained = [...memory.requests].filter(([, request]) => request.payload.expected.work.agent === row.id);
+  const goal = row.goal;
+  const goalText = typeof goal === 'object' && goal !== null && 'text' in goal && typeof goal.text === 'string' ? goal.text : null;
   return <section className="recovery-panel" aria-labelledby="recovery-title">
     <h3 id="recovery-title" tabIndex={-1}>Recover interrupted goal</h3>
-    <p>Keep the same agent and goal. Inspect the recorded opportunity before choosing context.</p>
-    <p>Ordinary Resume remains separate and does not release a recovery barrier.</p>
+    {goalText === null ? null : <p className="recovery-goal"><strong>Current goal</strong> {goalText}</p>}
+    <p>Keep the same agent and goal. A ticket keeps its current round. Inspect what Dudes recorded, then choose how to continue.</p>
+    <p>Resume alone cannot release this interruption.</p>
     <button type="button" aria-disabled={!enabled || busy} aria-busy={busy} ref={handFocusOnLeave}
       data-focus-on-leave={AGENT_DETAIL_HEADING_ID} onClick={(event) => { if (event.detail < 2) void inspectRecovery(row.id, browserRecoveryDeps); }}>
       {busy ? 'Inspecting…' : 'Inspect recovery'}
@@ -62,6 +69,12 @@ export function RecoveryPanelView({ floor, row, memory, session }: {
     {inspection?.kind === 'problem' ? <p role="alert">{inspection.text}</p> : null}
     {inspection?.kind === 'unavailable' ? <p role="status">{UNAVAILABLE[inspection.reason]}</p> : null}
     {draft === undefined ? null : <RecoveryDraft draft={draft} memory={memory} floor={floor} session={session} />}
+    {retained.length === 0 || onReadReceipt === undefined ? null : <div className="recovery-retained">
+      <p>This page keeps {retained.length === 1 ? 'a recovery request' : `${retained.length} recovery requests`} for this agent.
+        Open a receipt to see what Dudes recorded. This closes the agent panel.</p>
+      {retained.map(([id], index) => <button key={id} type="button" onClick={() => onReadReceipt(id)}>
+        Read recovery receipt{retained.length > 1 ? ` ${index + 1}` : ''}</button>)}
+    </div>}
   </section>;
 }
 function RecoveryDraft({ draft, memory, floor, session }: {
@@ -72,14 +85,9 @@ function RecoveryDraft({ draft, memory, floor, session }: {
   const blocked = blocksDraft(draft, memory);
   const waiting = (Object.keys(WAIT_LABELS) as (keyof Waits)[]).filter(key => inspection.waiting[key] === 'waiting');
   return <div className="recovery-draft" data-recovery-reason={inspection.reason}>
-    <dl className="recovery-facts">
-      <div><dt>AgentId</dt><dd>{inspection.expected.work.agent}</dd></div>
-      <div><dt>GoalId</dt><dd>{inspection.expected.work.goal}</dd></div>
-      <div><dt>Source turn</dt><dd>{inspection.expected.work.turn}</dd></div>
-      {inspection.expected.ticket === null ? null : <div><dt>Ticket</dt><dd>{inspection.expected.ticket.card} · Round {inspection.expected.ticket.round}</dd></div>}
-    </dl>
-    {inspection.reason === 'missing_spawn' ? <p className="recovery-warning">A child may have run before its launch was recorded. Earlier effects may repeat.
-      Only the exact already-issued task can repeat, in fresh context. Its task and answers stay unchanged; no recap is added.</p>
+    {inspection.reason === 'missing_spawn' ? <p className="recovery-warning">The engine may have run before Dudes recorded its launch. Earlier effects may repeat.
+      Only the exact already-issued task can repeat, in fresh context without the earlier conversation history.
+      Its task and answers stay unchanged. No recap is added.</p>
       : inspection.prior_effects_unknown ? <p className="recovery-warning">Earlier effects are unknown and may repeat.</p> : null}
     {inspection.choices === 'recorded_or_fresh' ? <p>Trying the recorded conversation attempts its recorded identifier. It does not promise restored history.
       A context failure never automatically falls back to fresh work.</p> : null}
@@ -90,13 +98,23 @@ function RecoveryDraft({ draft, memory, floor, session }: {
         aria-disabled={problem !== null || blocked} ref={handFocusOnLeave} data-focus-on-leave="recovery-title"
         onClick={() => { if (problem === null && !blocked) chooseRecovery(draft.key, choice); }}>{CHOICES[choice]}</button>)}
     </div>
-    <p>Recovery keeps the current budget, hop cap, questions, instruction review and other admission gates. Authorization does not guarantee a launch.</p>
-    {waiting.length === 0 ? null : <ul aria-label="Remaining admission waits">{waiting.map(key => <li key={key}>{WAIT_LABELS[key]}</li>)}</ul>}
+    <p>Recovery keeps the current budget, hop cap, questions, instruction review and other limits. Authorization does not guarantee a launch.</p>
+    {waiting.length === 0 ? null : <div className="recovery-waits"><p>At this inspection, work was also waiting for:</p>
+      <ul aria-label="Waits at inspection">{waiting.map(key => <li key={key}>{WAIT_LABELS[key]}</li>)}</ul></div>}
     {problem === null ? null : <p role="status">{problem}</p>}
-    {blocked ? <p role="status">This page retains a request for this work. Read its receipt below. A later eligible episode needs a fresh inspection and choice.</p> : null}
+    {blocked ? <p role="status">This page keeps a recovery request for this work. Read its receipt with the button below.
+      A later interruption needs a fresh inspection and choice.</p> : null}
     <button type="button" aria-disabled={problem !== null || blocked || draft.choice === null} ref={handFocusOnLeave}
       data-focus-on-leave={draft.requestId === null ? 'recovery-title' : `recovery-receipt-${draft.requestId}`}
       onClick={(event) => { if (event.detail < 2) void submitRecovery(draft.key, browserRecoveryDeps); }}>Authorize one recovery</button>
+    <details className="recovery-details"><summary>Recorded identifiers</summary>
+    <dl className="recovery-facts">
+      <div><dt>AgentId</dt><dd>{inspection.expected.work.agent}</dd></div>
+      <div><dt>GoalId</dt><dd>{inspection.expected.work.goal}</dd></div>
+      <div><dt>Source turn</dt><dd>{inspection.expected.work.turn}</dd></div>
+      {inspection.expected.ticket === null ? null : <div><dt>Ticket</dt><dd>{inspection.expected.ticket.card} · Round {inspection.expected.ticket.round}</dd></div>}
+    </dl>
+    </details>
   </div>;
 }
 
@@ -110,9 +128,7 @@ export function RecoveryReceiptsView({ floor, memory }: { readonly floor: FloorS
     return <section key={id} className="recovery-receipt" aria-live="polite"
     aria-labelledby={`recovery-receipt-${id}`} data-recovery-outcome={receipt === null ? request.outcome?.state ?? 'sending' : 'accepted'}>
     <h3 id={`recovery-receipt-${id}`} tabIndex={-1}>Recovery request · {request.name}</h3>
-    <dl className="recovery-facts"><div><dt>RequestId</dt><dd>{id}</dd></div>
-      <div><dt>GoalId</dt><dd>{request.payload.expected.work.goal}</dd></div>
-      <div><dt>Context choice</dt><dd>{CHOICES[request.payload.choice]}</dd></div></dl>
+    <p>Context choice: {CHOICES[request.payload.choice]}</p>
     <RequestOutcome request={request} />
     {receipt === null ? null : <ReceiptFacts receipt={receipt} />}
     {receipt === null || !request.checking && (request.read === null || request.read.state === 'found') ? null : <p>These receipt facts are retained from an earlier response.
@@ -131,7 +147,11 @@ export function RecoveryReceiptsView({ floor, memory }: { readonly floor: FloorS
     <button type="button" aria-disabled={request.submitting || request.checking || !liveReader(floor)} aria-busy={request.checking}
       ref={handFocusOnLeave} data-focus-on-leave={`recovery-receipt-${id}`}
       onClick={(event) => { if (event.detail < 2) void checkRecoveryReceipt(id, browserRecoveryDeps); }}>{request.checking ? 'Checking…' : 'Check receipt'}</button>
-    <p>Check receipt reads only this request. It never retries recovery and remains available with a live authenticated reader when recovery is off.</p>
+    <p>Check receipt reads only this request. It never retries recovery. You can check it after recovery is switched off, while this browser stays signed in and connected.</p>
+    <details className="recovery-details"><summary>Request identifiers</summary>
+      <dl className="recovery-facts"><div><dt>RequestId</dt><dd>{id}</dd></div>
+        <div><dt>GoalId</dt><dd>{request.payload.expected.work.goal}</dd></div></dl>
+    </details>
     {liveReader(floor) ? null : <p role="status">Receipt lookup waits for a live confirmed Floor session. Your request is kept.</p>}
   </section>;
   })}</>;
@@ -141,7 +161,8 @@ function RequestOutcome({ request }: { readonly request: RecoveryRequest }) {
   const outcome = request.outcome;
   const recorded = requestReceipt(request) !== null;
   return <>
-    {recorded ? <p>Authorization recorded. Its durable claim does not by itself prove issuance, launch, success or restored history.</p> : null}
+    {recorded ? <><p>Authorization recorded. This alone does not prove the task was issued or launched. It does not prove success or restored conversation history.</p>
+      <p>Check {request.payload.expected.ticket === null ? "the agent's goal" : 'the ticket'} for any remaining reviews, questions or limits.</p></> : null}
     {outcome?.state === 'accepted' ? null : <SubmissionOutcome request={request} historical={recorded} />}
   </>;
 }
@@ -160,16 +181,27 @@ function SubmissionOutcome({ request, historical }: { readonly request: Recovery
 function ReceiptFacts({ receipt }: { readonly receipt: Receipt }) {
   const status = receipt.status;
   return <div data-recovery-receipt-state={status.state}>
-    <h4>Last recorded receipt facts</h4>
-    {status.state === 'pending' ? <p>Pending. The authorized new turn has not been issued. Remaining admission gates still apply.</p>
-      : status.state === 'issue_bound' ? <p>Issue-bound. Turn {status.turn} is recorded at {status.issue_lsn}; no consuming physical receipt is established.</p>
-        : status.state === 'consumed' ? <p>Consumed. Authorization was consumed at record {status.evidence_lsn}. This does not establish process termination.
-          It can also reflect a terminal failure without a recorded launch.</p>
-          : status.state === 'invalidated' ? <p>Invalidated. {INVALIDATIONS[status.reason]} Unused consent is closed and cannot rearm.</p>
-            : <p>Superseded. A later missing-launch episode replaced this consent at record {status.barrier_lsn}. A fresh explicit choice is required.</p>}
+    <h4>What Dudes recorded</h4>
+    <p className="recovery-status">{status.state === 'pending' ? 'Waiting to issue the task. Remaining reviews and limits still apply.'
+      : status.state === 'issue_bound' ? 'The task is recorded. No launch or terminal failure is recorded for this recovery yet.'
+        : status.state === 'consumed' ? 'Recovery permission was used. This does not prove the process ended or the task succeeded. It can also mean a terminal failure before launch.'
+          : status.state === 'invalidated' ? `Recovery permission is closed. ${INVALIDATIONS[status.reason]} It cannot be reused.`
+            : 'A later interruption replaced this permission. Inspect again and make a fresh choice.'}</p>
     <p>{receipt.attempt.spawn === null ? 'No launch is recorded in this receipt.' : `Launch recorded at ${receipt.attempt.spawn}.`}
       {' '}{receipt.attempt.confirmation === null ? 'No matching context confirmation is recorded.' : `Identifier confirmation recorded at ${receipt.attempt.confirmation}; this does not prove restored history.`}
       {' '}{receipt.attempt.end === null ? 'No end is recorded.' : `End recorded at ${receipt.attempt.end}; this receipt does not classify success.`}</p>
     {receipt.prior_effects_unknown ? <p className="recovery-warning">Earlier effects remain unknown and may repeat. This receipt does not erase them.</p> : null}
+    <details className="recovery-details"><summary>Record details</summary>
+      <dl className="recovery-facts">
+        <div><dt>State</dt><dd>{status.state}</dd></div>
+        {status.state === 'issue_bound' || status.state === 'consumed' || status.state === 'superseded' ? <>
+          <div><dt>Turn</dt><dd>{status.turn}</dd></div>
+          <div><dt>Issue record</dt><dd>{status.issue_lsn}</dd></div>
+        </> : null}
+        {status.state === 'consumed' ? <div><dt>Permission used at record</dt><dd>{status.evidence_lsn}</dd></div> : null}
+        {status.state === 'invalidated' ? <div><dt>Closed at record</dt><dd>{status.invalidation_lsn}</dd></div> : null}
+        {status.state === 'superseded' ? <div><dt>Replaced at record</dt><dd>{status.barrier_lsn}</dd></div> : null}
+      </dl>
+    </details>
   </div>;
 }

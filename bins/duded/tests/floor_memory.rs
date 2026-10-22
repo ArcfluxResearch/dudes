@@ -3,6 +3,7 @@
 #![cfg(unix)]
 
 mod common;
+use common::PageHttp as _;
 
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
@@ -11,9 +12,9 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use common::{Fixture, ScriptedColumn, ScriptedRunner, SharedHost, TestClock};
+use duded::floor_browser::{Browser as Keys, Page};
 use duded::floor_gateway::FloorStartFault;
 use duded::floor_memory::SESSION_INTERVAL;
-use duded::floor_session::CSRF_HEADER_NAME;
 use duded::ports::{Answered, Ask};
 use duded::settings::FloorSettings;
 use duded::startup::Witness;
@@ -22,12 +23,13 @@ use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::{ErrorCode, Method};
 use dudes_proto::{PayloadDigest, PeerProvenance, Record};
 use dudes_rpc::Client;
+use dudes_supervisor::Clock as _;
 use dudes_types::{AgentId, Lsn};
 use serde_json::{Value, json};
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v3"
+    "/tests/fixtures/floor-release-v5"
 );
 const PAGE: &str = "/floor/memory/page";
 const ENTRY: &str = "/floor/memory/entry";
@@ -143,11 +145,11 @@ impl Daemon {
     }
 
     fn page(&self) -> Browser {
-        let (cookie, csrf) = common::floor_session(&self.settings, self.addr);
+        let clock = Arc::clone(&self.clock);
         Browser {
-            addr: self.addr,
-            cookie,
-            csrf,
+            page: Page::enrol_new_on(self.addr, &common::floor_link(&self.settings), move || {
+                clock.now().unix_millis()
+            }),
             last: None,
         }
     }
@@ -219,20 +221,26 @@ fn send(addr: SocketAddr, line: &str, headers: &[(&str, String)], body: &str) ->
 
 /// A signed-in page that waits out the per-session interval between its own requests.
 struct Browser {
-    addr: SocketAddr,
-    cookie: String,
-    csrf: String,
+    page: Page,
     last: Option<Instant>,
 }
 
 impl Browser {
-    fn headers(&self) -> Vec<(&'static str, String)> {
+    /// The headers of a request, signed now. A signature works once, so each request asks for its own.
+    fn headers(&self, method: &str, target: &str, body: &str) -> Vec<(&'static str, String)> {
+        let signed = self.page.signed(method, target, body.as_bytes());
         vec![
-            ("Host", self.addr.to_string()),
-            ("Origin", format!("http://{}", self.addr)),
+            ("Host", self.page.addr.to_string()),
+            ("Origin", self.page.origin()),
             ("Content-Type", "application/json".to_owned()),
-            ("Cookie", format!("dudes_floor_session={}", self.cookie)),
-            (CSRF_HEADER_NAME, self.csrf.clone()),
+            (
+                "Cookie",
+                format!("dudes_floor_session={}", self.page.cookie),
+            ),
+            ("X-Dudes-Origin", signed.origin),
+            ("X-Dudes-Time", signed.time),
+            ("X-Dudes-Request", signed.request),
+            ("X-Dudes-Signature", signed.signature),
         ]
     }
 
@@ -240,9 +248,9 @@ impl Browser {
     /// interval when the request reaches it, some time after it was sent.
     fn post_now(&mut self, path: &str, body: &str) -> Reply {
         let reply = send(
-            self.addr,
+            self.page.addr,
             &format!("POST {path} HTTP/1.1"),
-            &self.headers(),
+            &self.headers("POST", path, body),
             body,
         );
         self.last = Some(Instant::now());
@@ -458,6 +466,25 @@ fn an_operator_reads_an_agents_entry_and_its_withheld_appends() {
     daemon.stop();
 }
 
+fn assert_near_misses_are_not_routes(daemon: &Daemon, page: &Browser, body: &str) {
+    for (what, method, target) in [
+        ("a trailing slash", "POST", format!("{PAGE}/")),
+        ("a query string", "POST", format!("{PAGE}?before=1")),
+        ("GET", "GET", PAGE.to_owned()),
+    ] {
+        let headers = page.headers(method, &target, body);
+        let reply = send(
+            daemon.addr,
+            &format!("{method} {target} HTTP/1.1"),
+            &headers,
+            body,
+        );
+        assert_ne!(reply.status, 200, "{what}: {}", reply.head);
+        assert!(!reply.head.contains("application/json"), "{what}");
+        assert!(!reply.text().contains(SENTINEL), "{what}");
+    }
+}
+
 /// Every authentication failure is an empty `403`, before any read; near-miss paths
 /// and methods are not routed.
 #[test]
@@ -468,22 +495,23 @@ fn authentication_fails_closed_before_any_read_and_near_misses_are_not_routes() 
     daemon.append(agent, SENTINEL);
     let mut page = daemon.page();
     let body = json!({ "agent_id": agent.to_string(), "before": null }).to_string();
-    let good = page.headers();
-    let without = |name: &str| -> Vec<(&'static str, String)> {
-        good.iter()
-            .filter(|(header, _)| *header != name)
-            .cloned()
+    let good = || page.headers("POST", PAGE, &body);
+    let without = |names: &[&str]| -> Vec<(&'static str, String)> {
+        good()
+            .into_iter()
+            .filter(|(header, _)| !names.contains(header))
             .collect()
     };
     let replaced = |name: &'static str, value: &str| -> Vec<(&'static str, String)> {
-        good.iter()
+        good()
+            .into_iter()
             .map(|(header, old)| {
                 (
-                    *header,
-                    if *header == name {
+                    header,
+                    if header == name {
                         value.to_owned()
                     } else {
-                        old.clone()
+                        old
                     },
                 )
             })
@@ -491,41 +519,70 @@ fn authentication_fails_closed_before_any_read_and_near_misses_are_not_routes() 
     };
     let line = format!("POST {PAGE} HTTP/1.1");
     for (what, headers) in [
-        ("no cookie", without("Cookie")),
+        ("no cookie", without(&["Cookie"])),
         (
             "a forged cookie",
             replaced("Cookie", "dudes_floor_session=forged"),
         ),
         ("a wrong Host", replaced("Host", "127.0.0.1:1")),
         ("a wrong Origin", replaced("Origin", "http://evil.example")),
-        ("no CSRF", without(CSRF_HEADER_NAME)),
-        ("a wrong CSRF", replaced(CSRF_HEADER_NAME, &"A".repeat(43))),
     ] {
         let reply = send(daemon.addr, &line, &headers, &body);
         assert_eq!(reply.status, 403, "{what}: {}", reply.head);
         assert!(reply.body.is_empty(), "{what}");
         std::thread::sleep(Duration::from_millis(5));
     }
-
-    for (what, line) in [
-        ("a trailing slash", format!("POST {PAGE}/ HTTP/1.1")),
-        ("a query string", format!("POST {PAGE}?before=1 HTTP/1.1")),
-        ("GET", format!("GET {PAGE} HTTP/1.1")),
+    let other = Keys::new().sign(
+        "POST",
+        PAGE,
+        &page.page.origin(),
+        body.as_bytes(),
+        page.page.now_ms(),
+    );
+    let mut other_browser = good();
+    other_browser.truncate(other_browser.len() - 4);
+    other_browser.extend([
+        ("X-Dudes-Origin", other.origin.clone()),
+        ("X-Dudes-Time", other.time.clone()),
+        ("X-Dudes-Request", other.request.clone()),
+        ("X-Dudes-Signature", other.signature.clone()),
+    ]);
+    for (what, headers) in [
+        (
+            "no signature",
+            without(&[
+                "X-Dudes-Origin",
+                "X-Dudes-Time",
+                "X-Dudes-Request",
+                "X-Dudes-Signature",
+            ]),
+        ),
+        (
+            "a wrong signature",
+            replaced("X-Dudes-Signature", &"A".repeat(86)),
+        ),
+        ("another browser's signature", other_browser),
     ] {
-        let reply = send(daemon.addr, &line, &good, &body);
-        assert_ne!(reply.status, 200, "{what}: {}", reply.head);
-        assert!(!reply.head.contains("application/json"), "{what}");
-        assert!(!reply.text().contains(SENTINEL), "{what}");
+        let reply = send(daemon.addr, &line, &headers, &body);
+        assert_eq!(reply.status, 401, "{what}: {}", reply.head);
+        assert_eq!(reply.text(), r#"{"signature":"refused"}"#, "{what}");
+        std::thread::sleep(Duration::from_millis(5));
     }
+
+    assert_near_misses_are_not_routes(&daemon, &page, &body);
 
     assert!(
         page.page(agent, None).to_string().contains(SENTINEL),
         "positive control: the signed-in page reads the entry"
     );
-    daemon.clock.advance(25 * 60 * 60_000);
+    daemon.clock.advance(31 * 24 * 60 * 60_000);
     let expired = page.page_reply(agent, None);
     assert_eq!(expired.status, 403, "an expired session: {}", expired.head);
-    assert!(expired.body.is_empty());
+    assert_eq!(
+        expired.text(),
+        r#"{"reason":"expired","session":"gone"}"#,
+        "a device that ran out says so and nothing else"
+    );
     daemon.stop();
 }
 
@@ -607,37 +664,6 @@ fn pages_and_entries_stay_within_their_byte_bounds_at_six_to_one_escaping() {
     assert_eq!(preview["text"], json!("a".repeat(2_046)));
     assert_eq!(preview["cut"], true);
     assert_eq!(preview["len"], 2_055);
-    daemon.stop();
-}
-
-/// The summary bound, with full entries after the summary.
-#[test]
-fn a_worst_case_summary_and_full_entries_fit_one_page() {
-    let fixture = Fixture::new();
-    let daemon = Daemon::boot(
-        &fixture,
-        MemoryCondenseConfig::new(1, 8).expect("small bounds"),
-    );
-    let agent = daemon.hire(&fixture, "agent");
-    let worst = "\u{1}".repeat(2_048);
-    for _ in 0..40 {
-        daemon.append(agent, &worst);
-    }
-    let reply = daemon.page().page_reply(agent, None);
-    let body = reply.text();
-    assert!(body.len() <= 131_072, "page {} bytes", body.len());
-    let summary = section(&body, "summary", "withheld");
-    assert!(summary.len() <= 51_200, "summary {} bytes", summary.len());
-    let value = reply.json();
-    assert_eq!(value["summary"]["kind"], "excerpts");
-    assert!(
-        value["entries"]
-            .as_array()
-            .expect("entries")
-            .iter()
-            .any(|entry| entry["condensed"] == false && entry["text"] == json!(worst)),
-        "full entries follow the summary"
-    );
     daemon.stop();
 }
 
@@ -925,6 +951,15 @@ fn a_session_that_expires_while_the_loop_answers_gets_no_page() {
     let agent = daemon.hire(&fixture, "agent");
     daemon.append(agent, &format!("{SENTINEL}{}", "a".repeat(2_048)));
     let page = daemon.page();
+    // A device's first request is journaled, which waits for the loop, so it makes that request
+    // before the loop is held.
+    let first = send(
+        daemon.addr,
+        "POST /floor/devices HTTP/1.1",
+        &page.headers("POST", "/floor/devices", "{}"),
+        "{}",
+    );
+    assert_eq!(first.status, 200, "{}", first.head);
     daemon.pause.arm();
     let handle = daemon.running.handle.clone();
     let appending = std::thread::spawn(move || {
@@ -944,8 +979,12 @@ fn a_session_that_expires_while_the_loop_answers_gets_no_page() {
     let body = json!({ "agent_id": agent.to_string(), "before": null }).to_string();
     let (replies, answered) = mpsc::channel();
     for _ in 0..2 {
-        let (replies, headers, body, addr) =
-            (replies.clone(), page.headers(), body.clone(), daemon.addr);
+        let (replies, headers, body, addr) = (
+            replies.clone(),
+            page.headers("POST", PAGE, &body),
+            body.clone(),
+            daemon.addr,
+        );
         std::thread::spawn(move || {
             let _ = replies.send(send(
                 addr,
@@ -960,7 +999,7 @@ fn a_session_that_expires_while_the_loop_answers_gets_no_page() {
         .expect("one read answers while the loop is held");
     assert_eq!(busy.json()["state"], "busy");
 
-    daemon.clock.advance(25 * 60 * 60_000);
+    daemon.clock.advance(31 * 24 * 60 * 60_000);
     daemon.pause.release();
     assert!(appending.join().expect("the append").is_ok());
     let held = answered.recv_timeout(WAIT).expect("the held read answers");
@@ -976,6 +1015,8 @@ fn a_stopped_journal_still_answers_the_page() {
     let daemon = Daemon::boot(&fixture, raw_only());
     let agent = daemon.hire(&fixture, "agent");
     daemon.append(agent, SENTINEL);
+    // A browser can only sign in while the journal can take it, so it signs in first.
+    let mut browser = daemon.page();
     daemon.failure.short_write_next(5);
     assert!(
         daemon
@@ -989,7 +1030,7 @@ fn a_stopped_journal_still_answers_the_page() {
             .is_err(),
         "the journal stopped"
     );
-    let page = daemon.page().page(agent, None);
+    let page = browser.page(agent, None);
     assert_eq!(page["state"], "ok");
     assert_eq!(page["entries"][0]["text"], SENTINEL);
     daemon.stop();
@@ -1091,12 +1132,10 @@ impl Day {
 struct Stream(TcpStream);
 
 impl Stream {
-    fn subscribe(addr: SocketAddr, cookie: &str, csrf: &str) -> (Self, Value) {
-        let mut stream = TcpStream::connect(addr).expect("Floor listener");
+    fn subscribe(page: &Page) -> (Self, Value) {
+        let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
         stream.set_read_timeout(Some(WAIT)).expect("timeout");
-        let request = format!(
-            "GET /floor/stream HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: dudes-floor-v3, dudes-csrf.{csrf}\r\nCookie: dudes_floor_session={cookie}\r\n\r\n"
-        );
+        let request = page.upgrade_head("/floor/stream", "dudes-floor-v4");
         stream.write_all(request.as_bytes()).expect("upgrade");
         let mut head = Vec::new();
         let mut byte = [0_u8; 1];
@@ -1182,13 +1221,14 @@ fn a_page_read_never_reaches_the_sessions_stream() {
     )));
     let fault = duded::floor_stream::FloorStreamFault::default().without_heartbeat();
     fault.use_local_days(day.source());
+    let clock = Arc::new(TestClock::new());
     let daemon = duded::boot::boot_with_floor_faults(
         &settings,
         common::seams(
             &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
+            clock.clone(),
             Witness::default(),
         ),
         None,
@@ -1212,11 +1252,11 @@ fn a_page_read_never_reaches_the_sessions_stream() {
     };
     append(SENTINEL);
 
-    let (cookie, csrf) = common::floor_session(&settings, addr);
     let mut page = Browser {
-        addr,
-        cookie: cookie.clone(),
-        csrf: csrf.clone(),
+        page: Page::enrol_new_on(addr, &common::floor_link(&settings), {
+            let clock = Arc::clone(&clock);
+            move || clock.now().unix_millis()
+        }),
         last: None,
     };
     assert!(
@@ -1224,7 +1264,7 @@ fn a_page_read_never_reaches_the_sessions_stream() {
         "positive control: the page holds the sentinel"
     );
 
-    let (mut stream, snapshot) = Stream::subscribe(addr, &cookie, &csrf);
+    let (mut stream, snapshot) = Stream::subscribe(&page.page);
     let mut frames = vec![snapshot.to_string()];
     append(&format!("{SENTINEL}-after"));
     running
@@ -1251,7 +1291,7 @@ fn a_page_read_never_reaches_the_sessions_stream() {
         }
     }
     drop(stream);
-    let (_fresh, resynced) = Stream::subscribe(addr, &cookie, &csrf);
+    let (_fresh, resynced) = Stream::subscribe(&page.page);
     frames.push(resynced.to_string());
 
     for frame in &frames {

@@ -8,7 +8,7 @@ import type { DiffTransport } from './diff.ts';
 
 export const browserDiffTransport: DiffTransport = {
   async request(request) {
-    const outcome = await postDiff(request, currentFloorSession()?.csrf ?? null, floorFetch);
+    const outcome = await postDiff(request, currentFloorSession() !== null, floorFetch);
     // An empty 403 may mean the session ended or that this page can no longer act with it;
     // a fresh subscription tells the two apart.
     if (outcome.kind === 'forbidden') refreshFloorSnapshot();

@@ -3,7 +3,7 @@
 // Adding a project from a folder path. The page asks the daemon to look at the folder, shows what
 // the daemon found, and adds exactly that on one click. The daemon decides what the folder is: the
 // page sends back the folder and check it was shown, and the daemon refuses with `changed` if
-// either has moved since.
+// either has moved since. Removing a project asks once on the page, then sends the project's id.
 
 import { currentFloorSession } from '../../session.ts';
 import { floorFetch } from '../../transport.ts';
@@ -11,7 +11,7 @@ import { refreshFloorSnapshot } from '../floor/stream.ts';
 import { editDraft, mintAttemptId } from '../onboarding/hire.ts';
 
 export const REFUSALS = ['not_found', 'not_a_folder', 'not_allowed', 'not_git', 'changed', 'busy', 'config_changed', 'full',
-  'action_off'] as const;
+  'unknown', 'working', 'open_tickets', 'action_off'] as const;
 export type Refusal = (typeof REFUSALS)[number];
 export type NotHireable = 'ceiling_required' | 'check_not_runnable';
 
@@ -36,6 +36,8 @@ export interface ProjectAdded {
 export type AddState =
   | { readonly kind: 'idle' }
   | { readonly kind: 'looking' }
+  | { readonly kind: 'choosing' }
+  | { readonly kind: 'not_chosen'; readonly why: 'busy' | 'unavailable' | 'failed' }
   | { readonly kind: 'preview'; readonly preview: ProjectPreview; readonly attempt: string }
   | { readonly kind: 'adding'; readonly preview: ProjectPreview; readonly attempt: string }
   | { readonly kind: 'added'; readonly added: ProjectAdded }
@@ -45,7 +47,7 @@ export type AddState =
 
 export interface AddDeps {
   fetch: typeof floorFetch;
-  csrf(): string | null;
+  signedIn(): boolean;
   random(bytes: Uint8Array<ArrayBuffer>): void;
   refresh(): void;
   wait(milliseconds: number): Promise<void>;
@@ -53,7 +55,7 @@ export interface AddDeps {
 
 export const browserAddDeps: AddDeps = {
   fetch: floorFetch,
-  csrf: () => currentFloorSession()?.csrf ?? null,
+  signedIn: () => currentFloorSession() !== null,
   random: (bytes) => { crypto.getRandomValues(bytes); },
   refresh: refreshFloorSnapshot,
   wait: (milliseconds) => new Promise((done) => { setTimeout(done, milliseconds); }),
@@ -148,22 +150,66 @@ export function decodeAdded(status: number, text: string): Decoded<ProjectAdded>
 
 const PREVIEW_PATH = '/floor/project/preview';
 const ADD_PATH = '/floor/project/add';
+const REMOVE_PATH = '/floor/project/remove';
+const CHOOSE_PATH = '/floor/project/choose';
 
-async function post(path: typeof PREVIEW_PATH | typeof ADD_PATH, body: unknown, deps: AddDeps): Promise<{ status: number; text: string } | null> {
-  const csrf = deps.csrf();
-  if (csrf === null) return null;
+async function post(path: typeof PREVIEW_PATH | typeof ADD_PATH | typeof REMOVE_PATH | typeof CHOOSE_PATH, body: unknown, deps: AddDeps): Promise<{ status: number; text: string } | null> {
+  if (!deps.signedIn()) return null;
   try {
     const response = await deps.fetch(path, {
       method: 'POST',
       credentials: 'same-origin',
       cache: 'no-store',
       referrerPolicy: 'no-referrer',
-      headers: { 'Content-Type': 'application/json', 'X-Dudes-CSRF': csrf },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     return { status: response.status, text: await response.text() };
   } catch {
     return null;
+  }
+}
+
+export type Chosen =
+  | { readonly kind: 'path'; readonly path: string }
+  | { readonly kind: 'cancelled' | 'busy' | 'unavailable' | 'failed' };
+
+/** What the daemon's folder dialog came to: exactly one of a path, cancelled, busy or unavailable. */
+export function decodeChosen(status: number, text: string): Chosen {
+  const fields = object(text);
+  const keys = fields === null ? [] : Object.keys(fields);
+  if (status !== 200 || fields === null || keys.length !== 1) return { kind: 'failed' };
+  const [key] = keys;
+  if (key === 'path' && typeof fields.path === 'string' && /^\//.test(fields.path) && fields.path.length <= 4096) {
+    return { kind: 'path', path: fields.path };
+  }
+  if ((key === 'cancelled' || key === 'busy' || key === 'unavailable') && fields[key] === true) return { kind: key };
+  return { kind: 'failed' };
+}
+
+/**
+ * Open the daemon's folder dialog and wait for the person's choice. Nothing is written: a chosen
+ * path only fills the folder box, and the daemon then looks at it as it looks at a typed one.
+ */
+export async function chooseFolder(deps: AddDeps = browserAddDeps): Promise<string | null> {
+  if (state.kind === 'looking' || state.kind === 'adding' || state.kind === 'choosing') return null;
+  commit({ kind: 'choosing' });
+  const answer = await post(CHOOSE_PATH, {}, deps);
+  const chosen = answer === null ? { kind: 'failed' as const } : decodeChosen(answer.status, answer.text);
+  if (chosen.kind === 'path') {
+    commit(IDLE);
+    return chosen.path;
+  }
+  commit(chosen.kind === 'cancelled' ? IDLE : { kind: 'not_chosen', why: chosen.kind });
+  return null;
+}
+
+/** The sentence for a dialog that gave no folder. */
+export function notChosenLine(why: 'busy' | 'unavailable' | 'failed'): string {
+  switch (why) {
+    case 'busy': return 'A folder window is already open. Choose a folder in it, or close it and try again.';
+    case 'unavailable': return 'Dudes cannot open a folder window here. Type the folder instead.';
+    case 'failed': return 'Dudes did not answer. Type the folder instead, or try again.';
   }
 }
 
@@ -214,9 +260,12 @@ export function refusalLine(reason: Refusal): string {
     case 'changed': return 'That folder changed since you looked at it. Look at it again.';
     case 'busy': return 'Dudes is busy applying another change. Try again in a moment.';
     case 'config_changed': return 'Other changes to the settings file are waiting to be loaded, so nothing was changed. '
-      + 'Restart Dudes to load them, then add the project again.';
+      + 'Restart Dudes to load them, then try again.';
     case 'full': return 'Dudes already runs 32 projects, the most it can. Remove one first.';
-    case 'action_off': return 'Adding projects from this page is turned off. Turn on Add projects in Settings.';
+    case 'unknown': return 'That project is no longer in the list.';
+    case 'open_tickets': return 'The project still has open tickets. Finish or remove them first, then remove the project.';
+    case 'working': return 'An agent still works in this project. Retire it first, then remove the project.';
+    case 'action_off': return 'Adding and removing projects from this page is turned off. Turn on Add and remove projects in Settings.';
   }
 }
 
@@ -247,4 +296,76 @@ export function addedLine(added: ProjectAdded): string {
   }
   if (added.reason === 'check_not_runnable') return `${added.label} is added, but its check cannot run on this computer yet.`;
   return `${added.label} is added. You can hire an agent in it now.`;
+}
+
+export interface ProjectRemoved {
+  readonly projectId: string;
+  readonly label: string;
+}
+
+export type RemoveState =
+  | { readonly kind: 'idle' }
+  | { readonly kind: 'asking'; readonly projectId: string; readonly label: string; readonly attempt: string }
+  | { readonly kind: 'removing'; readonly projectId: string; readonly label: string; readonly attempt: string }
+  | { readonly kind: 'removed'; readonly label: string }
+  | { readonly kind: 'refused'; readonly projectId: string; readonly label: string; readonly reason: Refusal }
+  | { readonly kind: 'unsure'; readonly projectId: string; readonly label: string; readonly attempt: string };
+
+let removal: RemoveState = Object.freeze({ kind: 'idle' });
+const removeListeners = new Set<() => void>();
+
+export function getRemoveState(): RemoveState { return removal; }
+
+export function subscribeToRemove(listener: () => void): () => void {
+  removeListeners.add(listener);
+  return () => { removeListeners.delete(listener); };
+}
+
+function commitRemove(next: RemoveState): void {
+  removal = Object.freeze(next);
+  for (const listener of [...removeListeners]) listener();
+}
+
+export function resetRemove(): void { commitRemove({ kind: 'idle' }); }
+
+export function decodeRemoved(status: number, text: string): Decoded<ProjectRemoved> {
+  const fields = object(text);
+  if (fields === null) return { kind: 'failed' };
+  if (status === 202 && fields.state === 'pending') return { kind: 'pending' };
+  const refused = refusal(status, fields);
+  if (refused !== null) return refused;
+  if (status !== 200 || typeof fields.project_id !== 'string' || typeof fields.label !== 'string') return { kind: 'failed' };
+  return { kind: 'ok', value: Object.freeze({ projectId: fields.project_id, label: fields.label }) };
+}
+
+/** Ask once: nothing is sent until the person confirms with {@link removeAsked}. */
+export function askToRemove(projectId: string, label: string, deps: AddDeps = browserAddDeps): void {
+  if (removal.kind === 'removing') return;
+  commitRemove({ kind: 'asking', projectId, label, attempt: mintAttemptId(deps.random) });
+}
+
+/** Remove the project the person confirmed. */
+export async function removeAsked(deps: AddDeps = browserAddDeps): Promise<void> {
+  const current = removal;
+  if (current.kind !== 'asking' && current.kind !== 'unsure') return;
+  const { projectId, label, attempt } = current;
+  commitRemove({ kind: 'removing', projectId, label, attempt });
+  const body = { project_id: projectId, attempt_id: attempt };
+  for (let tries = 0; tries <= MOST_PENDING_RETRIES; tries += 1) {
+    const answer = await post(REMOVE_PATH, body, deps);
+    const decoded = answer === null ? null : decodeRemoved(answer.status, answer.text);
+    if (decoded === null || decoded.kind === 'failed') return commitRemove({ kind: 'unsure', projectId, label, attempt });
+    if (decoded.kind === 'refused') {
+      commitRemove({ kind: 'refused', projectId, label, reason: decoded.reason });
+      if (decoded.reason === 'unknown') deps.refresh();
+      return;
+    }
+    if (decoded.kind === 'ok') {
+      commitRemove({ kind: 'removed', label: decoded.value.label });
+      deps.refresh();
+      return;
+    }
+    await deps.wait(500);
+  }
+  commitRemove({ kind: 'unsure', projectId, label, attempt });
 }

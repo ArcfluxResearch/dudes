@@ -4,7 +4,7 @@ import type { FloorState } from '../floor/store.ts';
 import { isHireEngine } from '../onboarding/catalog.ts';
 
 export type GuideStep = 'welcome' | 'engines' | 'workspaces' | 'actions' | 'hire';
-export type GuideStatus = 'Done' | 'Not done' | 'Optional';
+export type GuideStatus = 'Complete' | 'Not done' | 'Optional';
 const STEPS: readonly { readonly key: GuideStep; readonly label: string; readonly optional?: true;
   readonly ready: (floor: FloorState, actionsSeen: boolean) => boolean }[] = [
   { key: 'welcome', label: 'Welcome', ready: () => true },
@@ -23,5 +23,5 @@ export function guideSteps(floor: FloorState, actionsSeen: boolean):
   readonly { key: GuideStep; label: string; status: GuideStatus }[] {
   const confirmed = guideSnapshotConfirmed(floor);
   return STEPS.map(({ key, label, optional, ready }) => ({ key, label,
-    status: confirmed && ready(floor, actionsSeen) ? 'Done' : optional ? 'Optional' : 'Not done' }));
+    status: confirmed && ready(floor, actionsSeen) ? 'Complete' : optional ? 'Optional' : 'Not done' }));
 }

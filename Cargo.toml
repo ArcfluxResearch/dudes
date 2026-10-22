@@ -13,7 +13,7 @@ exclude = ["fuzz", "vendor/libproc"]
 # directory must be in the naming gate's `ROOTS`, or the gate never walks it and passes silently.
 
 [workspace.package]
-version = "0.91.0"
+version = "0.93.0"
 edition = "2024"
 # MSRV policy: two stable releases behind the pinned toolchain at the time of a release; a bump is a
 # minor change (see CONTRIBUTING.md). Tested by the `msrv` CI job.
@@ -68,6 +68,10 @@ subtle = { version = "2.6.1", default-features = false }
 # 2026-09-16 — MIT OR Apache-2.0, both on `deny.toml`'s allow list; `rust-version` 1.71.0, under
 # this workspace's 1.96 MSRV.
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
+# The Floor daemon verifies each request's ECDSA P-256 signature with the browser's public key. The
+# `ecdsa` feature is the verifier; the signer comes with it and the tests use it to play a browser.
+# Pure Rust, Apache-2.0 OR MIT.
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
 # Journal: CRC-32/ISCSI (crc32c) frames and the redb projection store. Verified on crates.io 2026-08-23.
 crc = "3.4.0"
 redb = "4.2.0"
@@ -120,7 +124,7 @@ windows-spawn = "=0.1.0"
 windows-sys = "0.61.2"
 # Synchronous byte-mode Windows named pipes for the local control transport. Kept Windows-only by
 # `dudes-rpc`; no runtime or network transport enters the control-plane crate.
-interprocess = { version = "=2.4.4", default-features = false }
+interprocess = { version = "=2.4.6", default-features = false }
 # `SecurityDescriptor::deserialize` consumes a wide SDDL string at bind time. This exact major is
 # shared with interprocess 2.4.3, so the descriptor never crosses two incompatible wide-string
 # types.
@@ -143,19 +147,19 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.10", default-features = false }
 
 # Workspace crates, so members name each other by `workspace = true`.
-dudes-types = { path = "crates/dudes-types", version = "0.91.0", default-features = false }
-dudes-proto = { path = "crates/dudes-proto", version = "0.91.0" }
-dudes-journal = { path = "crates/dudes-journal", version = "0.91.0" }
-dudes-policy = { path = "crates/dudes-policy", version = "0.91.0" }
-dudes-providers = { path = "crates/dudes-providers", version = "0.91.0" }
-dudes-config = { path = "crates/dudes-config", version = "0.91.0" }
-dudes-rpc = { path = "crates/dudes-rpc", version = "0.91.0" }
-dudes-supervisor = { path = "crates/dudes-supervisor", version = "0.91.0" }
-dudes-host = { path = "crates/dudes-host", version = "0.91.0" }
-dudes-pty = { path = "crates/dudes-pty", version = "0.91.0" }
+dudes-types = { path = "crates/dudes-types", version = "0.93.0", default-features = false }
+dudes-proto = { path = "crates/dudes-proto", version = "0.93.0" }
+dudes-journal = { path = "crates/dudes-journal", version = "0.93.0" }
+dudes-policy = { path = "crates/dudes-policy", version = "0.93.0" }
+dudes-providers = { path = "crates/dudes-providers", version = "0.93.0" }
+dudes-config = { path = "crates/dudes-config", version = "0.93.0" }
+dudes-rpc = { path = "crates/dudes-rpc", version = "0.93.0" }
+dudes-supervisor = { path = "crates/dudes-supervisor", version = "0.93.0" }
+dudes-host = { path = "crates/dudes-host", version = "0.93.0" }
+dudes-pty = { path = "crates/dudes-pty", version = "0.93.0" }
 # Windows DACL and filesystem operations. Its source guard checks that the three process/job spellings
 # stay in `dudes-host`; the layering table covers crate dependencies.
-dudes-win = { path = "crates/dudes-win", version = "0.91.0" }
+dudes-win = { path = "crates/dudes-win", version = "0.93.0" }
 # The daemon, named here so `bins/dudes` can reach `boot` from its `[dev-dependencies]`. It goes
 # through the shared table rather than a bare `path` for the reason `crates/dudes-rpc`'s own
 # self-reference records: `cargo deny`'s `[bans.workspace-dependencies]` has

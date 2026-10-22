@@ -19,5 +19,8 @@ thiserror = { workspace = true, features = ["std"] }
 # Codex takes each declared MCP server as one `-c` TOML value, written by the serializer.
 toml = { workspace = true, features = ["display"] }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

@@ -7,7 +7,7 @@
 //! request continues that list. A **content** request returns up to eight complete files from it.
 //! The browser never supplies a path, a revision or a pattern.
 //!
-//! Three limits are per session and survive CSRF rotation, reloads and reconnects, because the key
+//! Three limits are per session and survive reloads and reconnects, because the key
 //! is the session cookie's digest. A session may start a read once per interval. It may receive
 //! [`SESSION_ALLOWANCE`] bytes of successful replies in all, charged before the reply is sent and
 //! never refunded. A reply that does not fit ends the allowance, so a smaller one cannot follow. It may hold one manifest, and the daemon holds at most [`MAX_MANIFESTS`].

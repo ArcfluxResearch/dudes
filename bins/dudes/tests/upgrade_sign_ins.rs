@@ -1,5 +1,5 @@
 //! The restart half of `dudes upgrade` against a real `duded`: the sign-ins a Floor tab holds
-//! survive an upgrade and do not survive a plain stop and start.
+//! survive an upgrade because the daemon keeps them as devices in its journal.
 //!
 //! The installer step is replaced by writing a second Floor bundle beside the daemon, which is all
 //! the installer changes that the Floor can see. Everything from the export to the import is the
@@ -12,8 +12,12 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use duded::floor_browser::Browser;
 use dudes::Environment;
 use sha2::{Digest as _, Sha256};
+
+mod common;
+use common::Lifeline;
 
 fn built_daemon() -> PathBuf {
     let mut daemon = PathBuf::from(env!("CARGO_BIN_EXE_dudes"));
@@ -67,7 +71,7 @@ fn write_bundle(dir: &Path, tag: &str) {
         "schema_version": 1,
         "base_path": "/floor/",
         "daemon_version": env!("CARGO_PKG_VERSION"),
-        "browser_wire_version": 3,
+        "browser_wire_version": 5,
         "asset_tree_sha256": hex(&tree.finalize()),
         "files": files,
     });
@@ -95,12 +99,13 @@ fn http(origin: &str, request_line: &str, extra: &str, body: &str) -> (String, S
 }
 
 struct Installed {
-    _root: tempfile::TempDir,
+    _lifeline: Lifeline,
+    root: tempfile::TempDir,
     env: Environment,
     floor: PathBuf,
     origin: String,
     cookie: String,
-    secret: String,
+    browser: Browser,
 }
 
 impl Installed {
@@ -109,7 +114,10 @@ impl Installed {
         let bin = root.path().join("bin");
         std::fs::create_dir_all(&bin).expect("the install directory");
         let daemon = bin.join("duded");
-        std::fs::copy(built_daemon(), &daemon).expect("copy duded");
+        let built = built_daemon();
+        std::fs::hard_link(&built, &daemon)
+            .or_else(|_| std::fs::copy(&built, &daemon).map(|_| ()))
+            .expect("install duded");
         let floor = bin.join("floor");
         write_bundle(&floor, "aaaaaaaa");
         let home = root.path().join("home");
@@ -125,10 +133,7 @@ impl Installed {
                 root.path().join("state").into_os_string(),
             ),
             ("DUDES_DAEMON", daemon.into_os_string()),
-            (
-                "PATH",
-                std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
-            ),
+            ("PATH", OsString::from("/usr/bin:/bin")),
         ];
         let env = Environment::resolve(move |name| {
             variables
@@ -136,16 +141,23 @@ impl Installed {
                 .find(|(candidate, _)| *candidate == name)
                 .map(|(_, value)| value.clone())
         });
+        let lifeline = Lifeline::start(root.path());
         let mut installed = Self {
-            _root: root,
+            _lifeline: lifeline,
+            root,
             env,
             floor,
             origin: String::new(),
             cookie: String::new(),
-            secret: String::new(),
+            browser: Browser::new(),
         };
         let (code, out, err) = installed.cli(&["start"]);
         assert_eq!(code, 0, "{out}{err}");
+        assert!(
+            std::fs::read_to_string(installed.root.path().join("run/duded.log"))
+                .is_ok_and(|note| note.contains("quickstart started duded pid ")),
+            "the lifeline knows the daemon"
+        );
         installed.sign_in();
         installed
     }
@@ -173,17 +185,24 @@ impl Installed {
             .strip_prefix("http://")
             .expect("loopback")
             .clone_into(&mut self.origin);
+        let enrolment = self.browser.enrolment(bearer, "Chrome on macOS");
+        let signature = self.browser.enrolment_lines(
+            &enrolment,
+            &format!("http://{}", self.origin),
+            Browser::now_ms(),
+        );
         let (head, body) = http(
             &self.origin,
             "POST /floor/session",
-            "Content-Type: text/plain;charset=UTF-8\r\n",
-            bearer,
+            &format!("{signature}Content-Type: application/json\r\n"),
+            &enrolment,
         );
         let signed_in: serde_json::Value = serde_json::from_str(&body).expect("a JSON body");
-        signed_in["csrf"]
-            .as_str()
-            .expect("the session secret")
-            .clone_into(&mut self.secret);
+        assert_eq!(
+            signed_in["device"],
+            self.browser.device().to_string(),
+            "the answer names the device the browser's key makes"
+        );
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
         head.lines()
             .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
@@ -201,26 +220,27 @@ impl Installed {
             .to_owned()
     }
 
-    /// Whether the cookie and the secret the page holds still name a session. An empty JSON body is
+    /// Whether the cookie and the key the page holds still name a session. An empty JSON body is
     /// a bad request for any route that got past authentication, and a refusal for one that did not.
     fn acts(&self) -> bool {
+        let signed = self.browser.sign(
+            "POST",
+            "/floor/memory/page",
+            &format!("http://{}", self.origin),
+            b"{}",
+            Browser::now_ms(),
+        );
         let (head, _) = http(
             &self.origin,
             "POST /floor/memory/page",
             &format!(
-                "Content-Type: application/json\r\nCookie: dudes_floor_session={}\r\nX-Dudes-CSRF: {}\r\n",
-                self.cookie, self.secret
+                "Content-Type: application/json\r\nCookie: dudes_floor_session={}\r\n{}",
+                self.cookie,
+                signed.header_lines()
             ),
             "{}",
         );
-        !head.starts_with("HTTP/1.1 403")
-    }
-
-    fn plain_restart(&self) {
-        let (code, out, err) = self.cli(&["stop"]);
-        assert_eq!(code, 0, "{out}{err}");
-        let (code, out, err) = self.cli(&["start"]);
-        assert_eq!(code, 0, "{out}{err}");
+        !head.starts_with("HTTP/1.1 403") && !head.starts_with("HTTP/1.1 401")
     }
 }
 
@@ -231,7 +251,7 @@ impl Drop for Installed {
 }
 
 #[test]
-fn an_upgrade_keeps_the_open_sign_in_and_a_plain_restart_does_not() {
+fn an_upgrade_keeps_the_open_sign_in() {
     let installed = Installed::start();
     let before = installed.build();
     assert!(
@@ -261,51 +281,5 @@ fn an_upgrade_keeps_the_open_sign_in_and_a_plain_restart_does_not() {
     assert!(
         installed.acts(),
         "the sign-in from before the upgrade reaches the new run"
-    );
-
-    installed.plain_restart();
-    assert!(
-        !installed.acts(),
-        "a plain stop and start signs the browser out"
-    );
-}
-
-#[test]
-fn a_restart_with_no_open_sign_in_says_nothing_about_sign_ins() {
-    let mut installed = Installed::start();
-    installed.plain_restart();
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    let code = dudes::run::upgrade_restart_for_test(
-        &installed.env,
-        env!("CARGO_PKG_VERSION"),
-        &mut out,
-        &mut err,
-    );
-    let out = String::from_utf8(out).expect("text");
-    assert_eq!(code, Ok(0), "{out}");
-    assert!(!out.contains("sign-in"), "{out}");
-    installed.sign_in();
-    assert!(installed.acts());
-}
-
-#[test]
-fn an_upgrade_that_dies_after_the_export_and_before_the_import_restores_nothing() {
-    use dudes_proto::rpc::CurrentMethod;
-
-    let installed = Installed::start();
-    let credential = dudes::read_operator_credential(installed.env.runtime_dir().expect("runtime"))
-        .expect("the credential reads");
-    let mut client = dudes_rpc::LocalClient::connect(installed.env.socket().expect("socket"))
-        .expect("connect to the daemon");
-    let exported = client
-        .call_current_presenting(CurrentMethod::FloorSessionExport, None, credential)
-        .expect("export is answered")
-        .result
-        .expect("the operator exports");
-    assert_eq!(exported["sessions"].as_array().map(Vec::len), Some(1));
-    installed.plain_restart();
-    assert!(
-        !installed.acts(),
-        "an export that never reached an import signs nobody back in"
     );
 }

@@ -120,7 +120,7 @@ test('the projection publishes one new envelope cut even when legacy Numbers are
   const socket = { addEventListener: (type, run) => listeners.set(type, run), send() {}, close() {} };
   const events = [];
   const stop = subscribeToProjection(event => events.push(event));
-  const close = openFloorStream({ csrf: 'fixture' }, { protocol: 'http:', host: '127.0.0.1:7717' }, () => socket,
+  const close = openFloorStream({ device: 'fixture' }, { protocol: 'http:', host: '127.0.0.1:7717' }, () => socket,
     { now: () => 0, repeat: () => () => {}, after: () => () => {} });
   try {
     listeners.get('open')();

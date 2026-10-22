@@ -24,13 +24,17 @@ import { resetPastedLink, takePastedLink } from '../src/connect.ts';
 import { getFloorState, resetFloorStore } from '../src/renderer/floor/store.ts';
 import { streamProtocols } from '../src/renderer/floor/stream.ts';
 import { currentFloorSession, reauthenticateFloorSessionWith, resetFloorSession } from '../src/session.ts';
+import { fakeDaemon } from './helpers/fake-daemon.mjs';
+import { testSigner } from './helpers/signer.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const BOOTSTRAP = `A${'b'.repeat(41)}E`;
-const CSRF_A = `C${'d'.repeat(41)}I`;
-const CSRF_B = `F${'g'.repeat(41)}M`;
 const HERE = { protocol: 'http:', host: '127.0.0.1:7717' };
 const SNAPSHOT = JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 3, agents: [] } });
+
+const SIGNED = ['dudes-sig.s', 'dudes-time.1', 'dudes-id.i'];
+/** The stream opens its socket once the handshake is signed, which is a few microtasks away. */
+const tick = () => new Promise((done) => setImmediate(done));
 
 function reply(status, payload = {}) {
   return { ok: status >= 200 && status < 300, status, async json() { return payload; } };
@@ -48,6 +52,12 @@ function servingBuild(fetch, refs = OWN) {
   };
 }
 
+/** A browser key that signs every handshake the same way: these tests are about which session the stream follows. */
+const STUB_SIGNER = { socketEntries: async () => SIGNED };
+
+/** The daemon taking any link: it enrols the key it is sent. */
+const accept = async (url, init) => fakeDaemon({ links: [BOOTSTRAP] }).plain(url, init);
+
 /** A pasted link's location, and a history that scrubs it. */
 function pasted() {
   const location = { hash: `#bootstrap=${BOOTSTRAP}`, pathname: '/floor/', search: '' };
@@ -55,9 +65,11 @@ function pasted() {
 }
 
 /** The exchange a pasted link runs, through `module`'s session code, answered by `fetch`. */
-function exchange(fetch, module = { reauthenticateFloorSessionWith }, served = OWN) {
+function exchange(plain, module = { reauthenticateFloorSessionWith }, served = OWN) {
   const { location, history } = pasted();
-  return () => module.reauthenticateFloorSessionWith(location, history, servingBuild(fetch, served), OWN);
+  const signed = async () => { throw new Error('a fresh browser has no key to sign a check with'); };
+  return () => module.reauthenticateFloorSessionWith(location, history, OWN,
+    { signer: testSigner().signer, plain: servingBuild(plain, served), signed });
 }
 
 /** A socket as the browser gives one: it remembers what it was opened with, and fires close when closed. */
@@ -108,19 +120,21 @@ test('two pasted links race: the stale one neither re-keys nor closes the stream
   resetPastedLink();
   const { sockets, connect } = socketFactory();
   const timers = manualTimers();
-  const ports = { location: HERE, socket: connect, timers };
+  const ports = { location: HERE, socket: connect, timers, signer: STUB_SIGNER };
 
   // Link A is pasted, and its exchange is held in flight.
   let release;
   const held = new Promise((done) => { release = done; });
-  const first = takePastedLink(exchange(async () => {
+  const first = takePastedLink(exchange(async (url, init) => {
     await held;
-    return reply(200, { csrf: CSRF_A });
+    return accept(url, init);
   }), ports);
   // Link B is pasted after it, settles first, and connects.
-  await takePastedLink(exchange(async () => reply(200, { csrf: CSRF_B })), ports);
+  await takePastedLink(exchange(accept), ports);
+  await tick();
+  const fresh = currentFloorSession();
   assert.equal(sockets.length, 1);
-  assert.deepEqual(sockets[0].protocols, streamProtocols(CSRF_B));
+  assert.deepEqual(sockets[0].protocols, streamProtocols(SIGNED));
   sockets[0].emit('open');
   sockets[0].emit('message', { data: SNAPSHOT });
   assert.equal(getFloorState().phase, 'live', 'the control: the fresh link’s stream went live');
@@ -128,11 +142,12 @@ test('two pasted links race: the stale one neither re-keys nor closes the stream
   // A settles now. Its result is stale: B was pasted after it and already holds the page.
   release();
   await first;
+  await tick();
   timers.runPending(); // any reconnect a re-key would have scheduled
-  assert.equal(currentFloorSession()?.csrf, CSRF_B, 'the stale result became the page’s session');
+  assert.equal(currentFloorSession(), fresh, 'the stale result became the page’s session');
   assert.equal(sockets[0].closed, 0, 'the stale link closed the live socket');
   assert.equal(sockets.length, 1, 'the stale link opened a socket of its own');
-  assert.deepEqual(sockets[0].protocols, streamProtocols(CSRF_B));
+  assert.deepEqual(sockets[0].protocols, streamProtocols(SIGNED));
   assert.equal(getFloorState().phase, 'live');
 });
 
@@ -162,16 +177,18 @@ test('a taken link whose stream throws as it opens still settles, and leaves no 
     const entry = await runnerWithNoOpenStream.import('/src/connect.ts');
     let throws = 0;
     const broken = { ...manualTimers(), now() { throws += 1; throw new Error('the stream clock is gone'); } };
-    const ports = { location: HERE, socket: socketFactory().connect, timers: broken };
+    const ports = { location: HERE, socket: socketFactory().connect, timers: broken, signer: STUB_SIGNER };
 
-    void entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_A }), session), ports);
-    await new Promise((done) => setImmediate(done));
-    assert.equal(session.currentFloorSession()?.csrf, CSRF_A, 'the control: the exchange took the link');
+    void entry.takePastedLink(exchange(accept, session), ports);
+    for (let turn = 0; turn < 500 && session.currentFloorSession() === null; turn += 1) await new Promise((done) => setTimeout(done, 1));
+    await tick();
+    const taken = session.currentFloorSession();
+    assert.notEqual(taken, null, 'the control: the exchange took the link');
     assert.equal(throws, 1, 'the control: connect() never reached the stream, so nothing threw');
     assert.deepEqual(unhandled.map(String), [], 'a throw after the exchange became an unhandled rejection');
 
-    await entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_B }), session), ports);
-    assert.equal(session.currentFloorSession()?.csrf, CSRF_B);
+    await entry.takePastedLink(exchange(accept, session), ports);
+    assert.notEqual(session.currentFloorSession(), taken);
     assert.equal(throws, 2);
     assert.equal(entry.pastedLinkRefused(), false, 'a link the daemon took was said to be refused');
   } finally {
@@ -193,25 +210,25 @@ test('a refused pasted link is said, names no secret, and keeps what the page ho
   const control = await server.ssrLoadModule('/src/renderer/control/control.ts');
   const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
   const page = () => renderToStaticMarkup(createElement(WebFloorShell));
-  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers() };
+  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers(), signer: STUB_SIGNER };
 
   // The page holds a session, a live floor with one Waiting agent, and one of each attempt.
-  await entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_A }), session), ports);
+  await entry.takePastedLink(exchange(accept, session), ports);
   const held = session.currentFloorSession();
-  assert.equal(held?.csrf, CSRF_A);
+  assert.notEqual(held, null);
   const epoch = store.beginFloorEpoch();
   store.noteTransport('open');
   const ada = { id: '01JBQ8XK2M3N4P5Q6R7S8T9VWX', name: 'Ada', status: 'waiting', mode: 'managed', turns: 1,
     question: 'Which tag?', question_lsn: '1099511628288', paused: false, halted: false };
   store.applyServerFrame(JSON.stringify({ type: 'floor.snapshot', projection: { lsn: 9, agents: [ada] },
     answer: { max_text_bytes: 4096 }, control: {} }), epoch);
-  const deps = { fetch: never, csrf: () => CSRF_A, random: (bytes) => bytes.fill(7), refresh() {},
+  const deps = { fetch: never, signedIn: () => true, random: (bytes) => bytes.fill(7), refresh() {},
     epoch: () => store.getFloorState().epoch, session: () => session.floorSessionGeneration() };
-  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', goalText: 'ship' });
+  hire.editDraft({ name: 'Kim', role: 'reviewer', workspaceId: 'repo_1', taskText: 'ship' });
   void hire.submitHire({ onboarding: { floorUsdPerDayMicros: '1', workspaces: [{ workspaceId: 'repo_1', label: 'Repo',
     engines: ['claude'], goalUsdMicros: '1', agentUsdPerDayMicros: '1', agentTokensPerDay: null, goalTokens: null,
-    hopCap: 1 }] }, checks: { workspaces: [{ workspaceId: 'repo_1', checks: [{ id: 'default', label: 'tests',
-    revision: 'a'.repeat(64), mayAlreadyPass: false }] }] } }, deps);
+    hopCap: 1, trusted: false }] }, checks: { workspaces: [{ workspaceId: 'repo_1', checks: [{ id: 'default',
+    label: 'tests', revision: 'a'.repeat(64), mayAlreadyPass: false }] }] }, agents: [], ticket: true }, deps);
   const gate = answer.answerGate(store.getFloorState(), store.getFloorState().agents[0]);
   answer.editAnswerDraft(gate.agent, gate.questionLsn, 'use main');
   void answer.submitAnswer(gate, deps);
@@ -226,13 +243,13 @@ test('a refused pasted link is said, names no secret, and keeps what the page ho
   assert.match(html,
     /<p class="link-refused" role="alert">The Floor link pasted into this tab was refused, or the daemon could not be reached to take it\. This page is as it was and keeps what it holds\./);
   assert.equal(html.includes(BOOTSTRAP), false, 'the refusal line carries the bootstrap');
-  assert.equal(html.includes(CSRF_A), false, 'the page carries the session’s nonce');
+  assert.equal(html.includes(held.device), false, 'the page carries the browser’s device id');
   assert.equal(session.currentFloorSession(), held, 'a refused link replaced the session');
   assert.deepEqual([hire.getHireState().attempt, answer.getAnswerState().attempt, control.getControlState().attempt],
     attempts, 'a refused link let go of an attempt the page held');
 
   // A link that works takes the line down: the page is signed in again.
-  await entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_B }), session), ports);
+  await entry.takePastedLink(exchange(accept, session), ports);
   assert.doesNotMatch(page(), /class="link-refused"/, 'a working link left the refusal on screen');
 
   // A refusal that settles after a newer link has signed the page in is stale, and says nothing.
@@ -242,7 +259,7 @@ test('a refused pasted link is said, names no secret, and keeps what the page ho
     await slow;
     return reply(403);
   }, session), ports);
-  await entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_A }), session), ports);
+  await entry.takePastedLink(exchange(accept, session), ports);
   release();
   await stale;
   assert.equal(entry.pastedLinkRefused(), false, 'a stale refusal was said over a page a newer link signed in');
@@ -253,14 +270,14 @@ test('a link refused for a different build says so, keeps the page, and a matchi
   const entry = await server.ssrLoadModule('/src/connect.ts');
   const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
   const page = () => renderToStaticMarkup(createElement(WebFloorShell));
-  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers() };
+  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers(), signer: STUB_SIGNER };
   session.resetFloorSession();
   entry.resetPastedLink();
-  await entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_A }), session), ports);
+  await entry.takePastedLink(exchange(accept, session), ports);
   const held = session.currentFloorSession();
 
   const posted = [];
-  const spend = async (url) => { posted.push(url); return reply(200, { csrf: CSRF_B }); };
+  const spend = async (url, init) => { posted.push(url); return accept(url, init); };
   await entry.takePastedLink(exchange(spend, session, ['/floor/assets/index-cccc3333.js']), ports);
   const html = page();
   assert.match(html, /<p class="link-refused" role="alert">The daemon now serves a different Floor build from this page, so the link pasted into this tab was not used\./);
@@ -274,10 +291,11 @@ test('a link refused for a different build says so, keeps the page, and a matchi
   assert.equal(entry.pastedLinkBuildMismatch(), false);
 });
 
-const USED = 'This sign-in link did not work\. A link works once, for 60 seconds\. Open Dudes for a new one\.';
-const NO_LINK = 'The sign-in link in the address of this page is not a Dudes sign-in link\. Open Dudes to sign in\.';
-const EXPIRED = 'You are signed out of this Floor\. That happens after a day without use, after 30 days, when you sign out, or when Dudes restarts and cannot keep sign-ins\. '
-  + 'Open Dudes to sign in again\.';
+const OPEN = '<span class="open-command"><code>dudes open</code><button type="button" class="open-command-copy">Copy</button></span>';
+const USED = `This sign-in link did not work\\. A link works once, for 60 seconds\\. To get a new one, run ${OPEN} in a terminal\\.`;
+const NO_LINK = `The sign-in link in the address of this page is not a Dudes sign-in link\\. To sign in, run ${OPEN} in a terminal\\.`;
+const NO_KEY = `This browser no longer has its sign-in key\\. To sign in again, run ${OPEN} in a terminal\\.`;
+const UNSUPPORTED = 'This browser cannot keep a sign-in key, so it was not signed in\\. Some private windows block the storage it needs\\. Try a normal window\\.';
 
 test('a refused first link leads with the used-or-expired line, names no secret, and a session taken since clears it', async () => {
   const session = await server.ssrLoadModule('/src/session.ts');
@@ -285,14 +303,15 @@ test('a refused first link leads with the used-or-expired line, names no secret,
   const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
   const page = () => renderToStaticMarkup(createElement(WebFloorShell));
-  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers() };
+  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers(), signer: STUB_SIGNER };
   session.resetFloorSession();
   entry.resetPastedLink();
   store.resetFloorStore();
 
   const outcome = (fetch) => {
     const { location, history } = pasted();
-    return session.exchangeBootstrap(location, history, fetch).then(() => null, (error) => error);
+    const ports = { signer: testSigner().signer, plain: fetch, signed: async () => reply(401) };
+    return session.exchangeBootstrap(location, history, ports).then(() => null, (error) => error);
   };
   assert.ok(await outcome(async () => reply(403)) instanceof session.LinkRefused, 'a refused exchange is a refusal');
   assert.equal(await outcome(async () => { throw new TypeError('Failed to fetch'); }) instanceof session.LinkRefused,
@@ -312,7 +331,7 @@ test('a refused first link leads with the used-or-expired line, names no secret,
   assert.doesNotMatch(html, /stream-notice/, 'the stream notice sits beside the refusal');
   assert.equal(html.includes(BOOTSTRAP), false, 'the refusal line carries the bootstrap');
 
-  await entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_A }), session), ports);
+  await entry.takePastedLink(exchange(accept, session), ports);
   assert.doesNotMatch(page(), /did not work/, 'a link that signed the page in left the refusal up');
   assert.match(page(), /id="crew-list"/, 'a signed-in page lost its crew list');
 });
@@ -322,13 +341,13 @@ test('a good pasted link tells the signed-out page its first-link problem is gon
   const entry = await server.ssrLoadModule('/src/connect.ts');
   session.resetFloorSession();
   entry.resetPastedLink();
-  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers() };
+  const ports = { location: HERE, socket: socketFactory().connect, timers: manualTimers(), signer: STUB_SIGNER };
   let told = 0;
   entry.subscribeToPastedLink(() => { told += 1; });
   entry.noteFirstLinkRefused();
   assert.equal(told, 1);
   assert.equal(entry.firstLinkProblem(), 'refused');
-  await entry.takePastedLink(exchange(async () => reply(200, { csrf: CSRF_A }), session), ports);
+  await entry.takePastedLink(exchange(accept, session), ports);
   assert.equal(told, 2, 'a link that signed the page in did not tell the page');
   assert.equal(entry.firstLinkProblem(), null);
   session.resetFloorSession();
@@ -352,7 +371,7 @@ test('a page whose address holds no usable link says so instead of Disconnected'
   assert.doesNotMatch(html, /Disconnected/);
 });
 
-test('a page that holds no secret says the sign-in expired instead of Disconnected', async () => {
+test('a page that no longer has its key says so instead of Disconnected', async () => {
   const entry = await server.ssrLoadModule('/src/connect.ts');
   const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
   const session = await server.ssrLoadModule('/src/session.ts');
@@ -362,18 +381,62 @@ test('a page that holds no secret says the sign-in expired instead of Disconnect
   entry.resetPastedLink();
   store.resetFloorStore();
 
-  const forgotten = { read: () => null, write() { throw new Error('nothing is written'); } };
   const found = await session.establishFloorSessionWith(
     { hash: '', pathname: '/floor/', search: '' },
     { replaceState() {} },
-    async () => { throw new Error('a reload sends nothing'); },
-    forgotten,
+    {
+      signer: testSigner().signer,
+      plain: async () => { throw new Error('a reload sends nothing'); },
+      signed: async () => { throw new Error('a reload sends nothing'); },
+    },
   );
-  assert.equal(found, null, 'no secret, no session');
-  entry.noteSignInExpired();
+  assert.equal(found, null, 'no key, no session');
+  entry.noteNoSignInKey();
   store.noteTransport('close');
   const html = page();
-  assert.match(html, new RegExp(`<p class="link-refused" role="alert">${EXPIRED}</p>`));
+  assert.match(html, new RegExp(`<p class="link-refused" role="alert">${NO_KEY}</p>`));
   assert.doesNotMatch(html, /Disconnected/);
   assert.doesNotMatch(html, /no sign-in link/);
+});
+
+test('a browser that cannot hold a key is told why and offered no fallback', async () => {
+  const entry = await server.ssrLoadModule('/src/connect.ts');
+  const store = await server.ssrLoadModule('/src/renderer/floor/store.ts');
+  const session = await server.ssrLoadModule('/src/session.ts');
+  const { WebFloorShell } = await server.ssrLoadModule('/src/shell.tsx');
+  const page = () => renderToStaticMarkup(createElement(WebFloorShell));
+  session.resetFloorSession();
+  entry.resetPastedLink();
+  store.resetFloorStore();
+
+  let spent = 0;
+  const noKeyPorts = {
+    signer: null,
+    plain: async () => { spent += 1; return reply(200); },
+    signed: async () => { spent += 1; return reply(200); },
+  };
+  const location = { hash: `#bootstrap=${BOOTSTRAP}`, pathname: '/floor/', search: '' };
+  await assert.rejects(session.establishFloorSessionWith(location, { replaceState() {} }, noKeyPorts), { message: 'This browser cannot keep a sign-in key' });
+  await assert.rejects(session.establishFloorSessionWith({ hash: '', pathname: '/floor/', search: '' }, { replaceState() {} }, noKeyPorts), { message: 'This browser cannot keep a sign-in key' });
+  assert.equal(spent, 0, 'a browser with no key sent a request');
+  assert.equal(location.hash, `#bootstrap=${BOOTSTRAP}`, 'the link was scrubbed from the address though nothing used it');
+  entry.noteKeyUnavailable();
+  store.noteTransport('close');
+  const html = page();
+  assert.match(html, new RegExp(`<p class="link-refused" role="alert">${UNSUPPORTED}</p>`));
+  assert.doesNotMatch(html, /Disconnected/);
+  assert.doesNotMatch(html, /dudes open/, 'a browser that cannot hold a key was sent to the terminal');
+});
+
+test('a fresh link opened in a page that waits for a reload says to reload, and a reload forgets it', async () => {
+  const entry = await server.ssrLoadModule('/src/connect.ts');
+  const { PastedLinkNotice } = await server.ssrLoadModule('/src/shell.tsx');
+  entry.resetPastedLink();
+  const notice = () => renderToStaticMarkup(createElement(PastedLinkNotice));
+  assert.equal(notice(), '');
+  entry.noteLinkWaitsForReload();
+  assert.match(notice(), /Reload this page to use the new link/);
+  assert.match(notice(), /<button[^>]*>Reload<\/button>/);
+  entry.resetPastedLink();
+  assert.equal(notice(), '');
 });

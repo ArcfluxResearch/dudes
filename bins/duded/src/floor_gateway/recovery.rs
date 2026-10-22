@@ -93,21 +93,7 @@ mod tests {
             "127.0.0.1:43123".parse().unwrap(),
             Arc::new(dudes_supervisor::testing::FakeClock::frozen(0)),
         );
-        let exchange = sessions
-            .exchange(
-                "127.0.0.1:43123",
-                "http://127.0.0.1:43123",
-                sessions.issue().unwrap().bootstrap.as_bytes(),
-            )
-            .unwrap();
-        let session = sessions
-            .authorize_onboard(
-                "127.0.0.1:43123",
-                "http://127.0.0.1:43123",
-                &exchange.cookie,
-                &exchange.csrf,
-            )
-            .unwrap();
+        let (session, _) = sessions.admitted_for_test("127.0.0.1:43123", "http://127.0.0.1:43123");
         let body = br#"{"request_id":"8484848484848484848484848484848484848484848484848484848484848484","expected":{"work":{"agent":"01ARZ3NDEKTSV4RRFFQ69G5FAV","goal":"01ARZ3NDEKTSV4RRFFQ69G5FAW","turn":"01ARZ3NDEKTSV4RRFFQ69G5FAX"},"issue_lsn":"9007199254740993","source_lsn":"18446744073709551615","episode":null,"expected_predecessor":null,"control_lsn":null,"ticket":null},"choice":"fresh_with_recap"}"#;
         let (sender, jobs) = mpsc::channel();
         let handle = Handle::new(sender);

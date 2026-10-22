@@ -170,7 +170,7 @@ fn managed_review(changed: bool, completion: Completion, held_controls: bool, de
         completed,
     );
     if let Some(gate) = &gate {
-        assert_delayed_completion(&fixture, gate, agent, &read);
+        assert_delayed_completion(&fixture, &running.handle, gate, agent, &read);
     }
     if !completed && !held_controls {
         assert_admitted_continuation(&fixture, agent, turn, &read);
@@ -529,16 +529,14 @@ fn assert_exact_review(
 
 fn assert_delayed_completion(
     fixture: &common::Fixture,
+    handle: &duded::Handle,
     gate: &CheckGate,
     agent: dudes_types::AgentId,
     read: &TicketReadResult,
 ) {
     assert!(gate.entered.load(Ordering::SeqCst));
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while Instant::now() < deadline {
-        assert_eq!(fixture.records().iter().filter(|record| matches!(record, Record::TurnIssued { agent: owner, .. } if *owner == agent)).count(), 1, "acknowledgment must wait for the observed completion check");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    handle.doctor().expect("the writer reaches the held check");
+    assert_eq!(fixture.records().iter().filter(|record| matches!(record, Record::TurnIssued { agent: owner, .. } if *owner == agent)).count(), 1, "acknowledgment must wait for the observed completion check");
     gate.release();
     fixture.await_record(
         "the delayed observed completion check",

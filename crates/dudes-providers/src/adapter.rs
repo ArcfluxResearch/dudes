@@ -58,6 +58,9 @@ pub struct AgentCtx<'a> {
     pub mcp_servers: &'a [McpLaunch],
 }
 
+/// The folder under an agent's directory that holds the files a person sent in Chat.
+pub const CHAT_FILES_DIR: &str = "files";
+
 /// Which vendor session a turn announces.
 ///
 /// Not an `Option`: where Dudes mints the id itself it must be able to say "announce this id"

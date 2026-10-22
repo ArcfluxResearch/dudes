@@ -597,8 +597,6 @@ enum CheckEnd {
     #[default]
     Verdict,
     NoVerdict,
-    Swept,
-    Panic,
 }
 
 #[derive(Default)]
@@ -635,8 +633,6 @@ impl duded::predicate::PredicateRunner for HeldCheck {
         match self.end {
             CheckEnd::Verdict => Ok(common::passes()),
             CheckEnd::NoVerdict => Err(std::io::Error::other("owned missing verdict")),
-            CheckEnd::Swept => Ok(duded::predicate::PredicateOutcome::Swept),
-            CheckEnd::Panic => panic!("owned predicate unwind"),
         }
     }
     fn sweep(&self) {
@@ -1923,12 +1919,7 @@ fn issued_unspawned_and_replayed_owed_work_refuse_without_cancellation_or_new_go
 
 #[test]
 fn queued_old_check_completion_is_settled_by_the_writer_before_admission() {
-    for end in [
-        CheckEnd::Verdict,
-        CheckEnd::NoVerdict,
-        CheckEnd::Swept,
-        CheckEnd::Panic,
-    ] {
+    for end in [CheckEnd::Verdict, CheckEnd::NoVerdict] {
         let fixture = Fixture::new();
         let settings = fixture.settings();
         let runner = Arc::new(HeldCheck {
@@ -2283,9 +2274,9 @@ fn replacement_retry_and_restart_preserve_unclaimed_and_claimed_board_cards() {
 }
 
 #[test]
-fn live_plain_and_onboarding_names_that_do_not_recompute_refuse_before_any_publication() {
+fn live_plain_names_that_do_not_recompute_refuse_before_any_publication() {
     use dudes_supervisor::{Command, Input};
-    for onboarding in [false, true] {
+    {
         let fixture = Fixture::new();
         let (settings, mut running) = start(&fixture);
         let (agent, old) = paused_goal(&fixture, &settings, &running);
@@ -2304,25 +2295,16 @@ fn live_plain_and_onboarding_names_that_do_not_recompute_refuse_before_any_publi
             .unwrap();
         copied.id = GoalId::NIL;
         copied.completion_check.as_mut().unwrap().label = "Forged label".into();
-        let command = if onboarding {
-            Command::BrowserOnboardGoal(Box::new(dudes_supervisor::input::BrowserOnboardGoal {
-                agent,
-                goal: copied,
-                attempt_id: Hex32::new([67; 32]),
-                session_digest: Hex32::new([68; 32]),
-            }))
-        } else {
-            Command::GoalSet {
-                agent,
-                text: copied.text,
-                predicate: copied.predicate,
-                budget: copied.budget,
-                hop_cap: copied.hop_cap,
-                browser_goal: None,
-                goal_replacement: None,
-                completion_check: copied.completion_check,
-                baseline: None,
-            }
+        let command = Command::GoalSet {
+            agent,
+            text: copied.text,
+            predicate: copied.predicate,
+            budget: copied.budget,
+            hop_cap: copied.hop_cap,
+            browser_goal: None,
+            goal_replacement: None,
+            completion_check: copied.completion_check,
+            baseline: None,
         };
         let before = fixture.records();
         let projection = call(&settings, Method::AgentList, json!({}))

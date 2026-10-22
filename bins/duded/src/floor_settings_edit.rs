@@ -155,6 +155,12 @@ mod tests {
             parse("budget.floor_usd_per_day", "5"),
             Ok("budget.floor_usd_per_day 5".to_owned())
         );
+        for dollars in ["7.5", "0.5", "2.25", "100"] {
+            assert!(
+                parse("budget.floor_usd_per_day", dollars).is_ok(),
+                "{dollars}"
+            );
+        }
         assert_eq!(
             parse("providers.pi", "on"),
             Ok("providers.pi on".to_owned())

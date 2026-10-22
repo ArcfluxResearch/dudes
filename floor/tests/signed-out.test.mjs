@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-// What the page does when the daemon does not know its session, and what it does not do.
+// What the page does when the daemon does not know its device, and what it does not do.
 //
 // The stream is the real `stream.ts` and the session code is the real `session.ts`, driven through
-// `connect()` with a fake socket, a fake clock and a fake `window` that holds the page's storage and
-// answers the session check.
+// `connect()` with a fake socket, a fake clock and a fake daemon that checks every signature with
+// WebCrypto.
 //
 // Firing controls, each named by the test it turns red:
 //   - `askFloorStanding` answering `unknown` for any non-2xx ......... "only the daemon's plain answer…"
 //   - the stream calling `onUnknown` without the `unknown` answer ...... "a transient close keeps the session"
-//   - `sessionUnknown` skipping the stored-secret adoption ............ "another tab's sign-in is followed"
+//   - `signOutFloorSession` deleting the key before the daemon answers .. "signing out deletes the key last…"
+//   - treating a refused signature as `unknown` ........................ "a second refusal is not a sign-out"
 
 import assert from 'node:assert/strict';
 import test, { beforeEach } from 'node:test';
@@ -17,37 +18,46 @@ import test, { beforeEach } from 'node:test';
 import { connect, firstLinkProblem, resetPastedLink } from '../src/connect.ts';
 import { resetFloorStore } from '../src/renderer/floor/store.ts';
 import { resetAway } from '../src/renderer/floor/away.ts';
+import { installSigner } from '../src/signer.ts';
+import { floorFetch, resetFloorTransport } from '../src/transport.ts';
 import {
+  adoptStoredFloorSession,
   askFloorStanding,
   currentFloorSession,
   openFloorSessionWith,
   resetFloorSession,
   signOutFloorSession,
-  browserSecretStore,
 } from '../src/session.ts';
+import { fakeDaemon, reply } from './helpers/fake-daemon.mjs';
+import { ORIGIN, enrolledSigner } from './helpers/signer.mjs';
 
-const SECRET = `C${'d'.repeat(41)}I`;
-const OTHER = `F${'g'.repeat(41)}M`;
 const HERE = { protocol: 'http:', host: '127.0.0.1:7717' };
-
-const reply = (status, payload) => ({ ok: status >= 200 && status < 300, status, json: async () => payload });
 const UNKNOWN = () => reply(401, { session: 'unknown' });
 
-function page({ check }) {
-  const storage = new Map([['dudes.floor.secret', SECRET]]);
-  const asked = [];
-  globalThis.window = {
-    localStorage: {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-      removeItem: (key) => storage.delete(key),
-    },
-    fetch: async (url, init) => {
-      asked.push({ url, init });
-      return check(url, init);
-    },
-  };
-  return { storage, asked };
+const order = [];
+const waiting = [];
+const timers = {
+  now: () => 0,
+  repeat: () => () => {},
+  after(_ms, run) {
+    const entry = { run, cancelled: false };
+    waiting.push(entry);
+    return () => { entry.cancelled = true; };
+  },
+};
+const elapse = () => { for (const entry of waiting.splice(0)) if (!entry.cancelled) entry.run(); };
+const settle = () => new Promise((done) => setImmediate(done));
+const until = async (done, turns = 1000) => { for (let turn = 0; turn < turns && !done(); turn += 1) await new Promise((next) => setTimeout(next, 1)); };
+
+/** A page whose key the daemon knows, with a fake browser network that reaches the daemon. */
+async function page({ override } = {}) {
+  const held = await enrolledSigner();
+  const daemon = fakeDaemon({ links: [] });
+  await daemon.enrol(held.key);
+  daemon.state.override = override ?? null;
+  installSigner(held.signer);
+  globalThis.window = { location: { origin: ORIGIN }, fetch: daemon.send };
+  return { ...held, daemon };
 }
 
 function sockets() {
@@ -63,32 +73,22 @@ function sockets() {
         close: () => listeners.get('close')?.(),
         emit: (type, event) => listeners.get(type)?.(event),
       };
+      order.push('socket');
       opened.push(socket);
       return socket;
     },
   };
 }
 
-const waiting = [];
-const timers = {
-  now: () => 0,
-  repeat: () => () => {},
-  after(_ms, run) {
-    const entry = { run, cancelled: false };
-    waiting.push(entry);
-    return () => { entry.cancelled = true; };
-  },
-};
-const elapse = () => { for (const entry of waiting.splice(0)) if (!entry.cancelled) entry.run(); };
-const settle = () => new Promise((done) => setImmediate(done));
-
 async function openedPage(options) {
-  const world = page(options);
+  const world = await page(options);
   const factory = sockets();
-  const ports = { location: HERE, socket: factory.connect, timers };
-  const session = await openFloorSessionWith({ hash: '', pathname: '/floor/', search: '' }, { replaceState() {} }, window.fetch, browserSecretStore);
+  const ports = { location: HERE, socket: factory.connect, timers, signer: world.signer };
+  const session = await openFloorSessionWith({ hash: '', pathname: '/floor/', search: '' }, { replaceState() {} },
+    { signer: world.signer, plain: world.daemon.plain, signed: floorFetch });
   connect(session, ports);
-  return { ...world, factory, session };
+  await until(() => factory.opened.length > 0);
+  return { ...world, factory, session, ports };
 }
 
 beforeEach(() => {
@@ -96,15 +96,21 @@ beforeEach(() => {
   resetFloorStore();
   resetPastedLink();
   resetAway();
+  resetFloorTransport();
+  installSigner(undefined);
+  waiting.length = 0;
+  order.length = 0;
   delete globalThis.window;
 });
 
-test('only the daemon’s plain answer that the session is unknown counts as unknown', async () => {
-  const session = Object.freeze({ csrf: SECRET });
+test('only the daemon’s plain answer that the device is unknown counts as unknown', async () => {
+  const session = Object.freeze({ device: 'x' });
   for (const [what, fetch, expected] of [
-    ['a live session', async () => reply(200, { session: 'live' }), 'live'],
+    ['a live device', async () => reply(200, { session: 'live' }), 'live'],
     ['the plain unknown answer', async () => UNKNOWN(), 'unknown'],
-    ['a refusal that is not about the session', async () => reply(403, null), 'unclear'],
+    ['the plain gone answer', async () => reply(403, { session: 'gone' }), 'unknown'],
+    ['a refusal that is not about the device', async () => reply(403, null), 'unclear'],
+    ['a refused signature', async () => reply(401, { signature: 'refused' }), 'unclear'],
     ['a 401 that says something else', async () => reply(401, { session: 'strange' }), 'unclear'],
     ['a server error', async () => reply(503, null), 'unclear'],
     ['a daemon that cannot be reached', async () => { throw new TypeError('refused'); }, 'unclear'],
@@ -113,67 +119,115 @@ test('only the daemon’s plain answer that the session is unknown counts as unk
   }
 });
 
-test('a transient close keeps the session, however the check goes wrong', async () => {
-  for (const check of [
-    async () => { throw new TypeError('the daemon blinked'); },
-    async () => reply(503, null),
-    async () => reply(403, null),
-    async () => reply(200, { session: 'live' }),
+test('the signed socket is accepted by a daemon that checks its signature', async () => {
+  const { factory, daemon } = await openedPage();
+  assert.equal(await daemon.socket('/floor/stream', factory.opened[0].protocols), true);
+  assert.equal(factory.opened[0].protocols.length, 4);
+  assert.equal(await daemon.socket('/floor/terminal', factory.opened[0].protocols), false, 'a signature for one socket opened another');
+});
+
+test('a transient close keeps the session and the key, however the check goes wrong', async () => {
+  for (const override of [
+    () => { throw new TypeError('the daemon blinked'); },
+    () => reply(503, null),
+    () => reply(403, null),
+    () => reply(401, { signature: 'refused' }),
+    () => undefined,
   ]) {
-    resetFloorSession(); resetFloorStore(); resetPastedLink(); resetAway();
-    const { storage, factory, session } = await openedPage({ check });
+    resetFloorSession(); resetFloorStore(); resetPastedLink(); resetAway(); resetFloorTransport();
+    const { store, factory, session } = await openedPage({ override: (url) => (url === '/floor/session/check' ? override() : undefined) });
     factory.opened[0].emit('close');
+    await settle();
     await settle();
     assert.equal(currentFloorSession(), session);
     assert.equal(firstLinkProblem(), null);
-    assert.equal(storage.get('dudes.floor.secret'), SECRET, 'the secret was kept');
+    assert.notEqual(store.held, null, 'the key was deleted');
   }
 });
 
-test('a session the daemon does not know is signed out: the screen says so and the stored secret goes', async () => {
-  const { storage, factory, asked } = await openedPage({ check: async () => UNKNOWN() });
+test('a device the daemon does not know is signed out: the screen says so and the key stays', async () => {
+  const { store, factory, daemon } = await openedPage();
+  daemon.state.remove(session0(daemon));
   factory.opened[0].emit('close');
-  await settle();
-  const checks = asked.filter((request) => request.url === '/floor/session/check');
-  assert.equal(checks.length, 1);
-  assert.equal(checks[0].init.headers['X-Dudes-CSRF'], SECRET);
+  await until(() => firstLinkProblem() !== null);
   assert.equal(currentFloorSession(), null);
   assert.equal(firstLinkProblem(), 'expired');
-  assert.equal(storage.has('dudes.floor.secret'), false);
+  assert.notEqual(store.held, null, 'a standing answer deleted the key');
 });
+
+function session0(daemon) {
+  return daemon.state.devices[0];
+}
 
 test('another tab’s sign-in is followed instead of signing this tab out', async () => {
-  const { storage, factory } = await openedPage({ check: async () => UNKNOWN() });
-  storage.set('dudes.floor.secret', OTHER);
+  const { store, signer, factory, daemon, session } = await openedPage();
+  const next = await signer.newKey();
+  await daemon.enrol(next);
+  daemon.state.remove(session.device);
+  await store.write({ device: next.device, privateKey: next.privateKey });
   factory.opened[0].emit('close');
-  await settle();
-  assert.equal(currentFloorSession()?.csrf, OTHER);
-  assert.equal(firstLinkProblem(), null);
-  elapse();
-  assert.deepEqual(factory.opened.at(-1)?.protocols.at(-1), `dudes-csrf.${OTHER}`, 'the stream follows the new secret');
-});
-
-test('signing out forgets the secret only once the daemon says the session is ended or unknown', async () => {
-  for (const check of [async () => reply(200, { session: 'ended' }), async () => UNKNOWN()]) {
-    resetFloorSession();
-    const { storage, asked } = page({ check });
-    assert.equal(await signOutFloorSession(Object.freeze({ csrf: SECRET })), true);
-    assert.equal(asked[0].url, '/floor/session/end');
-    assert.equal(asked[0].init.method, 'POST');
-    assert.equal(asked[0].init.headers['X-Dudes-CSRF'], SECRET);
-    assert.equal(storage.has('dudes.floor.secret'), false);
+  for (let round = 0; round < 6 && factory.opened.length < 2; round += 1) {
+    await until(() => waiting.length > 0 || factory.opened.length > 1);
+    elapse();
+    await settle();
   }
+  await until(() => factory.opened.length > 1);
+  assert.equal(firstLinkProblem(), null);
+  assert.equal(await daemon.socket('/floor/stream', factory.opened.at(-1).protocols), true, 'the stream did not follow the new key');
+  assert.deepEqual(await adoptStoredFloorSession(signer), { device: next.device }, 'the new device is not adopted');
+  assert.equal(await adoptStoredFloorSession(signer), null, 'the same device was taken twice');
 });
 
-test('a sign-out the daemon does not confirm keeps the secret and says it failed', async () => {
-  for (const check of [
-    async () => reply(503, null),
-    async () => reply(403, null),
-    async () => { throw new TypeError('down'); },
+test('signing out deletes the key last: only once the daemon says the device is ended or unknown', async () => {
+  for (const [what, override] of [
+    ['ended', () => reply(200, { session: 'ended' })],
+    ['unknown', UNKNOWN],
   ]) {
     resetFloorSession();
-    const { storage } = page({ check });
-    assert.equal(await signOutFloorSession(Object.freeze({ csrf: SECRET })), false);
-    assert.equal(storage.get('dudes.floor.secret'), SECRET, 'the secret is kept');
+    const { store, daemon } = await page({ override: (url) => (url === '/floor/session/end' ? override() : undefined) });
+    assert.equal(await signOutFloorSession(Object.freeze({ device: store.held.device })), true, what);
+    assert.equal(daemon.state.requests[0].url, '/floor/session/end');
+    assert.equal(daemon.state.requests[0].init.method, 'POST');
+    assert.equal(store.held, null, `the key stayed after ${what}`);
   }
+});
+
+test('signing out deletes the key only after the daemon answered', async () => {
+  const { store } = await page({
+    override: (url) => {
+      if (url === '/floor/session/end') {
+        assert.notEqual(store.held, null, 'the key went before the daemon answered');
+        return reply(200, { session: 'ended' });
+      }
+      return undefined;
+    },
+  });
+  assert.equal(await signOutFloorSession(Object.freeze({ device: store.held.device })), true);
+  assert.equal(store.held, null);
+});
+
+test('a sign-out the daemon does not confirm keeps the key and says it failed', async () => {
+  for (const override of [
+    () => reply(503, null),
+    () => reply(403, null),
+    () => reply(401, { signature: 'refused' }),
+    () => { throw new TypeError('down'); },
+  ]) {
+    resetFloorSession();
+    const { store } = await page({ override: (url) => (url === '/floor/session/end' ? override() : undefined) });
+    assert.equal(await signOutFloorSession(Object.freeze({ device: store.held.device })), false);
+    assert.notEqual(store.held, null, 'the key is kept');
+  }
+});
+
+test('a second refusal of the signature is an error the page shows and not a sign-out', async () => {
+  const { store, daemon, session } = await openedPage();
+  daemon.state.refuseNext = 2;
+  const response = await floorFetch('/floor/session/check', { method: 'POST', body: '{}' });
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { signature: 'refused' });
+  assert.equal(daemon.state.requests.length, 2, 'the request was not retried exactly once');
+  assert.equal(await askFloorStanding(session), 'live', 'the key still works');
+  assert.equal(currentFloorSession(), session);
+  assert.notEqual(store.held, null);
 });

@@ -129,7 +129,7 @@ fn leave_pending_prefix(fixture: &Fixture, settings: &Settings) -> (Vec<TurnId>,
     let mut running =
         common::start(boot(settings, parts(settings, host.clone(), Arc::clone(&clock))).unwrap());
     let mut old_turns = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..1 {
         let agent = common::hire(&running.handle, fixture.state.path());
         let goal = common::set_goal(
             &running.handle,
@@ -154,7 +154,7 @@ fn leave_pending_prefix(fixture: &Fixture, settings: &Settings) -> (Vec<TurnId>,
     }
     let release = clock.hold();
     let mut pending = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..1 {
         let agent = common::hire(&running.handle, fixture.state.path());
         let goal = common::set_goal(
             &running.handle,

@@ -16,7 +16,7 @@ test('a worktree view keeps its branch, state and origin lease and nothing else'
   assert.deepEqual(decodeWorktree({ branch: BRANCH, state: 'active' }), { branch: BRANCH, state: 'active' });
   assert.deepEqual(decodeWorktree({ branch: BRANCH, state: 'released', from: LEASE }),
     { branch: BRANCH, state: 'released', from: LEASE });
-  assert.equal(worktreeText({ branch: BRANCH, state: 'released' }), `Branch ${BRANCH}, released, not yet removed`);
+  assert.equal(worktreeText({ branch: BRANCH, state: 'released' }), `Own copy on branch ${BRANCH}, released, not yet removed`);
   const decoded = decodeWorktree({ branch: BRANCH, state: 'active', path: SECRET });
   assert.deepEqual(Object.keys(decoded), ['branch', 'state']);
 });

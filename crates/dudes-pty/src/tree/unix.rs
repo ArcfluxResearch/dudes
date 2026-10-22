@@ -38,6 +38,10 @@ const FORCED_GROUP_ISSUE: &str = "injected post-spawn group uncertainty";
 #[cfg(test)]
 const FIRST_HEARTBEAT_WAIT: Duration = Duration::from_secs(2);
 
+/// The most one [`Session::write_ready`] call writes, so a terminal that reported room is not asked
+/// for more than a small input queue holds.
+const READY_WRITE_BYTES: usize = 256;
+
 pub(crate) struct Session {
     child: Child,
     original_group: Option<Pid>,
@@ -381,6 +385,10 @@ fn close_owned(state: &mut CleanupState, ops: &mut impl UnixTeardownOps) -> Clos
 }
 
 impl Session {
+    pub(crate) fn exit_status(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
+    }
+
     pub(crate) fn close_query(&self) -> io::Result<CloseQuery> {
         if self.cleanup.direct != DirectCleanup::Reaped {
             return Err(io::Error::other("PTY direct child is not reaped"));
@@ -396,6 +404,25 @@ impl Session {
 
     pub(crate) fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.writer.write(bytes)
+    }
+
+    /// Write at most [`READY_WRITE_BYTES`] if the terminal has room right now, and `0` if it has
+    /// none, without waiting for any.
+    pub(crate) fn write_ready(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let mut polled = [rustix::event::PollFd::new(
+            &self.writer,
+            rustix::event::PollFlags::OUT,
+        )];
+        let now = rustix::event::Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        rustix::event::poll(&mut polled, Some(&now))?;
+        if !polled[0].revents().contains(rustix::event::PollFlags::OUT) {
+            return Ok(0);
+        }
+        self.writer
+            .write(&bytes[..bytes.len().min(READY_WRITE_BYTES)])
     }
 
     pub(crate) fn resize(&mut self, size: PtySize) -> io::Result<()> {

@@ -4,7 +4,7 @@
 // keeps a table of them. A test in the daemon's suite reads this file and fails when a sentence
 // here differs from the one the daemon owns.
 
-import type { CardRow, TicketReason } from '../board.ts';
+import type { CardRow, TicketReason, TicketTurnEnd } from '../board.ts';
 
 export type RefusalCode = 'stale_card' | 'not_a_ticket' | 'ticket_card' | 'wrong_state' | 'project_unavailable'
   | 'done_when_changed' | 'agent_unavailable' | 'agent_no_project' | 'queue_full' | 'limit_reached' | 'busy'
@@ -64,7 +64,7 @@ export function refusalSentence(code: RefusalCode, status: CardRow['status'] | n
 }
 
 const REASONS: Readonly<Record<TicketReason, string>> = Object.freeze({
-  recovery_required: "This work was interrupted. Recovery keeps the same goal and ticket round. Review recovery in the agent drawer when available, or run `dudes recovery inspect <agent-id>` in a terminal. Earlier effects may repeat.",
+  recovery_required: "This work was interrupted. Recovery keeps the same goal and ticket round. Review recovery to see what was recorded and choose how to continue. Earlier effects may repeat.",
   project_unavailable: "This project is not set up any more. Enroll it again with `dudes project add`, then Give to agent, or Remove the ticket.",
   check_cannot_run: "The check cannot run: its program is missing, or it is a file inside the project that an agent could change. Install the program, or use one outside the project's repository. To use a script from the repository, run it through its interpreter, for example `sh test.sh` for a shell script; an agent can still edit that script, so review its changes before you accept the work. Then Give to agent. If the check itself is wrong, Remove this ticket and create it again.",
   ceiling_required: "Set a spending limit first, because your account bills per use. Add one to the project's enrollment (`dudes project add`) or the agent's hire, then Give to agent.",
@@ -73,8 +73,8 @@ const REASONS: Readonly<Record<TicketReason, string>> = Object.freeze({
   limit_goal: "This ticket reached its spending limit. Give to agent to try again, or Stop.",
   slowed: "The agent kept failing and was slowed down. Look at the agent, then Give to agent to try again, or Stop.",
   no_turns: "The agent used all its turns on this ticket. Give to agent to try again, or Stop.",
-  held_launch: "The agent's engine would not start. Fix the cause, then resume the agent in the Floor or with `dudes resume`.",
-  held_failing: "The agent's turns kept failing at once. Fix the cause, then resume the agent in the Floor or with `dudes resume`.",
+  held_launch: "The agent's engine would not start. Fix the cause, then resume the agent.",
+  held_failing: "The agent's turns kept failing at once. Fix the cause, then resume the agent.",
   held_unsure: "Dudes could not confirm how the agent's last turn ended. Resume the agent, or Stop.",
   shared_instructions_changed: "Shared project instructions changed during this work. Review the change, then Accept or Ask for changes.",
   shared_instructions_unknown: "Dudes could not determine whether shared project instructions changed during this work. Review the work, then Accept or Ask for changes.",
@@ -136,3 +136,18 @@ export const COULD_NOT_CONFIRM = "We could not confirm that saved. Look at the b
 /** Shown under the summary: whose words they are. */
 export const AGENT_SAYS = "The agent says";
 export const NO_SUMMARY = "The agent left no summary";
+
+const SIGNAL_NAMES: Readonly<Record<number, string>> = Object.freeze({
+  1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 4: 'SIGILL', 5: 'SIGTRAP', 6: 'SIGABRT',
+  8: 'SIGFPE', 9: 'SIGKILL', 11: 'SIGSEGV', 13: 'SIGPIPE', 14: 'SIGALRM', 15: 'SIGTERM',
+});
+
+export function engineStopped(ended: TicketTurnEnd | undefined): string | null {
+  if (ended === undefined) return null;
+  const { code, signal } = ended.exit;
+  const cause = signal !== null ? SIGNAL_NAMES[signal] ?? `signal ${signal}`
+    : code !== null && code !== 0 ? `exit ${code}` : null;
+  if (cause === null) return null;
+  const time = new Date(ended.at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `The engine stopped (${cause}) at ${time}`;
+}

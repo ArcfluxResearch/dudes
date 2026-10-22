@@ -4,9 +4,10 @@
 //! and retained in memory before one TCP port can become ready. Runtime requests therefore cross
 //! no filesystem seam and can reach only the finite routes this catalog contains.
 //!
-//! The browser stream upgrades only `GET /floor/stream`. It requires the exact two offered
-//! subprotocols `dudes-floor-v3` and `dudes-csrf.<43-character nonce>`, and echoes only the former.
-//! Exact Host and Origin are checked before the host-only session cookie and CSRF carrier.
+//! The browser stream upgrades only `GET /floor/stream`. It requires the offered subprotocols
+//! `dudes-floor-v4`, `dudes-sig.<signature>`, `dudes-time.<time>` and `dudes-id.<request id>`, and
+//! echoes only the first. Exact Host and Origin are checked before the host-only session cookie, and
+//! then the device's signature over the handshake request.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,6 +27,7 @@ use sha2::{Digest as _, Sha256};
 
 use dudes_supervisor::Clock;
 
+use crate::engine_login::EngineLogins;
 use crate::floor_actions::{OnboardOutcome, OnboardRefusal, OnboardRequest};
 use crate::floor_answer::{AnswerOutcome, AnswerRefusal, AnswerRequest, MAX_ANSWER_BODY_BYTES};
 use crate::floor_chat::{ChatOutcome, ChatRefusal, ChatRequest, ChatVerb, MAX_CHAT_BODY_BYTES};
@@ -44,8 +46,9 @@ use crate::floor_project::{
 use crate::floor_rename::{MAX_RENAME_BODY_BYTES, RenameOutcome, RenameRefusal, RenameRequest};
 use crate::floor_retire::{MAX_RETIRE_BODY_BYTES, RetireOutcome, RetireRefusal, RetireRequest};
 use crate::floor_session::{
-    ActionKind, FloorSessionAuthorizer, FloorSessions, ReceiptSession, ReserveResult,
-    SESSION_COOKIE_NAME, SessionIdentity, StreamSession, TerminalSession,
+    ActionKind, ExchangeRefusal, FloorSessionAuthorizer, FloorSessions, GoneReason, LoginSession,
+    ReceiptSession, Removal, ReserveResult, SESSION_COOKIE_NAME, SessionIdentity, StreamSession,
+    TerminalSession,
 };
 use crate::floor_settings_edit::{MAX_SETTINGS_BODY_BYTES, SettingsRefusal, SettingsRequest};
 use crate::floor_stream::{ClientMessage, FloorStreams, QueueRead, decode_client};
@@ -57,19 +60,21 @@ use crate::floor_websocket::{Decoder, Message, accept_key, close_frame, pong_fra
 use crate::settings::FloorSettings;
 use crate::{ExitCause, Handle};
 
+mod devices;
 mod guard;
 #[cfg(test)]
 mod guard_tests;
 mod recovery;
+use devices::{DeviceVerb, MAX_DEVICES_BODY_BYTES};
 use guard::{
-    Admission, Admitted, Credentials, Denied, Endpoints, Guard, Head, Route, SignIn, StandingRoute,
+    Admission, Admitted, Denied, Endpoints, Guard, Head, Route, SignIn, Signed, StandingRoute,
 };
 use recovery::RecoveryRoute;
 
 /// The configured public root for the first static shell.
 pub const BASE_PATH: &str = "/floor/";
 /// The browser-wire generation required by the daemon and its matching Floor bundle.
-pub const BROWSER_WIRE_VERSION: u32 = 3;
+pub const BROWSER_WIRE_VERSION: u32 = 5;
 
 const MANIFEST_NAME: &str = "release-manifest.json";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -115,7 +120,11 @@ const SETTINGS_PATH: &str = "/floor/settings";
 /// Routed only while `[floor.project]` is on; otherwise a POST here is any unrouted POST.
 const PROJECT_PREVIEW_PATH: &str = "/floor/project/preview";
 const PROJECT_ADD_PATH: &str = "/floor/project/add";
+const PROJECT_REMOVE_PATH: &str = "/floor/project/remove";
+const PROJECT_CHOOSE_PATH: &str = "/floor/project/choose";
 const TERMINAL_PATH: &str = "/floor/terminal";
+/// Routed only while `[floor.hire]` is on: the socket that signs in to an engine.
+const ENGINE_LOGIN_PATH: &str = "/floor/engine-login";
 /// Routed only when the operator enabled the Git tab; otherwise a POST here is any
 /// unrouted POST.
 const GIT_PATH: &str = "/floor/git";
@@ -125,12 +134,24 @@ const DIFF_PATH: &str = "/floor/diff";
 /// Always routed: an agent's memory, read on demand.
 const MEMORY_PAGE_PATH: &str = "/floor/memory/page";
 const MEMORY_ENTRY_PATH: &str = "/floor/memory/entry";
+/// Always routed: the signed-in browsers, listed, signed out, and kept.
+const DEVICES_PATH: &str = "/floor/devices";
+const DEVICES_REMOVE_PATH: &str = "/floor/devices/remove";
+const DEVICES_KEEP_PATH: &str = "/floor/devices/keep";
 const CHAT_SEND_PATH: &str = "/floor/chat/send";
 const CHAT_CANCEL_PATH: &str = "/floor/chat/cancel";
+/// Raw bytes of one file, the agent and name in the query. The only route whose body is not text.
+const CHAT_FILE_PATH: &str = "/floor/chat/file";
+/// How long a file upload may take to arrive. Other bodies share the head's short deadline.
+const UPLOAD_DEADLINE: Duration = Duration::from_secs(120);
 /// The onboarding body cap.
 const MAX_ONBOARD_BODY: usize = 4096;
-const FLOOR_PROTOCOL: &str = "dudes-floor-v3";
-const CSRF_PROTOCOL_PREFIX: &str = "dudes-csrf.";
+const FLOOR_PROTOCOL: &str = "dudes-floor-v4";
+/// The `Sec-WebSocket-Protocol` entries that carry a socket's signature, time and request id,
+/// because a browser socket cannot set headers.
+const SIGNATURE_PROTOCOL_PREFIX: &str = "dudes-sig.";
+const TIME_PROTOCOL_PREFIX: &str = "dudes-time.";
+const REQUEST_PROTOCOL_PREFIX: &str = "dudes-id.";
 
 /// Maximum delay between stop observation points in the idle accept loop.
 pub const ACCEPT_POLL: Duration = Duration::from_millis(25);
@@ -149,9 +170,9 @@ pub const JOIN_BOUND: Duration = Duration::from_secs(2);
 const FAULT_WAIT: Duration = Duration::from_secs(5);
 
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
-/// A terminal-enabled daemon admits inline styles for the terminal's renderer. Every
+/// A daemon that draws a terminal admits inline text in style elements for the renderer. Every
 /// other directive is byte-identical to [`CSP`].
-const TERMINAL_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
+const TERMINAL_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; style-src-elem 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
 
 const STARTING: u8 = 0;
 const READY: u8 = 1;
@@ -247,9 +268,8 @@ pub struct PreparedAssets {
     remembered: Option<u16>,
     /// Which routes exist right now. The loop thread swaps it when the operator file changes.
     switches: SharedSwitches,
-    /// Whether the daemon started with the terminal on, which decides the page's security policy
-    /// for the whole run.
-    terminal_csp: bool,
+    /// The engine sign-ins, served only while `[floor.hire]` is on.
+    logins: Option<EngineLogins>,
     /// The Git route's reader and limits, served only while `[floor.git]` is on.
     git: Option<Arc<GitReads>>,
     /// The diff route's reader, served only while `[floor.git]` and `[floor.diff]` are on.
@@ -258,6 +278,9 @@ pub struct PreparedAssets {
     board: Arc<TicketLimits>,
     /// Who may use the Floor, decided from the process on the other end of each connection.
     peer: Arc<PeerGate>,
+    /// The devices the journal holds. Present only for a daemon whose Floor keeps its devices in
+    /// the journal; without it the listener keeps none.
+    devices: Option<BTreeMap<dudes_proto::record::Hex32, dudes_supervisor::DeviceRow>>,
 }
 
 impl PreparedAssets {
@@ -514,8 +537,14 @@ impl PreparedAssets {
     /// Serve the routes that `switches` turns on, now and after every later swap.
     #[must_use]
     pub(crate) fn with_switches(mut self, switches: SharedSwitches) -> Self {
-        self.terminal_csp = switches.load().terminal;
         self.switches = switches;
+        self
+    }
+
+    /// Serve the engine sign-in socket over `logins` while `[floor.hire]` is on.
+    #[must_use]
+    pub(crate) fn with_engine_logins(mut self, logins: EngineLogins) -> Self {
+        self.logins = Some(logins);
         self
     }
 
@@ -542,6 +571,16 @@ impl PreparedAssets {
         daemon_pid: Option<u32>,
     ) -> Self {
         self.peer = Arc::new(PeerGate::system(roots, daemon_pid));
+        self
+    }
+
+    /// Keep the Floor's devices in the journal, starting from the ones it already holds.
+    #[must_use]
+    pub(crate) fn with_devices(
+        mut self,
+        devices: BTreeMap<dudes_proto::record::Hex32, dudes_supervisor::DeviceRow>,
+    ) -> Self {
+        self.devices = Some(devices);
         self
     }
 
@@ -674,18 +713,26 @@ impl PreparedAssets {
         let assets = Arc::new(self.assets);
         let manifest = Arc::new(self.manifest);
         let switches = self.switches;
-        let terminal_csp = self.terminal_csp;
         let git = self.git;
         let diff = self.diff;
+        let logins = self.logins;
         let board = self.board;
         let tickets = Some(Arc::clone(&board));
         let peer = self.peer;
+        let devices = self.devices;
         let memory = fault
             .0
             .memory_interval
             .map_or_else(MemoryReads::new, MemoryReads::with_interval);
         let thread_clock = Arc::clone(&clock);
         let sessions = FloorSessions::new(addr, clock);
+        if let Some(devices) = &devices {
+            sessions.install_sink(Arc::new(LoopDevices {
+                handle: handle.clone(),
+                streams: streams.clone(),
+            }));
+            sessions.seed(devices);
+        }
         let thread_sessions = sessions.clone();
         let thread_streams = streams.clone();
         let connection_failure = handle.clone();
@@ -703,9 +750,9 @@ impl PreparedAssets {
                             assets: &assets,
                             manifest: &manifest,
                             switches: &switches,
-                            terminal_csp,
                             git: git.as_deref(),
                             diff: diff.as_deref(),
+                            logins: logins.as_ref(),
                             board: &board,
                             memory: &memory,
                             peer: &peer,
@@ -1069,6 +1116,18 @@ fn handle_connection(
                             handle,
                         );
                     }
+                    SocketSession::Login(session) => {
+                        if let Some(logins) = catalog.engine_logins() {
+                            crate::engine_login::serve(
+                                &mut stream,
+                                &session,
+                                &buffered,
+                                phase,
+                                logins,
+                                catalog.switches,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -1082,18 +1141,24 @@ struct Catalog<'a> {
     assets: &'a BTreeMap<String, Asset>,
     manifest: &'a [u8],
     switches: &'a SharedSwitches,
-    terminal_csp: bool,
     git: Option<&'a GitReads>,
     diff: Option<&'a DiffReads>,
+    logins: Option<&'a EngineLogins>,
     board: &'a TicketLimits,
     memory: &'a MemoryReads,
     peer: &'a PeerGate,
 }
 
 impl<'a> Catalog<'a> {
-    /// The terminal switch at start decides the page's policy, so one run stamps one CSP.
-    const fn csp(self) -> &'static str {
-        if self.terminal_csp { TERMINAL_CSP } else { CSP }
+    /// The page's policy follows the live switches: the terminal and the engine sign-in that hiring
+    /// carries both draw a terminal, which needs inline styles.
+    fn csp(self) -> &'static str {
+        let live = self.live();
+        if live.terminal || live.hire {
+            TERMINAL_CSP
+        } else {
+            CSP
+        }
     }
 
     /// The switches as they are now. A route reads this once per request.
@@ -1109,6 +1174,11 @@ impl<'a> Catalog<'a> {
     /// The diff reads while `[floor.git]` and `[floor.diff]` are on.
     fn diff(self) -> Option<&'a DiffReads> {
         self.diff.filter(|_| self.live().serves_diff())
+    }
+
+    /// The engine sign-ins while `[floor.hire]` is on.
+    fn engine_logins(self) -> Option<&'a EngineLogins> {
+        self.logins.filter(|_| self.live().hire)
     }
 
     /// The ticket limits while `[floor.board]` is on.
@@ -1130,12 +1200,15 @@ enum ActionRoute {
     Retire,
     Settings,
     Project(ProjectVerb),
+    ChooseFolder,
     Git,
     Diff,
     Memory(MemoryRoute),
     Chat(ChatVerb),
+    ChatFile,
     Ticket(TicketRoute),
     Recovery(RecoveryRoute),
+    Devices(DeviceVerb),
 }
 
 impl ActionRoute {
@@ -1145,8 +1218,12 @@ impl ActionRoute {
         }
         let live = catalog.live();
         match path {
+            DEVICES_PATH => Some(Self::Devices(DeviceVerb::List)),
+            DEVICES_REMOVE_PATH => Some(Self::Devices(DeviceVerb::Remove)),
+            DEVICES_KEEP_PATH => Some(Self::Devices(DeviceVerb::Keep)),
             CHAT_SEND_PATH => Some(Self::Chat(ChatVerb::Send)),
             CHAT_CANCEL_PATH => Some(Self::Chat(ChatVerb::Cancel)),
+            CHAT_FILE_PATH => Some(Self::ChatFile),
             ONBOARD_PATH => Some(Self::Onboard),
             INSPECT_RECOVERY_PATH if live.serves_recovery() => {
                 Some(Self::Recovery(RecoveryRoute::Inspect))
@@ -1166,6 +1243,8 @@ impl ActionRoute {
             SETTINGS_PATH => Some(Self::Settings),
             PROJECT_PREVIEW_PATH if live.project => Some(Self::Project(ProjectVerb::Preview)),
             PROJECT_ADD_PATH if live.project => Some(Self::Project(ProjectVerb::Add)),
+            PROJECT_REMOVE_PATH if live.project => Some(Self::Project(ProjectVerb::Remove)),
+            PROJECT_CHOOSE_PATH if live.project => Some(Self::ChooseFolder),
             GIT_PATH if catalog.git().is_some() => Some(Self::Git),
             DIFF_PATH if catalog.diff().is_some() => Some(Self::Diff),
             MEMORY_PAGE_PATH => Some(Self::Memory(MemoryRoute::Page)),
@@ -1186,12 +1265,14 @@ impl ActionRoute {
             Self::Look => MAX_LOOK_BODY_BYTES,
             Self::Retire => MAX_RETIRE_BODY_BYTES,
             Self::Settings => MAX_SETTINGS_BODY_BYTES,
-            Self::Project(_) => MAX_PROJECT_BODY_BYTES,
+            Self::Project(_) | Self::ChooseFolder => MAX_PROJECT_BODY_BYTES,
             Self::Git => MAX_GIT_BODY_BYTES,
             Self::Diff => MAX_DIFF_BODY_BYTES,
             Self::Memory(_) => MAX_MEMORY_BODY_BYTES,
             Self::Chat(_) => MAX_CHAT_BODY_BYTES,
+            Self::ChatFile => crate::floor_chat_file::MAX_FILE_BYTES,
             Self::Ticket(_) => MAX_TICKET_BODY_BYTES,
+            Self::Devices(_) => MAX_DEVICES_BODY_BYTES,
         }
     }
 }
@@ -1220,6 +1301,7 @@ struct Upgrade {
 enum SocketSession {
     Stream(StreamSession),
     Terminal(TerminalSession),
+    Login(LoginSession),
 }
 
 impl SocketSession {
@@ -1227,6 +1309,7 @@ impl SocketSession {
         match self {
             Self::Stream(_) => SocketRoute::Stream,
             Self::Terminal(_) => SocketRoute::Terminal,
+            Self::Login(_) => SocketRoute::EngineLogin,
         }
     }
 
@@ -1234,6 +1317,7 @@ impl SocketSession {
         match self {
             Self::Stream(session) => session.is_valid(),
             Self::Terminal(session) => session.is_valid(),
+            Self::Login(session) => session.is_valid(),
         }
     }
 }
@@ -1242,6 +1326,7 @@ impl SocketSession {
 enum SocketRoute {
     Stream,
     Terminal,
+    EngineLogin,
 }
 
 impl SocketRoute {
@@ -1249,6 +1334,9 @@ impl SocketRoute {
         match (method, path) {
             ("GET", STREAM_PATH) => Some(Self::Stream),
             ("GET", TERMINAL_PATH) if catalog.live().terminal => Some(Self::Terminal),
+            ("GET", ENGINE_LOGIN_PATH) if catalog.engine_logins().is_some() => {
+                Some(Self::EngineLogin)
+            }
             _ => None,
         }
     }
@@ -1257,6 +1345,7 @@ impl SocketRoute {
         match self {
             Self::Stream => FLOOR_PROTOCOL,
             Self::Terminal => crate::floor_terminal::TERMINAL_PROTOCOL,
+            Self::EngineLogin => crate::engine_login::PROTOCOL,
         }
     }
 }
@@ -1287,6 +1376,27 @@ impl RequestReader for TcpStream {
     }
 }
 
+/// The upload slot and the longer deadline a file body gets, or the busy answer when another
+/// upload holds the slot. Any other body keeps the head's deadline.
+fn claim_upload(
+    uploading: bool,
+    slot: &mut Option<crate::floor_chat_file::UploadSlot>,
+    head_deadline: Instant,
+) -> Result<Instant, Denied> {
+    if !uploading {
+        return Ok(head_deadline);
+    }
+    let Some(taken) = crate::floor_chat_file::UploadSlot::take() else {
+        return Err(Denied::Response(action_json(
+            200,
+            "OK",
+            &serde_json::json!({ "busy": true }),
+        )));
+    };
+    *slot = Some(taken);
+    Ok(Instant::now() + UPLOAD_DEADLINE)
+}
+
 fn read_request<'a>(
     stream: &mut impl RequestReader,
     guard: Guard<'a>,
@@ -1314,6 +1424,8 @@ fn read_request<'a>(
                 } => {
                     let buffered = &head[end..];
                     let endpoints = stream.endpoints();
+                    let uploading = route.action() == Some(ActionRoute::ChatFile);
+                    let mut slot = None;
                     let read = || {
                         if !route.has_body() {
                             return Ok(Vec::new());
@@ -1321,6 +1433,7 @@ fn read_request<'a>(
                         if buffered.len() > parsed.content_length {
                             return Err(Denied::Response(error_response(400, "Bad Request")));
                         }
+                        let deadline = claim_upload(uploading, &mut slot, deadline)?;
                         match read_body(stream, buffered, parsed.content_length, deadline, phase) {
                             Ok(Some(body)) => Ok(body),
                             Ok(None) => Err(Denied::Closed),
@@ -1382,6 +1495,10 @@ fn read_request<'a>(
 
 /// Run an admitted request's handler. This is the only caller of any route's handler, and every
 /// handler takes what [`Guard::admit`] returned.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match sends every admitted route to its handler"
+)]
 fn dispatch<'a>(
     admitted: Admitted,
     route: Route,
@@ -1399,15 +1516,9 @@ fn dispatch<'a>(
     } = guard;
     let response = match (admitted, route.action()) {
         (Admitted::SignIn(sign_in), _) => exchange_response(sessions, &sign_in, body),
-        (Admitted::Standing(identity), _) => match route.standing() {
-            Some(StandingRoute::Check) => {
-                standing_response(identity.as_ref(), sessions.is_running(), &head, false)
-            }
-            Some(StandingRoute::End) => {
-                standing_response(identity.as_ref(), sessions.is_running(), &head, true)
-            }
-            None => error_response(403, "Forbidden"),
-        },
+        (Admitted::Standing(identity), _) => {
+            standing_dispatch(route, identity.as_ref(), sessions, &head)
+        }
         (Admitted::Socket(session), _) => {
             return Some(ConnectionAction::Upgrade(Upgrade {
                 accept: head.accept,
@@ -1417,10 +1528,10 @@ fn dispatch<'a>(
         }
         (admitted @ (Admitted::Session(_) | Admitted::Receipt(_)), Some(action)) => {
             // Using the session renews it, so the browser's cookie is renewed with it.
-            let renewed = match (&admitted, &head.credentials) {
-                (Admitted::Session(session), Some(credentials)) => session
+            let renewed = match (&admitted, &head.cookie) {
+                (Admitted::Session(session), Some(cookie)) => session
                     .cookie_max_age_s()
-                    .map(|age| session_cookie_header(&credentials.cookie, age)),
+                    .map(|age| session_cookie_header(cookie, age)),
                 _ => None,
             };
             let mut response = match (action, admitted) {
@@ -1454,6 +1565,9 @@ fn dispatch<'a>(
                 (ActionRoute::Settings, Admitted::Session(session)) => {
                     settings_response(session, handle, body)
                 }
+                (ActionRoute::ChooseFolder, Admitted::Session(_)) => {
+                    choose_folder_response(handle, body)
+                }
                 (ActionRoute::Project(verb), Admitted::Session(session)) => {
                     project_response(verb, session, handle, body)
                 }
@@ -1479,8 +1593,14 @@ fn dispatch<'a>(
                 (ActionRoute::Chat(verb), Admitted::Session(session)) => {
                     chat_response(verb, session, handle, body)
                 }
+                (ActionRoute::ChatFile, Admitted::Session(_)) => {
+                    chat_file_response(handle, &head.target, body)
+                }
                 (ActionRoute::Ticket(route), Admitted::Session(session)) => {
                     ticket_response(route, session, handle, catalog, body)
+                }
+                (ActionRoute::Devices(verb), Admitted::Session(session)) => {
+                    devices::response(verb, &session, sessions, body)
                 }
                 _ => error_response(403, "Forbidden"),
             };
@@ -1490,6 +1610,33 @@ fn dispatch<'a>(
         _ => error_response(403, "Forbidden"),
     };
     Some(ConnectionAction::Response(response))
+}
+
+/// The answer to a check or a sign-out. A browser whose device is gone is told why when it holds
+/// the device's cookie.
+fn standing_dispatch<'a>(
+    route: Route,
+    identity: Option<&SessionIdentity>,
+    sessions: &FloorSessions,
+    head: &Head,
+) -> Response<'a> {
+    let gone = identity
+        .is_none()
+        .then(|| {
+            head.cookie
+                .as_deref()
+                .and_then(|cookie| sessions.gone_reason(cookie))
+        })
+        .flatten();
+    match route.standing() {
+        Some(StandingRoute::Check) => {
+            standing_response(identity, sessions.is_running(), head, false, gone)
+        }
+        Some(StandingRoute::End) => {
+            standing_response(identity, sessions.is_running(), head, true, gone)
+        }
+        None => error_response(403, "Forbidden"),
+    }
 }
 
 fn read_body(
@@ -1510,7 +1657,7 @@ fn read_body(
             return Ok(None);
         }
         stream.set_request_timeout(Some(deadline.saturating_duration_since(now)))?;
-        let mut chunk = [0_u8; 1024];
+        let mut chunk = [0_u8; 16 * 1024];
         let room = (content_length - body.len()).min(chunk.len());
         match stream.read(&mut chunk[..room]) {
             Ok(0) => return Ok(None),
@@ -1554,8 +1701,14 @@ fn parse_request<'a>(head: &[u8], catalog: Catalog<'a>, sessions: &FloorSessions
     let Some(path) = request.path else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
-    if let Some(route) = Route::of(method, path, catalog) {
-        return if let Some(socket) = route.socket() {
+    // Only the file route has a query; for every other route a `?` is part of an unknown path.
+    let route_path = path
+        .split_once('?')
+        .map(|(base, _)| base)
+        .filter(|base| *base == CHAT_FILE_PATH)
+        .unwrap_or(path);
+    if let Some(route) = Route::of(method, route_path, catalog) {
+        let parsed = if let Some(socket) = route.socket() {
             upgrade_request(route, socket, request.version, request.headers, sessions)
         } else if route.is_sign_in() {
             exchange_request(route, request.version, request.headers, sessions)
@@ -1563,6 +1716,14 @@ fn parse_request<'a>(head: &[u8], catalog: Catalog<'a>, sessions: &FloorSessions
             standing_request(route, request.version, request.headers)
         } else {
             action_request(route, request.version, request.headers)
+        };
+        return match parsed {
+            Parsed::Dynamic { route, mut head } => {
+                method.clone_into(&mut head.method);
+                path.clone_into(&mut head.target);
+                Parsed::Dynamic { route, head }
+            }
+            response @ Parsed::Response(_) => response,
         };
     }
     if !valid_static_framing(request.version, request.headers) {
@@ -1620,10 +1781,13 @@ fn exchange_request(
     if !sessions.authority_matches(host, origin) {
         return Parsed::Response(error_response(403, "Forbidden"));
     }
+    let Ok(signed) = presented_signature(headers) else {
+        return Parsed::Response(error_response(400, "Bad Request"));
+    };
     let Some(content_type) = one_header(headers, "content-type") else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
-    if !content_type.eq_ignore_ascii_case(b"text/plain;charset=UTF-8") {
+    if !content_type.eq_ignore_ascii_case(b"application/json") {
         return Parsed::Response(error_response(400, "Bad Request"));
     }
     let Some(content_length) = one_header(headers, "content-length")
@@ -1641,7 +1805,10 @@ fn exchange_request(
         head: Head {
             host: host.to_owned(),
             origin: origin.to_owned(),
-            credentials: None,
+            method: String::new(),
+            target: String::new(),
+            cookie: None,
+            signed,
             content_length,
             accept: String::new(),
         },
@@ -1649,10 +1816,19 @@ fn exchange_request(
 }
 
 fn exchange_response<'a>(sessions: &FloorSessions, sign_in: &SignIn, body: &[u8]) -> Response<'a> {
-    let Some(exchange) = sessions.exchange(&sign_in.host, &sign_in.origin, body) else {
-        return error_response(403, "Forbidden");
+    let exchange = match sessions.exchange(&sign_in.head.presentation("", body)) {
+        Ok(exchange) => exchange,
+        Err(ExchangeRefusal::Malformed) => return error_response(400, "Bad Request"),
+        Err(ExchangeRefusal::Signature) => {
+            return action_json(
+                401,
+                "Unauthorized",
+                &serde_json::json!({ "signature": "refused" }),
+            );
+        }
+        Err(ExchangeRefusal::Forbidden) => return error_response(403, "Forbidden"),
     };
-    let body = serde_json::to_vec(&serde_json::json!({ "csrf": exchange.csrf }))
+    let body = serde_json::to_vec(&serde_json::json!({ "device": exchange.device }))
         .expect("a string-only Floor session response serializes");
     Response {
         code: 200,
@@ -1676,52 +1852,61 @@ fn session_cookie_header(value: &str, max_age_s: i64) -> String {
     )
 }
 
+/// A session answer that names the session's state and, for a device that ended for a reason the
+/// person should hear, why.
+fn gone_body(session: &str, gone: Option<GoneReason>) -> serde_json::Value {
+    match gone {
+        Some(reason) => serde_json::json!({ "session": session, "reason": reason.code() }),
+        None => serde_json::json!({ "session": session }),
+    }
+}
+
 /// The answer to a check or a sign-out. A session the daemon does not know is answered `401` with
 /// `{"session":"unknown"}`, which only these two routes say: any other refusal (a wrong origin, a
 /// refused peer) is a `403` and says nothing about the session, so a page never signs itself out
-/// over a refusal that is not about its session.
+/// over a refusal that is not about its session. When the browser's cookie names a device that
+/// was removed, expired or replaced, the answer carries that as `reason`.
 fn standing_response<'a>(
     identity: Option<&SessionIdentity>,
     running: bool,
     head: &Head,
     end: bool,
+    gone: Option<GoneReason>,
 ) -> Response<'a> {
     let Some(session) = identity else {
         // A stopping daemon has cleared every session, so "unknown" would be a lie the page
-        // acts on: it would wipe a secret the carry-over to the next run is about to honour.
+        // acts on: it would sign out a page the carry-over to the next run is about to honour.
         if !running {
             return error_response(503, "Service Unavailable");
         }
-        return action_json(
-            401,
-            "Unauthorized",
-            &serde_json::json!({ "session": "unknown" }),
-        );
+        return action_json(401, "Unauthorized", &gone_body("unknown", gone));
     };
     if end {
-        session.end();
+        if session.sign_out() == Removal::Unavailable {
+            return error_response(503, "Service Unavailable");
+        }
         return Response {
             set_cookie: head
-                .credentials
-                .as_ref()
-                .map(|credentials| session_cookie_header(&credentials.cookie, 0)),
+                .cookie
+                .as_deref()
+                .map(|cookie| session_cookie_header(cookie, 0)),
             ..action_json(200, "OK", &serde_json::json!({ "session": "ended" }))
         };
     }
     Response {
-        set_cookie: head.credentials.as_ref().and_then(|credentials| {
+        set_cookie: head.cookie.as_deref().and_then(|cookie| {
             session
                 .cookie_max_age_s()
-                .map(|age| session_cookie_header(&credentials.cookie, age))
+                .map(|age| session_cookie_header(cookie, age))
         }),
         ..action_json(200, "OK", &serde_json::json!({ "session": "live" }))
     }
 }
 
-/// The shape of a browser action's head: HTTP/1.1; one Host, Origin, Cookie and secret each; JSON;
-/// and a decimal `Content-Length` within the route's cap, refused with `413` before any body is
-/// read. Whether the cookie and the secret name a live session, and who sent the request, are
-/// for [`Guard::admit`].
+/// The shape of a browser action's head: HTTP/1.1; one Host, Origin, Cookie and each signature
+/// header at most once; JSON; and a decimal `Content-Length` within the route's cap, refused with
+/// `413` before any body is read. Whether the cookie names a live device, whether the signature
+/// holds, and who sent the request, are for [`Guard::admit`].
 fn action_request(
     route: Route,
     version: Option<u8>,
@@ -1730,18 +1915,63 @@ fn action_request(
     let Some(action) = route.action() else {
         return Parsed::Response(error_response(403, "Forbidden"));
     };
-    browser_head(route, version, headers, action.max_body(), true)
+    let content_type: &[u8] = if action == ActionRoute::ChatFile {
+        b"application/octet-stream"
+    } else {
+        b"application/json"
+    };
+    browser_head(
+        route,
+        version,
+        headers,
+        action.max_body(),
+        true,
+        content_type,
+    )
 }
 
-/// The head of a check or a sign-out. Unlike an action it may carry no cookie or secret, or a
-/// malformed one: the page asks because it is not sure it still has a session, and the answer to
-/// a request with no usable credentials is that the session is unknown.
+/// The head of a check or a sign-out. Unlike an action it may carry no cookie, or a malformed
+/// one: the page asks because it is not sure it still has a session, and the answer to a request
+/// with no usable cookie is that the session is unknown.
 fn standing_request(
     route: Route,
     version: Option<u8>,
     headers: &[httparse::Header<'_>],
 ) -> Parsed<'static> {
-    browser_head(route, version, headers, MAX_STANDING_BODY, false)
+    browser_head(
+        route,
+        version,
+        headers,
+        MAX_STANDING_BODY,
+        false,
+        b"application/json",
+    )
+}
+
+/// The headers a page signs a request with, in the order [`Signed`] reads them: the origin it
+/// signed for, the time, the request id and the signature.
+const SIGNATURE_HEADERS: [&str; 4] = [
+    "X-Dudes-Origin",
+    "X-Dudes-Time",
+    "X-Dudes-Request",
+    "X-Dudes-Signature",
+];
+
+/// The four values a page presents, when it presents all of them. `Err` when one is repeated.
+fn presented_signature(headers: &[httparse::Header<'_>]) -> Result<Option<Signed>, ()> {
+    let mut presented = [None; 4];
+    for (slot, name) in presented.iter_mut().zip(SIGNATURE_HEADERS) {
+        *slot = unique_header(headers, name)?.and_then(|value| std::str::from_utf8(value).ok());
+    }
+    Ok(match presented {
+        [Some(origin), Some(time), Some(request), Some(signature)] => Some(Signed {
+            origin: origin.to_owned(),
+            time: time.to_owned(),
+            request: request.to_owned(),
+            signature: signature.to_owned(),
+        }),
+        _ => None,
+    })
 }
 
 fn browser_head(
@@ -1749,7 +1979,8 @@ fn browser_head(
     version: Option<u8>,
     headers: &[httparse::Header<'_>],
     max_body: usize,
-    credentials_required: bool,
+    cookie_required: bool,
+    content_type_wanted: &[u8],
 ) -> Parsed<'static> {
     if version != Some(1) || forbidden_framing(headers) {
         return Parsed::Response(error_response(400, "Bad Request"));
@@ -1767,7 +1998,7 @@ fn browser_head(
     let Ok(cookie) = unique_header(headers, "cookie") else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
-    let Ok(secret) = unique_header(headers, crate::floor_session::CSRF_HEADER_NAME) else {
+    let Ok(signed) = presented_signature(headers) else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
     let Some(host) = std::str::from_utf8(host).ok() else {
@@ -1779,21 +2010,13 @@ fn browser_head(
     let cookie = cookie
         .and_then(|value| std::str::from_utf8(value).ok())
         .and_then(session_cookie);
-    let secret = secret
-        .and_then(|value| std::str::from_utf8(value).ok())
-        .filter(|value| valid_nonce(value));
-    let credentials = match (cookie, secret) {
-        (Some(cookie), Some(secret)) => Some(Credentials {
-            cookie: cookie.to_owned(),
-            secret: secret.to_owned(),
-        }),
-        _ if credentials_required => return Parsed::Response(error_response(403, "Forbidden")),
-        _ => None,
-    };
+    if cookie.is_none() && cookie_required {
+        return Parsed::Response(error_response(403, "Forbidden"));
+    }
     let Some(content_type) = one_header(headers, "content-type") else {
         return Parsed::Response(error_response(400, "Bad Request"));
     };
-    if !content_type.eq_ignore_ascii_case(b"application/json") {
+    if !content_type.eq_ignore_ascii_case(content_type_wanted) {
         return Parsed::Response(error_response(400, "Bad Request"));
     }
     let Some(content_length) = one_header(headers, "content-length")
@@ -1811,7 +2034,10 @@ fn browser_head(
         head: Head {
             host: host.to_owned(),
             origin: origin.to_owned(),
-            credentials,
+            method: String::new(),
+            target: String::new(),
+            cookie: cookie.map(str::to_owned),
+            signed,
             content_length,
             accept: String::new(),
         },
@@ -1843,30 +2069,10 @@ fn onboard_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) 
     };
     let outcome = handle.onboard(session, request);
     match outcome {
-        Ok(OnboardOutcome::Complete {
-            attempt_id,
-            agent,
-            goal,
-        }) => action_json(
+        Ok(OnboardOutcome::Complete { attempt_id, agent }) => action_json(
             200,
             "OK",
-            &serde_json::json!({
-                "attempt_id":attempt_id,"state":"complete","agent":agent,"goal":goal
-            }),
-        ),
-        Ok(OnboardOutcome::Partial {
-            attempt_id,
-            agent,
-            reason,
-            current_goal,
-            retired,
-        }) => action_json(
-            409,
-            "Conflict",
-            &serde_json::json!({
-                "attempt_id":attempt_id,"state":"hired_without_goal","agent":agent,
-                "goal":null,"reason":reason,"current_goal":current_goal,"retired":retired
-            }),
+            &serde_json::json!({ "attempt_id": attempt_id, "state": "complete", "agent": agent }),
         ),
         Err(OnboardRefusal::Forbidden) => error_response(403, "Forbidden"),
         Err(OnboardRefusal::Conflict) => error_response(409, "Conflict"),
@@ -1893,6 +2099,14 @@ fn onboard_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) 
             "Conflict",
             &serde_json::json!({
                 "attempt_id": attempt_wire, "state": "refused", "reason": "shared_folder",
+                "note": refusal.to_string()
+            }),
+        ),
+        Err(OnboardRefusal::OwnCopy(refusal)) => action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({
+                "attempt_id": attempt_wire, "state": "refused", "reason": "own_copy",
                 "note": refusal.to_string()
             }),
         ),
@@ -2226,11 +2440,33 @@ fn retire_response<'a>(session: SessionIdentity, handle: &Handle, body: &[u8]) -
 enum ProjectVerb {
     Preview,
     Add,
+    Remove,
 }
 
-/// The project preview and add. A preview changes nothing. An add keeps its attempt for as long
-/// as it runs, so a retry meets `pending`; once it has run, adding the same folder again answers
-/// with the project that is already there.
+/// The system folder dialog: the daemon opens it and answers with the chosen path, or why there is
+/// none. The body is `{}` and nothing else. The path only fills the page's folder box, so choosing
+/// grants nothing that typing does not.
+fn choose_folder_response<'a>(handle: &Handle, body: &[u8]) -> Response<'a> {
+    use crate::folder_picker::Choice;
+    let is_empty_object =
+        serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(body)
+            .is_ok_and(|object| object.is_empty());
+    if !is_empty_object {
+        return error_response(400, "Bad Request");
+    }
+    let answer = match handle.choose_folder() {
+        Choice::Path(path) => serde_json::json!({ "path": path }),
+        Choice::Cancelled => serde_json::json!({ "cancelled": true }),
+        Choice::Busy => serde_json::json!({ "busy": true }),
+        Choice::Unavailable => serde_json::json!({ "unavailable": true }),
+    };
+    action_json(200, "OK", &answer)
+}
+
+/// The project preview, add and remove. A preview changes nothing. An add or remove keeps its
+/// attempt for as long as it runs, so a retry meets `pending`; once it has run, adding the same
+/// folder again answers with the project that is already there, and removing the same project
+/// again answers `unknown`.
 fn project_response<'a>(
     verb: ProjectVerb,
     session: SessionIdentity,
@@ -2272,6 +2508,25 @@ fn project_response<'a>(
                 };
             (ProjectRequest::Add(request), Some(reservation))
         }
+        ProjectVerb::Remove => {
+            let Some(request) = crate::floor_project::parse_remove(body) else {
+                return error_response(400, "Bad Request");
+            };
+            let reservation =
+                match session.reserve(ActionKind::Project, request.attempt_id, request.digest) {
+                    ReserveResult::Owner(reservation) => reservation,
+                    ReserveResult::Pending => {
+                        return action_json(
+                            202,
+                            "Accepted",
+                            &serde_json::json!({ "state": "pending" }),
+                        );
+                    }
+                    ReserveResult::Conflict => return error_response(409, "Conflict"),
+                    ReserveResult::Forbidden => return error_response(403, "Forbidden"),
+                };
+            (ProjectRequest::Remove(request), Some(reservation))
+        }
     };
     match handle.project(session, request) {
         Ok(ProjectAnswer::Preview(preview)) => action_json(
@@ -2283,6 +2538,11 @@ fn project_response<'a>(
             200,
             "OK",
             &serde_json::to_value(added).expect("an added project is finite JSON"),
+        ),
+        Ok(ProjectAnswer::Removed(removed)) => action_json(
+            200,
+            "OK",
+            &serde_json::to_value(removed).expect("a removed project is finite JSON"),
         ),
         Err(ProjectRefusal::Reason(reason)) => refused(reason.code()),
         Err(ProjectRefusal::ActionOff) => refused(crate::floor_switches::ACTION_OFF),
@@ -2536,6 +2796,57 @@ fn chat_response<'a>(
     }
 }
 
+/// One file from Chat: ask the writer which folder the agent keeps, then copy the bytes there.
+/// The writer is not held for the copy.
+fn chat_file_response<'a>(handle: &Handle, target: &str, body: &[u8]) -> Response<'a> {
+    use crate::floor_chat_file::{Refusal, store};
+    let agent = crate::floor_chat_file::query_value(target, "agent")
+        .and_then(|raw| String::from_utf8(raw).ok())
+        .and_then(|raw| {
+            dudes_types::AgentId::parse(&raw)
+                .ok()
+                .filter(|id| id.to_string() == raw)
+        });
+    let Some(agent) = agent else {
+        return error_response(400, "Bad Request");
+    };
+    let name = crate::floor_chat_file::query_value(target, "name").unwrap_or_default();
+    let refused = |reason: &str| {
+        action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({ "state": "refused", "reason": reason }),
+        )
+    };
+    let dir = match handle.chat_file_dir(agent) {
+        Ok(dir) => dir,
+        Err("unavailable") => return error_response(503, "Service Unavailable"),
+        Err(reason) => return refused(reason),
+    };
+    match store(&dir, &name, body) {
+        Ok(stored) => match handle.chat_file_kept(agent, &dir) {
+            Err(reason) => refused(reason),
+            Ok(()) => action_json(
+                200,
+                "OK",
+                &serde_json::json!({
+                    "path": stored.path.to_string_lossy(), "name": stored.name, "bytes": stored.bytes
+                }),
+            ),
+        },
+        Err(Refusal::Full(folder)) => action_json(
+            409,
+            "Conflict",
+            &serde_json::json!({
+                "state": "refused", "reason": "folder_full",
+                "folder": folder.to_string_lossy()
+            }),
+        ),
+        Err(Refusal::NotAFolder) => refused("not_a_folder"),
+        Err(Refusal::Io) => error_response(503, "Service Unavailable"),
+    }
+}
+
 fn action_json<'a>(code: u16, reason: &'static str, value: &serde_json::Value) -> Response<'a> {
     json_response(
         code,
@@ -2613,23 +2924,36 @@ fn upgrade_request(
     let Some(protocols) = header_text(headers, "sec-websocket-protocol") else {
         return Parsed::Response(error_response(403, "Forbidden"));
     };
-    let offered: Vec<_> = protocols.split(',').map(str::trim).collect();
-    if offered.len() != 2
-        || offered.iter().any(|item| item.is_empty())
-        || offered
-            .iter()
-            .filter(|item| **item == socket.protocol())
-            .count()
-            != 1
-    {
+    let mut route_protocols = 0;
+    let (mut signature, mut time, mut request) = (None, None, None);
+    for entry in protocols.split(',').map(str::trim) {
+        let slot = if entry == socket.protocol() {
+            route_protocols += 1;
+            continue;
+        } else if let Some(value) = entry.strip_prefix(SIGNATURE_PROTOCOL_PREFIX) {
+            (&mut signature, value)
+        } else if let Some(value) = entry.strip_prefix(TIME_PROTOCOL_PREFIX) {
+            (&mut time, value)
+        } else if let Some(value) = entry.strip_prefix(REQUEST_PROTOCOL_PREFIX) {
+            (&mut request, value)
+        } else {
+            return Parsed::Response(error_response(403, "Forbidden"));
+        };
+        if slot.0.replace(slot.1).is_some() {
+            return Parsed::Response(error_response(403, "Forbidden"));
+        }
+    }
+    if route_protocols != 1 {
         return Parsed::Response(error_response(403, "Forbidden"));
     }
-    let Some(csrf) = offered
-        .iter()
-        .find_map(|item| item.strip_prefix(CSRF_PROTOCOL_PREFIX))
-        .filter(|value| valid_nonce(value))
-    else {
-        return Parsed::Response(error_response(403, "Forbidden"));
+    let signed = match (signature, time, request) {
+        (Some(signature), Some(time), Some(request)) => Some(Signed {
+            origin: origin.to_owned(),
+            time: time.to_owned(),
+            request: request.to_owned(),
+            signature: signature.to_owned(),
+        }),
+        _ => None,
     };
     let Some(cookie) = header_text(headers, "cookie").and_then(session_cookie) else {
         return Parsed::Response(error_response(403, "Forbidden"));
@@ -2639,10 +2963,10 @@ fn upgrade_request(
         head: Head {
             host: host.to_owned(),
             origin: origin.to_owned(),
-            credentials: Some(Credentials {
-                cookie: cookie.to_owned(),
-                secret: csrf.to_owned(),
-            }),
+            method: String::new(),
+            target: String::new(),
+            cookie: Some(cookie.to_owned()),
+            signed,
             content_length: 0,
             accept,
         },
@@ -2715,7 +3039,7 @@ fn serve_websocket(
 
     let mut input = [0_u8; 8192];
     loop {
-        if stop_requested(phase) || !session.is_valid() {
+        if stop_requested(phase) || !session.renew_if_watched() {
             let _ = write_bytes(stream, &close_frame(), phase);
             return Ok(());
         }
@@ -2803,6 +3127,9 @@ fn handle_messages(
                         }
                         write_activity_frame(stream, &opened.snapshot, clock, phase)?;
                         *subscription = Some(opened.subscription);
+                    }
+                    (true, ClientMessage::Visibility { visible }) => {
+                        session.set_visible(visible);
                     }
                     (true, ClientMessage::Unsubscribe {}) => {
                         let _ = write_bytes(stream, &close_frame(), phase);
@@ -3231,7 +3558,7 @@ pub fn prepare(settings: &FloorSettings) -> Result<PreparedAssets> {
         port: settings.port,
         remembered: None,
         switches: SharedSwitches::default(),
-        terminal_csp: false,
+        logins: None,
         git: None,
         diff: None,
         board: Arc::new(TicketLimits::new()),
@@ -3239,7 +3566,45 @@ pub fn prepare(settings: &FloorSettings) -> Result<PreparedAssets> {
             Arc::new(crate::floor_peer::NoAgents),
             None,
         )),
+        devices: None,
     })
+}
+
+/// Where the Floor's devices become durable: each change goes to the daemon's writer and is
+/// answered once it is fsynced, and each durable change is told to the open pages.
+struct LoopDevices {
+    handle: Handle,
+    streams: FloorStreams,
+}
+
+impl crate::floor_session::DeviceSink for LoopDevices {
+    /// Wait for the writer's answer, but not past the daemon's exit or a few seconds: a request
+    /// that arrives while the writer is stopping must not hold the exit path up.
+    fn record(&self, change: dudes_supervisor::FloorDeviceChange) -> bool {
+        const BOUND: Duration = Duration::from_secs(5);
+        let Ok(answer) = self
+            .handle
+            .ask_queued(crate::ports::Ask::FloorDevice(change))
+        else {
+            return false;
+        };
+        let started = Instant::now();
+        loop {
+            match answer.recv_timeout(Duration::from_millis(50)) {
+                Ok(done) => return done.is_ok(),
+                Err(RecvTimeoutError::Timeout) => {
+                    if self.handle.is_stopping() || started.elapsed() >= BOUND {
+                        return false;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => return false,
+            }
+        }
+    }
+
+    fn announce(&self, event: &crate::floor_session::DeviceEvent) {
+        self.streams.publish_device_event(event);
+    }
 }
 
 fn validate_policy(row: &ManifestFile) -> Result<()> {
@@ -3528,9 +3893,9 @@ mod tests {
             assets,
             manifest,
             switches: &SWITCHES,
-            terminal_csp: false,
             git: None,
             diff: None,
+            logins: None,
             board: &BOARD,
             memory: &MEMORY,
             peer: open_gate(),

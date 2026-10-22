@@ -154,19 +154,19 @@ test('Crew says which agents write in their own worktree and which share a direc
   ];
   await withCrew((render) => {
     const html = render({ agents, selectedId: null, selectable: true });
-    assert.match(html, /<p class="crew-checkouts">Checkouts: 2 in own worktree · 3 share a directory<\/p>/);
+    assert.match(html, /<p class="crew-checkouts">Checkouts: 2 in their own copy · 3 share a directory<\/p>/);
     const entry = (name) => html.match(new RegExp(`<li class="crew-entry"[^>]*>(?:(?!</li>)[\\s\\S])*<strong class="crew-name">${name}</strong>[\\s\\S]*?</li>`))[0];
-    assert.match(entry('Ada'), /<small class="crew-checkout" data-checkout="worktree" title="Worktree dudes\/0123456789ab, in use">Worktree dudes\/0123456789ab, in use<\/small>/);
-    assert.match(entry('Grace'), />Worktree dudes\/ba9876543210, being created<\/small>/);
-    assert.match(entry('Knuth'), />Worktree dudes\/aaaaaaaaaaaa, removed<\/small>/);
+    assert.match(entry('Ada'), /<small class="crew-checkout" data-checkout="worktree" title="Own copy on branch dudes\/0123456789ab, in use">Own copy on branch dudes\/0123456789ab, in use<\/small>/);
+    assert.match(entry('Grace'), />Own copy on branch dudes\/ba9876543210, being created<\/small>/);
+    assert.match(entry('Knuth'), />Own copy on branch dudes\/aaaaaaaaaaaa, removed<\/small>/);
     const both = entry('Hamilton');
-    assert.match(both, />Worktree dudes\/bbbbbbbbbbbb, released, not yet removed<\/small>/);
+    assert.match(both, />Own copy on branch dudes\/bbbbbbbbbbbb, released, not yet removed<\/small>/);
     assert.match(both, /data-checkout="shared"[^>]*>Shared directory<\/small>/);
     assert.match(entry('Hopper'), /<small class="crew-checkout" data-checkout="shared"[^>]*>Shared directory<\/small>/);
     assert.match(entry('Hopper'), /Shared directory<\/span>/);
     assert.doesNotMatch(entry('Turing'), /crew-checkout/);
     assert.doesNotMatch(entry('Hopper'), /Worktree/);
-    assert.match(entry('Ada'), /Project: [^<]*\. Worktree dudes\/0123456789ab, in use<\/span>/);
+    assert.match(entry('Ada'), /Project: [^<]*\. Own copy on branch dudes\/0123456789ab, in use<\/span>/);
   });
 });
 

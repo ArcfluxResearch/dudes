@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use duded::config::load_operator;
 use duded::floor_actions::{Enrollment, Profile};
+use duded::floor_browser::{Browser, Page, Signed};
 use duded::ports::{Answered, Ask};
 use duded::runtime::{OnboardingFailurePoint, OnboardingPausePoint};
 use duded::settings::Seams;
@@ -24,11 +25,11 @@ use dudes_proto::record::{
     BrowserGoal, BrowserGoalKind, BrowserOnboardingGoal, BrowserOnboardingHire, BrowserRetire,
     Hex32, RecordKind,
 };
+use dudes_proto::rpc::Method;
 use dudes_proto::rpc::agent::RetireParams;
 use dudes_proto::rpc::cred::OperatorCredential;
 use dudes_proto::rpc::floor::SessionIssueResult;
 use dudes_proto::rpc::goal::GoalSetParams;
-use dudes_proto::rpc::{CurrentMethod, Method};
 use dudes_proto::{
     AgentBudget, BudgetScope, Goal, GoalBudget, LoopDecision, Predicate, Record, Spend, TurnOutcome,
 };
@@ -43,6 +44,7 @@ use dudes_providers::pi::PiAdapter;
 use dudes_providers::registry::Adapters;
 use dudes_providers::stream::{ScopedUsage, TurnReader};
 use dudes_rpc::Client;
+use dudes_supervisor::Clock as _;
 use dudes_supervisor::Input;
 use dudes_supervisor::testing::FakeRng;
 use dudes_types::{AgentId, GoalId, IsolationMode, Lsn, Tokens, TurnId, Usage, Usd};
@@ -50,10 +52,10 @@ use dudes_types::{ModelSelection, Provider, Tier};
 use serde_json::{Value, json};
 
 mod common;
-use common::{
-    Fixture, ScriptedRunner, SharedHost, TestClock, seams, seams_with, system32_program,
-    true_program,
-};
+use common::PageHttp as _;
+use common::{Fixture, ScriptedRunner, SharedHost, TestClock, system32_program, true_program};
+
+const STREAM_PROTOCOL: &str = "dudes-floor-v4";
 
 #[test]
 fn predicate_path_uses_the_system_root_and_survives_fixture_escaping() {
@@ -248,11 +250,13 @@ fn real_stub_seams_with(
     predicates: ScriptedRunner,
 ) -> Seams<RealHost, ScriptedRunner, TestClock, common::FixtureRng> {
     let children = ChildEnds::new();
+    let clock = Arc::new(TestClock::new());
+    follow_clock(&clock);
     Seams {
         host: RealHost::watching(Arc::new(HostStreams(Arc::clone(&children)))),
         pty_host: Box::new(duded::ports::ClosedPtyHost),
         predicates: Arc::new(predicates),
-        clock: Arc::new(TestClock::new()),
+        clock,
         rng: common::FixtureRng::from_rng(settings, FakeRng::new()),
         resolver: duded::classify::Resolver::fixed(Arc::new(duded::classify::NoWalk)),
         adapters: [Box::new(StubAdapter) as Box<dyn Adapter>]
@@ -265,7 +269,7 @@ fn real_stub_seams_with(
 
 const FLOOR_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/floor-release-v3"
+    "/tests/fixtures/floor-release-v5"
 );
 
 fn enrolled_settings(fixture: &Fixture) -> duded::Settings {
@@ -431,62 +435,95 @@ fn issue(settings: &duded::Settings) -> SessionIssueResult {
     serde_json::from_value(reply.result.expect("issue succeeded")).expect("typed issue")
 }
 
-fn exchange(addr: SocketAddr, bootstrap: &str) -> (String, String) {
-    let host = addr.to_string();
-    let mut stream = TcpStream::connect(addr).expect("Floor listener");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .expect("timeout");
-    let request = format!(
-        "POST /floor/session HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nContent-Type: text/plain;charset=UTF-8\r\nContent-Length: {}\r\n\r\n{bootstrap}",
-        bootstrap.len()
-    );
-    stream.write_all(request.as_bytes()).expect("exchange");
-    let head = read_head(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    let cookie = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Set-Cookie: dudes_floor_session="))
-        .and_then(|value| value.split(';').next())
-        .expect("cookie")
-        .to_owned();
-    let length: usize = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Content-Length: "))
-        .expect("length")
-        .parse()
-        .expect("decimal length");
-    let mut body = vec![0; length];
-    stream.read_exact(&mut body).expect("exchange body");
-    let csrf = serde_json::from_slice::<Value>(&body).expect("JSON")["csrf"]
-        .as_str()
-        .expect("csrf")
-        .to_owned();
-    (cookie, csrf)
+type Now = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+thread_local! {
+    static DAEMON_TIME: std::cell::RefCell<Option<Now>> = const { std::cell::RefCell::new(None) };
 }
 
-fn snapshot(addr: SocketAddr, cookie: &str, csrf: &str) -> (Value, Vec<u8>) {
-    snapshot_optional(addr, cookie, csrf).expect("authenticated Floor snapshot")
+/// A test daemon runs on a fake clock, and a request is accepted only within a minute of the
+/// daemon's own time, so the pages this test thread opens sign with the clock it booted with.
+fn follow_clock(clock: &Arc<TestClock>) {
+    let clock = Arc::clone(clock);
+    follow_time(Arc::new(move || clock.now().unix_millis()));
 }
 
-fn snapshot_optional(addr: SocketAddr, cookie: &str, csrf: &str) -> Option<(Value, Vec<u8>)> {
-    snapshot_optional_signaled(addr, cookie, csrf, None)
+fn follow_time(now: Now) {
+    DAEMON_TIME.with(|slot| *slot.borrow_mut() = Some(now));
+}
+
+fn daemon_time() -> Now {
+    DAEMON_TIME
+        .with(|slot| slot.borrow().clone())
+        .unwrap_or_else(|| {
+            let at = TestClock::new().now().unix_millis();
+            Arc::new(move || at)
+        })
+}
+
+fn seams<H: dudes_supervisor::host::ProcessHost, P: duded::predicate::PredicateRunner>(
+    settings: &duded::Settings,
+    host: H,
+    predicates: Arc<P>,
+    clock: Arc<TestClock>,
+    witness: Witness,
+) -> Seams<H, P, TestClock, common::FixtureRng> {
+    follow_clock(&clock);
+    common::seams(settings, host, predicates, clock, witness)
+}
+
+fn seams_with<H: dudes_supervisor::host::ProcessHost, P: duded::predicate::PredicateRunner>(
+    settings: &duded::Settings,
+    host: H,
+    predicates: Arc<P>,
+    clock: Arc<TestClock>,
+    witness: Witness,
+    resolver: Arc<dyn dudes_rpc::auth::PeerResolver>,
+) -> Seams<H, P, TestClock, common::FixtureRng> {
+    follow_clock(&clock);
+    common::seams_with(settings, host, predicates, clock, witness, resolver)
+}
+
+/// Enrol a new browser with `link`; the page signs at the daemon's time.
+fn exchange(addr: SocketAddr, link: &str) -> Arc<Page> {
+    let now = daemon_time();
+    Arc::new(Page::enrol_new_on(addr, link, move || now()))
+}
+
+fn presentation<'a>(
+    page: &'a Page,
+    host: &'a str,
+    origin: &'a str,
+) -> duded::floor_session::Presentation<'a> {
+    page.browser.presentation(
+        host,
+        origin,
+        &page.cookie,
+        "POST",
+        "/floor/test",
+        &[],
+        page.now_ms(),
+    )
+}
+
+#[track_caller]
+fn snapshot(page: &Page) -> (Value, Vec<u8>) {
+    snapshot_optional(page).expect("authenticated Floor snapshot")
+}
+
+fn snapshot_optional(page: &Page) -> Option<(Value, Vec<u8>)> {
+    snapshot_optional_signaled(page, None)
 }
 
 fn snapshot_optional_signaled(
-    addr: SocketAddr,
-    cookie: &str,
-    csrf: &str,
+    page: &Page,
     sent: Option<std::sync::mpsc::Sender<()>>,
 ) -> Option<(Value, Vec<u8>)> {
-    let host = addr.to_string();
-    let mut stream = TcpStream::connect(addr).expect("Floor listener");
+    let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("timeout");
-    let request = format!(
-        "GET /floor/stream HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: dudes-floor-v3, dudes-csrf.{csrf}\r\nCookie: dudes_floor_session={cookie}\r\n\r\n"
-    );
+    let request = page.upgrade_head("/floor/stream", STREAM_PROTOCOL);
     stream.write_all(request.as_bytes()).expect("upgrade");
     assert!(read_head(&mut stream).starts_with("HTTP/1.1 101 Switching Protocols"));
     let subscribe = br#"{"type":"floor.subscribe"}"#;
@@ -545,18 +582,66 @@ fn snapshot_optional_signaled(
     ))
 }
 
-fn upgrade_head(addr: SocketAddr, host: &str, origin: &str, cookie: &str, csrf: &str) -> String {
-    let mut stream = TcpStream::connect(addr).expect("Floor listener");
+/// The head a stream handshake gets back when the browser presents `cookie` and `signed`, to the
+/// `host` and `origin` it names.
+fn upgrade_head(
+    page: &Page,
+    host: &str,
+    origin: &str,
+    cookie: &str,
+    signed: Option<&Signed>,
+) -> String {
+    let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("timeout");
+    let protocols = signed.map_or_else(
+        || STREAM_PROTOCOL.to_owned(),
+        |signed| format!("{STREAM_PROTOCOL}, {}", signed.protocol_entries()),
+    );
     let request = format!(
-        "GET /floor/stream HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: dudes-floor-v3, dudes-csrf.{csrf}\r\nCookie: dudes_floor_session={cookie}\r\n\r\n"
+        "GET /floor/stream HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: {protocols}\r\nCookie: dudes_floor_session={cookie}\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
         .expect("upgrade request");
     read_head(&mut stream)
+}
+
+/// What a stream handshake gets back for each way a browser can present itself wrongly: the
+/// case, the status line it is refused with, and the head.
+fn refused_handshakes(page: &Page) -> Vec<(&'static str, &'static str, String)> {
+    let host = page.addr.to_string();
+    let origin = page.origin();
+    let signed = || page.signed("GET", "/floor/stream", &[]);
+    let foreign = Browser::new().sign("GET", "/floor/stream", &origin, &[], page.now_ms());
+    vec![
+        (
+            "Host",
+            "403 Forbidden",
+            upgrade_head(page, "invalid", &origin, &page.cookie, Some(&signed())),
+        ),
+        (
+            "Origin",
+            "403 Forbidden",
+            upgrade_head(page, &host, "null", &page.cookie, Some(&signed())),
+        ),
+        (
+            "cookie",
+            "403 Forbidden",
+            upgrade_head(page, &host, &origin, "invalid", Some(&signed())),
+        ),
+        (
+            "another browser's signature",
+            "401 Unauthorized",
+            upgrade_head(page, &host, &origin, &page.cookie, Some(&foreign)),
+        ),
+        (
+            "missing signature",
+            "401 Unauthorized",
+            upgrade_head(page, &host, &origin, &page.cookie, None),
+        ),
+    ]
 }
 
 /// The fixtures' enrolled check: one the operator declared may already pass, so a hire does not
@@ -602,49 +687,60 @@ fn naming_the_check(body: &Value) -> Value {
     body
 }
 
+/// The head of a POST of `body` to `path` that presents `cookie` and, when given, `signed`.
+fn post_head(
+    path: &str,
+    body: &[u8],
+    page: &Page,
+    cookie: &str,
+    signed: Option<&Signed>,
+) -> String {
+    format!(
+        "POST {path} HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\nCookie: dudes_floor_session={cookie}\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        page.addr,
+        page.origin(),
+        signed.map(Signed::header_lines).unwrap_or_default(),
+        body.len()
+    )
+}
+
+/// The head of a POST of `body` to `path` that the page signed just now.
+fn signed_post_head(page: &Page, path: &str, body: &[u8]) -> String {
+    let signed = page.signed("POST", path, body);
+    post_head(path, body, page, &page.cookie, Some(&signed))
+}
+
+/// The head of a POST that claims `length` body bytes and sends none, so the Floor refuses it on
+/// the head alone.
+fn oversize_head(page: &Page, path: &str, length: usize) -> String {
+    let signed = page.signed("POST", path, &[]);
+    format!(
+        "POST {path} HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\nCookie: dudes_floor_session={}\r\n{}Content-Type: application/json\r\nContent-Length: {length}\r\n\r\n",
+        page.addr,
+        page.origin(),
+        page.cookie,
+        signed.header_lines()
+    )
+}
+
+/// Values that another browser signed for this request, which the Floor must not take as the page's.
+fn foreign_signature(page: &Page, path: &str, body: &[u8]) -> Signed {
+    Browser::new().sign("POST", path, &page.origin(), body, page.now_ms())
+}
+
 #[track_caller]
-fn post_onboard(addr: SocketAddr, cookie: &str, csrf: &str, body: &Value) -> (String, Value) {
-    post_onboard_signaled(addr, cookie, csrf, body, None)
+fn post_onboard(page: &Page, body: &Value) -> (String, Value) {
+    post_onboard_signaled(page, body, None)
 }
 
 #[track_caller]
 fn post_onboard_signaled(
-    addr: SocketAddr,
-    cookie: &str,
-    csrf: &str,
+    page: &Page,
     body: &Value,
     sent: Option<std::sync::mpsc::Sender<()>>,
 ) -> (String, Value) {
-    let host = addr.to_string();
     let body = serde_json::to_vec(&naming_the_check(body)).expect("onboarding request JSON");
-    let mut stream = TcpStream::connect(addr).expect("Floor listener");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("timeout");
-    let head = format!(
-        "POST /floor/onboard HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        body.len()
-    );
-    stream.write_all(head.as_bytes()).expect("request head");
-    stream.write_all(&body).expect("request body");
-    if let Some(sent) = sent {
-        sent.send(()).expect("request sent signal");
-    }
-    let head = read_head(&mut stream);
-    let length: usize = head
-        .lines()
-        .find_map(|line| line.strip_prefix("Content-Length: "))
-        .expect("response length")
-        .parse()
-        .expect("decimal length");
-    let mut body = vec![0; length];
-    stream.read_exact(&mut body).expect("response body");
-    let value = if body.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&body).expect("response JSON")
-    };
-    (head, value)
+    post_bytes_within(page, "/floor/onboard", &body, sent, Duration::from_secs(5))
 }
 
 fn raw_onboard(addr: SocketAddr, request: &[u8]) -> (String, Vec<u8>) {
@@ -709,8 +805,8 @@ fn browser_enrollment_view_is_finite_and_safe() {
     .expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (frame, bytes) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (frame, bytes) = snapshot(&page);
     assert_eq!(frame["type"], "floor.snapshot");
     assert!(frame["projection"].is_object());
     assert_eq!(
@@ -721,7 +817,7 @@ fn browser_enrollment_view_is_finite_and_safe() {
                 "workspace_id":"repo_1", "label":"Service workspace", "engines":["claude"],
                 "goal_usd_micros":"5000000",
                 "agent_usd_per_day_micros":"10000000", "agent_tokens_per_day":null,
-                "goal_tokens":null, "hop_cap":3
+                "goal_tokens":null, "hop_cap":3, "trusted":false
             }]
         })
     );
@@ -734,7 +830,7 @@ fn browser_enrollment_view_is_finite_and_safe() {
 }
 
 #[test]
-fn enrolled_snapshot_refuses_wrong_host_origin_cookie_and_csrf() {
+fn enrolled_snapshot_refuses_wrong_host_origin_cookie_and_signature() {
     let fixture = Fixture::new();
     let settings = enrolled_settings(&fixture);
     let daemon = boot(
@@ -750,52 +846,14 @@ fn enrolled_snapshot_refuses_wrong_host_origin_cookie_and_csrf() {
     .expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let host = addr.to_string();
-    let origin = format!("http://{host}");
+    let page = exchange(addr, &issue(&settings).bootstrap);
     assert!(
-        snapshot(addr, &cookie, &csrf).0["onboarding"].is_object(),
+        snapshot(&page).0["onboarding"].is_object(),
         "positive control: this session has a catalog"
     );
-    for (label, candidate_host, candidate_origin, candidate_cookie, candidate_csrf) in [
-        (
-            "Host",
-            "invalid",
-            origin.as_str(),
-            cookie.as_str(),
-            csrf.as_str(),
-        ),
-        (
-            "Origin",
-            host.as_str(),
-            "null",
-            cookie.as_str(),
-            csrf.as_str(),
-        ),
-        (
-            "cookie",
-            host.as_str(),
-            origin.as_str(),
-            "invalid",
-            csrf.as_str(),
-        ),
-        (
-            "CSRF",
-            host.as_str(),
-            origin.as_str(),
-            cookie.as_str(),
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        ),
-    ] {
-        let head = upgrade_head(
-            addr,
-            candidate_host,
-            candidate_origin,
-            candidate_cookie,
-            candidate_csrf,
-        );
+    for (label, status, head) in refused_handshakes(&page) {
         assert!(
-            head.starts_with("HTTP/1.1 403 Forbidden"),
+            head.starts_with(&format!("HTTP/1.1 {status}")),
             "{label}: {head}"
         );
         assert!(
@@ -842,8 +900,8 @@ fn catalog_sentinels_stay_out_of_frame_asset_response_url_and_debug_log_values()
     let fault = daemon.onboarding_failure();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (frame, frame_bytes) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (frame, frame_bytes) = snapshot(&page);
     assert!(
         frame["onboarding"].is_object(),
         "positive control: eligible sentinel profile"
@@ -859,13 +917,13 @@ fn catalog_sentinels_stay_out_of_frame_asset_response_url_and_debug_log_values()
     fault.arm(OnboardingFailurePoint::Hire);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship",
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer",
         "check_id": "default",
         "check_revision": common::check_revision_as(
             "default", "Checks pass", &[true_program(), "private-argv-sentinel"], 10, true
         )
     });
-    let (failed_head, failed_body) = post_onboard(addr, &cookie, &csrf, &request);
+    let (failed_head, failed_body) = post_onboard(&page, &request);
     assert!(
         failed_head.starts_with("HTTP/1.1 503 Service Unavailable"),
         "{failed_head}"
@@ -922,8 +980,8 @@ fn browser_catalog_preserves_micro_dollars_above_javascript_safe_integer() {
     .expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (frame, _) = snapshot(&page);
     for value in [
         "floor_usd_per_day_micros",
         "agent_usd_per_day_micros",
@@ -971,8 +1029,8 @@ fn fresh_snapshot_omits_disabled_or_drifted_enrollment() {
         let daemon = boot(&settings, configured).expect("boot disabled Floor");
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (frame, _) = snapshot(addr, &cookie, &csrf);
+        let page = exchange(addr, &issue(&settings).bootstrap);
+        let (frame, _) = snapshot(&page);
         assert!(frame.get("onboarding").is_none(), "{case}");
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     }
@@ -993,17 +1051,17 @@ fn fresh_snapshot_omits_disabled_or_drifted_enrollment() {
     let mut running = common::start(daemon);
     std::fs::remove_dir_all(fixture.state.path().join("enrolled-repo/.git"))
         .expect("invalidate repository marker after boot");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (frame, _) = snapshot(&page);
     assert!(
         frame.get("onboarding").is_none(),
         "drifted workspace is not advertised"
     );
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
-    let (head, body) = post_onboard(addr, &cookie, &csrf, &request);
+    let (head, body) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{head}");
     assert!(body.is_null());
     assert!(!fixture.records().iter().any(|record| matches!(
@@ -1035,7 +1093,7 @@ fn uncapped_settings(fixture: &Fixture) -> duded::Settings {
 }
 
 /// A signed-in Floor over `settings` on a daemon whose registry holds Claude, Codex and Pi.
-fn every_engine_floor(settings: &duded::Settings) -> (common::Running, SocketAddr, String, String) {
+fn every_engine_floor(settings: &duded::Settings) -> (common::Running, SocketAddr, Arc<Page>) {
     let daemon = boot(
         settings,
         Seams {
@@ -1056,8 +1114,8 @@ fn every_engine_floor(settings: &duded::Settings) -> (common::Running, SocketAdd
     .expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(settings).bootstrap);
-    (running, addr, cookie, csrf)
+    let page = exchange(addr, &issue(settings).bootstrap);
+    (running, addr, page)
 }
 
 /// A browser hire of `repo_1` under the attempt id that starts with `attempt`, naming `provider`
@@ -1065,7 +1123,7 @@ fn every_engine_floor(settings: &duded::Settings) -> (common::Running, SocketAdd
 fn hire_request(attempt: char, provider: Option<&str>) -> Value {
     let mut request = json!({
         "attempt_id": format!("{attempt}{}", "A".repeat(42)),
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     if let Some(provider) = provider {
         request["provider"] = json!(provider);
@@ -1090,25 +1148,6 @@ fn browser_hires(fixture: &Fixture) -> Vec<(Provider, Option<IsolationMode>)> {
         .collect()
 }
 
-/// The binding ceiling of the first refused `BudgetDecision`, once one is on the disk.
-fn await_refused_ceiling(fixture: &Fixture) -> dudes_proto::Ceiling {
-    fixture.await_record("a refused BudgetDecision", |record| match record {
-        Record::BudgetDecision {
-            allowed: false,
-            ceiling,
-            ..
-        } => Some(*ceiling),
-        _ => None,
-    })
-}
-
-fn any_turn_issued(fixture: &Fixture) -> bool {
-    fixture
-        .records()
-        .iter()
-        .any(|record| matches!(record, Record::TurnIssued { .. }))
-}
-
 /// With `[floor.hire]` on and no budget anywhere, the catalog offers every
 /// registered engine with each ceiling `null`, the settings sibling reports the switch and the
 /// default reserves, and a hire of each engine completes.
@@ -1116,8 +1155,8 @@ fn any_turn_issued(fixture: &Fixture) -> bool {
 fn uncapped_hires_of_every_engine_need_no_budget() {
     let fixture = Fixture::new();
     let settings = uncapped_settings(&fixture);
-    let (mut running, addr, cookie, csrf) = every_engine_floor(&settings);
-    let frame = snapshot(addr, &cookie, &csrf).0;
+    let (mut running, _, page) = every_engine_floor(&settings);
+    let frame = snapshot(&page).0;
     assert_eq!(
         frame["onboarding"],
         json!({
@@ -1125,7 +1164,7 @@ fn uncapped_hires_of_every_engine_need_no_budget() {
             "workspaces": [{
                 "workspace_id":"repo_1", "label":"Service workspace",
                 "engines":["claude", "codex", "pi"], "goal_usd_micros":null, "agent_usd_per_day_micros":null,
-                "agent_tokens_per_day":null, "goal_tokens":null, "hop_cap":3
+                "agent_tokens_per_day":null, "goal_tokens":null, "hop_cap":3, "trusted":false
             }]
         })
     );
@@ -1138,7 +1177,7 @@ fn uncapped_hires_of_every_engine_need_no_budget() {
         })
     );
     for (attempt, provider) in [('A', None), ('B', Some("codex")), ('C', Some("pi"))] {
-        let (head, response) = post_onboard(addr, &cookie, &csrf, &hire_request(attempt, provider));
+        let (head, response) = post_onboard(&page, &hire_request(attempt, provider));
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{provider:?}: {head}");
         assert_eq!(response["state"], "complete", "{provider:?}");
     }
@@ -1158,9 +1197,9 @@ fn uncapped_hires_of_every_engine_need_no_budget() {
 fn browser_hires_of_codex_and_pi_record_the_engine_without_isolation() {
     let fixture = Fixture::new();
     let settings = enrolled_settings(&fixture);
-    let (mut running, addr, cookie, csrf) = every_engine_floor(&settings);
+    let (mut running, _, page) = every_engine_floor(&settings);
     for (attempt, provider) in [('A', Some("codex")), ('B', Some("pi")), ('C', None)] {
-        let (head, _) = post_onboard(addr, &cookie, &csrf, &hire_request(attempt, provider));
+        let (head, _) = post_onboard(&page, &hire_request(attempt, provider));
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{provider:?}: {head}");
     }
     assert_eq!(
@@ -1181,15 +1220,14 @@ fn browser_hires_of_codex_and_pi_record_the_engine_without_isolation() {
 fn an_engine_that_is_not_offered_is_refused_before_any_append() {
     let fixture = Fixture::new();
     let settings = enrolled_settings(&fixture);
-    let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
+    let (_, mut running, _, page) = default_floor(&settings);
     assert_eq!(
-        snapshot(addr, &cookie, &csrf).0["onboarding"]["workspaces"][0]["engines"],
+        snapshot(&page).0["onboarding"]["workspaces"][0]["engines"],
         json!(["claude"])
     );
     let before = fixture.records();
     for (attempt, provider) in [('A', "codex"), ('B', "pi")] {
-        let (head, body) =
-            post_onboard(addr, &cookie, &csrf, &hire_request(attempt, Some(provider)));
+        let (head, body) = post_onboard(&page, &hire_request(attempt, Some(provider)));
         assert!(
             head.starts_with("HTTP/1.1 403 Forbidden"),
             "{provider}: {head}"
@@ -1201,7 +1239,7 @@ fn an_engine_that_is_not_offered_is_refused_before_any_append() {
         before,
         "a refused engine appends nothing"
     );
-    let (head, _) = post_onboard(addr, &cookie, &csrf, &hire_request('C', None));
+    let (head, _) = post_onboard(&page, &hire_request('C', None));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "control: {head}");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -1212,19 +1250,19 @@ fn an_engine_that_is_not_offered_is_refused_before_any_append() {
 fn a_retry_that_changes_the_engine_conflicts() {
     let fixture = Fixture::new();
     let settings = enrolled_settings(&fixture);
-    let (mut running, addr, cookie, csrf) = every_engine_floor(&settings);
+    let (mut running, _, page) = every_engine_floor(&settings);
     let codex = hire_request('A', Some("codex"));
-    let (head, complete) = post_onboard(addr, &cookie, &csrf, &codex);
+    let (head, complete) = post_onboard(&page, &codex);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     for changed in [hire_request('A', Some("pi")), hire_request('A', None)] {
-        let (head, conflict) = post_onboard(addr, &cookie, &csrf, &changed);
+        let (head, conflict) = post_onboard(&page, &changed);
         assert!(
             head.starts_with("HTTP/1.1 409 Conflict"),
             "{changed}: {head}"
         );
         assert!(conflict.is_null(), "{changed}");
     }
-    let (_, retry) = post_onboard(addr, &cookie, &csrf, &codex);
+    let (_, retry) = post_onboard(&page, &codex);
     assert_eq!(retry, complete);
     assert_eq!(browser_hires(&fixture), [(Provider::Codex, None)]);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -1244,10 +1282,9 @@ fn a_billing_key_withdraws_codex_until_a_token_ceiling_counts() {
             "fixture-value-not-a-credential",
         ));
         settings.enrollment.profiles[0].agent_budget.tokens_per_day = tokens;
-        let (mut running, addr, cookie, csrf) = every_engine_floor(&settings);
-        let engines =
-            snapshot(addr, &cookie, &csrf).0["onboarding"]["workspaces"][0]["engines"].clone();
-        let (head, _) = post_onboard(addr, &cookie, &csrf, &hire_request('A', Some("codex")));
+        let (mut running, _, page) = every_engine_floor(&settings);
+        let engines = snapshot(&page).0["onboarding"]["workspaces"][0]["engines"].clone();
+        let (head, _) = post_onboard(&page, &hire_request('A', Some("codex")));
         if tokens.is_none() {
             assert_eq!(engines, json!(["claude", "pi"]));
             assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{head}");
@@ -1270,11 +1307,11 @@ fn browser_hire_is_refused_while_the_hire_switch_is_off() {
         let fixture = Fixture::new();
         let mut settings = enrolled_settings(&fixture);
         settings.floor_hire_enabled = enabled;
-        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-        let frame = snapshot(addr, &cookie, &csrf).0;
+        let (_, mut running, _, page) = default_floor(&settings);
+        let frame = snapshot(&page).0;
         assert_eq!(frame.get("onboarding").is_some(), enabled);
         assert_eq!(frame["settings"]["switches"]["hire"], enabled);
-        let (head, body) = post_onboard(addr, &cookie, &csrf, &hire_request('A', None));
+        let (head, body) = post_onboard(&page, &hire_request('A', None));
         if enabled {
             assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
         } else {
@@ -1286,112 +1323,95 @@ fn browser_hire_is_refused_while_the_hire_switch_is_off() {
     }
 }
 
-/// Invariant 4 for a browser hire: a ceiling the workspace sets still binds at admission. A goal
-/// token ceiling of 0 admits the hire and its goal, and the budget gate refuses the first turn with a
-/// journaled `BudgetDecision` in the goal scope. With no ceiling, the turn is issued.
-#[test]
-fn a_set_ceiling_still_refuses_a_browser_hire_at_admission() {
-    for ceiling in [Some(Tokens::ZERO), None] {
-        let fixture = Fixture::new();
-        let mut settings = uncapped_settings(&fixture);
-        settings.enrollment.profiles[0].goal_budget.tokens = ceiling;
-        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-        let (head, response) = post_onboard(addr, &cookie, &csrf, &hire_request('A', None));
-        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-        assert_eq!(response["state"], "complete");
-        if ceiling.is_some() {
-            let binding = await_refused_ceiling(&fixture);
-            assert_eq!(
-                (binding.scope, binding.tokens),
-                (BudgetScope::Goal, Some(Tokens::ZERO))
-            );
-            assert!(!any_turn_issued(&fixture), "no turn at a reached ceiling");
-        } else {
-            fixture.await_turn();
-        }
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+/// Plant what a daemon wrote before a hire started with a ticket: a Claude browser hire with its
+/// goal and the workspace's ceilings recorded, and its goal appended when `appended`.
+fn plant_old_hire(
+    fixture: &Fixture,
+    settings: &duded::Settings,
+    appended: bool,
+) -> (AgentId, dudes_proto::Goal) {
+    let profile = settings.enrollment.profiles[0].clone();
+    let agent = AgentId::from_parts(7, 1);
+    let goal = dudes_proto::Goal {
+        completion_check: None,
+        id: dudes_types::GoalId::from_parts(7, 2),
+        text: "ship".to_owned(),
+        predicate: profile.checks[0].predicate.clone(),
+        budget: profile.goal_budget,
+        hop_cap: profile.hop_cap,
+        baseline: Some(dudes_proto::CheckBaseline::MayAlreadyPass),
+    };
+    let attempt_id = Hex32::new([0x41; 32]);
+    let session_digest = Hex32::new([7; 32]);
+    let mut records = vec![Record::AgentHired {
+        character: None,
+        accent: None,
+        id: agent,
+        name: "Kim".to_owned(),
+        role: "engineer".to_owned(),
+        department: profile.department.clone(),
+        provider: Provider::Claude,
+        cwd: profile.cwd.clone(),
+        budget: profile.agent_budget,
+        sandbox: None,
+        isolation: Some(IsolationMode::Default),
+        max_turns: None,
+        max_budget: None,
+        trusted: false,
+        workspace: None,
+        worktree: None,
+        mcp_servers: Vec::new(),
+        browser_onboarding: Some(Box::new(BrowserOnboardingHire {
+            attempt_id,
+            request_digest: Hex32::new([5; 32]),
+            profile_id: profile.id.clone(),
+            session_digest,
+            intended_goal: Some(goal.clone()),
+            trust_lsn: None,
+        })),
+    }];
+    if appended {
+        records.push(Record::GoalSet {
+            agent,
+            goal: goal.clone(),
+            browser_onboarding: Some(BrowserOnboardingGoal {
+                attempt_id,
+                session_digest,
+            }),
+            browser_goal: None,
+            goal_replacement: None,
+        });
     }
+    seed(fixture, records);
+    (agent, goal)
 }
 
-/// A journal written before budgets were optional replays: a partial Claude browser hire recorded
-/// with the workspace's dollar ceilings and isolation completes its goal after the upgrade, and the
-/// ceilings it recorded still bind that goal's first turn.
+/// A journal written before a hire started with a ticket replays whatever it holds: a hire whose
+/// goal was appended keeps it, and a hire cut off before its goal comes back hired and idle, with no
+/// goal and no turn. New hires still work beside them.
 #[test]
-fn an_old_journal_with_ceilings_replays_and_its_ceilings_still_bind() {
-    let fixture = Fixture::new();
-    let mut settings = enrolled_settings(&fixture);
-    settings.enrollment.profiles[0].goal_budget.tokens = Some(Tokens::ZERO);
-    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
-    let daemon = boot(
-        &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::clone(&clock),
-            Witness::default(),
-        ),
-    )
-    .expect("first boot");
-    let pause = daemon.onboarding_pause();
-    pause.arm(OnboardingPausePoint::BeforeGoalPermit);
-    let addr = daemon.floor_addr().expect("Floor address");
-    let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let request = hire_request('A', None);
-    let owner_request = request.clone();
-    let owner = std::thread::spawn(move || post_onboard(addr, &cookie, &csrf, &owner_request));
-    assert!(
-        pause.wait_reached(Duration::from_secs(3)),
-        "the hire is durable before the goal"
-    );
-    clock.advance(30 * 24 * 60 * 60 * 1000);
-    pause.release();
-    let (_, partial) = owner.join().expect("partial response");
-    assert_eq!(partial["reason"], "session_expired");
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    let recorded = fixture
-        .records()
-        .into_iter()
-        .find_map(|record| match record {
-            Record::AgentHired {
-                provider,
-                isolation,
-                budget,
-                browser_onboarding: Some(_),
-                ..
-            } => Some((provider, isolation, budget)),
-            _ => None,
-        })
-        .expect("the partial hire");
-    assert_eq!(
-        recorded,
-        (
-            Provider::Claude,
-            Some(IsolationMode::Default),
-            AgentBudget {
-                usd_per_day: Some(Usd::from_dollars(10)),
-                tokens_per_day: None,
-            }
-        ),
-        "the record a Claude hire has always written"
-    );
-
-    let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-    let (head, complete) = post_onboard(addr, &cookie, &csrf, &request);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
-    assert_eq!(complete["state"], "complete");
-    let binding = await_refused_ceiling(&fixture);
-    assert_eq!(
-        (binding.scope, binding.usd, binding.tokens),
-        (
-            BudgetScope::Goal,
-            Some(Usd::from_dollars(5)),
-            Some(Tokens::ZERO)
-        )
-    );
-    assert!(!any_turn_issued(&fixture), "no turn at a reached ceiling");
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+fn an_old_journal_with_a_recorded_goal_replays() {
+    for appended in [true, false] {
+        let fixture = Fixture::new();
+        let settings = enrolled_settings(&fixture);
+        let (agent, goal) = plant_old_hire(&fixture, &settings, appended);
+        let (_, mut running, _, page) = default_floor(&settings);
+        let (frame, _) = snapshot(&page);
+        let row = frame["projection"]["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == agent.to_string())
+            .expect("the old hire is on the floor");
+        if appended {
+            assert_eq!(row["goal"]["id"], goal.id.to_string());
+        } else {
+            assert!(row["goal"].is_null(), "the cut-off hire has no goal: {row}");
+        }
+        let (head, body) = post_onboard(&page, &hire_request('B', None));
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
 }
 
 #[test]
@@ -1399,7 +1419,7 @@ fn an_old_journal_with_ceilings_replays_and_its_ceilings_still_bind() {
     clippy::too_many_lines,
     reason = "one end-to-end stub scenario asserts the complete durable effect chain"
 )]
-fn browser_hire_briefing_is_finite_and_attributed() {
+fn a_browser_hire_is_complete_with_the_hire_alone() {
     let fixture = Fixture::new();
     let repo = fixture.state.path().join("enrolled-repo");
     std::fs::create_dir_all(repo.join(".git")).expect("repository marker");
@@ -1433,28 +1453,23 @@ fn browser_hire_briefing_is_finite_and_attributed() {
     let daemon = boot(&settings, real_stub_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer",
-        "goal_text":"ship one feature"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
-    let (head, response) = post_onboard(addr, &cookie, &csrf, &request);
+    let (head, response) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert!(head.contains("Cache-Control: no-store"));
     assert!(!head.to_ascii_lowercase().contains("access-control-allow"));
     assert_eq!(response["state"], "complete");
+    assert!(response.get("goal").is_none(), "{response}");
     let agent = response["agent"].as_str().expect("real AgentId");
-    let goal = response["goal"].as_str().expect("real GoalId");
     let records = fixture.records();
     let encoded = serde_json::to_string(&fixture.entries()).expect("journal entries encode");
     assert!(
-        !encoded.contains(&cookie),
+        !encoded.contains(&page.cookie),
         "raw cookie is absent from journal truth"
-    );
-    assert!(
-        !encoded.contains(&csrf),
-        "raw CSRF is absent from journal truth"
     );
     assert!(
         !encoded.contains(request["attempt_id"].as_str().expect("attempt wire")),
@@ -1470,117 +1485,44 @@ fn browser_hire_briefing_is_finite_and_attributed() {
                 ..
             } => {
                 assert!(!trusted);
-                assert_eq!(meta.intended_goal.id.to_string(), goal);
+                assert!(meta.intended_goal.is_none(), "a hire carries no goal");
                 Some(id)
             }
             _ => None,
         })
         .collect();
-    let goals: Vec<_> = records
-        .iter()
-        .filter_map(|record| match record {
-            Record::GoalSet {
-                agent: owner,
-                goal: set,
-                browser_onboarding: Some(meta),
-                browser_goal: None,
-                goal_replacement: None,
-            } => {
-                assert_eq!(meta.attempt_id.bytes(), [0; 32]);
-                assert_eq!(owner.to_string(), agent);
-                assert_eq!(set.id.to_string(), goal);
-                Some(set)
-            }
-            _ => None,
-        })
-        .collect();
     assert_eq!(hires.len(), 1);
-    assert_eq!(goals.len(), 1);
-    let check = goals[0]
-        .completion_check
-        .as_ref()
-        .expect("the hire records the enrolled check's name");
-    let revision = common::check_revision_as("default", "Checks pass", &[true_program()], 10, true);
-    assert_eq!(
-        (
-            check.id.as_str(),
-            check.label.as_str(),
-            serde_json::to_value(check.revision).unwrap()
-        ),
-        ("default", "Checks pass", json!(revision))
-    );
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    assert_eq!(hires[0].to_string(), agent);
+    let (frame, _) = snapshot(&page);
     let row = frame["projection"]["agents"]
         .as_array()
         .unwrap()
         .iter()
         .find(|row| row["id"] == agent)
         .unwrap();
-    assert_eq!(
-        row["goal"]["completion_check"],
-        json!({"id": "default", "revision": revision, "label": "Checks pass"}),
-        "the Floor reads the name from the snapshot"
-    );
-    fixture.await_record(
-        "TurnSpawned by the daemon-owned stub",
-        |record| match record {
-            Record::TurnSpawned { .. } => Some(()),
-            _ => None,
-        },
-    );
-    fixture.await_record(
-        "TurnEnded by the daemon-owned stub",
-        |record| match record {
-            Record::TurnEnded { .. } => Some(()),
-            _ => None,
-        },
-    );
-    let effect_counts = |records: &[Record]| -> (usize, usize, usize, usize) {
+    assert!(row["goal"].is_null(), "the new agent has no goal: {row}");
+    let counts = |records: &[Record]| -> (usize, usize, usize) {
         (
             records
                 .iter()
-                .filter(|record| {
-                    matches!(
-                        record,
-                        Record::AgentHired {
-                            browser_onboarding: Some(_),
-                            ..
-                        }
-                    )
-                })
+                .filter(|record| matches!(record, Record::AgentHired { .. }))
                 .count(),
             records
                 .iter()
-                .filter(|record| {
-                    matches!(
-                        record,
-                        Record::GoalSet {
-                            browser_onboarding: Some(_),
-                            ..
-                        }
-                    )
-                })
+                .filter(|record| matches!(record, Record::GoalSet { .. }))
                 .count(),
             records
                 .iter()
                 .filter(|record| matches!(record, Record::TurnIssued { .. }))
                 .count(),
-            records
-                .iter()
-                .filter(|record| matches!(record, Record::TurnSpawned { .. }))
-                .count(),
         )
     };
-    let before = effect_counts(&fixture.records());
-    let (_, retry) = post_onboard(addr, &cookie, &csrf, &request);
+    let before = counts(&fixture.records());
+    let (_, retry) = post_onboard(&page, &request);
     assert_eq!(retry["agent"], agent);
-    assert_eq!(retry["goal"], goal);
-    assert_eq!(
-        effect_counts(&fixture.records()),
-        before,
-        "retry is read-only"
-    );
-    assert_eq!(before, (1, 1, 1, 1));
+    assert_eq!(retry["state"], "complete");
+    assert_eq!(counts(&fixture.records()), before, "the retry is read-only");
+    assert_eq!(before, (1, 0, 0), "one hire, no goal, no turn");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
@@ -1632,39 +1574,49 @@ fn browser_admission_and_four_hire_limit_are_journal_derived() {
     .expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let mut request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     let initial = fixture.records().len();
-    for (bad_cookie, bad_csrf) in [("invalid", csrf.as_str()), (cookie.as_str(), "invalid")] {
-        let (head, body) = post_onboard(addr, bad_cookie, bad_csrf, &request);
-        assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{head}");
-        assert!(body.is_null());
-    }
+    let bytes = serde_json::to_vec(&naming_the_check(&request)).expect("onboarding request JSON");
+    let signed = page.signed("POST", "/floor/onboard", &bytes);
+    let (head, body) = post_presenting(&page, "/floor/onboard", &bytes, "invalid", Some(&signed));
+    assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{head}");
+    assert!(body.is_null());
+    let foreign = foreign_signature(&page, "/floor/onboard", &bytes);
+    let (head, body) = post_presenting(
+        &page,
+        "/floor/onboard",
+        &bytes,
+        &page.cookie,
+        Some(&foreign),
+    );
+    assert!(head.starts_with("HTTP/1.1 401 Unauthorized"), "{head}");
+    assert_eq!(body, json!({"signature": "refused"}));
     for (key, value) in [("cwd", json!("/tmp/escape")), ("provider", json!("other"))] {
         let mut bad = request.clone();
         bad[key] = value;
-        let (head, body) = post_onboard(addr, &cookie, &csrf, &bad);
+        let (head, body) = post_onboard(&page, &bad);
         assert!(head.starts_with("HTTP/1.1 400 Bad Request"), "{head}");
         assert!(body.is_null());
     }
     request["attempt_id"] = json!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB");
-    let (head, _) = post_onboard(addr, &cookie, &csrf, &request);
+    let (head, _) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 400 Bad Request"), "{head}");
     assert_eq!(fixture.records().len(), initial);
 
     let mut first = None;
     for final_char in ["A", "E", "I", "M"] {
         request["attempt_id"] = json!(format!("{}{}", "A".repeat(42), final_char));
-        let (head, outcome) = post_onboard(addr, &cookie, &csrf, &request);
+        let (head, outcome) = post_onboard(&page, &request);
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
         if first.is_none() {
             first = Some((request.clone(), outcome.clone()));
         }
         if final_char == "I" {
-            let (frame, _) = snapshot(addr, &cookie, &csrf);
+            let (frame, _) = snapshot(&page);
             assert!(
                 frame["onboarding"].is_object(),
                 "three hires leave one slot"
@@ -1682,7 +1634,7 @@ fn browser_admission_and_four_hire_limit_are_journal_derived() {
         })))
         .expect("retire admitted");
     request["attempt_id"] = json!(format!("{}Q", "A".repeat(42)));
-    let (head, body) = post_onboard(addr, &cookie, &csrf, &request);
+    let (head, body) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{head}");
     assert!(body.is_null());
     let hires = fixture
@@ -1700,15 +1652,15 @@ fn browser_admission_and_four_hire_limit_are_journal_derived() {
         .count();
     assert_eq!(hires, 4);
     let (first_request, first_outcome) = first.expect("first hire");
-    let (_, retry) = post_onboard(addr, &cookie, &csrf, &first_request);
+    let (_, retry) = post_onboard(&page, &first_request);
     assert_eq!(retry, first_outcome);
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let (frame, _) = snapshot(&page);
     assert!(
         frame.get("onboarding").is_none(),
         "four durable hires hide this session's catalog"
     );
-    let (second_cookie, second_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (other, _) = snapshot(addr, &second_cookie, &second_csrf);
+    let second_page = exchange(addr, &issue(&settings).bootstrap);
+    let (other, _) = snapshot(&second_page);
     assert!(
         other["onboarding"].is_object(),
         "a separate session has independent slots"
@@ -1733,7 +1685,10 @@ macro_rules! rejection_case {
 rejection_case!(browser_post_rejects_wrong_host, "wrong Host");
 rejection_case!(browser_post_rejects_null_origin, "null Origin");
 rejection_case!(browser_post_rejects_duplicate_host, "duplicate Host");
-rejection_case!(browser_post_rejects_duplicate_csrf, "duplicate CSRF");
+rejection_case!(
+    browser_post_rejects_duplicate_signature,
+    "duplicate signature"
+);
 rejection_case!(
     browser_post_rejects_duplicate_json_member,
     "duplicate JSON member"
@@ -1766,13 +1721,14 @@ fn browser_post_rejection(selected: Option<&str>) {
     .expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let host = addr.to_string();
-    let body = r#"{"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","workspace_id":"repo_1","name":"Kim","role":"engineer","goal_text":"ship"}"#;
+    let body = r#"{"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","workspace_id":"repo_1","name":"Kim","role":"engineer"}"#;
     // An identity no other row uses, so the array row's attempt is free unless it is admitted.
     let fresh = format!("B{}", "A".repeat(42));
     let normal_headers = format!(
-        "Host: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\nContent-Type: application/json\r\n"
+        "Host: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={}\r\n{{SIGNED}}Content-Type: application/json\r\n",
+        page.cookie
     );
     let make = |headers: &str, body: &str| {
         format!(
@@ -1800,8 +1756,8 @@ fn browser_post_rejection(selected: Option<&str>) {
             400,
         ),
         (
-            "duplicate CSRF",
-            format!("{normal_headers}X-Dudes-CSRF: {csrf}\r\n"),
+            "duplicate signature",
+            format!("{normal_headers}X-Dudes-Signature: AAAA\r\n"),
             body.to_owned(),
             400,
         ),
@@ -1844,6 +1800,8 @@ fn browser_post_rejection(selected: Option<&str>) {
         if selected.is_some_and(|selected| selected != label) {
             continue;
         }
+        let signed = page.signed("POST", "/floor/onboard", body.as_bytes());
+        let headers = headers.replace("{SIGNED}", &signed.header_lines());
         let (head, returned) = raw_onboard(addr, make(&headers, &body).as_bytes());
         assert!(
             head.starts_with(&format!("HTTP/1.1 {status} ")),
@@ -1866,12 +1824,9 @@ fn browser_post_rejection(selected: Option<&str>) {
     // Nor did the array reserve its attempt: a different request under that identity completes,
     // where a held attempt would answer 202 and a recorded one 409.
     let (head, response) = post_onboard(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &json!({
             "attempt_id": fresh, "workspace_id": "repo_1", "name": "Other", "role": "engineer",
-            "goal_text": "ship"
         }),
     );
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
@@ -1897,9 +1852,12 @@ fn refused_body_drain_discards_a_pipelined_action_without_effects() {
     let addr = daemon.floor_addr().expect("Floor address");
     let probe = daemon.floor_gateway_probe().expect("Floor probe");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let signed = page.signed("POST", "/floor/onboard", &[b'x'; 4097]);
     let headers = format!(
-        "Host: {addr}\r\nOrigin: http://{addr}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\nContent-Type: application/json\r\n"
+        "Host: {addr}\r\nOrigin: http://{addr}\r\nCookie: dudes_floor_session={}\r\n{}Content-Type: application/json\r\n",
+        page.cookie,
+        signed.header_lines()
     );
     let before = fixture.records();
     let mut client = TcpStream::connect(addr).expect("refused client");
@@ -1928,7 +1886,7 @@ fn refused_body_drain_discards_a_pipelined_action_without_effects() {
         1,
         "the refused body is still draining"
     );
-    let body = json!({"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"});
+    let body = json!({"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "workspace_id":"repo_1", "name":"Kim", "role":"engineer"});
     let encoded = serde_json::to_vec(&body).expect("valid action body");
     let tail = format!(
         "POST /floor/onboard HTTP/1.1\r\n{headers}Content-Length: {}\r\n\r\n",
@@ -1952,7 +1910,7 @@ fn refused_body_drain_discards_a_pipelined_action_without_effects() {
         before,
         "the valid tail caused no journal effect"
     );
-    let (head, response) = post_onboard(addr, &cookie, &csrf, &body);
+    let (head, response) = post_onboard(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(
         response["state"], "complete",
@@ -1961,158 +1919,23 @@ fn refused_body_drain_discards_a_pipelined_action_without_effects() {
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// The request digest over the fields as the parser trims and admits them.
-fn onboard_digest(workspace_id: &str, name: &str, role: &str, goal_text: &str) -> [u8; 32] {
-    use sha2::{Digest as _, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"dudes.onboard.v1\0");
-    for (field, value) in [
-        ("workspace_id", workspace_id),
-        ("name", name),
-        ("role", role),
-        ("goal_text", goal_text),
-    ] {
-        hasher.update(u16::try_from(field.len()).unwrap().to_be_bytes());
-        hasher.update(field.as_bytes());
-        hasher.update(u32::try_from(value.len()).unwrap().to_be_bytes());
-        hasher.update(value.as_bytes());
-    }
-    hasher.finalize().into()
-}
-
-/// A new onboarding attempt whose `goal_text` holds U+0000 is
-/// refused in the new-attempt validation with the route's existing empty `400`, before
-/// any effect: no `AgentHired` and no `GoalSet`. That text would become the agent's goal, and no
-/// launch can carry U+0000.
-///
-/// Control, first: the same request with U+0001 in its place completes.
-///
-/// Durable retry: an attempt made durable before the refusal existed, planted with [`seed`] as a
-/// complete hire and goal whose recorded goal holds U+0000, still answers a same-key, same-payload
-/// retry from the journal-derived index with its original `200`.
-///
-/// Mutants: deleting the check hires the U+0000 attempt; refusing every `Cc` refuses the control;
-/// moving the check into `OnboardRequest::parse` refuses the durable retry.
+/// A hire request that carries `goal_text` is refused with the route's existing empty `400`,
+/// before any effect: no `AgentHired` and no `GoalSet`. The same request without it completes.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one planted journal serves the control, the refusal and the durable retry"
-)]
-fn browser_onboarding_goal_text_holding_nul_is_refused_before_effect() {
+fn browser_onboarding_with_a_goal_is_refused_before_effect() {
     let fixture = Fixture::new();
     let settings = enrolled_settings(&fixture);
-    let profile = settings.enrollment.profiles[0].clone();
-    let planted_agent = AgentId::from_parts(7, 1);
-    let planted_goal = dudes_proto::Goal {
-        completion_check: None,
-        id: dudes_types::GoalId::from_parts(7, 2),
-        text: "ship\u{0}it".to_owned(),
-        predicate: profile.checks[0].predicate.clone(),
-        budget: profile.goal_budget,
-        hop_cap: profile.hop_cap,
-        baseline: None,
-    };
-    // Forty-three `Q`s decode to the bytes 0x41 0x04 0x10, repeated; the index keys on those.
-    let durable = "Q".repeat(43);
-    let attempt = Hex32::new(std::array::from_fn(|k| [0x41, 0x04, 0x10][k % 3]));
-    let admitting = Hex32::new([7; 32]);
-    seed(
-        &fixture,
-        [
-            Record::AgentHired {
-                character: None,
-                accent: None,
-                id: planted_agent,
-                name: "Kim".to_owned(),
-                role: "engineer".to_owned(),
-                department: profile.department.clone(),
-                provider: Provider::Claude,
-                cwd: profile.cwd.clone(),
-                budget: profile.agent_budget,
-                sandbox: None,
-                isolation: Some(profile.isolation),
-                max_turns: None,
-                max_budget: None,
-                trusted: false,
-                workspace: None,
-                worktree: None,
-                mcp_servers: Vec::new(),
-                browser_onboarding: Some(Box::new(BrowserOnboardingHire {
-                    attempt_id: attempt,
-                    request_digest: Hex32::new(onboard_digest(
-                        "repo_1",
-                        "Kim",
-                        "engineer",
-                        "ship\u{0}it",
-                    )),
-                    profile_id: profile.id.clone(),
-                    session_digest: admitting,
-                    intended_goal: planted_goal.clone(),
-                })),
-            },
-            Record::GoalSet {
-                agent: planted_agent,
-                goal: planted_goal.clone(),
-                browser_onboarding: Some(BrowserOnboardingGoal {
-                    attempt_id: attempt,
-                    session_digest: admitting,
-                }),
-                browser_goal: None,
-                goal_replacement: None,
-            },
-        ],
-    );
-    let daemon = boot(
-        &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot Floor");
-    let addr = daemon.floor_addr().expect("Floor address");
-    let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let request = |attempt: &str, goal_text: &str| {
-        json!({
-            "attempt_id": attempt, "workspace_id": "repo_1", "name": "Kim", "role": "engineer",
-            "goal_text": goal_text
-        })
-    };
+    let (_, mut running, _, page) = default_floor(&settings);
     let effects = |records: &[Record]| {
         records
             .iter()
             .filter(|record| matches!(record, Record::AgentHired { .. } | Record::GoalSet { .. }))
             .count()
     };
-
-    let (head, complete) = post_onboard(
-        addr,
-        &cookie,
-        &csrf,
-        &request(&"A".repeat(43), "ship\u{1}it"),
-    );
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "control: {head}");
-    assert_eq!(complete["state"], "complete", "{complete}");
-    assert!(
-        fixture.records().iter().any(|record| matches!(
-            record,
-            Record::GoalSet { goal, browser_onboarding: Some(_), .. } if goal.text == "ship\u{1}it"
-        )),
-        "control: the initial goal is recorded with the bytes sent"
-    );
-
+    let mut request = hire_request('A', None);
+    request["goal_text"] = "ship".into();
     let before = effects(&fixture.records());
-    let refused_attempt = format!("AQ{}", "A".repeat(41));
-    let (head, refused) = post_onboard(
-        addr,
-        &cookie,
-        &csrf,
-        &request(&refused_attempt, "ship\u{0}it"),
-    );
+    let (head, refused) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 400 Bad Request"), "{head}");
     assert!(refused.is_null(), "the refusal has no onboarding envelope");
     assert_eq!(
@@ -2121,22 +1944,16 @@ fn browser_onboarding_goal_text_holding_nul_is_refused_before_effect() {
         "no AgentHired and no GoalSet"
     );
 
-    let mut older = request(&durable, "ship\u{0}it");
-    older["check_id"] = Value::Null;
-    let (head, retried) = post_onboard(addr, &cookie, &csrf, &older);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "durable retry: {head}");
-    assert_eq!(
-        retried,
-        json!({
-            "attempt_id": durable, "state": "complete",
-            "agent": planted_agent, "goal": planted_goal.id
-        }),
-        "the index answers with the original ids"
-    );
-    assert_eq!(
-        effects(&fixture.records()),
-        before,
-        "the retry appends nothing"
+    request.as_object_mut().unwrap().remove("goal_text");
+    let (head, complete) = post_onboard(&page, &request);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "control: {head}");
+    assert_eq!(complete["state"], "complete", "{complete}");
+    assert!(
+        fixture.records().iter().any(|record| matches!(
+            record,
+            Record::AgentHired { browser_onboarding: Some(meta), .. } if meta.intended_goal.is_none()
+        )),
+        "control: the hire records no goal"
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -2160,21 +1977,19 @@ fn concurrent_same_key_is_pending_and_changed_payload_refuses() {
     pause.arm(OnboardingPausePoint::BeforeHireAppend);
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
-    let owner_cookie = cookie.clone();
-    let owner_csrf = csrf.clone();
+    let owner_page = Arc::clone(&page);
     let owner_request = request.clone();
-    let owner =
-        std::thread::spawn(move || post_onboard(addr, &owner_cookie, &owner_csrf, &owner_request));
+    let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
         "writer reached the first append cut"
     );
-    let (head, pending) = post_onboard(addr, &cookie, &csrf, &request);
+    let (head, pending) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
     assert_eq!(
         pending,
@@ -2183,7 +1998,7 @@ fn concurrent_same_key_is_pending_and_changed_payload_refuses() {
     assert!(pending.get("agent").is_none() && pending.get("goal").is_none());
     let mut changed = request.clone();
     changed["name"] = json!("Other");
-    let (head, conflict) = post_onboard(addr, &cookie, &csrf, &changed);
+    let (head, conflict) = post_onboard(&page, &changed);
     assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
     assert!(conflict.is_null());
     assert!(!fixture.records().iter().any(|record| matches!(
@@ -2197,7 +2012,7 @@ fn concurrent_same_key_is_pending_and_changed_payload_refuses() {
     let (head, complete) = owner.join().expect("owner response");
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(complete["state"], "complete");
-    let (_, retry) = post_onboard(addr, &cookie, &csrf, &request);
+    let (_, retry) = post_onboard(&page, &request);
     assert_eq!(retry, complete);
     assert_eq!(
         fixture
@@ -2214,269 +2029,6 @@ fn concurrent_same_key_is_pending_and_changed_payload_refuses() {
         1
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
-
-#[test]
-fn local_goal_and_retirement_win_before_browser_initial_goal() {
-    let fixture = Fixture::new();
-    let settings = enrolled_settings(&fixture);
-    let daemon = boot(
-        &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::new(ScriptedRunner::default()),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("boot Floor");
-    let pause = daemon.onboarding_pause();
-    let addr = daemon.floor_addr().expect("Floor address");
-    let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-
-    for (last, retire) in [("A", false), ("E", true)] {
-        pause.arm(OnboardingPausePoint::BetweenEffects);
-        let request = json!({
-            "attempt_id":format!("{}{}", "A".repeat(42), last),
-            "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
-        });
-        let owner_cookie = cookie.clone();
-        let owner_csrf = csrf.clone();
-        let owner_request = request.clone();
-        let owner = std::thread::spawn(move || {
-            post_onboard(addr, &owner_cookie, &owner_csrf, &owner_request)
-        });
-        assert!(
-            pause.wait_reached(Duration::from_secs(3)),
-            "hire folded before goal continuation"
-        );
-        let agent = fixture
-            .records()
-            .iter()
-            .rev()
-            .find_map(|record| match record {
-                Record::AgentHired {
-                    id,
-                    browser_onboarding: Some(_),
-                    ..
-                } => Some(*id),
-                _ => None,
-            })
-            .expect("durable hire");
-        let local = if retire {
-            running
-                .handle
-                .ask_queued(Ask::Retire(Box::new(RetireParams {
-                    agent,
-                    reason: "operator retired".into(),
-                })))
-                .expect("retire queued")
-        } else {
-            running
-                .handle
-                .ask_queued(Ask::SetGoal(Box::new(common::goal_params(
-                    agent,
-                    &[true_program()],
-                ))))
-                .expect("local goal queued")
-        };
-        pause.release();
-        let answer = local
-            .recv_timeout(Duration::from_secs(3))
-            .expect("local writer answer")
-            .expect("local action admitted");
-        let (head, partial) = owner.join().expect("browser response");
-        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
-        assert_eq!(partial["state"], "hired_without_goal");
-        assert_eq!(partial["agent"], agent.to_string());
-        assert!(partial["goal"].is_null());
-        if retire {
-            assert_eq!(partial["reason"], "agent_retired");
-            assert_eq!(partial["retired"], true);
-            assert!(partial["current_goal"].is_null());
-        } else {
-            let Answered::GoalSet(set) = answer else {
-                panic!("local goal answer")
-            };
-            assert_eq!(partial["reason"], "goal_conflict");
-            assert_eq!(partial["current_goal"], set.goal.to_string());
-            assert_eq!(partial["retired"], false);
-        }
-        assert!(!fixture.records().iter().any(|record| matches!(record,
-            Record::GoalSet { agent: owner, browser_onboarding: Some(_), .. } if *owner == agent
-        )));
-    }
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
-
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "both durable local winners require the same live and replay controls"
-)]
-fn uncertain_local_goal_and_retirement_fence_browser_continuation() {
-    for (cut, retire) in [
-        (OnboardingFailurePoint::LocalGoal, false),
-        (OnboardingFailurePoint::LocalRetire, true),
-    ] {
-        let fixture = Fixture::new();
-        let settings = enrolled_settings(&fixture);
-        let daemon = boot(
-            &settings,
-            seams(
-                &settings,
-                SharedHost::new(),
-                Arc::new(ScriptedRunner::default()),
-                Arc::new(TestClock::new()),
-                Witness::default(),
-            ),
-        )
-        .expect("boot Floor");
-        let pause = daemon.onboarding_pause();
-        let fault = daemon.onboarding_failure();
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let request = json!({
-            "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
-        });
-        pause.arm(OnboardingPausePoint::BetweenEffects);
-        let owner_cookie = cookie.clone();
-        let owner_csrf = csrf.clone();
-        let owner_request = request.clone();
-        let owner = std::thread::spawn(move || {
-            post_onboard(addr, &owner_cookie, &owner_csrf, &owner_request)
-        });
-        assert!(pause.wait_reached(Duration::from_secs(3)), "durable hire");
-        let agent = fixture
-            .records()
-            .iter()
-            .find_map(|record| match record {
-                Record::AgentHired {
-                    id,
-                    browser_onboarding: Some(_),
-                    ..
-                } => Some(*id),
-                _ => None,
-            })
-            .expect("attributed hire");
-        fault.arm(cut);
-        let local = if retire {
-            running
-                .handle
-                .ask_queued(Ask::Retire(Box::new(RetireParams {
-                    agent,
-                    reason: "operator retired".into(),
-                })))
-                .expect("retire queued")
-        } else {
-            running
-                .handle
-                .ask_queued(Ask::SetGoal(Box::new(common::goal_params(
-                    agent,
-                    &[true_program()],
-                ))))
-                .expect("local goal queued")
-        };
-        pause.release();
-        assert!(
-            local
-                .recv_timeout(Duration::from_secs(3))
-                .expect("local writer answer")
-                .is_err(),
-            "{cut:?}: injected failure fired after fsync"
-        );
-        let (head, body) = owner.join().expect("browser response");
-        assert!(
-            head.starts_with("HTTP/1.1 503 Service Unavailable"),
-            "{cut:?}: {head}"
-        );
-        assert!(
-            body.is_null(),
-            "{cut:?}: uncertain truth has no response IDs"
-        );
-        let records = fixture.records();
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| matches!(record,
-                    Record::GoalSet { agent: owner, browser_onboarding: Some(_), .. }
-                        if *owner == agent
-                ))
-                .count(),
-            0,
-            "{cut:?}: browser must not overwrite durable local winner"
-        );
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| if retire {
-                    matches!(record, Record::AgentRetired { id, .. } if *id == agent)
-                } else {
-                    matches!(record, Record::GoalSet { agent: owner, browser_onboarding: None, .. }
-                        if *owner == agent)
-                })
-                .count(),
-            1,
-            "{cut:?}: local winner is durable"
-        );
-        let (pending_head, pending) = post_onboard(addr, &cookie, &csrf, &request);
-        assert!(
-            pending_head.starts_with("HTTP/1.1 202 Accepted"),
-            "{cut:?}: {pending_head}"
-        );
-        assert_eq!(pending["state"], "pending");
-        assert!(
-            snapshot_optional(addr, &cookie, &csrf).is_none(),
-            "{cut:?}: unresolved fold closes normal snapshot publication"
-        );
-        let mut fresh_request = request.clone();
-        fresh_request["attempt_id"] = json!(format!("{}E", "A".repeat(42)));
-        let (fresh_head, fresh_body) = post_onboard(addr, &cookie, &csrf, &fresh_request);
-        assert!(
-            fresh_head.starts_with("HTTP/1.1 503 Service Unavailable"),
-            "{cut:?}: {fresh_head}"
-        );
-        assert!(fresh_body.is_null());
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-
-        let daemon = boot(
-            &settings,
-            seams(
-                &settings,
-                SharedHost::new(),
-                Arc::new(ScriptedRunner::default()),
-                Arc::new(TestClock::new()),
-                Witness::default(),
-            ),
-        )
-        .expect("replay local winner");
-        let addr = daemon.floor_addr().expect("replayed Floor address");
-        let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (head, partial) = post_onboard(addr, &cookie, &csrf, &request);
-        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{cut:?}: {head}");
-        assert_eq!(partial["state"], "hired_without_goal");
-        assert_eq!(partial["agent"], agent.to_string());
-        assert_eq!(partial["retired"], retire);
-        assert_eq!(
-            partial["reason"],
-            if retire {
-                "agent_retired"
-            } else {
-                "goal_conflict"
-            }
-        );
-        assert_eq!(partial["current_goal"].is_null(), retire);
-        assert!(!fixture.records().iter().any(|record| matches!(record,
-            Record::GoalSet { agent: owner, browser_onboarding: Some(_), .. }
-                if *owner == agent
-        )));
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
 }
 
 #[test]
@@ -2503,22 +2055,20 @@ fn fenced_complete_retry_returns_original_ids_without_effects() {
     let fault = daemon.onboarding_failure();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let complete_request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
-    let (head, complete) = post_onboard(addr, &cookie, &csrf, &complete_request);
+    let (head, complete) = post_onboard(&page, &complete_request);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(complete["state"], "complete");
     let mut partial_request = complete_request.clone();
     partial_request["attempt_id"] = json!(format!("{}E", "A".repeat(42)));
     pause.arm(OnboardingPausePoint::BetweenEffects);
-    let owner_cookie = cookie.clone();
-    let owner_csrf = csrf.clone();
+    let owner_page = Arc::clone(&page);
     let owner_request = partial_request.clone();
-    let owner =
-        std::thread::spawn(move || post_onboard(addr, &owner_cookie, &owner_csrf, &owner_request));
+    let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(pause.wait_reached(Duration::from_secs(3)), "durable hire");
     let partial_agent = fixture
         .records()
@@ -2550,17 +2100,17 @@ fn fenced_complete_retry_returns_original_ids_without_effects() {
             .is_err(),
         "control: injected failure fired after fsync"
     );
-    let (head, body) = owner.join().expect("partial owner response");
+    let (head, second) = owner.join().expect("second owner response");
     assert!(
-        head.starts_with("HTTP/1.1 503 Service Unavailable"),
-        "control: fence is up: {head}"
+        head.starts_with("HTTP/1.1 200 OK"),
+        "a durable hire is complete even though the fence is up: {head}"
     );
-    assert!(body.is_null());
+    assert_eq!(second["state"], "complete");
     let before = fixture.records();
     let spawned = host.spawned().len();
 
     for retry in 1..=2 {
-        let (head, again) = post_onboard(addr, &cookie, &csrf, &complete_request);
+        let (head, again) = post_onboard(&page, &complete_request);
         assert!(
             head.starts_with("HTTP/1.1 200 OK"),
             "complete retry {retry} while fenced: {head}"
@@ -2568,23 +2118,22 @@ fn fenced_complete_retry_returns_original_ids_without_effects() {
         assert_eq!(again, complete, "complete retry {retry} keeps original IDs");
         let mut changed = complete_request.clone();
         changed["name"] = json!("Other");
-        let (head, conflict) = post_onboard(addr, &cookie, &csrf, &changed);
+        let (head, conflict) = post_onboard(&page, &changed);
         assert!(
             head.starts_with("HTTP/1.1 409 Conflict"),
             "changed payload {retry} while fenced: {head}"
         );
         assert!(conflict.is_null());
     }
-    let (head, pending) = post_onboard(addr, &cookie, &csrf, &partial_request);
+    let (head, again) = post_onboard(&page, &partial_request);
     assert!(
-        head.starts_with("HTTP/1.1 202 Accepted"),
-        "known partial stays pending while fenced: {head}"
+        head.starts_with("HTTP/1.1 200 OK"),
+        "the second hire's retry while fenced: {head}"
     );
-    assert_eq!(pending["state"], "pending");
-    assert!(pending.get("agent").is_none() && pending.get("goal").is_none());
+    assert_eq!(again, second, "it keeps the original IDs");
     let mut fresh_request = complete_request.clone();
     fresh_request["attempt_id"] = json!(format!("{}I", "A".repeat(42)));
-    let (head, fresh) = post_onboard(addr, &cookie, &csrf, &fresh_request);
+    let (head, fresh) = post_onboard(&page, &fresh_request);
     assert!(
         head.starts_with("HTTP/1.1 503 Service Unavailable"),
         "fresh attempt stays fenced: {head}"
@@ -2622,14 +2171,14 @@ fn session_expiry_before_each_append_has_distinct_truthful_outcomes() {
     let pause = daemon.onboarding_pause();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     pause.arm(OnboardingPausePoint::BeforeHireAppend);
     let owner_request = request.clone();
-    let owner = std::thread::spawn(move || post_onboard(addr, &cookie, &csrf, &owner_request));
+    let owner = std::thread::spawn(move || post_onboard(&page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
         "first permit cut"
@@ -2647,16 +2196,14 @@ fn session_expiry_before_each_append_has_distinct_truthful_outcomes() {
         }
     )));
 
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    pause.arm(OnboardingPausePoint::BeforeGoalPermit);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    pause.arm(OnboardingPausePoint::AfterHireFsync);
     let owner_request = request.clone();
-    let owner_cookie = cookie.clone();
-    let owner_csrf = csrf.clone();
-    let owner =
-        std::thread::spawn(move || post_onboard(addr, &owner_cookie, &owner_csrf, &owner_request));
+    let owner_page = Arc::clone(&page);
+    let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
-        "second permit cut"
+        "the hire is on disk"
     );
     let durable_hire = fixture
         .records()
@@ -2674,19 +2221,13 @@ fn session_expiry_before_each_append_has_distinct_truthful_outcomes() {
     assert_eq!(durable_hire, 1);
     clock.advance(30 * 24 * 60 * 60 * 1000);
     pause.release();
-    let (head, body) = owner.join().expect("partial response");
-    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
-    assert_eq!(body["state"], "hired_without_goal");
-    assert_eq!(body["reason"], "session_expired");
+    let (head, body) = owner.join().expect("complete response");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(
+        body["state"], "complete",
+        "a durable hire is not undone by expiry"
+    );
     assert!(body["agent"].is_string());
-    assert!(body["goal"].is_null());
-    assert!(!fixture.records().iter().any(|record| matches!(
-        record,
-        Record::GoalSet {
-            browser_onboarding: Some(_),
-            ..
-        }
-    )));
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
@@ -2707,35 +2248,26 @@ fn expired_follower_after_registry_lock_wait_gets_empty_forbidden() {
     )
     .expect("boot Floor");
     let pause = daemon.onboarding_pause();
-    pause.arm(OnboardingPausePoint::AfterGoalPermit);
+    pause.arm(OnboardingPausePoint::AfterHirePermit);
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
-    let owner_cookie = cookie.clone();
-    let owner_csrf = csrf.clone();
+    let owner_page = Arc::clone(&page);
     let owner_request = request.clone();
-    let owner =
-        std::thread::spawn(move || post_onboard(addr, &owner_cookie, &owner_csrf, &owner_request));
+    let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
-        "owner holds the goal append permit"
+        "owner holds the hire append permit"
     );
     let (sent_tx, sent_rx) = std::sync::mpsc::channel();
-    let follower_cookie = cookie.clone();
-    let follower_csrf = csrf.clone();
+    let follower_page = Arc::clone(&page);
     let follower_request = request.clone();
     let follower = std::thread::spawn(move || {
-        post_onboard_signaled(
-            addr,
-            &follower_cookie,
-            &follower_csrf,
-            &follower_request,
-            Some(sent_tx),
-        )
+        post_onboard_signaled(&follower_page, &follower_request, Some(sent_tx))
     });
     sent_rx
         .recv_timeout(Duration::from_secs(3))
@@ -2753,20 +2285,10 @@ fn expired_follower_after_registry_lock_wait_gets_empty_forbidden() {
         head.starts_with("HTTP/1.1 403 Forbidden"),
         "expired follower must not get 202: {head}"
     );
-    assert!(body.is_null(), "no typed attempt ID after expiry");
     assert_eq!(
-        fixture
-            .records()
-            .iter()
-            .filter(|record| matches!(
-                record,
-                Record::AgentHired {
-                    browser_onboarding: Some(_),
-                    ..
-                }
-            ))
-            .count(),
-        1
+        body,
+        json!({"session": "gone", "reason": "expired"}),
+        "no typed attempt ID after expiry, only that the device ran out"
     );
     assert_eq!(
         fixture
@@ -2774,7 +2296,7 @@ fn expired_follower_after_registry_lock_wait_gets_empty_forbidden() {
             .iter()
             .filter(|record| matches!(
                 record,
-                Record::GoalSet {
+                Record::AgentHired {
                     browser_onboarding: Some(_),
                     ..
                 }
@@ -2807,28 +2329,32 @@ fn expired_same_key_follower_blocked_in_reservation_gets_empty_forbidden() {
     let mut running = common::start(daemon);
     let host = addr.to_string();
     let origin = format!("http://{host}");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     // Idle-fresh up to one minute short of the absolute bound, so only that bound can pass.
-    for _ in 0..31 {
-        clock.advance(23 * 60 * 60 * 1000);
+    assert!(
+        authorizer
+            .authorize_read(&presentation(&page, &host, &origin))
+            .is_ok(),
+        "its first request, inside the day"
+    );
+    for _ in 0..3 {
+        clock.advance(29 * 24 * 60 * 60 * 1000);
         assert!(
             authorizer
-                .authorize_read(&host, &origin, &cookie, &csrf)
-                .is_some(),
+                .authorize_read(&presentation(&page, &host, &origin))
+                .is_ok(),
             "activity keeps the session idle-fresh"
         );
     }
-    clock.advance((7 * 60 - 1) * 60 * 1000);
+    clock.advance((3 * 24 * 60 - 1) * 60 * 1000);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     pause.arm(OnboardingPausePoint::BeforeHireAppend);
-    let owner_cookie = cookie.clone();
-    let owner_csrf = csrf.clone();
+    let owner_page = Arc::clone(&page);
     let owner_request = request.clone();
-    let owner =
-        std::thread::spawn(move || post_onboard(addr, &owner_cookie, &owner_csrf, &owner_request));
+    let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
         "owner holds the attempt reservation before its hire permit"
@@ -2839,7 +2365,7 @@ fn expired_same_key_follower_blocked_in_reservation_gets_empty_forbidden() {
         reached_tx.send(()).expect("reservation reached");
         let _ = go_rx.recv_timeout(Duration::from_secs(5));
     });
-    let follower = std::thread::spawn(move || post_onboard(addr, &cookie, &csrf, &request));
+    let follower = std::thread::spawn(move || post_onboard(&page, &request));
     let reached = reached_rx.recv_timeout(Duration::from_secs(3)).is_ok();
     clock.advance(60 * 1000);
     let _ = go_tx.send(());
@@ -2878,110 +2404,6 @@ fn expired_same_key_follower_blocked_in_reservation_gets_empty_forbidden() {
 }
 
 #[test]
-fn replayed_partial_refuses_every_effective_profile_change() {
-    let fixture = Fixture::new();
-    let settings = enrolled_settings(&fixture);
-    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
-    let fixture_parts = seams(
-        &settings,
-        SharedHost::new(),
-        Arc::new(ScriptedRunner::default()),
-        Arc::clone(&clock),
-        Witness::default(),
-    );
-    let daemon = boot(&settings, fixture_parts).expect("first boot");
-    let pause = daemon.onboarding_pause();
-    pause.arm(OnboardingPausePoint::BeforeGoalPermit);
-    let addr = daemon.floor_addr().expect("Floor address");
-    let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let request = json!({
-        "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
-    });
-    let owner_request = request.clone();
-    let owner = std::thread::spawn(move || post_onboard(addr, &cookie, &csrf, &owner_request));
-    assert!(
-        pause.wait_reached(Duration::from_secs(3)),
-        "durable partial hire"
-    );
-    clock.advance(30 * 24 * 60 * 60 * 1000);
-    pause.release();
-    let (_, partial) = owner.join().expect("partial result");
-    assert_eq!(partial["reason"], "session_expired");
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    let new_repo = fixture.state.path().join("different-repo");
-    std::fs::create_dir_all(new_repo.join(".git")).expect("new repository marker");
-
-    for change in [
-        "removed",
-        "cwd",
-        "department",
-        "isolation",
-        "agent_budget",
-        "goal_budget",
-        "predicate_argv",
-        "predicate_timeout",
-        "hop_cap",
-    ] {
-        let mut changed = settings.clone();
-        if change == "removed" {
-            changed.enrollment.profiles.clear();
-        } else {
-            let profile = &mut changed.enrollment.profiles[0];
-            match change {
-                "cwd" => profile.cwd = new_repo.canonicalize().expect("canonical alternate"),
-                "department" => profile.department = "infra".into(),
-                "isolation" => profile.isolation = IsolationMode::Inherit,
-                "agent_budget" => profile.agent_budget.usd_per_day = Some(Usd::from_dollars(11)),
-                "goal_budget" => profile.goal_budget.usd = Some(Usd::from_dollars(6)),
-                "predicate_argv" => {
-                    profile.checks[0].predicate = Predicate::Command {
-                        argv: vec!["/usr/bin/false".into()],
-                        timeout_s: 10,
-                    }
-                }
-                "predicate_timeout" => {
-                    profile.checks[0].predicate = Predicate::Command {
-                        argv: vec![true_program().into()],
-                        timeout_s: 11,
-                    }
-                }
-                "hop_cap" => profile.hop_cap = 4,
-                _ => unreachable!(),
-            }
-        }
-        let daemon = boot(
-            &changed,
-            seams(
-                &changed,
-                SharedHost::new(),
-                Arc::new(ScriptedRunner::default()),
-                Arc::new(TestClock::new()),
-                Witness::default(),
-            ),
-        )
-        .expect("replay with changed profile");
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&changed).bootstrap);
-        let before = fixture.records();
-        let (head, outcome) = post_onboard(addr, &cookie, &csrf, &request);
-        assert!(
-            head.starts_with("HTTP/1.1 409 Conflict"),
-            "{change}: {head}"
-        );
-        assert_eq!(outcome["reason"], "profile_changed", "{change}");
-        assert_eq!(
-            fixture.records(),
-            before,
-            "{change}: retry cannot replace the goal"
-        );
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
-}
-
-#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one session registry proves both losing and winning permit orders"
@@ -3006,20 +2428,19 @@ fn session_revocation_linearizes_with_both_append_permits() {
     let mut running = common::start(daemon);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
 
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     pause.arm(OnboardingPausePoint::BeforeHireAppend);
     let owner_request = request.clone();
-    let owner_cookie = cookie.clone();
-    let owner =
-        std::thread::spawn(move || post_onboard(addr, &owner_cookie, &csrf, &owner_request));
+    let owner_page = Arc::clone(&page);
+    let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
         "first permit cut"
     );
-    assert!(authorizer.revoke_for_test(&cookie));
+    assert!(authorizer.revoke_for_test(&page.cookie));
     pause.release();
     let (head, body) = owner.join().expect("no-effect response");
     assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{head}");
@@ -3032,34 +2453,34 @@ fn session_revocation_linearizes_with_both_append_permits() {
         }
     )));
 
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    pause.arm(OnboardingPausePoint::BeforeGoalPermit);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    pause.arm(OnboardingPausePoint::AfterHireFsync);
     let owner_request = request.clone();
-    let owner_cookie = cookie.clone();
-    let owner =
-        std::thread::spawn(move || post_onboard(addr, &owner_cookie, &csrf, &owner_request));
+    let owner_page = Arc::clone(&page);
+    let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
-        "second permit cut"
+        "the hire is on disk"
     );
-    assert!(authorizer.revoke_for_test(&cookie));
+    assert!(authorizer.revoke_for_test(&page.cookie));
     pause.release();
-    let (head, body) = owner.join().expect("partial response");
-    assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
-    assert_eq!(body["reason"], "session_revoked");
-    assert!(body["agent"].is_string() && body["goal"].is_null());
+    let (head, body) = owner.join().expect("complete response");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(
+        body["state"], "complete",
+        "a durable hire is not undone by revocation"
+    );
 
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let mut next = request.clone();
     next["attempt_id"] = json!(format!("{}E", "A".repeat(42)));
-    pause.arm(OnboardingPausePoint::AfterGoalPermit);
+    pause.arm(OnboardingPausePoint::AfterHirePermit);
     let owner_request = next;
-    let owner_cookie = cookie.clone();
-    let owner =
-        std::thread::spawn(move || post_onboard(addr, &owner_cookie, &csrf, &owner_request));
+    let owner_page = Arc::clone(&page);
+    let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
-        "goal append holds permit"
+        "the hire append holds its permit"
     );
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -3067,7 +2488,7 @@ fn session_revocation_linearizes_with_both_append_permits() {
     let revoker = std::thread::spawn(move || {
         started_tx.send(()).expect("started signal");
         done_tx
-            .send(revoke.revoke_for_test(&cookie))
+            .send(revoke.revoke_for_test(&page.cookie))
             .expect("revoke result");
     });
     started_rx
@@ -3101,261 +2522,7 @@ fn session_revocation_linearizes_with_both_append_permits() {
             .count(),
         2
     );
-    assert_eq!(
-        fixture
-            .records()
-            .iter()
-            .filter(|record| matches!(
-                record,
-                Record::GoalSet {
-                    browser_onboarding: Some(_),
-                    ..
-                }
-            ))
-            .count(),
-        1
-    );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
-
-fn issued_onboarding_fence(
-    fixture: &Fixture,
-    handle: &duded::Handle,
-    agent: AgentId,
-    goal: GoalId,
-) {
-    nth_turn(fixture, goal, 0);
-    let before = fixture.records();
-    let stopped = handle.ask(Ask::Pause(agent)).unwrap_err();
-    assert_eq!(stopped.code, dudes_proto::rpc::ErrorCode::Refused.code());
-    assert_eq!(
-        stopped.message,
-        "journal state unresolved; restart to replay before new work or writes"
-    );
-    assert_eq!(
-        fixture.records(),
-        before,
-        "the fenced probe appends nothing"
-    );
-    let counts = (
-        before.iter().filter(|record| matches!(record, Record::AgentHired { id, .. } if *id == agent)).count(),
-        before.iter().filter(|record| matches!(record, Record::GoalSet { agent: owner, goal: issued, .. } if *owner == agent && issued.id == goal)).count(),
-        before.iter().filter(|record| matches!(record, Record::TurnIssued { agent: owner, goal: issued, .. } if *owner == agent && *issued == goal)).count(),
-        before.iter().filter(|record| matches!(record, Record::TurnSpawned { agent: owner, .. } if *owner == agent)).count(),
-    );
-    assert_eq!(counts, (1, 1, 1, 0));
-}
-
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the journal cuts share one exact record and Spawn counter"
-)]
-fn post_fsync_cuts_replay_one_hire_goal_and_turn() {
-    for cut in [
-        OnboardingFailurePoint::Hire,
-        OnboardingFailurePoint::HireProjection,
-        OnboardingFailurePoint::Goal,
-        OnboardingFailurePoint::TurnIssued,
-    ] {
-        let fixture = Fixture::new();
-        let settings = enrolled_settings(&fixture);
-        let daemon = boot(
-            &settings,
-            seams(
-                &settings,
-                SharedHost::new(),
-                Arc::new(ScriptedRunner::default()),
-                Arc::new(TestClock::new()),
-                Witness::default(),
-            ),
-        )
-        .expect("first boot");
-        daemon.onboarding_failure().arm(cut);
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let request = json!({
-            "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
-        });
-        let (head, body) = post_onboard(addr, &cookie, &csrf, &request);
-        if cut != OnboardingFailurePoint::TurnIssued {
-            assert!(
-                head.starts_with("HTTP/1.1 503 Service Unavailable"),
-                "{cut:?}: {head}"
-            );
-            assert!(
-                body.is_null(),
-                "{cut:?}: uncertain durability invents no IDs"
-            );
-        }
-        let mut durable = fixture.records();
-        let (agent, goal) = durable
-            .iter()
-            .find_map(|record| match record {
-                Record::AgentHired {
-                    id,
-                    browser_onboarding: Some(meta),
-                    ..
-                } => Some((*id, meta.intended_goal.id)),
-                _ => None,
-            })
-            .expect("hire fsynced before cut");
-        if cut == OnboardingFailurePoint::TurnIssued {
-            assert!(head.starts_with("HTTP/1.1 200 OK"), "{cut:?}: {head}");
-            assert_eq!(
-                body,
-                json!({"attempt_id":request["attempt_id"], "state":"complete", "agent":agent, "goal":goal})
-            );
-            issued_onboarding_fence(&fixture, &running.handle, agent, goal);
-            durable = fixture.records();
-            let (retry_head, retry) = post_onboard(addr, &cookie, &csrf, &request);
-            assert!(retry_head.starts_with("HTTP/1.1 200 OK"), "{retry_head}");
-            assert_eq!(retry, body);
-            let mut fresh = request.clone();
-            fresh["attempt_id"] = json!(format!("{}E", "A".repeat(42)));
-            let (fresh_head, fresh_body) = post_onboard(addr, &cookie, &csrf, &fresh);
-            assert!(
-                fresh_head.starts_with("HTTP/1.1 503 Service Unavailable"),
-                "{fresh_head}"
-            );
-            assert!(fresh_body.is_null());
-            assert_eq!(
-                fixture.records(),
-                durable,
-                "indexed retry and fresh refusal append nothing"
-            );
-            let shown = snapshot_optional(addr, &cookie, &csrf);
-            assert!(
-                shown
-                    .as_ref()
-                    .is_none_or(|(frame, _)| frame.get("onboarding").is_none())
-            );
-        }
-        let counts = |records: &[Record]| {
-            (
-                records
-                    .iter()
-                    .filter(|record| {
-                        matches!(
-                            record,
-                            Record::AgentHired {
-                                browser_onboarding: Some(_),
-                                ..
-                            }
-                        )
-                    })
-                    .count(),
-                records
-                    .iter()
-                    .filter(|record| {
-                        matches!(
-                            record,
-                            Record::GoalSet {
-                                browser_onboarding: Some(_),
-                                ..
-                            }
-                        )
-                    })
-                    .count(),
-                records
-                    .iter()
-                    .filter(|record| matches!(record, Record::TurnIssued { .. }))
-                    .count(),
-                records
-                    .iter()
-                    .filter(|record| matches!(record, Record::TurnSpawned { .. }))
-                    .count(),
-            )
-        };
-        assert_eq!(
-            counts(&durable),
-            match cut {
-                OnboardingFailurePoint::Hire | OnboardingFailurePoint::HireProjection =>
-                    (1, 0, 0, 0),
-                OnboardingFailurePoint::Goal => (1, 1, 0, 0),
-                OnboardingFailurePoint::TurnIssued => (1, 1, 1, 0),
-                OnboardingFailurePoint::LocalGoal
-                | OnboardingFailurePoint::LocalRetire
-                | OnboardingFailurePoint::Answer
-                | OnboardingFailurePoint::Control
-                | OnboardingFailurePoint::GoalChange
-                | OnboardingFailurePoint::Rename
-                | OnboardingFailurePoint::Look
-                | OnboardingFailurePoint::Retire
-                | OnboardingFailurePoint::Ticket
-                | OnboardingFailurePoint::ClosingAnnounced
-                | OnboardingFailurePoint::ClosingAck
-                | OnboardingFailurePoint::ClosingComplete
-                | OnboardingFailurePoint::SpendRefresh => {
-                    unreachable!(
-                        "local, answer, control, goal and retire cuts are tested separately"
-                    )
-                }
-            }
-        );
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-
-        let (parts, host) = native_fixture_seams(&fixture, fake_seams(&settings));
-        let daemon = boot(&settings, parts).expect("replay durable prefix");
-        let addr = daemon.floor_addr().expect("replayed Floor address");
-        let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        if cut == OnboardingFailurePoint::TurnIssued {
-            recover_owed_browser_turn(&settings, &fixture, &running, agent, goal);
-        }
-        if matches!(
-            cut,
-            OnboardingFailurePoint::Goal | OnboardingFailurePoint::TurnIssued
-        ) {
-            issued_goal_turn(&fixture, goal);
-            running.handle.doctor().unwrap();
-        }
-        let before_retry = fixture.records();
-        let (_, complete) = post_onboard(addr, &cookie, &csrf, &request);
-        assert_eq!(complete["state"], "complete", "{cut:?}");
-        assert_eq!(complete["agent"], agent.to_string());
-        assert_eq!(complete["goal"], goal.to_string());
-        issued_goal_turn(&fixture, goal);
-        running.handle.doctor().unwrap();
-        let after_retry = fixture.records();
-        assert_eq!(counts(&after_retry).0, 1, "{cut:?}: no rehire");
-        assert_eq!(counts(&after_retry).1, 1, "{cut:?}: no second initial goal");
-        if !matches!(
-            cut,
-            OnboardingFailurePoint::Hire | OnboardingFailurePoint::HireProjection
-        ) {
-            assert_eq!(
-                counts(&after_retry).2,
-                counts(&before_retry).2,
-                "{cut:?}: retry did not issue a new turn"
-            );
-        }
-        assert_eq!(
-            counts(&after_retry).3,
-            1,
-            "{cut:?}: one host spawn after recovery"
-        );
-        assert_eq!(host.spawned().len(), 1, "{cut:?}: one host launch");
-        if cut == OnboardingFailurePoint::TurnIssued {
-            let turn = nth_turn(&fixture, goal, 0);
-            let task = |records: &[Record]| {
-                records
-                    .iter()
-                    .find_map(|record| match record {
-                        Record::TurnIssued {
-                            turn: seen, task, ..
-                        } if *seen == turn => Some(task.clone()),
-                        _ => None,
-                    })
-                    .unwrap()
-            };
-            assert_eq!(task(&after_retry), task(&durable));
-            assert_eq!(managed_turns(&fixture, goal), 1);
-        }
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
 }
 
 #[test]
@@ -3378,12 +2545,12 @@ fn pre_append_failure_leaves_no_hire_and_same_key_retries_after_restart() {
         .fail_nth(NonZeroUsize::new(1).expect("one"));
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
-    let (head, body) = post_onboard(addr, &cookie, &csrf, &request);
+    let (head, body) = post_onboard(&page, &request);
     assert!(
         head.starts_with("HTTP/1.1 503 Service Unavailable"),
         "{head}"
@@ -3396,7 +2563,7 @@ fn pre_append_failure_leaves_no_hire_and_same_key_retries_after_restart() {
             ..
         }
     )));
-    let (same_run_head, same_run) = post_onboard(addr, &cookie, &csrf, &request);
+    let (same_run_head, same_run) = post_onboard(&page, &request);
     assert!(
         same_run_head.starts_with("HTTP/1.1 200 OK"),
         "a known no-effect 503 can be retried in this run: {same_run_head}"
@@ -3432,8 +2599,8 @@ fn pre_append_failure_leaves_no_hire_and_same_key_retries_after_restart() {
     .expect("restart after no-effect cut");
     let addr = daemon.floor_addr().expect("new Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (head, complete) = post_onboard(addr, &cookie, &csrf, &request);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, complete) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(complete["state"], "complete");
     assert_eq!(
@@ -3476,8 +2643,8 @@ fn a_workspace_whose_first_check_cannot_run_is_still_offered() {
     let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (frame, _) = snapshot(&page);
     assert_eq!(
         frame["onboarding"]["workspaces"][0]["workspace_id"], "repo_1",
         "{frame}"
@@ -3519,17 +2686,17 @@ fn snapshot_omits_invalid_profile_predicate_and_token_reserve() {
         .expect("boot Floor");
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (frame, _) = snapshot(addr, &cookie, &csrf);
+        let page = exchange(addr, &issue(&settings).bootstrap);
+        let (frame, _) = snapshot(&page);
         assert!(
             frame.get("onboarding").is_none(),
             "{case}: invalid profile is omitted"
         );
         let request = json!({
             "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+            "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
         });
-        let (head, body) = post_onboard(addr, &cookie, &csrf, &request);
+        let (head, body) = post_onboard(&page, &request);
         assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{case}: {head}");
         assert!(body.is_null());
         assert!(
@@ -3591,22 +2758,22 @@ fn fresh_snapshot_omits_predicate_that_disappeared_after_enrollment() {
     .expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     assert!(
-        snapshot(addr, &cookie, &csrf).0["onboarding"].is_object(),
+        snapshot(&page).0["onboarding"].is_object(),
         "positive control: the existing typed predicate is eligible"
     );
     std::fs::remove_file(&program).expect("predicate drift");
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let (frame, _) = snapshot(&page);
     assert!(
         frame.get("onboarding").is_none(),
         "missing predicate removes its profile"
     );
     let request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
-    let (head, body) = post_onboard(addr, &cookie, &csrf, &request);
+    let (head, body) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{head}");
     assert!(body.is_null());
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -3630,27 +2797,25 @@ fn fourth_durable_hire_precedes_queued_session_catalog_snapshot() {
     let pause = daemon.onboarding_pause();
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let mut request = json!({
         "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+        "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
     });
     for last in ["A", "E", "I"] {
         request["attempt_id"] = json!(format!("{}{}", "A".repeat(42), last));
-        let (head, _) = post_onboard(addr, &cookie, &csrf, &request);
+        let (head, _) = post_onboard(&page, &request);
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     }
     assert!(
-        snapshot(addr, &cookie, &csrf).0["onboarding"].is_object(),
+        snapshot(&page).0["onboarding"].is_object(),
         "three durable hires still show one available slot"
     );
     pause.arm(OnboardingPausePoint::BetweenEffects);
     request["attempt_id"] = json!(format!("{}M", "A".repeat(42)));
     let owner_request = request.clone();
-    let owner_cookie = cookie.clone();
-    let owner_csrf = csrf.clone();
-    let owner =
-        std::thread::spawn(move || post_onboard(addr, &owner_cookie, &owner_csrf, &owner_request));
+    let owner_page = Arc::clone(&page);
+    let owner = std::thread::spawn(move || post_onboard(&owner_page, &owner_request));
     assert!(
         pause.wait_reached(Duration::from_secs(3)),
         "fourth hire folded before its goal"
@@ -3670,11 +2835,9 @@ fn fourth_durable_hire_precedes_queued_session_catalog_snapshot() {
         4
     );
     let (sent_tx, sent_rx) = std::sync::mpsc::channel();
-    let read_cookie = cookie.clone();
-    let read_csrf = csrf.clone();
-    let queued_snapshot = std::thread::spawn(move || {
-        snapshot_optional_signaled(addr, &read_cookie, &read_csrf, Some(sent_tx))
-    });
+    let read_page = Arc::clone(&page);
+    let queued_snapshot =
+        std::thread::spawn(move || snapshot_optional_signaled(&read_page, Some(sent_tx)));
     sent_rx
         .recv_timeout(Duration::from_secs(3))
         .expect("snapshot subscribe sent while writer held");
@@ -3691,7 +2854,7 @@ fn fourth_durable_hire_precedes_queued_session_catalog_snapshot() {
         "the fourth committed hire omits the sibling"
     );
     request["attempt_id"] = json!(format!("{}Q", "A".repeat(42)));
-    let (head, _) = post_onboard(addr, &cookie, &csrf, &request);
+    let (head, _) = post_onboard(&page, &request);
     assert!(
         head.starts_with("HTTP/1.1 403 Forbidden"),
         "stale catalog cannot admit a fifth hire: {head}"
@@ -3749,29 +2912,29 @@ fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
         )
         .expect("boot Floor")
     };
-    let hire = |addr: SocketAddr, cookie: &str, csrf: &str, last: &str| {
+    let hire = |page: &Page, last: &str| {
         let request = json!({
             "attempt_id": format!("{}{last}", "A".repeat(42)),
-            "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+            "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
         });
-        post_onboard(addr, cookie, csrf, &request).0
+        post_onboard(page, &request).0
     };
 
     let daemon = boot_run(&clock);
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     for last in ["A", "E", "I", "M"] {
-        let head = hire(addr, &cookie, &csrf, last);
+        let head = hire(&page, last);
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
         if last == "A" {
             assert!(
-                snapshot(addr, &cookie, &csrf).0["onboarding"].is_object(),
+                snapshot(&page).0["onboarding"].is_object(),
                 "control: a session with one hire is still offered another"
             );
         }
     }
-    let head = hire(addr, &cookie, &csrf, "Q");
+    let head = hire(&page, "Q");
     assert!(
         head.starts_with("HTTP/1.1 403 Forbidden"),
         "control: a session that hired four times is refused a fifth: {head}"
@@ -3801,17 +2964,13 @@ fn an_imported_session_keeps_its_browser_hire_count_from_the_journal() {
         Some(json!({ "exported": exported })),
     );
     assert_eq!(imported, json!({ "restored": 1 }));
-    let rotated = csrf;
-    let head = hire(addr, &cookie, &rotated, "U");
+    let head = hire(&page, "U");
     assert!(
         head.starts_with("HTTP/1.1 403 Forbidden"),
         "the four hires before the upgrade still count: {head}"
     );
     assert!(
-        snapshot(addr, &cookie, &rotated)
-            .0
-            .get("onboarding")
-            .is_none(),
+        snapshot(&page).0.get("onboarding").is_none(),
         "the carried session is offered no further hire"
     );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -3840,7 +2999,7 @@ fn browser_onboarding_hire_seals_the_pre_agent_epoch() {
     let column = common::ScriptedColumn::new(PeerProvenance::NoRecordedAgent);
     let daemon = boot(
         &settings,
-        common::seams_with(
+        seams_with(
             &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
@@ -3883,15 +3042,13 @@ fn browser_onboarding_hire_seals_the_pre_agent_epoch() {
         "the pre-hire connection holds a lease"
     );
 
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let hire = std::thread::spawn(move || {
         post_onboard(
-            addr,
-            &cookie,
-            &csrf,
+            &page,
             &json!({
                 "attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "workspace_id":"repo_1", "name":"Kim", "role":"engineer", "goal_text":"ship"
+                "workspace_id":"repo_1", "name":"Kim", "role":"engineer"
             }),
         )
     });
@@ -4040,22 +3197,47 @@ fn answer_body(request_id: &str, agent: AgentId, question: Lsn, text: &str) -> V
 }
 
 fn post_bytes(
-    addr: SocketAddr,
+    page: &Page,
     path: &str,
-    cookie: &str,
-    csrf: &str,
     body: &[u8],
     sent: Option<mpsc::Sender<()>>,
 ) -> (String, Value) {
-    let host = addr.to_string();
-    let mut stream = TcpStream::connect(addr).expect("Floor listener");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("timeout");
-    let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        body.len()
-    );
+    post_bytes_within(page, path, body, sent, Duration::from_secs(10))
+}
+
+/// A POST signed at send time, so a retry carries a request id of its own.
+fn post_bytes_within(
+    page: &Page,
+    path: &str,
+    body: &[u8],
+    sent: Option<mpsc::Sender<()>>,
+    bound: Duration,
+) -> (String, Value) {
+    let head = signed_post_head(page, path, body);
+    send_post(page, &head, body, sent, bound)
+}
+
+/// A POST that presents `cookie` and `signed` as given, for a request the Floor should refuse.
+fn post_presenting(
+    page: &Page,
+    path: &str,
+    body: &[u8],
+    cookie: &str,
+    signed: Option<&Signed>,
+) -> (String, Value) {
+    let head = post_head(path, body, page, cookie, signed);
+    send_post(page, &head, body, None, Duration::from_secs(5))
+}
+
+fn send_post(
+    page: &Page,
+    head: &str,
+    body: &[u8],
+    sent: Option<mpsc::Sender<()>>,
+    bound: Duration,
+) -> (String, Value) {
+    let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
+    stream.set_read_timeout(Some(bound)).expect("timeout");
     stream.write_all(head.as_bytes()).expect("request head");
     stream.write_all(body).expect("request body");
     if let Some(sent) = sent {
@@ -4078,12 +3260,10 @@ fn post_bytes(
     (head, value)
 }
 
-fn post_answer(addr: SocketAddr, cookie: &str, csrf: &str, body: &Value) -> (String, Value) {
+fn post_answer(page: &Page, body: &Value) -> (String, Value) {
     post_bytes(
-        addr,
+        page,
         "/floor/answer",
-        cookie,
-        csrf,
         &serde_json::to_vec(body).expect("answer JSON"),
         None,
     )
@@ -4128,8 +3308,10 @@ fn answers_for(records: &[Record], agent: AgentId) -> usize {
 
 fn empty_refusal(head: &str, body: &Value, status: &str) {
     assert!(head.starts_with(status), "{head}");
+    // A device that ran out says so, and says nothing else. Every other refusal is empty.
+    let ran_out = serde_json::json!({"session": "gone", "reason": "expired"});
     assert!(
-        body.is_null(),
+        body.is_null() || (status == "HTTP/1.1 403 Forbidden" && *body == ran_out),
         "an empty refusal carries no envelope: {body}"
     );
 }
@@ -4221,9 +3403,9 @@ fn browser_answer_is_finite_bound_and_observed() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (agent, question) = waiting_agent(&running, &fixture, "which branch?");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
 
-    let (snapshot, _) = snapshot(addr, &cookie, &csrf);
+    let (snapshot, _) = snapshot(&page);
     assert_eq!(snapshot["answer"], json!({ "max_text_bytes": 4096 }));
     let row = snapshot["projection"]["agents"]
         .as_array()
@@ -4245,9 +3427,7 @@ fn browser_answer_is_finite_bound_and_observed() {
     let text = "use main,\n\tthen rebase";
     let wire = request_id(1);
     let (head, response) = post_answer(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &answer_body(&wire, agent, question, &format!("  {text}\r\n")),
     );
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
@@ -4298,7 +3478,9 @@ fn browser_answer_is_finite_bound_and_observed() {
     );
     assert_eq!(
         attribution.session_digest.bytes(),
-        <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(cookie.as_bytes()))
+        <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(
+            page.cookie.as_bytes()
+        ))
     );
 
     let after: Vec<&(Lsn, dudes_proto::Entry)> = entries
@@ -4420,9 +3602,9 @@ fn browser_answer_is_finite_bound_and_observed() {
         ));
     }
     let journal = serde_json::to_string(&entries).expect("journal JSON");
-    for secret in [cookie.as_str(), csrf.as_str(), wire.as_str()] {
+    for credential in [page.cookie.as_str(), wire.as_str()] {
         assert!(
-            !journal.contains(secret),
+            !journal.contains(credential),
             "raw browser credential in the journal"
         );
     }
@@ -4438,10 +3620,15 @@ fn browser_answer_is_finite_bound_and_observed() {
 }
 
 /// Every browser credential is checked before any effect: wrong Host, wrong or missing Origin, an
-/// unknown cookie, a wrong or missing CSRF and an expired session each get the uniform empty
-/// `403`, and the journal does not move. Control: the right credentials answer.
+/// unknown cookie and an expired session each get the uniform empty `403`,
+/// a wrong or missing signature a `401` that says so, and the journal does not move.
+/// Control: the right credentials answer.
 #[test]
-fn browser_answer_refuses_wrong_session_host_origin_and_csrf_without_effect() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "six credential failures, the expired session and the control share one daemon"
+)]
+fn browser_answer_refuses_wrong_session_host_origin_and_signature_without_effect() {
     let fixture = Fixture::new();
     let settings = answer_settings(&fixture, true);
     let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
@@ -4459,17 +3646,17 @@ fn browser_answer_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (agent, question) = waiting_agent(&running, &fixture, "which branch?");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = serde_json::to_vec(&answer_body(&request_id(1), agent, question, "main")).unwrap();
     let host = addr.to_string();
-    let request = |host: &str, origin: Option<&str>, cookie: &str, csrf: Option<&str>| {
+    let request = |host: &str, origin: Option<&str>, cookie: &str, signed: Option<&Signed>| {
         let mut head = format!("POST /floor/answer HTTP/1.1\r\nHost: {host}\r\n");
         if let Some(origin) = origin {
             let _ = write!(head, "Origin: {origin}\r\n");
         }
         let _ = write!(head, "Cookie: dudes_floor_session={cookie}\r\n");
-        if let Some(csrf) = csrf {
-            let _ = write!(head, "X-Dudes-CSRF: {csrf}\r\n");
+        if let Some(signed) = signed {
+            head.push_str(&signed.header_lines());
         }
         let _ = write!(
             head,
@@ -4482,43 +3669,81 @@ fn browser_answer_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     };
     let origin = format!("http://{host}");
     let unknown = "A".repeat(43);
+    let signed = |path: &str| page.signed("POST", path, &body);
+    let foreign = |path: &str| foreign_signature(&page, path, &body);
     let before = fixture.records();
     for (label, bytes) in [
         (
             "wrong Host",
-            request("127.0.0.1:1", Some(&origin), &cookie, Some(&csrf)),
+            request(
+                "127.0.0.1:1",
+                Some(&origin),
+                &page.cookie,
+                Some(&signed("/floor/answer")),
+            ),
         ),
         (
             "wrong Origin",
-            request(&host, Some("http://127.0.0.1:1"), &cookie, Some(&csrf)),
+            request(
+                &host,
+                Some("http://127.0.0.1:1"),
+                &page.cookie,
+                Some(&signed("/floor/answer")),
+            ),
         ),
-        ("missing Origin", request(&host, None, &cookie, Some(&csrf))),
+        (
+            "missing Origin",
+            request(&host, None, &page.cookie, Some(&signed("/floor/answer"))),
+        ),
         (
             "unknown cookie",
-            request(&host, Some(&origin), &unknown, Some(&csrf)),
+            request(
+                &host,
+                Some(&origin),
+                &unknown,
+                Some(&signed("/floor/answer")),
+            ),
         ),
         (
-            "wrong CSRF",
-            request(&host, Some(&origin), &cookie, Some(&unknown)),
+            "wrong signature",
+            request(
+                &host,
+                Some(&origin),
+                &page.cookie,
+                Some(&foreign("/floor/answer")),
+            ),
         ),
-        ("missing CSRF", request(&host, Some(&origin), &cookie, None)),
+        (
+            "missing signature",
+            request(&host, Some(&origin), &page.cookie, None),
+        ),
     ] {
         let (head, response) = raw_onboard(addr, &bytes);
-        assert!(
-            head.starts_with("HTTP/1.1 403 Forbidden"),
-            "{label}: {head}"
-        );
-        assert!(response.is_empty(), "{label}: no envelope");
+        if label.ends_with("signature") {
+            assert!(
+                head.starts_with("HTTP/1.1 401 Unauthorized"),
+                "{label}: {head}"
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&response).expect("JSON"),
+                json!({"signature": "refused"}),
+                "{label}: {head}"
+            );
+        } else {
+            assert!(
+                head.starts_with("HTTP/1.1 403 Forbidden"),
+                "{label}: {head}"
+            );
+            assert!(response.is_empty(), "{label}: no envelope");
+        }
     }
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
-    let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(24 * 60 * 60 * 1000);
-    let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let expired_page = exchange(addr, &issue(&settings).bootstrap);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
+    let fresh_page = exchange(addr, &issue(&settings).bootstrap);
     let (head, response) = post_answer(
-        addr,
-        &expired_cookie,
-        &expired_csrf,
+        &expired_page,
         &answer_body(&request_id(1), agent, question, "main"),
     );
     empty_refusal(&head, &response, "HTTP/1.1 403 Forbidden");
@@ -4527,12 +3752,9 @@ fn browser_answer_refuses_wrong_session_host_origin_and_csrf_without_effect() {
         before,
         "an expired session appends nothing"
     );
-    let _ = (cookie, csrf);
 
     let (head, response) = post_answer(
-        addr,
-        &fresh_cookie,
-        &fresh_csrf,
+        &fresh_page,
         &answer_body(&request_id(1), agent, question, "main"),
     );
     assert!(head.starts_with("HTTP/1.1 200 OK"), "control: {head}");
@@ -4557,7 +3779,7 @@ fn browser_answer_refuses_wrong_agent_stale_and_locally_answered_questions() {
     let column = common::ScriptedColumn::new(dudes_proto::PeerProvenance::NoRecordedAgent);
     let daemon = boot(
         &settings,
-        common::seams_with(
+        seams_with(
             &settings,
             SharedHost::new(),
             Arc::new(ScriptedRunner::default()),
@@ -4606,7 +3828,7 @@ fn browser_answer_refuses_wrong_agent_stale_and_locally_answered_questions() {
     common::set_goal(&running.handle, common::goal_params(a, &[true_program()]));
     let first = question_lsn(&fixture, a);
     let (b, other) = waiting_agent(&running, &fixture, "which tag?");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
 
     let local = operator
         .call_as_operator(
@@ -4649,7 +3871,7 @@ fn browser_answer_refuses_wrong_agent_stale_and_locally_answered_questions() {
             answer_body(&request_id(4), a, other, "x"),
         ),
     ] {
-        let (head, response) = post_answer(addr, &cookie, &csrf, &body);
+        let (head, response) = post_answer(&page, &body);
         assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{label}: {head}");
         assert_eq!(
             response,
@@ -4659,12 +3881,7 @@ fn browser_answer_refuses_wrong_agent_stale_and_locally_answered_questions() {
     }
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
-    let (head, response) = post_answer(
-        addr,
-        &cookie,
-        &csrf,
-        &answer_body(&request_id(5), a, reasked, "v1.2"),
-    );
+    let (head, response) = post_answer(&page, &answer_body(&request_id(5), a, reasked, "v1.2"));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "control: {head}");
     assert_eq!(response["question_lsn"], json!(reasked.0.to_string()));
     assert_eq!(
@@ -4752,19 +3969,15 @@ fn browser_answer_refuses_attached_retired_and_answers_paused() {
     .expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
     for (k, agent, question, reason) in [
         (1, attached, attached_q, "agent_attached"),
         (2, retired, retired_q, "agent_retired"),
         (3, both, both_q, "agent_retired"),
     ] {
-        let (head, response) = post_answer(
-            addr,
-            &cookie,
-            &csrf,
-            &answer_body(&request_id(k), agent, question, "x"),
-        );
+        let (head, response) =
+            post_answer(&page, &answer_body(&request_id(k), agent, question, "x"));
         assert!(
             head.starts_with("HTTP/1.1 409 Conflict"),
             "{reason}: {head}"
@@ -4773,12 +3986,8 @@ fn browser_answer_refuses_attached_retired_and_answers_paused() {
     }
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
-    let (head, response) = post_answer(
-        addr,
-        &cookie,
-        &csrf,
-        &answer_body(&request_id(4), paused, paused_q, "yes"),
-    );
+    let (head, response) =
+        post_answer(&page, &answer_body(&request_id(4), paused, paused_q, "yes"));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(response["state"], "answered");
     let after: Vec<Record> = fixture.records()[before.len()..].to_vec();
@@ -4824,20 +4033,20 @@ fn browser_answer_same_key_retry_returns_original_and_changed_payload_conflicts(
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (agent, question) = waiting_agent(&running, &fixture, "which branch?");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = answer_body(&request_id(1), agent, question, "main");
-    let (head, original) = post_answer(addr, &cookie, &csrf, &body);
+    let (head, original) = post_answer(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     await_continuation_outcome(&fixture, &running.handle, agent);
     let durable = fixture.records();
 
-    let (head, retry) = post_answer(addr, &cookie, &csrf, &body);
+    let (head, retry) = post_answer(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(retry, original);
     assert_eq!(fixture.records(), durable, "a retry is read-only");
 
     let changed = answer_body(&request_id(1), agent, question, "develop");
-    let (head, response) = post_answer(addr, &cookie, &csrf, &changed);
+    let (head, response) = post_answer(&page, &changed);
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
     assert_eq!(fixture.records(), durable);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -4847,11 +4056,11 @@ fn browser_answer_same_key_retry_returns_original_and_changed_payload_conflicts(
     let mut running = common::start(daemon);
     running.handle.doctor().unwrap();
     let settled = fixture.records();
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (head, replayed) = post_answer(addr, &cookie, &csrf, &body);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, replayed) = post_answer(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "after restart: {head}");
     assert_eq!(replayed, original);
-    let (head, response) = post_answer(addr, &cookie, &csrf, &changed);
+    let (head, response) = post_answer(&page, &changed);
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
     assert_eq!(
         fixture.records(),
@@ -4885,13 +4094,13 @@ fn browser_answer_concurrent_same_key_is_pending_and_two_keys_yield_one_answer()
     let mut running = common::start(daemon);
     let (first, first_q) = waiting_agent(&running, &fixture, "which branch?");
     let (second, second_q) = waiting_agent(&running, &fixture, "which tag?");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
 
     pause.arm(OnboardingPausePoint::BeforeAnswerPermit);
     let owner_body = answer_body(&request_id(1), first, first_q, "main");
     let owner = {
-        let (cookie, csrf, body) = (cookie.clone(), csrf.clone(), owner_body.clone());
-        std::thread::spawn(move || post_answer(addr, &cookie, &csrf, &body))
+        let (page, body) = (Arc::clone(&page), owner_body.clone());
+        std::thread::spawn(move || post_answer(&page, &body))
     };
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
@@ -4902,9 +4111,9 @@ fn browser_answer_concurrent_same_key_is_pending_and_two_keys_yield_one_answer()
     // test rather than hanging it.
     let at_once = |body: Value| {
         let (tx, rx) = mpsc::channel();
-        let (cookie, csrf) = (cookie.clone(), csrf.clone());
+        let page = Arc::clone(&page);
         std::thread::spawn(move || {
-            let _ = tx.send(post_answer(addr, &cookie, &csrf, &body));
+            let _ = tx.send(post_answer(&page, &body));
         });
         rx.recv_timeout(Duration::from_secs(3)).ok()
     };
@@ -4926,9 +4135,9 @@ fn browser_answer_concurrent_same_key_is_pending_and_two_keys_yield_one_answer()
 
     pause.arm(OnboardingPausePoint::BeforeAnswerPermit);
     let winner = {
-        let (cookie, csrf) = (cookie.clone(), csrf.clone());
+        let page = Arc::clone(&page);
         let body = answer_body(&request_id(2), second, second_q, "v1");
-        std::thread::spawn(move || post_answer(addr, &cookie, &csrf, &body))
+        std::thread::spawn(move || post_answer(&page, &body))
     };
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
@@ -4936,12 +4145,10 @@ fn browser_answer_concurrent_same_key_is_pending_and_two_keys_yield_one_answer()
     );
     let (sent_tx, sent_rx) = mpsc::channel();
     let loser = {
-        let (cookie, csrf) = (cookie.clone(), csrf.clone());
+        let page = Arc::clone(&page);
         let body =
             serde_json::to_vec(&answer_body(&request_id(3), second, second_q, "v2")).unwrap();
-        std::thread::spawn(move || {
-            post_bytes(addr, "/floor/answer", &cookie, &csrf, &body, Some(sent_tx))
-        })
+        std::thread::spawn(move || post_bytes(&page, "/floor/answer", &body, Some(sent_tx)))
     };
     sent_rx
         .recv_timeout(Duration::from_secs(5))
@@ -4960,127 +4167,17 @@ fn browser_answer_concurrent_same_key_is_pending_and_two_keys_yield_one_answer()
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// Across restarts, at three cuts: after the answer's fsync and before its fold; after its
-/// fold and before its decision; after the continuation's `TurnIssued` fsync and before Spawn.
-/// Each replays one answer and one continuation, exactly.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "three restart cuts share one assertion shape and stay side by side"
-)]
-fn browser_answer_restart_cut_points_replay_one_answer_and_one_continuation() {
-    #[derive(Clone, Copy, Debug)]
-    enum Cut {
-        AnswerFsync,
-        AnswerFold,
-        TurnIssuedFsync,
-    }
-    for cut in [Cut::AnswerFsync, Cut::AnswerFold, Cut::TurnIssuedFsync] {
-        let fixture = Fixture::new();
-        let settings = answer_settings(&fixture, true);
-        let host = SharedHost::new();
-        let run = |host: &SharedHost| {
-            boot(
-                &settings,
-                seams(
-                    &settings,
-                    host.clone(),
-                    Arc::new(ScriptedRunner::default()),
-                    Arc::new(TestClock::new()),
-                    Witness::default(),
-                ),
-            )
-            .expect("boot Floor")
-        };
-        let daemon = run(&host);
-        let failure = daemon.onboarding_failure();
-        let append_failure = daemon.append_failure();
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let (agent, question) = waiting_agent(&running, &fixture, "which branch?");
-        let (other, other_q) = waiting_agent(&running, &fixture, "which tag?");
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let body = answer_body(&request_id(1), agent, question, "main");
-        match cut {
-            Cut::AnswerFsync => failure.arm(OnboardingFailurePoint::Answer),
-            // The answer is the first append of the request and its decision the second.
-            Cut::AnswerFold => append_failure.fail_nth(NonZeroUsize::new(2).unwrap()),
-            Cut::TurnIssuedFsync => failure.arm(OnboardingFailurePoint::TurnIssued),
-        }
-        let (head, response) = post_answer(addr, &cookie, &csrf, &body);
-        match cut {
-            Cut::AnswerFsync => {
-                empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-                let (head, pending) = post_answer(addr, &cookie, &csrf, &body);
-                assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
-                assert_eq!(
-                    pending["state"], "pending",
-                    "an uncertain append keeps its key"
-                );
-                let fresh = answer_body(&request_id(2), other, other_q, "v1");
-                let (head, response) = post_answer(addr, &cookie, &csrf, &fresh);
-                empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-            }
-            Cut::AnswerFold | Cut::TurnIssuedFsync => {
-                assert!(head.starts_with("HTTP/1.1 200 OK"), "{cut:?}: {head}");
-                assert_eq!(response["state"], "answered", "durable and indexed");
-            }
-        }
-        let spawned_before = host.spawned().len();
-        assert_eq!(spawned_before, 0, "{cut:?}: the cut is before any Spawn");
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-
-        let daemon = run(&host);
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        fixture.await_record("the continuation's spawn", |record| {
-            matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent).then_some(())
-        });
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (head, replayed) = post_answer(addr, &cookie, &csrf, &body);
-        assert!(head.starts_with("HTTP/1.1 200 OK"), "{cut:?}: {head}");
-        assert_eq!(replayed["question_lsn"], json!(question.0.to_string()));
-        let records = fixture.records();
-        let answered_lsn = fixture
-            .entries()
-            .into_iter()
-            .find_map(|(lsn, e)| matches!(e.record, Record::HumanAnswer { .. }).then_some(lsn))
-            .expect("answer");
-        assert_eq!(answers_for(&records, agent), 1, "{cut:?}: one answer");
-        let issued: Vec<&Vec<Lsn>> = records
-            .iter()
-            .filter_map(|record| match record {
-                Record::TurnIssued {
-                    agent: who,
-                    answers,
-                    ..
-                } if *who == agent => Some(answers),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            issued,
-            vec![&vec![answered_lsn]],
-            "{cut:?}: one continuation carrying it"
-        );
-        assert_eq!(host.spawned().len(), 1, "{cut:?}: one Spawn");
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent))
-                .count(),
-            1,
-            "{cut:?}"
-        );
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
-}
-
 /// A clock that tells the test when a Floor connection thread reads it: the first such read after
 /// [`ProbeClock::arm`] signals, after the value is taken.
 struct ProbeClock {
     inner: TestClock,
     armed: Mutex<Option<mpsc::Sender<()>>>,
+}
+
+/// The pages of a test on a [`ProbeClock`] sign with the clock under it.
+fn follow_probe(clock: &Arc<ProbeClock>) {
+    let clock = Arc::clone(clock);
+    follow_time(Arc::new(move || clock.inner.now().unix_millis()));
 }
 
 impl ProbeClock {
@@ -5128,6 +4225,7 @@ fn browser_answer_expiry_waiting_on_registry_lock_is_forbidden() {
         inner: TestClock::ticking(1_800_000_000_000, 0),
         armed: Mutex::new(None),
     });
+    follow_probe(&clock);
     let daemon = boot(
         &settings,
         Seams {
@@ -5150,17 +4248,12 @@ fn browser_answer_expiry_waiting_on_registry_lock_is_forbidden() {
     let mut running = common::start(daemon);
     let (a, a_q) = waiting_agent(&running, &fixture, "which branch?");
     let (b, b_q) = waiting_agent(&running, &fixture, "which tag?");
-    let (a_cookie, a_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (b_cookie, b_csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let a_page = exchange(addr, &issue(&settings).bootstrap);
+    let b_page = exchange(addr, &issue(&settings).bootstrap);
 
     pause.arm(OnboardingPausePoint::AfterAnswerPermit);
     let holder = std::thread::spawn(move || {
-        post_answer(
-            addr,
-            &a_cookie,
-            &a_csrf,
-            &answer_body(&request_id(1), a, a_q, "main"),
-        )
+        post_answer(&a_page, &answer_body(&request_id(1), a, a_q, "main"))
     });
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
@@ -5170,14 +4263,7 @@ fn browser_answer_expiry_waiting_on_registry_lock_is_forbidden() {
     let (sent_tx, sent_rx) = mpsc::channel();
     let waiter = std::thread::spawn(move || {
         let body = serde_json::to_vec(&answer_body(&request_id(2), b, b_q, "v1")).unwrap();
-        post_bytes(
-            addr,
-            "/floor/answer",
-            &b_cookie,
-            &b_csrf,
-            &body,
-            Some(sent_tx),
-        )
+        post_bytes(&b_page, "/floor/answer", &body, Some(sent_tx))
     });
     sent_rx
         .recv_timeout(Duration::from_secs(5))
@@ -5238,19 +4324,14 @@ fn browser_answer_refuses_revoked_session_without_effect() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (agent, question) = waiting_agent(&running, &fixture, "which branch?");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
 
     pause.arm(OnboardingPausePoint::BeforeAnswerPermit);
     let revoked = {
-        let (cookie, csrf) = (cookie.clone(), csrf.clone());
+        let page = Arc::clone(&page);
         std::thread::spawn(move || {
-            post_answer(
-                addr,
-                &cookie,
-                &csrf,
-                &answer_body(&request_id(1), agent, question, "main"),
-            )
+            post_answer(&page, &answer_body(&request_id(1), agent, question, "main"))
         })
     };
     assert!(
@@ -5258,7 +4339,7 @@ fn browser_answer_refuses_revoked_session_without_effect() {
         "admitted, world-checked, before the permit"
     );
     assert!(
-        authorizer.revoke_for_test(&cookie),
+        authorizer.revoke_for_test(&page.cookie),
         "the live session is revoked"
     );
     pause.release();
@@ -5274,13 +4355,9 @@ fn browser_answer_refuses_revoked_session_without_effect() {
         &after[before.len()..]
     );
 
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (head, response) = post_answer(
-        addr,
-        &cookie,
-        &csrf,
-        &answer_body(&request_id(1), agent, question, "main"),
-    );
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) =
+        post_answer(&page, &answer_body(&request_id(1), agent, question, "main"));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "control: {head}");
     assert_eq!(response["state"], "answered");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -5309,9 +4386,9 @@ fn browser_answer_uncertain_local_write_fences_fresh_requests_and_serves_durable
     let mut running = common::start(daemon);
     let (first, first_q) = waiting_agent(&running, &fixture, "which branch?");
     let (second, second_q) = waiting_agent(&running, &fixture, "which tag?");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let durable = answer_body(&request_id(1), first, first_q, "main");
-    let (head, original) = post_answer(addr, &cookie, &csrf, &durable);
+    let (head, original) = post_answer(&page, &durable);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
 
     failure.arm(OnboardingFailurePoint::LocalGoal);
@@ -5328,7 +4405,7 @@ fn browser_answer_uncertain_local_write_fences_fresh_requests_and_serves_durable
     let fenced = fixture.records();
 
     for attempt in 0..2 {
-        let (head, retry) = post_answer(addr, &cookie, &csrf, &durable);
+        let (head, retry) = post_answer(&page, &durable);
         assert!(
             head.starts_with("HTTP/1.1 200 OK"),
             "retry {attempt} while fenced: {head}"
@@ -5336,15 +4413,13 @@ fn browser_answer_uncertain_local_write_fences_fresh_requests_and_serves_durable
         assert_eq!(retry, original);
     }
     let (head, response) = post_answer(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &answer_body(&request_id(1), first, first_q, "develop"),
     );
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
     let fresh = answer_body(&request_id(2), second, second_q, "v1");
     for attempt in 0..2 {
-        let (head, response) = post_answer(addr, &cookie, &csrf, &fresh);
+        let (head, response) = post_answer(&page, &fresh);
         empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
         let _ = attempt;
     }
@@ -5380,7 +4455,7 @@ fn browser_answer_bounds_and_json_shape_refuse_before_effect() {
     let mut running = common::start(daemon);
     let (agent, question) = waiting_agent(&running, &fixture, "which branch?");
     let (second, second_q) = waiting_agent(&running, &fixture, "which tag?");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let id = request_id(1);
     let q = question.0.to_string();
     let valid_prefix =
@@ -5466,17 +4541,14 @@ fn browser_answer_bounds_and_json_shape_refuse_before_effect() {
     ];
     let before = fixture.records();
     for (label, body) in &refusals {
-        let (head, response) = post_bytes(addr, "/floor/answer", &cookie, &csrf, body, None);
+        let (head, response) = post_bytes(&page, "/floor/answer", body, None);
         assert!(
             head.starts_with("HTTP/1.1 400 Bad Request"),
             "{label}: {head}"
         );
         assert!(response.is_null(), "{label}: {response}");
     }
-    let host = addr.to_string();
-    let oversize = format!(
-        "POST /floor/answer HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\nContent-Type: application/json\r\nContent-Length: 16385\r\n\r\n"
-    );
+    let oversize = oversize_head(&page, "/floor/answer", 16385);
     let (head, body) = raw_onboard(addr, oversize.as_bytes());
     assert!(
         head.starts_with("HTTP/1.1 413"),
@@ -5486,12 +4558,8 @@ fn browser_answer_bounds_and_json_shape_refuse_before_effect() {
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let whole = "a".repeat(4_096);
-    let (head, response) = post_answer(
-        addr,
-        &cookie,
-        &csrf,
-        &answer_body(&request_id(2), agent, question, &whole),
-    );
+    let (head, response) =
+        post_answer(&page, &answer_body(&request_id(2), agent, question, &whole));
     assert!(
         head.starts_with("HTTP/1.1 200 OK"),
         "control, 4,096 bytes: {head}"
@@ -5503,14 +4571,7 @@ fn browser_answer_bounds_and_json_shape_refuse_before_effect() {
         serde_json::to_string(&answer_body(&request_id(3), second, second_q, "v1")).unwrap();
     let padded = format!("{}{}", compact, " ".repeat(16_384 - compact.len()));
     assert_eq!(padded.len(), 16_384);
-    let (head, response) = post_bytes(
-        addr,
-        "/floor/answer",
-        &cookie,
-        &csrf,
-        padded.as_bytes(),
-        None,
-    );
+    let (head, response) = post_bytes(&page, "/floor/answer", padded.as_bytes(), None);
     assert!(
         head.starts_with("HTTP/1.1 200 OK"),
         "control, a 16,384-byte body: {head}"
@@ -5541,27 +4602,11 @@ fn browser_answer_is_absent_when_not_enabled() {
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
         let (agent, question) = waiting_agent(&running, &fixture, "which branch?");
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+        let page = exchange(addr, &issue(&settings).bootstrap);
         let body =
             serde_json::to_vec(&answer_body(&request_id(1), agent, question, "main")).unwrap();
-        let host = addr.to_string();
-        let raw = |path: &str| {
-            let mut stream = TcpStream::connect(addr).expect("Floor listener");
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .expect("timeout");
-            let mut request = format!(
-                "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-                body.len()
-            )
-            .into_bytes();
-            request.extend_from_slice(&body);
-            stream.write_all(&request).expect("request");
-            let mut response = Vec::new();
-            let _ = stream.read_to_end(&mut response);
-            response
-        };
-        let (snapshot, _) = snapshot(addr, &cookie, &csrf);
+        let raw = |path: &str| raw_post(&page, path, &body);
+        let (snapshot, _) = snapshot(&page);
         let answered = raw("/floor/answer");
         let unrouted = raw("/floor/unrouted");
         if enabled {
@@ -5636,35 +4681,22 @@ fn control_body(request_id: &str, agent: AgentId, control_lsn: Option<Lsn>) -> V
     })
 }
 
-fn post_control(
-    addr: SocketAddr,
-    path: &str,
-    cookie: &str,
-    csrf: &str,
-    body: &Value,
-) -> (String, Value) {
+fn post_control(page: &Page, path: &str, body: &Value) -> (String, Value) {
     post_bytes(
-        addr,
+        page,
         path,
-        cookie,
-        csrf,
         &serde_json::to_vec(body).expect("control JSON"),
         None,
     )
 }
 
 /// One complete raw exchange, for byte-for-byte comparison of two responses.
-fn raw_post(addr: SocketAddr, path: &str, cookie: &str, csrf: &str, body: &[u8]) -> Vec<u8> {
-    let host = addr.to_string();
-    let mut stream = TcpStream::connect(addr).expect("Floor listener");
+fn raw_post(page: &Page, path: &str, body: &[u8]) -> Vec<u8> {
+    let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("timeout");
-    let mut request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-        body.len()
-    )
-    .into_bytes();
+    let mut request = signed_post_head(page, path, body).into_bytes();
     request.extend_from_slice(body);
     stream.write_all(&request).expect("request");
     let mut response = Vec::new();
@@ -5804,111 +4836,6 @@ fn issued_goal_turn(fixture: &Fixture, goal: GoalId) -> TurnId {
     turn
 }
 
-fn recover_owed_browser_turn(
-    settings: &duded::Settings,
-    fixture: &Fixture,
-    running: &common::Running,
-    agent: AgentId,
-    goal: GoalId,
-) {
-    use dudes_proto::rpc::recovery::{
-        RecoveryAllowedChoices, RecoveryChoice, RecoveryInspectResult, RecoverySubmitParams,
-        RecoverySubmitResult,
-    };
-
-    let turn = nth_turn(fixture, goal, 0);
-    fixture.await_record("the owed goal's recovery barrier", |record| {
-        matches!(record, Record::RecoveryRequired(required)
-            if required.binding.work.agent == agent && required.binding.work.goal == goal
-                && required.binding.work.turn == turn)
-        .then_some(())
-    });
-    let owed: Vec<_> = fixture
-        .records()
-        .into_iter()
-        .filter(
-            |record| matches!(record, Record::TurnIssued { goal: issued, .. } if *issued == goal),
-        )
-        .collect();
-    assert_eq!(owed.len(), 1);
-    let no_spawn = || {
-        assert!(!fixture.records().iter().any(|record| {
-            matches!(record, Record::TurnSpawned { turn: seen, .. } if *seen == turn)
-        }));
-    };
-    no_spawn();
-    let call = |method, params| {
-        let credential = std::fs::read_to_string(
-            settings
-                .runtime_dir
-                .join(dudes_rpc::OPERATOR_CREDENTIAL_NAME),
-        )
-        .expect("operator credential");
-        let response = Client::connect(settings.socket())
-            .expect("operator socket")
-            .call_current_as_operator(
-                method,
-                Some(params),
-                OperatorCredential::new(credential).expect("credential"),
-            )
-            .expect("operator response");
-        assert!(response.error.is_none(), "{response:?}");
-        response.result.expect("operator result")
-    };
-    call(
-        CurrentMethod::Legacy(Method::LoopResume),
-        json!({"agent":agent}),
-    );
-    running.handle.doctor().expect("Resume reached the writer");
-    no_spawn();
-    let inspection: RecoveryInspectResult =
-        serde_json::from_value(call(CurrentMethod::RecoveryInspect, json!({"agent":agent})))
-            .expect("typed recovery inspection");
-    let RecoveryInspectResult::Available {
-        expected,
-        choices,
-        reason,
-        ..
-    } = inspection
-    else {
-        panic!("the owed issue must offer exact recovery");
-    };
-    assert_eq!(choices, RecoveryAllowedChoices::RepeatIssuedFresh);
-    assert_eq!(reason, dudes_proto::recovery::RecoveryReason::MissingSpawn);
-    assert_eq!(expected.work.agent, agent);
-    assert_eq!(expected.work.goal, goal);
-    assert_eq!(expected.work.turn, turn);
-    let request_id = Hex32::new([231; 32]);
-    let request = RecoverySubmitParams {
-        request_id,
-        expected: *expected,
-        choice: RecoveryChoice::RepeatIssuedFresh,
-    };
-    let submitted: RecoverySubmitResult = serde_json::from_value(call(
-        CurrentMethod::RecoverySubmit,
-        serde_json::to_value(request).expect("strict recovery request"),
-    ))
-    .expect("typed recovery submission");
-    let RecoverySubmitResult::Accepted { receipt } = submitted else {
-        panic!("one explicit submission must authorize the exact repeat");
-    };
-    assert_eq!(receipt.request_id, request_id);
-    assert_eq!(receipt.claim.episode.work, expected.work);
-    let records = fixture.records();
-    assert_eq!(records.iter().filter(|record| {
-        matches!(record, Record::RecoveryAuthorized(authorized) if authorized.request_id == request_id)
-    }).count(), 1);
-    assert_eq!(
-        records
-            .into_iter()
-            .filter(|record| {
-                matches!(record, Record::TurnIssued { goal: issued, .. } if *issued == goal)
-            })
-            .collect::<Vec<_>>(),
-        owed
-    );
-}
-
 fn await_continuation_outcome(fixture: &Fixture, handle: &duded::Handle, agent: AgentId) -> TurnId {
     let turn = fixture.await_record(
         "the prior continuation's actual start",
@@ -6003,8 +4930,8 @@ fn browser_pause_resume_is_finite_and_observed() {
         } if *who == agent => Some(*turn),
         _ => None,
     });
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (view, _) = snapshot(&page);
     assert_eq!(view["control"], json!({}), "control is enabled");
     let row = view["projection"]["agents"]
         .as_array()
@@ -6027,13 +4954,7 @@ fn browser_pause_resume_is_finite_and_observed() {
         "T1 is still running"
     );
     let pause_wire = request_id(1);
-    let (head, response) = post_control(
-        addr,
-        PAUSE,
-        &cookie,
-        &csrf,
-        &control_body(&pause_wire, agent, None),
-    );
+    let (head, response) = post_control(&page, PAUSE, &control_body(&pause_wire, agent, None));
     let p = applied(&head, &response, "paused");
     assert_eq!(
         response,
@@ -6087,7 +5008,7 @@ fn browser_pause_resume_is_finite_and_observed() {
         "{hold_trace:?}"
     );
     // A job through the same writer, so every effect of the held pump has been run.
-    let _ = snapshot(addr, &cookie, &csrf);
+    let _ = snapshot(&page);
 
     // Step 4: nothing is issued after P, and the stub saw one launch.
     let issued_after = |from: Lsn| {
@@ -6117,13 +5038,7 @@ fn browser_pause_resume_is_finite_and_observed() {
 
     // Step 5: a resume presenting P applies at R.
     let resume_wire = request_id(2);
-    let (head, response) = post_control(
-        addr,
-        RESUME,
-        &cookie,
-        &csrf,
-        &control_body(&resume_wire, agent, Some(p)),
-    );
+    let (head, response) = post_control(&page, RESUME, &control_body(&resume_wire, agent, Some(p)));
     let r = applied(&head, &response, "resumed");
     assert!(r > p);
     fixture.await_record("the goal met after the resumed turn", |record| {
@@ -6157,7 +5072,9 @@ fn browser_pause_resume_is_finite_and_observed() {
         panic!("an attributed Resume at R");
     };
     assert_eq!((paused, resumed), (agent, agent));
-    let session = <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(cookie.as_bytes()));
+    let session = <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(
+        page.cookie.as_bytes(),
+    ));
     let mut first_id = [0_u8; 32];
     first_id[0] = 4;
     assert_eq!(pause_attribution.request_id.bytes(), first_id);
@@ -6235,9 +5152,9 @@ fn browser_pause_resume_is_finite_and_observed() {
     );
     assert_eq!(spawns(), 2, "exactly one more stub spawn after R");
     let journal = serde_json::to_string(&entries).expect("journal JSON");
-    for secret in [cookie.as_str(), csrf.as_str(), pause_wire.as_str()] {
+    for credential in [page.cookie.as_str(), pause_wire.as_str()] {
         assert!(
-            !journal.contains(secret),
+            !journal.contains(credential),
             "raw browser credential in the journal"
         );
     }
@@ -6249,23 +5166,11 @@ fn browser_pause_resume_is_finite_and_observed() {
     assert_eq!(row.control_lsn, Some(r));
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
-    let (head, response) = post_control(
-        addr,
-        PAUSE,
-        &cookie,
-        &csrf,
-        &control_body(&pause_wire, agent, None),
-    );
+    let (head, response) = post_control(&page, PAUSE, &control_body(&pause_wire, agent, None));
     assert_eq!(applied(&head, &response, "paused"), p);
-    let (head, response) = post_control(
-        addr,
-        RESUME,
-        &cookie,
-        &csrf,
-        &control_body(&resume_wire, agent, Some(p)),
-    );
+    let (head, response) = post_control(&page, RESUME, &control_body(&resume_wire, agent, Some(p)));
     assert_eq!(applied(&head, &response, "resumed"), r);
     assert_eq!(
         fixture.records(),
@@ -6276,14 +5181,15 @@ fn browser_pause_resume_is_finite_and_observed() {
 }
 
 /// Every browser credential is checked before any effect: a wrong Host, a wrong or missing Origin,
-/// an unknown cookie, a wrong or missing CSRF and an expired session each get the uniform empty
-/// `403` on both routes, and the journal does not move. Control: the right credentials apply.
+/// an unknown cookie and an expired session each get the uniform empty `403`,
+/// a wrong or missing signature a `401` that says so, on both routes, and the journal does not move.
+/// Control: the right credentials apply.
 #[test]
 #[expect(
     clippy::too_many_lines,
     reason = "six credential failures on both routes, the expired session and the control"
 )]
-fn browser_pause_resume_refuses_wrong_session_host_origin_and_csrf_without_effect() {
+fn browser_pause_resume_refuses_wrong_session_host_origin_and_signature_without_effect() {
     let fixture = Fixture::new();
     let settings = control_settings(&fixture, true);
     let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
@@ -6301,18 +5207,18 @@ fn browser_pause_resume_refuses_wrong_session_host_origin_and_csrf_without_effec
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = serde_json::to_vec(&control_body(&request_id(1), agent, None)).unwrap();
     let host = addr.to_string();
     let request =
-        |path: &str, host: &str, origin: Option<&str>, cookie: &str, csrf: Option<&str>| {
+        |path: &str, host: &str, origin: Option<&str>, cookie: &str, signed: Option<&Signed>| {
             let mut head = format!("POST {path} HTTP/1.1\r\nHost: {host}\r\n");
             if let Some(origin) = origin {
                 let _ = write!(head, "Origin: {origin}\r\n");
             }
             let _ = write!(head, "Cookie: dudes_floor_session={cookie}\r\n");
-            if let Some(csrf) = csrf {
-                let _ = write!(head, "X-Dudes-CSRF: {csrf}\r\n");
+            if let Some(signed) = signed {
+                head.push_str(&signed.header_lines());
             }
             let _ = write!(
                 head,
@@ -6325,12 +5231,20 @@ fn browser_pause_resume_refuses_wrong_session_host_origin_and_csrf_without_effec
         };
     let origin = format!("http://{host}");
     let unknown = "A".repeat(43);
+    let signed = |path: &str| page.signed("POST", path, &body);
+    let foreign = |path: &str| foreign_signature(&page, path, &body);
     let before = fixture.records();
     for path in [PAUSE, RESUME] {
         for (label, bytes) in [
             (
                 "wrong Host",
-                request(path, "127.0.0.1:1", Some(&origin), &cookie, Some(&csrf)),
+                request(
+                    path,
+                    "127.0.0.1:1",
+                    Some(&origin),
+                    &page.cookie,
+                    Some(&signed(path)),
+                ),
             ),
             (
                 "wrong Origin",
@@ -6338,46 +5252,62 @@ fn browser_pause_resume_refuses_wrong_session_host_origin_and_csrf_without_effec
                     path,
                     &host,
                     Some("http://127.0.0.1:1"),
-                    &cookie,
-                    Some(&csrf),
+                    &page.cookie,
+                    Some(&signed(path)),
                 ),
             ),
             (
                 "missing Origin",
-                request(path, &host, None, &cookie, Some(&csrf)),
+                request(path, &host, None, &page.cookie, Some(&signed(path))),
             ),
             (
                 "unknown cookie",
-                request(path, &host, Some(&origin), &unknown, Some(&csrf)),
+                request(path, &host, Some(&origin), &unknown, Some(&signed(path))),
             ),
             (
-                "wrong CSRF",
-                request(path, &host, Some(&origin), &cookie, Some(&unknown)),
+                "wrong signature",
+                request(
+                    path,
+                    &host,
+                    Some(&origin),
+                    &page.cookie,
+                    Some(&foreign(path)),
+                ),
             ),
             (
-                "missing CSRF",
-                request(path, &host, Some(&origin), &cookie, None),
+                "missing signature",
+                request(path, &host, Some(&origin), &page.cookie, None),
             ),
         ] {
             let (head, response) = raw_onboard(addr, &bytes);
-            assert!(
-                head.starts_with("HTTP/1.1 403 Forbidden"),
-                "{path} {label}: {head}"
-            );
-            assert!(response.is_empty(), "{path} {label}: no envelope");
+            if label.ends_with("signature") {
+                assert!(
+                    head.starts_with("HTTP/1.1 401 Unauthorized"),
+                    "{path} {label}: {head}"
+                );
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&response).expect("JSON"),
+                    json!({"signature": "refused"}),
+                    "{path} {label}: {head}"
+                );
+            } else {
+                assert!(
+                    head.starts_with("HTTP/1.1 403 Forbidden"),
+                    "{path} {label}: {head}"
+                );
+                assert!(response.is_empty(), "{path} {label}: no envelope");
+            }
         }
     }
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
-    let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(24 * 60 * 60 * 1000);
-    let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let expired_page = exchange(addr, &issue(&settings).bootstrap);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
+    let fresh_page = exchange(addr, &issue(&settings).bootstrap);
     for path in [PAUSE, RESUME] {
         let (head, response) = post_control(
-            addr,
+            &expired_page,
             path,
-            &expired_cookie,
-            &expired_csrf,
             &control_body(&request_id(1), agent, None),
         );
         empty_refusal(&head, &response, "HTTP/1.1 403 Forbidden");
@@ -6387,13 +5317,10 @@ fn browser_pause_resume_refuses_wrong_session_host_origin_and_csrf_without_effec
         before,
         "an expired session appends nothing"
     );
-    let _ = (cookie, csrf);
 
     let (head, response) = post_control(
-        addr,
+        &fresh_page,
         PAUSE,
-        &fresh_cookie,
-        &fresh_csrf,
         &control_body(&request_id(1), agent, None),
     );
     applied(&head, &response, "paused");
@@ -6445,7 +5372,7 @@ fn browser_pause_resume_refuses_unknown_retired_and_foreign_control_lsn() {
     let daemon = boot(&settings, fake_seams(&settings)).expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let unknown = AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("an agent id");
     assert!(
         !fixture.records().iter().any(|record| matches!(
@@ -6463,32 +5390,18 @@ fn browser_pause_resume_refuses_unknown_retired_and_foreign_control_lsn() {
         (5, PAUSE, live, Some(other_lsn), "stale_control"),
         (6, RESUME, older, None, "stale_control"),
     ] {
-        let (head, response) = post_control(
-            addr,
-            path,
-            &cookie,
-            &csrf,
-            &control_body(&request_id(k), agent, lsn),
-        );
+        let (head, response) = post_control(&page, path, &control_body(&request_id(k), agent, lsn));
         refused(&head, &response, reason);
     }
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let (head, response) = post_control(
-        addr,
+        &page,
         RESUME,
-        &cookie,
-        &csrf,
         &control_body(&request_id(7), older, Some(older_lsn)),
     );
     applied(&head, &response, "resumed");
-    let (head, response) = post_control(
-        addr,
-        PAUSE,
-        &cookie,
-        &csrf,
-        &control_body(&request_id(8), live, None),
-    );
+    let (head, response) = post_control(&page, PAUSE, &control_body(&request_id(8), live, None));
     applied(&head, &response, "paused");
     let records = fixture.records();
     assert_eq!(
@@ -6517,34 +5430,25 @@ fn browser_resume_cannot_lift_a_halt() {
     let agent = common::hire(&running.handle, fixture.state.path());
     running.handle.ask(Ask::Halt(agent)).expect("local halt");
     let halt = disk_control_lsn(&fixture, agent).expect("the halt");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
 
     let before = fixture.records();
     let (head, response) = post_control(
-        addr,
+        &page,
         RESUME,
-        &cookie,
-        &csrf,
         &control_body(&request_id(1), agent, Some(halt)),
     );
     refused(&head, &response, "agent_halted");
     assert_eq!(fixture.records(), before);
 
     let (head, response) = post_control(
-        addr,
+        &page,
         PAUSE,
-        &cookie,
-        &csrf,
         &control_body(&request_id(2), agent, Some(halt)),
     );
     let p = applied(&head, &response, "paused");
-    let (head, response) = post_control(
-        addr,
-        RESUME,
-        &cookie,
-        &csrf,
-        &control_body(&request_id(3), agent, Some(p)),
-    );
+    let (head, response) =
+        post_control(&page, RESUME, &control_body(&request_id(3), agent, Some(p)));
     refused(&head, &response, "agent_halted");
     let records = fixture.records();
     assert_eq!(controls_for(&records, agent), (1, 0), "zero Resume records");
@@ -6556,8 +5460,8 @@ fn browser_resume_cannot_lift_a_halt() {
     );
 
     let body = serde_json::to_vec(&control_body(&request_id(4), agent, Some(p))).unwrap();
-    let halted = raw_post(addr, "/floor/halt", &cookie, &csrf, &body);
-    let unrouted = raw_post(addr, "/floor/unrouted", &cookie, &csrf, &body);
+    let halted = raw_post(&page, "/floor/halt", &body);
+    let unrouted = raw_post(&page, "/floor/unrouted", &body);
     assert!(!unrouted.is_empty());
     assert_eq!(
         halted,
@@ -6573,7 +5477,7 @@ fn browser_resume_cannot_lift_a_halt() {
             json!("halt")
         });
         for path in [PAUSE, RESUME] {
-            let (head, response) = post_control(addr, path, &cookie, &csrf, &body);
+            let (head, response) = post_control(&page, path, &body);
             assert!(
                 head.starts_with("HTTP/1.1 400 Bad Request"),
                 "{member} on {path}: {head}"
@@ -6616,17 +5520,17 @@ fn browser_pause_resume_replayed_body_has_no_effect() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = control_body(&request_id(1), agent, None);
-    let (head, original) = post_control(addr, PAUSE, &cookie, &csrf, &body);
+    let (head, original) = post_control(&page, PAUSE, &body);
     applied(&head, &original, "paused");
     let applied_records = fixture.records();
 
     let mut replayed = body.clone();
     replayed["request_id"] = json!(request_id(2));
-    let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &replayed);
+    let (head, response) = post_control(&page, PAUSE, &replayed);
     refused(&head, &response, "stale_control");
-    let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &body);
+    let (head, response) = post_control(&page, PAUSE, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(response, original, "its own identity gets its original 200");
     assert_eq!(fixture.records(), applied_records, "zero new records");
@@ -6637,7 +5541,7 @@ fn browser_pause_resume_replayed_body_has_no_effect() {
         .expect("local resume");
     let local = fixture.records();
     replayed["request_id"] = json!(request_id(3));
-    let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &replayed);
+    let (head, response) = post_control(&page, PAUSE, &replayed);
     refused(&head, &response, "stale_control");
     assert_eq!(
         fixture.records(),
@@ -6659,9 +5563,9 @@ fn browser_pause_resume_same_key_retry_returns_original_and_changed_payload_conf
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = control_body(&request_id(1), agent, None);
-    let (head, original) = post_control(addr, PAUSE, &cookie, &csrf, &body);
+    let (head, original) = post_control(&page, PAUSE, &body);
     let p = applied(&head, &original, "paused");
     running
         .handle
@@ -6670,14 +5574,14 @@ fn browser_pause_resume_same_key_retry_returns_original_and_changed_payload_conf
     running.handle.ask(Ask::Pause(agent)).expect("local pause");
     let later = fixture.records();
 
-    let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &body);
+    let (head, response) = post_control(&page, PAUSE, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(response, original, "after a later local change");
     let mut changed = body.clone();
     changed["control_lsn"] = json!(p.0.to_string());
-    let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &changed);
+    let (head, response) = post_control(&page, PAUSE, &changed);
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
-    let (head, response) = post_control(addr, RESUME, &cookie, &csrf, &body);
+    let (head, response) = post_control(&page, RESUME, &body);
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
     assert_eq!(fixture.records(), later, "no retry appended anything");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -6685,12 +5589,12 @@ fn browser_pause_resume_same_key_retry_returns_original_and_changed_payload_conf
     let daemon = boot(&settings, fake_seams(&settings)).expect("restart");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
-    let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &body);
+    let (head, response) = post_control(&page, PAUSE, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(response, original, "from a fresh session after a restart");
-    let (head, response) = post_control(addr, RESUME, &cookie, &csrf, &body);
+    let (head, response) = post_control(&page, RESUME, &body);
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
     assert_eq!(fixture.records(), before);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -6711,13 +5615,13 @@ fn browser_pause_resume_concurrent_same_key_is_pending_and_two_keys_yield_one_re
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     let second = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = control_body(&request_id(1), agent, None);
 
     pause.arm(OnboardingPausePoint::BeforeControlPermit);
     let owner = {
-        let (cookie, csrf, body) = (cookie.clone(), csrf.clone(), body.clone());
-        std::thread::spawn(move || post_control(addr, PAUSE, &cookie, &csrf, &body))
+        let (page, body) = (Arc::clone(&page), body.clone());
+        std::thread::spawn(move || post_control(&page, PAUSE, &body))
     };
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
@@ -6728,9 +5632,9 @@ fn browser_pause_resume_concurrent_same_key_is_pending_and_two_keys_yield_one_re
     // test rather than hanging it.
     let at_once = |path: &'static str, body: Value| {
         let (tx, rx) = mpsc::channel();
-        let (cookie, csrf) = (cookie.clone(), csrf.clone());
+        let page = Arc::clone(&page);
         std::thread::spawn(move || {
-            let _ = tx.send(post_control(addr, path, &cookie, &csrf, &body));
+            let _ = tx.send(post_control(&page, path, &body));
         });
         rx.recv_timeout(Duration::from_secs(3)).ok()
     };
@@ -6757,9 +5661,9 @@ fn browser_pause_resume_concurrent_same_key_is_pending_and_two_keys_yield_one_re
     let view = control_body(&request_id(2), second, None);
     let mut twin = view.clone();
     twin["request_id"] = json!(request_id(3));
-    let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &view);
+    let (head, response) = post_control(&page, PAUSE, &view);
     applied(&head, &response, "paused");
-    let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &twin);
+    let (head, response) = post_control(&page, PAUSE, &twin);
     refused(&head, &response, "stale_control");
     assert_eq!(
         controls_for(&fixture.records(), second),
@@ -6786,7 +5690,7 @@ fn browser_pause_resume_local_winner_is_never_overwritten() {
     let paused = common::hire(&running.handle, fixture.state.path());
     let unpaused = common::hire(&running.handle, fixture.state.path());
     let crashed = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
 
     // The page saw `moved` with no control record; locally it is paused and resumed since.
     running.handle.ask(Ask::Pause(moved)).expect("local pause");
@@ -6811,13 +5715,7 @@ fn browser_pause_resume_local_winner_is_never_overwritten() {
         (2, PAUSE, paused, paused_lsn, "already paused"),
         (3, RESUME, unpaused, unpaused_lsn, "not paused"),
     ] {
-        let (head, response) = post_control(
-            addr,
-            path,
-            &cookie,
-            &csrf,
-            &control_body(&request_id(k), agent, lsn),
-        );
+        let (head, response) = post_control(&page, path, &control_body(&request_id(k), agent, lsn));
         assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{what}: {head}");
         assert_eq!(response["reason"], "stale_control", "{what}: {response}");
     }
@@ -6825,7 +5723,7 @@ fn browser_pause_resume_local_winner_is_never_overwritten() {
 
     append_failure.fail_nth(NonZeroUsize::new(1).unwrap());
     let body = control_body(&request_id(4), crashed, None);
-    let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &body);
+    let (head, response) = post_control(&page, PAUSE, &body);
     empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
     assert_eq!(controls_for(&fixture.records(), crashed), (0, 0));
     running
@@ -6836,7 +5734,7 @@ fn browser_pause_resume_local_winner_is_never_overwritten() {
         .handle
         .ask(Ask::Resume(crashed))
         .expect("local resume");
-    let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &body);
+    let (head, response) = post_control(&page, PAUSE, &body);
     refused(&head, &response, "stale_control");
     assert_eq!(
         controls_for(&fixture.records(), crashed),
@@ -6845,151 +5743,6 @@ fn browser_pause_resume_local_winner_is_never_overwritten() {
     );
     let _ = (paused, unpaused);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
-
-/// Across restarts, at four cuts: after the pause's fsync and before its fold; after its fold;
-/// after the resume's fsync and before its `ClearedCause`; after the resumed turn's `TurnIssued`
-/// fsync and before Spawn. Each replays exactly one pause, one resume where it was sent, one turn
-/// and one Spawn, and the same key answers from the index.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "four restart cuts share one scenario and one assertion shape"
-)]
-fn browser_pause_resume_restart_cut_points_replay_one_record() {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum Cut {
-        PauseFsync,
-        PauseFold,
-        ResumeFsync,
-        TurnIssuedFsync,
-    }
-    for cut in [
-        Cut::PauseFsync,
-        Cut::PauseFold,
-        Cut::ResumeFsync,
-        Cut::TurnIssuedFsync,
-    ] {
-        let fixture = Fixture::new();
-        let settings = control_settings(&fixture, true);
-        let host = SharedHost::new();
-        let run = |host: &SharedHost| {
-            boot(
-                &settings,
-                seams(
-                    &settings,
-                    host.clone(),
-                    Arc::new(ScriptedRunner::default()),
-                    Arc::new(TestClock::new()),
-                    Witness::default(),
-                ),
-            )
-            .expect("boot Floor")
-        };
-        let daemon = run(&host);
-        let failure = daemon.onboarding_failure();
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let agent = common::hire(&running.handle, fixture.state.path());
-        let other = common::hire(&running.handle, fixture.state.path());
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let pause_body = control_body(&request_id(1), agent, None);
-        if cut == Cut::PauseFsync {
-            failure.arm(OnboardingFailurePoint::Control);
-        }
-        let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &pause_body);
-        let mut resume_body = None;
-        if cut == Cut::PauseFsync {
-            empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-            let (head, pending) = post_control(addr, PAUSE, &cookie, &csrf, &pause_body);
-            assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
-            assert_eq!(
-                pending["state"], "pending",
-                "an uncertain append keeps its key"
-            );
-            let fresh = control_body(&request_id(2), other, None);
-            let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &fresh);
-            empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-        } else {
-            let p = applied(&head, &response, "paused");
-            if matches!(cut, Cut::ResumeFsync | Cut::TurnIssuedFsync) {
-                // A goal set while paused is held; only the resume can issue its turn.
-                common::set_goal(
-                    &running.handle,
-                    common::goal_params(agent, &[true_program()]),
-                );
-                failure.arm(if cut == Cut::ResumeFsync {
-                    OnboardingFailurePoint::Control
-                } else {
-                    OnboardingFailurePoint::TurnIssued
-                });
-                let body = control_body(&request_id(3), agent, Some(p));
-                let (head, response) = post_control(addr, RESUME, &cookie, &csrf, &body);
-                if cut == Cut::ResumeFsync {
-                    empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-                } else {
-                    applied(&head, &response, "resumed");
-                }
-                resume_body = Some(body);
-            }
-        }
-        assert_eq!(
-            host.spawned().len(),
-            0,
-            "{cut:?}: the cut is before any Spawn"
-        );
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-
-        let daemon = run(&host);
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        if resume_body.is_some() {
-            fixture.await_record("the resumed turn's spawn", |record| {
-                matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent)
-                    .then_some(())
-            });
-        }
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &pause_body);
-        let p = applied(&head, &response, "paused");
-        let mut resumes = 0;
-        if let Some(body) = &resume_body {
-            let (head, response) = post_control(addr, RESUME, &cookie, &csrf, body);
-            let r = applied(&head, &response, "resumed");
-            assert!(r > p, "{cut:?}");
-            resumes = 1;
-            let issued: Vec<Lsn> = fixture
-                .records()
-                .iter()
-                .filter_map(|record| match record {
-                    Record::TurnIssued {
-                        agent: who,
-                        lsn_of_decision,
-                        ..
-                    } if *who == agent => Some(*lsn_of_decision),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(issued.len(), 1, "{cut:?}: one turn: {issued:?}");
-            assert!(issued[0] > r, "{cut:?}: decided after the resume");
-            assert_eq!(host.spawned().len(), 1, "{cut:?}: one Spawn");
-            assert_eq!(
-                fixture
-                    .records()
-                    .iter()
-                    .filter(|record| matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent))
-                    .count(),
-                1,
-                "{cut:?}"
-            );
-        } else {
-            assert_eq!(host.spawned().len(), 0, "{cut:?}: nothing to spawn");
-        }
-        let records = fixture.records();
-        assert_eq!(controls_for(&records, agent), (1, resumes), "{cut:?}");
-        assert_eq!(controls_for(&records, other), (0, 0), "{cut:?}");
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
 }
 
 /// A correctly identified live session passes the world check, is revoked before its append
@@ -7010,20 +5763,14 @@ fn browser_pause_resume_revocation_before_the_permit_is_forbidden() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
 
     pause.arm(OnboardingPausePoint::BeforeControlPermit);
     let losing = {
-        let (cookie, csrf) = (cookie.clone(), csrf.clone());
+        let page = Arc::clone(&page);
         std::thread::spawn(move || {
-            post_control(
-                addr,
-                PAUSE,
-                &cookie,
-                &csrf,
-                &control_body(&request_id(1), agent, None),
-            )
+            post_control(&page, PAUSE, &control_body(&request_id(1), agent, None))
         })
     };
     assert!(
@@ -7031,7 +5778,7 @@ fn browser_pause_resume_revocation_before_the_permit_is_forbidden() {
         "admitted, world-checked, before the permit"
     );
     assert!(
-        authorizer.revoke_for_test(&cookie),
+        authorizer.revoke_for_test(&page.cookie),
         "the live session is revoked"
     );
     pause.release();
@@ -7050,18 +5797,12 @@ fn browser_pause_resume_revocation_before_the_permit_is_forbidden() {
         &after_revoke[before.len()..]
     );
 
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     pause.arm(OnboardingPausePoint::AfterControlPermit);
     let owner = {
-        let (cookie, csrf) = (cookie.clone(), csrf.clone());
+        let page = Arc::clone(&page);
         std::thread::spawn(move || {
-            post_control(
-                addr,
-                PAUSE,
-                &cookie,
-                &csrf,
-                &control_body(&request_id(1), agent, None),
-            )
+            post_control(&page, PAUSE, &control_body(&request_id(1), agent, None))
         })
     };
     assert!(
@@ -7074,7 +5815,7 @@ fn browser_pause_resume_revocation_before_the_permit_is_forbidden() {
     let revoker = std::thread::spawn(move || {
         started_tx.send(()).expect("started signal");
         done_tx
-            .send(revoke.revoke_for_test(&cookie))
+            .send(revoke.revoke_for_test(&page.cookie))
             .expect("revoke result");
     });
     started_rx
@@ -7093,7 +5834,6 @@ fn browser_pause_resume_revocation_before_the_permit_is_forbidden() {
     revoker.join().expect("revoker thread");
     let (head, response) = owner.join().expect("winning request");
     applied(&head, &response, "paused");
-    let _ = csrf;
     assert_eq!(controls_for(&fixture.records(), agent), (1, 0));
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -7110,6 +5850,7 @@ fn browser_pause_resume_expiry_waiting_on_registry_lock_is_forbidden() {
         inner: TestClock::ticking(1_800_000_000_000, 0),
         armed: Mutex::new(None),
     });
+    follow_probe(&clock);
     let daemon = boot(
         &settings,
         Seams {
@@ -7132,18 +5873,12 @@ fn browser_pause_resume_expiry_waiting_on_registry_lock_is_forbidden() {
     let mut running = common::start(daemon);
     let a = common::hire(&running.handle, fixture.state.path());
     let b = common::hire(&running.handle, fixture.state.path());
-    let (a_cookie, a_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (b_cookie, b_csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let a_page = exchange(addr, &issue(&settings).bootstrap);
+    let b_page = exchange(addr, &issue(&settings).bootstrap);
 
     pause.arm(OnboardingPausePoint::AfterControlPermit);
     let holder = std::thread::spawn(move || {
-        post_control(
-            addr,
-            PAUSE,
-            &a_cookie,
-            &a_csrf,
-            &control_body(&request_id(1), a, None),
-        )
+        post_control(&a_page, PAUSE, &control_body(&request_id(1), a, None))
     });
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
@@ -7153,7 +5888,7 @@ fn browser_pause_resume_expiry_waiting_on_registry_lock_is_forbidden() {
     let (sent_tx, sent_rx) = mpsc::channel();
     let waiter = std::thread::spawn(move || {
         let body = serde_json::to_vec(&control_body(&request_id(2), b, None)).unwrap();
-        post_bytes(addr, PAUSE, &b_cookie, &b_csrf, &body, Some(sent_tx))
+        post_bytes(&b_page, PAUSE, &body, Some(sent_tx))
     });
     sent_rx
         .recv_timeout(Duration::from_secs(5))
@@ -7196,9 +5931,9 @@ fn browser_pause_resume_uncertain_local_write_fences_fresh_requests_and_serves_d
     let mut running = common::start(daemon);
     let first = common::hire(&running.handle, fixture.state.path());
     let second = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let durable = control_body(&request_id(1), first, None);
-    let (head, original) = post_control(addr, PAUSE, &cookie, &csrf, &durable);
+    let (head, original) = post_control(&page, PAUSE, &durable);
     let p = applied(&head, &original, "paused");
 
     failure.arm(OnboardingFailurePoint::LocalGoal);
@@ -7215,7 +5950,7 @@ fn browser_pause_resume_uncertain_local_write_fences_fresh_requests_and_serves_d
     let fenced = fixture.records();
 
     for attempt in 0..2 {
-        let (head, retry) = post_control(addr, PAUSE, &cookie, &csrf, &durable);
+        let (head, retry) = post_control(&page, PAUSE, &durable);
         assert!(
             head.starts_with("HTTP/1.1 200 OK"),
             "retry {attempt} while fenced: {head}"
@@ -7224,11 +5959,11 @@ fn browser_pause_resume_uncertain_local_write_fences_fresh_requests_and_serves_d
     }
     let mut changed = durable.clone();
     changed["control_lsn"] = json!(p.0.to_string());
-    let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &changed);
+    let (head, response) = post_control(&page, PAUSE, &changed);
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
     let fresh = control_body(&request_id(2), second, None);
     for _ in 0..2 {
-        let (head, response) = post_control(addr, PAUSE, &cookie, &csrf, &fresh);
+        let (head, response) = post_control(&page, PAUSE, &fresh);
         empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
     }
     assert_eq!(fixture.records(), fenced, "nothing appended while fenced");
@@ -7241,10 +5976,6 @@ fn browser_pause_resume_uncertain_local_write_fences_fresh_requests_and_serves_d
 /// identity, agent or `control_lsn`. Controls: a valid body padded to exactly 512 bytes applies,
 /// and so does the minimal one.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "every request bound is one row of a single table beside its two controls"
-)]
 fn browser_pause_resume_bounds_and_json_shape_refuse_before_effect() {
     let fixture = Fixture::new();
     let settings = control_settings(&fixture, true);
@@ -7253,7 +5984,7 @@ fn browser_pause_resume_bounds_and_json_shape_refuse_before_effect() {
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     let second = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let id = request_id(1);
     let alias = agent.to_string().replacen('0', "O", 1);
     assert_ne!(alias, agent.to_string(), "the alias spelling differs");
@@ -7322,17 +6053,14 @@ fn browser_pause_resume_bounds_and_json_shape_refuse_before_effect() {
     let before = fixture.records();
     for path in [PAUSE, RESUME] {
         for (label, body) in &refusals {
-            let (head, response) = post_bytes(addr, path, &cookie, &csrf, body.as_bytes(), None);
+            let (head, response) = post_bytes(&page, path, body.as_bytes(), None);
             assert!(
                 head.starts_with("HTTP/1.1 400 Bad Request"),
                 "{path} {label}: {head}"
             );
             assert!(response.is_null(), "{path} {label}: {response}");
         }
-        let host = addr.to_string();
-        let oversize = format!(
-            "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\nContent-Type: application/json\r\nContent-Length: 513\r\n\r\n"
-        );
+        let oversize = oversize_head(&page, path, 513);
         let (head, body) = raw_onboard(addr, oversize.as_bytes());
         assert!(
             head.starts_with("HTTP/1.1 413"),
@@ -7345,15 +6073,9 @@ fn browser_pause_resume_bounds_and_json_shape_refuse_before_effect() {
     let compact = serde_json::to_string(&control_body(&request_id(2), agent, None)).unwrap();
     let padded = format!("{}{}", compact, " ".repeat(512 - compact.len()));
     assert_eq!(padded.len(), 512);
-    let (head, response) = post_bytes(addr, PAUSE, &cookie, &csrf, padded.as_bytes(), None);
+    let (head, response) = post_bytes(&page, PAUSE, padded.as_bytes(), None);
     applied(&head, &response, "paused");
-    let (head, response) = post_control(
-        addr,
-        PAUSE,
-        &cookie,
-        &csrf,
-        &control_body(&request_id(3), second, None),
-    );
+    let (head, response) = post_control(&page, PAUSE, &control_body(&request_id(3), second, None));
     applied(&head, &response, "paused");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -7363,10 +6085,6 @@ fn browser_pause_resume_bounds_and_json_shape_refuse_before_effect() {
 /// configuration with control on routes both and sends the sibling. And the operator's switch
 /// loads with no budget at all.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "two switch settings and every load case share one table"
-)]
 fn browser_pause_resume_is_absent_when_not_enabled() {
     for enabled in [false, true] {
         let fixture = Fixture::new();
@@ -7375,13 +6093,11 @@ fn browser_pause_resume_is_absent_when_not_enabled() {
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
         let agent = common::hire(&running.handle, fixture.state.path());
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (view, _) = snapshot(addr, &cookie, &csrf);
+        let page = exchange(addr, &issue(&settings).bootstrap);
+        let (view, _) = snapshot(&page);
         let unrouted = raw_post(
-            addr,
+            &page,
             "/floor/unrouted",
-            &cookie,
-            &csrf,
             &serde_json::to_vec(&control_body(&request_id(1), agent, None)).unwrap(),
         );
         assert!(!unrouted.is_empty());
@@ -7392,7 +6108,7 @@ fn browser_pause_resume_is_absent_when_not_enabled() {
                 disk_control_lsn(&fixture, agent),
             ))
             .unwrap();
-            let routed = raw_post(addr, path, &cookie, &csrf, &body);
+            let routed = raw_post(&page, path, &body);
             if enabled {
                 assert_ne!(routed, unrouted, "control: {path} is a route");
                 assert!(
@@ -7497,12 +6213,10 @@ fn goal_body(request_id: &str, agent: AgentId, goal: GoalId, text: &str) -> Valu
     json!({ "request_id": request_id, "agent": agent, "goal": goal, "text": text })
 }
 
-fn post_goal(addr: SocketAddr, cookie: &str, csrf: &str, body: &Value) -> (String, Value) {
+fn post_goal(page: &Page, body: &Value) -> (String, Value) {
     post_bytes(
-        addr,
+        page,
         GOAL_ROUTE,
-        cookie,
-        csrf,
         &serde_json::to_vec(body).expect("goal JSON"),
         None,
     )
@@ -7625,39 +6339,25 @@ fn browser_goal_refuses_a_legacy_predicate(status: dudes_types::CardStatus, reas
     let daemon = boot(&settings, fake_seams(&settings)).expect("replay legacy goal");
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
-    let (head, response) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
-        &goal_body(&request_id(1), agent, goal, NEW_TEXT),
-    );
+    let (head, response) = post_goal(&page, &goal_body(&request_id(1), agent, goal, NEW_TEXT));
     assert_eq!(
         changed(&head, &response),
         legacy_goal,
         "durable retry truth precedes the predicate admission rule"
     );
     let (head, response) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &goal_body(&request_id(2), agent, legacy_goal, NEW_TEXT),
     );
     refused(&head, &response, reason);
     let (head, response) = post_renew(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &renew_body(&request_id(3), agent, legacy_goal, SHOWN),
     );
     refused(&head, &response, reason);
-    let (head, response) = post_renew(
-        addr,
-        &cookie,
-        &csrf,
-        &renew_body(&request_id(1), agent, goal, SHOWN),
-    );
+    let (head, response) = post_renew(&page, &renew_body(&request_id(1), agent, goal, SHOWN));
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
     assert_eq!(fixture.records(), before);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -7727,24 +6427,6 @@ fn await_entry(fixture: &Fixture, what: &str, f: impl Fn(Lsn, &Record) -> bool) 
     }
 }
 
-/// Resend one goal change until it applies, for at most three seconds; each refusal on the way
-/// has no effect. Returns the `200`'s new goal.
-fn apply_goal_when_admitted(addr: SocketAddr, cookie: &str, csrf: &str, body: &Value) -> GoalId {
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    loop {
-        let (head, response) = post_goal(addr, cookie, csrf, body);
-        if head.starts_with("HTTP/1.1 200 OK") {
-            return changed(&head, &response);
-        }
-        assert_eq!(response["reason"], "turn_open", "{head} {response}");
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the change stayed refused: {response}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
 /// The primary test, stub-backed and read from the replayed journal, in its seven
 /// ordered steps: a change is refused while T1 runs; after T1's end, its verdict and `Done`, one
 /// applies; the new goal keeps G1's predicate and carries exactly what G1 had left; its own
@@ -7789,8 +6471,8 @@ fn browser_goal_change_is_finite_bounded_and_observed() {
         } if *who == agent => Some(*turn),
         _ => None,
     });
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (view, _) = snapshot(&page);
     assert_eq!(view["goal"], json!({ "max_text_bytes": 2048 }));
 
     assert!(
@@ -7800,12 +6482,7 @@ fn browser_goal_change_is_finite_bounded_and_observed() {
             .any(|record| matches!(record, Record::TurnEnded { turn, .. } if *turn == t1)),
         "T1 is still running"
     );
-    let (head, response) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
-        &goal_body(&request_id(1), agent, g1, NEW_TEXT),
-    );
+    let (head, response) = post_goal(&page, &goal_body(&request_id(1), agent, g1, NEW_TEXT));
     refused(&head, &response, "turn_open");
     assert!(browser_goals(&fixture, agent).is_empty());
 
@@ -7826,12 +6503,7 @@ fn browser_goal_change_is_finite_bounded_and_observed() {
         })
         .expect("T1's known cost");
     assert!(t1_usd.micros() * 2 >= ceiling.micros(), "{t1_usd:?}");
-    let (head, response) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
-        &goal_body(&request_id(2), agent, g1, NEW_TEXT),
-    );
+    let (head, response) = post_goal(&page, &goal_body(&request_id(2), agent, g1, NEW_TEXT));
     let g2 = changed(&head, &response);
     assert_eq!(
         response,
@@ -7880,7 +6552,9 @@ fn browser_goal_change_is_finite_bounded_and_observed() {
             tokens: None,
         }
     );
-    let session = <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(cookie.as_bytes()));
+    let session = <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(
+        page.cookie.as_bytes(),
+    ));
     assert_eq!(attribution.session_digest.bytes(), session);
     assert_eq!(
         attribution.request_digest.bytes(),
@@ -7968,9 +6642,9 @@ fn browser_goal_change_is_finite_bounded_and_observed() {
         "{t2_end:?} {verdict:?} {done:?}"
     );
     let journal = serde_json::to_string(&entries).expect("journal JSON");
-    for secret in [cookie.as_str(), csrf.as_str(), request_id(2).as_str()] {
+    for credential in [page.cookie.as_str(), request_id(2).as_str()] {
         assert!(
-            !journal.contains(secret),
+            !journal.contains(credential),
             "raw browser credential in the journal"
         );
     }
@@ -7979,14 +6653,9 @@ fn browser_goal_change_is_finite_bounded_and_observed() {
     assert_eq!(daemon.world().agents[&agent].goal, Some(g2));
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
-    let (head, replayed) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
-        &goal_body(&request_id(2), agent, g1, NEW_TEXT),
-    );
+    let (head, replayed) = post_goal(&page, &goal_body(&request_id(2), agent, g1, NEW_TEXT));
     assert_eq!(changed(&head, &replayed), g2);
     assert_eq!(replayed, response);
     assert_eq!(
@@ -7998,10 +6667,15 @@ fn browser_goal_change_is_finite_bounded_and_observed() {
 }
 
 /// Every browser credential is checked before any effect: a wrong Host, a wrong or missing Origin,
-/// an unknown cookie, a wrong or missing CSRF and an expired session each get the uniform empty
-/// `403`, and the journal does not move. Control: the right credentials apply.
+/// an unknown cookie and an expired session each get the uniform empty `403`,
+/// a wrong or missing signature a `401` that says so, and the journal does not move.
+/// Control: the right credentials apply.
 #[test]
-fn browser_goal_refuses_wrong_session_host_origin_and_csrf_without_effect() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "six credential failures, the expired session and the control share one daemon"
+)]
+fn browser_goal_refuses_wrong_session_host_origin_and_signature_without_effect() {
     let fixture = Fixture::new();
     let settings = goal_settings(&fixture, true);
     let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
@@ -8019,17 +6693,17 @@ fn browser_goal_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (agent, goal) = paused_with_goal(&running, &fixture);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = serde_json::to_vec(&goal_body(&request_id(1), agent, goal, NEW_TEXT)).unwrap();
     let host = addr.to_string();
-    let request = |host: &str, origin: Option<&str>, cookie: &str, csrf: Option<&str>| {
+    let request = |host: &str, origin: Option<&str>, cookie: &str, signed: Option<&Signed>| {
         let mut head = format!("POST {GOAL_ROUTE} HTTP/1.1\r\nHost: {host}\r\n");
         if let Some(origin) = origin {
             let _ = write!(head, "Origin: {origin}\r\n");
         }
         let _ = write!(head, "Cookie: dudes_floor_session={cookie}\r\n");
-        if let Some(csrf) = csrf {
-            let _ = write!(head, "X-Dudes-CSRF: {csrf}\r\n");
+        if let Some(signed) = signed {
+            head.push_str(&signed.header_lines());
         }
         let _ = write!(
             head,
@@ -8042,43 +6716,76 @@ fn browser_goal_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     };
     let origin = format!("http://{host}");
     let unknown = "A".repeat(43);
+    let signed = |path: &str| page.signed("POST", path, &body);
+    let foreign = |path: &str| foreign_signature(&page, path, &body);
     let before = fixture.records();
     for (label, bytes) in [
         (
             "wrong Host",
-            request("127.0.0.1:1", Some(&origin), &cookie, Some(&csrf)),
+            request(
+                "127.0.0.1:1",
+                Some(&origin),
+                &page.cookie,
+                Some(&signed(GOAL_ROUTE)),
+            ),
         ),
         (
             "wrong Origin",
-            request(&host, Some("http://127.0.0.1:1"), &cookie, Some(&csrf)),
+            request(
+                &host,
+                Some("http://127.0.0.1:1"),
+                &page.cookie,
+                Some(&signed(GOAL_ROUTE)),
+            ),
         ),
-        ("missing Origin", request(&host, None, &cookie, Some(&csrf))),
+        (
+            "missing Origin",
+            request(&host, None, &page.cookie, Some(&signed(GOAL_ROUTE))),
+        ),
         (
             "unknown cookie",
-            request(&host, Some(&origin), &unknown, Some(&csrf)),
+            request(&host, Some(&origin), &unknown, Some(&signed(GOAL_ROUTE))),
         ),
         (
-            "wrong CSRF",
-            request(&host, Some(&origin), &cookie, Some(&unknown)),
+            "wrong signature",
+            request(
+                &host,
+                Some(&origin),
+                &page.cookie,
+                Some(&foreign(GOAL_ROUTE)),
+            ),
         ),
-        ("missing CSRF", request(&host, Some(&origin), &cookie, None)),
+        (
+            "missing signature",
+            request(&host, Some(&origin), &page.cookie, None),
+        ),
     ] {
         let (head, response) = raw_onboard(addr, &bytes);
-        assert!(
-            head.starts_with("HTTP/1.1 403 Forbidden"),
-            "{label}: {head}"
-        );
-        assert!(response.is_empty(), "{label}: no envelope");
+        if label.ends_with("signature") {
+            assert!(
+                head.starts_with("HTTP/1.1 401 Unauthorized"),
+                "{label}: {head}"
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&response).expect("JSON"),
+                json!({"signature": "refused"}),
+                "{label}: {head}"
+            );
+        } else {
+            assert!(
+                head.starts_with("HTTP/1.1 403 Forbidden"),
+                "{label}: {head}"
+            );
+            assert!(response.is_empty(), "{label}: no envelope");
+        }
     }
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
-    let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(24 * 60 * 60 * 1000);
-    let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let expired_page = exchange(addr, &issue(&settings).bootstrap);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
+    let fresh_page = exchange(addr, &issue(&settings).bootstrap);
     let (head, response) = post_goal(
-        addr,
-        &expired_cookie,
-        &expired_csrf,
+        &expired_page,
         &goal_body(&request_id(1), agent, goal, NEW_TEXT),
     );
     empty_refusal(&head, &response, "HTTP/1.1 403 Forbidden");
@@ -8087,12 +6794,9 @@ fn browser_goal_refuses_wrong_session_host_origin_and_csrf_without_effect() {
         before,
         "an expired session appends nothing"
     );
-    let _ = (cookie, csrf);
 
     let (head, response) = post_goal(
-        addr,
-        &fresh_cookie,
-        &fresh_csrf,
+        &fresh_page,
         &goal_body(&request_id(1), agent, goal, NEW_TEXT),
     );
     changed(&head, &response);
@@ -8162,7 +6866,7 @@ fn browser_goal_refuses_absent_halted_stale_and_open_turn() {
     let (control, control_goal) = paused_with_goal(&running, &fixture);
     let unknown = AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("an agent id");
 
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
     for (k, agent, goal, reason) in [
         (1, unknown, older, "agent_absent"),
@@ -8173,20 +6877,13 @@ fn browser_goal_refuses_absent_halted_stale_and_open_turn() {
         (6, issued, issued_goal, "turn_open"),
         (7, spawned, spawned_goal, "turn_open"),
     ] {
-        let (head, response) = post_goal(
-            addr,
-            &cookie,
-            &csrf,
-            &goal_body(&request_id(k), agent, goal, NEW_TEXT),
-        );
+        let (head, response) = post_goal(&page, &goal_body(&request_id(k), agent, goal, NEW_TEXT));
         refused(&head, &response, reason);
     }
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let (head, response) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &goal_body(&request_id(8), control, control_goal, NEW_TEXT),
     );
     changed(&head, &response);
@@ -8232,7 +6929,7 @@ fn browser_goal_chain_never_exceeds_the_first_goal() {
         fixture: &fixture,
         host: &native_host,
     };
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let agent = common::hire(&running.handle, fixture.state.path());
     running.handle.ask(Ask::Pause(agent)).expect("local pause");
     let mut goal = common::set_goal(
@@ -8264,12 +6961,8 @@ fn browser_goal_chain_never_exceeds_the_first_goal() {
         fixture.await_record("the verdict", |record| {
             matches!(record, Record::PredicateResult { goal, .. } if *goal == judged).then_some(())
         });
-        let (head, response) = post_goal(
-            addr,
-            &cookie,
-            &csrf,
-            &goal_body(&request_id(k + 1), agent, goal, NEW_TEXT),
-        );
+        let (head, response) =
+            post_goal(&page, &goal_body(&request_id(k + 1), agent, goal, NEW_TEXT));
         if k < 2 {
             goal = changed(&head, &response);
             let (_, new_goal, _) = browser_goals(&fixture, agent).pop().expect("the change");
@@ -8284,9 +6977,7 @@ fn browser_goal_chain_never_exceeds_the_first_goal() {
 
     let (dollars, spent_goal) = spent_dollar_goal(&native);
     let (head, response) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &goal_body(&request_id(4), dollars, spent_goal, NEW_TEXT),
     );
     refused(&head, &response, "goal_exhausted");
@@ -8338,19 +7029,6 @@ fn spent_dollar_goal(native: &NativeTurnFixture<'_>) -> (AgentId, GoalId) {
     (dollars, spent_goal)
 }
 
-/// One step of [`GatedRunner`]'s script.
-#[derive(Clone, Copy, Debug)]
-enum Step {
-    /// Wait for [`GatedRunner::release`], then pass.
-    Held,
-    /// The run fails to start: no verdict.
-    Unrun,
-    /// The exit path swept it: no verdict.
-    Swept,
-    /// The runner panics inside the predicate thread.
-    Panics,
-}
-
 /// What [`GatedRunner`] reports.
 #[derive(Debug, PartialEq, Eq)]
 enum RunEvent {
@@ -8358,24 +7036,18 @@ enum RunEvent {
     Returning,
 }
 
-/// A predicate runner that answers from a script of [`Step`]s, then passes, and reports each run's
-/// start and return.
 struct GatedRunner {
-    script: Mutex<std::collections::VecDeque<Step>>,
     released: (Mutex<bool>, std::sync::Condvar),
     events: Mutex<mpsc::Sender<RunEvent>>,
-    runs: std::sync::atomic::AtomicUsize,
 }
 
 impl GatedRunner {
-    fn new(script: impl IntoIterator<Item = Step>) -> (Arc<Self>, mpsc::Receiver<RunEvent>) {
+    fn new() -> (Arc<Self>, mpsc::Receiver<RunEvent>) {
         let (tx, rx) = mpsc::channel();
         (
             Arc::new(Self {
-                script: Mutex::new(script.into_iter().collect()),
                 released: (Mutex::new(false), std::sync::Condvar::new()),
                 events: Mutex::new(tx),
-                runs: std::sync::atomic::AtomicUsize::new(0),
             }),
             rx,
         )
@@ -8405,34 +7077,21 @@ impl duded::predicate::PredicateRunner for GatedRunner {
         _spec: &LaunchSpec,
         _timeout: Duration,
     ) -> std::io::Result<duded::predicate::PredicateOutcome> {
-        self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let step = self
-            .script
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop_front();
         self.report(RunEvent::Started);
-        if matches!(step, Some(Step::Held)) {
-            let mut released = self
+        let mut released = self
+            .released
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while !*released {
+            released = self
                 .released
-                .0
-                .lock()
+                .1
+                .wait(released)
                 .unwrap_or_else(PoisonError::into_inner);
-            while !*released {
-                released = self
-                    .released
-                    .1
-                    .wait(released)
-                    .unwrap_or_else(PoisonError::into_inner);
-            }
         }
         self.report(RunEvent::Returning);
-        match step {
-            Some(Step::Unrun) => Err(std::io::Error::other("the predicate could not start")),
-            Some(Step::Swept) => Ok(duded::predicate::PredicateOutcome::Swept),
-            Some(Step::Panics) => panic!("an injected predicate runner panic"),
-            Some(Step::Held) | None => Ok(common::passes()),
-        }
+        Ok(common::passes())
     }
 
     fn sweep(&self) {
@@ -8449,18 +7108,16 @@ struct VerdictArm {
     runner: Arc<GatedRunner>,
     events: mpsc::Receiver<RunEvent>,
     pause: duded::runtime::OnboardingPause,
-    addr: SocketAddr,
-    cookie: String,
-    csrf: String,
+    page: Arc<Page>,
     agent: AgentId,
     goal: GoalId,
 }
 
 impl VerdictArm {
-    fn start(script: impl IntoIterator<Item = Step>, spawn_failure: bool) -> Self {
+    fn start() -> Self {
         let fixture = Fixture::new();
         let settings = goal_settings(&fixture, true);
-        let (runner, events) = GatedRunner::new(script);
+        let (runner, events) = GatedRunner::new();
         let (parts, native_host) = native_fixture_seams(
             &fixture,
             seams(
@@ -8472,9 +7129,6 @@ impl VerdictArm {
             ),
         );
         let daemon = boot(&settings, parts).expect("boot Floor");
-        if spawn_failure {
-            daemon.predicate_spawn_failure().arm();
-        }
         let pause = daemon.onboarding_pause();
         let addr = daemon.floor_addr().expect("Floor address");
         let running = common::start(daemon);
@@ -8484,7 +7138,7 @@ impl VerdictArm {
             common::goal_params(agent, &[true_program()]),
         );
         let turn = issued_goal_turn(&fixture, goal);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+        let page = exchange(addr, &issue(&settings).bootstrap);
         NativeTurnFixture {
             running: &running,
             fixture: &fixture,
@@ -8500,9 +7154,7 @@ impl VerdictArm {
             runner,
             events,
             pause,
-            addr,
-            cookie,
-            csrf,
+            page,
             agent,
             goal,
         }
@@ -8518,18 +7170,6 @@ impl VerdictArm {
 
     fn body(&self, k: usize, text: &str) -> Value {
         goal_body(&request_id(k), self.agent, self.goal, text)
-    }
-
-    fn post(&self, body: &Value) -> (String, Value) {
-        post_goal(self.addr, &self.cookie, &self.csrf, body)
-    }
-
-    fn verdicts(&self) -> usize {
-        self.fixture
-            .records()
-            .iter()
-            .filter(|record| matches!(record, Record::PredicateResult { goal, .. } if *goal == self.goal))
-            .count()
     }
 
     fn stop(mut self) {
@@ -8560,31 +7200,14 @@ impl VerdictArm {
 /// refused).
 #[test]
 fn browser_goal_waits_for_the_replaced_goals_verdict() {
-    let arm = VerdictArm::start([Step::Held], false);
-    arm.expect(RunEvent::Started);
-    let (head, response) = arm.post(&arm.body(1, NEW_TEXT));
-    refused(&head, &response, "turn_open");
-    assert!(browser_goals(&arm.fixture, arm.agent).is_empty());
-    arm.runner.release();
-    arm.expect(RunEvent::Returning);
-    apply_goal_when_admitted(arm.addr, &arm.cookie, &arm.csrf, &arm.body(1, NEW_TEXT));
-    assert_eq!(arm.verdicts(), 1);
-    arm.stop();
-
-    let arm = VerdictArm::start([Step::Held], false);
+    let arm = VerdictArm::start();
     arm.expect(RunEvent::Started);
     let blocker = common::hire(&arm.running.handle, arm.fixture.state.path());
     arm.pause.arm(OnboardingPausePoint::BeforeControlPermit);
     let blocking = {
-        let (addr, cookie, csrf) = (arm.addr, arm.cookie.clone(), arm.csrf.clone());
+        let page = Arc::clone(&arm.page);
         std::thread::spawn(move || {
-            post_control(
-                addr,
-                PAUSE,
-                &cookie,
-                &csrf,
-                &control_body(&request_id(9), blocker, None),
-            )
+            post_control(&page, PAUSE, &control_body(&request_id(9), blocker, None))
         })
     };
     assert!(
@@ -8593,13 +7216,11 @@ fn browser_goal_waits_for_the_replaced_goals_verdict() {
     );
     let queue = |body: Value| {
         let (sent_tx, sent_rx) = mpsc::channel();
-        let (addr, cookie, csrf) = (arm.addr, arm.cookie.clone(), arm.csrf.clone());
+        let page = Arc::clone(&arm.page);
         let request = std::thread::spawn(move || {
             post_bytes(
-                addr,
+                &page,
                 GOAL_ROUTE,
-                &cookie,
-                &csrf,
                 &serde_json::to_vec(&body).expect("goal JSON"),
                 Some(sent_tx),
             )
@@ -8638,32 +7259,6 @@ fn browser_goal_waits_for_the_replaced_goals_verdict() {
         .expect("G1's verdict");
     assert!(verdict < changes[0].0, "the verdict precedes the change");
     arm.stop();
-
-    for step in [Step::Unrun, Step::Swept] {
-        let arm = VerdictArm::start([step], false);
-        arm.expect(RunEvent::Started);
-        arm.expect(RunEvent::Returning);
-        apply_goal_when_admitted(arm.addr, &arm.cookie, &arm.csrf, &arm.body(1, NEW_TEXT));
-        assert_eq!(arm.verdicts(), 0, "{step:?}: no verdict was observed");
-        arm.stop();
-    }
-
-    let arm = VerdictArm::start([Step::Panics], false);
-    arm.expect(RunEvent::Started);
-    arm.expect(RunEvent::Returning);
-    apply_goal_when_admitted(arm.addr, &arm.cookie, &arm.csrf, &arm.body(1, NEW_TEXT));
-    assert_eq!(arm.verdicts(), 0);
-    arm.stop();
-
-    let arm = VerdictArm::start([], true);
-    apply_goal_when_admitted(arm.addr, &arm.cookie, &arm.csrf, &arm.body(1, NEW_TEXT));
-    assert_eq!(
-        arm.runner.runs.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "G1's predicate thread never started"
-    );
-    assert_eq!(arm.verdicts(), 0);
-    arm.stop();
 }
 
 /// Every applied body is single use. Resent under a new identity it is `stale_goal`; resent under
@@ -8676,17 +7271,17 @@ fn browser_goal_replayed_body_has_no_effect() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (agent, goal) = paused_with_goal(&running, &fixture);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = goal_body(&request_id(1), agent, goal, NEW_TEXT);
-    let (head, original) = post_goal(addr, &cookie, &csrf, &body);
+    let (head, original) = post_goal(&page, &body);
     changed(&head, &original);
     let applied_records = fixture.records();
 
     let mut replayed = body.clone();
     replayed["request_id"] = json!(request_id(2));
-    let (head, response) = post_goal(addr, &cookie, &csrf, &replayed);
+    let (head, response) = post_goal(&page, &replayed);
     refused(&head, &response, "stale_goal");
-    let (head, response) = post_goal(addr, &cookie, &csrf, &body);
+    let (head, response) = post_goal(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(response, original, "its own identity gets its original 200");
     assert_eq!(fixture.records(), applied_records, "zero new records");
@@ -8704,9 +7299,9 @@ fn browser_goal_same_key_retry_returns_original_and_changed_payload_conflicts() 
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (agent, goal) = paused_with_goal(&running, &fixture);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = goal_body(&request_id(1), agent, goal, NEW_TEXT);
-    let (head, original) = post_goal(addr, &cookie, &csrf, &body);
+    let (head, original) = post_goal(&page, &body);
     changed(&head, &original);
     common::set_goal(
         &running.handle,
@@ -8714,12 +7309,12 @@ fn browser_goal_same_key_retry_returns_original_and_changed_payload_conflicts() 
     );
     let later = fixture.records();
 
-    let (head, response) = post_goal(addr, &cookie, &csrf, &body);
+    let (head, response) = post_goal(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(response, original, "after a later local goal.set");
     let mut changed_text = body.clone();
     changed_text["text"] = json!("another text");
-    let (head, response) = post_goal(addr, &cookie, &csrf, &changed_text);
+    let (head, response) = post_goal(&page, &changed_text);
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
     assert_eq!(fixture.records(), later, "no retry appended anything");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -8727,12 +7322,12 @@ fn browser_goal_same_key_retry_returns_original_and_changed_payload_conflicts() 
     let daemon = boot(&settings, fake_seams(&settings)).expect("restart");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
-    let (head, response) = post_goal(addr, &cookie, &csrf, &body);
+    let (head, response) = post_goal(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(response, original, "from a fresh session after a restart");
-    let (head, response) = post_goal(addr, &cookie, &csrf, &changed_text);
+    let (head, response) = post_goal(&page, &changed_text);
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
     assert_eq!(fixture.records(), before);
     assert_eq!(browser_goals(&fixture, agent).len(), 1);
@@ -8753,13 +7348,13 @@ fn browser_goal_concurrent_same_key_is_pending_and_two_keys_yield_one_record() {
     let mut running = common::start(daemon);
     let (agent, goal) = paused_with_goal(&running, &fixture);
     let (second, second_goal) = paused_with_goal(&running, &fixture);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = goal_body(&request_id(1), agent, goal, NEW_TEXT);
 
     pause.arm(OnboardingPausePoint::BeforeGoalChangePermit);
     let owner = {
-        let (cookie, csrf, body) = (cookie.clone(), csrf.clone(), body.clone());
-        std::thread::spawn(move || post_goal(addr, &cookie, &csrf, &body))
+        let (page, body) = (Arc::clone(&page), body.clone());
+        std::thread::spawn(move || post_goal(&page, &body))
     };
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
@@ -8767,9 +7362,9 @@ fn browser_goal_concurrent_same_key_is_pending_and_two_keys_yield_one_record() {
     );
     let at_once = |body: Value| {
         let (tx, rx) = mpsc::channel();
-        let (cookie, csrf) = (cookie.clone(), csrf.clone());
+        let page = Arc::clone(&page);
         std::thread::spawn(move || {
-            let _ = tx.send(post_goal(addr, &cookie, &csrf, &body));
+            let _ = tx.send(post_goal(&page, &body));
         });
         rx.recv_timeout(Duration::from_secs(3)).ok()
     };
@@ -8793,9 +7388,9 @@ fn browser_goal_concurrent_same_key_is_pending_and_two_keys_yield_one_record() {
     let view = goal_body(&request_id(2), second, second_goal, NEW_TEXT);
     let mut twin = view.clone();
     twin["request_id"] = json!(request_id(3));
-    let (head, response) = post_goal(addr, &cookie, &csrf, &view);
+    let (head, response) = post_goal(&page, &view);
     changed(&head, &response);
-    let (head, response) = post_goal(addr, &cookie, &csrf, &twin);
+    let (head, response) = post_goal(&page, &twin);
     refused(&head, &response, "stale_goal");
     assert_eq!(browser_goals(&fixture, second).len(), 1, "one record");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -8814,186 +7409,32 @@ fn browser_goal_local_winner_is_never_overwritten() {
     let mut running = common::start(daemon);
     let (moved, seen) = paused_with_goal(&running, &fixture);
     let (crashed, crashed_goal) = paused_with_goal(&running, &fixture);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
 
     let local = common::set_goal(
         &running.handle,
         common::goal_params(moved, &[true_program()]),
     );
     let before = fixture.records();
-    let (head, response) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
-        &goal_body(&request_id(1), moved, seen, NEW_TEXT),
-    );
+    let (head, response) = post_goal(&page, &goal_body(&request_id(1), moved, seen, NEW_TEXT));
     refused(&head, &response, "stale_goal");
     assert_eq!(fixture.records(), before, "the local goal stands");
     assert_eq!(folded(&fixture).agents[&moved].goal, Some(local));
 
     append_failure.fail_nth(NonZeroUsize::new(1).unwrap());
     let body = goal_body(&request_id(2), crashed, crashed_goal, NEW_TEXT);
-    let (head, response) = post_goal(addr, &cookie, &csrf, &body);
+    let (head, response) = post_goal(&page, &body);
     empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
     assert!(browser_goals(&fixture, crashed).is_empty());
     let local = common::set_goal(
         &running.handle,
         common::goal_params(crashed, &[true_program()]),
     );
-    let (head, response) = post_goal(addr, &cookie, &csrf, &body);
+    let (head, response) = post_goal(&page, &body);
     refused(&head, &response, "stale_goal");
     assert!(browser_goals(&fixture, crashed).is_empty());
     assert_eq!(folded(&fixture).agents[&crashed].goal, Some(local));
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
-
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "three restart cuts share one scenario and one assertion shape"
-)]
-fn browser_goal_restart_cut_points_replay_one_record() {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum Cut {
-        GoalSetFsync,
-        GoalSetFold,
-        TurnIssuedFsync,
-    }
-    for cut in [Cut::GoalSetFsync, Cut::GoalSetFold, Cut::TurnIssuedFsync] {
-        let fixture = Fixture::new();
-        let settings = goal_settings(&fixture, true);
-        let run = || {
-            let (parts, host) = native_fixture_seams(
-                &fixture,
-                seams(
-                    &settings,
-                    SharedHost::new(),
-                    Arc::new(ScriptedRunner::scripted([common::passes()])),
-                    Arc::new(TestClock::new()),
-                    Witness::default(),
-                ),
-            );
-            (boot(&settings, parts).expect("boot Floor"), host)
-        };
-        let (daemon, host) = run();
-        let failure = daemon.onboarding_failure();
-        let append_failure = daemon.append_failure();
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let native = NativeTurnFixture {
-            running: &running,
-            fixture: &fixture,
-            host: &host,
-        };
-        let (agent, goal) = if cut == Cut::TurnIssuedFsync {
-            // A `Done` agent: the change's own decision issues G2's turn.
-            let agent = common::hire(&running.handle, fixture.state.path());
-            let goal = common::set_goal(
-                &running.handle,
-                common::goal_params(agent, &[true_program()]),
-            );
-            let turn = issued_goal_turn(&fixture, goal);
-            native.complete(turn, Some(dollars(Usd::from_cents(1))));
-            fixture.await_record("G1 met", |record| {
-                matches!(record, Record::LoopDecided { agent: who, decision: LoopDecision::Done, .. } if *who == agent)
-                    .then_some(())
-            });
-            (agent, goal)
-        } else {
-            paused_with_goal(&running, &fixture)
-        };
-        let (other, other_goal) = paused_with_goal(&running, &fixture);
-        let spawned_before = host.spawned().len();
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let body = goal_body(&request_id(1), agent, goal, NEW_TEXT);
-        match cut {
-            Cut::GoalSetFsync => failure.arm(OnboardingFailurePoint::GoalChange),
-            Cut::GoalSetFold => append_failure.fail_nth(NonZeroUsize::new(2).unwrap()),
-            Cut::TurnIssuedFsync => failure.arm(OnboardingFailurePoint::TurnIssued),
-        }
-        let (head, response) = post_goal(addr, &cookie, &csrf, &body);
-        if cut == Cut::GoalSetFsync {
-            empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-            let (head, pending) = post_goal(addr, &cookie, &csrf, &body);
-            assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
-            assert_eq!(
-                pending["state"], "pending",
-                "an uncertain append keeps its key"
-            );
-            let fresh = goal_body(&request_id(2), other, other_goal, NEW_TEXT);
-            let (head, response) = post_goal(addr, &cookie, &csrf, &fresh);
-            empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-        } else {
-            changed(&head, &response);
-        }
-        if cut == Cut::TurnIssuedFsync {
-            let goal = browser_goals(&fixture, agent).last().unwrap().1.id;
-            nth_turn(&fixture, goal, 0);
-            running.handle.doctor().unwrap();
-        }
-        assert_eq!(
-            host.spawned().len(),
-            spawned_before,
-            "{cut:?}: the cut is before any Spawn"
-        );
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-        let (c, g2_goal, _) = browser_goals(&fixture, agent)
-            .pop()
-            .expect("the GoalSet is durable");
-        match cut {
-            Cut::GoalSetFsync | Cut::GoalSetFold => assert!(
-                !after(&fixture, c)
-                    .iter()
-                    .any(|(_, e)| matches!(&e.record, Record::LoopDecided { agent: who, .. } if *who == agent)),
-                "{cut:?}: no decision after the change yet"
-            ),
-            Cut::TurnIssuedFsync => assert!(
-                after(&fixture, c).iter().any(|(_, e)| matches!(&e.record, Record::TurnIssued { goal, .. } if *goal == g2_goal.id)),
-                "{cut:?}: G2's turn is durable"
-            ),
-        }
-
-        let (daemon, restarted_host) = run();
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        if cut == Cut::TurnIssuedFsync {
-            recover_owed_browser_turn(&settings, &fixture, &running, agent, g2_goal.id);
-            issued_goal_turn(&fixture, g2_goal.id);
-            assert_eq!(
-                restarted_host.spawned().len(),
-                1,
-                "G2's exact owed turn re-issued once"
-            );
-        }
-        let (head, response) = post_goal(addr, &cookie, &csrf, &body);
-        assert_eq!(changed(&head, &response), g2_goal.id, "{cut:?}");
-        let records = fixture.records();
-        assert_eq!(browser_goals(&fixture, agent).len(), 1, "{cut:?}");
-        assert!(browser_goals(&fixture, other).is_empty(), "{cut:?}");
-        assert!(
-            after(&fixture, c).iter().any(|(_, e)| matches!(&e.record, Record::LoopDecided { agent: who, .. } if *who == agent)),
-            "{cut:?}: replay decided on G2"
-        );
-        let g2_turns = records
-            .iter()
-            .filter(
-                |record| matches!(record, Record::TurnIssued { goal, .. } if *goal == g2_goal.id),
-            )
-            .count();
-        if cut == Cut::TurnIssuedFsync {
-            assert_eq!(g2_turns, 1, "{cut:?}: G2's turn re-issued exactly once");
-            assert_eq!(
-                host.spawned().len() + restarted_host.spawned().len(),
-                spawned_before + 1,
-                "{cut:?}: one Spawn"
-            );
-        } else {
-            assert_eq!(g2_turns, 0, "{cut:?}: the paused agent issues nothing");
-            assert_eq!(host.spawned().len(), spawned_before, "{cut:?}");
-        }
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
 }
 
 /// A correctly identified live session passes the world check and the carry-over, is revoked
@@ -9014,21 +7455,21 @@ fn browser_goal_revocation_before_the_permit_is_forbidden() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (agent, goal) = paused_with_goal(&running, &fixture);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = goal_body(&request_id(1), agent, goal, NEW_TEXT);
     let before = fixture.records();
 
     pause.arm(OnboardingPausePoint::BeforeGoalChangePermit);
     let losing = {
-        let (cookie, csrf, body) = (cookie.clone(), csrf.clone(), body.clone());
-        std::thread::spawn(move || post_goal(addr, &cookie, &csrf, &body))
+        let (page, body) = (Arc::clone(&page), body.clone());
+        std::thread::spawn(move || post_goal(&page, &body))
     };
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
         "admitted, world-checked, before the permit"
     );
     assert!(
-        authorizer.revoke_for_test(&cookie),
+        authorizer.revoke_for_test(&page.cookie),
         "the live session is revoked"
     );
     pause.release();
@@ -9044,11 +7485,11 @@ fn browser_goal_revocation_before_the_permit_is_forbidden() {
         &after_revoke[before.len()..]
     );
 
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     pause.arm(OnboardingPausePoint::AfterGoalChangePermit);
     let owner = {
-        let (cookie, csrf) = (cookie.clone(), csrf.clone());
-        std::thread::spawn(move || post_goal(addr, &cookie, &csrf, &body))
+        let page = Arc::clone(&page);
+        std::thread::spawn(move || post_goal(&page, &body))
     };
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
@@ -9060,7 +7501,7 @@ fn browser_goal_revocation_before_the_permit_is_forbidden() {
     let revoker = std::thread::spawn(move || {
         started_tx.send(()).expect("started signal");
         done_tx
-            .send(revoke.revoke_for_test(&cookie))
+            .send(revoke.revoke_for_test(&page.cookie))
             .expect("revoke result");
     });
     started_rx
@@ -9079,7 +7520,6 @@ fn browser_goal_revocation_before_the_permit_is_forbidden() {
     revoker.join().expect("revoker thread");
     let (head, response) = owner.join().expect("winning request");
     changed(&head, &response);
-    let _ = csrf;
     assert_eq!(browser_goals(&fixture, agent).len(), 1);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -9096,6 +7536,7 @@ fn browser_goal_expiry_waiting_on_registry_lock_is_forbidden() {
         inner: TestClock::ticking(1_800_000_000_000, 0),
         armed: Mutex::new(None),
     });
+    follow_probe(&clock);
     let daemon = boot(
         &settings,
         Seams {
@@ -9118,17 +7559,12 @@ fn browser_goal_expiry_waiting_on_registry_lock_is_forbidden() {
     let mut running = common::start(daemon);
     let (a, a_goal) = paused_with_goal(&running, &fixture);
     let (b, b_goal) = paused_with_goal(&running, &fixture);
-    let (a_cookie, a_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (b_cookie, b_csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let a_page = exchange(addr, &issue(&settings).bootstrap);
+    let b_page = exchange(addr, &issue(&settings).bootstrap);
 
     pause.arm(OnboardingPausePoint::AfterGoalChangePermit);
     let holder = std::thread::spawn(move || {
-        post_goal(
-            addr,
-            &a_cookie,
-            &a_csrf,
-            &goal_body(&request_id(1), a, a_goal, NEW_TEXT),
-        )
+        post_goal(&a_page, &goal_body(&request_id(1), a, a_goal, NEW_TEXT))
     });
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
@@ -9138,7 +7574,7 @@ fn browser_goal_expiry_waiting_on_registry_lock_is_forbidden() {
     let (sent_tx, sent_rx) = mpsc::channel();
     let waiter = std::thread::spawn(move || {
         let body = serde_json::to_vec(&goal_body(&request_id(2), b, b_goal, NEW_TEXT)).unwrap();
-        post_bytes(addr, GOAL_ROUTE, &b_cookie, &b_csrf, &body, Some(sent_tx))
+        post_bytes(&b_page, GOAL_ROUTE, &body, Some(sent_tx))
     });
     sent_rx
         .recv_timeout(Duration::from_secs(5))
@@ -9179,9 +7615,9 @@ fn browser_goal_uncertain_local_write_fences_fresh_requests_and_serves_durable_r
     let mut running = common::start(daemon);
     let (first, first_goal) = paused_with_goal(&running, &fixture);
     let (second, second_goal) = paused_with_goal(&running, &fixture);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let durable = goal_body(&request_id(1), first, first_goal, NEW_TEXT);
-    let (head, original) = post_goal(addr, &cookie, &csrf, &durable);
+    let (head, original) = post_goal(&page, &durable);
     changed(&head, &original);
 
     failure.arm(OnboardingFailurePoint::LocalGoal);
@@ -9198,7 +7634,7 @@ fn browser_goal_uncertain_local_write_fences_fresh_requests_and_serves_durable_r
     let fenced = fixture.records();
 
     for attempt in 0..2 {
-        let (head, retry) = post_goal(addr, &cookie, &csrf, &durable);
+        let (head, retry) = post_goal(&page, &durable);
         assert!(
             head.starts_with("HTTP/1.1 200 OK"),
             "retry {attempt} while fenced: {head}"
@@ -9207,11 +7643,11 @@ fn browser_goal_uncertain_local_write_fences_fresh_requests_and_serves_durable_r
     }
     let mut changed_text = durable.clone();
     changed_text["text"] = json!("another text");
-    let (head, response) = post_goal(addr, &cookie, &csrf, &changed_text);
+    let (head, response) = post_goal(&page, &changed_text);
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
     let fresh = goal_body(&request_id(2), second, second_goal, NEW_TEXT);
     for _ in 0..2 {
-        let (head, response) = post_goal(addr, &cookie, &csrf, &fresh);
+        let (head, response) = post_goal(&page, &fresh);
         empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
     }
     assert_eq!(fixture.records(), fenced, "nothing appended while fenced");
@@ -9235,7 +7671,7 @@ fn browser_goal_bounds_and_json_shape_refuse_before_effect() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let (agent, goal) = paused_with_goal(&running, &fixture);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let id = request_id(1);
     let alias = agent.to_string().replacen('0', "O", 1);
     assert_ne!(alias, agent.to_string(), "the alias spelling differs");
@@ -9310,17 +7746,14 @@ fn browser_goal_bounds_and_json_shape_refuse_before_effect() {
     ];
     let before = fixture.records();
     for (label, body) in &refusals {
-        let (head, response) = post_bytes(addr, GOAL_ROUTE, &cookie, &csrf, body.as_bytes(), None);
+        let (head, response) = post_bytes(&page, GOAL_ROUTE, body.as_bytes(), None);
         assert!(
             head.starts_with("HTTP/1.1 400 Bad Request"),
             "{label}: {head}"
         );
         assert!(response.is_null(), "{label}: {response}");
     }
-    let host = addr.to_string();
-    let oversize = format!(
-        "POST {GOAL_ROUTE} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\nContent-Type: application/json\r\nContent-Length: 16385\r\n\r\n"
-    );
+    let oversize = oversize_head(&page, GOAL_ROUTE, 16385);
     let (head, body) = raw_onboard(addr, oversize.as_bytes());
     assert!(
         head.starts_with("HTTP/1.1 413"),
@@ -9337,7 +7770,7 @@ fn browser_goal_bounds_and_json_shape_refuse_before_effect() {
     ))
     .unwrap();
     assert_eq!(widest.len(), 12_431);
-    let (head, response) = post_bytes(addr, GOAL_ROUTE, &cookie, &csrf, &widest, None);
+    let (head, response) = post_bytes(&page, GOAL_ROUTE, &widest, None);
     changed(&head, &response);
     let (_, new_goal, _) = browser_goals(&fixture, agent).pop().expect("applied");
     assert_eq!(new_goal.text, "\u{1}".repeat(2048));
@@ -9374,12 +7807,12 @@ fn browser_goal_is_absent_when_not_enabled() {
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
         let (agent, goal) = paused_with_goal(&running, &fixture);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (view, _) = snapshot(addr, &cookie, &csrf);
+        let page = exchange(addr, &issue(&settings).bootstrap);
+        let (view, _) = snapshot(&page);
         let body = serde_json::to_vec(&goal_body(&request_id(1), agent, goal, NEW_TEXT)).unwrap();
-        let unrouted = raw_post(addr, "/floor/unrouted", &cookie, &csrf, &body);
+        let unrouted = raw_post(&page, "/floor/unrouted", &body);
         assert!(!unrouted.is_empty());
-        let routed = raw_post(addr, GOAL_ROUTE, &cookie, &csrf, &body);
+        let routed = raw_post(&page, GOAL_ROUTE, &body);
         if control.goal() {
             assert!(
                 String::from_utf8_lossy(&routed).starts_with("HTTP/1.1 200 OK"),
@@ -9534,7 +7967,8 @@ fn browser_goal_index_refuses_a_goal_set_with_both_attributions() {
                         request_digest: Hex32::new([8; 32]),
                         profile_id: "repo_1".to_owned(),
                         session_digest,
-                        intended_goal: intended.clone(),
+                        intended_goal: Some(intended.clone()),
+                        trust_lsn: None,
                     })),
                 },
                 Record::GoalSet {
@@ -9663,8 +8097,8 @@ fn operator_reload(settings: &duded::Settings, params: Value) -> Result<Value, (
 }
 
 /// The workspace ids a fresh snapshot offers, with each one's mark.
-fn offered(addr: SocketAddr, cookie: &str, csrf: &str) -> Vec<(String, Value)> {
-    let (frame, _) = snapshot(addr, cookie, csrf);
+fn offered(page: &Page) -> Vec<(String, Value)> {
+    let (frame, _) = snapshot(page);
     frame["onboarding"]["workspaces"]
         .as_array()
         .map(|list| {
@@ -9684,12 +8118,9 @@ fn offered(addr: SocketAddr, cookie: &str, csrf: &str) -> Vec<(String, Value)> {
 struct OpenStream(TcpStream);
 
 impl OpenStream {
-    fn open(addr: SocketAddr, cookie: &str, csrf: &str) -> Self {
-        let host = addr.to_string();
-        let mut stream = TcpStream::connect(addr).expect("Floor listener");
-        let request = format!(
-            "GET /floor/stream HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: dudes-floor-v3, dudes-csrf.{csrf}\r\nCookie: dudes_floor_session={cookie}\r\n\r\n"
-        );
+    fn open(page: &Page) -> Self {
+        let mut stream = TcpStream::connect(page.addr).expect("Floor listener");
+        let request = page.upgrade_head("/floor/stream", STREAM_PROTOCOL);
         stream.write_all(request.as_bytes()).expect("upgrade");
         assert!(read_head(&mut stream).starts_with("HTTP/1.1 101 Switching Protocols"));
         let subscribe = br#"{"type":"floor.subscribe"}"#;
@@ -9853,12 +8284,9 @@ fn browser_enrollment_view_follows_an_operator_reload() {
     );
     let settings = reload_settings(&fixture, &reload_config(&[("repo_1", &repo_1)]));
     let (mut running, addr, _) = boot_reload(&settings);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    assert_eq!(
-        offered(addr, &cookie, &csrf),
-        vec![("repo_1".to_owned(), Value::Null)]
-    );
-    let mut open = OpenStream::open(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    assert_eq!(offered(&page), vec![("repo_1".to_owned(), Value::Null)]);
+    let mut open = OpenStream::open(&page);
     let journal = fixture.records().len();
 
     let sha = rewrite(
@@ -9882,7 +8310,7 @@ fn browser_enrollment_view_follows_an_operator_reload() {
         "the open stream is told to take a fresh snapshot"
     );
 
-    let now = offered(addr, &cookie, &csrf);
+    let now = offered(&page);
     assert_eq!(now[0], ("repo_1".to_owned(), Value::Null));
     assert_eq!(now[1].0, "repo_2");
     assert_eq!(now[1].1["kind"], "added");
@@ -9894,13 +8322,11 @@ fn browser_enrollment_view_follows_an_operator_reload() {
     );
 
     let (head, body) = post_onboard(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &json!({
             "attempt_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "workspace_id": "repo_2", "workspace_revision": "1",
-            "name": "Kim", "role": "engineer", "goal_text": "ship"
+            "name": "Kim", "role": "engineer"
         }),
     );
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
@@ -9910,8 +8336,6 @@ fn browser_enrollment_view_follows_an_operator_reload() {
             if *cwd == repo_2 && meta.profile_id == "repo_2"
     )));
 
-    let goal = GoalId::parse(body["goal"].as_str().expect("goal id")).expect("goal id");
-    issued_goal_turn(&fixture, goal);
     running.handle.doctor().unwrap();
     let journal = fixture.records().len();
     let sha = rewrite(&settings, &reload_config(&[("repo_2", &repo_2)]));
@@ -9933,20 +8357,18 @@ fn browser_workspace_label_survives_enrollment_change_removal_and_replay() {
     let initial_config = reload_config(&[("repo_1", &repo)]);
     let mut settings = reload_settings(&fixture, &initial_config);
     let (mut running, addr, _) = boot_reload(&settings);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let (head, body) = post_onboard(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &json!({
             "attempt_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "workspace_id": "repo_1", "name": "Kim", "role": "engineer", "goal_text": "ship"
+            "workspace_id": "repo_1", "name": "Kim", "role": "engineer"
         }),
     );
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
     let expected = json!({ "id": "repo_1", "label": "Workspace repo_1" });
-    let workspace_of = |addr, cookie: &str, csrf: &str| {
-        let (view, _) = snapshot(addr, cookie, csrf);
+    let workspace_of = |page: &Page| {
+        let (view, _) = snapshot(page);
         let agents = &view["projection"]["agents"];
         assert_eq!(agents.as_array().unwrap().len(), 1);
         assert!(
@@ -9956,7 +8378,7 @@ fn browser_workspace_label_survives_enrollment_change_removal_and_replay() {
         );
         agents[0]["workspace"].clone()
     };
-    assert_eq!(workspace_of(addr, &cookie, &csrf), expected);
+    assert_eq!(workspace_of(&page), expected);
     assert!(fixture.records().iter().any(|record| matches!(record,
         Record::AgentHired { workspace: Some(workspace), browser_onboarding: Some(_), .. }
             if workspace.id == "repo_1" && workspace.label == "Workspace repo_1"
@@ -9965,17 +8387,17 @@ fn browser_workspace_label_survives_enrollment_change_removal_and_replay() {
         initial_config.replace("label = 'Workspace repo_1'", "label = 'Renamed workspace'");
     let sha = rewrite(&settings, &changed);
     operator_reload(&settings, apply(&sha, &[], &[], &["repo_1"])).unwrap();
-    assert_eq!(workspace_of(addr, &cookie, &csrf), expected);
+    assert_eq!(workspace_of(&page), expected);
     let sha = rewrite(&settings, RELOAD_BUDGET);
     operator_reload(&settings, apply(&sha, &[], &["repo_1"], &[])).unwrap();
-    assert_eq!(workspace_of(addr, &cookie, &csrf), expected);
+    assert_eq!(workspace_of(&page), expected);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     settings.enrollment = load_operator(settings.operator_config.as_ref().unwrap())
         .unwrap()
         .enrollment;
     let (mut replayed, addr, _) = boot_reload(&settings);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    assert_eq!(workspace_of(addr, &cookie, &csrf), expected);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    assert_eq!(workspace_of(&page), expected);
     assert_eq!(
         replayed.stop(ExitCause::ShutdownRpc),
         ExitCause::ShutdownRpc
@@ -10058,7 +8480,7 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
     let start = reload_config(&[("repo_1", &repo_1)]);
     let settings = reload_settings(&fixture, &start);
     let (mut running, addr, pause) = boot_reload(&settings);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let only_repo_1 = vec![("repo_1".to_owned(), Value::Null)];
     let with_repo_2 = reload_config(&[("repo_1", &repo_1), ("repo_2", &repo_2)]);
 
@@ -10074,7 +8496,7 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
         "the real change is reported"
     );
     assert_eq!(result["workspaces"], json!(["repo_1"]));
-    assert_eq!(offered(addr, &cookie, &csrf), only_repo_1);
+    assert_eq!(offered(&page), only_repo_1);
 
     let sha = rewrite(
         &settings,
@@ -10087,7 +8509,7 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
         json!(["repo_3"]),
         "the real change is shown"
     );
-    assert_eq!(offered(addr, &cookie, &csrf), only_repo_1);
+    assert_eq!(offered(&page), only_repo_1);
 
     #[cfg(unix)]
     {
@@ -10099,10 +8521,10 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
             .expect_err("a non-canonical cwd is refused");
         assert_eq!(code, -32602, "InvalidParams");
         assert!(
-            message.contains("workspace `repo_2` whose cwd is not its canonical form"),
+            message.contains("project `repo_2` in [floor.onboarding] workspaces whose cwd is not its canonical form"),
             "{message}"
         );
-        assert_eq!(offered(addr, &cookie, &csrf), only_repo_1);
+        assert_eq!(offered(&page), only_repo_1);
     }
 
     let older = rewrite(&settings, &with_repo_2);
@@ -10126,13 +8548,13 @@ fn enrollment_reload_apply_is_bound_to_the_file_and_the_change() {
         json!(["repo_2"]),
         "its own change still matched"
     );
-    assert_eq!(offered(addr, &cookie, &csrf), only_repo_1);
+    assert_eq!(offered(&page), only_repo_1);
 
     let sha = rewrite(&settings, &with_repo_2);
     let result = operator_reload(&settings, apply(&sha, &["repo_2"], &[], &[])).expect("applied");
     assert_eq!(result["applied"], true);
     assert_eq!(
-        offered(addr, &cookie, &csrf)
+        offered(&page)
             .into_iter()
             .map(|(id, _)| id)
             .collect::<Vec<_>>(),
@@ -10153,7 +8575,7 @@ fn a_reload_applies_enrollment_whatever_the_mcp_variables() {
     );
     let settings = reload_settings(&fixture, &reload_config(&[("repo_1", &repo_1)]));
     let (mut running, addr, _) = boot_reload(&settings);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let text = format!(
         "{}[mcp.servers.memory]\nurl = 'https://memory.example.com/mcp'\nbearer_env = 'MEMORY_BEARER_NEVER_SET'\n",
         reload_config(&[("repo_1", &repo_1), ("repo_2", &repo_2)])
@@ -10163,7 +8585,7 @@ fn a_reload_applies_enrollment_whatever_the_mcp_variables() {
     assert_eq!(result["applied"], true);
     assert_eq!(result["not_applied"], json!(["mcp.servers"]));
     assert_eq!(
-        offered(addr, &cookie, &csrf)
+        offered(&page)
             .into_iter()
             .map(|(id, _)| id)
             .collect::<Vec<_>>(),
@@ -10182,11 +8604,8 @@ fn browser_hire_is_bound_to_the_workspace_revision_it_saw() {
     );
     let settings = reload_settings(&fixture, &reload_config(&[("repo_1", &repo_1)]));
     let (mut running, addr, _) = boot_reload(&settings);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    assert_eq!(
-        offered(addr, &cookie, &csrf),
-        vec![("repo_1".to_owned(), Value::Null)]
-    );
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    assert_eq!(offered(&page), vec![("repo_1".to_owned(), Value::Null)]);
 
     let sha = rewrite(&settings, &reload_config(&[("repo_1", &moved)]));
     let result = operator_reload(&settings, apply(&sha, &[], &[], &["repo_1"])).expect("applied");
@@ -10198,9 +8617,9 @@ fn browser_hire_is_bound_to_the_workspace_revision_it_saw() {
     let journal = fixture.records().len();
     let request = json!({
         "attempt_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id": "repo_1", "name": "Kim", "role": "engineer", "goal_text": "ship"
+        "workspace_id": "repo_1", "name": "Kim", "role": "engineer"
     });
-    let (head, body) = post_onboard(addr, &cookie, &csrf, &request);
+    let (head, body) = post_onboard(&page, &request);
     assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
     assert_eq!(
         body,
@@ -10217,7 +8636,7 @@ fn browser_hire_is_bound_to_the_workspace_revision_it_saw() {
 
     let mut current = request;
     current["workspace_revision"] = json!("1");
-    let (head, body) = post_onboard(addr, &cookie, &csrf, &current);
+    let (head, body) = post_onboard(&page, &current);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
     assert!(fixture.records().iter().any(|record| matches!(
         record,
@@ -10295,9 +8714,9 @@ fn enrollment_reload_is_operator_only() {
     ] {
         assert_eq!(code, Some(-32001), "{who} is Unauthorized");
     }
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     assert_eq!(
-        offered(addr, &cookie, &csrf),
+        offered(&page),
         vec![("repo_1".to_owned(), Value::Null)],
         "the old set is still offered, with no mark"
     );
@@ -10321,11 +8740,8 @@ fn enrollment_reload_ignores_a_symlink_in_an_unchanged_entry() {
     );
     let settings = reload_settings(&fixture, &reload_config(&[("repo_1", &repo_1)]));
     let (mut running, addr, _) = boot_reload(&settings);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    assert_eq!(
-        offered(addr, &cookie, &csrf),
-        vec![("repo_1".to_owned(), Value::Null)]
-    );
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    assert_eq!(offered(&page), vec![("repo_1".to_owned(), Value::Null)]);
 
     std::fs::rename(&repo_1, fixture.state.path().join("repo_1_moved")).expect("move away");
     std::os::unix::fs::symlink(&other, &repo_1).expect("planted symlink");
@@ -10341,7 +8757,7 @@ fn enrollment_reload_ignores_a_symlink_in_an_unchanged_entry() {
         "an unchanged entry is not a change"
     );
     assert_eq!(
-        offered(addr, &cookie, &csrf)
+        offered(&page)
             .into_iter()
             .map(|(id, _)| id)
             .collect::<Vec<_>>(),
@@ -10518,13 +8934,13 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     .expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
 
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let (frame, _) = snapshot(&page);
     assert_eq!(
         frame["daemon"],
         json!({"state_dir":"~/state","providers":[
-            {"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog"}
+            {"provider":"claude","program":"prog","found":true,"path":"~/bin-a/prog","sign_in":"unknown"}
         ]})
     );
     one_launch(&running.handle, &fixture, &home.path().join("work-a"));
@@ -10538,11 +8954,12 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     install_prog(&bin_b.join("prog"), &marks);
     std::fs::write(&marks, "").expect("clear the marks");
     std::thread::sleep(PAST_REUSE);
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let (frame, _) = snapshot(&page);
     let outside_prog = bin_b.join("prog").to_str().expect("UTF-8").to_owned();
     assert_eq!(
         frame["daemon"]["providers"],
-        json!([{"provider":"claude","program":"prog","found":true,"path":outside_prog}]),
+        json!([{"provider":"claude","program":"prog","found":true,"path":outside_prog,
+            "sign_in":"unknown"}]),
         "a path outside the home is shown in full, with no restart"
     );
     one_launch(&running.handle, &fixture, &home.path().join("work-b"));
@@ -10554,7 +8971,7 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
     std::fs::remove_file(bin_b.join("prog")).expect("remove bin-b/prog");
     std::fs::write(&marks, "").expect("clear the marks");
     std::thread::sleep(PAST_REUSE);
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let (frame, _) = snapshot(&page);
     assert_eq!(
         frame["daemon"]["providers"],
         json!([{"provider":"claude","program":"prog","found":false}])
@@ -10574,194 +8991,15 @@ fn browser_daemon_view_reports_the_launch_check_and_home() {
 }
 
 /// One shape of `PATH` or configured command, and the file the check must report for it.
-#[cfg(unix)]
-struct Shape {
-    name: &'static str,
-    program: OsString,
-    path: OsString,
-    expected: Option<PathBuf>,
-}
-
-/// A `prog` in `root/acl` whose ACL denies the daemon's own user execute while its mode bits allow
-/// it, ahead of `exec`. Only where the platform allows that without root.
-#[cfg(target_os = "macos")]
-#[expect(
-    clippy::disallowed_types,
-    reason = "the fixture sets an ACL, which the standard library cannot"
-)]
-fn acl_shapes(
-    root: &std::path::Path,
-    marks: &std::path::Path,
-    exec: &std::path::Path,
-) -> Vec<Shape> {
-    let acl = root.join("acl");
-    install_prog(&acl.join("prog"), marks);
-    let user = std::env::var("USER").expect("the test's user name");
-    let status = std::process::Command::new("/bin/chmod")
-        .arg("+a")
-        .arg(format!("{user} deny execute"))
-        .arg(acl.join("prog"))
-        .status()
-        .expect("run chmod");
-    assert!(status.success(), "chmod +a refused");
-    vec![Shape {
-        name: "a prog whose ACL denies execute before an executable one",
-        program: OsString::from("prog"),
-        path: std::env::join_paths([&acl, exec]).expect("a PATH"),
-        expected: Some(exec.join("prog")),
-    }]
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn acl_shapes(_: &std::path::Path, _: &std::path::Path, _: &std::path::Path) -> Vec<Shape> {
-    Vec::new()
-}
-
-/// Each shape under `root`, every candidate `prog` appending the path it ran as to `marks`.
-#[cfg(unix)]
-fn path_shapes(root: &std::path::Path, marks: &std::path::Path) -> Vec<Shape> {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let abs = root.join("abs");
-    install_prog(&abs.join("prog"), marks);
-    let exec = root.join("exec");
-    install_prog(&exec.join("prog"), marks);
-    let mode = root.join("mode");
-    install_prog(&mode.join("prog"), marks);
-    std::fs::set_permissions(mode.join("prog"), std::fs::Permissions::from_mode(0o644))
-        .expect("not executable");
-    let dir = root.join("dir");
-    std::fs::create_dir_all(dir.join("prog")).expect("a directory named prog");
-    let link = root.join("link");
-    install_prog(&root.join("target").join("real"), marks);
-    std::fs::create_dir_all(&link).expect("link");
-    std::os::unix::fs::symlink(root.join("target").join("real"), link.join("prog"))
-        .expect("a symlink to an executable");
-    let dangling = root.join("dangling");
-    std::fs::create_dir_all(&dangling).expect("dangling");
-    std::os::unix::fs::symlink(root.join("nowhere"), dangling.join("prog"))
-        .expect("a dangling symlink");
-    let none = root.join("none");
-    let join = |entries: &[&std::path::Path]| std::env::join_paths(entries).expect("a PATH");
-    let bare = || OsString::from("prog");
-
-    [
-        Shape {
-            name: "relative and empty entries before an absolute one",
-            program: bare(),
-            path: join(&[".".as_ref(), "".as_ref(), &abs]),
-            expected: Some(abs.join("prog")),
-        },
-        Shape {
-            name: "relative and empty entries and no absolute one holding prog",
-            program: bare(),
-            path: join(&[".".as_ref(), "".as_ref(), &none]),
-            expected: None,
-        },
-        Shape {
-            name: "a mode-0644 prog before an executable one",
-            program: bare(),
-            path: join(&[&mode, &exec]),
-            expected: Some(exec.join("prog")),
-        },
-        Shape {
-            name: "a directory named prog before an executable file",
-            program: bare(),
-            path: join(&[&dir, &exec]),
-            expected: Some(exec.join("prog")),
-        },
-        Shape {
-            name: "a symlink to an executable",
-            program: bare(),
-            path: join(&[&link]),
-            expected: Some(link.join("prog")),
-        },
-        Shape {
-            name: "a dangling symlink",
-            program: bare(),
-            path: join(&[&dangling]),
-            expected: None,
-        },
-        Shape {
-            name: "an absolute configured command that is present",
-            program: abs.join("prog").into_os_string(),
-            path: join(&[&none]),
-            expected: Some(abs.join("prog")),
-        },
-        Shape {
-            name: "an absolute configured command that is absent",
-            program: root.join("gone").join("prog").into_os_string(),
-            path: join(&[&abs]),
-            expected: None,
-        },
-    ]
-    .into_iter()
-    .chain(acl_shapes(root, marks, &exec))
-    .collect()
-}
-
-#[cfg(unix)]
-#[test]
-fn browser_daemon_view_agrees_with_the_launch_on_each_path_shape() {
-    let root = tempfile::tempdir().expect("a scene");
-    let root = root.path();
-    let marks = root.join("marks");
-    let workspace = root.join("work");
-    install_prog(&workspace.join("prog"), &marks);
-    for shape in &path_shapes(root, &marks) {
-        let name = shape.name;
-        std::fs::write(&marks, "").expect("clear the marks");
-        let fixture = Fixture::new();
-        let mut settings = with_floor(fixture.settings());
-        settings.daemon_env = vec![EnvVar::new("PATH", &shape.path)];
-        let daemon = boot(
-            &settings,
-            program_seams(&settings, shape.program.clone(), 1),
-        )
-        .expect("boot");
-        let addr = daemon.floor_addr().expect("Floor address");
-        let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (frame, _) = snapshot(addr, &cookie, &csrf);
-        let row = match &shape.expected {
-            Some(path) => json!({"provider":"claude","program":"prog","found":true,
-                "path":path.to_str().expect("UTF-8")}),
-            None => json!({"provider":"claude","program":"prog","found":false}),
-        };
-        assert_eq!(
-            frame["daemon"]["providers"],
-            json!([row]),
-            "{name}: the view"
-        );
-        let outcome = one_launch(&running.handle, &fixture, &workspace);
-        let ran = std::fs::read_to_string(&marks).expect("marks");
-        if let Some(path) = &shape.expected {
-            assert_eq!(
-                ran,
-                format!("{}\n", path.display()),
-                "{name}: the launch ran the file the view reported, and nothing planted"
-            );
-        } else {
-            assert!(
-                matches!(outcome, TurnOutcome::NotLaunched { .. }),
-                "{name}: {outcome:?}"
-            );
-            assert_eq!(ran, "", "{name}: nothing ran, the planted prog included");
-        }
-        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-    }
-}
-
 /// The default configuration's Floor on the fake host, with a session: the daemon's provider
-/// check, the running daemon, the Floor's address, and the session's cookie and CSRF nonce.
+/// check, the running daemon, the Floor's address, and the signed-in page.
 fn default_floor(
     settings: &duded::Settings,
 ) -> (
     duded::provider_check::ProviderCheck,
     common::Running,
     SocketAddr,
-    String,
-    String,
+    Arc<Page>,
 ) {
     let daemon = boot(
         settings,
@@ -10777,8 +9015,8 @@ fn default_floor(
     let check = daemon.provider_check();
     let addr = daemon.floor_addr().expect("Floor address");
     let running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(settings).bootstrap);
-    (check, running, addr, cookie, csrf)
+    let page = exchange(addr, &issue(settings).bootstrap);
+    (check, running, addr, page)
 }
 
 /// Whether a record `found` accepts reaches the journal within `bound`.
@@ -10823,8 +9061,8 @@ fn browser_daemon_view_discloses_nothing_else() {
             EnvVar::new("HOME", &home),
             EnvVar::new("PRIVATE_VALUE", "private-env-sentinel"),
         ];
-        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-        let (frame, bytes) = snapshot(addr, &cookie, &csrf);
+        let (_, mut running, addr, page) = default_floor(&settings);
+        let (frame, bytes) = snapshot(&page);
         assert_eq!(
             frame["daemon"]["providers"][0]["found"], true,
             "positive control: the stand-in provider is found through the sentinel PATH"
@@ -10867,47 +9105,14 @@ fn browser_daemon_view_discloses_nothing_else() {
 fn browser_daemon_view_requires_the_session() {
     let fixture = Fixture::new();
     let settings = with_floor(fixture.settings());
-    let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
+    let (_, mut running, _, page) = default_floor(&settings);
     assert!(
-        snapshot(addr, &cookie, &csrf).0["daemon"].is_object(),
+        snapshot(&page).0["daemon"].is_object(),
         "positive control: this session's snapshot carries the sibling"
     );
-    let host = addr.to_string();
-    let origin = format!("http://{host}");
-    let wrong_csrf = "A".repeat(43);
-    for (label, host, origin, cookie, csrf) in [
-        (
-            "Host",
-            "invalid",
-            origin.as_str(),
-            cookie.as_str(),
-            csrf.as_str(),
-        ),
-        (
-            "Origin",
-            host.as_str(),
-            "null",
-            cookie.as_str(),
-            csrf.as_str(),
-        ),
-        (
-            "cookie",
-            host.as_str(),
-            origin.as_str(),
-            "invalid",
-            csrf.as_str(),
-        ),
-        (
-            "CSRF",
-            host.as_str(),
-            origin.as_str(),
-            cookie.as_str(),
-            wrong_csrf.as_str(),
-        ),
-    ] {
-        let head = upgrade_head(addr, host, origin, cookie, csrf);
+    for (label, status, head) in refused_handshakes(&page) {
         assert!(
-            head.starts_with("HTTP/1.1 403 Forbidden"),
+            head.starts_with(&format!("HTTP/1.1 {status}")),
             "{label}: {head}"
         );
         assert!(!head.contains("daemon"), "{label}: nothing of the sibling");
@@ -10919,10 +9124,10 @@ fn browser_daemon_view_requires_the_session() {
 fn browser_daemon_check_is_bounded_by_its_deadline() {
     let fixture = Fixture::new();
     let settings = with_floor(fixture.settings());
-    let (check, mut running, addr, cookie, csrf) = default_floor(&settings);
+    let (check, mut running, _, page) = default_floor(&settings);
     check.hold_next();
     let started = std::time::Instant::now();
-    let (held, _) = snapshot(addr, &cookie, &csrf);
+    let (held, _) = snapshot(&page);
     let waited = started.elapsed();
     assert!(check.wait_held(Duration::ZERO), "the check is still held");
     assert_eq!(
@@ -10936,7 +9141,7 @@ fn browser_daemon_check_is_bounded_by_its_deadline() {
     );
 
     let again = std::time::Instant::now();
-    let (during, _) = snapshot(addr, &cookie, &csrf);
+    let (during, _) = snapshot(&page);
     assert!(
         again.elapsed() < Duration::from_millis(500),
         "a snapshot after the running check's deadline goes at once"
@@ -10946,7 +9151,7 @@ fn browser_daemon_check_is_bounded_by_its_deadline() {
 
     check.release();
     std::thread::sleep(PAST_REUSE);
-    let (after, _) = snapshot(addr, &cookie, &csrf);
+    let (after, _) = snapshot(&page);
     assert!(after["daemon"].is_object(), "a fresh check answers again");
     assert_eq!(
         after["projection"], held["projection"],
@@ -10980,9 +9185,9 @@ fn browser_daemon_and_settings_siblings_join_on_the_connection_thread() {
         .expect("boot Floor");
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+        let page = exchange(addr, &issue(&settings).bootstrap);
         for _ in 0..3 {
-            let (frame, _) = snapshot(addr, &cookie, &csrf);
+            let (frame, _) = snapshot(&page);
             assert!(frame["daemon"].is_object());
             assert!(frame["settings"].is_object());
             assert_eq!(frame["onboarding"].is_object(), enrolled);
@@ -11005,12 +9210,12 @@ fn browser_daemon_and_settings_siblings_join_on_the_connection_thread() {
 fn browser_daemon_check_runs_off_the_loop_thread() {
     let fixture = Fixture::new();
     let settings = with_floor(fixture.settings());
-    let (check, mut running, addr, cookie, csrf) = default_floor(&settings);
+    let (check, mut running, _, page) = default_floor(&settings);
     let workspace = fixture.state.path().join("repo");
     std::fs::create_dir_all(&workspace).expect("a workspace");
     let agent = common::hire(&running.handle, &workspace);
     check.hold_next();
-    let subscriber = std::thread::spawn(move || snapshot_optional(addr, &cookie, &csrf));
+    let subscriber = std::thread::spawn(move || snapshot_optional(&page));
     assert!(
         check.wait_held(Duration::from_secs(5)),
         "the subscription started a check"
@@ -11052,12 +9257,10 @@ fn retire_body(request_id: &str, agent: AgentId) -> Value {
     json!({ "request_id": request_id, "agent": agent })
 }
 
-fn post_retire(addr: SocketAddr, cookie: &str, csrf: &str, body: &Value) -> (String, Value) {
+fn post_retire(page: &Page, body: &Value) -> (String, Value) {
     post_bytes(
-        addr,
+        page,
         RETIRE,
-        cookie,
-        csrf,
         &serde_json::to_vec(body).expect("retire JSON"),
         None,
     )
@@ -11191,14 +9394,14 @@ fn browser_retire_is_finite_attributed_and_ends_the_agent() {
         dudes_proto::rpc::ErrorCode::Unauthorized.code(),
         "control: before the retirement the token still names a live agent: {before:?}"
     );
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (view, _) = snapshot(&page);
     assert_eq!(view["retire"], json!({}), "retiring is enabled");
-    let mut stream = OpenStream::open(addr, &cookie, &csrf);
+    let mut stream = OpenStream::open(&page);
 
     // Step 1: T1 is running; a browser retire presenting A applies at R.
     let wire = request_id(1);
-    let (head, response) = post_retire(addr, &cookie, &csrf, &retire_body(&wire, agent));
+    let (head, response) = post_retire(&page, &retire_body(&wire, agent));
     let r = retired_at(&head, &response);
     assert_eq!(
         response,
@@ -11227,7 +9430,7 @@ fn browser_retire_is_finite_attributed_and_ends_the_agent() {
         }
     };
     assert_eq!(removed, json!([agent]));
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let (view, _) = snapshot(&page);
     assert!(
         !view["projection"]["agents"]
             .as_array()
@@ -11255,7 +9458,7 @@ fn browser_retire_is_finite_attributed_and_ends_the_agent() {
         _ => None,
     });
     // A job through the same writer, so every effect of that pump has run.
-    let _ = snapshot(addr, &cookie, &csrf);
+    let _ = snapshot(&page);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
     // Step 2: the attributed record at R names the admitting session.
@@ -11281,7 +9484,9 @@ fn browser_retire_is_finite_attributed_and_ends_the_agent() {
     );
     assert_eq!(
         attribution.session_digest.bytes(),
-        <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(cookie.as_bytes()))
+        <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(
+            page.cookie.as_bytes()
+        ))
     );
     assert_eq!(retirements(&fixture, agent).len(), 1);
     let ended_at = entries
@@ -11300,9 +9505,9 @@ fn browser_retire_is_finite_attributed_and_ends_the_agent() {
     );
     assert_eq!(spawns(), 1, "no further stub spawn");
     let journal = serde_json::to_string(&entries).expect("journal JSON");
-    for secret in [cookie.as_str(), csrf.as_str(), wire.as_str()] {
+    for credential in [page.cookie.as_str(), wire.as_str()] {
         assert!(
-            !journal.contains(secret),
+            !journal.contains(credential),
             "raw browser credential in the journal"
         );
     }
@@ -11323,22 +9528,27 @@ fn browser_retire_is_finite_attributed_and_ends_the_agent() {
     assert!(daemon.world().agents[&agent].retired);
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
-    let (head, replayed) = post_retire(addr, &cookie, &csrf, &retire_body(&wire, agent));
+    let (head, replayed) = post_retire(&page, &retire_body(&wire, agent));
     assert_eq!(retired_at(&head, &replayed), r);
     assert_eq!(replayed, response, "the original 200");
-    let _ = snapshot(addr, &cookie, &csrf);
+    let _ = snapshot(&page);
     assert_eq!(fixture.records(), before, "nothing appended after replay");
     assert!(host.spawned().is_empty(), "nothing spawned after replay");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
 /// Every browser credential is checked before any effect: a wrong Host, a wrong or missing Origin,
-/// an unknown cookie, a wrong or missing CSRF and an expired session each get the uniform empty
-/// `403`, and the journal does not move. Control: the right credentials apply.
+/// an unknown cookie and an expired session each get the uniform empty `403`,
+/// a wrong or missing signature a `401` that says so, and the journal does not move.
+/// Control: the right credentials apply.
 #[test]
-fn browser_retire_refuses_wrong_session_host_origin_and_csrf_without_effect() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "six credential failures, the expired session and the control share one daemon"
+)]
+fn browser_retire_refuses_wrong_session_host_origin_and_signature_without_effect() {
     let fixture = Fixture::new();
     let settings = retire_settings(&fixture, true);
     let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
@@ -11356,17 +9566,17 @@ fn browser_retire_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = serde_json::to_vec(&retire_body(&request_id(1), agent)).unwrap();
     let host = addr.to_string();
-    let request = |host: &str, origin: Option<&str>, cookie: &str, csrf: Option<&str>| {
+    let request = |host: &str, origin: Option<&str>, cookie: &str, signed: Option<&Signed>| {
         let mut head = format!("POST {RETIRE} HTTP/1.1\r\nHost: {host}\r\n");
         if let Some(origin) = origin {
             let _ = write!(head, "Origin: {origin}\r\n");
         }
         let _ = write!(head, "Cookie: dudes_floor_session={cookie}\r\n");
-        if let Some(csrf) = csrf {
-            let _ = write!(head, "X-Dudes-CSRF: {csrf}\r\n");
+        if let Some(signed) = signed {
+            head.push_str(&signed.header_lines());
         }
         let _ = write!(
             head,
@@ -11379,59 +9589,78 @@ fn browser_retire_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     };
     let origin = format!("http://{host}");
     let unknown = "A".repeat(43);
+    let signed = |path: &str| page.signed("POST", path, &body);
+    let foreign = |path: &str| foreign_signature(&page, path, &body);
     let before = fixture.records();
     for (label, bytes) in [
         (
             "wrong Host",
-            request("127.0.0.1:1", Some(&origin), &cookie, Some(&csrf)),
+            request(
+                "127.0.0.1:1",
+                Some(&origin),
+                &page.cookie,
+                Some(&signed(RETIRE)),
+            ),
         ),
         (
             "wrong Origin",
-            request(&host, Some("http://127.0.0.1:1"), &cookie, Some(&csrf)),
+            request(
+                &host,
+                Some("http://127.0.0.1:1"),
+                &page.cookie,
+                Some(&signed(RETIRE)),
+            ),
         ),
-        ("missing Origin", request(&host, None, &cookie, Some(&csrf))),
+        (
+            "missing Origin",
+            request(&host, None, &page.cookie, Some(&signed(RETIRE))),
+        ),
         (
             "unknown cookie",
-            request(&host, Some(&origin), &unknown, Some(&csrf)),
+            request(&host, Some(&origin), &unknown, Some(&signed(RETIRE))),
         ),
         (
-            "wrong CSRF",
-            request(&host, Some(&origin), &cookie, Some(&unknown)),
+            "wrong signature",
+            request(&host, Some(&origin), &page.cookie, Some(&foreign(RETIRE))),
         ),
-        ("missing CSRF", request(&host, Some(&origin), &cookie, None)),
+        (
+            "missing signature",
+            request(&host, Some(&origin), &page.cookie, None),
+        ),
     ] {
         let (head, response) = raw_onboard(addr, &bytes);
-        assert!(
-            head.starts_with("HTTP/1.1 403 Forbidden"),
-            "{label}: {head}"
-        );
-        assert!(response.is_empty(), "{label}: no envelope");
+        if label.ends_with("signature") {
+            assert!(
+                head.starts_with("HTTP/1.1 401 Unauthorized"),
+                "{label}: {head}"
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&response).expect("JSON"),
+                json!({"signature": "refused"}),
+                "{label}: {head}"
+            );
+        } else {
+            assert!(
+                head.starts_with("HTTP/1.1 403 Forbidden"),
+                "{label}: {head}"
+            );
+            assert!(response.is_empty(), "{label}: no envelope");
+        }
     }
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
-    let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(24 * 60 * 60 * 1000);
-    let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (head, response) = post_retire(
-        addr,
-        &expired_cookie,
-        &expired_csrf,
-        &retire_body(&request_id(1), agent),
-    );
+    let expired_page = exchange(addr, &issue(&settings).bootstrap);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
+    let fresh_page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_retire(&expired_page, &retire_body(&request_id(1), agent));
     empty_refusal(&head, &response, "HTTP/1.1 403 Forbidden");
     assert_eq!(
         fixture.records(),
         before,
         "an expired session appends nothing"
     );
-    let _ = (cookie, csrf);
 
-    let (head, response) = post_retire(
-        addr,
-        &fresh_cookie,
-        &fresh_csrf,
-        &retire_body(&request_id(1), agent),
-    );
+    let (head, response) = post_retire(&fresh_page, &retire_body(&request_id(1), agent));
     retired_at(&head, &response);
     assert_eq!(retirements(&fixture, agent).len(), 1);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -11481,7 +9710,7 @@ fn browser_retire_refuses_absent_halted_and_unknown_liveness() {
         running.handle.input(Input::Liveness { turn, liveness });
     }
     running.handle.doctor().expect("order the liveness inputs");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
     let kills = || host.peek(|host| host.killed.len());
     let kills_before = kills();
@@ -11491,15 +9720,14 @@ fn browser_retire_refuses_absent_halted_and_unknown_liveness() {
         (3, halted, "agent_halted"),
         (4, unknown, "liveness_unknown"),
     ] {
-        let (head, response) =
-            post_retire(addr, &cookie, &csrf, &retire_body(&request_id(k), agent));
+        let (head, response) = post_retire(&page, &retire_body(&request_id(k), agent));
         refused(&head, &response, reason);
         assert_eq!(response["request_id"], request_id(k), "{response}");
     }
     assert_eq!(fixture.records(), before, "no refusal appended anything");
     assert_eq!(kills(), kills_before, "no refusal killed anything");
 
-    let (head, response) = post_retire(addr, &cookie, &csrf, &retire_body(&request_id(5), live));
+    let (head, response) = post_retire(&page, &retire_body(&request_id(5), live));
     retired_at(&head, &response);
     assert_eq!(retirements(&fixture, live).len(), 1, "control: it applied");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -11515,17 +9743,17 @@ fn browser_retire_replayed_body_has_no_effect() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = retire_body(&request_id(1), agent);
-    let (head, original) = post_retire(addr, &cookie, &csrf, &body);
+    let (head, original) = post_retire(&page, &body);
     retired_at(&head, &original);
     let applied_records = fixture.records();
 
     let mut replayed = body.clone();
     replayed["request_id"] = json!(request_id(2));
-    let (head, response) = post_retire(addr, &cookie, &csrf, &replayed);
+    let (head, response) = post_retire(&page, &replayed);
     refused(&head, &response, "agent_absent");
-    let (head, response) = post_retire(addr, &cookie, &csrf, &body);
+    let (head, response) = post_retire(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(response, original, "its own identity gets its original 200");
     assert_eq!(fixture.records(), applied_records, "zero new records");
@@ -11546,18 +9774,18 @@ fn browser_retire_same_key_retry_returns_original_and_changed_payload_conflicts(
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     let other = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = retire_body(&request_id(1), agent);
-    let (head, original) = post_retire(addr, &cookie, &csrf, &body);
+    let (head, original) = post_retire(&page, &body);
     retired_at(&head, &original);
     let later = fixture.records();
 
-    let (head, response) = post_retire(addr, &cookie, &csrf, &body);
+    let (head, response) = post_retire(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(response, original);
     let mut changed = body.clone();
     changed["agent"] = json!(other);
-    let (head, response) = post_retire(addr, &cookie, &csrf, &changed);
+    let (head, response) = post_retire(&page, &changed);
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
     assert_eq!(fixture.records(), later, "no retry appended anything");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -11565,11 +9793,11 @@ fn browser_retire_same_key_retry_returns_original_and_changed_payload_conflicts(
     let daemon = boot(&settings, fake_seams(&settings)).expect("restart");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (head, response) = post_retire(addr, &cookie, &csrf, &body);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_retire(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(response, original, "from a fresh session after a restart");
-    let (head, response) = post_retire(addr, &cookie, &csrf, &changed);
+    let (head, response) = post_retire(&page, &changed);
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
     assert_eq!(fixture.records(), later);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -11589,13 +9817,13 @@ fn browser_retire_concurrent_same_key_is_pending_and_two_keys_yield_one_record()
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     let second = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = retire_body(&request_id(1), agent);
 
     pause.arm(OnboardingPausePoint::BeforeRetirePermit);
     let owner = {
-        let (cookie, csrf, body) = (cookie.clone(), csrf.clone(), body.clone());
-        std::thread::spawn(move || post_retire(addr, &cookie, &csrf, &body))
+        let (page, body) = (Arc::clone(&page), body.clone());
+        std::thread::spawn(move || post_retire(&page, &body))
     };
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
@@ -11603,9 +9831,9 @@ fn browser_retire_concurrent_same_key_is_pending_and_two_keys_yield_one_record()
     );
     let at_once = |body: Value| {
         let (tx, rx) = mpsc::channel();
-        let (cookie, csrf) = (cookie.clone(), csrf.clone());
+        let page = Arc::clone(&page);
         std::thread::spawn(move || {
-            let _ = tx.send(post_retire(addr, &cookie, &csrf, &body));
+            let _ = tx.send(post_retire(&page, &body));
         });
         rx.recv_timeout(Duration::from_secs(3)).ok()
     };
@@ -11626,9 +9854,9 @@ fn browser_retire_concurrent_same_key_is_pending_and_two_keys_yield_one_record()
     retired_at(&head, &response);
     assert_eq!(retirements(&fixture, agent).len(), 1);
 
-    let (head, response) = post_retire(addr, &cookie, &csrf, &retire_body(&request_id(2), second));
+    let (head, response) = post_retire(&page, &retire_body(&request_id(2), second));
     retired_at(&head, &response);
-    let (head, response) = post_retire(addr, &cookie, &csrf, &retire_body(&request_id(3), second));
+    let (head, response) = post_retire(&page, &retire_body(&request_id(3), second));
     refused(&head, &response, "agent_absent");
     assert_eq!(retirements(&fixture, second).len(), 1, "one record");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -11649,7 +9877,7 @@ fn browser_retire_local_winner_is_never_repeated() {
     let retired = common::hire(&running.handle, fixture.state.path());
     let halted = common::hire(&running.handle, fixture.state.path());
     let crashed = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let local_retire = |agent| {
         running
             .handle
@@ -11663,19 +9891,18 @@ fn browser_retire_local_winner_is_never_repeated() {
     running.handle.ask(Ask::Halt(halted)).expect("local halt");
     let before = fixture.records();
     for (k, agent, reason) in [(1, retired, "agent_absent"), (2, halted, "agent_halted")] {
-        let (head, response) =
-            post_retire(addr, &cookie, &csrf, &retire_body(&request_id(k), agent));
+        let (head, response) = post_retire(&page, &retire_body(&request_id(k), agent));
         refused(&head, &response, reason);
     }
     assert_eq!(fixture.records(), before, "no local record was repeated");
 
     append_failure.fail_nth(NonZeroUsize::new(1).unwrap());
     let body = retire_body(&request_id(3), crashed);
-    let (head, response) = post_retire(addr, &cookie, &csrf, &body);
+    let (head, response) = post_retire(&page, &body);
     empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
     assert!(retirements(&fixture, crashed).is_empty());
     local_retire(crashed);
-    let (head, response) = post_retire(addr, &cookie, &csrf, &body);
+    let (head, response) = post_retire(&page, &body);
     refused(&head, &response, "agent_absent");
     let records = retirements(&fixture, crashed);
     assert_eq!(records.len(), 1, "only the local record");
@@ -11715,7 +9942,7 @@ fn browser_retire_restart_cut_points_replay_one_record() {
         let mut running = common::start(daemon);
         let (agent, _) = working(&running, &fixture);
         let other = common::hire(&running.handle, fixture.state.path());
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+        let page = exchange(addr, &issue(&settings).bootstrap);
         let body = retire_body(&request_id(1), agent);
         if !fold_first {
             failure.arm(OnboardingFailurePoint::Retire);
@@ -11727,19 +9954,18 @@ fn browser_retire_restart_cut_points_replay_one_record() {
                 |record| matches!(record, Record::TurnIssued { agent: who, .. } if *who == agent),
             )
             .count();
-        let (head, response) = post_retire(addr, &cookie, &csrf, &body);
+        let (head, response) = post_retire(&page, &body);
         if fold_first {
             retired_at(&head, &response);
         } else {
             empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
-            let (head, pending) = post_retire(addr, &cookie, &csrf, &body);
+            let (head, pending) = post_retire(&page, &body);
             assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
             assert_eq!(
                 pending["state"], "pending",
                 "an uncertain append keeps its key"
             );
-            let (head, response) =
-                post_retire(addr, &cookie, &csrf, &retire_body(&request_id(2), other));
+            let (head, response) = post_retire(&page, &retire_body(&request_id(2), other));
             empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
         }
         let kills = host.peek(|host| host.killed.len());
@@ -11767,8 +9993,8 @@ fn browser_retire_restart_cut_points_replay_one_record() {
         assert!(daemon.world().agents[&agent].retired, "replay folds it");
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (head, response) = post_retire(addr, &cookie, &csrf, &body);
+        let page = exchange(addr, &issue(&settings).bootstrap);
+        let (head, response) = post_retire(&page, &body);
         let r = retired_at(&head, &response);
         let records = retirements(&fixture, agent);
         assert_eq!(records.len(), 1, "fold first {fold_first}: one record");
@@ -11806,6 +10032,7 @@ fn browser_retire_expiry_waiting_on_registry_lock_is_forbidden() {
         inner: TestClock::ticking(1_800_000_000_000, 0),
         armed: Mutex::new(None),
     });
+    follow_probe(&clock);
     let daemon = boot(
         &settings,
         Seams {
@@ -11828,13 +10055,11 @@ fn browser_retire_expiry_waiting_on_registry_lock_is_forbidden() {
     let mut running = common::start(daemon);
     let a = common::hire(&running.handle, fixture.state.path());
     let b = common::hire(&running.handle, fixture.state.path());
-    let (a_cookie, a_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (b_cookie, b_csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let a_page = exchange(addr, &issue(&settings).bootstrap);
+    let b_page = exchange(addr, &issue(&settings).bootstrap);
 
     pause.arm(OnboardingPausePoint::AfterRetirePermit);
-    let holder = std::thread::spawn(move || {
-        post_retire(addr, &a_cookie, &a_csrf, &retire_body(&request_id(1), a))
-    });
+    let holder = std::thread::spawn(move || post_retire(&a_page, &retire_body(&request_id(1), a)));
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
         "A holds its append permit"
@@ -11843,7 +10068,7 @@ fn browser_retire_expiry_waiting_on_registry_lock_is_forbidden() {
     let (sent_tx, sent_rx) = mpsc::channel();
     let waiter = std::thread::spawn(move || {
         let body = serde_json::to_vec(&retire_body(&request_id(2), b)).unwrap();
-        post_bytes(addr, RETIRE, &b_cookie, &b_csrf, &body, Some(sent_tx))
+        post_bytes(&b_page, RETIRE, &body, Some(sent_tx))
     });
     sent_rx
         .recv_timeout(Duration::from_secs(5))
@@ -11886,17 +10111,17 @@ fn browser_retire_uncertain_local_write_fences_fresh_requests_and_serves_durable
     let durable_agent = common::hire(&running.handle, fixture.state.path());
     let fenced_agent = common::hire(&running.handle, fixture.state.path());
     let fresh_agent = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let durable = retire_body(&request_id(1), durable_agent);
-    let (head, original) = post_retire(addr, &cookie, &csrf, &durable);
+    let (head, original) = post_retire(&page, &durable);
     retired_at(&head, &original);
 
     failure.arm(OnboardingFailurePoint::Retire);
     let fenced = retire_body(&request_id(2), fenced_agent);
-    let (head, response) = post_retire(addr, &cookie, &csrf, &fenced);
+    let (head, response) = post_retire(&page, &fenced);
     empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
     assert!(
-        snapshot_optional(addr, &cookie, &csrf).is_none(),
+        snapshot_optional(&page).is_none(),
         "unresolved retirement cannot publish a normal snapshot"
     );
     let on_disk = fixture.records();
@@ -11906,16 +10131,11 @@ fn browser_retire_uncertain_local_write_fences_fresh_requests_and_serves_durable
         "it is durable"
     );
 
-    let (head, retry) = post_retire(addr, &cookie, &csrf, &durable);
+    let (head, retry) = post_retire(&page, &durable);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "while fenced: {head}");
     assert_eq!(retry, original);
     for _ in 0..2 {
-        let (head, response) = post_retire(
-            addr,
-            &cookie,
-            &csrf,
-            &retire_body(&request_id(3), fresh_agent),
-        );
+        let (head, response) = post_retire(&page, &retire_body(&request_id(3), fresh_agent));
         empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
     }
     assert_eq!(fixture.records(), on_disk, "nothing appended while fenced");
@@ -11925,8 +10145,8 @@ fn browser_retire_uncertain_local_write_fences_fresh_requests_and_serves_durable
     assert!(daemon.world().agents[&fenced_agent].retired);
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (head, response) = post_retire(addr, &cookie, &csrf, &fenced);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_retire(&page, &fenced);
     retired_at(&head, &response);
     assert_eq!(retirements(&fixture, fenced_agent).len(), 1);
     assert!(retirements(&fixture, fresh_agent).is_empty());
@@ -11946,7 +10166,7 @@ fn browser_retire_bounds_and_json_shape_refuse_before_effect() {
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let id = request_id(1);
     let alias = agent.to_string().replacen('0', "O", 1);
     assert_ne!(alias, agent.to_string(), "the alias spelling differs");
@@ -11987,17 +10207,14 @@ fn browser_retire_bounds_and_json_shape_refuse_before_effect() {
     ];
     let before = fixture.records();
     for (label, body) in &refusals {
-        let (head, response) = post_bytes(addr, RETIRE, &cookie, &csrf, body.as_bytes(), None);
+        let (head, response) = post_bytes(&page, RETIRE, body.as_bytes(), None);
         assert!(
             head.starts_with("HTTP/1.1 400 Bad Request"),
             "{label}: {head}"
         );
         assert!(response.is_null(), "{label}: {response}");
     }
-    let host = addr.to_string();
-    let oversize = format!(
-        "POST {RETIRE} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\nContent-Type: application/json\r\nContent-Length: 513\r\n\r\n"
-    );
+    let oversize = oversize_head(&page, RETIRE, 513);
     let (head, body) = raw_onboard(addr, oversize.as_bytes());
     assert!(
         head.starts_with("HTTP/1.1 413"),
@@ -12008,7 +10225,7 @@ fn browser_retire_bounds_and_json_shape_refuse_before_effect() {
 
     let canonical = serde_json::to_string(&retire_body(&id, agent)).unwrap();
     assert_eq!(canonical.len(), 97);
-    let (head, response) = post_bytes(addr, RETIRE, &cookie, &csrf, canonical.as_bytes(), None);
+    let (head, response) = post_bytes(&page, RETIRE, canonical.as_bytes(), None);
     retired_at(&head, &response);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -12045,12 +10262,12 @@ fn browser_retire_is_absent_when_not_enabled() {
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
         let agent = common::hire(&running.handle, fixture.state.path());
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (view, _) = snapshot(addr, &cookie, &csrf);
+        let page = exchange(addr, &issue(&settings).bootstrap);
+        let (view, _) = snapshot(&page);
         let body = serde_json::to_vec(&retire_body(&request_id(1), agent)).unwrap();
-        let unrouted = raw_post(addr, "/floor/unrouted", &cookie, &csrf, &body);
+        let unrouted = raw_post(&page, "/floor/unrouted", &body);
         assert!(!unrouted.is_empty());
-        let routed = raw_post(addr, RETIRE, &cookie, &csrf, &body);
+        let routed = raw_post(&page, RETIRE, &body);
         if control.retire() {
             assert!(
                 String::from_utf8_lossy(&routed).starts_with("HTTP/1.1 200 OK"),
@@ -12158,9 +10375,9 @@ fn browser_hire_unknown_appearance_is_refused_before_append() {
     .expect("boot Floor");
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let request = json!({"attempt_id":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "workspace_id":"repo_1", "name":"Ada", "role":"engineer", "goal_text":"ship"});
+        "workspace_id":"repo_1", "name":"Ada", "role":"engineer"});
     let before = fixture.records();
     for (field, value) in [
         ("character", "a"),
@@ -12172,7 +10389,7 @@ fn browser_hire_unknown_appearance_is_refused_before_append() {
     ] {
         let mut unknown = request.clone();
         unknown[field] = json!(value);
-        let (head, body) = post_onboard(addr, &cookie, &csrf, &unknown);
+        let (head, body) = post_onboard(&page, &unknown);
         assert!(
             head.starts_with("HTTP/1.1 400 Bad Request"),
             "{field}: {head}"
@@ -12187,7 +10404,7 @@ fn browser_hire_unknown_appearance_is_refused_before_append() {
     let mut chosen = request;
     chosen["character"] = json!("h");
     chosen["accent"] = json!("sky");
-    let (head, _) = post_onboard(addr, &cookie, &csrf, &chosen);
+    let (head, _) = post_onboard(&page, &chosen);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert!(fixture.records().iter().any(|record| matches!(
         record,
@@ -12204,23 +10421,19 @@ fn rename_body(id: &str, agent: AgentId, name: &str) -> Value {
     json!({"request_id": id, "agent": agent, "name": name})
 }
 
-fn post_rename(addr: SocketAddr, cookie: &str, csrf: &str, body: &Value) -> (String, Value) {
+fn post_rename(page: &Page, body: &Value) -> (String, Value) {
     post_bytes(
-        addr,
+        page,
         "/floor/rename",
-        cookie,
-        csrf,
         &serde_json::to_vec(body).unwrap(),
         None,
     )
 }
 
-fn post_look(addr: SocketAddr, cookie: &str, csrf: &str, body: &Value) -> (String, Value) {
+fn post_look(page: &Page, body: &Value) -> (String, Value) {
     post_bytes(
-        addr,
+        page,
         "/floor/look",
-        cookie,
-        csrf,
         &serde_json::to_vec(body).unwrap(),
         None,
     )
@@ -12318,8 +10531,8 @@ fn browser_look_updates_live_and_archive_and_refuses_stale_edits() {
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (before_view, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (before_view, _) = snapshot(&page);
     let before_agent = &before_view["projection"]["agents"][0];
     assert!(before_agent.get("look_lsn").is_none());
     let body = json!({
@@ -12329,7 +10542,7 @@ fn browser_look_updates_live_and_archive_and_refuses_stale_edits() {
     });
     let before_records = fixture.records();
     let before_activity = before_view["projection"]["activity"].clone();
-    let (head, original) = post_look(addr, &cookie, &csrf, &body);
+    let (head, original) = post_look(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(
         original,
@@ -12344,24 +10557,24 @@ fn browser_look_updates_live_and_archive_and_refuses_stale_edits() {
         id, role, character: Some(dudes_types::CastCharacter::H),
         accent: Some(dudes_types::AccentColour::Sky), browser_look: Some(_),
     }) if *id == agent && role == "designer"));
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let (view, _) = snapshot(&page);
     assert_eq!(view["projection"]["agents"][0]["role"], "designer");
     assert_eq!(view["projection"]["agents"][0]["character"], "h");
     assert_eq!(view["projection"]["agents"][0]["accent"], "sky");
     assert_eq!(view["projection"]["activity"], before_activity);
-    assert_eq!(post_look(addr, &cookie, &csrf, &body).1, original);
+    assert_eq!(post_look(&page, &body).1, original);
     let mut conflicting = body.clone();
     conflicting["expected_lsn"] = view["projection"]["agents"][0]["look_lsn"].clone();
-    let (head, refusal) = post_look(addr, &cookie, &csrf, &conflicting);
+    let (head, refusal) = post_look(&page, &conflicting);
     empty_refusal(&head, &refusal, "HTTP/1.1 409 Conflict");
     let mut conflicting = body.clone();
     conflicting["role"] = json!("writer");
-    let (head, refusal) = post_look(addr, &cookie, &csrf, &conflicting);
+    let (head, refusal) = post_look(&page, &conflicting);
     empty_refusal(&head, &refusal, "HTTP/1.1 409 Conflict");
     let mut stale = body.clone();
     stale["request_id"] = json!(request_id(2));
     stale["role"] = json!("writer");
-    let (head, refusal) = post_look(addr, &cookie, &csrf, &stale);
+    let (head, refusal) = post_look(&page, &stale);
     assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
     assert_eq!(refusal["reason"], "stale_look");
     assert_eq!(fixture.records(), records);
@@ -12372,20 +10585,20 @@ fn browser_look_updates_live_and_archive_and_refuses_stale_edits() {
             reason: "done".to_owned(),
         })))
         .unwrap();
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let (view, _) = snapshot(&page);
     assert_eq!(view["projection"]["retired_agents"][0]["role"], "designer");
     assert_eq!(view["projection"]["retired_agents"][0]["character"], "h");
     assert_eq!(view["projection"]["retired_agents"][0]["accent"], "sky");
-    assert_eq!(post_look(addr, &cookie, &csrf, &body).1, original);
+    assert_eq!(post_look(&page, &body).1, original);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before_retry = fixture.records();
-    assert_eq!(post_look(addr, &cookie, &csrf, &body).1, original);
+    assert_eq!(post_look(&page, &body).1, original);
     assert_eq!(fixture.records(), before_retry);
-    let (replayed, _) = snapshot(addr, &cookie, &csrf);
+    let (replayed, _) = snapshot(&page);
     assert_eq!(
         replayed["projection"]["retired_agents"][0]["role"],
         "designer"
@@ -12406,8 +10619,8 @@ fn browser_look_revision_refuses_aba_even_when_display_fields_match_again() {
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (initial, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (initial, _) = snapshot(&page);
     let original = &initial["projection"]["agents"][0];
     let original_role = original["role"].as_str().unwrap().to_owned();
     let original_lsn = json!("0");
@@ -12415,24 +10628,16 @@ fn browser_look_revision_refuses_aba_even_when_display_fields_match_again() {
         "request_id": request_id(3), "agent": agent, "expected_lsn": original_lsn,
         "role": "designer", "character": "h", "accent": "sky",
     });
-    assert!(
-        post_look(addr, &cookie, &csrf, &first)
-            .0
-            .starts_with("HTTP/1.1 200 OK")
-    );
-    let (changed, _) = snapshot(addr, &cookie, &csrf);
+    assert!(post_look(&page, &first).0.starts_with("HTTP/1.1 200 OK"));
+    let (changed, _) = snapshot(&page);
     let changed_lsn = changed["projection"]["agents"][0]["look_lsn"].clone();
     assert_ne!(changed_lsn, original_lsn);
     let back = json!({
         "request_id": request_id(4), "agent": agent, "expected_lsn": changed_lsn,
         "role": original_role, "character": null, "accent": null,
     });
-    assert!(
-        post_look(addr, &cookie, &csrf, &back)
-            .0
-            .starts_with("HTTP/1.1 200 OK")
-    );
-    let (again, _) = snapshot(addr, &cookie, &csrf);
+    assert!(post_look(&page, &back).0.starts_with("HTTP/1.1 200 OK"));
+    let (again, _) = snapshot(&page);
     assert_eq!(again["projection"]["agents"][0]["role"], original_role);
     assert_eq!(again["projection"]["agents"][0]["character"], Value::Null);
     assert_eq!(again["projection"]["agents"][0]["accent"], Value::Null);
@@ -12441,7 +10646,7 @@ fn browser_look_revision_refuses_aba_even_when_display_fields_match_again() {
         "role": "writer", "character": null, "accent": null,
     });
     let before = fixture.records();
-    let (head, refused) = post_look(addr, &cookie, &csrf, &stale);
+    let (head, refused) = post_look(&page, &stale);
     assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
     assert_eq!(refused["reason"], "stale_look");
     assert_eq!(fixture.records(), before);
@@ -12449,8 +10654,8 @@ fn browser_look_revision_refuses_aba_even_when_display_fields_match_again() {
     let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (replayed, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (replayed, _) = snapshot(&page);
     assert_eq!(replayed["projection"]["agents"][0]["role"], original_role);
     assert_eq!(
         replayed["projection"]["agents"][0]["character"],
@@ -12471,8 +10676,8 @@ fn browser_look_revocation_and_uncertain_fsync_replay() {
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (view, _) = snapshot(&page);
     assert!(view["projection"]["agents"][0].get("look_lsn").is_none());
     let body = json!({
         "request_id": request_id(6), "agent": agent,
@@ -12482,20 +10687,20 @@ fn browser_look_revocation_and_uncertain_fsync_replay() {
     let before = fixture.records();
     pause.arm(OnboardingPausePoint::BeforeLookPermit);
     let loser = {
-        let (cookie, csrf, body) = (cookie.clone(), csrf.clone(), body.clone());
-        std::thread::spawn(move || post_look(addr, &cookie, &csrf, &body))
+        let (page, body) = (Arc::clone(&page), body.clone());
+        std::thread::spawn(move || post_look(&page, &body))
     };
     assert!(pause.wait_reached(Duration::from_secs(5)));
-    assert!(authorizer.revoke_for_test(&cookie));
+    assert!(authorizer.revoke_for_test(&page.cookie));
     pause.release();
     let (head, value) = loser.join().unwrap();
     empty_refusal(&head, &value, "HTTP/1.1 403 Forbidden");
     assert_eq!(fixture.records(), before);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     failure.arm(OnboardingFailurePoint::Look);
-    let (head, value) = post_look(addr, &cookie, &csrf, &body);
+    let (head, value) = post_look(&page, &body);
     empty_refusal(&head, &value, "HTTP/1.1 503 Service Unavailable");
-    let (head, value) = post_look(addr, &cookie, &csrf, &body);
+    let (head, value) = post_look(&page, &body);
     assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
     assert_eq!(value["state"], "pending");
     assert_eq!(
@@ -12510,9 +10715,9 @@ fn browser_look_revocation_and_uncertain_fsync_replay() {
     let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
-    let (head, result) = post_look(addr, &cookie, &csrf, &body);
+    let (head, result) = post_look(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(result["role"], "designer");
     assert_eq!(fixture.records(), before);
@@ -12523,7 +10728,7 @@ fn browser_look_revocation_and_uncertain_fsync_replay() {
             |(_, entry)| matches!(entry.record, Record::AgentLookChanged { id, .. } if id == agent),
         )
         .unwrap();
-    let (replayed, _) = snapshot(addr, &cookie, &csrf);
+    let (replayed, _) = snapshot(&page);
     let row = &replayed["projection"]["agents"][0];
     assert_eq!(row["role"], "designer");
     assert_eq!(row["character"], "h");
@@ -12533,7 +10738,7 @@ fn browser_look_revocation_and_uncertain_fsync_replay() {
     stale["request_id"] = json!(request_id(12));
     stale["role"] = json!("writer");
     let before = fixture.records();
-    let (head, refusal) = post_look(addr, &cookie, &csrf, &stale);
+    let (head, refusal) = post_look(&page, &stale);
     assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
     assert_eq!(refusal["reason"], "stale_look");
     assert_eq!(fixture.records(), before);
@@ -12557,8 +10762,8 @@ fn browser_look_switch_and_strict_body_append_nothing() {
         let addr = daemon.floor_addr().unwrap();
         let mut running = common::start(daemon);
         let agent = common::hire(&running.handle, fixture.state.path());
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (view, _) = snapshot(addr, &cookie, &csrf);
+        let page = exchange(addr, &issue(&settings).bootstrap);
+        let (view, _) = snapshot(&page);
         assert!(view["projection"]["agents"][0].get("look_lsn").is_none());
         let valid = json!({
             "request_id": request_id(7), "agent": agent,
@@ -12569,8 +10774,8 @@ fn browser_look_switch_and_strict_body_append_nothing() {
         if control == FloorControl::Off {
             let bytes = serde_json::to_vec(&valid).unwrap();
             assert_eq!(
-                raw_post(addr, "/floor/look", &cookie, &csrf, &bytes),
-                raw_post(addr, "/floor/unrouted", &cookie, &csrf, &bytes),
+                raw_post(&page, "/floor/look", &bytes),
+                raw_post(&page, "/floor/unrouted", &bytes),
             );
         } else {
             let mut invalid = Vec::new();
@@ -12594,27 +10799,20 @@ fn browser_look_switch_and_strict_body_append_nothing() {
             unknown["token"] = json!("not admitted");
             invalid.push(unknown);
             for body in invalid {
-                let (head, refusal) = post_look(addr, &cookie, &csrf, &body);
+                let (head, refusal) = post_look(&page, &body);
                 empty_refusal(&head, &refusal, "HTTP/1.1 400 Bad Request");
             }
             let duplicate = format!(
                 "{{\"request_id\":\"{}\",\"agent\":\"{agent}\",\"expected_lsn\":\"1\",\"role\":\"builder\",\"role\":\"writer\",\"character\":null,\"accent\":null}}",
                 request_id(8),
             );
-            let (head, refusal) = post_bytes(
-                addr,
-                "/floor/look",
-                &cookie,
-                &csrf,
-                duplicate.as_bytes(),
-                None,
-            );
+            let (head, refusal) = post_bytes(&page, "/floor/look", duplicate.as_bytes(), None);
             empty_refusal(&head, &refusal, "HTTP/1.1 400 Bad Request");
             let missing = AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
             assert_ne!(missing, agent);
             let mut body = valid.clone();
             body["agent"] = json!(missing);
-            let (head, refusal) = post_look(addr, &cookie, &csrf, &body);
+            let (head, refusal) = post_look(&page, &body);
             assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
             assert_eq!(refusal["reason"], "agent_absent");
         }
@@ -12638,8 +10836,8 @@ fn a_card_sized_before_chat_was_always_on_replays_and_blocks_only_look_edits() {
     let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (frame, _) = snapshot(&page);
     assert_eq!(
         frame["projection"]["cards"][0]["title"]
             .as_str()
@@ -12654,7 +10852,7 @@ fn a_card_sized_before_chat_was_always_on_replays_and_blocks_only_look_edits() {
         "character": "h", "accent": "sky",
     });
     let before = fixture.records();
-    let (head, refusal) = post_look(addr, &cookie, &csrf, &body);
+    let (head, refusal) = post_look(&page, &body);
     assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
     assert_eq!(refusal["reason"], "floor_limit");
     assert_eq!(fixture.records(), before);
@@ -12697,14 +10895,14 @@ fn browser_and_local_look_reserve_the_complete_floor_frame() {
         let daemon = boot(&settings, fake_seams(&settings)).unwrap();
         let addr = daemon.floor_addr().unwrap();
         let mut running = common::start(daemon);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+        let page = exchange(addr, &issue(&settings).bootstrap);
         let body = json!({
             "request_id": request_id(9 + over_by), "agent": agent,
             "expected_lsn": "0", "role": "x".repeat(512),
             "character": "h", "accent": "sky",
         });
         let before = fixture.records();
-        let (head, response) = post_look(addr, &cookie, &csrf, &body);
+        let (head, response) = post_look(&page, &body);
         if over_by == 1 {
             assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
             assert_eq!(response["reason"], "floor_limit");
@@ -12782,8 +10980,8 @@ fn untouched_two_agent_replay_omits_look_revisions_and_first_edit_reserves_them(
     let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (view, _) = snapshot(&page);
     let agents = view["projection"]["agents"].as_array().unwrap();
     assert_eq!(agents.len(), 2);
     assert!(agents.iter().all(|row| row.get("look_lsn").is_none()));
@@ -12792,7 +10990,7 @@ fn untouched_two_agent_replay_omits_look_revisions_and_first_edit_reserves_them(
         "request_id": request_id(11), "agent": agent, "expected_lsn": "0",
         "role": "backend engineer", "character": null, "accent": null,
     });
-    let (head, refusal) = post_look(addr, &cookie, &csrf, &body);
+    let (head, refusal) = post_look(&page, &body);
     assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
     assert_eq!(refusal["reason"], "floor_limit");
     assert_eq!(fixture.records(), before);
@@ -12808,13 +11006,13 @@ fn browser_rename_preserves_identity_activity_and_original_retry_after_retiremen
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
     running.handle.ask(Ask::Pause(agent)).unwrap();
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (before_view, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (before_view, _) = snapshot(&page);
     let old_name = before_view["projection"]["agents"][0]["name"].clone();
     let old_activity = before_view["projection"]["activity"].clone();
     let before = fixture.records();
     let body = rename_body(&request_id(1), agent, " \tAda renamed\r\n");
-    let (head, original) = post_rename(addr, &cookie, &csrf, &body);
+    let (head, original) = post_rename(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(
         original,
@@ -12829,7 +11027,7 @@ fn browser_rename_preserves_identity_activity_and_original_retry_after_retiremen
     assert!(
         matches!(after.last(), Some(Record::AgentRenamed { id, name, browser_rename: Some(_) }) if *id == agent && name == "Ada renamed")
     );
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let (view, _) = snapshot(&page);
     assert_eq!(view["projection"]["agents"][0]["id"], json!(agent));
     assert_eq!(view["projection"]["agents"][0]["name"], "Ada renamed");
     assert_ne!(old_name, "Ada renamed");
@@ -12850,13 +11048,8 @@ fn browser_rename_preserves_identity_activity_and_original_retry_after_retiremen
         )))
         .unwrap();
     let before_retry = fixture.records();
-    assert_eq!(post_rename(addr, &cookie, &csrf, &body).1, original);
-    let (head, conflict) = post_rename(
-        addr,
-        &cookie,
-        &csrf,
-        &rename_body(&request_id(1), agent, "Different"),
-    );
+    assert_eq!(post_rename(&page, &body).1, original);
+    let (head, conflict) = post_rename(&page, &rename_body(&request_id(1), agent, "Different"));
     empty_refusal(&head, &conflict, "HTTP/1.1 409 Conflict");
     assert_eq!(fixture.records(), before_retry);
     running
@@ -12867,13 +11060,8 @@ fn browser_rename_preserves_identity_activity_and_original_retry_after_retiremen
         })))
         .unwrap();
     let retired = fixture.records();
-    assert_eq!(post_rename(addr, &cookie, &csrf, &body).1, original);
-    let (head, refusal) = post_rename(
-        addr,
-        &cookie,
-        &csrf,
-        &rename_body(&request_id(2), agent, "New"),
-    );
+    assert_eq!(post_rename(&page, &body).1, original);
+    let (head, refusal) = post_rename(&page, &rename_body(&request_id(2), agent, "New"));
     assert!(head.starts_with("HTTP/1.1 409 Conflict"));
     assert_eq!(refusal["reason"], "agent_absent");
     assert_eq!(fixture.records(), retired);
@@ -12881,9 +11069,9 @@ fn browser_rename_preserves_identity_activity_and_original_retry_after_retiremen
     let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
-    assert_eq!(post_rename(addr, &cookie, &csrf, &body).1, original);
+    assert_eq!(post_rename(&page, &body).1, original);
     assert_eq!(fixture.records(), before);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -12905,32 +11093,23 @@ fn browser_rename_route_off_missing_agent_and_name_bounds_append_nothing() {
         let addr = daemon.floor_addr().unwrap();
         let mut running = common::start(daemon);
         let agent = common::hire(&running.handle, fixture.state.path());
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+        let page = exchange(addr, &issue(&settings).bootstrap);
         let before = fixture.records();
         let body = serde_json::to_vec(&rename_body(&request_id(1), agent, "New")).unwrap();
         if control == FloorControl::Off {
             assert_eq!(
-                raw_post(addr, "/floor/rename", &cookie, &csrf, &body),
-                raw_post(addr, "/floor/unrouted", &cookie, &csrf, &body)
+                raw_post(&page, "/floor/rename", &body),
+                raw_post(&page, "/floor/unrouted", &body)
             );
         } else {
             for name in [" \t\r\n".to_owned(), "é".repeat(65), "x".repeat(129)] {
-                let (head, refused) = post_rename(
-                    addr,
-                    &cookie,
-                    &csrf,
-                    &rename_body(&request_id(2), agent, &name),
-                );
+                let (head, refused) =
+                    post_rename(&page, &rename_body(&request_id(2), agent, &name));
                 empty_refusal(&head, &refused, "HTTP/1.1 400 Bad Request");
             }
             let missing = AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
             assert_ne!(missing, agent);
-            let (head, refused) = post_rename(
-                addr,
-                &cookie,
-                &csrf,
-                &rename_body(&request_id(3), missing, "New"),
-            );
+            let (head, refused) = post_rename(&page, &rename_body(&request_id(3), missing, "New"));
             assert!(head.starts_with("HTTP/1.1 409 Conflict"));
             assert_eq!(refused["reason"], "agent_absent");
         }
@@ -12950,33 +11129,28 @@ fn browser_rename_revocation_before_append_and_uncertain_fsync_replay() {
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, fixture.state.path());
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = rename_body(&request_id(1), agent, "New");
     let before = fixture.records();
     pause.arm(OnboardingPausePoint::BeforeRenamePermit);
     let loser = {
-        let (cookie, csrf, body) = (cookie.clone(), csrf.clone(), body.clone());
-        std::thread::spawn(move || post_rename(addr, &cookie, &csrf, &body))
+        let (page, body) = (Arc::clone(&page), body.clone());
+        std::thread::spawn(move || post_rename(&page, &body))
     };
     assert!(pause.wait_reached(Duration::from_secs(5)));
-    assert!(authorizer.revoke_for_test(&cookie));
+    assert!(authorizer.revoke_for_test(&page.cookie));
     pause.release();
     let (head, value) = loser.join().unwrap();
     empty_refusal(&head, &value, "HTTP/1.1 403 Forbidden");
     assert_eq!(fixture.records(), before);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     failure.arm(OnboardingFailurePoint::Rename);
-    let (head, value) = post_rename(addr, &cookie, &csrf, &body);
+    let (head, value) = post_rename(&page, &body);
     empty_refusal(&head, &value, "HTTP/1.1 503 Service Unavailable");
-    let (head, value) = post_rename(addr, &cookie, &csrf, &body);
+    let (head, value) = post_rename(&page, &body);
     assert!(head.starts_with("HTTP/1.1 202 Accepted"));
     assert_eq!(value["state"], "pending");
-    let (head, value) = post_rename(
-        addr,
-        &cookie,
-        &csrf,
-        &rename_body(&request_id(2), agent, "Fresh"),
-    );
+    let (head, value) = post_rename(&page, &rename_body(&request_id(2), agent, "Fresh"));
     empty_refusal(&head, &value, "HTTP/1.1 503 Service Unavailable");
     assert_eq!(
         fixture
@@ -12990,11 +11164,11 @@ fn browser_rename_revocation_before_append_and_uncertain_fsync_replay() {
     let daemon = boot(&settings, fake_seams(&settings)).unwrap();
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (head, value) = post_rename(addr, &cookie, &csrf, &body);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, value) = post_rename(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"));
     assert_eq!(value["name"], "New");
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let (view, _) = snapshot(&page);
     assert_eq!(view["projection"]["agents"][0]["name"], "New");
     assert_eq!(
         fixture
@@ -13112,29 +11286,21 @@ fn browser_resume_clears_an_automatic_hold_and_fences_a_later_episode() {
     let daemon = boot(&settings, fake_seams(&settings)).expect("held run");
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (view, _) = snapshot(&page);
     let row = &view["projection"]["agents"][0];
     assert_eq!(row["automatic_hold"]["kind"], "launch_failed");
     assert_eq!(row["control_lsn"], first_hold.0.to_string());
     assert_eq!(row["paused"], false);
-    let (head, body) = post_control(
-        addr,
-        RESUME,
-        &cookie,
-        &csrf,
-        &control_body(&request_id(1), agent, None),
-    );
+    let (head, body) = post_control(&page, RESUME, &control_body(&request_id(1), agent, None));
     refused(&head, &body, "stale_control");
     let (head, body) = post_control(
-        addr,
+        &page,
         RESUME,
-        &cookie,
-        &csrf,
         &control_body(&request_id(2), agent, Some(first_hold)),
     );
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let (view, _) = snapshot(&page);
     assert!(
         view["projection"]["agents"][0]
             .get("automatic_hold")
@@ -13152,16 +11318,14 @@ fn browser_resume_clears_an_automatic_hold_and_fences_a_later_episode() {
     let daemon = boot(&settings, fake_seams(&settings)).expect("later held run");
     let addr = daemon.floor_addr().unwrap();
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let (head, body) = post_control(
-        addr,
+        &page,
         RESUME,
-        &cookie,
-        &csrf,
         &control_body(&request_id(3), agent, Some(first_hold)),
     );
     refused(&head, &body, "stale_control");
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let (view, _) = snapshot(&page);
     assert_eq!(
         view["projection"]["agents"][0]["control_lsn"],
         second_hold.0.to_string()
@@ -13201,18 +11365,19 @@ fn browser_settings_view_is_an_exact_read_only_allowlist() {
     };
     settings.enrollment.profiles[0].agent_budget.tokens_per_day = Some(Tokens::new(123));
     settings.enrollment.profiles[0].goal_budget.tokens = Some(Tokens::new(456));
-    let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-    let frame = snapshot(addr, &cookie, &csrf).0;
+    let (_, mut running, _, page) = default_floor(&settings);
+    let frame = snapshot(&page).0;
     assert_eq!(
         frame["settings"],
         json!({
+            "folder_picker": false,
             "switches": { "answer": true, "hire": true, "control": true, "recovery": false, "goal": true, "renew": true, "retire": true, "terminal": true, "git": true, "board": false, "diff": false, "project": false },
             "budget": { "floor_usd_per_day_micros": "100000000", "per_turn_usd_micros": "1234", "per_turn_tokens": "9007199254740993" },
             "providers": ["claude"],
             "workspaces": [{ "workspace_id": "repo_1", "label": "Service workspace",
                 "agent_usd_per_day_micros": "10000000", "agent_tokens_per_day": "123",
                 "goal_usd_micros": "5000000", "goal_tokens": "456" }],
-            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 3 }
+            "about": { "daemon_version": env!("CARGO_PKG_VERSION"), "browser_wire_version": 5 }
         })
     );
     let bytes = frame["settings"].to_string();
@@ -13224,7 +11389,7 @@ fn browser_settings_view_is_an_exact_read_only_allowlist() {
         assert!(!bytes.contains(secret), "settings disclosed {secret}");
     }
     let before = fixture.records().len();
-    let second = snapshot(addr, &cookie, &csrf).0;
+    let second = snapshot(&page).0;
     assert_eq!(second["settings"], frame["settings"]);
     assert_eq!(
         fixture.records().len(),
@@ -13240,9 +11405,9 @@ fn browser_settings_survive_unavailable_hire_and_provider_check() {
     let mut settings = with_floor(fixture.settings());
     settings.floor_usd_per_day = None;
     settings.floor_hire_enabled = false;
-    let (check, mut running, addr, cookie, csrf) = default_floor(&settings);
+    let (check, mut running, _, page) = default_floor(&settings);
     check.hold_next();
-    let frame = snapshot(addr, &cookie, &csrf).0;
+    let frame = snapshot(&page).0;
     assert!(frame.get("onboarding").is_none());
     assert!(frame.get("daemon").is_none());
     assert_eq!(frame["settings"]["providers"], json!(["claude"]));
@@ -13302,8 +11467,8 @@ fn a_browser_hire_above_a_live_lease_is_refused_before_any_append() {
     );
     let before = fixture.records();
     assert_eq!(before.len(), 1, "a control: only the lease is recorded");
-    let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-    let (head, body) = post_onboard(addr, &cookie, &csrf, &hire_request('A', None));
+    let (_, mut running, _, page) = default_floor(&settings);
+    let (head, body) = post_onboard(&page, &hire_request('A', None));
     assert!(head.starts_with("HTTP/1.1 403 Forbidden"), "{head}");
     assert!(body.is_null());
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -13312,8 +11477,8 @@ fn a_browser_hire_above_a_live_lease_is_refused_before_any_append() {
     let beside = Fixture::new();
     let settings = enrolled_settings(&beside);
     seed_lease(&beside, &beside.state.path().join("another-tree"));
-    let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-    let (head, _) = post_onboard(addr, &cookie, &csrf, &hire_request('A', None));
+    let (_, mut running, _, page) = default_floor(&settings);
+    let (head, _) = post_onboard(&page, &hire_request('A', None));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "control: {head}");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -13330,11 +11495,11 @@ fn the_git_tab_is_a_sibling_and_a_route_only_when_enabled() {
         let addr = daemon.floor_addr().expect("Floor address");
         let mut running = common::start(daemon);
         let agent = common::hire(&running.handle, fixture.state.path());
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (view, _) = snapshot(addr, &cookie, &csrf);
+        let page = exchange(addr, &issue(&settings).bootstrap);
+        let (view, _) = snapshot(&page);
         let body = serde_json::to_vec(&json!({ "agent_id": agent })).unwrap();
-        let unrouted = raw_post(addr, "/floor/unrouted", &cookie, &csrf, &body);
-        let routed = raw_post(addr, "/floor/git", &cookie, &csrf, &body);
+        let unrouted = raw_post(&page, "/floor/unrouted", &body);
+        let routed = raw_post(&page, "/floor/git", &body);
         if enabled {
             assert_eq!(view["git"], json!({}), "the sibling is an empty object");
             let text = String::from_utf8_lossy(&routed);
@@ -13437,12 +11602,10 @@ fn renew_body(request_id: &str, agent: AgentId, goal: GoalId, shown: Allowance) 
     })
 }
 
-fn post_renew(addr: SocketAddr, cookie: &str, csrf: &str, body: &Value) -> (String, Value) {
+fn post_renew(page: &Page, body: &Value) -> (String, Value) {
     post_bytes(
-        addr,
+        page,
         RENEW_ROUTE,
-        cookie,
-        csrf,
         &serde_json::to_vec(body).expect("renew JSON"),
         None,
     )
@@ -13691,8 +11854,8 @@ fn browser_renew_funds_an_exhausted_goal_from_its_workspace() {
         )
         .then_some(())
     });
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (view, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (view, _) = snapshot(&page);
     assert_eq!(
         view["goal"],
         json!({
@@ -13705,17 +11868,12 @@ fn browser_renew_funds_an_exhausted_goal_from_its_workspace() {
             }]},
         })
     );
-    let (head, response) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
-        &goal_body(&request_id(1), agent, g1, NEW_TEXT),
-    );
+    let (head, response) = post_goal(&page, &goal_body(&request_id(1), agent, g1, NEW_TEXT));
     refused(&head, &response, "goal_exhausted");
 
     std::fs::write(&cost, "1.0").expect("the renewed turn's cost");
     let body = renew_body(&request_id(2), agent, g1, SHOWN);
-    let (head, response) = post_renew(addr, &cookie, &csrf, &body);
+    let (head, response) = post_renew(&page, &body);
     let g2 = renewed(&head, &response);
     assert_eq!(
         response,
@@ -13795,7 +11953,9 @@ fn browser_renew_funds_an_exhausted_goal_from_its_workspace() {
         attribution.request_digest.bytes(),
         expected_renew_digest(agent, g1, RENEWED_TEXT, SHOWN)
     );
-    let session = <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(cookie.as_bytes()));
+    let session = <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(
+        page.cookie.as_bytes(),
+    ));
     assert_eq!(attribution.session_digest.bytes(), session);
 
     let decisions = decisions_after(&fixture, agent, c);
@@ -13851,9 +12011,9 @@ fn browser_renew_funds_an_exhausted_goal_from_its_workspace() {
     );
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&edited).bootstrap);
+    let page = exchange(addr, &issue(&edited).bootstrap);
     let before = fixture.records();
-    let (head, replayed) = post_renew(addr, &cookie, &csrf, &body);
+    let (head, replayed) = post_renew(&page, &body);
     assert_eq!(renewed(&head, &replayed), g2);
     assert_eq!(replayed, response);
     assert_eq!(
@@ -13900,11 +12060,9 @@ fn browser_renew_with_no_ceilings_is_bounded_by_the_hop_cap() {
         dollars(Usd::from_dollars(1)),
         false,
     );
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let (head, response) = post_renew(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &renew_body(&request_id(1), agent, g1, ("3", None, None)),
     );
     let g2 = renewed(&head, &response);
@@ -13959,11 +12117,9 @@ fn browser_renew_goal_token_ceiling_binds_the_renewed_goal() {
         work_tokens(2_000),
         false,
     );
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let (head, response) = post_renew(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &renew_body(&request_id(1), agent, g1, ("3", None, Some("1000"))),
     );
     let g2 = renewed(&head, &response);
@@ -14065,13 +12221,8 @@ fn renewal_waits_for_the_next_day(
         Some(&exhausted(reason)),
         "the old goal stopped at the daily ceiling"
     );
-    let (cookie, csrf) = exchange(addr, &issue(settings).bootstrap);
-    let (head, response) = post_renew(
-        addr,
-        &cookie,
-        &csrf,
-        &renew_body(&request_id(1), agent, g1, SHOWN),
-    );
+    let page = exchange(addr, &issue(settings).bootstrap);
+    let (head, response) = post_renew(&page, &renew_body(&request_id(1), agent, g1, SHOWN));
     let g2 = renewed(&head, &response);
     let c = renewals(fixture, agent)[0].0;
     await_entry(fixture, "the renewal's decision", |lsn, record| {
@@ -14092,7 +12243,7 @@ fn renewal_waits_for_the_next_day(
     );
     assert_eq!(managed_turns(fixture, g2), 0, "no turn on the first day");
 
-    clock.advance(86_400_000);
+    clock.advance(30 * 86_400_000);
     running.handle.input(Input::Tick);
     nth_turn(fixture, g2, 0);
     assert_eq!(managed_turns(fixture, g2), 1, "one turn on the next day");
@@ -14229,23 +12380,16 @@ fn browser_renew_refuses_under_the_billing_guard() {
     let mut running = common::start(daemon);
     let sha = rewrite(&settings, &dollars_only);
     operator_reload(&settings, apply(&sha, &[], &[], &["repo_1"])).expect("reload applies");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
-    let (head, response) = post_renew(
-        addr,
-        &cookie,
-        &csrf,
-        &renew_body(&request_id(1), agent, g1, SHOWN),
-    );
+    let (head, response) = post_renew(&page, &renew_body(&request_id(1), agent, g1, SHOWN));
     refused(&head, &response, "workspace_unavailable");
     assert_eq!(fixture.records(), before, "no GoalSet");
 
     let sha = rewrite(&settings, &tokens);
     operator_reload(&settings, apply(&sha, &[], &[], &["repo_1"])).expect("reload applies");
     let (head, response) = post_renew(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &renew_body(&request_id(2), agent, g1, ("3", None, Some("1000"))),
     );
     renewed(&head, &response);
@@ -14344,16 +12488,11 @@ fn browser_renew_refuses_unenrolled_moved_and_changed_workspaces() {
     );
     let (unenrolled, unenrolled_goal) = spent(&native, &unenrolled_dir, Usd::from_cents(1), true);
     let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let mut k = 0;
     let mut renew = |agent, goal, shown| {
         k += 1;
-        post_renew(
-            addr,
-            &cookie,
-            &csrf,
-            &renew_body(&request_id(k), agent, goal, shown),
-        )
+        post_renew(&page, &renew_body(&request_id(k), agent, goal, shown))
     };
 
     let before = fixture.records();
@@ -14428,13 +12567,8 @@ fn browser_renew_restarts_a_done_goal_at_its_cap() {
         Some(&LoopDecision::Done),
         "G1 passed its check on its one turn"
     );
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (head, response) = post_renew(
-        addr,
-        &cookie,
-        &csrf,
-        &renew_body(&request_id(1), agent, g1, SHOWN),
-    );
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_renew(&page, &renew_body(&request_id(1), agent, g1, SHOWN));
     let g2 = renewed(&head, &response);
     nth_turn(&fixture, g2, 0);
     let c = renewals(&fixture, agent)[0].0;
@@ -14447,10 +12581,15 @@ fn browser_renew_restarts_a_done_goal_at_its_cap() {
 }
 
 /// Every browser credential is checked before any effect: a wrong Host, a wrong or missing Origin,
-/// an unknown cookie, a wrong or missing CSRF and an expired session each get the uniform empty
-/// `403`, and the journal does not move. Control: the right credentials apply.
+/// an unknown cookie and an expired session each get the uniform empty `403`,
+/// a wrong or missing signature a `401` that says so, and the journal does not move.
+/// Control: the right credentials apply.
 #[test]
-fn browser_renew_refuses_wrong_session_host_origin_and_csrf_without_effect() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "six credential failures, the expired session and the control share one daemon"
+)]
+fn browser_renew_refuses_wrong_session_host_origin_and_signature_without_effect() {
     let fixture = Fixture::new();
     let (settings, repo) = renew_workspace(&fixture);
     let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
@@ -14473,17 +12612,17 @@ fn browser_renew_refuses_wrong_session_host_origin_and_csrf_without_effect() {
         host: &native_host,
     };
     let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = serde_json::to_vec(&renew_body(&request_id(1), agent, goal, SHOWN)).unwrap();
     let host = addr.to_string();
-    let request = |host: &str, origin: Option<&str>, cookie: &str, csrf: Option<&str>| {
+    let request = |host: &str, origin: Option<&str>, cookie: &str, signed: Option<&Signed>| {
         let mut head = format!("POST {RENEW_ROUTE} HTTP/1.1\r\nHost: {host}\r\n");
         if let Some(origin) = origin {
             let _ = write!(head, "Origin: {origin}\r\n");
         }
         let _ = write!(head, "Cookie: dudes_floor_session={cookie}\r\n");
-        if let Some(csrf) = csrf {
-            let _ = write!(head, "X-Dudes-CSRF: {csrf}\r\n");
+        if let Some(signed) = signed {
+            head.push_str(&signed.header_lines());
         }
         let _ = write!(
             head,
@@ -14496,50 +12635,84 @@ fn browser_renew_refuses_wrong_session_host_origin_and_csrf_without_effect() {
     };
     let origin = format!("http://{host}");
     let unknown = "A".repeat(43);
+    let signed = |path: &str| page.signed("POST", path, &body);
+    let foreign = |path: &str| foreign_signature(&page, path, &body);
     let before = fixture.records();
     for (label, bytes) in [
         (
             "wrong Host",
-            request("127.0.0.1:1", Some(&origin), &cookie, Some(&csrf)),
+            request(
+                "127.0.0.1:1",
+                Some(&origin),
+                &page.cookie,
+                Some(&signed(RENEW_ROUTE)),
+            ),
         ),
         (
             "wrong Origin",
-            request(&host, Some("http://127.0.0.1:1"), &cookie, Some(&csrf)),
+            request(
+                &host,
+                Some("http://127.0.0.1:1"),
+                &page.cookie,
+                Some(&signed(RENEW_ROUTE)),
+            ),
         ),
-        ("missing Origin", request(&host, None, &cookie, Some(&csrf))),
+        (
+            "missing Origin",
+            request(&host, None, &page.cookie, Some(&signed(RENEW_ROUTE))),
+        ),
         (
             "unknown cookie",
-            request(&host, Some(&origin), &unknown, Some(&csrf)),
+            request(&host, Some(&origin), &unknown, Some(&signed(RENEW_ROUTE))),
         ),
         (
-            "wrong CSRF",
-            request(&host, Some(&origin), &cookie, Some(&unknown)),
+            "wrong signature",
+            request(
+                &host,
+                Some(&origin),
+                &page.cookie,
+                Some(&foreign(RENEW_ROUTE)),
+            ),
         ),
-        ("missing CSRF", request(&host, Some(&origin), &cookie, None)),
+        (
+            "missing signature",
+            request(&host, Some(&origin), &page.cookie, None),
+        ),
     ] {
         let (head, response) = raw_onboard(addr, &bytes);
-        assert!(
-            head.starts_with("HTTP/1.1 403 Forbidden"),
-            "{label}: {head}"
-        );
-        assert!(response.is_empty(), "{label}: no envelope");
+        if label.ends_with("signature") {
+            assert!(
+                head.starts_with("HTTP/1.1 401 Unauthorized"),
+                "{label}: {head}"
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&response).expect("JSON"),
+                json!({"signature": "refused"}),
+                "{label}: {head}"
+            );
+        } else {
+            assert!(
+                head.starts_with("HTTP/1.1 403 Forbidden"),
+                "{label}: {head}"
+            );
+            assert!(response.is_empty(), "{label}: no envelope");
+        }
     }
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
-    let (expired_cookie, expired_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    clock.advance(24 * 60 * 60 * 1000);
-    let (fresh_cookie, fresh_csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let expired_page = exchange(addr, &issue(&settings).bootstrap);
+    clock.advance(30 * 24 * 60 * 60 * 1000);
+    let fresh_page = exchange(addr, &issue(&settings).bootstrap);
     let renewal = renew_body(&request_id(1), agent, goal, SHOWN);
-    let (head, response) = post_renew(addr, &expired_cookie, &expired_csrf, &renewal);
+    let (head, response) = post_renew(&expired_page, &renewal);
     empty_refusal(&head, &response, "HTTP/1.1 403 Forbidden");
     assert_eq!(
         fixture.records(),
         before,
         "an expired session appends nothing"
     );
-    let _ = (cookie, csrf);
 
-    let (head, response) = post_renew(addr, &fresh_cookie, &fresh_csrf, &renewal);
+    let (head, response) = post_renew(&fresh_page, &renewal);
     renewed(&head, &response);
     assert_eq!(renewals(&fixture, agent).len(), 1);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -14611,7 +12784,7 @@ fn browser_renew_refuses_absent_halted_stale_and_open_turn() {
     let (control, control_goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let unknown = AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("an agent id");
 
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
     for (k, agent, goal, reason) in [
         (1, unknown, older, "agent_absent"),
@@ -14622,20 +12795,13 @@ fn browser_renew_refuses_absent_halted_stale_and_open_turn() {
         (6, issued, issued_goal, "turn_open"),
         (7, spawned, spawned_goal, "turn_open"),
     ] {
-        let (head, response) = post_renew(
-            addr,
-            &cookie,
-            &csrf,
-            &renew_body(&request_id(k), agent, goal, SHOWN),
-        );
+        let (head, response) = post_renew(&page, &renew_body(&request_id(k), agent, goal, SHOWN));
         refused(&head, &response, reason);
     }
     assert_eq!(fixture.records(), before, "no refusal moved the journal");
 
     let (head, response) = post_renew(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &renew_body(&request_id(8), control, control_goal, SHOWN),
     );
     renewed(&head, &response);
@@ -14673,14 +12839,12 @@ fn browser_renew_same_key_retry_returns_original_and_other_payloads_conflict() {
     };
     let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (changing, changing_goal) = paused_with_goal(&running, &fixture);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = renew_body(&request_id(1), agent, goal, SHOWN);
-    let (head, original) = post_renew(addr, &cookie, &csrf, &body);
+    let (head, original) = post_renew(&page, &body);
     renewed(&head, &original);
     let (head, response) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &goal_body(&request_id(2), changing, changing_goal, NEW_TEXT),
     );
     changed(&head, &response);
@@ -14692,9 +12856,9 @@ fn browser_renew_same_key_retry_returns_original_and_other_payloads_conflict() {
 
     let mut replayed = body.clone();
     replayed["request_id"] = json!(request_id(3));
-    let (head, response) = post_renew(addr, &cookie, &csrf, &replayed);
+    let (head, response) = post_renew(&page, &replayed);
     refused(&head, &response, "stale_goal");
-    let conflicts = |addr: SocketAddr, cookie: &str, csrf: &str| {
+    let conflicts = |page: &Page| {
         let mut changed_text = body.clone();
         changed_text["text"] = json!("another text");
         let mut change_key = body.clone();
@@ -14709,34 +12873,28 @@ fn browser_renew_same_key_retry_returns_original_and_other_payloads_conflict() {
                 renewal_key,
             ),
         ] {
-            let (head, response) = post_bytes(
-                addr,
-                route,
-                cookie,
-                csrf,
-                &serde_json::to_vec(&payload).unwrap(),
-                None,
-            );
+            let (head, response) =
+                post_bytes(page, route, &serde_json::to_vec(&payload).unwrap(), None);
             assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{label}: {head}");
             assert!(response.is_null(), "{label}: {response}");
         }
     };
-    let (head, response) = post_renew(addr, &cookie, &csrf, &body);
+    let (head, response) = post_renew(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(response, original, "after a later local goal.set");
-    conflicts(addr, &cookie, &csrf);
+    conflicts(&page);
     assert_eq!(fixture.records(), later, "no retry appended anything");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
     let daemon = boot(&settings, fake_seams(&settings)).expect("restart");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let before = fixture.records();
-    let (head, response) = post_renew(addr, &cookie, &csrf, &body);
+    let (head, response) = post_renew(&page, &body);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
     assert_eq!(response, original, "from a fresh session after a restart");
-    conflicts(addr, &cookie, &csrf);
+    conflicts(&page);
     assert_eq!(fixture.records(), before);
     assert_eq!(renewals(&fixture, agent).len(), 1);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -14761,13 +12919,13 @@ fn browser_renew_concurrent_same_key_is_pending_and_two_keys_yield_one_record() 
     };
     let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (second, second_goal) = spent(&native, &repo, Usd::from_cents(1), true);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = renew_body(&request_id(1), agent, goal, SHOWN);
 
     pause.arm(OnboardingPausePoint::BeforeGoalChangePermit);
     let owner = {
-        let (cookie, csrf, body) = (cookie.clone(), csrf.clone(), body.clone());
-        std::thread::spawn(move || post_renew(addr, &cookie, &csrf, &body))
+        let (page, body) = (Arc::clone(&page), body.clone());
+        std::thread::spawn(move || post_renew(&page, &body))
     };
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
@@ -14775,9 +12933,9 @@ fn browser_renew_concurrent_same_key_is_pending_and_two_keys_yield_one_record() 
     );
     let at_once = |body: Value| {
         let (tx, rx) = mpsc::channel();
-        let (cookie, csrf) = (cookie.clone(), csrf.clone());
+        let page = Arc::clone(&page);
         std::thread::spawn(move || {
-            let _ = tx.send(post_renew(addr, &cookie, &csrf, &body));
+            let _ = tx.send(post_renew(&page, &body));
         });
         rx.recv_timeout(Duration::from_secs(3)).ok()
     };
@@ -14801,9 +12959,9 @@ fn browser_renew_concurrent_same_key_is_pending_and_two_keys_yield_one_record() 
     let view = renew_body(&request_id(2), second, second_goal, SHOWN);
     let mut twin = view.clone();
     twin["request_id"] = json!(request_id(3));
-    let (head, response) = post_renew(addr, &cookie, &csrf, &view);
+    let (head, response) = post_renew(&page, &view);
     renewed(&head, &response);
-    let (head, response) = post_renew(addr, &cookie, &csrf, &twin);
+    let (head, response) = post_renew(&page, &twin);
     refused(&head, &response, "stale_goal");
     assert_eq!(renewals(&fixture, second).len(), 1, "one record");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -14828,33 +12986,28 @@ fn browser_renew_local_winner_is_never_overwritten() {
     };
     let (moved, seen) = spent(&native, &repo, Usd::from_cents(1), true);
     let (crashed, crashed_goal) = spent(&native, &repo, Usd::from_cents(1), true);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
 
     let local = common::set_goal(
         &running.handle,
         common::goal_params(moved, &[true_program()]),
     );
     let before = fixture.records();
-    let (head, response) = post_renew(
-        addr,
-        &cookie,
-        &csrf,
-        &renew_body(&request_id(1), moved, seen, SHOWN),
-    );
+    let (head, response) = post_renew(&page, &renew_body(&request_id(1), moved, seen, SHOWN));
     refused(&head, &response, "stale_goal");
     assert_eq!(fixture.records(), before, "the local goal stands");
     assert_eq!(folded(&fixture).agents[&moved].goal, Some(local));
 
     append_failure.fail_nth(NonZeroUsize::new(1).unwrap());
     let body = renew_body(&request_id(2), crashed, crashed_goal, SHOWN);
-    let (head, response) = post_renew(addr, &cookie, &csrf, &body);
+    let (head, response) = post_renew(&page, &body);
     empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
     assert!(browser_goals(&fixture, crashed).is_empty());
     let local = common::set_goal(
         &running.handle,
         common::goal_params(crashed, &[true_program()]),
     );
-    let (head, response) = post_renew(addr, &cookie, &csrf, &body);
+    let (head, response) = post_renew(&page, &body);
     refused(&head, &response, "stale_goal");
     assert!(browser_goals(&fixture, crashed).is_empty());
     assert_eq!(folded(&fixture).agents[&crashed].goal, Some(local));
@@ -14881,21 +13034,21 @@ fn browser_renew_revocation_before_the_permit_is_forbidden() {
         host: &native_host,
     };
     let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = renew_body(&request_id(1), agent, goal, SHOWN);
     let before = fixture.records();
 
     pause.arm(OnboardingPausePoint::BeforeGoalChangePermit);
     let losing = {
-        let (cookie, csrf, body) = (cookie.clone(), csrf.clone(), body.clone());
-        std::thread::spawn(move || post_renew(addr, &cookie, &csrf, &body))
+        let (page, body) = (Arc::clone(&page), body.clone());
+        std::thread::spawn(move || post_renew(&page, &body))
     };
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
         "admitted, checked, before the permit"
     );
     assert!(
-        authorizer.revoke_for_test(&cookie),
+        authorizer.revoke_for_test(&page.cookie),
         "the live session is revoked"
     );
     pause.release();
@@ -14911,11 +13064,11 @@ fn browser_renew_revocation_before_the_permit_is_forbidden() {
         &after_revoke[before.len()..]
     );
 
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     pause.arm(OnboardingPausePoint::AfterGoalChangePermit);
     let owner = {
-        let (cookie, csrf) = (cookie.clone(), csrf.clone());
-        std::thread::spawn(move || post_renew(addr, &cookie, &csrf, &body))
+        let page = Arc::clone(&page);
+        std::thread::spawn(move || post_renew(&page, &body))
     };
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
@@ -14927,7 +13080,7 @@ fn browser_renew_revocation_before_the_permit_is_forbidden() {
     let revoker = std::thread::spawn(move || {
         started_tx.send(()).expect("started signal");
         done_tx
-            .send(revoke.revoke_for_test(&cookie))
+            .send(revoke.revoke_for_test(&page.cookie))
             .expect("revoke result");
     });
     started_rx
@@ -14946,7 +13099,6 @@ fn browser_renew_revocation_before_the_permit_is_forbidden() {
     revoker.join().expect("revoker thread");
     let (head, response) = owner.join().expect("winning request");
     renewed(&head, &response);
-    let _ = csrf;
     assert_eq!(renewals(&fixture, agent).len(), 1);
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -14963,6 +13115,7 @@ fn browser_renew_expiry_waiting_on_registry_lock_is_forbidden() {
         inner: TestClock::ticking(1_800_000_000_000, 0),
         armed: Mutex::new(None),
     });
+    follow_probe(&clock);
     let (native_parts, native_host) = native_fixture_seams(
         &fixture,
         Seams {
@@ -14990,17 +13143,12 @@ fn browser_renew_expiry_waiting_on_registry_lock_is_forbidden() {
     };
     let (a, a_goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (b, b_goal) = spent(&native, &repo, Usd::from_cents(1), true);
-    let (a_cookie, a_csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (b_cookie, b_csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let a_page = exchange(addr, &issue(&settings).bootstrap);
+    let b_page = exchange(addr, &issue(&settings).bootstrap);
 
     pause.arm(OnboardingPausePoint::AfterGoalChangePermit);
     let holder = std::thread::spawn(move || {
-        post_renew(
-            addr,
-            &a_cookie,
-            &a_csrf,
-            &renew_body(&request_id(1), a, a_goal, SHOWN),
-        )
+        post_renew(&a_page, &renew_body(&request_id(1), a, a_goal, SHOWN))
     });
     assert!(
         pause.wait_reached(Duration::from_secs(5)),
@@ -15010,7 +13158,7 @@ fn browser_renew_expiry_waiting_on_registry_lock_is_forbidden() {
     let (sent_tx, sent_rx) = mpsc::channel();
     let waiter = std::thread::spawn(move || {
         let body = serde_json::to_vec(&renew_body(&request_id(2), b, b_goal, SHOWN)).unwrap();
-        post_bytes(addr, RENEW_ROUTE, &b_cookie, &b_csrf, &body, Some(sent_tx))
+        post_bytes(&b_page, RENEW_ROUTE, &body, Some(sent_tx))
     });
     sent_rx
         .recv_timeout(Duration::from_secs(5))
@@ -15057,9 +13205,9 @@ fn browser_renew_uncertain_local_write_fences_fresh_requests_and_serves_durable_
     };
     let (first, first_goal) = spent(&native, &repo, Usd::from_cents(1), true);
     let (second, second_goal) = spent(&native, &repo, Usd::from_cents(1), true);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let durable = renew_body(&request_id(1), first, first_goal, SHOWN);
-    let (head, original) = post_renew(addr, &cookie, &csrf, &durable);
+    let (head, original) = post_renew(&page, &durable);
     renewed(&head, &original);
 
     failure.arm(OnboardingFailurePoint::LocalGoal);
@@ -15076,7 +13224,7 @@ fn browser_renew_uncertain_local_write_fences_fresh_requests_and_serves_durable_
     let fenced = fixture.records();
 
     for attempt in 0..2 {
-        let (head, retry) = post_renew(addr, &cookie, &csrf, &durable);
+        let (head, retry) = post_renew(&page, &durable);
         assert!(
             head.starts_with("HTTP/1.1 200 OK"),
             "retry {attempt} while fenced: {head}"
@@ -15085,11 +13233,11 @@ fn browser_renew_uncertain_local_write_fences_fresh_requests_and_serves_durable_
     }
     let mut changed_text = durable.clone();
     changed_text["text"] = json!("another text");
-    let (head, response) = post_renew(addr, &cookie, &csrf, &changed_text);
+    let (head, response) = post_renew(&page, &changed_text);
     empty_refusal(&head, &response, "HTTP/1.1 409 Conflict");
     let fresh = renew_body(&request_id(2), second, second_goal, SHOWN);
     for _ in 0..2 {
-        let (head, response) = post_renew(addr, &cookie, &csrf, &fresh);
+        let (head, response) = post_renew(&page, &fresh);
         empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
     }
     assert_eq!(fixture.records(), fenced, "nothing appended while fenced");
@@ -15119,7 +13267,7 @@ fn browser_renew_bounds_and_json_shape_refuse_before_effect() {
         host: &native_host,
     };
     let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let id = request_id(1);
     let alias = agent.to_string().replacen('0', "O", 1);
     assert_ne!(alias, agent.to_string(), "the alias spelling differs");
@@ -15239,17 +13387,14 @@ fn browser_renew_bounds_and_json_shape_refuse_before_effect() {
     ];
     let before = fixture.records();
     for (label, body) in &refusals {
-        let (head, response) = post_bytes(addr, RENEW_ROUTE, &cookie, &csrf, body.as_bytes(), None);
+        let (head, response) = post_bytes(&page, RENEW_ROUTE, body.as_bytes(), None);
         assert!(
             head.starts_with("HTTP/1.1 400 Bad Request"),
             "{label}: {head}"
         );
         assert!(response.is_null(), "{label}: {response}");
     }
-    let host = addr.to_string();
-    let oversize = format!(
-        "POST {RENEW_ROUTE} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nCookie: dudes_floor_session={cookie}\r\nX-Dudes-CSRF: {csrf}\r\nContent-Type: application/json\r\nContent-Length: 16385\r\n\r\n"
-    );
+    let oversize = oversize_head(&page, RENEW_ROUTE, 16385);
     let (head, body) = raw_onboard(addr, oversize.as_bytes());
     assert!(
         head.starts_with("HTTP/1.1 413"),
@@ -15262,7 +13407,7 @@ fn browser_renew_bounds_and_json_shape_refuse_before_effect() {
     widest["text"] = json!("\u{1}".repeat(2048));
     let widest = serde_json::to_vec(&widest).unwrap();
     assert!(widest.len() < 16_384, "{}", widest.len());
-    let (head, response) = post_bytes(addr, RENEW_ROUTE, &cookie, &csrf, &widest, None);
+    let (head, response) = post_bytes(&page, RENEW_ROUTE, &widest, None);
     renewed(&head, &response);
     let (_, new_goal, _) = renewals(&fixture, agent).pop().expect("applied");
     assert_eq!(new_goal.text, "\u{1}".repeat(2048));
@@ -15300,16 +13445,11 @@ fn browser_renew_on_attached_agent_writes_no_pty() {
         .handle
         .ask(Ask::Resume(agent))
         .expect("local resume");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (head, response) = post_renew(
-        addr,
-        &cookie,
-        &csrf,
-        &renew_body(&request_id(1), agent, goal, SHOWN),
-    );
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_renew(&page, &renew_body(&request_id(1), agent, goal, SHOWN));
     renewed(&head, &response);
     let c = renewals(&fixture, agent)[0].0;
-    let _ = snapshot(addr, &cookie, &csrf);
+    let _ = snapshot(&page);
     let renewed_records = after(&fixture, c);
     assert!(
         !renewed_records.iter().any(|(_, e)| matches!(
@@ -15356,17 +13496,17 @@ fn browser_renew_is_absent_when_not_enabled() {
             host: &native_host,
         };
         let (agent, goal) = spent(&native, &repo, Usd::from_cents(1), true);
-        let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-        let (view, _) = snapshot(addr, &cookie, &csrf);
+        let page = exchange(addr, &issue(&settings).bootstrap);
+        let (view, _) = snapshot(&page);
         assert_eq!(
             view["settings"]["switches"]["renew"],
             json!(enabled),
             "{view}"
         );
         let body = serde_json::to_vec(&renew_body(&request_id(1), agent, goal, SHOWN)).unwrap();
-        let unrouted = raw_post(addr, "/floor/unrouted", &cookie, &csrf, &body);
+        let unrouted = raw_post(&page, "/floor/unrouted", &body);
         assert!(!unrouted.is_empty());
-        let routed = raw_post(addr, RENEW_ROUTE, &cookie, &csrf, &body);
+        let routed = raw_post(&page, RENEW_ROUTE, &body);
         if enabled {
             assert!(
                 String::from_utf8_lossy(&routed).starts_with("HTTP/1.1 200 OK"),
@@ -15577,7 +13717,7 @@ fn enrolled_revision(id: &str) -> String {
 fn hire_naming(attempt: &str, check: &str) -> Value {
     json!({
         "attempt_id": attempt, "workspace_id": "repo_1", "name": "Wanda", "role": "writer",
-        "goal_text": "Write CONTRIBUTING.md", "check_id": check,
+        "check_id": check,
         "check_revision": enrolled_revision(check)
     })
 }
@@ -15639,15 +13779,14 @@ fn set_goal_once_idle(handle: &duded::Handle, agent: AgentId, key: &str) -> Goal
     }
 }
 
-/// A hire whose check already passes waits for that run and is refused: nobody is hired, and a
-/// same-key follower that arrives during the run gets `202 pending`. A hire naming a check that
-/// fails completes.
-///
-/// Mutation: hiring without waiting for the run hires an agent whose check already passes.
+/// A hire runs no check, so a healthy project whose check already passes is hired like any other,
+/// and the first ticket given to the new agent still starts: a ticket's start takes its own
+/// baseline, which may already pass.
 #[test]
-fn browser_onboard_refuses_a_passing_check_before_hire() {
+fn a_hire_into_a_project_whose_check_passes_is_hired_and_its_first_ticket_starts() {
     let fixture = Fixture::new();
-    let settings = checks_settings(&fixture);
+    let mut settings = checks_settings(&fixture);
+    settings.floor_board_enabled = true;
     let runner = BaselineRunner::new();
     runner.answer("default", common::passes());
     let daemon = boot(
@@ -15663,40 +13802,46 @@ fn browser_onboard_refuses_a_passing_check_before_hire() {
     .expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    runner.hold_next();
-    let body = hire_naming(&attempt(0), "default");
-    let owner = {
-        let (cookie, csrf, body) = (cookie.clone(), csrf.clone(), body.clone());
-        std::thread::spawn(move || post_onboard(addr, &cookie, &csrf, &body))
-    };
-    runner.wait_runs(1);
-    let (head, follower) = post_onboard(addr, &cookie, &csrf, &body);
-    assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
-    assert_eq!(follower["state"], "pending");
-    runner.release();
-    let (head, refused) = owner.join().expect("the owner's answer");
-    assert_eq!(refused_reason(&head, &refused), "check_already_passes");
-    assert!(hires(&fixture).is_empty(), "nobody was hired");
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, hired) = post_onboard(&page, &hire_naming(&attempt(0), "default"));
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {hired}");
+    assert_eq!(hired["state"], "complete");
+    assert!(runner.ran().is_empty(), "the hire ran a check");
+    let agent = AgentId::parse(hired["agent"].as_str().unwrap()).unwrap();
 
-    let (head, complete) = post_onboard(
-        addr,
-        &cookie,
-        &csrf,
-        &hire_naming(&attempt(1), "contributing"),
+    let revision = enrolled_revision("default");
+    let create = json!({"title": "Write CONTRIBUTING.md", "project": "repo_1",
+        "done_when": "default", "done_when_revision": revision});
+    let (head, made) = post_bytes(
+        &page,
+        "/floor/ticket",
+        &serde_json::to_vec(&create).unwrap(),
+        None,
     );
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {complete}");
-    assert_eq!(runner.ran(), ["default", "contributing"]);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {made}");
+    let give = json!({"card": made["card"], "agent": agent, "expected_seq": made["seq"]});
+    let (head, given) = post_bytes(
+        &page,
+        "/floor/ticket/assign",
+        &serde_json::to_vec(&give).unwrap(),
+        None,
+    );
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {given}");
+    await_entry(
+        &fixture,
+        "the ticket's start",
+        |_, record| matches!(record, Record::TicketStarted { agent: who, .. } if *who == agent),
+    );
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
-/// A hire records the check it names, with that check's own revision and what its run saw, and
-/// the request digest binds the check. A revision the page did not read is `profile_changed`,
-/// and a new attempt that names no check is malformed; neither runs anything.
+/// A hire binds the check it names in its request digest. A revision the page did not read is
+/// `profile_changed`, and a new attempt that names no check is malformed; neither runs anything.
+/// The hire records no goal, so the check is the page's to give the first ticket.
 ///
-/// Mutation: recording the workspace's first check records the wrong name.
+/// Mutation: leaving the check out of the digest lets a retry that names another check complete.
 #[test]
-fn browser_onboard_records_the_chosen_check() {
+fn browser_onboard_binds_the_chosen_check() {
     let fixture = Fixture::new();
     let settings = checks_settings(&fixture);
     let runner = BaselineRunner::new();
@@ -15713,64 +13858,34 @@ fn browser_onboard_records_the_chosen_check() {
     .expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let mut stale = hire_naming(&attempt(0), "contributing");
     stale["check_revision"] = json!(enrolled_revision("default"));
-    let (head, refused) = post_onboard(addr, &cookie, &csrf, &stale);
+    let (head, refused) = post_onboard(&page, &stale);
     assert_eq!(refused_reason(&head, &refused), "profile_changed");
     let mut nameless = hire_naming(&attempt(1), "contributing");
     nameless["check_id"] = Value::Null;
-    let (head, _) = post_onboard(addr, &cookie, &csrf, &nameless);
+    let (head, _) = post_onboard(&page, &nameless);
     assert!(head.starts_with("HTTP/1.1 400 Bad Request"), "{head}");
     assert!(runner.ran().is_empty(), "neither ran a check");
 
-    let (head, complete) = post_onboard(
-        addr,
-        &cookie,
-        &csrf,
-        &hire_naming(&attempt(2), "contributing"),
-    );
+    let (head, complete) = post_onboard(&page, &hire_naming(&attempt(2), "contributing"));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {complete}");
     let [hire] = <[_; 1]>::try_from(hires(&fixture)).expect("one hire");
-    let intended = &hire.intended_goal;
-    let check = intended.completion_check.as_ref().expect("a check name");
-    assert_eq!(
-        (check.id.as_str(), check.label.as_str()),
-        ("contributing", "CONTRIBUTING.md exists")
+    assert!(hire.intended_goal.is_none(), "the hire records no goal");
+    assert!(
+        !fixture
+            .records()
+            .iter()
+            .any(|record| matches!(record, Record::GoalSet { .. })),
+        "no goal is appended"
     );
-    assert_eq!(
-        serde_json::to_value(check.revision).unwrap(),
-        json!(enrolled_revision("contributing"))
-    );
-    let program = std::fs::canonicalize(true_program())
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
-    assert_eq!(
-        intended.baseline,
-        Some(dudes_proto::CheckBaseline::CommandFailed { program, exit: 1 })
-    );
-    let goal = fixture
-        .records()
-        .into_iter()
-        .find_map(|record| match record {
-            Record::GoalSet {
-                goal,
-                browser_onboarding: Some(_),
-                ..
-            } => Some(goal),
-            _ => None,
-        })
-        .expect("the hire's goal");
-    assert_eq!(&goal, intended, "the goal is the intended one");
     let digest = framed(
-        b"dudes.onboard.v4\0",
+        b"dudes.onboard.nogoal.v4\0",
         &[
             ("workspace_id", "repo_1"),
             ("name", "Wanda"),
             ("role", "writer"),
-            ("goal_text", "Write CONTRIBUTING.md"),
             ("provider", "claude"),
             ("character", ""),
             ("accent", ""),
@@ -15779,151 +13894,7 @@ fn browser_onboard_records_the_chosen_check() {
         ],
     );
     assert_eq!(hire.request_digest, digest, "the digest binds the check");
-    assert_eq!(runner.ran(), ["contributing"]);
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-}
-
-/// While a local goal set's check runs for a durable hire's agent, the hire's retry runs no
-/// check beside it and stays pending, because the hire is durable. The local check passes, so it
-/// sets no goal.
-fn retry_beside_a_local_check(
-    running: &common::Running,
-    runner: &BaselineRunner,
-    fixture: &Fixture,
-    (addr, cookie, csrf): (SocketAddr, &str, &str),
-    body: &Value,
-) {
-    let [hire] = <[_; 1]>::try_from(hires(fixture)).expect("one hire");
-    let agent = fixture
-        .records()
-        .into_iter()
-        .find_map(|record| match record {
-            Record::AgentHired {
-                id,
-                browser_onboarding: Some(meta),
-                ..
-            } if meta.attempt_id == hire.attempt_id => Some(id),
-            _ => None,
-        })
-        .expect("the hired agent");
-    runner.answer("local", common::passes());
-    runner.hold_next();
-    let local = {
-        let handle = running.handle.clone();
-        std::thread::spawn(move || {
-            handle.set_goal(
-                GoalSetParams {
-                    may_already_pass: false,
-                    ..common::goal_params(agent, &[true_program(), "local"])
-                },
-                &dudes_rpc::HangUp::never(),
-            )
-        })
-    };
-    runner.wait_runs(1);
-    let (head, _) = post_onboard(addr, cookie, csrf, body);
-    assert!(head.starts_with("HTTP/1.1 503"), "{head}");
-    runner.release();
-    local
-        .join()
-        .unwrap()
-        .expect_err("the local check already passes, so it sets no goal");
-}
-
-/// A partial attempt's retry runs its check again before the hire's goal is appended: a check
-/// that now passes leaves the agent hired without a goal, and one that fails again completes it.
-/// While a local goal set's check runs for the agent, the retry stays pending and runs nothing.
-///
-/// Mutations: skipping the rerun appends the goal on the first retry; starting the retry's check
-/// beside the local one answers it refused instead of pending.
-#[test]
-fn browser_onboard_partial_retry_reruns_the_baseline() {
-    let fixture = Fixture::new();
-    let settings = checks_settings(&fixture);
-    let clock = Arc::new(TestClock::ticking(1_800_000_000_000, 0));
-    let daemon = boot(
-        &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            BaselineRunner::new(),
-            Arc::clone(&clock),
-            Witness::default(),
-        ),
-    )
-    .expect("first boot");
-    let pause = daemon.onboarding_pause();
-    pause.arm(OnboardingPausePoint::BeforeGoalPermit);
-    let addr = daemon.floor_addr().expect("Floor address");
-    let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let body = hire_naming(&attempt(0), "contributing");
-    let owner = {
-        let body = body.clone();
-        std::thread::spawn(move || post_onboard(addr, &cookie, &csrf, &body))
-    };
-    assert!(
-        pause.wait_reached(Duration::from_secs(5)),
-        "the hire is durable"
-    );
-    clock.advance(30 * 24 * 60 * 60 * 1000);
-    pause.release();
-    let (_, partial) = owner.join().expect("the partial answer");
-    assert_eq!(partial["reason"], "session_expired");
-    assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
-
-    let runner = BaselineRunner::new();
-    runner.answer("contributing", common::passes());
-    let daemon = boot(
-        &settings,
-        seams(
-            &settings,
-            SharedHost::new(),
-            Arc::clone(&runner),
-            Arc::new(TestClock::new()),
-            Witness::default(),
-        ),
-    )
-    .expect("second boot");
-    let addr = daemon.floor_addr().expect("Floor address");
-    let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-
-    retry_beside_a_local_check(&running, &runner, &fixture, (addr, &cookie, &csrf), &body);
-
-    let (head, partial) = post_onboard(addr, &cookie, &csrf, &body);
-    assert!(
-        head.starts_with("HTTP/1.1 409 Conflict"),
-        "{head} {partial}"
-    );
-    assert_eq!(partial["state"], "hired_without_goal");
-    assert_eq!(partial["reason"], "goal_refused");
-    assert_eq!(
-        runner.ran(),
-        ["local", "contributing"],
-        "the retry ran the check again once the local one ended"
-    );
-    let onboarding_goals = |fixture: &Fixture| {
-        fixture
-            .records()
-            .iter()
-            .filter(|record| {
-                matches!(
-                    record,
-                    Record::GoalSet {
-                        browser_onboarding: Some(_),
-                        ..
-                    }
-                )
-            })
-            .count()
-    };
-    assert_eq!(onboarding_goals(&fixture), 0, "no goal was appended");
-
-    runner.answer("contributing", common::fails());
-    let (head, complete) = post_onboard(addr, &cookie, &csrf, &body);
-    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {complete}");
-    assert_eq!(onboarding_goals(&fixture), 1);
+    assert!(runner.ran().is_empty(), "the hire ran a check");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
 
@@ -15950,38 +13921,20 @@ fn browser_goal_change_keeps_or_names_a_check() {
     .expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (head, hired) = post_onboard(
-        addr,
-        &cookie,
-        &csrf,
-        &hire_naming(&attempt(0), "regression"),
-    );
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, hired) = post_onboard(&page, &hire_naming(&attempt(0), "regression"));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {hired}");
     let agent = AgentId::parse(hired["agent"].as_str().unwrap()).unwrap();
-    await_entry(
-        &fixture,
-        "the first turn",
-        |_, record| matches!(record, Record::TurnIssued { agent: who, .. } if *who == agent),
-    );
     running.handle.ask(Ask::Pause(agent)).expect("local pause");
-    end_turn(&running.handle, newest_turn(&fixture, agent), None);
     let goal = set_goal_once_idle(&running.handle, agent, "local");
 
     runner.answer("local", common::passes());
-    let (head, refused) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
-        &goal_body(&request_id(1), agent, goal, NEW_TEXT),
-    );
+    let (head, refused) = post_goal(&page, &goal_body(&request_id(1), agent, goal, NEW_TEXT));
     assert_eq!(refused_reason(&head, &refused), "check_already_passes");
     assert!(browser_goals(&fixture, agent).is_empty(), "nothing changed");
 
     let (head, response) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &goal_naming(&request_id(2), agent, goal, "contributing"),
     );
     let named = changed(&head, &response);
@@ -15999,18 +13952,11 @@ fn browser_goal_change_keeps_or_names_a_check() {
 
     let ran = runner.ran().len();
     let (head, response) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &goal_naming(&request_id(3), agent, named, "regression"),
     );
     let chosen = changed(&head, &response);
-    let (head, response) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
-        &goal_body(&request_id(4), agent, chosen, "keep it"),
-    );
+    let (head, response) = post_goal(&page, &goal_body(&request_id(4), agent, chosen, "keep it"));
     changed(&head, &response);
     assert_eq!(runner.ran().len(), ran, "neither change ran a check");
     let goals = browser_goals(&fixture, agent);
@@ -16130,7 +14076,7 @@ fn pending_check_request(
     route: PendingCheckRoute,
     running: &common::Running,
     settings: &duded::Settings,
-    session: (SocketAddr, &str, &str),
+    session: &Page,
     agent: AgentId,
     goal: GoalId,
 ) -> Option<GoalId> {
@@ -16200,20 +14146,15 @@ fn pending_check_request(
             }
         }
         PendingCheckRoute::Change | PendingCheckRoute::Renew => {
-            let (addr, cookie, csrf) = session;
             let renewal = matches!(route, PendingCheckRoute::Renew);
             let (head, body) = if renewal {
                 post_renew(
-                    addr,
-                    cookie,
-                    csrf,
+                    session,
                     &renew_body(&request_id(7), agent, goal, ("1", Some("5000000"), None)),
                 )
             } else {
                 post_goal(
-                    addr,
-                    cookie,
-                    csrf,
+                    session,
                     &goal_naming(&request_id(7), agent, goal, "contributing"),
                 )
             };
@@ -16246,21 +14187,17 @@ fn pending_instruction_check_blocks(route: PendingCheckRoute) {
     let daemon = boot(&settings, fixture_parts).expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (head, hired) = post_onboard(
-        addr,
-        &cookie,
-        &csrf,
-        &hire_naming(&attempt(0), "regression"),
-    );
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, hired) = post_onboard(&page, &hire_naming(&attempt(0), "regression"));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {hired}");
     let agent = AgentId::parse(hired["agent"].as_str().unwrap()).unwrap();
-    let goal = fixture.await_record("the initial goal", |record| {
-        record
-            .goal_install()
-            .filter(|(owner, _)| *owner == agent)
-            .map(|(_, goal)| goal.id)
-    });
+    let goal = common::set_goal(
+        &running.handle,
+        GoalSetParams {
+            hop_cap: settings.enrollment.profiles[0].hop_cap,
+            ..common::goal_params(agent, &[true_program(), "regression"])
+        },
+    );
     let turn = issued_goal_turn(&fixture, goal);
     running.handle.ask(Ask::Pause(agent)).expect("local pause");
     let release = clock.hold();
@@ -16269,14 +14206,7 @@ fn pending_instruction_check_blocks(route: PendingCheckRoute) {
     running.handle.doctor().unwrap();
     let before = fixture.records();
     assert_eq!(
-        pending_check_request(
-            route,
-            &running,
-            &settings,
-            (addr, &cookie, &csrf),
-            agent,
-            goal
-        ),
+        pending_check_request(route, &running, &settings, &page, agent, goal),
         None
     );
     assert!(runner.ran().is_empty(), "admission started no baseline");
@@ -16290,7 +14220,7 @@ fn pending_instruction_check_blocks(route: PendingCheckRoute) {
         PendingCheckRoute::CheckedSet,
         &running,
         &settings,
-        (addr, &cookie, &csrf),
+        &page,
         other,
         goal,
     );
@@ -16314,14 +14244,7 @@ fn pending_instruction_check_blocks(route: PendingCheckRoute) {
         },
     );
     assert_eq!(runner.ran(), ["local", "regression"]);
-    let replacement = pending_check_request(
-        route,
-        &running,
-        &settings,
-        (addr, &cookie, &csrf),
-        agent,
-        goal,
-    );
+    let replacement = pending_check_request(route, &running, &settings, &page, agent, goal);
     assert!(
         replacement.is_some(),
         "the settled check admits replacement"
@@ -16360,21 +14283,14 @@ fn legacy_goal_set_keeps_its_bypass_and_browser_current_goal_check_rules() {
     let daemon = boot(&settings, fixture_parts).expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (head, hired) = post_onboard(
-        addr,
-        &cookie,
-        &csrf,
-        &hire_naming(&attempt(0), "regression"),
-    );
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, hired) = post_onboard(&page, &hire_naming(&attempt(0), "regression"));
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {hired}");
     let agent = AgentId::parse(hired["agent"].as_str().unwrap()).unwrap();
-    let old_goal = fixture.await_record("the initial goal", |record| {
-        record
-            .goal_install()
-            .filter(|(owner, _)| *owner == agent)
-            .map(|(_, goal)| goal.id)
-    });
+    let old_goal = common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &[true_program(), "regression"]),
+    );
     let turn = issued_goal_turn(&fixture, old_goal);
     running.handle.ask(Ask::Pause(agent)).expect("local pause");
     let release = clock.hold();
@@ -16387,7 +14303,7 @@ fn legacy_goal_set_keeps_its_bypass_and_browser_current_goal_check_rules() {
         runner.ran().is_empty(),
         "the legacy setter starts no baseline"
     );
-    let session = (addr, cookie.as_str(), csrf.as_str());
+    let session = &page;
     let before = fixture.records();
     assert_eq!(
         pending_check_request(
@@ -16421,9 +14337,7 @@ fn legacy_goal_set_keeps_its_bypass_and_browser_current_goal_check_rules() {
         None
     );
     let (head, body) = post_goal(
-        addr,
-        &cookie,
-        &csrf,
+        &page,
         &goal_naming(&request_id(8), agent, legacy, "regression"),
     );
     assert_ne!(
@@ -16477,24 +14391,23 @@ fn browser_baselines_are_limited_per_agent_and_session() {
     .expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let elsewhere = tempfile::tempdir().expect("a directory outside the workspace");
-    let agent = common::hire(&running.handle, elsewhere.path());
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let other_page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, hired) = post_onboard(&page, &hire_naming(&attempt(0), "contributing"));
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {hired}");
+    let agent = AgentId::parse(hired["agent"].as_str().unwrap()).unwrap();
     running.handle.ask(Ask::Pause(agent)).expect("local pause");
     let goal = set_goal_once_idle(&running.handle, agent, "first");
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (other_cookie, other_csrf) = exchange(addr, &issue(&settings).bootstrap);
 
     runner.hold_next();
     let held_change = {
-        let (cookie, csrf) = (cookie.clone(), csrf.clone());
+        let page = Arc::clone(&page);
         let body = goal_body(&request_id(1), agent, goal, NEW_TEXT);
-        std::thread::spawn(move || post_goal(addr, &cookie, &csrf, &body))
+        std::thread::spawn(move || post_goal(&page, &body))
     };
     runner.wait_runs(2);
     let (head, body) = post_goal(
-        addr,
-        &other_cookie,
-        &other_csrf,
+        &other_page,
         &goal_body(&request_id(2), agent, goal, NEW_TEXT),
     );
     assert_eq!(
@@ -16502,7 +14415,7 @@ fn browser_baselines_are_limited_per_agent_and_session() {
         "check_running",
         "the same agent"
     );
-    let (head, body) = post_onboard(addr, &cookie, &csrf, &hire_naming(&attempt(0), "default"));
+    let (head, body) = post_goal(&page, &goal_naming(&request_id(3), agent, goal, "default"));
     assert_eq!(
         refused_reason(&head, &body),
         "check_running",
@@ -16529,11 +14442,9 @@ fn browser_baselines_are_limited_per_agent_and_session() {
     assert_eq!(refused_reason(&head, &body), "stale_goal");
 
     for n in 1..=32 {
-        let (head, body) = post_onboard(
-            addr,
-            &other_cookie,
-            &other_csrf,
-            &hire_naming(&attempt(n), "default"),
+        let (head, body) = post_goal(
+            &other_page,
+            &goal_naming(&attempt(100 + n), agent, replaced, "default"),
         );
         assert_eq!(
             refused_reason(&head, &body),
@@ -16541,11 +14452,9 @@ fn browser_baselines_are_limited_per_agent_and_session() {
             "run {n}"
         );
     }
-    let (head, body) = post_onboard(
-        addr,
-        &other_cookie,
-        &other_csrf,
-        &hire_naming(&attempt(33), "default"),
+    let (head, body) = post_goal(
+        &other_page,
+        &goal_naming(&attempt(143), agent, replaced, "default"),
     );
     assert_eq!(refused_reason(&head, &body), "check_limit");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
@@ -16563,8 +14472,8 @@ fn checks_sibling_is_bounded_and_safe() {
     let daemon = boot(&settings, fake_seams(&settings)).expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
-    let (frame, bytes) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (frame, bytes) = snapshot(&page);
     let listed: Vec<Value> = CHECKS
         .iter()
         .map(|&(id, label, may_already_pass)| {
@@ -16601,8 +14510,8 @@ fn checks_sibling_is_bounded_and_safe() {
     let daemon = boot(&off, fake_seams(&off)).expect("boot");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&off).bootstrap);
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let page = exchange(addr, &issue(&off).bootstrap);
+    let (frame, _) = snapshot(&page);
     assert!(frame.get("checks").is_none(), "no Hire and no goal change");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 
@@ -16730,15 +14639,10 @@ fn browser_renew_keeps_or_names_a_check() {
     let mut running = common::start(daemon);
     let agent = common::hire(&running.handle, &repo);
     let g1 = exhausted_goal(&running, &fixture, agent, "g1", false);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
 
     runner.answer("g1", common::passes());
-    let (head, response) = post_renew(
-        addr,
-        &cookie,
-        &csrf,
-        &renew_body(&request_id(1), agent, g1, SHOWN),
-    );
+    let (head, response) = post_renew(&page, &renew_body(&request_id(1), agent, g1, SHOWN));
     assert_eq!(refused_reason(&head, &response), "check_already_passes");
     assert!(renewals(&fixture, agent).is_empty(), "nothing renewed");
 
@@ -16752,7 +14656,7 @@ fn browser_renew_keeps_or_names_a_check() {
     let mut named = renew_body(&request_id(2), agent, g1, SHOWN);
     named["check_id"] = json!("contributing");
     named["check_revision"] = json!(revision);
-    let (head, response) = post_renew(addr, &cookie, &csrf, &named);
+    let (head, response) = post_renew(&page, &named);
     renewed(&head, &response);
     let [(_, goal, attribution)] =
         <[_; 1]>::try_from(renewals(&fixture, agent)).expect("one renewal");
@@ -16786,12 +14690,7 @@ fn browser_renew_keeps_or_names_a_check() {
     let other = common::hire(&running.handle, &repo);
     let kept = exhausted_goal(&running, &fixture, other, "kept", true);
     let ran = runner.ran().len();
-    let (head, response) = post_renew(
-        addr,
-        &cookie,
-        &csrf,
-        &renew_body(&request_id(3), other, kept, SHOWN),
-    );
+    let (head, response) = post_renew(&page, &renew_body(&request_id(3), other, kept, SHOWN));
     renewed(&head, &response);
     assert_eq!(
         runner.ran().len(),
@@ -16816,8 +14715,8 @@ fn browser_renew_keeps_or_names_a_check() {
 fn browser_onboarded_hires_allow_mcp_read_and_noop_but_refuse_changed_sets() {
     let fixture = Fixture::new();
     let settings = enrolled_settings(&fixture);
-    let (mut running, addr, cookie, csrf) = every_engine_floor(&settings);
-    let (head, _) = post_onboard(addr, &cookie, &csrf, &hire_request('A', Some("codex")));
+    let (mut running, _, page) = every_engine_floor(&settings);
+    let (head, _) = post_onboard(&page, &hire_request('A', Some("codex")));
     assert!(head.starts_with("HTTP/1.1 200 OK"));
     let agent = fixture
         .records()
@@ -16831,7 +14730,6 @@ fn browser_onboarded_hires_allow_mcp_read_and_noop_but_refuse_changed_sets() {
             _ => None,
         })
         .expect("the recorded browser origin");
-    await_continuation_outcome(&fixture, &running.handle, agent);
     let before = fixture.records();
     for names in [None, Some(Vec::new())] {
         let Answered::Mcp(result) = running
@@ -16886,7 +14784,7 @@ fn a_reload_runs_a_floor_switch_without_a_restart() {
     .expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let body = serde_json::to_vec(&answer_body(
         &request_id(1),
         AgentId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("an agent id"),
@@ -16895,8 +14793,8 @@ fn a_reload_runs_a_floor_switch_without_a_restart() {
     ))
     .expect("answer JSON");
     let answer_route = || {
-        let (answered, _) = post_bytes(addr, "/floor/answer", &cookie, &csrf, &body, None);
-        let (unrouted, _) = post_bytes(addr, "/floor/unrouted", &cookie, &csrf, &body, None);
+        let (answered, _) = post_bytes(&page, "/floor/answer", &body, None);
+        let (unrouted, _) = post_bytes(&page, "/floor/unrouted", &body, None);
         (answered, unrouted)
     };
     let (answered, unrouted) = answer_route();
@@ -16911,7 +14809,7 @@ fn a_reload_runs_a_floor_switch_without_a_restart() {
     assert_eq!(result["switches"], json!(["floor.answer"]), "{result}");
     let (answered, unrouted) = answer_route();
     assert_ne!(answered, unrouted, "the route exists without a restart");
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let (frame, _) = snapshot(&page);
     assert_eq!(frame["answer"], json!({ "max_text_bytes": 4096 }));
 
     let sha256 = rewrite(&settings, hire);
@@ -16919,7 +14817,7 @@ fn a_reload_runs_a_floor_switch_without_a_restart() {
     assert_eq!(result["switches"], json!(["floor.answer"]), "{result}");
     let (answered, unrouted) = answer_route();
     assert_eq!(answered, unrouted, "off again is an unrouted path");
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let (frame, _) = snapshot(&page);
     assert!(frame.get("answer").is_none(), "{frame}");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -16947,11 +14845,11 @@ fn the_settings_route_writes_only_the_closed_list_of_keys() {
     .expect("boot Floor");
     let addr = daemon.floor_addr().expect("Floor address");
     let mut running = common::start(daemon);
-    let (cookie, csrf) = exchange(addr, &issue(&settings).bootstrap);
+    let page = exchange(addr, &issue(&settings).bootstrap);
     let file = settings.operator_config.clone().expect("a file");
     let post = |key: &str, value: &str| {
         let body = serde_json::to_vec(&json!({"key": key, "value": value})).expect("JSON");
-        post_bytes(addr, "/floor/settings", &cookie, &csrf, &body, None)
+        post_bytes(&page, "/floor/settings", &body, None)
     };
 
     let (head, body) = post("floor.answer", "on");
@@ -16962,7 +14860,7 @@ fn the_settings_route_writes_only_the_closed_list_of_keys() {
             .unwrap()
             .contains("[floor.answer]")
     );
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let (frame, _) = snapshot(&page);
     assert_eq!(frame["answer"], json!({ "max_text_bytes": 4096 }));
 
     let before = std::fs::read(&file).unwrap();
@@ -16987,16 +14885,16 @@ fn a_switch_turned_off_from_the_settings_route_refuses_the_next_action() {
     let fixture = Fixture::new();
     let mut settings = reload_settings(&fixture, "[floor.hire]\nenabled = true\n");
     settings.floor_hire_enabled = true;
-    let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-    let (head, body) = post_onboard(addr, &cookie, &csrf, &hire_request('A', None));
+    let (_, mut running, _, page) = default_floor(&settings);
+    let (head, body) = post_onboard(&page, &hire_request('A', None));
     assert_ne!(body["reason"], "action_off", "{head} {body}");
 
     let off = serde_json::to_vec(&json!({"key": "floor.hire", "value": "off"})).expect("JSON");
-    let (head, body) = post_bytes(addr, "/floor/settings", &cookie, &csrf, &off, None);
+    let (head, body) = post_bytes(&page, "/floor/settings", &off, None);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
     assert_eq!(body["applied"], json!(["floor.hire"]), "{body}");
 
-    let (head, body) = post_onboard(addr, &cookie, &csrf, &hire_request('B', None));
+    let (head, body) = post_onboard(&page, &hire_request('B', None));
     assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
     assert_eq!(body["reason"], "action_off", "{body}");
     assert_eq!(browser_hires(&fixture), []);
@@ -17012,10 +14910,10 @@ fn a_saved_edit_the_daemon_could_not_adopt_is_not_reported_as_running() {
     let file = fixture.state.path().join("config.toml");
     std::fs::write(&file, "[budget.per_turn_floor]\nusd = 1\n").expect("operator file");
     settings.operator_config = Some(file.clone());
-    let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
+    let (_, mut running, _, page) = default_floor(&settings);
     let post = |key: &str, value: &str| {
         let body = serde_json::to_vec(&json!({"key": key, "value": value})).expect("JSON");
-        post_bytes(addr, "/floor/settings", &cookie, &csrf, &body, None)
+        post_bytes(&page, "/floor/settings", &body, None)
     };
 
     let before = std::fs::read(&file).unwrap();
@@ -17034,7 +14932,7 @@ fn a_saved_edit_the_daemon_could_not_adopt_is_not_reported_as_running() {
             .unwrap()
             .contains("[floor.answer]")
     );
-    let (frame, _) = snapshot(addr, &cookie, &csrf);
+    let (frame, _) = snapshot(&page);
     assert!(frame.get("answer").is_none(), "{frame}");
     assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
 }
@@ -17063,21 +14961,9 @@ mod project_add {
         repo.canonicalize().expect("canonical repository")
     }
 
-    fn project_post(
-        addr: SocketAddr,
-        session: &(String, String),
-        verb: &str,
-        body: &Value,
-    ) -> (String, Value) {
+    fn project_post(session: &Page, verb: &str, body: &Value) -> (String, Value) {
         let body = serde_json::to_vec(body).expect("JSON");
-        post_bytes(
-            addr,
-            &format!("/floor/project/{verb}"),
-            &session.0,
-            &session.1,
-            &body,
-            None,
-        )
+        post_bytes(session, &format!("/floor/project/{verb}"), &body, None)
     }
 
     fn project_add_body(folder: &Path, check: &Value, attempt: &str) -> Value {
@@ -17092,13 +14978,12 @@ mod project_add {
     fn a_folder_typed_on_the_floor_becomes_a_live_project() {
         let fixture = Fixture::new();
         let settings = project_settings(&fixture);
-        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-        let session = (cookie.clone(), csrf.clone());
+        let (_, mut running, _, page) = default_floor(&settings);
         let file = settings.operator_config.clone().expect("a file");
         let scratch = tempfile::tempdir().expect("scratch");
         let app = project_repo(scratch.path(), "app");
 
-        let (head, preview) = project_post(addr, &session, "preview", &json!({"path": app}));
+        let (head, preview) = project_post(&page, "preview", &json!({"path": app}));
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {preview}");
         assert_eq!(
             preview,
@@ -17107,10 +14992,10 @@ mod project_add {
                 "check_label": "files changed", "hireable": true, "reason": null
             })
         );
-        assert!(offered(addr, &cookie, &csrf).is_empty());
+        assert!(offered(&page).is_empty());
 
         let add = project_add_body(&app, &json!("files_changed"), PROJECT_ATTEMPT);
-        let (head, added) = project_post(addr, &session, "add", &add);
+        let (head, added) = project_post(&page, "add", &add);
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {added}");
         assert_eq!(
             added,
@@ -17121,15 +15006,12 @@ mod project_add {
         );
         let written = std::fs::read_to_string(&file).unwrap();
         assert_eq!(written.matches("workspace_id").count(), 1, "{written}");
-        let ids: Vec<String> = offered(addr, &cookie, &csrf)
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
+        let ids: Vec<String> = offered(&page).into_iter().map(|(id, _)| id).collect();
         assert_eq!(ids, ["app"], "live with no restart");
 
         for attempt in [PROJECT_ATTEMPT, OTHER_ATTEMPT] {
             let again = project_add_body(&app, &json!("files_changed"), attempt);
-            let (head, repeat) = project_post(addr, &session, "add", &again);
+            let (head, repeat) = project_post(&page, "add", &again);
             assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {repeat}");
             assert_eq!(repeat, added, "a repeat converges");
         }
@@ -17138,7 +15020,7 @@ mod project_add {
             written,
             "a repeat wrote"
         );
-        let (_, preview) = project_post(addr, &session, "preview", &json!({"path": app}));
+        let (_, preview) = project_post(&page, "preview", &json!({"path": app}));
         assert_eq!(
             preview["already"],
             json!({"project_id": "app", "label": "app"})
@@ -17146,10 +15028,10 @@ mod project_add {
 
         let make = project_repo(scratch.path(), "make-app");
         std::fs::write(make.join("Makefile"), "test:\n\ttrue\n").expect("makefile");
-        let (_, preview) = project_post(addr, &session, "preview", &json!({"path": make}));
+        let (_, preview) = project_post(&page, "preview", &json!({"path": make}));
         assert_eq!(preview["check"], json!(["make", "test"]), "{preview}");
         let stale = project_add_body(&make, &json!("files_changed"), OTHER_ATTEMPT);
-        let (head, body) = project_post(addr, &session, "add", &stale);
+        let (head, body) = project_post(&page, "add", &stale);
         assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
         assert_eq!(body["reason"], "changed", "{body}");
 
@@ -17163,7 +15045,7 @@ mod project_add {
             (PathBuf::from("/"), "not_allowed"),
             (fixture.state.path().to_path_buf(), "not_allowed"),
         ] {
-            let (head, body) = project_post(addr, &session, "preview", &json!({"path": path}));
+            let (head, body) = project_post(&page, "preview", &json!({"path": path}));
             assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
             assert_eq!(body["reason"], reason, "{path:?}");
         }
@@ -17181,8 +15063,7 @@ mod project_add {
     fn an_add_the_daemon_cannot_adopt_leaves_the_file_as_it_was() {
         let fixture = Fixture::new();
         let settings = project_settings(&fixture);
-        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-        let session = (cookie.clone(), csrf.clone());
+        let (_, mut running, _, page) = default_floor(&settings);
         let file = settings.operator_config.clone().expect("a file");
         let scratch = tempfile::tempdir().expect("scratch");
         let hand = project_repo(scratch.path(), "by-hand");
@@ -17197,11 +15078,11 @@ mod project_add {
         std::fs::write(&file, &text).expect("hand edit");
 
         let add = project_add_body(&app, &json!("files_changed"), PROJECT_ATTEMPT);
-        let (head, body) = project_post(addr, &session, "add", &add);
+        let (head, body) = project_post(&page, "add", &add);
         assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
         assert_eq!(body["reason"], "config_changed", "{body}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "put back");
-        assert!(offered(addr, &cookie, &csrf).is_empty());
+        assert!(offered(&page).is_empty());
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     }
 
@@ -17211,8 +15092,7 @@ mod project_add {
     fn an_add_during_a_reload_answers_busy() {
         let fixture = Fixture::new();
         let settings = project_settings(&fixture);
-        let (_, mut running, addr, cookie, csrf) = default_floor(&settings);
-        let session = (cookie, csrf);
+        let (_, mut running, _, page) = default_floor(&settings);
         let file = settings.operator_config.clone().expect("a file");
         let scratch = tempfile::tempdir().expect("scratch");
         let app = project_repo(scratch.path(), "app");
@@ -17221,14 +15101,381 @@ mod project_add {
 
         let lock = running.handle.reload_lock();
         let reload_running = lock.lock().unwrap();
-        let (head, body) = project_post(addr, &session, "add", &add);
+        let (head, body) = project_post(&page, "add", &add);
         assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
         assert_eq!(body["reason"], "busy", "{body}");
         assert_eq!(std::fs::read(&file).unwrap(), before, "a busy add wrote");
         drop(reload_running);
 
-        let (head, body) = project_post(addr, &session, "add", &add);
+        let (head, body) = project_post(&page, "add", &add);
         assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
         assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
     }
+
+    fn remove_body(id: &str, attempt: &str) -> Value {
+        json!({"project_id": id, "attempt_id": attempt})
+    }
+
+    fn add_app(session: &Page, app: &Path) {
+        let add = project_add_body(app, &json!("files_changed"), PROJECT_ATTEMPT);
+        let (head, body) = project_post(session, "add", &add);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
+    }
+
+    /// A project added from the page is removed from the page: gone from the running daemon with
+    /// no restart and from the file, and the folder on disk is untouched. Removing it again, or a
+    /// project the daemon never ran, is refused as unknown.
+    #[test]
+    fn a_project_removed_on_the_floor_is_gone_live() {
+        let fixture = Fixture::new();
+        let settings = project_settings(&fixture);
+        let (_, mut running, _, page) = default_floor(&settings);
+        let file = settings.operator_config.clone().expect("a file");
+        let scratch = tempfile::tempdir().expect("scratch");
+        let app = project_repo(scratch.path(), "app");
+        let before = std::fs::read(&file).unwrap();
+        add_app(&page, &app);
+        assert_eq!(offered(&page).len(), 1);
+
+        let (head, body) = project_post(&page, "remove", &remove_body("app", PROJECT_ATTEMPT));
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
+        assert_eq!(body, json!({"project_id": "app", "label": "app"}));
+        assert!(offered(&page).is_empty(), "gone with no restart");
+        let written = std::fs::read_to_string(&file).unwrap();
+        assert!(!written.contains("workspace_id"), "{written}");
+        assert_eq!(
+            written.as_bytes(),
+            before.as_slice(),
+            "the file is as it began"
+        );
+        assert!(app.join(".git").is_dir(), "the folder is untouched");
+
+        for id in ["app", "never-ran"] {
+            let (head, body) = project_post(&page, "remove", &remove_body(id, OTHER_ATTEMPT));
+            assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head}");
+            assert_eq!(body["reason"], "unknown", "{body}");
+        }
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
+
+    /// An agent that works in the project holds it: the remove is refused and the file stays as it
+    /// was.
+    #[test]
+    fn a_project_with_an_agent_in_it_is_not_removed() {
+        let fixture = Fixture::new();
+        let settings = project_settings(&fixture);
+        let (_, mut running, _, page) = default_floor(&settings);
+        let file = settings.operator_config.clone().expect("a file");
+        let scratch = tempfile::tempdir().expect("scratch");
+        let app = project_repo(scratch.path(), "app");
+        add_app(&page, &app);
+        common::hire(&running.handle, &app);
+        let before = std::fs::read(&file).unwrap();
+
+        let (head, body) = project_post(&page, "remove", &remove_body("app", PROJECT_ATTEMPT));
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
+        assert_eq!(body["reason"], "working", "{body}");
+        assert_eq!(std::fs::read(&file).unwrap(), before, "a refusal wrote");
+        assert_eq!(offered(&page).len(), 1, "still live");
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
+
+    /// An agent hired through a link to the project folder still works in the project: the folder
+    /// is resolved before it is compared.
+    #[test]
+    fn an_agent_hired_through_a_link_holds_the_project() {
+        let fixture = Fixture::new();
+        let settings = project_settings(&fixture);
+        let (_, mut running, _, page) = default_floor(&settings);
+        let file = settings.operator_config.clone().expect("a file");
+        let scratch = tempfile::tempdir().expect("scratch");
+        let app = project_repo(scratch.path(), "app");
+        let link = scratch.path().join("link-to-app");
+        std::os::unix::fs::symlink(&app, &link).expect("link");
+        add_app(&page, &app);
+        common::hire(&running.handle, &link);
+        let before = std::fs::read(&file).unwrap();
+
+        let (head, body) = project_post(&page, "remove", &remove_body("app", PROJECT_ATTEMPT));
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
+        assert_eq!(body["reason"], "working", "{body}");
+        assert_eq!(std::fs::read(&file).unwrap(), before, "a refusal wrote");
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
+
+    /// A ticket that is not done names the project by id, and a later project could take the id, so
+    /// the remove is refused until the ticket is finished or removed.
+    #[test]
+    fn a_project_with_an_open_ticket_is_not_removed() {
+        let fixture = Fixture::new();
+        let mut settings = project_settings(&fixture);
+        let file = settings.operator_config.clone().expect("a file");
+        let text = "[floor.hire]\nenabled = true\n[floor.project]\nenabled = true\n[floor.control]\nenabled = true\n[floor.goal]\nenabled = true\n[floor.board]\nenabled = true\n";
+        std::fs::write(&file, text).expect("operator file");
+        settings.floor_control = FloorControl::On {
+            goal: true,
+            retire: false,
+            renew: false,
+        };
+        settings.floor_board_enabled = true;
+        let (_, mut running, _, page) = default_floor(&settings);
+        let scratch = tempfile::tempdir().expect("scratch");
+        let app = project_repo(scratch.path(), "app");
+        add_app(&page, &app);
+        let (head, body) = post_bytes(&page, "/floor/ticket", br#"{"title":"Fix it"}"#, None);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head} {body}");
+        let before = std::fs::read(&file).unwrap();
+
+        let (head, body) = project_post(&page, "remove", &remove_body("app", PROJECT_ATTEMPT));
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
+        assert_eq!(body["reason"], "open_tickets", "{body}");
+        assert_eq!(std::fs::read(&file).unwrap(), before, "a refusal wrote");
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
+
+    /// While a reload holds the lock a remove answers `busy` and writes nothing. A remove the
+    /// daemon cannot adopt, here because the file holds a project the daemon has not loaded, puts
+    /// the file back exactly as it was.
+    #[test]
+    fn a_remove_that_cannot_apply_leaves_the_file_as_it_was() {
+        let fixture = Fixture::new();
+        let settings = project_settings(&fixture);
+        let (_, mut running, _, page) = default_floor(&settings);
+        let file = settings.operator_config.clone().expect("a file");
+        let scratch = tempfile::tempdir().expect("scratch");
+        let app = project_repo(scratch.path(), "app");
+        let hand = project_repo(scratch.path(), "by-hand");
+        add_app(&page, &app);
+
+        let lock = running.handle.reload_lock();
+        let reload_running = lock.lock().unwrap();
+        let before = std::fs::read(&file).unwrap();
+        let (head, body) = project_post(&page, "remove", &remove_body("app", PROJECT_ATTEMPT));
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
+        assert_eq!(body["reason"], "busy", "{body}");
+        assert_eq!(std::fs::read(&file).unwrap(), before, "a busy remove wrote");
+        drop(reload_running);
+
+        let mut text = std::fs::read_to_string(&file).unwrap();
+        write!(
+            text,
+            "[[floor.onboarding.workspaces]]\nworkspace_id = 'by-hand'\nlabel = 'By hand'\ncompletion_check_label = 'Checks pass'\ncwd = '{}'\ndepartment = 'engineering'\nisolation = 'default'\nhop_cap = 3\npredicate_argv = ['/usr/bin/true']\npredicate_timeout_s = 10\n",
+            hand.display()
+        )
+        .unwrap();
+        std::fs::write(&file, &text).expect("hand edit");
+        let (head, body) = project_post(&page, "remove", &remove_body("app", OTHER_ATTEMPT));
+        assert!(head.starts_with("HTTP/1.1 409 Conflict"), "{head} {body}");
+        assert_eq!(body["reason"], "config_changed", "{body}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "put back");
+        assert_eq!(offered(&page).len(), 1, "still live");
+        assert_eq!(running.stop(ExitCause::ShutdownRpc), ExitCause::ShutdownRpc);
+    }
+}
+
+#[test]
+fn an_answer_restarts_after_its_fsync_before_its_fold() {
+    let fixture = Fixture::new();
+    let settings = answer_settings(&fixture, true);
+    let host = SharedHost::new();
+    let run = || {
+        boot(
+            &settings,
+            seams(
+                &settings,
+                host.clone(),
+                Arc::new(ScriptedRunner::default()),
+                Arc::new(TestClock::new()),
+                Witness::default(),
+            ),
+        )
+        .unwrap()
+    };
+    let daemon = run();
+    let failure = daemon.onboarding_failure();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let (agent, question) = waiting_agent(&running, &fixture, "which branch?");
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let body = answer_body(&request_id(1), agent, question, "main");
+    failure.arm(OnboardingFailurePoint::Answer);
+    let (head, response) = post_answer(&page, &body);
+    empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
+    let (head, response) = post_answer(&page, &body);
+    assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
+    assert_eq!(response["state"], "pending");
+    assert_eq!(host.spawned().len(), 0);
+    running.stop(ExitCause::ShutdownRpc);
+
+    let daemon = run();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    fixture.await_record("the recovered continuation spawned", |record| {
+        matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent).then_some(())
+    });
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_answer(&page, &body);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert_eq!(response["question_lsn"], question.0.to_string());
+    let answered = fixture
+        .entries()
+        .into_iter()
+        .find_map(|(lsn, entry)| {
+            matches!(entry.record, Record::HumanAnswer { agent: who, .. } if who == agent)
+                .then_some(lsn)
+        })
+        .unwrap();
+    let records = fixture.records();
+    assert_eq!(answers_for(&records, agent), 1);
+    let issued: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::TurnIssued {
+                agent: who,
+                answers,
+                ..
+            } if *who == agent => Some(answers.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(issued, vec![vec![answered]]);
+    assert_eq!(host.spawned().len(), 1);
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent)
+            )
+            .count(),
+        1
+    );
+    running.stop(ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn a_resume_restarts_after_its_fsync_before_clearing_the_cause() {
+    let fixture = Fixture::new();
+    let settings = control_settings(&fixture, true);
+    let host = SharedHost::new();
+    let run = || {
+        boot(
+            &settings,
+            seams(
+                &settings,
+                host.clone(),
+                Arc::new(ScriptedRunner::default()),
+                Arc::new(TestClock::new()),
+                Witness::default(),
+            ),
+        )
+        .unwrap()
+    };
+    let daemon = run();
+    let failure = daemon.onboarding_failure();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let agent = common::hire(&running.handle, fixture.state.path());
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let pause_body = control_body(&request_id(1), agent, None);
+    let (head, response) = post_control(&page, PAUSE, &pause_body);
+    let paused = applied(&head, &response, "paused");
+    common::set_goal(
+        &running.handle,
+        common::goal_params(agent, &[true_program()]),
+    );
+    failure.arm(OnboardingFailurePoint::Control);
+    let body = control_body(&request_id(3), agent, Some(paused));
+    let (head, response) = post_control(&page, RESUME, &body);
+    empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
+    assert_eq!(host.spawned().len(), 0);
+    running.stop(ExitCause::ShutdownRpc);
+
+    let daemon = run();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    fixture.await_record("the recovered resumed turn spawned", |record| {
+        matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent).then_some(())
+    });
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_control(&page, RESUME, &body);
+    let resumed = applied(&head, &response, "resumed");
+    assert!(resumed > paused);
+    let records = fixture.records();
+    assert_eq!(controls_for(&records, agent), (1, 1));
+    let issued: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::TurnIssued {
+                agent: who,
+                lsn_of_decision,
+                ..
+            } if *who == agent => Some(*lsn_of_decision),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(issued.len(), 1);
+    assert!(issued[0] > resumed);
+    assert_eq!(host.spawned().len(), 1);
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::TurnSpawned { agent: who, .. } if *who == agent)
+            )
+            .count(),
+        1
+    );
+    running.stop(ExitCause::ShutdownRpc);
+}
+
+#[test]
+fn a_goal_change_restarts_after_its_fsync_before_its_fold() {
+    let fixture = Fixture::new();
+    let settings = goal_settings(&fixture, true);
+    let run = || {
+        let (parts, host) = native_fixture_seams(&fixture, fake_seams(&settings));
+        (boot(&settings, parts).unwrap(), host)
+    };
+    let (daemon, host) = run();
+    let failure = daemon.onboarding_failure();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let (agent, goal) = paused_with_goal(&running, &fixture);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let body = goal_body(&request_id(1), agent, goal, NEW_TEXT);
+    failure.arm(OnboardingFailurePoint::GoalChange);
+    let (head, response) = post_goal(&page, &body);
+    empty_refusal(&head, &response, "HTTP/1.1 503 Service Unavailable");
+    let (head, response) = post_goal(&page, &body);
+    assert!(head.starts_with("HTTP/1.1 202 Accepted"), "{head}");
+    assert_eq!(response["state"], "pending");
+    assert_eq!(host.spawned().len(), 0);
+    running.stop(ExitCause::ShutdownRpc);
+    let (position, new_goal, _) = browser_goals(&fixture, agent).pop().unwrap();
+    assert!(!after(&fixture, position).iter().any(
+        |(_, entry)| matches!(entry.record, Record::LoopDecided { agent: who, .. } if who == agent)
+    ));
+
+    let (daemon, restarted) = run();
+    let addr = daemon.floor_addr().unwrap();
+    let mut running = common::start(daemon);
+    let page = exchange(addr, &issue(&settings).bootstrap);
+    let (head, response) = post_goal(&page, &body);
+    assert_eq!(changed(&head, &response), new_goal.id);
+    assert_eq!(browser_goals(&fixture, agent).len(), 1);
+    let records = fixture.records();
+    assert!(after(&fixture, position).iter().any(
+        |(_, entry)| matches!(entry.record, Record::LoopDecided { agent: who, .. } if who == agent)
+    ));
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| matches!(record, Record::TurnIssued { goal, .. } if *goal == new_goal.id)
+            )
+            .count(),
+        0
+    );
+    assert_eq!(host.spawned().len() + restarted.spawned().len(), 0);
+    running.stop(ExitCause::ShutdownRpc);
 }

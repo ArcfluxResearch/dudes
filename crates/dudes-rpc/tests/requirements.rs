@@ -52,6 +52,7 @@ const REGISTERED: &[(Method, Requirement)] = &[
     (Method::AgentRename, Requirement::Operator),
     (Method::AgentLook, Requirement::Operator),
     (Method::AgentMcp, Requirement::Operator),
+    (Method::WorkspaceTrust, Requirement::Operator),
     (Method::WorktreeList, Requirement::Operator),
     (Method::WorktreeRemoved, Requirement::Operator),
     (Method::AgentWhy, Requirement::Operator),
@@ -166,8 +167,8 @@ fn agent_ask_is_the_only_agent_row_and_it_admits_no_operator() {
     );
     assert_eq!(
         by_requirement(Requirement::Operator).len(),
-        14,
-        "control: the fourteen operator rows are still operator rows, so the counts above partition \
+        15,
+        "control: the fifteen operator rows are still operator rows, so the counts above partition \
          the surface rather than reading as an empty filter"
     );
 }

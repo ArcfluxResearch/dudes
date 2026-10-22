@@ -6,8 +6,9 @@
 
 use std::path::PathBuf;
 
+use dudes_proto::record::{TrustPin, TrustedRepository};
 use dudes_proto::{Record, WorktreeRemoval};
-use dudes_types::{AgentId, GitCommit, WorktreeId};
+use dudes_types::{AgentId, GitCommit, Lsn, WorktreeId};
 
 use super::World;
 
@@ -28,6 +29,17 @@ pub struct WorktreeRow {
     pub agent: Option<AgentId>,
     /// How the lease ended, once a `WorktreeRemoved` is recorded.
     pub removed: Option<WorktreeRemoval>,
+}
+
+/// What the operator vouched for when they trusted a project, and where in the journal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustGrant {
+    /// The record that granted it.
+    pub lsn: Lsn,
+    /// The repository vouched for.
+    pub repository: TrustedRepository,
+    /// The settings vouched for.
+    pub pin: TrustPin,
 }
 
 /// Where a lease is in its life. Derived from the fold, never stored.
@@ -72,6 +84,33 @@ impl World {
                 }
             }
             _ => {}
+        }
+    }
+
+    pub(super) fn fold_workspace_trust(&mut self, record: &Record, lsn: Lsn) {
+        let Record::WorkspaceTrustSet {
+            workspace_id,
+            trusted,
+            repository,
+            pin,
+        } = record
+        else {
+            return;
+        };
+        match (trusted, repository, pin) {
+            (true, Some(repository), Some(pin)) => {
+                self.workspace_trust.insert(
+                    workspace_id.clone(),
+                    TrustGrant {
+                        lsn,
+                        repository: repository.clone(),
+                        pin: pin.clone(),
+                    },
+                );
+            }
+            _ => {
+                self.workspace_trust.remove(workspace_id);
+            }
         }
     }
 

@@ -5,7 +5,7 @@ import type { FloorState } from '../floor/store.ts';
 import type { GuideStep } from './guide.ts';
 import { guideSnapshotConfirmed, guideSteps } from './guide.ts';
 import { SetupView, copyToClipboard } from './SetupView.tsx';
-import { ADD_WORKSPACE, WorkspaceSettings, hireUnavailable } from '../settings/SettingsView.tsx';
+import { WorkspaceSettings, hireUnavailable } from '../settings/SettingsView.tsx';
 import { refreshFloorSnapshot } from '../floor/stream.ts';
 
 function Command({ text }: { readonly text: string }) {
@@ -62,7 +62,8 @@ export function FirstRunGuideView({ floor, step, onStep, onClose, onHire }: {
         {entry.label}<span>{entry.status}</span></button>
     </li>)}</ol>
     <div className="guide-body">
-      <h3>{current.label}</h3><p className="guide-status" role="status">{current.status}</p>
+      <h3>{current.label}</h3>
+      {step === 'welcome' ? null : <p className="guide-status" role="status">{current.status}</p>}
       {!confirmed ? <p role="status">Waiting for a confirmed snapshot from the daemon. Recheck to try again.</p> : null}
       {step === 'welcome' ? <p>Dudes supervises coding agents while they work towards a goal.
         The Floor shows their current state and offers the actions you enable locally.</p> : null}
@@ -73,11 +74,11 @@ export function FirstRunGuideView({ floor, step, onStep, onClose, onHire }: {
       </> : null}
       {step === 'workspaces' ? floor.settings === null ? <p>Settings are not reported. Recheck to ask again.</p> : <>
         <p>Enroll a repository locally. The list updates when the running daemon adopts the enrollment.</p>
-        <WorkspaceSettings report={floor.settings} headingId="guide-workspaces" onCopyAdd={() => copyToClipboard(ADD_WORKSPACE)} />
+        <WorkspaceSettings report={floor.settings} floor={floor} headingId="guide-workspaces" />
       </> : null}
       {step === 'actions' ? <FloorActions floor={floor} /> : null}
       {step === 'hire' ? <>
-        <p>{current.status === 'Done' ? 'An agent is on the Floor.' : 'Open the Hire wizard, review its choices, and hire your first agent.'}</p>
+        <p>{current.status === 'Complete' ? 'An agent is on the Floor.' : 'Open the Hire wizard, review its choices, and hire your first agent.'}</p>
         {floor.onboarding === null ? <p>Hire is unavailable. Check Projects and Floor actions, then Recheck.
           If the session has used its Hire allowance, open Dudes to start a new Floor session.</p> : null}
         <button type="button" disabled={!confirmed || floor.onboarding === null}

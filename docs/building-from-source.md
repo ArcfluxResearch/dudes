@@ -35,7 +35,7 @@ The release workflow builds each target on a matching runner.
 
 Windows builds produce the directory but no archive, and a Windows installer is not implemented.
 
-To build and test the workspace:
+To build and test every crate:
 
 ```sh
 cargo build --workspace

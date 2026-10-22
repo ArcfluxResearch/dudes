@@ -14,7 +14,7 @@ function socket() {
 function stream() {
   resetFloorStore();
   const wire = socket();
-  const dispose = openFloorStream({ csrf: 'test-nonce' }, { protocol: 'http:', host: '127.0.0.1:7777' },
+  const dispose = openFloorStream({ device: 'fixture' }, { protocol: 'http:', host: '127.0.0.1:7777' },
     () => wire, { now: () => 0, repeat: () => () => {}, after: () => () => {} });
   wire.emit('open');
   return { wire, dispose, frame: (frame) => wire.emit('message', { data: JSON.stringify(frame) }) };
