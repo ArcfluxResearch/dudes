@@ -3177,6 +3177,27 @@ samp,
 .first-task h2 { margin: 0; font-size: 1.15rem; }
 .first-task p { margin: 0; }
 .first-task form { display: grid; gap: .5rem; }
+.first-task-line { display: flex; align-items: center; gap: .5rem; }
+.first-task button.first-task-open {
+  display: flex;
+  align-items: center;
+  column-gap: .25rem;
+  flex: 1;
+  min-width: 0;
+  padding: .35rem 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  white-space: nowrap;
+}
+.first-task-free { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.first-task button.first-task-close {
+  flex: 0 0 auto;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0;
+  font-size: 1.25rem;
+}
 .first-task-label { font-weight: 700; }
 .first-task textarea {
   box-sizing: border-box;
