@@ -31,6 +31,8 @@ export interface TicketTurnEnd {
  * the check's output. Those come from the read route when a ticket is opened.
  */
 export interface CardTicketRow {
+  /** The goal installed by the ticket's latest start, retained as history. */
+  readonly goal?: string;
   /** Its place in its agent's queue, counting from 1, while it waits there. */
   readonly position: number | null;
   readonly round: number;
@@ -85,6 +87,8 @@ function ticketOf(value: unknown): CardTicketRow | null | undefined {
   const ticket = object(value);
   if (ticket === null) return undefined;
   const { position, round, reason, stopping } = ticket;
+  const goal = ticket.goal ?? null;
+  if (goal !== null && (typeof goal !== 'string' || !CARD_ID.test(goal))) return undefined;
   const place = position ?? null;
   if (place !== null && (!count(place) || place < 1)) return undefined;
   const rounds = round ?? 0;
@@ -110,6 +114,7 @@ function ticketOf(value: unknown): CardTicketRow | null | undefined {
     lastTurnEnd = Object.freeze({ exit: Object.freeze({ code, signal }), at: ended.at });
   }
   return Object.freeze({ position: place, round: rounds, reason: why as TicketReason | null, stopping: stop,
+    ...(goal === null ? {} : { goal }),
     ...(review === null ? {} : { instruction_review: review }),
     ...(lastTurnEnd === null ? {} : { last_turn_end: lastTurnEnd }) });
 }

@@ -1660,6 +1660,17 @@
     "CardTicket": {
       "description": "What the floor snapshot says of a ticket. It carries no note, message, summary, path, argv,\ncheck name or check output: those come only from `ticket.read`. It is small on purpose, because\nthe snapshot's card budget has to hold the most tickets the board allows.",
       "properties": {
+        "goal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoalId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The goal installed by this ticket's latest start, retained after that work stops."
+        },
         "instruction_review": {
           "anyOf": [
             {

@@ -367,6 +367,7 @@ pub(super) fn apply_instruction(
                 row.view.status_by = Actor::System;
             }
             row.view.ticket = Some(dudes_proto::CardTicket {
+                goal: ticket.goal,
                 position: None,
                 round: ticket.round,
                 reason: ticket.reason,

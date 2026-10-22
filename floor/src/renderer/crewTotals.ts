@@ -12,7 +12,7 @@ export function crewStatuses(agents: readonly AgentRow[], cards: readonly CardRo
   const counts = new Map<string, number>();
   for (const row of agents) {
     const own = fieldsOf(row).status || 'unknown';
-    const status = ticketWord(cards, row.id, own) ?? own;
+    const status = ticketWord(cards, row, own) ?? own;
     counts.set(status, (counts.get(status) ?? 0) + 1);
   }
   const rank = (status: string): number => {

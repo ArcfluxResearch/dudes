@@ -181,6 +181,8 @@ function SignedInShell() {
   const hire = useSyncExternalStore(subscribeToHire, getHireState, getHireState);
   const [view, setView] = useState<ControlView | null>(null);
   const [answerAsked, setAnswerAsked] = useState<{ readonly id: string } | null>(null);
+  const [recoveryAsked, setRecoveryAsked] = useState<{ readonly id: string } | null>(null);
+  const [recoveryReceiptAsked, setRecoveryReceiptAsked] = useState<string | null>(null);
   const [crewOpen, setCrewOpen] = useState(true);
   const [focused, setFocused] = useState(false);
   const [preferences, setPreferences] = useState(readViewPreferences);
@@ -251,6 +253,14 @@ function SignedInShell() {
   }, [answerAsked, currentSelectedId]);
 
   useEffect(() => {
+    if (recoveryReceiptAsked === null || drawerOpen) return;
+    const receipt = document.getElementById(`recovery-receipt-${recoveryReceiptAsked}`);
+    receipt?.focus();
+    receipt?.scrollIntoView({ block: 'start' });
+    setRecoveryReceiptAsked(null);
+  }, [recoveryReceiptAsked, drawerOpen]);
+
+  useEffect(() => {
     if (focused && selectedId === null && focusedId !== null) {
       selectOutputAgent(focusedId);
       setSelectedId(focusedId);
@@ -285,7 +295,13 @@ function SignedInShell() {
   function reviewRecovery(id: string): void {
     if (!selectAgent(id)) return;
     setView(null);
-    requestAnimationFrame(() => document.getElementById('recovery-title')?.focus());
+    setRecoveryAsked({ id });
+  }
+
+  function readRecoveryReceipt(id: string): void {
+    clearSelection();
+    setView(null);
+    setRecoveryReceiptAsked(id);
   }
 
   function openView(next: ControlView): void {
@@ -414,7 +430,8 @@ function SignedInShell() {
     onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={endResize}
     onPointerCancel={endResize} onKeyDown={keyResize} onDoubleClick={resetSidebar} />;
   const drawer = <AgentDrawer floor={floor} row={displayRow} selectedId={currentSelectedId} onClose={clearSelection}
-    leaveFocusTo={leaveDrawerTo} />;
+    leaveFocusTo={leaveDrawerTo} recoveryRequested={recoveryAsked} onRecoveryShown={() => setRecoveryAsked(null)}
+    onReadRecoveryReceipt={readRecoveryReceipt} />;
 
   const notices = (
     <div className="notice-area">

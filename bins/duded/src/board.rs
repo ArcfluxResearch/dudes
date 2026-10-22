@@ -107,6 +107,7 @@ pub(crate) fn predicate_result(view: &CardView, predicate: &Predicate) -> (bool,
 /// the longest queue, a round count no ticket reaches and every optional member present.
 pub(crate) fn largest_ticket() -> CardTicket {
     CardTicket {
+        goal: Some(dudes_types::GoalId::from_parts(u64::MAX >> 16, u128::MAX)),
         position: u32::try_from(dudes_proto::ticket::MAX_QUEUE).ok(),
         round: u32::from(u16::MAX),
         reason: Some(TicketReason::ProjectUnavailable),
