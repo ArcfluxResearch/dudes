@@ -268,17 +268,29 @@ fn output_that_is_not_one_absolute_path_is_not_a_choice() {
     let fixture = Fixture::new();
     let scripts = tempfile::tempdir().expect("scripts");
     let floor = floor(&fixture, true, false);
-    for (name, body) in [
-        ("words", "printf 'not a path\\n'"),
-        ("relative", "printf 'code/app\\n'"),
-        ("two", "printf '/a\\n/b\\n'"),
-        ("escape", "printf '/tmp/\\033[2J\\n'"),
-        ("nothing", "exit 0"),
-        ("crash", "exit 3"),
-    ] {
-        floor
-            .picker
-            .use_stand_in(stand_in(scripts.path(), name, body), Duration::from_secs(5));
+    // One script, run by `/bin/sh` with the case as its argument: macOS scans each new executable
+    // the first time it runs, which made a script per case the slowest thing in this file.
+    let script = scripts.path().join("cases");
+    std::fs::write(
+        &script,
+        r#"case "$1" in
+words) printf 'not a path\n' ;;
+relative) printf 'code/app\n' ;;
+two) printf '/a\n/b\n' ;;
+escape) printf '/tmp/\033[2J\n' ;;
+nothing) exit 0 ;;
+crash) exit 3 ;;
+esac
+"#,
+    )
+    .expect("the cases script");
+    for name in ["words", "relative", "two", "escape", "nothing", "crash"] {
+        let argv = vec![
+            "/bin/sh".into(),
+            script.clone().into_os_string(),
+            name.into(),
+        ];
+        floor.picker.use_stand_in(argv, Duration::from_secs(5));
         assert_eq!(
             choose(&floor.page),
             json!({ "unavailable": true }),
