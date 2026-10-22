@@ -103,12 +103,24 @@ test('a request the daemon checks with WebCrypto is accepted, and altering any s
   assert.equal(elsewhere.status, 200, 'the control: a fresh request of the same device is accepted');
 });
 
-test('only text bodies are signed: any other body is refused with a clear error and nothing is sent', async () => {
+test('a byte body is signed as the exact bytes and the daemon accepts it', async () => {
+  const held = await enrolledSigner();
+  const daemon = fakeDaemon();
+  await daemon.enrol(held.key);
+  const bytes = new Uint8Array([0, 255, 1, 2, 128]);
+  const sent = [];
+  const send = (url, init) => { sent.push(init); return daemon.send(url, init); };
+  const answer = await signedFetch(held.signer, send, '/floor/session/check?name=a%20b', { method: 'POST', body: bytes });
+  assert.equal(answer.status, 200);
+  assert.deepEqual([...sent[0].body], [0, 255, 1, 2, 128]);
+});
+
+test('only text and byte bodies are signed: any other body is refused with a clear error and nothing is sent', async () => {
   const { signer } = await enrolledSigner();
   let sent = 0;
   const send = async () => { sent += 1; return reply(200, {}); };
-  for (const body of [new URLSearchParams('a=b'), new Blob(['x']), new Uint8Array([1]), new FormData()]) {
-    await assert.rejects(() => signedFetch(signer, send, '/floor/x', { method: 'POST', body }), /text bodies only/);
+  for (const body of [new URLSearchParams('a=b'), new Blob(['x']), new FormData()]) {
+    await assert.rejects(() => signedFetch(signer, send, '/floor/x', { method: 'POST', body }), /text or bytes only/);
   }
   assert.equal(sent, 0);
 });

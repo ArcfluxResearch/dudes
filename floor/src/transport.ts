@@ -31,10 +31,11 @@ export function resetFloorTransport(): void {
 
 const encoder = new TextEncoder();
 
-/** The exact bytes a request body sends. Only text can be signed as it is sent. */
+/** The exact bytes a request body sends. Only text and byte arrays can be signed as they are sent. */
 function bodyBytes(body: RequestInit['body']): Uint8Array<ArrayBuffer> {
   if (body === undefined || body === null) return new Uint8Array(0);
   if (typeof body === 'string') return encoder.encode(body);
+  if (body instanceof Uint8Array && body.buffer instanceof ArrayBuffer) return body as Uint8Array<ArrayBuffer>;
   throw new UnsignableBody();
 }
 
