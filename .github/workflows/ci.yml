@@ -40,6 +40,7 @@ jobs:
       - run: cargo xtask layering --strict
       - run: cargo xtask schemas --check
       - run: cargo xtask naming
+      - run: cargo xtask env-pairs
 
   clippy:
     name: clippy (${{ matrix.os }})
@@ -94,6 +95,11 @@ jobs:
           --no-fail-fast --no-tests=fail
       - run: cargo test --workspace --doc --locked
         if: ${{ !cancelled() }}
+      - name: macOS process identity (pidversion) controls
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        env:
+          CLANG_PATH: /usr/bin/clang
+        run: cargo test --manifest-path vendor/libproc/Cargo.toml --test pidversion -- --test-threads 1
       - name: Chrome pipe smoke
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         env:
