@@ -1055,6 +1055,64 @@ fn a_retried_create_is_recognised_after_a_restart() {
     board.stop();
 }
 
+/// A request id that decodes to 32 bytes, different for each `n` below 4096.
+fn request_id(n: usize) -> String {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    format!(
+        "{}{}{}",
+        DIGITS[n / 64] as char,
+        DIGITS[n % 64] as char,
+        "A".repeat(41)
+    )
+}
+
+/// Make `count` tickets, each with its own request id.
+fn make_with_ids(page: &Page, count: usize) {
+    for n in 0..count {
+        page.create(&json!({"request_id": request_id(n), "title": "Filler"}))
+            .ok();
+    }
+}
+
+/// The retry of the create that spent the session's last create finds its ticket, not a limit.
+#[test]
+fn the_retry_of_the_last_allowed_create_is_answered() {
+    let fixture = Fixture::new();
+    let (settings, repo) = settings(&fixture, true);
+    let board = Board::boot(settings, repo, vec![common::passes()]);
+    let page = board.page();
+    make_with_ids(&page, 63);
+    let last = json!({"request_id": request_id(63), "title": "The last one"});
+    let first = id_of(&page.create(&last).ok());
+    assert_eq!(id_of(&page.create(&last).ok()), first);
+    page.create(&json!({"request_id": request_id(64), "title": "One too many"}))
+        .refused("limit_reached");
+    assert_eq!(tickets_made(&fixture), 64);
+    board.stop();
+}
+
+/// Only an appended ticket counts: three retries of one create leave the count where one create
+/// left it, so exactly one more create fits.
+#[test]
+fn retries_of_a_create_do_not_spend_the_limit() {
+    let fixture = Fixture::new();
+    let (settings, repo) = settings(&fixture, true);
+    let board = Board::boot(settings, repo, vec![common::passes()]);
+    let page = board.page();
+    make_with_ids(&page, 62);
+    let body = json!({"request_id": request_id(62), "title": "Retried"});
+    let first = id_of(&page.create(&body).ok());
+    for _ in 0..3 {
+        assert_eq!(id_of(&page.create(&body).ok()), first);
+    }
+    page.create(&json!({"request_id": request_id(63), "title": "Still fits"}))
+        .ok();
+    page.create(&json!({"request_id": request_id(64), "title": "One too many"}))
+        .refused("limit_reached");
+    assert_eq!(tickets_made(&fixture), 64);
+    board.stop();
+}
+
 /// A lost answer to the assignment that follows a create is retried with the sequence the page
 /// had. The ticket is given once; the retry is told the ticket changed.
 #[test]

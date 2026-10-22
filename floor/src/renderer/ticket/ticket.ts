@@ -6,8 +6,9 @@
 // success finds the ticket on a newer sequence and is refused as `stale_card`, and the page then
 // shows the current state, which already holds the result. A create has no ticket yet, so it
 // carries a request id instead: a create tried again with the same fields reuses the id and is
-// answered with the ticket the first try made. The page never retries by itself. An answer that does not arrive leaves the form as the person typed
-// it and says the save could not be confirmed.
+// answered with the ticket the first try made. The page never retries by itself. An answer that
+// does not arrive leaves the form as the person typed it and says the save could not be
+// confirmed.
 //
 // The request and its feedback live in module memory and nowhere else: not in the URL, not in
 // browser storage, not in a log.

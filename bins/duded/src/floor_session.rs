@@ -3808,7 +3808,7 @@ mod carry_tests {
             for _ in 0..times {
                 let turn = run
                     .tickets
-                    .begin(key(exchange), Some(counted))
+                    .begin(key(exchange), Some(counted), false)
                     .expect("admitted");
                 turn.succeeded();
             }
@@ -4013,12 +4013,14 @@ mod carry_tests {
         assert_eq!(carry.import(Some(NEW_RUN), &exported), 1);
 
         assert_eq!(
-            tickets.begin(key(&one), Some(Counted::Create)).err(),
+            tickets.begin(key(&one), Some(Counted::Create), false).err(),
             Some("limit_reached"),
             "the create allowance was spent before the upgrade"
         );
         assert!(
-            tickets.begin(key(&one), Some(Counted::Assign)).is_ok(),
+            tickets
+                .begin(key(&one), Some(Counted::Assign), false)
+                .is_ok(),
             "control: an assign still has one left"
         );
         assert_eq!(

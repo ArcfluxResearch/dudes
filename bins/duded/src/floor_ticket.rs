@@ -83,8 +83,10 @@ impl TicketRoute {
 /// One admitted request. Each is exactly the members of the matching `ticket.*` method.
 #[derive(Clone, Debug)]
 pub enum TicketRequest {
-    /// Make a ticket. The attribution is present when the page sent a retry identity.
-    Create(TicketCreateParams, Option<TicketRequestAttribution>),
+    /// Make a ticket. The attribution is present when the page sent a retry identity. The flag
+    /// limits the request to a retry: it answers a ticket this identity already made and
+    /// appends nothing, for a session that has spent its creates.
+    Create(TicketCreateParams, Option<TicketRequestAttribution>, bool),
     /// Change a ticket in To do.
     Edit(TicketEditParams),
     /// Give a ticket to an agent.
@@ -132,7 +134,7 @@ impl TicketRequest {
                     .as_deref()
                     .map(|wire| create_attribution(wire, &request))
                     .transpose()?;
-                Self::Create(request, attribution)
+                Self::Create(request, attribution, false)
             }
             TicketRoute::Edit => {
                 let request: TicketEditParams = decode(bytes)?;
@@ -164,6 +166,19 @@ impl TicketRequest {
             TicketRoute::Remove => Self::Remove(decode(bytes)?),
             TicketRoute::Read => Self::Read(decode(bytes)?),
         })
+    }
+
+    /// Whether the request carries a retry identity.
+    pub(crate) const fn may_repeat(&self) -> bool {
+        matches!(self, Self::Create(_, Some(_), _))
+    }
+
+    /// Limit the request to answering a ticket its identity already made.
+    pub(crate) fn repeat_only(self) -> Self {
+        match self {
+            Self::Create(request, attribution, _) => Self::Create(request, attribution, true),
+            other => other,
+        }
     }
 
     /// Whether the request counts against the session's creations or its assignments.
@@ -350,6 +365,8 @@ pub enum TicketReply {
     /// `200`: the record is durable and projected. The body names the card and the position the
     /// answer is true through.
     Done(Value),
+    /// `200`: a create already made this ticket, so nothing was appended and nothing counts.
+    Repeated(Value),
     /// `409`: refused before any append, for one of the fixed codes.
     Refused(&'static str),
     /// `400`: a malformed request.
@@ -440,10 +457,14 @@ impl TicketLimits {
 
     /// Admit one request of `session`, or the reason it is refused: `busy` while another of its
     /// requests is in flight, `limit_reached` when a count it would move is spent. A refused request changes nothing.
+    /// A create that carries a retry identity (`may_repeat`) is still admitted past a spent count, as
+    /// a turn that may only answer a ticket already made, so the retry of a create whose answer was
+    /// lost is not refused for a ticket that exists.
     pub(crate) fn begin(
         &self,
         session: [u8; 32],
         counted: Option<Counted>,
+        may_repeat: bool,
     ) -> Result<Turn<'_>, &'static str> {
         let now = Instant::now();
         let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
@@ -458,7 +479,8 @@ impl TicketLimits {
         if counts.busy {
             return Err("busy");
         }
-        if (counted == Some(Counted::Create) && counts.creates >= MOST_CREATES)
+        let spent_creates = counted == Some(Counted::Create) && counts.creates >= MOST_CREATES;
+        if (spent_creates && !may_repeat)
             || (counted == Some(Counted::Assign) && counts.assigns >= MOST_ASSIGNS)
         {
             return Err("limit_reached");
@@ -468,6 +490,7 @@ impl TicketLimits {
             limits: self,
             session,
             counted,
+            repeat_only: spent_creates,
         })
     }
 }
@@ -478,9 +501,15 @@ pub(crate) struct Turn<'a> {
     limits: &'a TicketLimits,
     session: [u8; 32],
     counted: Option<Counted>,
+    repeat_only: bool,
 }
 
 impl Turn<'_> {
+    /// The session's creates are spent: the request may only answer a ticket already made.
+    pub(crate) const fn repeat_only(&self) -> bool {
+        self.repeat_only
+    }
+
     /// The record is durable: the request counts.
     pub(crate) fn succeeded(&self) {
         let mut sessions = self
@@ -920,21 +949,32 @@ mod tests {
     fn a_session_has_one_request_in_flight_and_spends_its_counts_on_success() {
         let limits = TicketLimits::new();
         let key = [7_u8; 32];
-        let first = limits.begin(key, Some(Counted::Create)).expect("first");
-        assert_eq!(limits.begin(key, None).err(), Some("busy"), "one at a time");
-        assert!(limits.begin([8_u8; 32], None).is_ok(), "per session");
+        let first = limits
+            .begin(key, Some(Counted::Create), false)
+            .expect("first");
+        assert_eq!(
+            limits.begin(key, None, false).err(),
+            Some("busy"),
+            "one at a time"
+        );
+        assert!(limits.begin([8_u8; 32], None, false).is_ok(), "per session");
         first.succeeded();
         drop(first);
         for _ in 1..MOST_CREATES {
-            let turn = limits.begin(key, Some(Counted::Create)).expect("within");
+            let turn = limits
+                .begin(key, Some(Counted::Create), false)
+                .expect("within");
             turn.succeeded();
         }
         assert_eq!(
-            limits.begin(key, Some(Counted::Create)).err(),
+            limits.begin(key, Some(Counted::Create), false).err(),
             Some("limit_reached")
         );
-        assert!(limits.begin(key, Some(Counted::Assign)).is_ok());
-        assert!(limits.begin(key, None).is_ok(), "reads are not counted");
+        assert!(limits.begin(key, Some(Counted::Assign), false).is_ok());
+        assert!(
+            limits.begin(key, None, false).is_ok(),
+            "reads are not counted"
+        );
     }
 
     #[test]
@@ -942,7 +982,11 @@ mod tests {
         let limits = TicketLimits::new();
         let key = [1_u8; 32];
         for _ in 0..(MOST_CREATES * 2) {
-            drop(limits.begin(key, Some(Counted::Create)).expect("not spent"));
+            drop(
+                limits
+                    .begin(key, Some(Counted::Create), false)
+                    .expect("not spent"),
+            );
         }
     }
 
