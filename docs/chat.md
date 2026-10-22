@@ -25,4 +25,4 @@ after completion. Windows currently supports that execution mode only.
 Chat retains each agent's draft and shows queued messages, live replies, failures and any
 history or reply limits. If the provider cannot resume a conversation, Chat asks you to confirm
 a fresh conversation before sending again. An agent's structured question has its own **Answer**
-action, which you turn on in quickstart.
+action, which quickstart turns on in a new file.

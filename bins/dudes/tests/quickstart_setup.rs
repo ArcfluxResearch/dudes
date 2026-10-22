@@ -18,7 +18,6 @@ mod common;
 use common::{Cli, Lifeline, run_program};
 
 const SPAWN_MARKER: &str = "quickstart started duded pid ";
-const FLOOR_QUESTION: &str = "Let the Floor act on your agents: hire, pause, answer, change goals, give tickets to agents, retire, recover, add projects and read their changes? A ticket given to an agent starts it, and agents then run and spend under your account. Anyone holding your one-time Floor link could start agents that act with your account's full reach. [Y/n]";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 struct Layout {
@@ -209,36 +208,38 @@ fn a_script_the_daemon_would_refuse_is_refused_whole() {
     let layout = Layout::new();
     let run = layout
         .cli()
-        .args([
-            "quickstart",
-            "--set",
-            "floor.goal",
-            "on",
-            "--enroll",
-            "--",
-            "/usr/bin/true",
-        ])
+        .args(["quickstart", "--set", "floor.control", "off"])
         .run();
 
     assert_eq!(run.code(), dudes::exit::OTHER, "{run:?}");
     assert_eq!(
         run.stderr,
         "dudes: the daemon would refuse this configuration when it starts, so nothing was \
-         written: floor.goal on needs floor.control on\n"
+         written: floor.goal on needs floor.control on; floor.retire on needs floor.control on; \
+         floor.board on needs floor.control on\n"
     );
     assert!(!layout.config().exists(), "nothing was written");
     assert!(!layout.path("run").exists(), "nothing was started");
 }
 
 /// A daemon of another version may compare settings this CLI does not know, so a script counts
-/// the version as a difference and stops nothing unless asked.
+/// the version as a difference. With an agent running a turn it stops nothing, names the agent and
+/// prints the commands that restart it.
 #[test]
-fn a_script_counts_a_daemon_of_another_version_as_a_difference() {
+fn a_busy_daemon_of_another_version_is_not_restarted() {
     let layout = Layout::new();
     std::fs::create_dir(layout.path("run")).expect("a runtime directory");
     std::fs::set_permissions(layout.path("run"), std::fs::Permissions::from_mode(0o700))
         .expect("an owner-only runtime directory");
-    common::ping_as(&layout.socket(), "0.0.1");
+    common::answer_as(
+        &layout.socket(),
+        "0.0.1",
+        Some(serde_json::json!([{
+            "id": "01JBQ8XK2M3N4P5Q6R7S8T9VWX", "name": "Ada", "role": "engineer",
+            "department": "engineering", "provider": "claude", "status": "running",
+            "mode": "managed",
+        }])),
+    );
 
     let unasked = layout
         .cli()
@@ -249,8 +250,9 @@ fn a_script_counts_a_daemon_of_another_version_as_a_difference() {
         unasked.stderr,
         format!(
             "dudes: wrote {}, but the running daemon reads other settings (the running daemon is \
-             0.0.1, this CLI is {VERSION}) and reads the file only when it starts. Nothing was \
-             stopped. To apply them, restart it, which ends any turn it is running: dudes \
+             0.0.1, this CLI is {VERSION}) only when it starts, and it was not restarted because \
+             Ada (01JBQ8XK2M3N4P5Q6R7S8T9VWX) is running a turn. When they are done, restart it \
+             with `dudes stop`, then `dudes start`. To restart it now and end their turns: dudes \
              quickstart --restart\n",
             layout.config().display()
         )
@@ -263,12 +265,10 @@ struct Screen {
     seen: Vec<u8>,
     cursor: usize,
     chunks: Receiver<Vec<u8>>,
-    keyboard: File,
 }
 
 impl Screen {
     fn new(leader: OwnedFd) -> Self {
-        let keyboard = File::from(leader.try_clone().expect("share the leader"));
         let mut reader = File::from(leader);
         let (sender, chunks) = mpsc::channel();
         std::thread::spawn(move || {
@@ -283,7 +283,6 @@ impl Screen {
             seen: Vec::new(),
             cursor: 0,
             chunks,
-            keyboard,
         }
     }
 
@@ -315,34 +314,138 @@ impl Screen {
         }
     }
 
+    /// Read what the program wrote before it exited.
+    fn drain(&mut self) {
+        while let Ok(chunk) = self.chunks.recv_timeout(Duration::from_millis(300)) {
+            self.seen.extend(chunk);
+        }
+    }
+
     fn shown(&self) -> String {
         String::from_utf8_lossy(&self.seen).replace("\r\n", "\n")
     }
 }
 
-/// The terminal's input ending is a stop: nothing is written and no daemon starts.
+fn built_daemon() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_dudes")).with_file_name("duded")
+}
+
+/// The nine Floor actions a first run turns on, and the three switches it leaves off.
+fn assert_first_run_floor(config: &Path) {
+    let file: toml_edit::DocumentMut = std::fs::read_to_string(config)
+        .expect("quickstart wrote the file")
+        .parse()
+        .expect("the file is TOML");
+    let enabled = |name: &str| file.get("floor")?.get(name)?.get("enabled")?.as_bool();
+    for name in [
+        "answer", "hire", "control", "goal", "retire", "board", "renew", "recovery", "project",
+    ] {
+        assert_eq!(enabled(name), Some(true), "floor.{name} in {file}");
+    }
+    for name in ["git", "diff", "terminal"] {
+        assert_ne!(enabled(name), Some(true), "floor.{name} in {file}");
+    }
+    assert!(
+        file.get("floor")
+            .and_then(|floor| floor.get("onboarding"))
+            .is_none(),
+        "a project was enrolled: {file}"
+    );
+}
+
+fn stop(layout: &Layout) {
+    let stopped = layout.cli().args(["stop", "--hard"]).run();
+    assert_eq!(stopped.code(), dudes::exit::SUCCESS, "{stopped:?}");
+}
+
+/// A newcomer's `dudes quickstart` on a terminal asks nothing: it writes the nine Floor actions,
+/// enrolls no project, hires no agent, starts the daemon and ends with the Floor link.
 #[test]
-fn a_terminal_that_ends_its_input_writes_nothing() {
+fn quickstart_on_a_terminal_asks_nothing_and_sets_the_floor_up() {
     let layout = Layout::new();
+    let _lifeline = Lifeline::start(layout.root.path());
     let pty = nix::pty::openpty(
         None::<&nix::pty::Winsize>,
         None::<&nix::sys::termios::Termios>,
     )
     .expect("a pseudo-terminal");
-    let mut child = layout.cli().arg("quickstart").spawn_on_terminal(&pty.slave);
+    let mut child = layout
+        .cli()
+        .env("DUDES_DAEMON", built_daemon())
+        .arg("quickstart")
+        .spawn_on_terminal(&pty.slave);
     drop(pty.slave);
     let mut screen = Screen::new(pty.master);
-    screen.expect(FLOOR_QUESTION);
-    // Control-D at the start of a line ends a terminal's input.
-    screen
-        .keyboard
-        .write_all(&[4])
-        .expect("type an end of input");
-    screen.expect("quickstart stopped at the end of its input; nothing was written");
-    let status = child.wait().expect("quickstart exits");
-    assert_eq!(status.code(), Some(i32::from(dudes::exit::USAGE)));
-    assert!(!layout.config().exists());
-    assert!(!layout.path("run").exists());
+    let status = exit_status(&mut child, &screen);
+    screen.drain();
+    let shown = screen.shown();
+    assert_eq!(status.code(), Some(0), "{shown}");
+    for asked in ["[Y/n]", "[y/N]", "Enter", "go ahead", "Project folder"] {
+        assert!(
+            !shown.contains(asked),
+            "quickstart asked `{asked}`:\n{shown}"
+        );
+    }
+    assert!(
+        shown.contains(&format!("Wrote {}:", layout.config().display())),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("The changed-file views (floor.git, floor.diff) are off."),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("no Floor link: the Floor is not configured"),
+        "{shown}"
+    );
+    assert_first_run_floor(&layout.config());
+    let agents = layout.cli().arg("agents").run();
+    assert_eq!(agents.code(), dudes::exit::SUCCESS, "{agents:?}");
+    assert!(!agents.stdout.contains("engineer"), "{agents:?}");
+    stop(&layout);
+}
+
+/// `--yes` gives the same file as a plain run. A second run adopts a Floor switch in the running
+/// daemon without a restart, and restarts the daemon for a start-time setting only because no
+/// agent is running a turn.
+#[test]
+fn yes_matches_a_plain_run_and_a_rerun_applies_the_change() {
+    let layout = Layout::new();
+    let _lifeline = Lifeline::start(layout.root.path());
+    let cli = || layout.cli().env("DUDES_DAEMON", built_daemon());
+    let first = cli().args(["quickstart", "--yes"]).run();
+    assert_eq!(first.code(), dudes::exit::SUCCESS, "{first:?}");
+    assert_first_run_floor(&layout.config());
+    let daemon = layout.daemons();
+    assert_eq!(daemon.len(), 1, "{daemon:?}");
+
+    let live = cli()
+        .args(["quickstart", "--yes", "--set", "floor.git", "on"])
+        .run();
+    assert_eq!(live.code(), dudes::exit::SUCCESS, "{live:?}");
+    assert!(
+        live.stdout
+            .contains("The running daemon now runs floor.git, with no restart."),
+        "{live:?}"
+    );
+    assert_eq!(
+        layout.daemons(),
+        daemon,
+        "a Floor switch restarted the daemon"
+    );
+
+    let restarted = cli()
+        .args(["quickstart", "--yes", "--set", "providers.codex", "on"])
+        .run();
+    assert_eq!(restarted.code(), dudes::exit::SUCCESS, "{restarted:?}");
+    assert!(
+        restarted
+            .stdout
+            .contains("Restarting the daemon so it reads"),
+        "{restarted:?}"
+    );
+    assert_eq!(layout.daemons().len(), 2, "{:?}", layout.daemons());
+    stop(&layout);
 }
 
 fn exit_status(child: &mut std::process::Child, screen: &Screen) -> std::process::ExitStatus {

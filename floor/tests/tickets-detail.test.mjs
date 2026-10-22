@@ -254,7 +254,7 @@ test('the decoder refuses a coverage note it does not know', () => {
 test('the changed files come from the Git read, or one plain line says how to turn it on', async () => {
   await open({}, { git: false });
   const off = panel();
-  assert.match(off, /<h4>Changed files<\/h4><p class="ticket-hint">Changed files are turned off, so this list is empty\. To see them, run <code>dudes config set floor\.git on<\/code> in a terminal, then <code>dudes stop<\/code> and <code>dudes start<\/code>\.<\/p>/);
+  assert.match(off, /<h4>Changed files<\/h4><p class="ticket-hint">Changed files are turned off, so this list is empty\. To see them, turn on Show changed files in Settings\.<\/p>/);
   assert.ok(!/ticket-files/.test(off));
   assert.ok(!/Look again/.test(off));
 

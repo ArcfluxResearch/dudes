@@ -19,8 +19,8 @@ curl -fsSL https://raw.githubusercontent.com/ArcfluxResearch/dudes/main/install.
 ~/.local/bin/dudes quickstart
 ```
 
-Follow the quickstart prompts. Dudes starts the daemon and opens the Floor, where you can hire
-agents, give them tickets, and review their work.
+Quickstart asks no questions. Dudes starts the daemon and opens the Floor, where you can add a
+project, hire agents, give them tickets, and review their work.
 
 Dudes is an early preview. Commands and configuration keys can change between releases.
 For source builds and Windows, see [Build Dudes from source](docs/building-from-source.md).

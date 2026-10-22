@@ -75,7 +75,7 @@ function ChangedFiles({ floor, card }: { readonly floor: FloorState; readonly ca
   }, [floor.git, agent, card.id, card.seq]);
   if (!floor.git) {
     return <section aria-label="Changed files"><h4>Changed files</h4>
-      <p className="ticket-hint">Changed files are turned off, so this list is empty. To see them, run <code>dudes config set floor.git on</code> in a terminal, then <code>dudes stop</code> and <code>dudes start</code>.</p>
+      <p className="ticket-hint">Changed files are turned off, so this list is empty. To see them, turn on Show changed files in Settings.</p>
     </section>;
   }
   const mine = agent !== null && git.agent === agent;

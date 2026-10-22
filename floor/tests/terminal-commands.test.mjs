@@ -15,14 +15,14 @@ import {
  * It includes the one line that names `dudes open`, which every signed-out message draws: a page with
  * no session has nothing left to ask the daemon with, so only a terminal can get the person back in.
  */
-const PLACES = 36;
+const PLACES = 35;
 /**
  * The different `dudes ...` commands those lines name. Lower it when the last mention of one goes.
  * It includes `dudes project trust`, the one named exit of the optional own-copy box on Hire, which
  * the page shows only for an untrusted project another agent already works in, and `dudes open`, the
  * way back in from a page that has no session.
  */
-const DISTINCT_DUDES_COMMANDS = 14;
+const DISTINCT_DUDES_COMMANDS = 12;
 
 const renderer = resolve(import.meta.dirname, '../src/renderer');
 

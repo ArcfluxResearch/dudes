@@ -38,7 +38,7 @@ Turning it on, like any other setting the daemon reads only at start, is named f
 - `floor.answer`, `floor.hire`, `floor.control`, `floor.recovery`, `floor.goal`, `floor.renew`,
   `floor.retire`, `floor.board`, `floor.project`, `floor.terminal`, `floor.git` and `floor.diff`,
   on or off, are the Floor's actions. Each is off unless you turn it on, and `dudes quickstart`
-  turns on every one except `floor.terminal` in a new file. `floor.project` lets the Floor add and remove a
+  turns on every one except `floor.terminal`, `floor.git` and `floor.diff` in a new file. `floor.project` lets the Floor add and remove a
   project, and a project with an agent working in it is not removed. Chat is always on and has no setting. `floor.board`
   lets the Floor make tickets and give them to agents, which then run and spend under your account,
   so it needs `floor.control` and `floor.goal` on. `floor.diff` lets the Floor show the files a
@@ -47,9 +47,7 @@ Turning it on, like any other setting the daemon reads only at start, is named f
 - `budget.floor_usd_per_day` and `budget.per_turn_floor.usd` are in dollars, and
   `budget.per_turn_floor.tokens` is in tokens. See [Budgets](#budgets).
 
-Recovery inspection and submission need both `floor.recovery` and `floor.control` on. Recovery is
-separate from the bundled Floor actions that `quickstart` offers and stays off unless you enable
-it. **Check receipt** is read-only. With a live authenticated Floor reader, it remains available
+Recovery inspection and submission need both `floor.recovery` and `floor.control` on. **Check receipt** is read-only. With a live authenticated Floor reader, it remains available
 when recovery is off while the current page retains the request. After reloading the page, use
 `dudes recovery receipt <request-id>` with the saved ID. Receipt lookup never resubmits recovery.
 See [Recover an interrupted goal](goals-and-stopping.md#recover-an-interrupted-goal).

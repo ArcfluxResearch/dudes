@@ -115,21 +115,20 @@ export class Journey {
     await run.command('sh', ['-c', 'printf "a project\\n" > README.md && git add README.md && git -c user.name=journey -c user.email=journey@example.invalid commit -qm start']);
   }
 
-  /** Start and open Dudes as a newcomer does. Nothing else is typed after this. */
+  /** Start Dudes as a newcomer does: quickstart opens the Floor. Nothing else is typed after this. */
   async start() {
     const { run } = this;
-    await run.cli(['quickstart', '--yes', '--set', 'providers.codex', 'on']);
+    const { stdout: started } = await run.cli(['quickstart', '--set', 'providers.codex', 'on']);
     await run.rememberManaged();
     if (!run.cdp) await run.launchChrome();
     await run.cdp.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }, run.cdp.session);
-    const { stdout: opened } = await run.cli(['open']);
     let link;
     const end = Date.now() + 15_000;
     while (!link && Date.now() < end) {
       link = (await readFile(this.linkFile, 'utf8').catch(() => '')).trim() || undefined;
       if (!link) await pause(100);
     }
-    check(link, `dudes open did not hand a link to the opener: ${opened.replace(/#bootstrap=\S+/g, '#bootstrap=...').trim()}`);
+    check(link, `quickstart did not hand a link to the opener: ${started.replace(/#bootstrap=\S+/g, '#bootstrap=...').trim()}`);
     await rm(this.linkFile, { force: true });
     await run.openFloor(link);
   }
