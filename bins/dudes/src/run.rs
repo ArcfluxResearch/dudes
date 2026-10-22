@@ -1567,7 +1567,7 @@ fn write_and_start(
         };
         if !differences.is_empty() {
             if !plan.restart {
-                let busy = crate::lifecycle::agents_busy(&agents(env)?);
+                let busy = crate::lifecycle::agents_busy(&agents(env).map_err(put_back)?);
                 if !busy.is_empty() {
                     let file = if written.wrote { "wrote" } else { "kept" };
                     return Err(local(format!(
