@@ -950,6 +950,8 @@ pub(crate) struct Ctx<H: ProcessHost, P: PredicateRunner, C: Clock> {
     /// Set only while one typed browser intent is passing through the persist ledger.
     pub(crate) browser_session: Option<crate::floor_session::SessionIdentity>,
     pub(crate) onboarding_pause: OnboardingPause,
+    /// The system folder dialog the Floor's Add project and Hire open.
+    pub(crate) folder_picker: Arc<crate::folder_picker::FolderPicker>,
     pub(crate) onboarding_failure: OnboardingFailure,
     #[cfg(feature = "fault-injection")]
     pub(crate) recovery_stop: Option<crate::fault::RecoveryStop>,
@@ -1219,6 +1221,13 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
     #[must_use]
     pub fn provider_check(&self) -> crate::provider_check::ProviderCheck {
         self.provider_check.clone()
+    }
+
+    /// The folder dialog, so a test can put a stand-in program in its place.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn folder_picker(&self) -> Arc<crate::folder_picker::FolderPicker> {
+        Arc::clone(&self.ctx.folder_picker)
     }
 
     /// One ordering pause retained by an integration test before `run` consumes the daemon.
@@ -2128,6 +2137,7 @@ impl<H: ProcessHost, P: PredicateRunner, C: Clock + Send + Sync, R: Rng> Daemon<
         switches.project = live.project;
         let settings = crate::floor_settings::view(
             switches,
+            live.project && self.ctx.folder_picker.available(),
             self.sup.config().floor_usd_per_day,
             self.sup.config().per_turn_floor,
             &self.ctx.enrollment,

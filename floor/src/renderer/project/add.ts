@@ -36,6 +36,8 @@ export interface ProjectAdded {
 export type AddState =
   | { readonly kind: 'idle' }
   | { readonly kind: 'looking' }
+  | { readonly kind: 'choosing' }
+  | { readonly kind: 'not_chosen'; readonly why: 'busy' | 'unavailable' | 'failed' }
   | { readonly kind: 'preview'; readonly preview: ProjectPreview; readonly attempt: string }
   | { readonly kind: 'adding'; readonly preview: ProjectPreview; readonly attempt: string }
   | { readonly kind: 'added'; readonly added: ProjectAdded }
@@ -149,8 +151,9 @@ export function decodeAdded(status: number, text: string): Decoded<ProjectAdded>
 const PREVIEW_PATH = '/floor/project/preview';
 const ADD_PATH = '/floor/project/add';
 const REMOVE_PATH = '/floor/project/remove';
+const CHOOSE_PATH = '/floor/project/choose';
 
-async function post(path: typeof PREVIEW_PATH | typeof ADD_PATH | typeof REMOVE_PATH, body: unknown, deps: AddDeps): Promise<{ status: number; text: string } | null> {
+async function post(path: typeof PREVIEW_PATH | typeof ADD_PATH | typeof REMOVE_PATH | typeof CHOOSE_PATH, body: unknown, deps: AddDeps): Promise<{ status: number; text: string } | null> {
   if (!deps.signedIn()) return null;
   try {
     const response = await deps.fetch(path, {
@@ -164,6 +167,49 @@ async function post(path: typeof PREVIEW_PATH | typeof ADD_PATH | typeof REMOVE_
     return { status: response.status, text: await response.text() };
   } catch {
     return null;
+  }
+}
+
+export type Chosen =
+  | { readonly kind: 'path'; readonly path: string }
+  | { readonly kind: 'cancelled' | 'busy' | 'unavailable' | 'failed' };
+
+/** What the daemon's folder dialog came to: exactly one of a path, cancelled, busy or unavailable. */
+export function decodeChosen(status: number, text: string): Chosen {
+  const fields = object(text);
+  const keys = fields === null ? [] : Object.keys(fields);
+  if (status !== 200 || fields === null || keys.length !== 1) return { kind: 'failed' };
+  const [key] = keys;
+  if (key === 'path' && typeof fields.path === 'string' && /^\//.test(fields.path) && fields.path.length <= 4096) {
+    return { kind: 'path', path: fields.path };
+  }
+  if ((key === 'cancelled' || key === 'busy' || key === 'unavailable') && fields[key] === true) return { kind: key };
+  return { kind: 'failed' };
+}
+
+/**
+ * Open the daemon's folder dialog and wait for the person's choice. Nothing is written: a chosen
+ * path only fills the folder box, and the daemon then looks at it as it looks at a typed one.
+ */
+export async function chooseFolder(deps: AddDeps = browserAddDeps): Promise<string | null> {
+  if (state.kind === 'looking' || state.kind === 'adding' || state.kind === 'choosing') return null;
+  commit({ kind: 'choosing' });
+  const answer = await post(CHOOSE_PATH, {}, deps);
+  const chosen = answer === null ? { kind: 'failed' as const } : decodeChosen(answer.status, answer.text);
+  if (chosen.kind === 'path') {
+    commit(IDLE);
+    return chosen.path;
+  }
+  commit(chosen.kind === 'cancelled' ? IDLE : { kind: 'not_chosen', why: chosen.kind });
+  return null;
+}
+
+/** The sentence for a dialog that gave no folder. */
+export function notChosenLine(why: 'busy' | 'unavailable' | 'failed'): string {
+  switch (why) {
+    case 'busy': return 'A folder window is already open. Choose a folder in it, or close it and try again.';
+    case 'unavailable': return 'Dudes cannot open a folder window here. Type the folder instead.';
+    case 'failed': return 'Dudes did not answer. Type the folder instead, or try again.';
   }
 }
 

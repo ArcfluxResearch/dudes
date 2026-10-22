@@ -2,7 +2,7 @@
 
 import { useId, useState, useSyncExternalStore } from 'react';
 import type { FloorState } from '../floor/store.ts';
-import { addPreviewed, addedLine, askToRemove, getAddState, getRemoveState, lookAtFolder, previewLines,
+import { addPreviewed, addedLine, askToRemove, chooseFolder, getAddState, getRemoveState, lookAtFolder, notChosenLine, previewLines,
   refusalLine, removeAsked, resetAdd, resetRemove, subscribeToAdd, subscribeToRemove } from './add.ts';
 
 /** Whether this session may add a project from the page. */
@@ -19,7 +19,7 @@ export function AddProject({ floor, off }: { readonly floor: FloorState; readonl
   const [typed, setTyped] = useState('');
   const id = useId();
   if (!projectAddOn(floor)) return off === undefined ? null : <>{off}</>;
-  const busy = add.kind === 'looking' || add.kind === 'adding';
+  const busy = add.kind === 'looking' || add.kind === 'adding' || add.kind === 'choosing';
   const shown = add.kind === 'preview' || add.kind === 'adding' || add.kind === 'unsure' ? add.preview : null;
   return <form className="add-project" aria-label="Add a project" onSubmit={(event) => {
     event.preventDefault();
@@ -31,6 +31,15 @@ export function AddProject({ floor, off }: { readonly floor: FloorState; readonl
       onChange={(event) => { setTyped(event.target.value); if (add.kind !== 'idle') resetAdd(); }} />
     <button type="submit" aria-disabled={busy || typed.trim() === '' || undefined}>
       {add.kind === 'looking' ? 'Looking…' : 'Look at folder'}</button>
+    {floor.settings?.folder_picker !== true ? null : <button type="button" className="add-project-choose"
+      aria-disabled={busy || undefined} onClick={() => {
+        if (busy) return;
+        void chooseFolder().then((path) => {
+          if (path === null) return;
+          setTyped(path);
+          void lookAtFolder(path);
+        });
+      }}>{add.kind === 'choosing' ? 'Waiting for the folder window…' : 'Choose folder…'}</button>}
     {shown === null ? null : <div className="add-project-preview" role="status">
       {previewLines(shown).map((line) => <p key={line}>{line}</p>)}
       {shown.already !== null ? null : <button type="button" className="add-project-submit"
@@ -40,6 +49,7 @@ export function AddProject({ floor, off }: { readonly floor: FloorState; readonl
     {add.kind === 'unsure' ? <p role="alert">Dudes did not confirm the add. Try again; it will not add the folder twice.</p> : null}
     {add.kind === 'added' ? <p role="status">{addedLine(add.added)}</p> : null}
     {add.kind === 'refused' ? <p role="alert">{refusalLine(add.reason)}</p> : null}
+    {add.kind === 'not_chosen' ? <p role="alert">{notChosenLine(add.why)}</p> : null}
     {add.kind === 'failed' ? <p role="alert">Dudes did not answer. Nothing was added. Try again.</p> : null}
   </form>;
 }

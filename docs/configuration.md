@@ -39,7 +39,9 @@ Turning it on, like any other setting the daemon reads only at start, is named f
   `floor.retire`, `floor.board`, `floor.project`, `floor.terminal`, `floor.git` and `floor.diff`,
   on or off, are the Floor's actions. Each is off unless you turn it on, and `dudes quickstart`
   turns on every one except `floor.terminal`, `floor.git` and `floor.diff` in a new file. `floor.project` lets the Floor add and remove a
-  project, and a project with an agent working in it is not removed. Chat is always on and has no setting. `floor.board`
+  project, and a project with an agent working in it is not removed. It also lets the Floor open your
+  system's folder window through the daemon, on macOS and on Linux with a display; a daemon started over
+  SSH, or on Windows, offers no window and the folder is typed. Chat is always on and has no setting. `floor.board`
   lets the Floor make tickets and give them to agents, which then run and spend under your account,
   so it needs `floor.control` and `floor.goal` on. `floor.diff` lets the Floor show the files a
   ticket's agent changed, so it only has an effect with `floor.git` on. See
